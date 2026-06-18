@@ -23,6 +23,14 @@ are observations awaiting triage, not committed work.
   capability spec; grant `core:delete` per-document or via a world default to
   restore owner-delete. Status: Accepted (documented behavior change).
 
+- Title: capability model — grants can target `DocRole::None`. Summary: a GM may
+  add capabilities to the `None` (no-access) role via `by_role`, widening what
+  the floor denies. GM-authored only (not an escalation), and a coherent way to
+  raise the default tier; recorded as intentional flexibility rather than
+  restricted (restricting only the world-defaults endpoint's `validate_grants`
+  would be inconsistent — per-document grants set at create / via PATCH
+  `/permissions` bypass it). Status: Accepted (design note from Phase 1 review).
+
 - Title: capability model — `core:create` world authorization deferred.
   Summary: Phase 1 does not gate document creation by a world-level
   `core:create`; current behavior is M5's (any member who owns the new doc may
