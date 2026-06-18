@@ -74,6 +74,10 @@ pub async fn router(state: AppState) -> Router {
             delete(routes::remove_member),
         )
         .route(
+            "/api/worlds/{id}/capability-defaults",
+            get(routes::get_world_capability_defaults).put(routes::set_world_capability_defaults),
+        )
+        .route(
             "/api/worlds/{id}/documents",
             get(routes::list_documents).post(routes::create_document),
         )
@@ -555,5 +559,71 @@ pub(crate) mod tests {
             got["system"].get("secret").is_none(),
             "GM-only property must be stripped for the player"
         );
+    }
+
+    #[tokio::test]
+    async fn world_capability_defaults_enable_owner_embedded() {
+        let state = initialized_state().await;
+        seed_user(&state, "gm").await;
+        let player_id = seed_user(&state, "pl").await;
+        let gm = login_server(&state, "gm").await;
+        let pl = login_server(&state, "pl").await;
+
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "W" }))
+            .await
+            .json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+        gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": player_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // A doc the player owns (so they hold the write_fields floor) but with no
+        // per-document capability grant.
+        let doc_id = Uuid::from_u128(700);
+        let perms = serde_json::json!({
+            "default": "none",
+            "users": { player_id.to_string(): "owner" },
+            "property_overrides": {}
+        });
+        let doc = doc_json(doc_id, &world_id, serde_json::json!({ "hp": 1 }), perms);
+        gm.post(&format!("/api/worlds/{world_id}/documents"))
+            .json(&doc)
+            .await
+            .assert_status_ok();
+
+        let embed = serde_json::json!({ "changes": [
+            { "path": "/embedded/items", "old": null, "new": [] }
+        ]});
+
+        // Without a grant the owner cannot manage embedded documents.
+        pl.patch(&format!("/api/documents/{doc_id}"))
+            .json(&embed)
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        // A non-GM cannot set world defaults.
+        let defaults = serde_json::json!({
+            "by_role": { "owner": ["core:manage_embedded"] },
+            "by_user": {}
+        });
+        pl.put(&format!("/api/worlds/{world_id}/capability-defaults"))
+            .json(&defaults)
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        // The GM sets a world default granting Owners core:manage_embedded.
+        gm.put(&format!("/api/worlds/{world_id}/capability-defaults"))
+            .json(&defaults)
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // Now the owner may manage embedded documents.
+        pl.patch(&format!("/api/documents/{doc_id}"))
+            .json(&embed)
+            .await
+            .assert_status_ok();
     }
 }

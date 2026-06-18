@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use crate::auth::role::ServerRole;
 use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
-use crate::data::document::{Document, Scope, World, WorldRole};
-use crate::data::permission::resolve_access;
+use crate::data::document::{CapabilityGrants, Document, Scope, World, WorldRole};
+use crate::data::permission::{cap, required_cap_for_path, resolve_access_world};
 use crate::data::repository::Repository;
 use crate::data::validation;
 use crate::data::DataError;
@@ -286,6 +286,17 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// Set a world's default capability grants (additive over the per-document
+    /// floor). Stored as JSON in the settings table.
+    pub async fn set_world_cap_defaults(
+        &self,
+        world: Uuid,
+        grants: &CapabilityGrants,
+    ) -> Result<(), DataError> {
+        let json = serde_json::to_string(grants)?;
+        self.set_setting(&world_caps_key(world), &json).await
+    }
+
     pub async fn add_member(
         &self,
         world_id: Uuid,
@@ -484,6 +495,10 @@ impl Repository for SqliteRepository {
         ops: Vec<Operation>,
         ts: i64,
     ) -> Result<Command, DataError> {
+        // Load world default grants before opening the transaction: the
+        // single-writer pool holds one connection, so a settings query mid-tx
+        // would deadlock.
+        let world_defaults = self.world_cap_defaults(world_id).await?;
         let mut tx = self.pool.begin().await?;
 
         // Phase 1 — authorize, structurally validate, and check pre-images.
@@ -494,7 +509,9 @@ impl Repository for SqliteRepository {
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
                     validation::validate_system_size(doc)?;
-                    if !resolve_access(ctx.user_id, ctx.world_role, doc).can_write {
+                    if !resolve_access_world(ctx.user_id, ctx.world_role, doc, &world_defaults)
+                        .has(cap::WRITE_FIELDS)
+                    {
                         return Err(DataError::Forbidden);
                     }
                     // Create is non-clobbering: an existing id is a conflict,
@@ -515,7 +532,9 @@ impl Repository for SqliteRepository {
                     // Authorize against the stored doc, scoped to this world, so
                     // a GM of one world cannot delete another world's document.
                     check_command_scope(&cur, world_id)?;
-                    if !resolve_access(ctx.user_id, ctx.world_role, &cur).can_write {
+                    if !resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults)
+                        .has(cap::DELETE)
+                    {
                         return Err(DataError::Forbidden);
                     }
                 }
@@ -524,19 +543,24 @@ impl Repository for SqliteRepository {
                         .await?
                         .ok_or_else(|| DataError::Conflict(format!("document {doc_id} missing")))?;
                     check_command_scope(&cur, world_id)?;
-                    if !resolve_access(ctx.user_id, ctx.world_role, &cur).can_write {
-                        return Err(DataError::Forbidden);
-                    }
+                    let access =
+                        resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults);
                     // Field-level OCC: every change's pre-image must equal the
                     // current value at its pointer (absent reads as Null).
                     let whole = serde_json::to_value(&cur)?;
                     for ch in changes {
                         validation::validate_field_path(&ch.path)?;
-                        // Updates may only touch the opaque `system` body. The
-                        // envelope (permissions, owner, scope, id, source, ...)
-                        // is not patchable, so document write access cannot be
-                        // escalated into ACL/visibility rewrites.
-                        if ch.path != "/system" && !ch.path.starts_with("/system/") {
+                        // Each field path requires its capability; an immutable
+                        // envelope field (id, scope, owner, source, ...) maps to
+                        // no capability and is rejected for everyone. /system ->
+                        // write_fields, /embedded -> manage_embedded,
+                        // /permissions -> edit_permissions.
+                        let need = required_cap_for_path(&ch.path).ok_or(DataError::Forbidden)?;
+                        if !access.has(need) {
+                            tracing::debug!(
+                                user = %ctx.user_id, path = %ch.path, capability = need,
+                                "intent denied: missing capability"
+                            );
                             return Err(DataError::Forbidden);
                         }
                         let actual = whole
@@ -730,6 +754,18 @@ impl Repository for SqliteRepository {
             updated_at: r.get("updated_at"),
         }))
     }
+
+    async fn world_cap_defaults(&self, world: Uuid) -> Result<CapabilityGrants, DataError> {
+        match self.get_setting(&world_caps_key(world)).await? {
+            Some(json) => Ok(serde_json::from_str(&json)?),
+            None => Ok(CapabilityGrants::default()),
+        }
+    }
+}
+
+/// Settings key holding a world's default capability grants (JSON).
+fn world_caps_key(world: Uuid) -> String {
+    format!("world_caps:{world}")
 }
 
 #[cfg(test)]
@@ -1365,53 +1401,217 @@ mod tests {
         assert!(matches!(too_large, Err(DataError::TooLarge(_))));
     }
 
+    // A doc owned by `player` (floor: read + write_fields), created by the GM.
+    async fn world_with_player_owned_doc(
+        r: &SqliteRepository,
+    ) -> (
+        Uuid,
+        Uuid,
+        crate::data::membership::PermissionContext,
+        Document,
+    ) {
+        use crate::data::document::{DocRole, PermissionSet};
+        use crate::data::membership::PermissionContext;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut doc = world_doc(1, w.id, serde_json::json!({ "hp": 10 }));
+        let mut perms = PermissionSet::default();
+        perms.users.insert(player, DocRole::Owner);
+        doc.permissions = perms;
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: doc.clone() }],
+            1,
+        )
+        .await
+        .unwrap();
+        (w.id, player, gm_ctx, doc)
+    }
+
+    fn update(
+        doc_id: Uuid,
+        path: &str,
+        old: serde_json::Value,
+        new: serde_json::Value,
+    ) -> Operation {
+        Operation::Update {
+            doc_id,
+            changes: vec![FieldChange {
+                path: path.into(),
+                old,
+                new,
+            }],
+        }
+    }
+
     #[tokio::test]
-    async fn apply_intent_rejects_envelope_patch() {
-        use crate::data::document::DocRole;
+    async fn apply_intent_update_gated_by_path_capability() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let (world, player, _gm_ctx, doc) = world_with_player_owned_doc(&r).await;
+        let p = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // Owner holds core:write_fields → /system writes succeed.
+        r.apply_intent(
+            &p,
+            world,
+            vec![update(
+                doc.id,
+                "/system/hp",
+                serde_json::json!(10),
+                serde_json::json!(5),
+            )],
+            2,
+        )
+        .await
+        .unwrap();
+
+        // ...but not core:manage_embedded → /embedded is forbidden.
+        let emb = r
+            .apply_intent(
+                &p,
+                world,
+                vec![update(
+                    doc.id,
+                    "/embedded/items",
+                    serde_json::json!(null),
+                    serde_json::json!([]),
+                )],
+                3,
+            )
+            .await;
+        assert!(matches!(emb, Err(DataError::Forbidden)));
+
+        // ...nor core:edit_permissions → /permissions is forbidden (no escalation).
+        let acl = r
+            .apply_intent(
+                &p,
+                world,
+                vec![update(
+                    doc.id,
+                    "/permissions/default",
+                    serde_json::json!("none"),
+                    serde_json::json!("owner"),
+                )],
+                4,
+            )
+            .await;
+        assert!(matches!(acl, Err(DataError::Forbidden)));
+
+        // ...and an immutable envelope field maps to no capability → forbidden.
+        let env = r
+            .apply_intent(
+                &p,
+                world,
+                vec![update(
+                    doc.id,
+                    "/owner",
+                    serde_json::json!(null),
+                    serde_json::json!(player),
+                )],
+                5,
+            )
+            .await;
+        assert!(matches!(env, Err(DataError::Forbidden)));
+    }
+
+    #[tokio::test]
+    async fn apply_intent_granted_capability_enables_embedded() {
+        use crate::data::document::{CapabilityGrants, DocRole, PermissionSet};
         use crate::data::membership::PermissionContext;
         let r = repo().await;
         let gm = r
             .create_user("gm", None, ServerRole::User, 0)
             .await
             .unwrap();
+        let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
-        let ctx = PermissionContext {
+        let gm_ctx = PermissionContext {
             user_id: gm,
             world_role: WorldRole::Gm,
         };
-        let doc = world_doc(1, w.id, serde_json::json!({ "hp": 1 }));
-        r.apply_intent(&ctx, w.id, vec![Operation::Create { doc: doc.clone() }], 1)
-            .await
-            .unwrap();
-        // Patching the ACL via a field path is refused even for a GM — only the
-        // /system body is patchable, so write access can't escalate to ACL edits.
-        let res = r
-            .apply_intent(
-                &ctx,
-                w.id,
-                vec![Operation::Update {
-                    doc_id: doc.id,
-                    changes: vec![FieldChange {
-                        path: "/permissions/default".into(),
-                        old: serde_json::json!("none"),
-                        new: serde_json::json!("owner"),
-                    }],
-                }],
-                2,
-            )
-            .await;
-        assert!(matches!(res, Err(DataError::Forbidden)));
-        // The envelope is untouched (and the rejected intent consumed no seq).
+        // Owner doc that additionally grants Owners core:manage_embedded.
+        let mut doc = world_doc(1, w.id, serde_json::json!({}));
+        let mut perms = PermissionSet::default();
+        perms.users.insert(player, DocRole::Owner);
+        let mut grants = CapabilityGrants::default();
+        grants
+            .by_role
+            .entry(DocRole::Owner)
+            .or_default()
+            .insert(crate::data::permission::cap::MANAGE_EMBEDDED.to_string());
+        perms.capabilities = grants;
+        doc.permissions = perms;
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: doc.clone() }],
+            1,
+        )
+        .await
+        .unwrap();
+
+        let p = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        // With the grant, the owner may now manage embedded documents.
+        r.apply_intent(
+            &p,
+            w.id,
+            vec![update(
+                doc.id,
+                "/embedded/items",
+                serde_json::json!(null),
+                serde_json::json!([]),
+            )],
+            2,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             r.get_document(doc.id)
                 .await
                 .unwrap()
                 .unwrap()
-                .permissions
-                .default,
-            DocRole::None
+                .embedded
+                .len(),
+            1
         );
-        assert_eq!(r.get_world(w.id).await.unwrap().unwrap().seq, 1);
+    }
+
+    #[tokio::test]
+    async fn apply_intent_delete_requires_delete_capability() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let (world, player, gm_ctx, doc) = world_with_player_owned_doc(&r).await;
+        let p = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        // Owner floor does not include core:delete.
+        let denied = r
+            .apply_intent(&p, world, vec![Operation::Delete { doc: doc.clone() }], 2)
+            .await;
+        assert!(matches!(denied, Err(DataError::Forbidden)));
+        assert!(r.get_document(doc.id).await.unwrap().is_some());
+        // The GM holds every capability and may delete.
+        r.apply_intent(&gm_ctx, world, vec![Operation::Delete { doc }], 2)
+            .await
+            .unwrap();
+        assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1453,5 +1653,71 @@ mod tests {
         };
         assert_eq!(doc.permissions.default, DocRole::None);
         assert_eq!(doc.system["secret"], serde_json::json!(1));
+    }
+
+    #[tokio::test]
+    async fn apply_intent_world_default_grants_apply() {
+        use crate::data::document::{CapabilityGrants, DocRole, PermissionSet};
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        // World default: Owners hold core:manage_embedded everywhere in this world.
+        let mut wd = CapabilityGrants::default();
+        wd.by_role
+            .entry(DocRole::Owner)
+            .or_default()
+            .insert(crate::data::permission::cap::MANAGE_EMBEDDED.to_string());
+        r.set_world_cap_defaults(w.id, &wd).await.unwrap();
+
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        // An owner-held doc with NO per-document capability grant.
+        let mut doc = world_doc(1, w.id, serde_json::json!({}));
+        let mut perms = PermissionSet::default();
+        perms.users.insert(player, DocRole::Owner);
+        doc.permissions = perms;
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: doc.clone() }],
+            1,
+        )
+        .await
+        .unwrap();
+
+        // The world default alone authorizes the owner to manage embedded docs.
+        let p = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        r.apply_intent(
+            &p,
+            w.id,
+            vec![update(
+                doc.id,
+                "/embedded/items",
+                serde_json::json!(null),
+                serde_json::json!([]),
+            )],
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            r.get_document(doc.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .embedded
+                .len(),
+            1
+        );
     }
 }

@@ -1,9 +1,11 @@
 # Capability-Based Permissions — Design Spec
 
-> Status: **DRAFT for review.** Supersedes M5's binary `can_write` with a
-> data-driven, namespaced capability model. Phase 1 (core capabilities) is
-> implementable on top of merged M5; Phase 2 (module-defined capabilities and
-> action enforcement) is designed here but lands with the M6 module/hook layer.
+> Status: **Phase 1 IMPLEMENTED** on branch `capability-permissions-phase1`
+> (core capabilities + per-document and per-world grants + path→capability
+> gating + world-defaults endpoints). Deferred follow-ups: world-level
+> `core:create` authorization (§7.1) and doc_type-scoped world defaults (§7.2)
+> — both logged in `POST_WORK_FINDINGS.md`. Phase 2 (module-defined
+> capabilities and action enforcement, §5) lands with the M6 module/hook layer.
 
 ## 1. Motivation
 

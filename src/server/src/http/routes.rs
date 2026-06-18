@@ -14,9 +14,9 @@ use crate::auth::role::ServerRole;
 use crate::auth::session::{AdminUser, AuthUser, SessionUser};
 use crate::auth::setup::{create_admin, now_millis};
 use crate::data::command::{Command, FieldChange, Operation};
-use crate::data::document::{Document, Scope, World, WorldRole};
+use crate::data::document::{CapabilityGrants, Document, Scope, World, WorldRole};
 use crate::data::membership::PermissionContext;
-use crate::data::permission::{filter_command, filter_properties, resolve_access};
+use crate::data::permission::{cap, filter_command, filter_properties, resolve_access_world};
 use crate::data::repository::Repository;
 use crate::health::HealthStatus;
 use crate::http::error::AppError;
@@ -307,12 +307,15 @@ pub async fn list_documents(
         .repo
         .permission_context(world, user.id, user.role)
         .await?;
+    let world_defaults = state.repo.world_cap_defaults(world).await?;
     let docs = state.repo.query_documents(world, &q.r#type).await?;
     let visible = docs
         .into_iter()
         .filter_map(|d| {
-            let access = resolve_access(ctx.user_id, ctx.world_role, &d);
-            access.can_read.then(|| filter_properties(&d, access))
+            let access = resolve_access_world(ctx.user_id, ctx.world_role, &d, &world_defaults);
+            access
+                .has(cap::READ)
+                .then(|| filter_properties(&d, &access))
         })
         .collect();
     Ok(Json(visible))
@@ -333,11 +336,12 @@ pub async fn get_document(
         .repo
         .permission_context(world, user.id, user.role)
         .await?;
-    let access = resolve_access(ctx.user_id, ctx.world_role, &doc);
-    if !access.can_read {
+    let world_defaults = state.repo.world_cap_defaults(world).await?;
+    let access = resolve_access_world(ctx.user_id, ctx.world_role, &doc, &world_defaults);
+    if !access.has(cap::READ) {
         return Err(AppError::NotFound);
     }
-    Ok(Json(filter_properties(&doc, access)))
+    Ok(Json(filter_properties(&doc, &access)))
 }
 
 #[derive(Deserialize)]
@@ -381,4 +385,47 @@ pub async fn delete_document(
         .ok_or(AppError::NotFound)?;
     let world = world_of(&doc)?;
     write_ops(&state, &user, world, vec![Operation::Delete { doc }]).await
+}
+
+/// Structural validation of a capability token: `<namespace>:<verb>`, both parts
+/// non-empty. The server never interprets the verb's meaning.
+fn validate_capability(token: &str) -> Result<(), AppError> {
+    match token.split_once(':') {
+        Some((ns, verb)) if !ns.is_empty() && !verb.is_empty() => Ok(()),
+        _ => Err(AppError::Unprocessable(format!(
+            "malformed capability '{token}' (expected <namespace>:<verb>)"
+        ))),
+    }
+}
+
+fn validate_grants(grants: &CapabilityGrants) -> Result<(), AppError> {
+    for set in grants.by_role.values().chain(grants.by_user.values()) {
+        for token in set {
+            validate_capability(token)?;
+        }
+    }
+    Ok(())
+}
+
+/// A world's default capability grants. GM/admin only.
+pub async fn get_world_capability_defaults(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+) -> Result<Json<CapabilityGrants>, AppError> {
+    require_gm(&state, &user, world).await?;
+    Ok(Json(state.repo.world_cap_defaults(world).await?))
+}
+
+/// Replace a world's default capability grants. GM/admin only.
+pub async fn set_world_capability_defaults(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+    Json(grants): Json<CapabilityGrants>,
+) -> Result<StatusCode, AppError> {
+    require_gm(&state, &user, world).await?;
+    validate_grants(&grants)?;
+    state.repo.set_world_cap_defaults(world, &grants).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

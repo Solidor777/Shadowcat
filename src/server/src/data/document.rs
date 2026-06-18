@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -22,7 +22,7 @@ pub struct Source {
     pub version: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum DocRole {
@@ -55,14 +55,28 @@ impl Default for DocRole {
     }
 }
 
-/// Document-level permissions: default role, per-user overrides, and
-/// property-level visibility keyed by JSON pointer.
+/// Additive capability grants beyond the built-in `DocRole` floor, keyed by
+/// namespaced capability string (e.g. `core:manage_embedded`). Grants widen
+/// what a role/user may do on a document; they never revoke the floor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct CapabilityGrants {
+    #[serde(default)]
+    pub by_role: BTreeMap<DocRole, BTreeSet<String>>,
+    #[serde(default)]
+    pub by_user: BTreeMap<Uuid, BTreeSet<String>>,
+}
+
+/// Document-level permissions: default role, per-user overrides, property-level
+/// visibility keyed by JSON pointer, and additive capability grants.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct PermissionSet {
     pub default: DocRole,
     pub users: BTreeMap<Uuid, DocRole>,
     pub property_overrides: BTreeMap<String, Visibility>,
+    #[serde(default)]
+    pub capabilities: CapabilityGrants,
 }
 
 /// The persisted document: typed envelope around an opaque `system` body.
