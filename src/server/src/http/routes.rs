@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 
 use axum::extract::State;
@@ -8,6 +9,7 @@ use tower_sessions::Session;
 use crate::auth::password::{hash_password, verify_password};
 use crate::auth::role::ServerRole;
 use crate::auth::session::{AuthUser, SessionUser};
+use crate::auth::setup::{create_admin, now_millis};
 use crate::health::HealthStatus;
 use crate::http::error::AppError;
 use crate::http::AppState;
@@ -88,4 +90,32 @@ pub async fn login(
 pub async fn logout(session: Session) -> axum::http::StatusCode {
     let _ = session.flush().await;
     axum::http::StatusCode::NO_CONTENT
+}
+
+#[derive(Deserialize)]
+pub struct SetupRequest {
+    pub username: String,
+    pub password: String,
+    pub token: Option<String>,
+}
+
+/// First-run admin creation. Gated: 409 once initialized; 403 on token mismatch
+/// when a token is required. Flips `initialized` so the gate opens.
+pub async fn setup(
+    State(state): State<AppState>,
+    Json(body): Json<SetupRequest>,
+) -> Result<axum::http::StatusCode, AppError> {
+    if state.initialized.load(Ordering::Relaxed)
+        || state.repo.admin_exists().await.map_err(|_| AppError::Internal)?
+    {
+        return Err(AppError::Conflict("server already initialized".into()));
+    }
+    if let Some(expected) = &state.setup_token {
+        if body.token.as_deref() != Some(expected.as_str()) {
+            return Err(AppError::Forbidden);
+        }
+    }
+    create_admin(&state.repo, &body.username, &body.password, now_millis()).await?;
+    state.initialized.store(true, Ordering::Relaxed);
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }

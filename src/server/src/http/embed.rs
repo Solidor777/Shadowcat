@@ -24,11 +24,11 @@ pub async fn static_handler(uri: Uri) -> Response {
 #[cfg(test)]
 mod tests {
     use crate::http::router;
-    use crate::http::tests::test_state;
+    use crate::http::tests::initialized_state;
 
     #[tokio::test]
     async fn serves_index_at_root_and_named_assets() {
-        let server = axum_test::TestServer::new(router(test_state().await).await).unwrap();
+        let server = axum_test::TestServer::new(router(initialized_state().await).await).unwrap();
 
         let root = server.get("/").await;
         root.assert_status_ok();

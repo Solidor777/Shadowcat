@@ -14,12 +14,16 @@ async fn main() -> anyhow::Result<()> {
     init_tracing();
 
     let repo = SqliteRepository::connect(&config.db).await?;
-    let initialized = repo.admin_exists().await?;
+
+    // Headless bootstrap (remote hosting): seed admin from config if present.
+    let seeded = shadowcat::auth::setup::bootstrap_admin(&repo, &config).await?;
+    let initialized = seeded || repo.admin_exists().await?;
+    let setup_token = AppState::resolve_setup_token(&config);
 
     let state = AppState {
         repo: Arc::new(repo),
         config: Arc::new(config.clone()),
-        setup_token: None,
+        setup_token,
         initialized: Arc::new(AtomicBool::new(initialized)),
     };
 

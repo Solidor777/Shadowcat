@@ -1,5 +1,6 @@
 pub mod embed;
 pub mod error;
+pub mod middleware;
 pub mod routes;
 
 use std::sync::atomic::AtomicBool;
@@ -22,6 +23,22 @@ pub struct AppState {
     pub initialized: Arc<AtomicBool>,
 }
 
+impl AppState {
+    /// Resolve the token `/api/setup` will require. `None` = open window.
+    pub fn resolve_setup_token(config: &Config) -> Option<String> {
+        use crate::config::SetupTokenPolicy;
+        match config.setup_token_policy() {
+            SetupTokenPolicy::Open => None,
+            SetupTokenPolicy::Required(Some(v)) => Some(v),
+            SetupTokenPolicy::Required(None) => {
+                let token = uuid::Uuid::new_v4().simple().to_string();
+                tracing::info!(%token, "setup token required; provide it on /setup.html");
+                Some(token)
+            }
+        }
+    }
+}
+
 pub async fn router(state: AppState) -> Router {
     use tower::ServiceBuilder;
     use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
@@ -36,7 +53,12 @@ pub async fn router(state: AppState) -> Router {
         .route("/api/me", get(routes::me))
         .route("/api/login", axum::routing::post(routes::login))
         .route("/api/logout", axum::routing::post(routes::logout))
+        .route("/api/setup", axum::routing::post(routes::setup))
         .fallback(embed::static_handler)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::init_gate,
+        ))
         .layer(
             // Outermost→innermost: stamp a request id, trace the span, then
             // propagate the id onto the response.
@@ -64,17 +86,75 @@ pub(crate) mod tests {
         }
     }
 
+    /// A `test_state` with the init gate already open — for exercising
+    /// normal (post-setup) routes without walking the first-run flow.
+    pub(crate) async fn initialized_state() -> AppState {
+        let state = test_state().await;
+        state.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
+        state
+    }
+
     use crate::auth::password::hash_password;
     use crate::auth::role::ServerRole;
 
     async fn server_with_user(username: &str, password: &str, role: ServerRole) -> axum_test::TestServer {
-        let state = test_state().await;
+        let state = initialized_state().await;
         let hash = hash_password(password).unwrap();
         state.repo.create_user(username, Some(&hash), role, 0).await.unwrap();
         axum_test::TestServer::builder()
             .save_cookies()
             .build(router(state).await)
             .unwrap()
+    }
+
+    async fn fresh_server() -> axum_test::TestServer {
+        // Uninitialized state, open token window (loopback default).
+        let state = test_state().await;
+        axum_test::TestServer::builder().save_cookies().build(router(state).await).unwrap()
+    }
+
+    #[tokio::test]
+    async fn setup_creates_admin_then_closes() {
+        let server = fresh_server().await;
+
+        // Uninitialized: a normal page redirects to setup.
+        let redirect = server.get("/").await;
+        redirect.assert_status(axum::http::StatusCode::SEE_OTHER);
+
+        let setup = server.post("/api/setup").json(&serde_json::json!({
+            "username": "admin", "password": "pw-admin"
+        })).await;
+        setup.assert_status(axum::http::StatusCode::NO_CONTENT);
+
+        // Now initialized: second setup is a conflict, and "/" serves index.
+        server.post("/api/setup").json(&serde_json::json!({
+            "username": "x", "password": "y"
+        })).await.assert_status(axum::http::StatusCode::CONFLICT);
+        server.get("/").await.assert_status_ok();
+
+        // The created admin can log in.
+        server.post("/api/login").json(&serde_json::json!({
+            "username": "admin", "password": "pw-admin"
+        })).await.assert_status(axum::http::StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn setup_requires_token_when_policy_demands_it() {
+        let mut state = test_state().await;
+        // Force a required token regardless of bind.
+        let mut cfg = crate::config::Config::default();
+        cfg.setup_token = "the-token".into();
+        state.config = std::sync::Arc::new(cfg.clone());
+        state.setup_token = AppState::resolve_setup_token(&cfg);
+        let server = axum_test::TestServer::builder().save_cookies().build(router(state).await).unwrap();
+
+        server.post("/api/setup").json(&serde_json::json!({
+            "username": "admin", "password": "pw"
+        })).await.assert_status(axum::http::StatusCode::FORBIDDEN);
+
+        server.post("/api/setup").json(&serde_json::json!({
+            "username": "admin", "password": "pw", "token": "the-token"
+        })).await.assert_status(axum::http::StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
