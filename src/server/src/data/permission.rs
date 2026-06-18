@@ -1,6 +1,9 @@
 use uuid::Uuid;
 
+use crate::data::command::{Command, FieldChange, Operation};
 use crate::data::document::{DocRole, Document, Visibility, WorldRole};
+use crate::data::membership::PermissionContext;
+use crate::data::repository::Repository;
 
 /// Effective access for a (user, document) pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +69,113 @@ pub fn filter_properties(doc: &Document, access: Access) -> Document {
     }
     out = serde_json::from_value(whole).expect("filtered document deserializes");
     out
+}
+
+/// The recipient's view of a broadcast command: ops on unreadable documents
+/// are dropped, GmOnly properties/changes stripped. seq/world/author/ts are
+/// preserved so the recipient's sequence guard never sees a false gap — a fully
+/// redacted command keeps its seq with empty ops.
+///
+/// Async because `Update` ops carry only deltas, not the document's
+/// `PermissionSet`; the current doc is loaded per op to resolve visibility.
+pub async fn filter_command(
+    repo: &dyn Repository,
+    cmd: &Command,
+    ctx: &PermissionContext,
+) -> Command {
+    let mut out_ops = Vec::with_capacity(cmd.ops.len());
+    for op in &cmd.ops {
+        match op {
+            Operation::Create { doc } => {
+                let access = resolve_access(ctx.user_id, ctx.world_role, doc);
+                if access.can_read {
+                    out_ops.push(Operation::Create {
+                        doc: filter_properties(doc, access),
+                    });
+                }
+            }
+            Operation::Delete { doc } => {
+                // A delete is visible to anyone who could read the document.
+                let access = resolve_access(ctx.user_id, ctx.world_role, doc);
+                if access.can_read {
+                    out_ops.push(Operation::Delete {
+                        doc: filter_properties(doc, access),
+                    });
+                }
+            }
+            Operation::Update { doc_id, changes } => {
+                let Ok(Some(cur)) = repo.get_document(*doc_id).await else {
+                    continue;
+                };
+                let access = resolve_access(ctx.user_id, ctx.world_role, &cur);
+                if !access.can_read {
+                    continue;
+                }
+                let kept: Vec<FieldChange> = if access.see_gm_only {
+                    changes.clone()
+                } else {
+                    let gm_only: Vec<String> = cur
+                        .permissions
+                        .property_overrides
+                        .iter()
+                        .filter(|(_, v)| **v == Visibility::GmOnly)
+                        .map(|(p, _)| p.clone())
+                        .collect();
+                    changes
+                        .iter()
+                        .filter_map(|ch| redact_change(ch, &gm_only))
+                        .collect()
+                };
+                out_ops.push(Operation::Update {
+                    doc_id: *doc_id,
+                    changes: kept,
+                });
+            }
+        }
+    }
+    Command {
+        seq: cmd.seq,
+        world_id: cmd.world_id,
+        author: cmd.author,
+        ts: cmd.ts,
+        ops: out_ops,
+    }
+}
+
+/// Redact one `FieldChange` for a recipient who cannot see GM-only properties,
+/// using the same subtree semantics as `filter_properties` (exact-pointer
+/// matching would leak nested fields):
+/// - if the change targets a GM-only pointer or any descendant of one, the
+///   change carries hidden data and is dropped entirely (`None`);
+/// - if the change writes an ancestor of a GM-only pointer, the hidden subtree
+///   is stripped from both the pre-image (`old`) and the new value.
+fn redact_change(ch: &FieldChange, gm_only: &[String]) -> Option<FieldChange> {
+    for ov in gm_only {
+        if &ch.path == ov || ch.path.starts_with(&format!("{ov}/")) {
+            return None;
+        }
+    }
+    let mut old = ch.old.clone();
+    let mut new = ch.new.clone();
+    let mut changed = false;
+    let prefix = format!("{}/", ch.path);
+    for ov in gm_only {
+        if let Some(rel) = ov.strip_prefix(&prefix) {
+            let rel_ptr = format!("/{rel}");
+            strip_pointer(&mut old, &rel_ptr);
+            strip_pointer(&mut new, &rel_ptr);
+            changed = true;
+        }
+    }
+    if changed {
+        Some(FieldChange {
+            path: ch.path.clone(),
+            old,
+            new,
+        })
+    } else {
+        Some(ch.clone())
+    }
 }
 
 /// Remove the value at a JSON pointer, if present.
@@ -164,5 +274,186 @@ mod tests {
             filter_properties(&d, gm).system["secret"],
             serde_json::json!(42)
         );
+    }
+
+    #[tokio::test]
+    async fn filter_command_strips_and_preserves_seq() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, FieldChange, Operation};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let mut d = doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "secret": 1, "public": 2 }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        d.permissions
+            .property_overrides
+            .insert("/system/secret".into(), Visibility::GmOnly);
+        r.apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: d.clone() }], 1)
+            .await
+            .unwrap();
+
+        // An update touching both a GmOnly and a public field.
+        let cmd = Command {
+            seq: 2,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id: d.id,
+                changes: vec![
+                    FieldChange {
+                        path: "/system/secret".into(),
+                        old: serde_json::json!(1),
+                        new: serde_json::json!(9),
+                    },
+                    FieldChange {
+                        path: "/system/public".into(),
+                        old: serde_json::json!(2),
+                        new: serde_json::json!(8),
+                    },
+                ],
+            }],
+        };
+
+        // Player sees the public change only; seq is preserved.
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let filtered = filter_command(&r, &cmd, &player).await;
+        assert_eq!(filtered.seq, 2);
+        if let Operation::Update { changes, .. } = &filtered.ops[0] {
+            assert_eq!(changes.len(), 1);
+            assert_eq!(changes[0].path, "/system/public");
+        } else {
+            panic!("expected Update");
+        }
+
+        // GM sees both changes.
+        let gm_view = filter_command(&r, &cmd, &gm_ctx).await;
+        if let Operation::Update { changes, .. } = &gm_view.ops[0] {
+            assert_eq!(changes.len(), 2);
+        } else {
+            panic!("expected Update");
+        }
+    }
+
+    #[tokio::test]
+    async fn filter_command_redacts_nested_gm_only_paths() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, FieldChange, Operation};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let mut d = doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({
+                "secret": { "value": 1 },
+                "sheet": { "hidden": 2, "shown": 3 },
+                "public": 4
+            }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        // A GM-only object and a GM-only nested leaf.
+        d.permissions
+            .property_overrides
+            .insert("/system/secret".into(), Visibility::GmOnly);
+        d.permissions
+            .property_overrides
+            .insert("/system/sheet/hidden".into(), Visibility::GmOnly);
+        r.apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: d.clone() }], 1)
+            .await
+            .unwrap();
+
+        let cmd = Command {
+            seq: 2,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id: d.id,
+                changes: vec![
+                    // Descendant of a GM-only pointer → dropped entirely.
+                    FieldChange {
+                        path: "/system/secret/value".into(),
+                        old: serde_json::json!(1),
+                        new: serde_json::json!(9),
+                    },
+                    // Ancestor of a GM-only pointer → hidden child stripped from
+                    // both pre-image and new value, siblings preserved.
+                    FieldChange {
+                        path: "/system/sheet".into(),
+                        old: serde_json::json!({ "hidden": 2, "shown": 3 }),
+                        new: serde_json::json!({ "hidden": 20, "shown": 30 }),
+                    },
+                    // Unrelated public field → kept whole.
+                    FieldChange {
+                        path: "/system/public".into(),
+                        old: serde_json::json!(4),
+                        new: serde_json::json!(40),
+                    },
+                ],
+            }],
+        };
+
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let filtered = filter_command(&r, &cmd, &player).await;
+        let Operation::Update { changes, .. } = &filtered.ops[0] else {
+            panic!("expected Update");
+        };
+        assert_eq!(changes.len(), 2, "the GM-only descendant change is dropped");
+        let sheet = changes.iter().find(|c| c.path == "/system/sheet").unwrap();
+        assert!(
+            sheet.new.get("hidden").is_none(),
+            "hidden child stripped from new"
+        );
+        assert!(
+            sheet.old.get("hidden").is_none(),
+            "hidden child stripped from old"
+        );
+        assert_eq!(sheet.new["shown"], serde_json::json!(30));
+        let public = changes.iter().find(|c| c.path == "/system/public").unwrap();
+        assert_eq!(public.new, serde_json::json!(40));
+
+        // The GM sees every change unredacted.
+        let gm_view = filter_command(&r, &cmd, &gm_ctx).await;
+        let Operation::Update { changes, .. } = &gm_view.ops[0] else {
+            panic!("expected Update");
+        };
+        assert_eq!(changes.len(), 3);
     }
 }

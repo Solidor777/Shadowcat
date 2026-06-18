@@ -13,6 +13,19 @@ pub trait Repository: Send + Sync {
     /// apply every operation to the document store — all in one transaction.
     async fn apply_command(&self, cmd: UnsequencedCommand) -> Result<Command, DataError>;
 
+    /// Authorize (per `ctx`), structurally validate, and check per-op
+    /// pre-images, then sequence + apply + log — all in one transaction.
+    /// Field-level optimistic concurrency: an `Update` whose `FieldChange.old`
+    /// does not match the current stored value yields `Conflict`. A failure in
+    /// the authorize phase consumes no seq (the transaction rolls back whole).
+    async fn apply_intent(
+        &self,
+        ctx: &crate::data::membership::PermissionContext,
+        world_id: Uuid,
+        ops: Vec<crate::data::command::Operation>,
+        ts: i64,
+    ) -> Result<Command, DataError>;
+
     async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DataError>;
 
     async fn query_documents(

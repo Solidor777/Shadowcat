@@ -10,6 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use shadowcat::auth::password::hash_password;
 use shadowcat::auth::role::ServerRole;
 use shadowcat::config::Config;
+use shadowcat::data::document::WorldRole;
 use shadowcat::data::repository::Repository;
 use shadowcat::data::sqlite::SqliteRepository;
 use shadowcat::http::{self, AppState};
@@ -26,11 +27,14 @@ struct Harness {
 
 async fn spawn() -> Harness {
     let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
-    let world = repo.create_world("test", 0).await.unwrap();
     let hash = hash_password("pw").unwrap();
-    repo.create_user("u", Some(&hash), ServerRole::User, 0)
+    // The seeded user owns the world (GM), so its intents are authorized and
+    // it passes the membership-gated WS join.
+    let uid = repo
+        .create_user("u", Some(&hash), ServerRole::User, 0)
         .await
         .unwrap();
+    let world = repo.create_world_owned("test", uid, 0).await.unwrap();
 
     let state = AppState {
         repo: repo.clone(),
@@ -82,12 +86,50 @@ type Ws =
 
 impl Harness {
     async fn connect(&self) -> Ws {
+        self.connect_with(&self.cookie).await
+    }
+
+    async fn connect_with(&self, cookie: &str) -> Ws {
         let url = format!("ws://{}/ws?world={}", self.addr, self.world);
         let mut req = url.into_client_request().unwrap();
-        req.headers_mut()
-            .insert("cookie", self.cookie.parse().unwrap());
+        req.headers_mut().insert("cookie", cookie.parse().unwrap());
         let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
         ws
+    }
+
+    /// Log in over HTTP and return the signed session cookie.
+    async fn login(&self, username: &str, password: &str) -> String {
+        let client = reqwest::Client::builder()
+            .cookie_store(true)
+            .build()
+            .unwrap();
+        let res = client
+            .post(format!("http://{}/api/login", self.addr))
+            .json(&serde_json::json!({ "username": username, "password": password }))
+            .send()
+            .await
+            .unwrap();
+        res.headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    /// Create a world member with `role` and return their session cookie.
+    async fn add_member(&self, username: &str, role: WorldRole) -> String {
+        let hash = hash_password("pw").unwrap();
+        let id = self
+            .repo
+            .create_user(username, Some(&hash), ServerRole::User, 0)
+            .await
+            .unwrap();
+        self.repo.add_member(self.world, id, role).await.unwrap();
+        self.login(username, "pw").await
     }
 
     async fn authoritative_seqs(&self) -> Vec<i64> {
@@ -101,8 +143,74 @@ impl Harness {
     }
 }
 
-fn emit(nonce: u64) -> Message {
-    Message::Text(serde_json::json!({ "type": "emit_test", "nonce": nonce }).to_string())
+/// An `Intent` frame: correlation id from `intent_n`, carrying `ops`.
+fn intent_msg(intent_n: u64, ops: serde_json::Value) -> Message {
+    Message::Text(
+        serde_json::json!({
+            "type": "intent",
+            "intent_id": Uuid::from_u128(intent_n as u128),
+            "ops": ops,
+        })
+        .to_string(),
+    )
+}
+
+/// A `create` op for a minimal world-scoped document.
+fn create_op(world: Uuid, doc_id: Uuid, system: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "op": "create",
+        "doc": {
+            "id": doc_id,
+            "scope": { "kind": "world", "world_id": world },
+            "doc_type": "actor",
+            "schema_version": 1,
+            "system": system,
+            "created_at": 0,
+            "updated_at": 0,
+        }
+    })
+}
+
+/// An `update` op carrying one field change with its pre-image.
+fn update_op(
+    doc_id: Uuid,
+    path: &str,
+    old: serde_json::Value,
+    new: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "op": "update",
+        "doc_id": doc_id,
+        "changes": [{ "path": path, "old": old, "new": new }],
+    })
+}
+
+/// An intent that creates one distinct document, keyed by `n`.
+fn create_intent(world: Uuid, n: u64) -> Message {
+    let doc_id = Uuid::from_u128(1000 + n as u128);
+    intent_msg(
+        n,
+        serde_json::json!([create_op(world, doc_id, serde_json::json!({}))]),
+    )
+}
+
+/// Drain `event` and `reject` frames (skipping welcome/ping/time_pong) until
+/// `count` are collected or the budget elapses.
+async fn drain_frames(ws: &mut Ws, count: usize) -> Vec<serde_json::Value> {
+    let mut out = vec![];
+    while out.len() < count {
+        let Ok(Some(Ok(m))) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await
+        else {
+            break;
+        };
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(m.to_text().unwrap_or("")) {
+            if matches!(v["type"].as_str(), Some("event") | Some("reject")) {
+                out.push(v);
+            }
+        }
+    }
+    out
 }
 
 /// Read frames, collecting Event seqs, until `count` events are seen or a budget
@@ -135,8 +243,8 @@ async fn join_welcome_emit_receive() {
     assert_eq!(welcome["type"], "welcome");
     assert_eq!(welcome["current_seq"], 0);
 
-    // Emit one test event; expect an Event with seq 1.
-    ws.send(emit(1)).await.unwrap();
+    // Emit one create intent; expect an Event with seq 1.
+    ws.send(create_intent(h.world, 1)).await.unwrap();
     let evt = loop {
         let m = ws.next().await.unwrap().unwrap();
         let v: serde_json::Value = serde_json::from_str(m.to_text().unwrap()).unwrap();
@@ -160,7 +268,7 @@ async fn all_clients_converge_after_reconnect() {
     let mut pubc = h.connect().await;
     let _ = pubc.next().await; // Welcome
     for n in 0..5 {
-        pubc.send(emit(n)).await.unwrap();
+        pubc.send(create_intent(h.world, n)).await.unwrap();
     }
 
     // Client A receives all 5 live.
@@ -193,7 +301,7 @@ async fn slow_reader_recovers_via_resync() {
     let mut pubc = h.connect().await;
     let _ = pubc.next().await;
     for n in 0..400 {
-        pubc.send(emit(n)).await.unwrap();
+        pubc.send(create_intent(h.world, n)).await.unwrap();
     }
     // Give the server time to process the publishes.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -221,9 +329,10 @@ async fn converges_with_publishing_during_resync() {
 
     let mut pubc = h.connect().await;
     let _ = pubc.next().await;
+    let world = h.world;
     let publisher = tokio::spawn(async move {
         for n in 0..300 {
-            if pubc.send(emit(n)).await.is_err() {
+            if pubc.send(create_intent(world, n)).await.is_err() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -266,4 +375,142 @@ async fn time_sync_returns_pong() {
     };
     assert_eq!(pong["client_t0"], 1000);
     assert!(pong["server_t"].as_i64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn conflicting_same_field_update_is_rejected() {
+    let h = spawn().await;
+    let mut ws = h.connect().await;
+    let _ = ws.next().await; // Welcome
+
+    let doc_id = Uuid::from_u128(5000);
+    // Create a doc with hp=10 (seq 1).
+    ws.send(intent_msg(
+        1,
+        serde_json::json!([create_op(h.world, doc_id, serde_json::json!({ "hp": 10 }))]),
+    ))
+    .await
+    .unwrap();
+    // Two updates against the same pre-image (old=10), sent back-to-back: the
+    // first wins (seq 2), the second is stale once hp is 5.
+    ws.send(intent_msg(
+        2,
+        serde_json::json!([update_op(
+            doc_id,
+            "/system/hp",
+            serde_json::json!(10),
+            serde_json::json!(5)
+        )]),
+    ))
+    .await
+    .unwrap();
+    ws.send(intent_msg(
+        3,
+        serde_json::json!([update_op(
+            doc_id,
+            "/system/hp",
+            serde_json::json!(10),
+            serde_json::json!(7)
+        )]),
+    ))
+    .await
+    .unwrap();
+
+    let frames = drain_frames(&mut ws, 3).await;
+    let event_seqs: Vec<i64> = frames
+        .iter()
+        .filter(|f| f["type"] == "event")
+        .map(|f| f["command"]["seq"].as_i64().unwrap())
+        .collect();
+    assert_eq!(event_seqs, vec![1, 2], "create + first update commit");
+    let rejects: Vec<&serde_json::Value> =
+        frames.iter().filter(|f| f["type"] == "reject").collect();
+    assert_eq!(rejects.len(), 1);
+    assert_eq!(rejects[0]["reason"], "conflict");
+    // The committed value is the first writer's.
+    assert_eq!(h.authoritative_seqs().await, vec![1, 2]);
+}
+
+#[tokio::test]
+async fn player_write_to_gm_owned_doc_is_forbidden() {
+    let h = spawn().await;
+    let mut gm = h.connect().await;
+    let _ = gm.next().await; // Welcome
+
+    // GM creates a doc with default permissions (only GM may write).
+    let doc_id = Uuid::from_u128(6000);
+    gm.send(intent_msg(
+        1,
+        serde_json::json!([create_op(h.world, doc_id, serde_json::json!({ "hp": 1 }))]),
+    ))
+    .await
+    .unwrap();
+    let created = drain_frames(&mut gm, 1).await;
+    assert_eq!(created[0]["command"]["seq"], 1);
+
+    // A player member tries to update it → Reject{forbidden}.
+    let cookie = h.add_member("p", WorldRole::Player).await;
+    let mut pc = h.connect_with(&cookie).await;
+    let _ = pc.next().await; // Welcome
+    pc.send(intent_msg(
+        2,
+        serde_json::json!([update_op(
+            doc_id,
+            "/system/hp",
+            serde_json::json!(1),
+            serde_json::json!(9)
+        )]),
+    ))
+    .await
+    .unwrap();
+    let frames = drain_frames(&mut pc, 1).await;
+    assert_eq!(frames[0]["type"], "reject");
+    assert_eq!(frames[0]["reason"], "forbidden");
+}
+
+#[tokio::test]
+async fn gm_only_property_hidden_from_player() {
+    let h = spawn().await;
+
+    // Player joins first so it receives the create live.
+    let cookie = h.add_member("p", WorldRole::Player).await;
+    let mut pc = h.connect_with(&cookie).await;
+    let _ = pc.next().await; // Welcome
+
+    let mut gm = h.connect().await;
+    let _ = gm.next().await; // Welcome
+
+    // GM creates a player-observable doc whose /system/secret is GM-only.
+    let doc_id = Uuid::from_u128(7000);
+    let doc = serde_json::json!({
+        "id": doc_id,
+        "scope": { "kind": "world", "world_id": h.world },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "permissions": {
+            "default": "observer",
+            "users": {},
+            "property_overrides": { "/system/secret": "gm_only" }
+        },
+        "system": { "secret": 42, "public": 7 },
+        "created_at": 0,
+        "updated_at": 0,
+    });
+    gm.send(intent_msg(
+        1,
+        serde_json::json!([{ "op": "create", "doc": doc }]),
+    ))
+    .await
+    .unwrap();
+
+    let frames = drain_frames(&mut pc, 1).await;
+    assert_eq!(frames[0]["type"], "event");
+    assert_eq!(frames[0]["command"]["seq"], 1);
+    let created = &frames[0]["command"]["ops"][0];
+    assert_eq!(created["op"], "create");
+    assert_eq!(created["doc"]["system"]["public"], 7);
+    assert!(
+        created["doc"]["system"].get("secret").is_none(),
+        "GM-only property must be stripped for the player"
+    );
 }

@@ -3,4 +3,4 @@
 /**
  * Error categories surfaced over the socket.
  */
-export type WsErrorCode = "world_not_found" | "bad_message" | "publish_failed" | "internal";
+export type WsErrorCode = "world_not_found" | "bad_message" | "publish_failed" | "forbidden" | "internal";

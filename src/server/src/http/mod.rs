@@ -6,7 +6,7 @@ pub mod routes;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use axum::routing::get;
+use axum::routing::{delete, get, post};
 use axum::Router;
 
 use crate::config::Config;
@@ -61,9 +61,28 @@ pub async fn router(state: AppState) -> Router {
         .route("/ws", get(crate::ws::conn::ws_handler))
         .route("/api/debug/rooms", get(routes::debug_rooms))
         .route("/api/me", get(routes::me))
-        .route("/api/login", axum::routing::post(routes::login))
-        .route("/api/logout", axum::routing::post(routes::logout))
-        .route("/api/setup", axum::routing::post(routes::setup))
+        .route("/api/login", post(routes::login))
+        .route("/api/logout", post(routes::logout))
+        .route("/api/setup", post(routes::setup))
+        .route("/api/worlds", post(routes::create_world))
+        .route(
+            "/api/worlds/{id}/members",
+            get(routes::list_members).post(routes::add_member),
+        )
+        .route(
+            "/api/worlds/{id}/members/{user}",
+            delete(routes::remove_member),
+        )
+        .route(
+            "/api/worlds/{id}/documents",
+            get(routes::list_documents).post(routes::create_document),
+        )
+        .route(
+            "/api/documents/{id}",
+            get(routes::get_document)
+                .patch(routes::patch_document)
+                .delete(routes::delete_document),
+        )
         .fallback(embed::static_handler)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -340,5 +359,201 @@ pub(crate) mod tests {
             .get("/api/debug/rooms")
             .await
             .assert_status(axum::http::StatusCode::FORBIDDEN);
+    }
+
+    // --- M5: world/document CRUD + permission HTTP surface ---
+
+    use axum::http::StatusCode;
+    use uuid::Uuid;
+
+    /// A TestServer over `state` with a logged-in session for `username`
+    /// (password "pw"). Multiple servers share the same Arc-backed state, so
+    /// they act as different users against one repository.
+    async fn login_server(state: &AppState, username: &str) -> axum_test::TestServer {
+        let server = axum_test::TestServer::builder()
+            .save_cookies()
+            .build(router(state.clone()).await)
+            .unwrap();
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": username, "password": "pw" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        server
+    }
+
+    async fn seed_user(state: &AppState, username: &str) -> Uuid {
+        let hash = hash_password("pw").unwrap();
+        state
+            .repo
+            .create_user(username, Some(&hash), ServerRole::User, 0)
+            .await
+            .unwrap()
+    }
+
+    fn doc_json(
+        id: Uuid,
+        world: &str,
+        system: serde_json::Value,
+        permissions: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "scope": { "kind": "world", "world_id": world },
+            "doc_type": "actor",
+            "schema_version": 1,
+            "permissions": permissions,
+            "system": system,
+            "created_at": 0,
+            "updated_at": 0,
+        })
+    }
+
+    fn gm_only_perms() -> serde_json::Value {
+        serde_json::json!({ "default": "none", "users": {}, "property_overrides": {} })
+    }
+
+    #[tokio::test]
+    async fn world_membership_and_document_authorization() {
+        let state = initialized_state().await;
+        seed_user(&state, "gm").await;
+        let player_id = seed_user(&state, "pl").await;
+        let stranger_id = seed_user(&state, "st").await;
+
+        let gm = login_server(&state, "gm").await;
+        let pl = login_server(&state, "pl").await;
+        let st = login_server(&state, "st").await;
+
+        // GM creates a world (becomes its GM).
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "W" }))
+            .await
+            .json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+
+        let doc_id = Uuid::from_u128(10);
+        let doc = doc_json(
+            doc_id,
+            &world_id,
+            serde_json::json!({ "hp": 1 }),
+            gm_only_perms(),
+        );
+
+        // Non-member cannot create a document in the world.
+        st.post(&format!("/api/worlds/{world_id}/documents"))
+            .json(&doc)
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        // GM creates it.
+        gm.post(&format!("/api/worlds/{world_id}/documents"))
+            .json(&doc)
+            .await
+            .assert_status_ok();
+
+        // GM adds the player as a member.
+        gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": player_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // The player cannot write a GM-only document.
+        pl.patch(&format!("/api/documents/{doc_id}"))
+            .json(&serde_json::json!({ "changes": [
+                { "path": "/system/hp", "old": 1, "new": 9 }
+            ]}))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        // A non-GM cannot manage membership.
+        pl.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": stranger_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn conflicting_patch_returns_conflict() {
+        let state = initialized_state().await;
+        seed_user(&state, "gm").await;
+        let gm = login_server(&state, "gm").await;
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "W" }))
+            .await
+            .json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+
+        let doc_id = Uuid::from_u128(42);
+        let doc = doc_json(
+            doc_id,
+            &world_id,
+            serde_json::json!({ "hp": 10 }),
+            gm_only_perms(),
+        );
+        gm.post(&format!("/api/worlds/{world_id}/documents"))
+            .json(&doc)
+            .await
+            .assert_status_ok();
+
+        // First write commits (hp 10 -> 5).
+        gm.patch(&format!("/api/documents/{doc_id}"))
+            .json(&serde_json::json!({ "changes": [
+                { "path": "/system/hp", "old": 10, "new": 5 }
+            ]}))
+            .await
+            .assert_status_ok();
+        // Stale pre-image (current is 5) -> 409.
+        gm.patch(&format!("/api/documents/{doc_id}"))
+            .json(&serde_json::json!({ "changes": [
+                { "path": "/system/hp", "old": 10, "new": 7 }
+            ]}))
+            .await
+            .assert_status(StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn get_document_strips_gm_only_for_player() {
+        let state = initialized_state().await;
+        seed_user(&state, "gm").await;
+        let player_id = seed_user(&state, "pl").await;
+        let gm = login_server(&state, "gm").await;
+        let pl = login_server(&state, "pl").await;
+
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "W" }))
+            .await
+            .json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+        gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": player_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let doc_id = Uuid::from_u128(99);
+        let perms = serde_json::json!({
+            "default": "observer",
+            "users": {},
+            "property_overrides": { "/system/secret": "gm_only" }
+        });
+        let doc = doc_json(
+            doc_id,
+            &world_id,
+            serde_json::json!({ "secret": 42, "public": 7 }),
+            perms,
+        );
+        gm.post(&format!("/api/worlds/{world_id}/documents"))
+            .json(&doc)
+            .await
+            .assert_status_ok();
+
+        let got: serde_json::Value = pl.get(&format!("/api/documents/{doc_id}")).await.json();
+        assert_eq!(got["system"]["public"], 7);
+        assert!(
+            got["system"].get("secret").is_none(),
+            "GM-only property must be stripped for the player"
+        );
     }
 }

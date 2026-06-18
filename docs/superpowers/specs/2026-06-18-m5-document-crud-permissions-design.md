@@ -27,16 +27,17 @@ Build the authoritative document read/write path on top of M2's data layer and M
 
 ## 3. Schema & membership
 
-### Migration `0003_world_members.sql`
+### `world_members` table (exists since `0001_init.sql`)
 ```sql
 CREATE TABLE world_members (
-  world_id   TEXT NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
-  user_id    TEXT NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
-  world_role TEXT NOT NULL,                 -- 'gm' | 'player' | 'spectator'
+  world_id  TEXT NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+  user_id   TEXT NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
+  role      TEXT NOT NULL,                  -- 'gm' | 'player' | 'spectator'
   PRIMARY KEY (world_id, user_id)
 );
 ```
-- `world_role` serializes via the existing `WorldRole` serde (`gm`/`player`/`spectator`).
+- The table already exists (column **`role`**) with `add_member`/`member_role` from M2; M5 reuses it — **no new migration**. Implementation note: the originally-planned `0003_world_members.sql` was dropped on discovering the table.
+- `role` serializes via the existing `WorldRole` serde (`gm`/`player`/`spectator`).
 - **World creation** lands in M5: `SqliteRepository::create_world` (already inherent) gains an HTTP surface; the creating user is inserted as the world's first **GM** in the same transaction.
 - **Membership management:** a server admin or a world GM may add/remove members and set roles.
 

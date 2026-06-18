@@ -1,5 +1,6 @@
 pub mod command;
 pub mod document;
+pub mod membership;
 pub mod migrate;
 pub mod permission;
 pub mod repository;
@@ -23,4 +24,8 @@ pub enum DataError {
     NotFound,
     #[error("operation failed: {0}")]
     OpFailed(String),
+    #[error("forbidden")]
+    Forbidden,
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
