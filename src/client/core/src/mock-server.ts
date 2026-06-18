@@ -49,19 +49,12 @@ export class MockServer {
         send: (data) => this.onClientMessage(conn, data),
         close: () => this.dropConn(conn),
       };
-      // Welcome arrives as a later frame (a macrotask), mirroring a real socket
-      // where the connection is established before the first message — so the
-      // client has assigned its transport by the time Welcome is handled.
-      setTimeout(() => {
-        if (conn.open) {
-          this.sendTo(conn, {
-            type: "welcome",
-            world: this.world,
-            current_seq: this.seq,
-            server_time: this.now(),
-          });
-        }
-      }, 0);
+      this.sendTo(conn, {
+        type: "welcome",
+        world: this.world,
+        current_seq: this.seq,
+        server_time: this.now(),
+      });
       return Promise.resolve(transport);
     };
   }
@@ -153,7 +146,14 @@ export class MockServer {
     for (const conn of this.conns.values()) this.sendTo(conn, msg);
   }
 
+  // Deliver on a macrotask, mirroring a real socket: server responses are never
+  // synchronous with the client's send, so optimistic predictions are
+  // observable before confirm/reject, and Welcome lands after the client has
+  // assigned its transport. Ordered: timers fire FIFO.
   private sendTo(conn: Conn, msg: ServerMsg): void {
-    if (conn.open) conn.handlers.onMessage(JSON.stringify(msg));
+    const data = JSON.stringify(msg);
+    setTimeout(() => {
+      if (conn.open) conn.handlers.onMessage(data);
+    }, 0);
   }
 }
