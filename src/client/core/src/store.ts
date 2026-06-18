@@ -37,7 +37,13 @@ export function setPointer(
   }
   const last = tokens[tokens.length - 1];
   if (Array.isArray(cur)) {
-    cur[Number(last)] = value;
+    // Match the server: an out-of-range or non-integer array index is rejected,
+    // never a silent sparse extension.
+    const idx = Number(last);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= cur.length) {
+      throw new Error(`array index out of range at ${pointer}`);
+    }
+    cur[idx] = value;
   } else if (cur !== null && typeof cur === "object") {
     (cur as Record<string, unknown>)[last] = value;
   } else {

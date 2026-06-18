@@ -45,7 +45,10 @@ export class OptimisticClient {
   /** Discard a rejected intent's prediction (wire `WsClient.onReject` to this). */
   reject(intentId: string): void {
     const i = this.pending.findIndex((p) => p.intentId === intentId);
-    if (i >= 0) this.pending.splice(i, 1);
+    // No match means a correlation/reconnect mismatch (the echo already shifted
+    // it); nothing to roll back, and no view change to broadcast.
+    if (i < 0) return;
+    this.pending.splice(i, 1);
     this.rebuildView();
   }
 

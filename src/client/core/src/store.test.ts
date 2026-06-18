@@ -95,4 +95,13 @@ describe("setPointer", () => {
     setPointer(root, "/a/b", 7);
     expect((root as { a: { b: number } }).a.b).toBe(7);
   });
+  it("replaces an in-range array element", () => {
+    const root = { a: [1, 2, 3] };
+    setPointer(root, "/a/1", 9);
+    expect(root.a).toEqual([1, 9, 3]);
+  });
+  it("rejects an out-of-range array index (no silent sparse extend)", () => {
+    expect(() => setPointer({ a: [1, 2] }, "/a/5", 9)).toThrow();
+    expect(() => setPointer({ a: [1, 2] }, "/a/x", 9)).toThrow();
+  });
 });

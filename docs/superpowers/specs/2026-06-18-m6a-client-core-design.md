@@ -101,15 +101,19 @@ optimistic intents**:
   observe.** Recomputed whenever `base` or `pending` changes.
 
 Flow:
-- `applyIntent(ops) -> intentId`: generate `intent_id` (uuid), compute `inverse`,
-  push to `pending`, send `ClientMsg::Intent { intent_id, ops }`, recompute
-  `view` (instant local feedback). Returns a handle resolving on confirm/reject.
+- `applyIntent(intentId, ops)`: push `{intent_id, ops}` to `pending`, recompute
+  `view` (instant local feedback). The caller sends
+  `ClientMsg::Intent { intent_id, ops }` and observes confirmation by the pending
+  entry draining (and the view subscription) — no inverse ops are computed, and
+  there is no returned promise handle (rollback is a `view` recompute, §rollback).
 - **Confirm** (the originator's own authored echo): the server broadcasts
-  `Event { command, intent_id: None }`. The client correlates its own events by
-  `command.author == self && command.seq` in **FIFO order** of `pending` (M5's
-  documented approach — no server change). On match: apply the command to `base`,
-  pop that `pending` entry, recompute `view`. (Convergence: `base` now holds the
-  authoritative result; the optimistic prediction is discarded in favor of it.)
+  `Event { command, intent_id: None }`. The client confirms the **oldest**
+  pending intent on any command where `command.author == self` (author-FIFO). Seq
+  ordering is implicit: a single connection's own echoes arrive in send order,
+  which is the pending order — so the server's `seq` is not separately consulted.
+  On confirm: apply the command to `base`, drop that `pending` entry, recompute
+  `view`. (Convergence: `base` now holds the authoritative result; the optimistic
+  prediction is discarded in favor of it.)
 - **Reject** `ServerMsg::Reject { intent_id, reason }`: remove that `pending`
   entry (no `base` change), recompute `view` (the optimistic change vanishes),
   and reject the caller's handle with `reason` (`Forbidden`/`Conflict`/`Invalid`).
@@ -122,10 +126,13 @@ This is deliberately a **last-writer-authoritative reconciliation**, not OT/CRDT
 the server is the single source of truth; optimism is a local prediction that is
 either confirmed (replaced by authoritative) or rolled back.
 
-> Correlation edge: a *single* connection's own events arrive in seq order, so
-> FIFO matching of `pending` is sound. (Two writing connections for the same
-> user is the M5-noted nuance; M6a assumes one writing client per session, which
-> is the norm. Documented as a limitation.)
+> Correlation edge: author-FIFO is sound only when own echoes arrive in send
+> order — true for a *single* writing connection. Two writing connections for the
+> same user (the M5-noted nuance) or a Reject observed after a *later* intent's
+> Event could shift the wrong pending entry; M6a assumes one writing client per
+> session (the norm) and accepts this as a limitation. A robust fix needs the
+> originator's echo to carry its `intent_id` — deferred with the M6 correlation
+> work, not added here.
 
 ## 8. Reactivity / subscription API
 

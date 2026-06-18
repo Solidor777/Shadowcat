@@ -13,6 +13,9 @@ export interface WsClientHandlers {
   /** An intent the server refused. */
   onReject?(intentId: string, reason: RejectReason): void;
   onWelcome?(world: string, currentSeq: number): void;
+  /** A command that failed to apply (e.g. schema drift). Surfaced, never thrown
+   * into the socket loop. */
+  onError?(error: unknown): void;
 }
 
 export interface WsClientOptions {
@@ -145,7 +148,14 @@ export class WsClient {
       this.send({ type: "resync_request", from_seq: this.nextExpected });
       return;
     }
-    this.opts.handlers.onCommand(cmd);
+    try {
+      this.opts.handlers.onCommand(cmd);
+    } catch (err) {
+      // A failed apply (e.g. schema drift, itself a build-time failure via the
+      // ts-rs CI sync) must not kill the socket loop. Surface it; still advance
+      // so we don't resync-loop on an unrecoverable frame.
+      this.opts.handlers.onError?.(err);
+    }
     this.nextExpected = cmd.seq + 1;
   }
 }

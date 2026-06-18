@@ -148,6 +148,36 @@ describe("WsClient", () => {
     expect(store.get("d2")).toBeDefined();
   });
 
+  it("a throwing onCommand is surfaced, not thrown into the socket loop", async () => {
+    const server = new MockServer();
+    const errors: unknown[] = [];
+    let seen = 0;
+    const sub = new WsClient({
+      connect: server.connector("u2"),
+      handlers: {
+        onCommand: () => {
+          seen++;
+          if (seen === 1) throw new Error("apply failed");
+        },
+        onError: (e) => errors.push(e),
+      },
+    });
+    await sub.start();
+    await flush();
+    const pub = new WsClient({
+      connect: server.connector("u1"),
+      handlers: noop,
+    });
+    await pub.start();
+    pub.send(intent(1, [createOp("d1")]));
+    pub.send(intent(2, [createOp("d2")]));
+    // First apply throws → surfaced via onError; loop survives and advances,
+    // so the second command is still delivered.
+    await waitFor(() => sub.appliedSeq === 2);
+    expect(errors).toHaveLength(1);
+    expect(seen).toBe(2);
+  });
+
   it("computes the server time offset from Welcome", async () => {
     const server = new MockServer({ now: () => 5000 });
     const c = new WsClient({
