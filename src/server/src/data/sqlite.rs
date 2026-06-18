@@ -222,6 +222,7 @@ impl Repository for SqliteRepository {
                     Self::upsert_document(&mut *tx, doc, seq).await?;
                 }
                 Operation::Delete { doc } => {
+                    check_command_scope(doc, sequenced.world_id)?;
                     sqlx::query("DELETE FROM documents WHERE id = ?")
                         .bind(doc.id.to_string())
                         .execute(&mut *tx)
@@ -526,6 +527,24 @@ mod tests {
         };
         assert!(r.apply_command(cmd).await.is_err());
         assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_with_foreign_world_scope_is_rejected() {
+        let r = repo().await;
+        let w = r.create_world("W", 0).await.unwrap();
+        let author = r.create_user("author", "user", 0).await.unwrap();
+        let cmd = UnsequencedCommand {
+            world_id: w.id,
+            author,
+            ts: 1,
+            ops: vec![Operation::Delete {
+                doc: world_doc(1, Uuid::from_u128(777), serde_json::json!({})),
+            }],
+        };
+        assert!(r.apply_command(cmd).await.is_err());
+        // The whole command rolled back: the seq was not consumed.
+        assert_eq!(r.get_world(w.id).await.unwrap().unwrap().seq, 0);
     }
 
     #[tokio::test]
