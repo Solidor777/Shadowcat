@@ -1,3 +1,4 @@
+pub mod embed;
 pub mod error;
 pub mod routes;
 
@@ -28,6 +29,7 @@ pub fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(routes::health))
+        .fallback(embed::static_handler)
         .layer(
             // Outermost→innermost: stamp a request id, trace the span, then
             // propagate the id onto the response.
@@ -40,11 +42,11 @@ pub fn router(state: AppState) -> Router {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
 
-    async fn test_state() -> AppState {
+    pub(crate) async fn test_state() -> AppState {
         let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
         AppState {
             repo: Arc::new(repo),

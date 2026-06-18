@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>shadowcat — first-run setup</title><link rel="stylesheet" href="/styles.css"></head>
+<body><main>
+  <h1>Create the admin account</h1>
+  <form id="setup-form">
+    <label>Username <input name="username" autocomplete="username" required></label>
+    <label>Password <input name="password" type="password" autocomplete="new-password" required></label>
+    <label>Setup token <input name="token" autocomplete="off" placeholder="only if required"></label>
+    <button type="submit">Create admin</button>
+  </form>
+  <p id="msg" role="status"></p>
+</main><script src="/auth.js"></script></body>
+</html>
