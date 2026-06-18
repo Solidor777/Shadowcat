@@ -265,7 +265,7 @@ pub struct PermissionContext {
         if server_role == ServerRole::Admin {
             return Ok(PermissionContext { user_id: user, world_role: WorldRole::Gm });
         }
-        match self.world_role(world, user).await? {
+        match self.member_role(world, user).await? {   // member_role exists from 0001
             Some(role) => Ok(PermissionContext { user_id: user, world_role: role }),
             None => Err(DataError::Forbidden),
         }

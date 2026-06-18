@@ -146,6 +146,25 @@ impl SqliteRepository {
             .collect()
     }
 
+    /// Resolve a user's authority within a world: server admins are GM
+    /// everywhere; a member resolves to their `role`; a non-member non-admin is
+    /// `Forbidden` (cannot establish a context, so cannot join or write).
+    pub async fn permission_context(
+        &self,
+        world: Uuid,
+        user: Uuid,
+        server_role: ServerRole,
+    ) -> Result<crate::data::membership::PermissionContext, DataError> {
+        use crate::data::membership::PermissionContext;
+        if server_role == ServerRole::Admin {
+            return Ok(PermissionContext { user_id: user, world_role: WorldRole::Gm });
+        }
+        match self.member_role(world, user).await? {
+            Some(role) => Ok(PermissionContext { user_id: user, world_role: role }),
+            None => Err(DataError::Forbidden),
+        }
+    }
+
     pub async fn create_user(
         &self,
         username: &str,
@@ -602,6 +621,25 @@ mod tests {
         let w = r.create_world_owned("W", creator, 0).await.unwrap();
         assert_eq!(r.member_role(w.id, creator).await.unwrap(), Some(WorldRole::Gm));
         assert_eq!(r.member_role(w.id, Uuid::from_u128(123)).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn permission_context_resolves_role_or_forbids() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r.create_user("gmx", None, ServerRole::User, 0).await.unwrap();
+        let admin = r.create_user("adx", None, ServerRole::Admin, 0).await.unwrap();
+        let stranger = r.create_user("sx", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+
+        let c: PermissionContext = r.permission_context(w.id, gm, ServerRole::User).await.unwrap();
+        assert_eq!(c.world_role, WorldRole::Gm);
+        let ac = r.permission_context(w.id, admin, ServerRole::Admin).await.unwrap();
+        assert_eq!(ac.world_role, WorldRole::Gm);
+        assert!(matches!(
+            r.permission_context(w.id, stranger, ServerRole::User).await,
+            Err(DataError::Forbidden)
+        ));
     }
 
     #[tokio::test]

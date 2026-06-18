@@ -24,4 +24,6 @@ pub enum DataError {
     NotFound,
     #[error("operation failed: {0}")]
     OpFailed(String),
+    #[error("forbidden")]
+    Forbidden,
 }
