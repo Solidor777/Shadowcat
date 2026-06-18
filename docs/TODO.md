@@ -3,6 +3,7 @@
 Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 
 ## Tooling
+- TODO: Renormalize line endings repo-wide. `.gitattributes` now declares `* text=auto eol=lf`, but it only applies to files git touches going forward. Run `git add --renormalize .` in a dedicated commit to convert any remaining CRLF-committed files to LF, so the baseline holds across the whole tree (not just files edited since the attribute landed).
 - TODO: Extend the ESLint gate to cover TypeScript. The M1 flat config (`eslint.config.js`) registers only `@eslint/js`, with no `typescript-eslint` parser and no `files` glob, so every `.ts` source is skipped and `pnpm lint` can pass green with lint errors present in TypeScript. Add `typescript-eslint` and a `files: ["**/*.ts"]` block once real client logic lands (post-M1).
 
 ## Server / auth
