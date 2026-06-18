@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.52", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 serde = { version = "1", features = ["derive"] }
 ts-rs = "12"
@@ -16,6 +16,8 @@ argon2 = { version = "0.5", features = ["std"] }
 clap = { version = "4", features = ["derive", "env"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 axum = "0.8"
+dashmap = "6"
+futures-util = "0.3"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "request-id", "util"] }
 tracing = "0.1"
@@ -30,3 +32,5 @@ subtle = "2"
 [dev-dependencies]
 tempfile = "3"
 axum-test = "17"
+tokio-tungstenite = "0.24"
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies"] }
