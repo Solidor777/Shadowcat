@@ -143,6 +143,31 @@ impl SqliteRepository {
         Ok(row.is_some())
     }
 
+    /// Insert an admin only if no admin exists yet, in a single guarded
+    /// statement. Returns the new id, or `None` when an admin already exists.
+    /// The single-writer pool serializes the insert, closing the first-run
+    /// check-then-create race (two concurrent setups cannot both succeed).
+    pub async fn create_admin_if_none(
+        &self,
+        username: &str,
+        password_hash: &str,
+        now: i64,
+    ) -> Result<Option<Uuid>, DataError> {
+        let id = Uuid::new_v4();
+        let res = sqlx::query(
+            "INSERT INTO users (id, username, password_hash, server_role, created_at) \
+             SELECT ?, ?, ?, 'admin', ? \
+             WHERE NOT EXISTS (SELECT 1 FROM users WHERE server_role = 'admin')",
+        )
+        .bind(id.to_string())
+        .bind(username)
+        .bind(password_hash)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok((res.rows_affected() == 1).then_some(id))
+    }
+
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>, DataError> {
         let row = sqlx::query("SELECT value FROM settings WHERE key = ?")
             .bind(key)
@@ -448,6 +473,28 @@ mod tests {
         assert_eq!(r.get_setting("k").await.unwrap().as_deref(), Some("v1"));
         r.set_setting("k", "v2").await.unwrap();
         assert_eq!(r.get_setting("k").await.unwrap().as_deref(), Some("v2"));
+    }
+
+    #[tokio::test]
+    async fn create_admin_if_none_guards_against_a_second_admin() {
+        let r = repo().await;
+        assert!(r
+            .create_admin_if_none("admin", "phc", 0)
+            .await
+            .unwrap()
+            .is_some());
+        // A second attempt — even with a different username — creates nothing.
+        assert!(r
+            .create_admin_if_none("other", "phc", 0)
+            .await
+            .unwrap()
+            .is_none());
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE server_role = 'admin'")
+                .fetch_one(r.pool())
+                .await
+                .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]

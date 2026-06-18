@@ -25,6 +25,7 @@ rust-embed = "8"
 mime_guess = "2"
 tower-sessions = { version = "0.15", default-features = false, features = ["axum-core", "signed"] }
 base64 = "0.22"
+subtle = "2"
 
 [dev-dependencies]
 tempfile = "3"

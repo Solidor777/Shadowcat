@@ -13,12 +13,14 @@ pub async fn init_gate(State(state): State<AppState>, req: Request, next: Next) 
     if state.initialized.load(Ordering::Relaxed) {
         return next.run(req).await;
     }
+    // Exact-match allowlist (no suffix matching, which would leak any future
+    // route ending in .js/.css): the first-run setup API, health, and the
+    // static assets the setup page itself loads.
     let path = req.uri().path();
-    let allowed = path == "/api/setup"
-        || path == "/setup.html"
-        || path == "/health"
-        || path.ends_with(".js")
-        || path.ends_with(".css");
+    let allowed = matches!(
+        path,
+        "/api/setup" | "/setup.html" | "/auth.js" | "/styles.css" | "/health"
+    );
     if allowed {
         next.run(req).await
     } else {

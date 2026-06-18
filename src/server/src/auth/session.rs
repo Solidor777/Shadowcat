@@ -168,11 +168,13 @@ impl FromRequestParts<AppState> for AdminUser {
 pub async fn load_or_create_key(repo: &SqliteRepository, config: &Config) -> anyhow::Result<Key> {
     if let Some(explicit) = &config.session_key {
         let raw = base64::engine::general_purpose::STANDARD.decode(explicit)?;
-        return Ok(Key::from(&raw));
+        return Key::try_from(raw.as_slice())
+            .map_err(|e| anyhow::anyhow!("session key invalid (needs >= 64 bytes): {e}"));
     }
     if let Some(stored) = repo.get_setting(SESSION_KEY_SETTING).await? {
         let raw = base64::engine::general_purpose::STANDARD.decode(stored)?;
-        return Ok(Key::from(&raw));
+        return Key::try_from(raw.as_slice())
+            .map_err(|e| anyhow::anyhow!("stored session key invalid (needs >= 64 bytes): {e}"));
     }
     let key = Key::generate();
     let encoded = base64::engine::general_purpose::STANDARD.encode(key.master());

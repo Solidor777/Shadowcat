@@ -3,7 +3,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::auth::password::hash_password;
-use crate::auth::role::ServerRole;
 use crate::config::Config;
 use crate::data::sqlite::SqliteRepository;
 use crate::http::error::AppError;
@@ -16,15 +15,17 @@ pub fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// Single audited path that hashes a password and writes an admin user.
+/// Single audited path that hashes a password and writes the first admin user.
+/// Returns the new id, or `None` when an admin already exists (the insert is
+/// guarded so concurrent first-run callers cannot both create an admin).
 pub async fn create_admin(
     repo: &SqliteRepository,
     username: &str,
     password: &str,
     now: i64,
-) -> Result<Uuid, AppError> {
+) -> Result<Option<Uuid>, AppError> {
     let hash = hash_password(password).map_err(|_| AppError::Internal)?;
-    repo.create_user(username, Some(&hash), ServerRole::Admin, now)
+    repo.create_admin_if_none(username, &hash, now)
         .await
         .map_err(|_| AppError::Internal)
 }
@@ -33,10 +34,10 @@ pub async fn create_admin(
 /// whether it created an account. The remote-hosting path.
 pub async fn bootstrap_admin(repo: &SqliteRepository, config: &Config) -> anyhow::Result<bool> {
     if let (Some(u), Some(p)) = (&config.admin_user, &config.admin_password) {
-        if !repo.admin_exists().await? {
-            create_admin(repo, u, p, now_millis())
-                .await
-                .map_err(|_| anyhow::anyhow!("bootstrap admin creation failed"))?;
+        let created = create_admin(repo, u, p, now_millis())
+            .await
+            .map_err(|_| anyhow::anyhow!("bootstrap admin creation failed"))?;
+        if created.is_some() {
             tracing::info!(username = %u, "bootstrapped admin from config");
             return Ok(true);
         }

@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 use axum::extract::State;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use tower_sessions::Session;
 
 use crate::auth::password::{hash_password, verify_password};
@@ -68,21 +69,24 @@ pub async fn login(
         .await
         .map_err(|_| AppError::Internal)?;
 
-    let ok = match &record {
-        Some(u) => u
-            .password_hash
-            .as_deref()
-            .map(|h| verify_password(&body.password, h))
-            .unwrap_or(false),
-        None => {
-            let _ = verify_password(&body.password, anti_enumeration_phc());
-            false
-        }
-    };
-    if !ok {
+    // Exactly one Argon2 verify on every path — against the stored hash when
+    // present, else a throwaway hash — so unknown users, credential-less users,
+    // and wrong passwords all cost the same and cannot be told apart by timing.
+    let verify_target = record
+        .as_ref()
+        .and_then(|u| u.password_hash.as_deref())
+        .map(str::to_owned)
+        .unwrap_or_else(|| anti_enumeration_phc().to_owned());
+    let verified = verify_password(&body.password, &verify_target);
+
+    // Only a user that actually has a stored credential may authenticate.
+    let authed = record.filter(|u| u.password_hash.is_some());
+    let (true, Some(u)) = (verified, authed) else {
         return Err(AppError::Unauthorized);
-    }
-    let u = record.expect("ok implies record present");
+    };
+
+    // Rotate the session id on privilege change to defeat session fixation.
+    session.cycle_id().await.map_err(|_| AppError::Internal)?;
     session
         .insert(
             "user",
@@ -97,10 +101,11 @@ pub async fn login(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
-/// Destroy the session.
-pub async fn logout(session: Session) -> axum::http::StatusCode {
-    let _ = session.flush().await;
-    axum::http::StatusCode::NO_CONTENT
+/// Destroy the session. Propagates store errors so a failed flush is not
+/// reported as a successful logout — the cookie would otherwise still authenticate.
+pub async fn logout(session: Session) -> Result<axum::http::StatusCode, AppError> {
+    session.flush().await.map_err(|_| AppError::Internal)?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -116,21 +121,24 @@ pub async fn setup(
     State(state): State<AppState>,
     Json(body): Json<SetupRequest>,
 ) -> Result<axum::http::StatusCode, AppError> {
-    if state.initialized.load(Ordering::Relaxed)
-        || state
-            .repo
-            .admin_exists()
-            .await
-            .map_err(|_| AppError::Internal)?
-    {
+    // Fast reject once initialized to avoid an Argon2 hash on a closed window;
+    // the guarded insert below is the authoritative race-free gate.
+    if state.initialized.load(Ordering::Relaxed) {
         return Err(AppError::Conflict("server already initialized".into()));
     }
     if let Some(expected) = &state.setup_token {
-        if body.token.as_deref() != Some(expected.as_str()) {
+        let provided = body.token.as_deref().unwrap_or("");
+        // Constant-time compare: the token guards the internet-exposed first-admin
+        // window and that window stays open across failed attempts.
+        if !bool::from(provided.as_bytes().ct_eq(expected.as_bytes())) {
             return Err(AppError::Forbidden);
         }
     }
-    create_admin(&state.repo, &body.username, &body.password, now_millis()).await?;
-    state.initialized.store(true, Ordering::Relaxed);
-    Ok(axum::http::StatusCode::NO_CONTENT)
+    match create_admin(&state.repo, &body.username, &body.password, now_millis()).await? {
+        Some(_) => {
+            state.initialized.store(true, Ordering::Relaxed);
+            Ok(axum::http::StatusCode::NO_CONTENT)
+        }
+        None => Err(AppError::Conflict("server already initialized".into())),
+    }
 }

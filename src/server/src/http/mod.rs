@@ -28,7 +28,14 @@ impl AppState {
     pub fn resolve_setup_token(config: &Config) -> Option<String> {
         use crate::config::SetupTokenPolicy;
         match config.setup_token_policy() {
-            SetupTokenPolicy::Open => None,
+            SetupTokenPolicy::Open => {
+                if !config.is_loopback_bind() {
+                    tracing::warn!(
+                        "setup token disabled on a non-loopback bind; /api/setup is unauthenticated until an admin exists"
+                    );
+                }
+                None
+            }
             SetupTokenPolicy::Required(Some(v)) => Some(v),
             SetupTokenPolicy::Required(None) => {
                 let token = uuid::Uuid::new_v4().simple().to_string();
@@ -59,15 +66,16 @@ pub async fn router(state: AppState) -> Router {
             state.clone(),
             middleware::init_gate,
         ))
+        .layer(sessions)
         .layer(
-            // Outermost→innermost: stamp a request id, trace the span, then
-            // propagate the id onto the response.
+            // Last layer = outermost. Request id is stamped first, the trace span
+            // wraps everything (including sessions and the gate), then the id is
+            // propagated onto the response.
             ServiceBuilder::new()
                 .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
                 .layer(TraceLayer::new_for_http())
                 .layer(PropagateRequestIdLayer::x_request_id()),
         )
-        .layer(sessions)
         .with_state(state)
 }
 
@@ -249,6 +257,62 @@ pub(crate) mod tests {
             unknown.text(),
             "no user enumeration via body"
         );
+    }
+
+    #[tokio::test]
+    async fn login_rejects_user_without_password_hash() {
+        let state = initialized_state().await;
+        // A credential-less user (e.g. an M2-era row) must never authenticate.
+        state
+            .repo
+            .create_user("hashless", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let server = axum_test::TestServer::builder()
+            .save_cookies()
+            .build(router(state).await)
+            .unwrap();
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": "hashless", "password": "anything" }))
+            .await
+            .assert_status(axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn headless_bootstrap_closes_setup_and_allows_login() {
+        // Mirror main.rs: bootstrap seeds the admin, then the gate is open.
+        let state = test_state().await;
+        let cfg = crate::config::Config {
+            admin_user: Some("ops".into()),
+            admin_password: Some("pw-boot".into()),
+            ..crate::config::Config::default()
+        };
+        assert!(crate::auth::setup::bootstrap_admin(&state.repo, &cfg)
+            .await
+            .unwrap());
+        state
+            .initialized
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let server = axum_test::TestServer::builder()
+            .save_cookies()
+            .build(router(state).await)
+            .unwrap();
+
+        // Setup window is closed.
+        server
+            .post("/api/setup")
+            .json(&serde_json::json!({ "username": "x", "password": "y" }))
+            .await
+            .assert_status(axum::http::StatusCode::CONFLICT);
+        // Normal page served, not redirected to setup.
+        server.get("/").await.assert_status_ok();
+        // The bootstrapped admin can log in.
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": "ops", "password": "pw-boot" }))
+            .await
+            .assert_status(axum::http::StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
