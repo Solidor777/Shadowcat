@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 use crate::data::command::{Command, FieldChange, Operation};
-use crate::data::document::{DocRole, Document, Visibility, WorldRole};
+use crate::data::document::{CapabilityGrants, DocRole, Document, Visibility, WorldRole};
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 
@@ -98,6 +98,35 @@ pub fn resolve_access(user: Uuid, world_role: WorldRole, doc: &Document) -> Acce
     }
 }
 
+/// `resolve_access` plus a world's default capability grants, layered additively
+/// on top of the per-document resolution (GM is unaffected — already holds all).
+/// World defaults let a deployment grant, e.g., every Owner in a world
+/// `core:manage_embedded` without editing each document.
+pub fn resolve_access_world(
+    user: Uuid,
+    world_role: WorldRole,
+    doc: &Document,
+    world_grants: &CapabilityGrants,
+) -> Access {
+    let mut access = resolve_access(user, world_role, doc);
+    if access.all {
+        return access;
+    }
+    let role = doc
+        .permissions
+        .users
+        .get(&user)
+        .copied()
+        .unwrap_or(doc.permissions.default);
+    if let Some(extra) = world_grants.by_role.get(&role) {
+        access.caps.extend(extra.iter().cloned());
+    }
+    if let Some(extra) = world_grants.by_user.get(&user) {
+        access.caps.extend(extra.iter().cloned());
+    }
+    access
+}
+
 /// Produce the recipient's view of a document: when `access.see_gm_only` is
 /// false, strip every property whose override is `GmOnly`.
 pub fn filter_properties(doc: &Document, access: &Access) -> Document {
@@ -132,11 +161,18 @@ pub async fn filter_command(
     cmd: &Command,
     ctx: &PermissionContext,
 ) -> Command {
+    // World default grants are part of read visibility too; an error loading them
+    // degrades to per-document resolution rather than failing redaction.
+    let world_defaults = repo
+        .world_cap_defaults(cmd.world_id)
+        .await
+        .unwrap_or_default();
     let mut out_ops = Vec::with_capacity(cmd.ops.len());
     for op in &cmd.ops {
         match op {
             Operation::Create { doc } => {
-                let access = resolve_access(ctx.user_id, ctx.world_role, doc);
+                let access =
+                    resolve_access_world(ctx.user_id, ctx.world_role, doc, &world_defaults);
                 if access.has(cap::READ) {
                     out_ops.push(Operation::Create {
                         doc: filter_properties(doc, &access),
@@ -145,7 +181,8 @@ pub async fn filter_command(
             }
             Operation::Delete { doc } => {
                 // A delete is visible to anyone who could read the document.
-                let access = resolve_access(ctx.user_id, ctx.world_role, doc);
+                let access =
+                    resolve_access_world(ctx.user_id, ctx.world_role, doc, &world_defaults);
                 if access.has(cap::READ) {
                     out_ops.push(Operation::Delete {
                         doc: filter_properties(doc, &access),
@@ -156,7 +193,8 @@ pub async fn filter_command(
                 let Ok(Some(cur)) = repo.get_document(*doc_id).await else {
                     continue;
                 };
-                let access = resolve_access(ctx.user_id, ctx.world_role, &cur);
+                let access =
+                    resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults);
                 if !access.has(cap::READ) {
                     continue;
                 }

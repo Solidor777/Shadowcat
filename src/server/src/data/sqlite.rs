@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use crate::auth::role::ServerRole;
 use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
-use crate::data::document::{Document, Scope, World, WorldRole};
-use crate::data::permission::{cap, required_cap_for_path, resolve_access};
+use crate::data::document::{CapabilityGrants, Document, Scope, World, WorldRole};
+use crate::data::permission::{cap, required_cap_for_path, resolve_access_world};
 use crate::data::repository::Repository;
 use crate::data::validation;
 use crate::data::DataError;
@@ -286,6 +286,17 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// Set a world's default capability grants (additive over the per-document
+    /// floor). Stored as JSON in the settings table.
+    pub async fn set_world_cap_defaults(
+        &self,
+        world: Uuid,
+        grants: &CapabilityGrants,
+    ) -> Result<(), DataError> {
+        let json = serde_json::to_string(grants)?;
+        self.set_setting(&world_caps_key(world), &json).await
+    }
+
     pub async fn add_member(
         &self,
         world_id: Uuid,
@@ -484,6 +495,10 @@ impl Repository for SqliteRepository {
         ops: Vec<Operation>,
         ts: i64,
     ) -> Result<Command, DataError> {
+        // Load world default grants before opening the transaction: the
+        // single-writer pool holds one connection, so a settings query mid-tx
+        // would deadlock.
+        let world_defaults = self.world_cap_defaults(world_id).await?;
         let mut tx = self.pool.begin().await?;
 
         // Phase 1 — authorize, structurally validate, and check pre-images.
@@ -494,7 +509,9 @@ impl Repository for SqliteRepository {
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
                     validation::validate_system_size(doc)?;
-                    if !resolve_access(ctx.user_id, ctx.world_role, doc).has(cap::WRITE_FIELDS) {
+                    if !resolve_access_world(ctx.user_id, ctx.world_role, doc, &world_defaults)
+                        .has(cap::WRITE_FIELDS)
+                    {
                         return Err(DataError::Forbidden);
                     }
                     // Create is non-clobbering: an existing id is a conflict,
@@ -515,7 +532,9 @@ impl Repository for SqliteRepository {
                     // Authorize against the stored doc, scoped to this world, so
                     // a GM of one world cannot delete another world's document.
                     check_command_scope(&cur, world_id)?;
-                    if !resolve_access(ctx.user_id, ctx.world_role, &cur).has(cap::DELETE) {
+                    if !resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults)
+                        .has(cap::DELETE)
+                    {
                         return Err(DataError::Forbidden);
                     }
                 }
@@ -524,7 +543,8 @@ impl Repository for SqliteRepository {
                         .await?
                         .ok_or_else(|| DataError::Conflict(format!("document {doc_id} missing")))?;
                     check_command_scope(&cur, world_id)?;
-                    let access = resolve_access(ctx.user_id, ctx.world_role, &cur);
+                    let access =
+                        resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults);
                     // Field-level OCC: every change's pre-image must equal the
                     // current value at its pointer (absent reads as Null).
                     let whole = serde_json::to_value(&cur)?;
@@ -730,6 +750,18 @@ impl Repository for SqliteRepository {
             updated_at: r.get("updated_at"),
         }))
     }
+
+    async fn world_cap_defaults(&self, world: Uuid) -> Result<CapabilityGrants, DataError> {
+        match self.get_setting(&world_caps_key(world)).await? {
+            Some(json) => Ok(serde_json::from_str(&json)?),
+            None => Ok(CapabilityGrants::default()),
+        }
+    }
+}
+
+/// Settings key holding a world's default capability grants (JSON).
+fn world_caps_key(world: Uuid) -> String {
+    format!("world_caps:{world}")
 }
 
 #[cfg(test)]
@@ -1617,5 +1649,71 @@ mod tests {
         };
         assert_eq!(doc.permissions.default, DocRole::None);
         assert_eq!(doc.system["secret"], serde_json::json!(1));
+    }
+
+    #[tokio::test]
+    async fn apply_intent_world_default_grants_apply() {
+        use crate::data::document::{CapabilityGrants, DocRole, PermissionSet};
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        // World default: Owners hold core:manage_embedded everywhere in this world.
+        let mut wd = CapabilityGrants::default();
+        wd.by_role
+            .entry(DocRole::Owner)
+            .or_default()
+            .insert(crate::data::permission::cap::MANAGE_EMBEDDED.to_string());
+        r.set_world_cap_defaults(w.id, &wd).await.unwrap();
+
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        // An owner-held doc with NO per-document capability grant.
+        let mut doc = world_doc(1, w.id, serde_json::json!({}));
+        let mut perms = PermissionSet::default();
+        perms.users.insert(player, DocRole::Owner);
+        doc.permissions = perms;
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: doc.clone() }],
+            1,
+        )
+        .await
+        .unwrap();
+
+        // The world default alone authorizes the owner to manage embedded docs.
+        let p = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        r.apply_intent(
+            &p,
+            w.id,
+            vec![update(
+                doc.id,
+                "/embedded/items",
+                serde_json::json!(null),
+                serde_json::json!([]),
+            )],
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            r.get_document(doc.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .embedded
+                .len(),
+            1
+        );
     }
 }

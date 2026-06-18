@@ -16,7 +16,7 @@ use crate::auth::setup::{create_admin, now_millis};
 use crate::data::command::{Command, FieldChange, Operation};
 use crate::data::document::{Document, Scope, World, WorldRole};
 use crate::data::membership::PermissionContext;
-use crate::data::permission::{cap, filter_command, filter_properties, resolve_access};
+use crate::data::permission::{cap, filter_command, filter_properties, resolve_access_world};
 use crate::data::repository::Repository;
 use crate::health::HealthStatus;
 use crate::http::error::AppError;
@@ -307,11 +307,12 @@ pub async fn list_documents(
         .repo
         .permission_context(world, user.id, user.role)
         .await?;
+    let world_defaults = state.repo.world_cap_defaults(world).await?;
     let docs = state.repo.query_documents(world, &q.r#type).await?;
     let visible = docs
         .into_iter()
         .filter_map(|d| {
-            let access = resolve_access(ctx.user_id, ctx.world_role, &d);
+            let access = resolve_access_world(ctx.user_id, ctx.world_role, &d, &world_defaults);
             access
                 .has(cap::READ)
                 .then(|| filter_properties(&d, &access))
@@ -335,7 +336,8 @@ pub async fn get_document(
         .repo
         .permission_context(world, user.id, user.role)
         .await?;
-    let access = resolve_access(ctx.user_id, ctx.world_role, &doc);
+    let world_defaults = state.repo.world_cap_defaults(world).await?;
+    let access = resolve_access_world(ctx.user_id, ctx.world_role, &doc, &world_defaults);
     if !access.has(cap::READ) {
         return Err(AppError::NotFound);
     }

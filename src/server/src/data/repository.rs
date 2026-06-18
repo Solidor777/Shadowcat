@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::data::command::{Command, UnsequencedCommand};
-use crate::data::document::{Document, World};
+use crate::data::document::{CapabilityGrants, Document, World};
 use crate::data::DataError;
 
 /// Storage contract. The only implementation in M2 is `SqliteRepository`;
@@ -44,4 +44,8 @@ pub trait Repository: Send + Sync {
 
     /// Fetch a world row by id, or `None` if it does not exist.
     async fn get_world(&self, id: Uuid) -> Result<Option<World>, DataError>;
+
+    /// A world's default capability grants (additive over the per-document
+    /// `DocRole` floor). Empty when unset.
+    async fn world_cap_defaults(&self, world: Uuid) -> Result<CapabilityGrants, DataError>;
 }
