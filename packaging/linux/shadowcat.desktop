@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Shadowcat
+Comment=Self-hosted virtual tabletop server
+Exec=shadowcat
+Icon=shadowcat
+Terminal=true
+Categories=Game;Utility;

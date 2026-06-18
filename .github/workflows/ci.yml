@@ -41,6 +41,19 @@ jobs:
           echo "release binary size: ${size} bytes"
           # 60 MiB guardrail; tighten as the binary's real baseline settles.
           test "${size}" -lt 62914560
+      # Assemble the icon-carrying distributable. Windows is excluded: the icon
+      # is embedded in the .exe at build time (build.rs). macOS -> .app (.icns);
+      # Linux -> staging tree with a .desktop entry + hicolor PNG.
+      - name: Package (icon bundle)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/package.sh "${{ runner.os == 'macOS' && 'macos' || 'linux' }}"
+      - name: Upload package
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadowcat-${{ runner.os }}
+          path: target/package/
 
   web:
     runs-on: ubuntu-latest
