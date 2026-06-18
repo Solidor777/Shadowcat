@@ -6,7 +6,9 @@ use uuid::Uuid;
 use crate::auth::role::ServerRole;
 use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
 use crate::data::document::{Document, Scope, World, WorldRole};
+use crate::data::permission::resolve_access;
 use crate::data::repository::Repository;
+use crate::data::validation;
 use crate::data::DataError;
 
 /// Auth-facing projection of a user row.
@@ -301,6 +303,24 @@ impl SqliteRepository {
         }
     }
 
+    /// Load a document envelope by id on an arbitrary executor (so it can run
+    /// inside a transaction). Mirrors `get_document`'s row→Document mapping.
+    async fn load_document<'e, E>(executor: E, id: Uuid) -> Result<Option<Document>, DataError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(executor)
+            .await?;
+        match row {
+            Some(r) => Ok(Some(serde_json::from_str(
+                r.get::<String, _>("json").as_str(),
+            )?)),
+            None => Ok(None),
+        }
+    }
+
     /// Upsert a document row from its envelope, stamping `seq`.
     async fn upsert_document<'e, E>(executor: E, doc: &Document, seq: i64) -> Result<(), DataError>
     where
@@ -430,6 +450,140 @@ impl Repository for SqliteRepository {
             .bind(seq)
             .bind(sequenced.author.to_string())
             .bind(sequenced.ts)
+            .bind(serde_json::to_string(&sequenced)?)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(sequenced)
+    }
+
+    async fn apply_intent(
+        &self,
+        ctx: &crate::data::membership::PermissionContext,
+        world_id: Uuid,
+        ops: Vec<Operation>,
+        ts: i64,
+    ) -> Result<Command, DataError> {
+        let mut tx = self.pool.begin().await?;
+
+        // Phase 1 — authorize, structurally validate, and check pre-images.
+        // No row is mutated; any failure here drops the transaction, so the
+        // per-world seq is never consumed by a rejected intent.
+        for op in &ops {
+            match op {
+                Operation::Create { doc } => {
+                    check_command_scope(doc, world_id)?;
+                    validation::validate_system_size(doc)?;
+                    if !resolve_access(ctx.user_id, ctx.world_role, doc).can_write {
+                        return Err(DataError::Forbidden);
+                    }
+                    // Create is non-clobbering: an existing id is a conflict,
+                    // not a silent overwrite (unlike upsert in apply_command).
+                    if Self::load_document(&mut *tx, doc.id).await?.is_some() {
+                        return Err(DataError::Conflict(format!(
+                            "document {} already exists",
+                            doc.id
+                        )));
+                    }
+                }
+                Operation::Delete { doc } => {
+                    let cur = Self::load_document(&mut *tx, doc.id)
+                        .await?
+                        .ok_or_else(|| DataError::Conflict(format!("document {} missing", doc.id)))?;
+                    // Authorize against the stored doc, scoped to this world, so
+                    // a GM of one world cannot delete another world's document.
+                    check_command_scope(&cur, world_id)?;
+                    if !resolve_access(ctx.user_id, ctx.world_role, &cur).can_write {
+                        return Err(DataError::Forbidden);
+                    }
+                }
+                Operation::Update { doc_id, changes } => {
+                    let cur = Self::load_document(&mut *tx, *doc_id)
+                        .await?
+                        .ok_or_else(|| DataError::Conflict(format!("document {doc_id} missing")))?;
+                    check_command_scope(&cur, world_id)?;
+                    if !resolve_access(ctx.user_id, ctx.world_role, &cur).can_write {
+                        return Err(DataError::Forbidden);
+                    }
+                    // Field-level OCC: every change's pre-image must equal the
+                    // current value at its pointer (absent reads as Null).
+                    let whole = serde_json::to_value(&cur)?;
+                    for ch in changes {
+                        validation::validate_field_path(&ch.path)?;
+                        let actual = whole
+                            .pointer(&ch.path)
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                        if actual != ch.old {
+                            return Err(DataError::Conflict(format!(
+                                "stale pre-image at {}",
+                                ch.path
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 2 — allocate seq, apply, log. Identical machinery to
+        // apply_command; authorization above has already cleared every op.
+        let seq: i64 = sqlx::query("UPDATE worlds SET seq = seq + 1 WHERE id = ? RETURNING seq")
+            .bind(world_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(DataError::NotFound)?
+            .get("seq");
+
+        let sequenced = Command {
+            seq,
+            world_id,
+            author: ctx.user_id,
+            ts,
+            ops,
+        };
+
+        for op in &sequenced.ops {
+            match op {
+                Operation::Create { doc } => Self::upsert_document(&mut *tx, doc, seq).await?,
+                Operation::Delete { doc } => {
+                    sqlx::query("DELETE FROM documents WHERE id = ?")
+                        .bind(doc.id.to_string())
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                Operation::Update { doc_id, changes } => {
+                    let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
+                        .bind(doc_id.to_string())
+                        .fetch_optional(&mut *tx)
+                        .await?
+                        .ok_or(DataError::NotFound)?;
+                    let mut value: serde_json::Value =
+                        serde_json::from_str(row.get::<String, _>("json").as_str())?;
+                    for ch in changes {
+                        set_pointer(&mut value, &ch.path, ch.new.clone())?;
+                    }
+                    let mut doc: Document = serde_json::from_value(value)?;
+                    if doc.id != *doc_id {
+                        return Err(DataError::OpFailed(
+                            "update must not change the document id".into(),
+                        ));
+                    }
+                    check_command_scope(&doc, world_id)?;
+                    // Body cap re-checked post-merge: the merged result, not the
+                    // pre-image, is what gets stored.
+                    validation::validate_system_size(&doc)?;
+                    doc.updated_at = ts;
+                    Self::upsert_document(&mut *tx, &doc, seq).await?;
+                }
+            }
+        }
+
+        sqlx::query("INSERT INTO world_events (world_id, seq, author_id, ts, command_json) VALUES (?, ?, ?, ?, ?)")
+            .bind(sequenced.world_id.to_string())
+            .bind(seq)
+            .bind(sequenced.author.to_string())
+            .bind(ts)
             .bind(serde_json::to_string(&sequenced)?)
             .execute(&mut *tx)
             .await?;
@@ -1006,5 +1160,112 @@ mod tests {
         assert_eq!(tail.len(), 2);
         assert_eq!(tail[0].seq, 2);
         assert_eq!(tail[1].seq, 3);
+    }
+
+    #[tokio::test]
+    async fn apply_intent_create_then_conflicting_update() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let doc = world_doc(1, w.id, serde_json::json!({ "hp": 10 }));
+        let c1 = r
+            .apply_intent(&ctx, w.id, vec![Operation::Create { doc: doc.clone() }], 1)
+            .await
+            .unwrap();
+        assert_eq!(c1.seq, 1);
+        // Matching pre-image update succeeds.
+        let ok = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id: doc.id,
+                    changes: vec![FieldChange {
+                        path: "/system/hp".into(),
+                        old: serde_json::json!(10),
+                        new: serde_json::json!(5),
+                    }],
+                }],
+                2,
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.seq, 2);
+        // Stale pre-image (current is 5, not 10) → Conflict, no mutation.
+        let conflict = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id: doc.id,
+                    changes: vec![FieldChange {
+                        path: "/system/hp".into(),
+                        old: serde_json::json!(10),
+                        new: serde_json::json!(1),
+                    }],
+                }],
+                3,
+            )
+            .await;
+        assert!(matches!(conflict, Err(DataError::Conflict(_))));
+        assert_eq!(
+            r.get_document(doc.id).await.unwrap().unwrap().system["hp"],
+            serde_json::json!(5)
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_intent_rejects_unauthorized_and_oversized() {
+        use crate::data::document::{DocRole, PermissionSet};
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        // A doc only the GM can write (no per-user role; default None).
+        let mut doc = world_doc(2, w.id, serde_json::json!({}));
+        doc.permissions = PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        };
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        r.apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: doc.clone() }], 1)
+            .await
+            .unwrap();
+        // A player updating it → Forbidden.
+        let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+        let p_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let forbidden = r
+            .apply_intent(
+                &p_ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id: doc.id,
+                    changes: vec![FieldChange {
+                        path: "/system/x".into(),
+                        old: serde_json::json!(null),
+                        new: serde_json::json!(1),
+                    }],
+                }],
+                2,
+            )
+            .await;
+        assert!(matches!(forbidden, Err(DataError::Forbidden)));
+        // Oversized create → TooLarge.
+        let big = world_doc(3, w.id, serde_json::json!({ "blob": "x".repeat(300 * 1024) }));
+        let too_large = r
+            .apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: big }], 3)
+            .await;
+        assert!(matches!(too_large, Err(DataError::TooLarge(_))));
     }
 }

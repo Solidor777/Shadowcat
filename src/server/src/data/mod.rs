@@ -26,4 +26,6 @@ pub enum DataError {
     OpFailed(String),
     #[error("forbidden")]
     Forbidden,
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
