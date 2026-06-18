@@ -16,6 +16,26 @@ are observations awaiting triage, not committed work.
   reconnect test (`all_clients_converge_after_reconnect`) does exercise the
   resync replay path explicitly via `ResyncRequest`.
 
+- Title: capability model — `core:delete` is GM-only by default (behavior change
+  from M5). Summary: the capability floor grants Owners `core:read` +
+  `core:write_fields` but NOT `core:delete`, so a document Owner can no longer
+  delete by default (M5's binary `can_write` allowed it). Intended per the
+  capability spec; grant `core:delete` per-document or via a world default to
+  restore owner-delete. Status: Accepted (documented behavior change).
+
+- Title: capability model — `core:create` world authorization deferred.
+  Summary: Phase 1 does not gate document creation by a world-level
+  `core:create`; current behavior is M5's (any member who owns the new doc may
+  create it). The capability constant exists. Status: Needs triage — wire a
+  world-level create grant (GM always allowed) when create restriction is
+  required.
+
+- Title: capability model — world defaults are not doc_type-scoped. Summary:
+  `world_cap_defaults` stores one `CapabilityGrants` per world applied to all
+  doc types; the spec allows per-`doc_type` scoping (§7.2). Status: Needs triage
+  — extend the stored shape to {all, by_type} when type-specific defaults are
+  needed (additive, no migration of the per-world form).
+
 - Title: a saturated lagged WS connection is slow to auto-converge on the
   ubuntu-latest CI runner. Summary: `converges_with_publishing_during_resync`
   originally asserted the deliberately-lagged client reached the tail seq (300)

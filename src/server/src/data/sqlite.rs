@@ -557,6 +557,10 @@ impl Repository for SqliteRepository {
                         // /permissions -> edit_permissions.
                         let need = required_cap_for_path(&ch.path).ok_or(DataError::Forbidden)?;
                         if !access.has(need) {
+                            tracing::debug!(
+                                user = %ctx.user_id, path = %ch.path, capability = need,
+                                "intent denied: missing capability"
+                            );
                             return Err(DataError::Forbidden);
                         }
                         let actual = whole
