@@ -1531,6 +1531,6 @@ git commit -m "feat(m2): document queries, source lookup, and event replay"
 
 ## Buddy-check directives
 
-- Plan buddy check: not run (the design was settled through brainstorming with the user).
-- **Flagged tasks (high-risk): Task 2 (command/`invert()` — serialization save-format + algorithmic core) and Task 6 (`apply_command` — transactional integrity + durable sequence guarantee).** A buddy check is **offered** at the execution handoff for these two tasks; outcome recorded there.
+- Plan buddy check: not run — design settled through brainstorming with the user.
+- **Flagged tasks: 2, 6 — buddy check accepted.** Task 2 (command/`invert()` — persisted save-format + algorithmic core) and Task 6 (`apply_command` — transactional integrity + durable sequence). A two-reviewer blind buddy check runs on each of these tasks' diffs at its review step, in addition to the inline enumerative compliance check.
 - Unflagged tasks that turn risky during execution: ask.
