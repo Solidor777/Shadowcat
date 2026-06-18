@@ -14,7 +14,7 @@ use crate::auth::role::ServerRole;
 use crate::auth::session::{AdminUser, AuthUser, SessionUser};
 use crate::auth::setup::{create_admin, now_millis};
 use crate::data::command::{Command, FieldChange, Operation};
-use crate::data::document::{Document, Scope, World, WorldRole};
+use crate::data::document::{CapabilityGrants, Document, Scope, World, WorldRole};
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{cap, filter_command, filter_properties, resolve_access_world};
 use crate::data::repository::Repository;
@@ -385,4 +385,47 @@ pub async fn delete_document(
         .ok_or(AppError::NotFound)?;
     let world = world_of(&doc)?;
     write_ops(&state, &user, world, vec![Operation::Delete { doc }]).await
+}
+
+/// Structural validation of a capability token: `<namespace>:<verb>`, both parts
+/// non-empty. The server never interprets the verb's meaning.
+fn validate_capability(token: &str) -> Result<(), AppError> {
+    match token.split_once(':') {
+        Some((ns, verb)) if !ns.is_empty() && !verb.is_empty() => Ok(()),
+        _ => Err(AppError::Unprocessable(format!(
+            "malformed capability '{token}' (expected <namespace>:<verb>)"
+        ))),
+    }
+}
+
+fn validate_grants(grants: &CapabilityGrants) -> Result<(), AppError> {
+    for set in grants.by_role.values().chain(grants.by_user.values()) {
+        for token in set {
+            validate_capability(token)?;
+        }
+    }
+    Ok(())
+}
+
+/// A world's default capability grants. GM/admin only.
+pub async fn get_world_capability_defaults(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+) -> Result<Json<CapabilityGrants>, AppError> {
+    require_gm(&state, &user, world).await?;
+    Ok(Json(state.repo.world_cap_defaults(world).await?))
+}
+
+/// Replace a world's default capability grants. GM/admin only.
+pub async fn set_world_capability_defaults(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+    Json(grants): Json<CapabilityGrants>,
+) -> Result<StatusCode, AppError> {
+    require_gm(&state, &user, world).await?;
+    validate_grants(&grants)?;
+    state.repo.set_world_cap_defaults(world, &grants).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
