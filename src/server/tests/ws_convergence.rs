@@ -259,7 +259,7 @@ async fn drain_event_seqs(ws: &mut Ws, count: usize) -> Vec<i64> {
     seqs
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn join_welcome_emit_receive() {
     let h = spawn().await;
     let mut ws = h.connect().await;
@@ -283,7 +283,7 @@ async fn join_welcome_emit_receive() {
     assert_eq!(h.authoritative_seqs().await, vec![1]);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn all_clients_converge_after_reconnect() {
     let h = spawn().await;
 
@@ -317,7 +317,7 @@ async fn all_clients_converge_after_reconnect() {
     assert_eq!(h.authoritative_seqs().await, vec![1, 2, 3, 4, 5]);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_reader_recovers_via_resync() {
     let h = spawn().await;
     let mut slow = h.connect().await;
@@ -344,7 +344,7 @@ async fn slow_reader_recovers_via_resync() {
     assert_eq!(*h.authoritative_seqs().await.last().unwrap(), 400);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn converges_with_publishing_during_resync() {
     // Regression guard for the resync watermark: events published while a resync
     // replay is in flight must not be dropped. The slow client accrues a backlog
@@ -383,7 +383,7 @@ async fn converges_with_publishing_during_resync() {
     assert_eq!(h.authoritative_seqs().await.last().copied(), Some(300));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn time_sync_returns_pong() {
     let h = spawn().await;
     let mut ws = h.connect().await;
@@ -404,7 +404,7 @@ async fn time_sync_returns_pong() {
     assert!(pong["server_t"].as_i64().unwrap() > 0);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn conflicting_same_field_update_is_rejected() {
     let h = spawn().await;
     let mut ws = h.connect().await;
@@ -458,7 +458,7 @@ async fn conflicting_same_field_update_is_rejected() {
     assert_eq!(h.authoritative_seqs().await, vec![1, 2]);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn player_write_to_gm_owned_doc_is_forbidden() {
     let h = spawn().await;
     let mut gm = h.connect().await;
@@ -495,7 +495,7 @@ async fn player_write_to_gm_owned_doc_is_forbidden() {
     assert_eq!(frames[0]["reason"], "forbidden");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gm_only_property_hidden_from_player() {
     let h = spawn().await;
 
