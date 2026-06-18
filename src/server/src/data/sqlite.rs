@@ -73,21 +73,6 @@ impl SqliteRepository {
         })
     }
 
-    pub async fn get_world(&self, id: Uuid) -> Result<Option<World>, DataError> {
-        let row =
-            sqlx::query("SELECT id, name, seq, created_at, updated_at FROM worlds WHERE id = ?")
-                .bind(id.to_string())
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.map(|r| World {
-            id: Uuid::parse_str(r.get::<String, _>("id").as_str()).unwrap(),
-            name: r.get("name"),
-            seq: r.get("seq"),
-            created_at: r.get("created_at"),
-            updated_at: r.get("updated_at"),
-        }))
-    }
-
     pub async fn create_user(
         &self,
         username: &str,
@@ -435,6 +420,21 @@ impl Repository for SqliteRepository {
                 )?)
             })
             .collect()
+    }
+
+    async fn get_world(&self, id: Uuid) -> Result<Option<World>, DataError> {
+        let row =
+            sqlx::query("SELECT id, name, seq, created_at, updated_at FROM worlds WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|r| World {
+            id: Uuid::parse_str(r.get::<String, _>("id").as_str()).unwrap(),
+            name: r.get("name"),
+            seq: r.get("seq"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        }))
     }
 }
 

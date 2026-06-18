@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::data::command::{Command, UnsequencedCommand};
-use crate::data::document::Document;
+use crate::data::document::{Document, World};
 use crate::data::DataError;
 
 /// Storage contract. The only implementation in M2 is `SqliteRepository`;
@@ -28,4 +28,7 @@ pub trait Repository: Send + Sync {
     ) -> Result<Vec<Document>, DataError>;
 
     async fn events_since(&self, world_id: Uuid, seq: i64) -> Result<Vec<Command>, DataError>;
+
+    /// Fetch a world row by id, or `None` if it does not exist.
+    async fn get_world(&self, id: Uuid) -> Result<Option<World>, DataError>;
 }
