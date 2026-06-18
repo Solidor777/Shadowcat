@@ -1,0 +1,12 @@
+{
+  "name": "@shadowcat/types",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "types": "index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"@shadowcat/types: no tests\" && exit 0"
+  }
+}
