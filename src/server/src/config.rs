@@ -63,8 +63,14 @@ pub enum SetupTokenPolicy {
 impl Config {
     /// Layer file + env over defaults via figment, then apply CLI overrides in
     /// code so CLI strictly wins (figment cannot easily skip `None` CLI fields).
+    // Boot-only call; figment::Error is third-party and large by value, so the
+    // large-Result cost is irrelevant here.
+    #[allow(clippy::result_large_err)]
     pub fn load(cli: Cli) -> Result<Self, figment::Error> {
-        let config_path = cli.config.clone().unwrap_or_else(|| "shadowcat.toml".into());
+        let config_path = cli
+            .config
+            .clone()
+            .unwrap_or_else(|| "shadowcat.toml".into());
         let mut cfg: Config = Figment::from(Serialized::defaults(Config::default()))
             .merge(Toml::file(&config_path)) // missing file is ignored
             .merge(Env::prefixed("SHADOWCAT_"))
@@ -164,12 +170,20 @@ mod tests {
         let mut cfg = Config::default(); // auto + loopback
         assert!(matches!(cfg.setup_token_policy(), SetupTokenPolicy::Open));
         cfg.bind = "0.0.0.0:30000".into();
-        assert!(matches!(cfg.setup_token_policy(), SetupTokenPolicy::Required(None)));
+        assert!(matches!(
+            cfg.setup_token_policy(),
+            SetupTokenPolicy::Required(None)
+        ));
         cfg.setup_token = "off".into();
         assert!(matches!(cfg.setup_token_policy(), SetupTokenPolicy::Open));
         cfg.setup_token = "required".into();
-        assert!(matches!(cfg.setup_token_policy(), SetupTokenPolicy::Required(None)));
+        assert!(matches!(
+            cfg.setup_token_policy(),
+            SetupTokenPolicy::Required(None)
+        ));
         cfg.setup_token = "s3cret".into();
-        assert!(matches!(cfg.setup_token_policy(), SetupTokenPolicy::Required(Some(ref v)) if v == "s3cret"));
+        assert!(
+            matches!(cfg.setup_token_policy(), SetupTokenPolicy::Required(Some(ref v)) if v == "s3cret")
+        );
     }
 }

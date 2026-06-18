@@ -51,9 +51,11 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_seeds_admin_once_then_is_idempotent() {
         let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
-        let mut cfg = Config::default();
-        cfg.admin_user = Some("ops".into());
-        cfg.admin_password = Some("pw-bootstrap".into());
+        let cfg = Config {
+            admin_user: Some("ops".into()),
+            admin_password: Some("pw-bootstrap".into()),
+            ..Config::default()
+        };
 
         assert!(bootstrap_admin(&repo, &cfg).await.unwrap());
         assert!(repo.admin_exists().await.unwrap());

@@ -142,7 +142,11 @@ impl FromRequestParts<AppState> for AuthUser {
             .await
             .map_err(|_| AppError::Internal)?;
         let u = user.ok_or(AppError::Unauthorized)?;
-        Ok(AuthUser { id: u.id, username: u.username, role: u.role })
+        Ok(AuthUser {
+            id: u.id,
+            username: u.username,
+            role: u.role,
+        })
     }
 }
 
@@ -206,7 +210,11 @@ mod tests {
         session
             .insert(
                 "user",
-                SessionUser { id: Uuid::from_u128(1), username: "a".into(), role: ServerRole::Admin },
+                SessionUser {
+                    id: Uuid::from_u128(1),
+                    username: "a".into(),
+                    role: ServerRole::Admin,
+                },
             )
             .await
             .unwrap();
@@ -216,7 +224,11 @@ mod tests {
         session
             .insert(
                 "user",
-                SessionUser { id: Uuid::from_u128(2), username: "u".into(), role: ServerRole::User },
+                SessionUser {
+                    id: Uuid::from_u128(2),
+                    username: "u".into(),
+                    role: ServerRole::User,
+                },
             )
             .await
             .unwrap();
@@ -239,13 +251,22 @@ mod tests {
             .route("/t/admin", get(admin_only))
             .layer(layer)
             .with_state(state);
-        (axum_test::TestServer::builder().save_cookies().build(app).unwrap(), ())
+        (
+            axum_test::TestServer::builder()
+                .save_cookies()
+                .build(app)
+                .unwrap(),
+            (),
+        )
     }
 
     #[tokio::test]
     async fn auth_user_requires_session() {
         let (server, _) = harness().await;
-        server.get("/t/me").await.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+        server
+            .get("/t/me")
+            .await
+            .assert_status(axum::http::StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -253,7 +274,10 @@ mod tests {
         let (server, _) = harness().await;
         server.post("/t/login-user").await.assert_status_ok();
         server.get("/t/me").await.assert_status_ok(); // any user passes AuthUser
-        server.get("/t/admin").await.assert_status(axum::http::StatusCode::FORBIDDEN);
+        server
+            .get("/t/admin")
+            .await
+            .assert_status(axum::http::StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -265,7 +289,9 @@ mod tests {
 
     #[tokio::test]
     async fn session_key_is_stable_across_loads() {
-        let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
         let cfg = crate::config::Config::default();
         let k1 = load_or_create_key(&repo, &cfg).await.unwrap();
         let k2 = load_or_create_key(&repo, &cfg).await.unwrap();

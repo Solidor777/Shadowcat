@@ -38,7 +38,11 @@ pub struct MeResponse {
 
 /// Current session identity, or 401.
 pub async fn me(user: AuthUser) -> Json<MeResponse> {
-    Json(MeResponse { id: user.id, username: user.username, server_role: user.role })
+    Json(MeResponse {
+        id: user.id,
+        username: user.username,
+        server_role: user.role,
+    })
 }
 
 /// A real Argon2id hash of a throwaway password, computed once. The unknown-user
@@ -80,7 +84,14 @@ pub async fn login(
     }
     let u = record.expect("ok implies record present");
     session
-        .insert("user", SessionUser { id: u.id, username: u.username, role: u.server_role })
+        .insert(
+            "user",
+            SessionUser {
+                id: u.id,
+                username: u.username,
+                role: u.server_role,
+            },
+        )
         .await
         .map_err(|_| AppError::Internal)?;
     Ok(axum::http::StatusCode::NO_CONTENT)
@@ -106,7 +117,11 @@ pub async fn setup(
     Json(body): Json<SetupRequest>,
 ) -> Result<axum::http::StatusCode, AppError> {
     if state.initialized.load(Ordering::Relaxed)
-        || state.repo.admin_exists().await.map_err(|_| AppError::Internal)?
+        || state
+            .repo
+            .admin_exists()
+            .await
+            .map_err(|_| AppError::Internal)?
     {
         return Err(AppError::Conflict("server already initialized".into()));
     }

@@ -3,9 +3,9 @@ use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
+use crate::auth::role::ServerRole;
 use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
 use crate::data::document::{Document, Scope, World, WorldRole};
-use crate::auth::role::ServerRole;
 use crate::data::repository::Repository;
 use crate::data::DataError;
 
@@ -463,7 +463,10 @@ mod tests {
     async fn members_carry_world_role() {
         let r = repo().await;
         let w = r.create_world("Test", 100).await.unwrap();
-        let u = r.create_user("gm", None, ServerRole::Admin, 100).await.unwrap();
+        let u = r
+            .create_user("gm", None, ServerRole::Admin, 100)
+            .await
+            .unwrap();
         r.add_member(w.id, u, WorldRole::Gm).await.unwrap();
         assert_eq!(r.member_role(w.id, u).await.unwrap(), Some(WorldRole::Gm));
         assert_eq!(
@@ -492,7 +495,10 @@ mod tests {
     async fn create_update_delete_round_trip_via_invert() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
+        let author = r
+            .create_user("author", None, ServerRole::User, 0)
+            .await
+            .unwrap();
 
         // Create
         let create = UnsequencedCommand {
@@ -551,7 +557,10 @@ mod tests {
     #[tokio::test]
     async fn apply_command_on_unknown_world_fails_and_writes_nothing() {
         let r = repo().await;
-        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
+        let author = r
+            .create_user("author", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let cmd = UnsequencedCommand {
             world_id: Uuid::from_u128(999),
             author,
@@ -576,7 +585,10 @@ mod tests {
             let r = SqliteRepository::connect(&url).await.unwrap();
             let w = r.create_world("W", 0).await.unwrap();
             world_id = w.id;
-            author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
+            author = r
+                .create_user("author", None, ServerRole::User, 0)
+                .await
+                .unwrap();
             r.apply_command(UnsequencedCommand {
                 world_id,
                 author,
@@ -608,7 +620,10 @@ mod tests {
     async fn create_with_foreign_world_scope_is_rejected() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
+        let author = r
+            .create_user("author", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         // Document scoped to a different world than the command sequences under.
         let cmd = UnsequencedCommand {
             world_id: w.id,
@@ -626,7 +641,10 @@ mod tests {
     async fn delete_with_foreign_world_scope_is_rejected() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
+        let author = r
+            .create_user("author", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let cmd = UnsequencedCommand {
             world_id: w.id,
             author,
@@ -644,7 +662,10 @@ mod tests {
     async fn update_cannot_change_document_id() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
+        let author = r
+            .create_user("author", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         r.apply_command(UnsequencedCommand {
             world_id: w.id,
             author,
@@ -680,7 +701,10 @@ mod tests {
     async fn update_stamps_updated_at_from_command_ts() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
+        let author = r
+            .create_user("author", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         // world_doc sets updated_at = 0.
         r.apply_command(UnsequencedCommand {
             world_id: w.id,
@@ -723,7 +747,10 @@ mod tests {
     async fn query_documents_filters_by_world_and_type() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
+        let author = r
+            .create_user("author", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         for id in [1u128, 2] {
             r.apply_command(UnsequencedCommand {
                 world_id: w.id,
@@ -745,7 +772,10 @@ mod tests {
     async fn documents_by_source_finds_instances_for_push() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
+        let author = r
+            .create_user("author", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let src = Uuid::from_u128(77);
         let mut doc = world_doc(1, w.id, serde_json::json!({}));
         doc.source = Some(Source {
@@ -775,7 +805,10 @@ mod tests {
     async fn events_since_returns_the_suffix() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
+        let author = r
+            .create_user("author", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         for id in [1u128, 2, 3] {
             r.apply_command(UnsequencedCommand {
                 world_id: w.id,

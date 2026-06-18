@@ -26,9 +26,10 @@ impl IntoResponse for AppError {
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
-            AppError::Internal => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
-            }
+            AppError::Internal => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error".to_string(),
+            ),
         };
         (status, Json(ErrorBody { error: msg })).into_response()
     }

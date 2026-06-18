@@ -90,17 +90,27 @@ pub(crate) mod tests {
     /// normal (post-setup) routes without walking the first-run flow.
     pub(crate) async fn initialized_state() -> AppState {
         let state = test_state().await;
-        state.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
+        state
+            .initialized
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         state
     }
 
     use crate::auth::password::hash_password;
     use crate::auth::role::ServerRole;
 
-    async fn server_with_user(username: &str, password: &str, role: ServerRole) -> axum_test::TestServer {
+    async fn server_with_user(
+        username: &str,
+        password: &str,
+        role: ServerRole,
+    ) -> axum_test::TestServer {
         let state = initialized_state().await;
         let hash = hash_password(password).unwrap();
-        state.repo.create_user(username, Some(&hash), role, 0).await.unwrap();
+        state
+            .repo
+            .create_user(username, Some(&hash), role, 0)
+            .await
+            .unwrap();
         axum_test::TestServer::builder()
             .save_cookies()
             .build(router(state).await)
@@ -110,7 +120,10 @@ pub(crate) mod tests {
     async fn fresh_server() -> axum_test::TestServer {
         // Uninitialized state, open token window (loopback default).
         let state = test_state().await;
-        axum_test::TestServer::builder().save_cookies().build(router(state).await).unwrap()
+        axum_test::TestServer::builder()
+            .save_cookies()
+            .build(router(state).await)
+            .unwrap()
     }
 
     #[tokio::test]
@@ -121,75 +134,121 @@ pub(crate) mod tests {
         let redirect = server.get("/").await;
         redirect.assert_status(axum::http::StatusCode::SEE_OTHER);
 
-        let setup = server.post("/api/setup").json(&serde_json::json!({
-            "username": "admin", "password": "pw-admin"
-        })).await;
+        let setup = server
+            .post("/api/setup")
+            .json(&serde_json::json!({
+                "username": "admin", "password": "pw-admin"
+            }))
+            .await;
         setup.assert_status(axum::http::StatusCode::NO_CONTENT);
 
         // Now initialized: second setup is a conflict, and "/" serves index.
-        server.post("/api/setup").json(&serde_json::json!({
-            "username": "x", "password": "y"
-        })).await.assert_status(axum::http::StatusCode::CONFLICT);
+        server
+            .post("/api/setup")
+            .json(&serde_json::json!({
+                "username": "x", "password": "y"
+            }))
+            .await
+            .assert_status(axum::http::StatusCode::CONFLICT);
         server.get("/").await.assert_status_ok();
 
         // The created admin can log in.
-        server.post("/api/login").json(&serde_json::json!({
-            "username": "admin", "password": "pw-admin"
-        })).await.assert_status(axum::http::StatusCode::NO_CONTENT);
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({
+                "username": "admin", "password": "pw-admin"
+            }))
+            .await
+            .assert_status(axum::http::StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
     async fn setup_requires_token_when_policy_demands_it() {
         let mut state = test_state().await;
         // Force a required token regardless of bind.
-        let mut cfg = crate::config::Config::default();
-        cfg.setup_token = "the-token".into();
+        let cfg = crate::config::Config {
+            setup_token: "the-token".into(),
+            ..crate::config::Config::default()
+        };
         state.config = std::sync::Arc::new(cfg.clone());
         state.setup_token = AppState::resolve_setup_token(&cfg);
-        let server = axum_test::TestServer::builder().save_cookies().build(router(state).await).unwrap();
+        let server = axum_test::TestServer::builder()
+            .save_cookies()
+            .build(router(state).await)
+            .unwrap();
 
-        server.post("/api/setup").json(&serde_json::json!({
-            "username": "admin", "password": "pw"
-        })).await.assert_status(axum::http::StatusCode::FORBIDDEN);
+        server
+            .post("/api/setup")
+            .json(&serde_json::json!({
+                "username": "admin", "password": "pw"
+            }))
+            .await
+            .assert_status(axum::http::StatusCode::FORBIDDEN);
 
-        server.post("/api/setup").json(&serde_json::json!({
-            "username": "admin", "password": "pw", "token": "the-token"
-        })).await.assert_status(axum::http::StatusCode::NO_CONTENT);
+        server
+            .post("/api/setup")
+            .json(&serde_json::json!({
+                "username": "admin", "password": "pw", "token": "the-token"
+            }))
+            .await
+            .assert_status(axum::http::StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
     async fn login_success_then_me_then_logout() {
         let server = server_with_user("gm-1", "pw-correct", ServerRole::User).await;
 
-        server.get("/api/me").await.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+        server
+            .get("/api/me")
+            .await
+            .assert_status(axum::http::StatusCode::UNAUTHORIZED);
 
-        let login = server.post("/api/login").json(&serde_json::json!({
-            "username": "gm-1", "password": "pw-correct"
-        })).await;
+        let login = server
+            .post("/api/login")
+            .json(&serde_json::json!({
+                "username": "gm-1", "password": "pw-correct"
+            }))
+            .await;
         login.assert_status(axum::http::StatusCode::NO_CONTENT);
 
         let me = server.get("/api/me").await;
         me.assert_status_ok();
         assert!(me.text().contains("gm-1"));
 
-        server.post("/api/logout").await.assert_status(axum::http::StatusCode::NO_CONTENT);
-        server.get("/api/me").await.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+        server
+            .post("/api/logout")
+            .await
+            .assert_status(axum::http::StatusCode::NO_CONTENT);
+        server
+            .get("/api/me")
+            .await
+            .assert_status(axum::http::StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn login_rejects_wrong_password_and_unknown_user_identically() {
         let server = server_with_user("gm-1", "pw-correct", ServerRole::User).await;
 
-        let bad_pw = server.post("/api/login").json(&serde_json::json!({
-            "username": "gm-1", "password": "pw-wrong"
-        })).await;
-        let unknown = server.post("/api/login").json(&serde_json::json!({
-            "username": "ghost", "password": "whatever"
-        })).await;
+        let bad_pw = server
+            .post("/api/login")
+            .json(&serde_json::json!({
+                "username": "gm-1", "password": "pw-wrong"
+            }))
+            .await;
+        let unknown = server
+            .post("/api/login")
+            .json(&serde_json::json!({
+                "username": "ghost", "password": "whatever"
+            }))
+            .await;
 
         bad_pw.assert_status(axum::http::StatusCode::UNAUTHORIZED);
         unknown.assert_status(axum::http::StatusCode::UNAUTHORIZED);
-        assert_eq!(bad_pw.text(), unknown.text(), "no user enumeration via body");
+        assert_eq!(
+            bad_pw.text(),
+            unknown.text(),
+            "no user enumeration via body"
+        );
     }
 
     #[tokio::test]
