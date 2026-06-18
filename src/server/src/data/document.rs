@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use uuid::Uuid;
 
 /// Storage/runtime scope of a document.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Scope {
     Compendium { pack: String },
@@ -12,14 +14,16 @@ pub enum Scope {
 }
 
 /// Provenance link for the deferred pull/push merge.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
 pub struct Source {
     pub id: Uuid,
     pub pack: Option<String>,
     pub version: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum DocRole {
     Owner,
@@ -27,14 +31,16 @@ pub enum DocRole {
     None,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum Visibility {
     All,
     GmOnly,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum WorldRole {
     Gm,
@@ -51,7 +57,8 @@ impl Default for DocRole {
 
 /// Document-level permissions: default role, per-user overrides, and
 /// property-level visibility keyed by JSON pointer.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
+#[ts(export, export_to = "../../types/generated/")]
 pub struct PermissionSet {
     pub default: DocRole,
     pub users: BTreeMap<Uuid, DocRole>,
@@ -59,7 +66,8 @@ pub struct PermissionSet {
 }
 
 /// The persisted document: typed envelope around an opaque `system` body.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
 #[serde(deny_unknown_fields)]
 pub struct Document {
     pub id: Uuid,
@@ -74,6 +82,7 @@ pub struct Document {
     pub permissions: PermissionSet,
     #[serde(default)]
     pub embedded: BTreeMap<String, Vec<Document>>,
+    #[ts(type = "unknown")]
     pub system: serde_json::Value,
     pub created_at: i64,
     pub updated_at: i64,

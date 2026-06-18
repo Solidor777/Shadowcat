@@ -1,20 +1,25 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::data::document::Document;
 use crate::data::DataError;
 
 /// One field-level change with its pre-image, so it is self-inverting.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
 pub struct FieldChange {
     pub path: String, // JSON pointer, e.g. "/system/hp"
+    #[ts(type = "unknown")]
     pub old: Value,
+    #[ts(type = "unknown")]
     pub new: Value,
 }
 
 /// A single operation within a command.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Operation {
     Create {
@@ -39,7 +44,8 @@ pub struct UnsequencedCommand {
 }
 
 /// A command that has been assigned a per-world sequence number.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
 pub struct Command {
     pub seq: i64,
     pub world_id: Uuid,
