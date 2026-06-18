@@ -42,7 +42,7 @@ Split into three sub-milestones (each brainstorm→spec→plan→execute). No UI
 integration-tested via the M4/M5 test-server. Headless core is a **Svelte-free,
 framework-neutral TS module**; Module API explicitly 0.x.
 
-#### M6a · Client core foundation
+#### M6a · Client core foundation ✅
 - WS client (reconnect / backoff / client-side sequence guard) over the M5
   `Intent`/`Event`/`Reject` protocol.
 - The **single** Zod-validated client document store (built once here).
