@@ -278,8 +278,10 @@ mod tests {
     fn command_round_trips_through_json() {
         use crate::data::document::{DocRole, PermissionSet, Scope, Source, Visibility};
 
-        let mut perms = PermissionSet::default();
-        perms.default = DocRole::Observer;
+        let mut perms = PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        };
         perms.users.insert(Uuid::from_u128(5), DocRole::Owner);
         perms
             .property_overrides
