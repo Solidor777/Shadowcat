@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test (emits ts-rs bindings)
+        run: cargo test --all
+      - name: ts-rs bindings in sync
+        run: git diff --exit-code src/types/generated
+      - name: Release build
+        run: cargo build --release
+      - name: Binary size budget
+        run: |
+          size=$(stat -c%s target/release/shadowcat)
+          echo "release binary size: ${size} bytes"
+          # 60 MiB guardrail; tighten as the binary's real baseline settles.
+          test "${size}" -lt 62914560
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+      - run: pnpm -r test
+      - run: pnpm lint
+      - run: pnpm --filter @shadowcat/ui build
