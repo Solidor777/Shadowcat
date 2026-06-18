@@ -9,11 +9,12 @@ use tower_sessions::Session;
 
 use crate::auth::password::{hash_password, verify_password};
 use crate::auth::role::ServerRole;
-use crate::auth::session::{AuthUser, SessionUser};
+use crate::auth::session::{AdminUser, AuthUser, SessionUser};
 use crate::auth::setup::{create_admin, now_millis};
 use crate::health::HealthStatus;
 use crate::http::error::AppError;
 use crate::http::AppState;
+use crate::ws::room::RoomStatsSnapshot;
 
 /// Liveness + DB connectivity probe.
 pub async fn health(State(state): State<AppState>) -> Json<HealthStatus> {
@@ -22,6 +23,14 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthStatus> {
         .await
         .is_ok();
     Json(HealthStatus::ok(connected))
+}
+
+/// Admin-only snapshot of live room telemetry.
+pub async fn debug_rooms(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+) -> Json<Vec<RoomStatsSnapshot>> {
+    Json(state.ws.rooms.snapshot())
 }
 
 #[derive(Deserialize)]

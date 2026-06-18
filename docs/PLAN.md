@@ -26,7 +26,7 @@ Guiding rule: build what you cannot build on top of. Networking and permissions 
 - Structured logging (tracing), request ids, `/health`.
 - Single-binary build (client bundle embedded via `rust-embed`; stub bundle acceptable here).
 
-### M4 · WebSocket event bus
+### M4 · WebSocket event bus 🚧 (implemented on branch `m4-websocket-event-bus`; final review + merge pending)
 - Per-world rooms; sequenced broadcasts; time-bounded event ring buffer; client sequence guard; reconnect/resync.
 - Server time source + client offset calibration (ahead of need).
 - Observability + desync telemetry; spawnable test-server binary; desync-convergence test harness — the project's highest-value test.

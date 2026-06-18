@@ -25,6 +25,7 @@ async fn main() -> anyhow::Result<()> {
         config: Arc::new(config.clone()),
         setup_token,
         initialized: Arc::new(AtomicBool::new(initialized)),
+        ws: shadowcat::ws::WsState::new(),
     };
 
     let app = http::router(state).await;

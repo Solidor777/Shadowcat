@@ -4,3 +4,4 @@ pub mod data;
 pub mod db;
 pub mod health;
 pub mod http;
+pub mod ws;
