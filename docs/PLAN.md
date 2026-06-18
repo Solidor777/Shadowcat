@@ -6,14 +6,14 @@ Guiding rule: build what you cannot build on top of. Networking and permissions 
 
 ## Phase 1 — MVP (→ dogfood alpha)
 
-### M1 · Project infrastructure
+### M1 · Project infrastructure ✅
 - Monorepo workspace under `src/` (`src/server/` Rust, `src/client/{core,ui}/`, `src/modules/`, `src/types/`); build output in `dist/`. Cargo + pnpm workspaces; Vite. Rename the empty `source/` dir to `src/`.
 - CI: Rust tests, TS typecheck, lint, cargo-bloat budget.
 - ts-rs type pipeline (Rust→TS), CI-enforced sync.
 - SQLite-only data target. Release `opt-level="z"`.
 - Excludes: Postgres, Tantivy, zstd, blake3.
 
-### M2 · Data foundation
+### M2 · Data foundation ✅
 - Document envelope + opaque `system` body + `schema_version`.
 - Migration *machinery only*: the synchronous client-side `migrateData` seam exists and runs as a no-op pass-through. No actual migrations are authored in v1 (nothing ships pre-v1, so no documents exist to migrate).
 - Permission schema (server / world / document roles, incl. observer / spectator; property-level overrides).
