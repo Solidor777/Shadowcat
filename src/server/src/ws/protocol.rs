@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::data::command::Command;
+use crate::data::command::{Command, Operation};
 
 /// Client -> server frames.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -17,8 +17,13 @@ use crate::data::command::Command;
 pub enum ClientMsg {
     /// First frame after upgrade: names the world and the client's last known seq.
     Hello { world: Uuid, last_seq: Option<i64> },
-    /// M4 driver: request an empty-ops command be sequenced and broadcast.
-    EmitTest { nonce: u64 },
+    /// A proposed write: a client-chosen `intent_id` for correlation plus the
+    /// ops to apply. The server authorizes/validates/sequences them through the
+    /// one write path; success broadcasts an `Event`, failure returns `Reject`.
+    Intent {
+        intent_id: Uuid,
+        ops: Vec<Operation>,
+    },
     /// Explicit gap recovery from the client's sequence guard.
     ResyncRequest { from_seq: i64 },
     /// Time calibration ping carrying the client's send timestamp.
@@ -44,7 +49,19 @@ pub enum WsErrorCode {
     WorldNotFound,
     BadMessage,
     PublishFailed,
+    Forbidden,
     Internal,
+}
+
+/// Why an `Intent` was rejected. Mirrors the write-path `DataError` categories
+/// the client can act on: re-auth, re-read+retry, or fix the payload.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum RejectReason {
+    Forbidden,
+    Conflict,
+    Invalid,
 }
 
 /// Server -> client frames.
@@ -58,8 +75,19 @@ pub enum ServerMsg {
         current_seq: i64,
         server_time: i64,
     },
-    /// A sequenced broadcast carrying the authoritative command.
-    Event { command: Command },
+    /// A sequenced broadcast carrying the authoritative command. `intent_id` is
+    /// the originator's correlation token; it is `None` on the shared broadcast
+    /// (an originator confirms its own write by receiving this echo of its
+    /// authored command). Per-intent `Some` correlation is added in M6.
+    Event {
+        command: Command,
+        intent_id: Option<Uuid>,
+    },
+    /// An `Intent` the write path refused, addressed to its originator only.
+    Reject {
+        intent_id: Uuid,
+        reason: RejectReason,
+    },
     /// Opens a resync replay range.
     ResyncBegin {
         from_seq: i64,
@@ -80,7 +108,7 @@ impl ServerMsg {
     /// seq of an `Event` frame, else `None`. Only `Event`s are buffered/resynced.
     pub fn event_seq(&self) -> Option<i64> {
         match self {
-            ServerMsg::Event { command } => Some(command.seq),
+            ServerMsg::Event { command, .. } => Some(command.seq),
             _ => None,
         }
     }
@@ -88,7 +116,7 @@ impl ServerMsg {
     /// server-stamped ts of an `Event` frame, else `None`.
     pub fn event_ts(&self) -> Option<i64> {
         match self {
-            ServerMsg::Event { command } => Some(command.ts),
+            ServerMsg::Event { command, .. } => Some(command.ts),
             _ => None,
         }
     }
@@ -127,6 +155,18 @@ mod protocol_tests {
         let s = serde_json::to_string(&begin).unwrap();
         assert!(s.contains("\"type\":\"resync_begin\""));
         assert!(s.contains("\"source\":\"buffer\""));
+        let _back: ServerMsg = serde_json::from_str(&s).unwrap();
+    }
+
+    #[test]
+    fn reject_round_trips_snake_case() {
+        let m = ServerMsg::Reject {
+            intent_id: Uuid::from_u128(3),
+            reason: RejectReason::Conflict,
+        };
+        let s = serde_json::to_string(&m).unwrap();
+        assert!(s.contains("\"type\":\"reject\""));
+        assert!(s.contains("\"reason\":\"conflict\""));
         let _back: ServerMsg = serde_json::from_str(&s).unwrap();
     }
 

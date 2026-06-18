@@ -10,7 +10,8 @@ use tokio::sync::{broadcast, Mutex};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::data::command::{Command, UnsequencedCommand};
+use crate::data::command::{Command, Operation};
+use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::DataError;
 use crate::ws::protocol::{ResyncSource, ServerMsg};
@@ -136,26 +137,24 @@ impl Room {
         self.current_seq.load(Ordering::Acquire)
     }
 
-    /// Allocate seq (durable), append to the ring, and broadcast — serialized per
-    /// world by `publish_guard` so broadcast order equals seq order. M4 publishes
-    /// an empty-ops command; M5 supplies real ops on this same path.
+    /// The one authoritative write path: authorize/validate/sequence `ops`
+    /// through `apply_intent`, append to the ring, and broadcast — serialized
+    /// per world by `publish_guard` so broadcast order equals seq order. The
+    /// broadcast `Event` carries `intent_id: None`; an originator confirms its
+    /// own write by receiving this echo. A rejected intent returns its
+    /// `DataError` without consuming a seq or broadcasting.
     pub async fn publish(
         &self,
         repo: &dyn Repository,
-        author: Uuid,
+        ctx: &PermissionContext,
+        ops: Vec<Operation>,
         ts: i64,
     ) -> Result<Command, DataError> {
         let _guard = self.publish_guard.lock().await;
-        let cmd = repo
-            .apply_command(UnsequencedCommand {
-                world_id: self.world_id,
-                author,
-                ts,
-                ops: vec![],
-            })
-            .await?;
+        let cmd = repo.apply_intent(ctx, self.world_id, ops, ts).await?;
         let msg = Arc::new(ServerMsg::Event {
             command: cmd.clone(),
+            intent_id: None,
         });
         self.ring.lock().await.push(msg.clone());
         self.current_seq.store(cmd.seq, Ordering::Release);
@@ -179,7 +178,12 @@ impl Room {
         self.stats.resyncs_cold.fetch_add(1, Ordering::Relaxed);
         let frames = cmds
             .into_iter()
-            .map(|c| Arc::new(ServerMsg::Event { command: c }))
+            .map(|c| {
+                Arc::new(ServerMsg::Event {
+                    command: c,
+                    intent_id: None,
+                })
+            })
             .collect();
         Ok((frames, ResyncSource::Log))
     }
@@ -272,6 +276,7 @@ mod ring_tests {
                 ts,
                 ops: vec![],
             },
+            intent_id: None,
         })
     }
 
@@ -338,29 +343,35 @@ mod ring_tests {
 mod room_tests {
     use super::*;
     use crate::auth::role::ServerRole;
+    use crate::data::document::WorldRole;
+    use crate::data::membership::PermissionContext;
     use crate::data::sqlite::SqliteRepository;
     use std::sync::atomic::Ordering;
     use uuid::Uuid;
 
-    async fn repo_with_world() -> (SqliteRepository, Uuid, Uuid) {
+    async fn repo_with_world() -> (SqliteRepository, Uuid, PermissionContext) {
         let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
-        let world = repo.create_world("W", 0).await.unwrap();
         let author = repo
             .create_user("a", None, ServerRole::User, 0)
             .await
             .unwrap();
-        (repo, world.id, author)
+        let world = repo.create_world_owned("W", author, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: author,
+            world_role: WorldRole::Gm,
+        };
+        (repo, world.id, ctx)
     }
 
     #[tokio::test]
     async fn publish_allocates_seq_buffers_and_broadcasts() {
-        let (repo, world_id, author) = repo_with_world().await;
+        let (repo, world_id, ctx) = repo_with_world().await;
         let reg = RoomRegistry::new();
         let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
         let (mut rx, current) = room.subscribe();
         assert_eq!(current, 0);
 
-        let cmd = room.publish(&repo, author, 10).await.unwrap();
+        let cmd = room.publish(&repo, &ctx, vec![], 10).await.unwrap();
         assert_eq!(cmd.seq, 1);
         assert_eq!(room.current_seq(), 1);
 
@@ -371,7 +382,7 @@ mod room_tests {
 
     #[tokio::test]
     async fn get_or_create_returns_none_for_missing_world() {
-        let (repo, _world_id, _author) = repo_with_world().await;
+        let (repo, _world_id, _ctx) = repo_with_world().await;
         let reg = RoomRegistry::new();
         assert!(reg
             .get_or_create(&repo, Uuid::from_u128(999))
@@ -382,11 +393,11 @@ mod room_tests {
 
     #[tokio::test]
     async fn resync_hot_then_cold_tiers() {
-        let (repo, world_id, author) = repo_with_world().await;
+        let (repo, world_id, ctx) = repo_with_world().await;
         let reg = RoomRegistry::new();
         let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
         for _ in 0..3 {
-            room.publish(&repo, author, 0).await.unwrap();
+            room.publish(&repo, &ctx, vec![], 0).await.unwrap();
         } // seq 1,2,3
 
         // hot: from_seq 2 resident in buffer
@@ -402,7 +413,7 @@ mod room_tests {
 
     #[tokio::test]
     async fn publish_is_ordered_under_concurrency() {
-        let (repo, world_id, author) = repo_with_world().await;
+        let (repo, world_id, ctx) = repo_with_world().await;
         let reg = RoomRegistry::new();
         let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
         let (mut rx, _) = room.subscribe();
@@ -413,7 +424,7 @@ mod room_tests {
             let room = room.clone();
             let repo = repo.clone();
             handles.push(tokio::spawn(async move {
-                room.publish(repo.as_ref(), author, 0).await.unwrap();
+                room.publish(repo.as_ref(), &ctx, vec![], 0).await.unwrap();
             }));
         }
         for h in handles {

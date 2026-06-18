@@ -19,11 +19,14 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::auth::role::ServerRole;
 use crate::auth::session::AuthUser;
+use crate::data::membership::PermissionContext;
+use crate::data::permission::filter_command;
 use crate::data::repository::Repository;
 use crate::data::sqlite::SqliteRepository;
 use crate::http::AppState;
-use crate::ws::protocol::{ClientMsg, ServerMsg, WsErrorCode};
+use crate::ws::protocol::{ClientMsg, RejectReason, ServerMsg, WsErrorCode};
 use crate::ws::room::Room;
 use crate::ws::time::now_millis;
 
@@ -47,7 +50,7 @@ pub async fn ws_handler(
     State(state): State<AppState>,
     Query(q): Query<WsQuery>,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(socket, state, user.id, q.world))
+    ws.on_upgrade(move |socket| handle_socket(socket, state, user.id, user.role, q.world))
 }
 
 /// Serialize a server frame to a text WS message. Serializing our own types
@@ -56,7 +59,45 @@ fn text(msg: &ServerMsg) -> Message {
     Message::Text(serde_json::to_string(msg).unwrap().into())
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid, world_id: Uuid) {
+/// Map a write-path error to the client-actionable reject category.
+fn reject_reason(e: &crate::data::DataError) -> RejectReason {
+    use crate::data::DataError::*;
+    match e {
+        Forbidden => RejectReason::Forbidden,
+        Conflict(_) => RejectReason::Conflict,
+        _ => RejectReason::Invalid,
+    }
+}
+
+/// Filter an outgoing frame for `ctx` and send it. Only `Event` frames carry
+/// document data, so only they are redacted (per-recipient, seq-preserving);
+/// every other frame passes through unchanged.
+async fn send_filtered<S>(
+    sink: &mut S,
+    repo: &dyn Repository,
+    ctx: &PermissionContext,
+    msg: &ServerMsg,
+) -> Result<(), ()>
+where
+    S: Sink<Message> + Unpin,
+{
+    let out = match msg {
+        ServerMsg::Event { command, intent_id } => ServerMsg::Event {
+            command: filter_command(repo, command, ctx).await,
+            intent_id: *intent_id,
+        },
+        other => other.clone(),
+    };
+    sink.send(text(&out)).await.map_err(|_| ())
+}
+
+async fn handle_socket(
+    socket: WebSocket,
+    state: AppState,
+    user_id: Uuid,
+    user_role: ServerRole,
+    world_id: Uuid,
+) {
     let repo = state.repo.clone();
     let room = match state.ws.rooms.get_or_create(repo.as_ref(), world_id).await {
         Ok(Some(r)) => r,
@@ -83,6 +124,25 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid, world_
         }
     };
 
+    // Membership gate: a non-member non-admin cannot build a PermissionContext,
+    // so cannot join. The context, resolved once here, authorizes writes and
+    // filters every outgoing frame for the rest of the connection.
+    let ctx = match repo.permission_context(world_id, user_id, user_role).await {
+        Ok(c) => c,
+        Err(_) => {
+            let mut s = socket;
+            let _ = s
+                .send(text(&ServerMsg::Error {
+                    code: WsErrorCode::Forbidden,
+                    message: "not a member of this world".into(),
+                }))
+                .await;
+            let _ = s.send(Message::Close(None)).await;
+            tracing::info!(world = %world_id, user = %user_id, "ws join denied: not a member");
+            return;
+        }
+    };
+
     room.stats.connections.fetch_add(1, Ordering::AcqRel);
     tracing::info!(world = %world_id, user = %user_id, "ws connected");
     let (rx, current_seq) = room.subscribe();
@@ -99,7 +159,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid, world_
         erx,
         egress_room,
         egress_repo,
-        world_id,
+        ctx,
         current_seq,
     ));
 
@@ -111,15 +171,21 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid, world_
                 let Some(Ok(frame)) = frame else { break };
                 match frame {
                     Message::Text(t) => match serde_json::from_str::<ClientMsg>(t.as_str()) {
-                        Ok(ClientMsg::EmitTest { .. }) => {
-                            if let Err(e) = room.publish(repo.as_ref(), user_id, now_millis()).await {
-                                tracing::warn!(?e, "publish failed");
-                                let _ = etx
-                                    .send(Egress::Frame(Arc::new(ServerMsg::Error {
-                                        code: WsErrorCode::PublishFailed,
-                                        message: "publish failed".into(),
-                                    })))
-                                    .await;
+                        Ok(ClientMsg::Intent { intent_id, ops }) => {
+                            // Success is confirmed by the broadcast echo of the
+                            // authored Event; only a rejection is sent directly.
+                            match room.publish(repo.as_ref(), &ctx, ops, now_millis()).await {
+                                Ok(_cmd) => {}
+                                Err(e) => {
+                                    let reason = reject_reason(&e);
+                                    tracing::debug!(world = %world_id, %intent_id, ?reason, "intent rejected");
+                                    let _ = etx
+                                        .send(Egress::Frame(Arc::new(ServerMsg::Reject {
+                                            intent_id,
+                                            reason,
+                                        })))
+                                        .await;
+                                }
                             }
                         }
                         Ok(ClientMsg::TimePing { client_t0 }) => {
@@ -165,11 +231,12 @@ async fn egress_loop<S>(
     mut erx: mpsc::Receiver<Egress>,
     room: Arc<Room>,
     repo: Arc<SqliteRepository>,
-    world_id: Uuid,
+    ctx: PermissionContext,
     current_seq: i64,
 ) where
     S: Sink<Message> + Unpin,
 {
+    let world_id = room.world_id;
     if sink
         .send(text(&ServerMsg::Welcome {
             world: world_id,
@@ -187,13 +254,13 @@ async fn egress_loop<S>(
         tokio::select! {
             cmd = erx.recv() => match cmd {
                 Some(Egress::Frame(f)) => {
-                    if sink.send(text(&f)).await.is_err() { break; }
+                    if send_filtered(&mut sink, repo.as_ref(), &ctx, f.as_ref()).await.is_err() { break; }
                 }
                 Some(Egress::TimePong { client_t0, server_t }) => {
                     if sink.send(text(&ServerMsg::TimePong { client_t0, server_t })).await.is_err() { break; }
                 }
                 Some(Egress::Resync(from)) => {
-                    match replay(&mut sink, &room, repo.as_ref(), from).await {
+                    match replay(&mut sink, &room, repo.as_ref(), &ctx, from).await {
                         Ok(to_seq) => next_expected = (to_seq + 1).max(next_expected),
                         Err(_) => break,
                     }
@@ -209,22 +276,22 @@ async fn egress_loop<S>(
                         if seq > next_expected {
                             room.stats.gaps_detected.fetch_add(1, Ordering::Relaxed);
                             tracing::debug!(world = %world_id, expected = next_expected, got = seq, "gap detected");
-                            match replay(&mut sink, &room, repo.as_ref(), next_expected).await {
+                            match replay(&mut sink, &room, repo.as_ref(), &ctx, next_expected).await {
                                 Ok(to_seq) => next_expected = to_seq + 1,
                                 Err(_) => break,
                             }
                             if seq < next_expected { continue; }
                         }
-                        if sink.send(text(&msg)).await.is_err() { break; }
+                        if send_filtered(&mut sink, repo.as_ref(), &ctx, msg.as_ref()).await.is_err() { break; }
                         next_expected = seq + 1;
-                    } else if sink.send(text(&msg)).await.is_err() {
+                    } else if send_filtered(&mut sink, repo.as_ref(), &ctx, msg.as_ref()).await.is_err() {
                         break;
                     }
                 }
                 Err(RecvError::Lagged(n)) => {
                     room.stats.lagged_drops.fetch_add(n, Ordering::Relaxed);
                     tracing::warn!(world = %world_id, dropped = n, "broadcast lagged");
-                    match replay(&mut sink, &room, repo.as_ref(), next_expected).await {
+                    match replay(&mut sink, &room, repo.as_ref(), &ctx, next_expected).await {
                         Ok(to_seq) => next_expected = to_seq + 1,
                         Err(_) => break,
                     }
@@ -246,6 +313,7 @@ async fn replay<S>(
     sink: &mut S,
     room: &Room,
     repo: &dyn Repository,
+    ctx: &PermissionContext,
     from_seq: i64,
 ) -> Result<i64, ()>
 where
@@ -264,8 +332,9 @@ where
     }))
     .await
     .map_err(|_| ())?;
+    // Replayed events are redacted per recipient, identically to live delivery.
     for f in frames {
-        sink.send(text(&f)).await.map_err(|_| ())?;
+        send_filtered(sink, repo, ctx, f.as_ref()).await?;
     }
     sink.send(text(&ServerMsg::ResyncEnd {
         current_seq: to_seq,
