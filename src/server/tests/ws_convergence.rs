@@ -188,7 +188,10 @@ fn update_op(
 /// An intent that creates one distinct document, keyed by `n`.
 fn create_intent(world: Uuid, n: u64) -> Message {
     let doc_id = Uuid::from_u128(1000 + n as u128);
-    intent_msg(n, serde_json::json!([create_op(world, doc_id, serde_json::json!({}))]))
+    intent_msg(
+        n,
+        serde_json::json!([create_op(world, doc_id, serde_json::json!({}))]),
+    )
 }
 
 /// Drain `event` and `reject` frames (skipping welcome/ping/time_pong) until
@@ -493,9 +496,12 @@ async fn gm_only_property_hidden_from_player() {
         "created_at": 0,
         "updated_at": 0,
     });
-    gm.send(intent_msg(1, serde_json::json!([{ "op": "create", "doc": doc }])))
-        .await
-        .unwrap();
+    gm.send(intent_msg(
+        1,
+        serde_json::json!([{ "op": "create", "doc": doc }]),
+    ))
+    .await
+    .unwrap();
 
     let frames = drain_frames(&mut pc, 1).await;
     assert_eq!(frames[0]["type"], "event");

@@ -116,11 +116,11 @@ pub async fn filter_command(
                 } else {
                     changes
                         .iter()
-                        .cloned()
                         .filter(|ch| {
                             cur.permissions.property_overrides.get(&ch.path)
                                 != Some(&Visibility::GmOnly)
                         })
+                        .cloned()
                         .collect()
                 };
                 out_ops.push(Operation::Update {
@@ -245,7 +245,10 @@ mod tests {
         use crate::data::sqlite::SqliteRepository;
 
         let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
-        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         let gm_ctx = PermissionContext {
             user_id: gm,

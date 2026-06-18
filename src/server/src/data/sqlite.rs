@@ -86,17 +86,24 @@ impl SqliteRepository {
     ) -> Result<World, DataError> {
         let mut tx = self.pool.begin().await?;
         let id = Uuid::new_v4();
-        sqlx::query("INSERT INTO worlds (id, name, seq, created_at, updated_at) VALUES (?, ?, 0, ?, ?)")
-            .bind(id.to_string())
-            .bind(name)
-            .bind(now)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO worlds (id, name, seq, created_at, updated_at) VALUES (?, ?, 0, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(name)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("INSERT INTO world_members (world_id, user_id, role) VALUES (?, ?, ?)")
             .bind(id.to_string())
             .bind(creator.to_string())
-            .bind(serde_json::to_value(WorldRole::Gm)?.as_str().unwrap().to_string())
+            .bind(
+                serde_json::to_value(WorldRole::Gm)?
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            )
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -110,13 +117,19 @@ impl SqliteRepository {
     }
 
     /// Change an existing member's role; `NotFound` if they are not a member.
-    pub async fn set_role(&self, world: Uuid, user: Uuid, role: WorldRole) -> Result<(), DataError> {
-        let res = sqlx::query("UPDATE world_members SET role = ? WHERE world_id = ? AND user_id = ?")
-            .bind(serde_json::to_value(role)?.as_str().unwrap().to_string())
-            .bind(world.to_string())
-            .bind(user.to_string())
-            .execute(&self.pool)
-            .await?;
+    pub async fn set_role(
+        &self,
+        world: Uuid,
+        user: Uuid,
+        role: WorldRole,
+    ) -> Result<(), DataError> {
+        let res =
+            sqlx::query("UPDATE world_members SET role = ? WHERE world_id = ? AND user_id = ?")
+                .bind(serde_json::to_value(role)?.as_str().unwrap().to_string())
+                .bind(world.to_string())
+                .bind(user.to_string())
+                .execute(&self.pool)
+                .await?;
         if res.rows_affected() == 0 {
             return Err(DataError::NotFound);
         }
@@ -159,10 +172,16 @@ impl SqliteRepository {
     ) -> Result<crate::data::membership::PermissionContext, DataError> {
         use crate::data::membership::PermissionContext;
         if server_role == ServerRole::Admin {
-            return Ok(PermissionContext { user_id: user, world_role: WorldRole::Gm });
+            return Ok(PermissionContext {
+                user_id: user,
+                world_role: WorldRole::Gm,
+            });
         }
         match self.member_role(world, user).await? {
-            Some(role) => Ok(PermissionContext { user_id: user, world_role: role }),
+            Some(role) => Ok(PermissionContext {
+                user_id: user,
+                world_role: role,
+            }),
             None => Err(DataError::Forbidden),
         }
     }
@@ -490,7 +509,9 @@ impl Repository for SqliteRepository {
                 Operation::Delete { doc } => {
                     let cur = Self::load_document(&mut *tx, doc.id)
                         .await?
-                        .ok_or_else(|| DataError::Conflict(format!("document {} missing", doc.id)))?;
+                        .ok_or_else(|| {
+                            DataError::Conflict(format!("document {} missing", doc.id))
+                        })?;
                     // Authorize against the stored doc, scoped to this world, so
                     // a GM of one world cannot delete another world's document.
                     check_command_scope(&cur, world_id)?;
@@ -771,24 +792,48 @@ mod tests {
     #[tokio::test]
     async fn world_owned_seats_creator_as_gm() {
         let r = repo().await;
-        let creator = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let creator = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let w = r.create_world_owned("W", creator, 0).await.unwrap();
-        assert_eq!(r.member_role(w.id, creator).await.unwrap(), Some(WorldRole::Gm));
-        assert_eq!(r.member_role(w.id, Uuid::from_u128(123)).await.unwrap(), None);
+        assert_eq!(
+            r.member_role(w.id, creator).await.unwrap(),
+            Some(WorldRole::Gm)
+        );
+        assert_eq!(
+            r.member_role(w.id, Uuid::from_u128(123)).await.unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
     async fn permission_context_resolves_role_or_forbids() {
         use crate::data::membership::PermissionContext;
         let r = repo().await;
-        let gm = r.create_user("gmx", None, ServerRole::User, 0).await.unwrap();
-        let admin = r.create_user("adx", None, ServerRole::Admin, 0).await.unwrap();
-        let stranger = r.create_user("sx", None, ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("gmx", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let admin = r
+            .create_user("adx", None, ServerRole::Admin, 0)
+            .await
+            .unwrap();
+        let stranger = r
+            .create_user("sx", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
 
-        let c: PermissionContext = r.permission_context(w.id, gm, ServerRole::User).await.unwrap();
+        let c: PermissionContext = r
+            .permission_context(w.id, gm, ServerRole::User)
+            .await
+            .unwrap();
         assert_eq!(c.world_role, WorldRole::Gm);
-        let ac = r.permission_context(w.id, admin, ServerRole::Admin).await.unwrap();
+        let ac = r
+            .permission_context(w.id, admin, ServerRole::Admin)
+            .await
+            .unwrap();
         assert_eq!(ac.world_role, WorldRole::Gm);
         assert!(matches!(
             r.permission_context(w.id, stranger, ServerRole::User).await,
@@ -799,12 +844,21 @@ mod tests {
     #[tokio::test]
     async fn set_remove_and_list_members() {
         let r = repo().await;
-        let gm = r.create_user("gm2", None, ServerRole::User, 0).await.unwrap();
-        let p = r.create_user("p2", None, ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("gm2", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let p = r
+            .create_user("p2", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         r.add_member(w.id, p, WorldRole::Player).await.unwrap();
         r.set_role(w.id, p, WorldRole::Spectator).await.unwrap();
-        assert_eq!(r.member_role(w.id, p).await.unwrap(), Some(WorldRole::Spectator));
+        assert_eq!(
+            r.member_role(w.id, p).await.unwrap(),
+            Some(WorldRole::Spectator)
+        );
         assert_eq!(r.list_members(w.id).await.unwrap().len(), 2);
         r.remove_member(w.id, p).await.unwrap();
         assert_eq!(r.member_role(w.id, p).await.unwrap(), None);
@@ -1166,7 +1220,10 @@ mod tests {
     async fn apply_intent_create_then_conflicting_update() {
         use crate::data::membership::PermissionContext;
         let r = repo().await;
-        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         let ctx = PermissionContext {
             user_id: gm,
@@ -1224,7 +1281,10 @@ mod tests {
         use crate::data::document::{DocRole, PermissionSet};
         use crate::data::membership::PermissionContext;
         let r = repo().await;
-        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         // A doc only the GM can write (no per-user role; default None).
         let mut doc = world_doc(2, w.id, serde_json::json!({}));
@@ -1236,9 +1296,14 @@ mod tests {
             user_id: gm,
             world_role: WorldRole::Gm,
         };
-        r.apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: doc.clone() }], 1)
-            .await
-            .unwrap();
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: doc.clone() }],
+            1,
+        )
+        .await
+        .unwrap();
         // A player updating it → Forbidden.
         let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
         let p_ctx = PermissionContext {
@@ -1262,7 +1327,11 @@ mod tests {
             .await;
         assert!(matches!(forbidden, Err(DataError::Forbidden)));
         // Oversized create → TooLarge.
-        let big = world_doc(3, w.id, serde_json::json!({ "blob": "x".repeat(300 * 1024) }));
+        let big = world_doc(
+            3,
+            w.id,
+            serde_json::json!({ "blob": "x".repeat(300 * 1024) }),
+        );
         let too_large = r
             .apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: big }], 3)
             .await;

@@ -323,7 +323,11 @@ pub async fn get_document(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Document>, AppError> {
-    let doc = state.repo.get_document(id).await?.ok_or(AppError::NotFound)?;
+    let doc = state
+        .repo
+        .get_document(id)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let world = world_of(&doc)?;
     let ctx = state
         .repo
@@ -347,7 +351,11 @@ pub async fn patch_document(
     Path(id): Path<Uuid>,
     Json(body): Json<PatchRequest>,
 ) -> Result<Json<Command>, AppError> {
-    let doc = state.repo.get_document(id).await?.ok_or(AppError::NotFound)?;
+    let doc = state
+        .repo
+        .get_document(id)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let world = world_of(&doc)?;
     write_ops(
         &state,
@@ -366,7 +374,11 @@ pub async fn delete_document(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Command>, AppError> {
-    let doc = state.repo.get_document(id).await?.ok_or(AppError::NotFound)?;
+    let doc = state
+        .repo
+        .get_document(id)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let world = world_of(&doc)?;
     write_ops(&state, &user, world, vec![Operation::Delete { doc }]).await
 }
