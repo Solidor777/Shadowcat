@@ -1498,4 +1498,6 @@ git commit -m "feat(m4): connection telemetry tracing; mark M4 complete"
 
 ## Buddy-check directives
 
-M4 carries genuine concurrency-correctness risk (the publish-ordering invariant, the egress resync/dedup state machine, broadcast `Lagged` recovery). A buddy-check (two independent blind reviewers debating) is **offered** for the final branch review, above mainline-plan-execution's single dispatched review. Default if not requested: the standard single fresh-context branch review. Outcome to be recorded here at execution handoff.
+M4 carries genuine concurrency-correctness risk (the publish-ordering invariant, the egress resync/dedup state machine, broadcast `Lagged` recovery). A buddy-check (two independent blind reviewers debating) is **offered** for the final branch review, above mainline-plan-execution's single dispatched review. Default if not requested: the standard single fresh-context branch review.
+
+**Outcome (recorded at handoff):** Offered at the post-implementation review checkpoint; user chose the **single fresh-context review**. No buddy-check run.
