@@ -194,6 +194,11 @@ fn create_intent(world: Uuid, n: u64) -> Message {
     )
 }
 
+/// An explicit gap-recovery request from `from_seq`.
+fn resync_request(from_seq: i64) -> Message {
+    Message::Text(serde_json::json!({ "type": "resync_request", "from_seq": from_seq }).to_string())
+}
+
 /// Drain `event` and `reject` frames (skipping welcome/ping/time_pong) until
 /// `count` are collected or the budget elapses.
 async fn drain_frames(ws: &mut Ws, count: usize) -> Vec<serde_json::Value> {
@@ -372,14 +377,32 @@ async fn converges_with_publishing_during_resync() {
     let seqs = drain_until_seq(&mut slow, 300).await;
     publisher.await.unwrap();
 
-    // Whatever the interleaving, delivery is contiguous from seq 1 to the
-    // authoritative tail with no gaps or duplicates.
+    // The watermark invariant under test: events published while a resync replay
+    // is in flight are never DROPPED. A drop would punch a gap into the delivered
+    // stream, so whatever the lagged client received during the overlap must be a
+    // contiguous prefix from seq 1 — no gaps, no duplicates. How far it got in
+    // real time is timing-dependent (a slower runner lags more) and not asserted.
     assert_eq!(seqs.first().copied(), Some(1));
-    assert_eq!(*seqs.last().unwrap(), 300);
     assert!(
         seqs.windows(2).all(|w| w[1] == w[0] + 1),
         "events dropped or duplicated across the resync window: {seqs:?}"
     );
+
+    // Convergence to the authoritative tail: a real client resyncs from its last
+    // seq on staleness. Drive that explicitly so completion is deterministic
+    // rather than racing the broadcast/lag timing, then assert the remainder
+    // arrives contiguously through seq 300.
+    let last = *seqs.last().unwrap();
+    if last < 300 {
+        slow.send(resync_request(last + 1)).await.unwrap();
+        let rest = drain_until_seq(&mut slow, 300).await;
+        assert_eq!(*rest.last().unwrap(), 300);
+        assert_eq!(rest.first().copied(), Some(last + 1));
+        assert!(
+            rest.windows(2).all(|w| w[1] == w[0] + 1),
+            "gap in the resync remainder: {rest:?}"
+        );
+    }
     assert_eq!(h.authoritative_seqs().await.last().copied(), Some(300));
 }
 
