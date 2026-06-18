@@ -230,21 +230,35 @@ async fn egress_loop<S>(
 }
 
 /// Replay `[from_seq, current]` to the sink as ResyncBegin .. Event* .. ResyncEnd.
-async fn replay<S>(sink: &mut S, room: &Room, repo: &dyn Repository, from_seq: i64) -> Result<(), ()>
+async fn replay<S>(
+    sink: &mut S,
+    room: &Room,
+    repo: &dyn Repository,
+    from_seq: i64,
+) -> Result<(), ()>
 where
     S: Sink<Message> + Unpin,
 {
     let (frames, source) = room.resync_range(repo, from_seq).await.map_err(|_| ())?;
-    let to_seq = frames.last().and_then(|m| m.event_seq()).unwrap_or(from_seq - 1);
+    let to_seq = frames
+        .last()
+        .and_then(|m| m.event_seq())
+        .unwrap_or(from_seq - 1);
     tracing::debug!(from_seq, to_seq, ?source, "resync served");
-    sink.send(text(&ServerMsg::ResyncBegin { from_seq, to_seq, source }))
-        .await
-        .map_err(|_| ())?;
+    sink.send(text(&ServerMsg::ResyncBegin {
+        from_seq,
+        to_seq,
+        source,
+    }))
+    .await
+    .map_err(|_| ())?;
     for f in frames {
         sink.send(text(&f)).await.map_err(|_| ())?;
     }
-    sink.send(text(&ServerMsg::ResyncEnd { current_seq: room.current_seq() }))
-        .await
-        .map_err(|_| ())?;
+    sink.send(text(&ServerMsg::ResyncEnd {
+        current_seq: room.current_seq(),
+    }))
+    .await
+    .map_err(|_| ())?;
     Ok(())
 }

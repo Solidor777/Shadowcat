@@ -69,10 +69,16 @@ async fn spawn() -> Harness {
         .unwrap()
         .to_string();
 
-    Harness { addr, cookie, world: world.id, repo }
+    Harness {
+        addr,
+        cookie,
+        world: world.id,
+        repo,
+    }
 }
 
-type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 impl Harness {
     async fn connect(&self) -> Ws {
@@ -96,11 +102,7 @@ impl Harness {
 }
 
 fn emit(nonce: u64) -> Message {
-    Message::Text(
-        serde_json::json!({ "type": "emit_test", "nonce": nonce })
-            .to_string()
-            .into(),
-    )
+    Message::Text(serde_json::json!({ "type": "emit_test", "nonce": nonce }).to_string())
 }
 
 /// Read frames, collecting Event seqs, until `count` events are seen or a budget
@@ -169,9 +171,7 @@ async fn all_clients_converge_after_reconnect() {
     let mut b = h.connect().await;
     let _ = b.next().await; // Welcome (current_seq = 5)
     b.send(Message::Text(
-        serde_json::json!({ "type": "resync_request", "from_seq": 1 })
-            .to_string()
-            .into(),
+        serde_json::json!({ "type": "resync_request", "from_seq": 1 }).to_string(),
     ))
     .await
     .unwrap();
@@ -215,9 +215,7 @@ async fn time_sync_returns_pong() {
     let mut ws = h.connect().await;
     let _ = ws.next().await; // Welcome
     ws.send(Message::Text(
-        serde_json::json!({ "type": "time_ping", "client_t0": 1000 })
-            .to_string()
-            .into(),
+        serde_json::json!({ "type": "time_ping", "client_t0": 1000 }).to_string(),
     ))
     .await
     .unwrap();

@@ -19,7 +19,9 @@ pub struct WsState {
 
 impl WsState {
     pub fn new() -> Self {
-        Self { rooms: Arc::new(RoomRegistry::new()) }
+        Self {
+            rooms: Arc::new(RoomRegistry::new()),
+        }
     }
 }
 

@@ -53,11 +53,19 @@ pub enum WsErrorCode {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
     /// Sent right after a successful join.
-    Welcome { world: Uuid, current_seq: i64, server_time: i64 },
+    Welcome {
+        world: Uuid,
+        current_seq: i64,
+        server_time: i64,
+    },
     /// A sequenced broadcast carrying the authoritative command.
     Event { command: Command },
     /// Opens a resync replay range.
-    ResyncBegin { from_seq: i64, to_seq: i64, source: ResyncSource },
+    ResyncBegin {
+        from_seq: i64,
+        to_seq: i64,
+        source: ResyncSource,
+    },
     /// Closes a resync replay range; live delivery resumes after this.
     ResyncEnd { current_seq: i64 },
     /// Time calibration reply: echoes the client send time, adds the server time.
@@ -93,16 +101,29 @@ mod protocol_tests {
 
     #[test]
     fn client_hello_round_trips_and_is_tagged() {
-        let m = ClientMsg::Hello { world: Uuid::from_u128(7), last_seq: Some(3) };
+        let m = ClientMsg::Hello {
+            world: Uuid::from_u128(7),
+            last_seq: Some(3),
+        };
         let s = serde_json::to_string(&m).unwrap();
         assert!(s.contains("\"type\":\"hello\""));
         let back: ClientMsg = serde_json::from_str(&s).unwrap();
-        assert!(matches!(back, ClientMsg::Hello { last_seq: Some(3), .. }));
+        assert!(matches!(
+            back,
+            ClientMsg::Hello {
+                last_seq: Some(3),
+                ..
+            }
+        ));
     }
 
     #[test]
     fn server_event_and_resync_round_trip() {
-        let begin = ServerMsg::ResyncBegin { from_seq: 2, to_seq: 5, source: ResyncSource::Buffer };
+        let begin = ServerMsg::ResyncBegin {
+            from_seq: 2,
+            to_seq: 5,
+            source: ResyncSource::Buffer,
+        };
         let s = serde_json::to_string(&begin).unwrap();
         assert!(s.contains("\"type\":\"resync_begin\""));
         assert!(s.contains("\"source\":\"buffer\""));
@@ -111,7 +132,10 @@ mod protocol_tests {
 
     #[test]
     fn error_code_serializes_snake_case() {
-        let e = ServerMsg::Error { code: WsErrorCode::WorldNotFound, message: "x".into() };
+        let e = ServerMsg::Error {
+            code: WsErrorCode::WorldNotFound,
+            message: "x".into(),
+        };
         let s = serde_json::to_string(&e).unwrap();
         assert!(s.contains("\"code\":\"world_not_found\""));
     }

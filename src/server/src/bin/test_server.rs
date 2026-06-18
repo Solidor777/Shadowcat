@@ -16,7 +16,8 @@ async fn main() -> anyhow::Result<()> {
     let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await?);
     let world = repo.create_world("test", 0).await?;
     let hash = hash_password("pw")?;
-    repo.create_user("u", Some(&hash), ServerRole::User, 0).await?;
+    repo.create_user("u", Some(&hash), ServerRole::User, 0)
+        .await?;
 
     let state = AppState {
         repo,

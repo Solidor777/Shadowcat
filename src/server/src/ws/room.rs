@@ -27,7 +27,9 @@ pub struct RingBuffer {
 
 impl RingBuffer {
     pub fn new() -> Self {
-        Self { events: VecDeque::new() }
+        Self {
+            events: VecDeque::new(),
+        }
     }
 
     /// Append an `Event` frame and prune by count then age.
@@ -124,7 +126,10 @@ impl Room {
     /// Subscribe to live frames; also returns the room's current seq so a joiner
     /// knows whether it needs to resync.
     pub fn subscribe(&self) -> (broadcast::Receiver<Arc<ServerMsg>>, i64) {
-        (self.tx.subscribe(), self.current_seq.load(Ordering::Acquire))
+        (
+            self.tx.subscribe(),
+            self.current_seq.load(Ordering::Acquire),
+        )
     }
 
     pub fn current_seq(&self) -> i64 {
@@ -149,7 +154,9 @@ impl Room {
                 ops: vec![],
             })
             .await?;
-        let msg = Arc::new(ServerMsg::Event { command: cmd.clone() });
+        let msg = Arc::new(ServerMsg::Event {
+            command: cmd.clone(),
+        });
         self.ring.lock().await.push(msg.clone());
         self.current_seq.store(cmd.seq, Ordering::Release);
         let _ = self.tx.send(msg); // Err only when there are no receivers
@@ -200,7 +207,9 @@ pub struct RoomRegistry {
 
 impl RoomRegistry {
     pub fn new() -> Self {
-        Self { rooms: DashMap::new() }
+        Self {
+            rooms: DashMap::new(),
+        }
     }
 
     /// Get the room for an existing world, creating it (seeded from the world's
@@ -236,8 +245,9 @@ impl RoomRegistry {
     /// re-join re-creates the room seeded from the world's current seq, so a
     /// reaped buffer only forces the rejoining client onto the cold tier.
     pub fn reap_if_empty(&self, world_id: Uuid) {
-        self.rooms
-            .remove_if(&world_id, |_, r| r.stats.connections.load(Ordering::Acquire) <= 0);
+        self.rooms.remove_if(&world_id, |_, r| {
+            r.stats.connections.load(Ordering::Acquire) <= 0
+        });
     }
 }
 
@@ -285,7 +295,10 @@ mod ring_tests {
         rb.push(event(1, 0));
         rb.push(event(2, 100));
         rb.push(event(3, MAX_AGE_MS + 1)); // pushes seq 1 (age > MAX) out
-        assert!(rb.range_from(1).is_none(), "seq 1 evicted, range not fully resident");
+        assert!(
+            rb.range_from(1).is_none(),
+            "seq 1 evicted, range not fully resident"
+        );
         let r = rb.range_from(2).unwrap();
         assert_eq!(r.len(), 2);
         assert_eq!(r[0].event_seq().unwrap(), 2);
@@ -332,7 +345,10 @@ mod room_tests {
     async fn repo_with_world() -> (SqliteRepository, Uuid, Uuid) {
         let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
         let world = repo.create_world("W", 0).await.unwrap();
-        let author = repo.create_user("a", None, ServerRole::User, 0).await.unwrap();
+        let author = repo
+            .create_user("a", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         (repo, world.id, author)
     }
 
@@ -377,7 +393,9 @@ mod room_tests {
         let (hot, src) = room.resync_range(&repo, 2).await.unwrap();
         assert_eq!(src, ResyncSource::Buffer);
         assert_eq!(
-            hot.iter().map(|m| m.event_seq().unwrap()).collect::<Vec<_>>(),
+            hot.iter()
+                .map(|m| m.event_seq().unwrap())
+                .collect::<Vec<_>>(),
             vec![2, 3]
         );
     }
@@ -408,7 +426,10 @@ mod room_tests {
         }
         let mut sorted = seqs.clone();
         sorted.sort();
-        assert_eq!(seqs, sorted, "broadcast delivery order must equal seq order");
+        assert_eq!(
+            seqs, sorted,
+            "broadcast delivery order must equal seq order"
+        );
         assert_eq!(seqs, (1..=50).collect::<Vec<_>>());
     }
 }
