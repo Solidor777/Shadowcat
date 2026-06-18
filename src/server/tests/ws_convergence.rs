@@ -210,6 +210,44 @@ async fn slow_reader_recovers_via_resync() {
 }
 
 #[tokio::test]
+async fn converges_with_publishing_during_resync() {
+    // Regression guard for the resync watermark: events published while a resync
+    // replay is in flight must not be dropped. The slow client accrues a backlog
+    // (forcing a server-side resync) and then drains while the publisher is still
+    // emitting, so live publishing overlaps the replay window.
+    let h = spawn().await;
+    let mut slow = h.connect().await;
+    let _ = slow.next().await; // Welcome
+
+    let mut pubc = h.connect().await;
+    let _ = pubc.next().await;
+    let publisher = tokio::spawn(async move {
+        for n in 0..300 {
+            if pubc.send(emit(n)).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    });
+
+    // Let a backlog build on the unread `slow` connection, then drain while the
+    // publisher keeps going.
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    let seqs = drain_event_seqs(&mut slow, 300).await;
+    publisher.await.unwrap();
+
+    // Whatever the interleaving, delivery is contiguous from seq 1 to the
+    // authoritative tail with no gaps or duplicates.
+    assert_eq!(seqs.first().copied(), Some(1));
+    assert_eq!(*seqs.last().unwrap(), 300);
+    assert!(
+        seqs.windows(2).all(|w| w[1] == w[0] + 1),
+        "events dropped or duplicated across the resync window: {seqs:?}"
+    );
+    assert_eq!(h.authoritative_seqs().await.last().copied(), Some(300));
+}
+
+#[tokio::test]
 async fn time_sync_returns_pong() {
     let h = spawn().await;
     let mut ws = h.connect().await;

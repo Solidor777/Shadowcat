@@ -193,8 +193,10 @@ async fn egress_loop<S>(
                     if sink.send(text(&ServerMsg::TimePong { client_t0, server_t })).await.is_err() { break; }
                 }
                 Some(Egress::Resync(from)) => {
-                    if replay(&mut sink, &room, repo.as_ref(), from).await.is_err() { break; }
-                    next_expected = room.current_seq() + 1;
+                    match replay(&mut sink, &room, repo.as_ref(), from).await {
+                        Ok(to_seq) => next_expected = (to_seq + 1).max(next_expected),
+                        Err(_) => break,
+                    }
                 }
                 None => break, // ingress gone
             },
@@ -207,8 +209,10 @@ async fn egress_loop<S>(
                         if seq > next_expected {
                             room.stats.gaps_detected.fetch_add(1, Ordering::Relaxed);
                             tracing::debug!(world = %world_id, expected = next_expected, got = seq, "gap detected");
-                            if replay(&mut sink, &room, repo.as_ref(), next_expected).await.is_err() { break; }
-                            next_expected = room.current_seq() + 1;
+                            match replay(&mut sink, &room, repo.as_ref(), next_expected).await {
+                                Ok(to_seq) => next_expected = to_seq + 1,
+                                Err(_) => break,
+                            }
                             if seq < next_expected { continue; }
                         }
                         if sink.send(text(&msg)).await.is_err() { break; }
@@ -220,8 +224,10 @@ async fn egress_loop<S>(
                 Err(RecvError::Lagged(n)) => {
                     room.stats.lagged_drops.fetch_add(n, Ordering::Relaxed);
                     tracing::warn!(world = %world_id, dropped = n, "broadcast lagged");
-                    if replay(&mut sink, &room, repo.as_ref(), next_expected).await.is_err() { break; }
-                    next_expected = room.current_seq() + 1;
+                    match replay(&mut sink, &room, repo.as_ref(), next_expected).await {
+                        Ok(to_seq) => next_expected = to_seq + 1,
+                        Err(_) => break,
+                    }
                 }
                 Err(RecvError::Closed) => break,
             },
@@ -229,13 +235,19 @@ async fn egress_loop<S>(
     }
 }
 
-/// Replay `[from_seq, current]` to the sink as ResyncBegin .. Event* .. ResyncEnd.
+/// Replay `[from_seq, to_seq]` to the sink as ResyncBegin .. Event* .. ResyncEnd,
+/// where `to_seq` is the last seq actually sent (a point-in-time snapshot taken by
+/// `resync_range`). Returns `to_seq` so the caller advances its watermark to
+/// exactly what was delivered — NOT a fresh `current_seq` read, which can race
+/// ahead of the snapshot and silently drop events published during this replay's
+/// I/O. `ResyncEnd.current_seq` reports the same `to_seq` so the client's
+/// watermark matches; events after `to_seq` arrive via normal live delivery.
 async fn replay<S>(
     sink: &mut S,
     room: &Room,
     repo: &dyn Repository,
     from_seq: i64,
-) -> Result<(), ()>
+) -> Result<i64, ()>
 where
     S: Sink<Message> + Unpin,
 {
@@ -256,9 +268,9 @@ where
         sink.send(text(&f)).await.map_err(|_| ())?;
     }
     sink.send(text(&ServerMsg::ResyncEnd {
-        current_seq: room.current_seq(),
+        current_seq: to_seq,
     }))
     .await
     .map_err(|_| ())?;
-    Ok(())
+    Ok(to_seq)
 }
