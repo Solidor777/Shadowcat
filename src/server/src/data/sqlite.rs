@@ -5,8 +5,18 @@ use uuid::Uuid;
 
 use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
 use crate::data::document::{Document, Scope, World, WorldRole};
+use crate::auth::role::ServerRole;
 use crate::data::repository::Repository;
 use crate::data::DataError;
+
+/// Auth-facing projection of a user row.
+#[derive(Debug, Clone)]
+pub struct UserRecord {
+    pub id: Uuid,
+    pub username: String,
+    pub password_hash: Option<String>,
+    pub server_role: ServerRole,
+}
 
 /// SQLite-backed storage. Holds a connection pool; migrations are embedded
 /// from `migrations/` and run at connect time.
@@ -81,20 +91,76 @@ impl SqliteRepository {
     pub async fn create_user(
         &self,
         username: &str,
-        server_role: &str,
+        password_hash: Option<&str>,
+        role: ServerRole,
         now: i64,
     ) -> Result<Uuid, DataError> {
         let id = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO users (id, username, server_role, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO users (id, username, password_hash, server_role, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(id.to_string())
         .bind(username)
-        .bind(server_role)
+        .bind(password_hash)
+        .bind(role.as_str())
         .bind(now)
         .execute(&self.pool)
         .await?;
         Ok(id)
+    }
+
+    pub async fn user_by_username(&self, username: &str) -> Result<Option<UserRecord>, DataError> {
+        let row = sqlx::query(
+            "SELECT id, username, password_hash, server_role FROM users WHERE username = ?",
+        )
+        .bind(username)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(match row {
+            Some(r) => {
+                let role_str: String = r.get("server_role");
+                let server_role = match role_str.as_str() {
+                    "admin" => ServerRole::Admin,
+                    _ => ServerRole::User,
+                };
+                Some(UserRecord {
+                    id: Uuid::parse_str(r.get::<String, _>("id").as_str())
+                        .map_err(|e| DataError::OpFailed(e.to_string()))?,
+                    username: r.get("username"),
+                    password_hash: r.get("password_hash"),
+                    server_role,
+                })
+            }
+            None => None,
+        })
+    }
+
+    pub async fn admin_exists(&self) -> Result<bool, DataError> {
+        let row = sqlx::query("SELECT 1 FROM users WHERE server_role = 'admin' LIMIT 1")
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>, DataError> {
+        let row = sqlx::query("SELECT value FROM settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get("value")))
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), DataError> {
+        sqlx::query(
+            "INSERT INTO settings (key, value) VALUES (?, ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn add_member(
@@ -358,6 +424,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn user_by_username_and_admin_exists() {
+        use crate::auth::role::ServerRole;
+        let r = repo().await;
+        assert!(!r.admin_exists().await.unwrap());
+        let id = r
+            .create_user("admin1", Some("phc-hash"), ServerRole::Admin, 100)
+            .await
+            .unwrap();
+        assert!(r.admin_exists().await.unwrap());
+        let rec = r.user_by_username("admin1").await.unwrap().unwrap();
+        assert_eq!(rec.id, id);
+        assert_eq!(rec.server_role, ServerRole::Admin);
+        assert_eq!(rec.password_hash.as_deref(), Some("phc-hash"));
+        assert!(r.user_by_username("nope").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn settings_get_set_round_trip() {
+        let r = repo().await;
+        assert!(r.get_setting("k").await.unwrap().is_none());
+        r.set_setting("k", "v1").await.unwrap();
+        assert_eq!(r.get_setting("k").await.unwrap().as_deref(), Some("v1"));
+        r.set_setting("k", "v2").await.unwrap();
+        assert_eq!(r.get_setting("k").await.unwrap().as_deref(), Some("v2"));
+    }
+
+    #[tokio::test]
     async fn create_then_get_world() {
         let r = repo().await;
         let w = r.create_world("Test", 100).await.unwrap();
@@ -370,7 +463,7 @@ mod tests {
     async fn members_carry_world_role() {
         let r = repo().await;
         let w = r.create_world("Test", 100).await.unwrap();
-        let u = r.create_user("gm", "admin", 100).await.unwrap();
+        let u = r.create_user("gm", None, ServerRole::Admin, 100).await.unwrap();
         r.add_member(w.id, u, WorldRole::Gm).await.unwrap();
         assert_eq!(r.member_role(w.id, u).await.unwrap(), Some(WorldRole::Gm));
         assert_eq!(
@@ -399,7 +492,7 @@ mod tests {
     async fn create_update_delete_round_trip_via_invert() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", "user", 0).await.unwrap();
+        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
 
         // Create
         let create = UnsequencedCommand {
@@ -458,7 +551,7 @@ mod tests {
     #[tokio::test]
     async fn apply_command_on_unknown_world_fails_and_writes_nothing() {
         let r = repo().await;
-        let author = r.create_user("author", "user", 0).await.unwrap();
+        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
         let cmd = UnsequencedCommand {
             world_id: Uuid::from_u128(999),
             author,
@@ -483,7 +576,7 @@ mod tests {
             let r = SqliteRepository::connect(&url).await.unwrap();
             let w = r.create_world("W", 0).await.unwrap();
             world_id = w.id;
-            author = r.create_user("author", "user", 0).await.unwrap();
+            author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
             r.apply_command(UnsequencedCommand {
                 world_id,
                 author,
@@ -515,7 +608,7 @@ mod tests {
     async fn create_with_foreign_world_scope_is_rejected() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", "user", 0).await.unwrap();
+        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
         // Document scoped to a different world than the command sequences under.
         let cmd = UnsequencedCommand {
             world_id: w.id,
@@ -533,7 +626,7 @@ mod tests {
     async fn delete_with_foreign_world_scope_is_rejected() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", "user", 0).await.unwrap();
+        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
         let cmd = UnsequencedCommand {
             world_id: w.id,
             author,
@@ -551,7 +644,7 @@ mod tests {
     async fn update_cannot_change_document_id() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", "user", 0).await.unwrap();
+        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
         r.apply_command(UnsequencedCommand {
             world_id: w.id,
             author,
@@ -587,7 +680,7 @@ mod tests {
     async fn update_stamps_updated_at_from_command_ts() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", "user", 0).await.unwrap();
+        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
         // world_doc sets updated_at = 0.
         r.apply_command(UnsequencedCommand {
             world_id: w.id,
@@ -630,7 +723,7 @@ mod tests {
     async fn query_documents_filters_by_world_and_type() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", "user", 0).await.unwrap();
+        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
         for id in [1u128, 2] {
             r.apply_command(UnsequencedCommand {
                 world_id: w.id,
@@ -652,7 +745,7 @@ mod tests {
     async fn documents_by_source_finds_instances_for_push() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", "user", 0).await.unwrap();
+        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
         let src = Uuid::from_u128(77);
         let mut doc = world_doc(1, w.id, serde_json::json!({}));
         doc.source = Some(Source {
@@ -682,7 +775,7 @@ mod tests {
     async fn events_since_returns_the_suffix() {
         let r = repo().await;
         let w = r.create_world("W", 0).await.unwrap();
-        let author = r.create_user("author", "user", 0).await.unwrap();
+        let author = r.create_user("author", None, ServerRole::User, 0).await.unwrap();
         for id in [1u128, 2, 3] {
             r.apply_command(UnsequencedCommand {
                 world_id: w.id,
