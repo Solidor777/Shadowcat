@@ -213,6 +213,33 @@ async fn drain_frames(ws: &mut Ws, count: usize) -> Vec<serde_json::Value> {
     out
 }
 
+/// Read until an Event with seq `target` (the authoritative tail) is observed,
+/// returning all Event seqs in arrival order. Unlike a fixed-count drain, this
+/// is robust to the publish/resync interleaving on a loaded runner: a slow
+/// runner cannot truncate collection, and a genuine duplicate or gap surfaces
+/// deterministically in the caller's contiguity assertion rather than as a
+/// short read. Generous per-frame budget; breaks only on a real stall.
+async fn drain_until_seq(ws: &mut Ws, target: i64) -> Vec<i64> {
+    let mut seqs = vec![];
+    loop {
+        let Ok(Some(Ok(m))) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), ws.next()).await
+        else {
+            break;
+        };
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(m.to_text().unwrap_or("")) {
+            if v["type"] == "event" {
+                let s = v["command"]["seq"].as_i64().unwrap();
+                seqs.push(s);
+                if s >= target {
+                    break;
+                }
+            }
+        }
+    }
+    seqs
+}
+
 /// Read frames, collecting Event seqs, until `count` events are seen or a budget
 /// elapses. Returns collected seqs in arrival order.
 async fn drain_event_seqs(ws: &mut Ws, count: usize) -> Vec<i64> {
@@ -308,7 +335,7 @@ async fn slow_reader_recovers_via_resync() {
 
     // Now read: whether delivery came live or via resync, the final delivered
     // seq reaches the authoritative tail (400), strictly increasing, no dups.
-    let seqs = drain_event_seqs(&mut slow, 400).await;
+    let seqs = drain_until_seq(&mut slow, 400).await;
     assert_eq!(*seqs.last().unwrap(), 400);
     let mut sorted = seqs.clone();
     sorted.sort();
@@ -342,7 +369,7 @@ async fn converges_with_publishing_during_resync() {
     // Let a backlog build on the unread `slow` connection, then drain while the
     // publisher keeps going.
     tokio::time::sleep(std::time::Duration::from_millis(40)).await;
-    let seqs = drain_event_seqs(&mut slow, 300).await;
+    let seqs = drain_until_seq(&mut slow, 300).await;
     publisher.await.unwrap();
 
     // Whatever the interleaving, delivery is contiguous from seq 1 to the
