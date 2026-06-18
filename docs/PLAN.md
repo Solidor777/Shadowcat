@@ -21,7 +21,7 @@ Guiding rule: build what you cannot build on top of. Networking and permissions 
 - Undoable mutation representation (command/event records) — the *undoable-mutation invariant*. This reversible representation is the single shared substrate for both optimistic rollback (M5/M6) and undo; later rollback consumes it, not a parallel representation.
 - Database layer + unit tests; no HTTP yet.
 
-### M3 · Auth + server skeleton
+### M3 · Auth + server skeleton ✅
 - axum boots, runs migrations; argon2 + tower-sessions; server / GM / player / spectator roles.
 - Structured logging (tracing), request ids, `/health`.
 - Single-binary build (client bundle embedded via `rust-embed`; stub bundle acceptable here).
