@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use crate::auth::role::ServerRole;
 use crate::auth::session::AuthUser;
+use crate::data::document::CapabilityGrants;
 use crate::data::membership::PermissionContext;
 use crate::data::permission::filter_command;
 use crate::data::repository::Repository;
@@ -76,6 +77,7 @@ async fn send_filtered<S>(
     sink: &mut S,
     repo: &dyn Repository,
     ctx: &PermissionContext,
+    world_defaults: &CapabilityGrants,
     msg: &ServerMsg,
 ) -> Result<(), ()>
 where
@@ -83,7 +85,7 @@ where
 {
     let out = match msg {
         ServerMsg::Event { command, intent_id } => ServerMsg::Event {
-            command: filter_command(repo, command, ctx).await,
+            command: filter_command(repo, command, ctx, world_defaults).await,
             intent_id: *intent_id,
         },
         other => other.clone(),
@@ -237,6 +239,10 @@ async fn egress_loop<S>(
     S: Sink<Message> + Unpin,
 {
     let world_id = room.world_id;
+    // Loaded once per connection (not per event): a per-event read would contend
+    // with apply_intent on the single-writer pool. A defaults change mid-session
+    // takes effect on the client's next (re)connect.
+    let world_defaults = repo.world_cap_defaults(world_id).await.unwrap_or_default();
     if sink
         .send(text(&ServerMsg::Welcome {
             world: world_id,
@@ -254,13 +260,13 @@ async fn egress_loop<S>(
         tokio::select! {
             cmd = erx.recv() => match cmd {
                 Some(Egress::Frame(f)) => {
-                    if send_filtered(&mut sink, repo.as_ref(), &ctx, f.as_ref()).await.is_err() { break; }
+                    if send_filtered(&mut sink, repo.as_ref(), &ctx, &world_defaults, f.as_ref()).await.is_err() { break; }
                 }
                 Some(Egress::TimePong { client_t0, server_t }) => {
                     if sink.send(text(&ServerMsg::TimePong { client_t0, server_t })).await.is_err() { break; }
                 }
                 Some(Egress::Resync(from)) => {
-                    match replay(&mut sink, &room, repo.as_ref(), &ctx, from).await {
+                    match replay(&mut sink, &room, repo.as_ref(), &ctx, &world_defaults, from).await {
                         Ok(to_seq) => next_expected = (to_seq + 1).max(next_expected),
                         Err(_) => break,
                     }
@@ -276,22 +282,22 @@ async fn egress_loop<S>(
                         if seq > next_expected {
                             room.stats.gaps_detected.fetch_add(1, Ordering::Relaxed);
                             tracing::debug!(world = %world_id, expected = next_expected, got = seq, "gap detected");
-                            match replay(&mut sink, &room, repo.as_ref(), &ctx, next_expected).await {
+                            match replay(&mut sink, &room, repo.as_ref(), &ctx, &world_defaults, next_expected).await {
                                 Ok(to_seq) => next_expected = to_seq + 1,
                                 Err(_) => break,
                             }
                             if seq < next_expected { continue; }
                         }
-                        if send_filtered(&mut sink, repo.as_ref(), &ctx, msg.as_ref()).await.is_err() { break; }
+                        if send_filtered(&mut sink, repo.as_ref(), &ctx, &world_defaults, msg.as_ref()).await.is_err() { break; }
                         next_expected = seq + 1;
-                    } else if send_filtered(&mut sink, repo.as_ref(), &ctx, msg.as_ref()).await.is_err() {
+                    } else if send_filtered(&mut sink, repo.as_ref(), &ctx, &world_defaults, msg.as_ref()).await.is_err() {
                         break;
                     }
                 }
                 Err(RecvError::Lagged(n)) => {
                     room.stats.lagged_drops.fetch_add(n, Ordering::Relaxed);
                     tracing::warn!(world = %world_id, dropped = n, "broadcast lagged");
-                    match replay(&mut sink, &room, repo.as_ref(), &ctx, next_expected).await {
+                    match replay(&mut sink, &room, repo.as_ref(), &ctx, &world_defaults, next_expected).await {
                         Ok(to_seq) => next_expected = to_seq + 1,
                         Err(_) => break,
                     }
@@ -314,6 +320,7 @@ async fn replay<S>(
     room: &Room,
     repo: &dyn Repository,
     ctx: &PermissionContext,
+    world_defaults: &CapabilityGrants,
     from_seq: i64,
 ) -> Result<i64, ()>
 where
@@ -334,7 +341,7 @@ where
     .map_err(|_| ())?;
     // Replayed events are redacted per recipient, identically to live delivery.
     for f in frames {
-        send_filtered(sink, repo, ctx, f.as_ref()).await?;
+        send_filtered(sink, repo, ctx, world_defaults, f.as_ref()).await?;
     }
     sink.send(text(&ServerMsg::ResyncEnd {
         current_seq: to_seq,

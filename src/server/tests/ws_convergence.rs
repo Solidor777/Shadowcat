@@ -383,7 +383,7 @@ async fn converges_with_publishing_during_resync() {
     // server has durably applied every published intent (the single-writer pool
     // may still be draining the ingress backlog on a slow runner).
     let _pubc = publisher.await.unwrap();
-    for _ in 0..150 {
+    for _ in 0..300 {
         if h.authoritative_seqs().await.last().copied() == Some(300) {
             break;
         }

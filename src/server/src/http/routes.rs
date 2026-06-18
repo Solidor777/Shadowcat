@@ -182,7 +182,8 @@ async fn write_ops(
     let cmd = room
         .publish(state.repo.as_ref(), &ctx, ops, now_millis())
         .await?;
-    let filtered = filter_command(state.repo.as_ref(), &cmd, &ctx).await;
+    let world_defaults = state.repo.world_cap_defaults(world).await?;
+    let filtered = filter_command(state.repo.as_ref(), &cmd, &ctx, &world_defaults).await;
     Ok(Json(filtered))
 }
 

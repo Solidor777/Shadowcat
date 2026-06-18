@@ -160,19 +160,17 @@ pub async fn filter_command(
     repo: &dyn Repository,
     cmd: &Command,
     ctx: &PermissionContext,
+    world_defaults: &CapabilityGrants,
 ) -> Command {
-    // World default grants are part of read visibility too; an error loading them
-    // degrades to per-document resolution rather than failing redaction.
-    let world_defaults = repo
-        .world_cap_defaults(cmd.world_id)
-        .await
-        .unwrap_or_default();
+    // `world_defaults` is passed in (loaded once per connection / request) rather
+    // than fetched here: this runs per event per recipient on the egress hot
+    // path, and a per-event DB read contends with apply_intent on the
+    // single-writer pool.
     let mut out_ops = Vec::with_capacity(cmd.ops.len());
     for op in &cmd.ops {
         match op {
             Operation::Create { doc } => {
-                let access =
-                    resolve_access_world(ctx.user_id, ctx.world_role, doc, &world_defaults);
+                let access = resolve_access_world(ctx.user_id, ctx.world_role, doc, world_defaults);
                 if access.has(cap::READ) {
                     out_ops.push(Operation::Create {
                         doc: filter_properties(doc, &access),
@@ -181,8 +179,7 @@ pub async fn filter_command(
             }
             Operation::Delete { doc } => {
                 // A delete is visible to anyone who could read the document.
-                let access =
-                    resolve_access_world(ctx.user_id, ctx.world_role, doc, &world_defaults);
+                let access = resolve_access_world(ctx.user_id, ctx.world_role, doc, world_defaults);
                 if access.has(cap::READ) {
                     out_ops.push(Operation::Delete {
                         doc: filter_properties(doc, &access),
@@ -194,7 +191,7 @@ pub async fn filter_command(
                     continue;
                 };
                 let access =
-                    resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults);
+                    resolve_access_world(ctx.user_id, ctx.world_role, &cur, world_defaults);
                 if !access.has(cap::READ) {
                     continue;
                 }
@@ -450,7 +447,7 @@ mod tests {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let filtered = filter_command(&r, &cmd, &player).await;
+        let filtered = filter_command(&r, &cmd, &player, &CapabilityGrants::default()).await;
         assert_eq!(filtered.seq, 2);
         if let Operation::Update { changes, .. } = &filtered.ops[0] {
             assert_eq!(changes.len(), 1);
@@ -460,7 +457,7 @@ mod tests {
         }
 
         // GM sees both changes.
-        let gm_view = filter_command(&r, &cmd, &gm_ctx).await;
+        let gm_view = filter_command(&r, &cmd, &gm_ctx, &CapabilityGrants::default()).await;
         if let Operation::Update { changes, .. } = &gm_view.ops[0] {
             assert_eq!(changes.len(), 2);
         } else {
@@ -544,7 +541,7 @@ mod tests {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let filtered = filter_command(&r, &cmd, &player).await;
+        let filtered = filter_command(&r, &cmd, &player, &CapabilityGrants::default()).await;
         let Operation::Update { changes, .. } = &filtered.ops[0] else {
             panic!("expected Update");
         };
@@ -563,7 +560,7 @@ mod tests {
         assert_eq!(public.new, serde_json::json!(40));
 
         // The GM sees every change unredacted.
-        let gm_view = filter_command(&r, &cmd, &gm_ctx).await;
+        let gm_view = filter_command(&r, &cmd, &gm_ctx, &CapabilityGrants::default()).await;
         let Operation::Update { changes, .. } = &gm_view.ops[0] else {
             panic!("expected Update");
         };
