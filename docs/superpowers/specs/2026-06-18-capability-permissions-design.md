@@ -4,8 +4,11 @@
 > (core capabilities + per-document and per-world grants + path→capability
 > gating + world-defaults endpoints). Deferred follow-ups: world-level
 > `core:create` authorization (§7.1) and doc_type-scoped world defaults (§7.2)
-> — both logged in `POST_WORK_FINDINGS.md`. Phase 2 (module-defined
-> capabilities and action enforcement, §5) lands with the M6 module/hook layer.
+> — both logged in `POST_WORK_FINDINGS.md`. The roadmap beyond Phase 1 is
+> layered (§5): **Phase 2** = declarative, data-driven field-path capability
+> requirements + manifest declarations + client awareness (M6b, server stays
+> structural-only); **Phase 3** = opt-in sandboxed server-side validators for
+> computed game-rule enforcement (a separate later milestone, never the default).
 
 ## 1. Motivation
 
@@ -138,30 +141,38 @@ impl Access { pub fn has(&self, cap: &str) -> bool { ... } }
 Read paths check `access.has("core:read")`. `see_gm_only` continues to drive
 `filter_properties` / `filter_command`.
 
-## 5. Phase 2 — module-defined capabilities & actions (with M6)
+## 5. Beyond Phase 1 — the layered roadmap
 
-Designed now so Phase 1 storage is forward-compatible; **implemented with the
-M6 module/hook layer**, not in Phase 1.
+The long-term shape is layered so the server takes on **no untrusted code-
+execution risk** except where genuinely unavoidable, and even then contained.
 
-- **Declaration.** A system/module declares its capabilities in its manifest
-  (namespaced, e.g. `dnd5e:cast`). Declared capabilities are registered so the
-  permission UI can offer them; the server still treats them as opaque tokens.
-- **Action enforcement.** A module action decomposes into core ops. The server
-  cannot know "this Update is a cast" — so a custom capability is enforced as an
-  **additional** gate, never a replacement for core-op gating:
-  1. The intent may carry an optional `action` tag naming the module + required
-     capability.
-  2. The server verifies the actor holds that capability (possession check), AND
-  3. every underlying op still passes its `core:*` path/op capability check, so a
-     mislabeled or hostile intent can never exceed what core grants allow.
-  4. A registered **server-side module validation hook** (M6) may add semantic
-     checks/transforms within the authoritative path.
-- **Trust/sandboxing.** Running module-supplied validation server-side is an M6
-  security decision (sandboxing, resource bounds). Out of scope here; flagged as
-  the gating dependency for Phase 2.
+### Phase 2 — declarative, data-driven field-path requirements (M6b)
 
-Because the grant store already holds arbitrary capability strings, custom
-capabilities and their grants require **no schema migration** when Phase 2 lands.
+The Phase-1 path→capability map is **fixed** (`/system`→write_fields, etc.).
+Phase 2 generalizes it into a **data-driven** map that modules/worlds *declare*:
+a path prefix → the set of capabilities required to write it. Examples:
+`/system/vision` requires `dnd5e:gm_vision`; `/system/hp` requires
+`core:write_fields`. This stays **pure data the server enforces structurally**
+(no interpretation of the body's meaning), yet expresses the large majority of
+real module rules ("only the GM edits vision," "this stat is locked unless you
+hold X"). Modules also **declare** their namespaced capabilities in the manifest
+(for the permission UI / client awareness); the server still treats every
+capability as an opaque token. Built on the same grant store — **no migration**.
+
+Client-side (M6b): the client replicates capability resolution (it has each
+readable doc's permissions; `Welcome` additionally carries the world-default
+grants + the actor's role) to gate module UI/actions for UX. This is advisory
+only — the server remains authoritative via the declarative requirements.
+
+### Phase 3 — sandboxed server-side validators (separate later milestone)
+
+Computed game-rule enforcement ("deduct a slot only if the caster knows the
+spell") cannot be declarative — it needs the system's rules = module code. This
+is the **only** place server-side module execution earns its risk, and it is
+**opt-in, sandboxed** (deterministic, no I/O, resource-bounded; e.g. WASM /
+QuickJS), designed as its own security-critical milestone with its own threat
+model — **never the default path**. Not part of M6. The grant store already
+holds arbitrary capability strings, so Phase 3 needs no schema migration.
 
 ## 6. Compatibility & migration
 

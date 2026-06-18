@@ -4,3 +4,27 @@ import type { HealthStatus } from "@shadowcat/types";
 export function isHealthy(status: HealthStatus): boolean {
   return status.status === "ok" && status.db_connected;
 }
+
+export { DocumentStore, setPointer, applyOperation } from "./store";
+export type { Listener } from "./store";
+export { OptimisticClient } from "./optimistic";
+export { WsClient } from "./ws-client";
+export type { WsClientOptions, WsClientHandlers } from "./ws-client";
+export { webSocketConnect } from "./transport";
+export type { Transport, TransportHandlers, Connect } from "./transport";
+export {
+  parseServerMsg,
+  DocumentSchema,
+  CommandSchema,
+  OperationSchema,
+  ServerMsgSchema,
+} from "./wire";
+export type {
+  ServerMsg,
+  ClientMsg,
+  WireDocument,
+  WireCommand,
+  WireOperation,
+  WireFieldChange,
+  WireScope,
+} from "./wire";

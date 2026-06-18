@@ -38,12 +38,39 @@ Guiding rule: build what you cannot build on top of. Networking and permissions 
 - Stable UUID asset references (data-model property; the upload surface itself lands in M8).
 
 ### M6 · Headless core client
-- WS client (reconnect / backoff / sequence guard); the **single** Zod-validated client document store (built once here).
-- **Client-side optimistic-apply + rollback UX**, consuming the M2 reversible representation.
-- Versioned hook system (informational / mutating / cancellable); service registry + middleware.
-- Module manifest + loader (topo-sort, semver, hot-unload cleanup); local module registry.
-- Headless core packaged as a **Svelte-free TS module**; framework-neutral mount points; `Core.search` API (over FTS5). Module API explicitly 0.x.
-- No UI. Integration tests via the M4 test-server.
+Split into three sub-milestones (each brainstorm→spec→plan→execute). No UI;
+integration-tested via the M4/M5 test-server. Headless core is a **Svelte-free,
+framework-neutral TS module**; Module API explicitly 0.x.
+
+#### M6a · Client core foundation ✅
+- WS client (reconnect / backoff / client-side sequence guard) over the M5
+  `Intent`/`Event`/`Reject` protocol.
+- The **single** Zod-validated client document store (built once here).
+- **Client-side optimistic-apply + rollback**, consuming the M2 reversible
+  representation; resolves the M5-deferred intent correlation client-side
+  (`author` + seq FIFO).
+
+#### M6b · Modules + capabilities (declarative)
+- Versioned hook system (informational / mutating / cancellable); service
+  registry + middleware.
+- Module manifest + loader (topo-sort, semver, hot-unload cleanup); local
+  module registry.
+- **Capability Phase 2 = declarative, data-driven, field-path-scoped capability
+  requirements** declared by modules/worlds + manifest capability declarations +
+  client capability-awareness (`Welcome` carries world-default grants + the
+  actor's role so the client replicates resolution). Server stays
+  structural-only; no server-side module code.
+
+#### M6c · Search
+- Full FTS5: virtual table + write-time sync + a search protocol frame +
+  `Core.search`.
+
+> **Capability roadmap.** Phase 1 (M5 follow-up, done): core-op capabilities +
+> per-document/world grants. Phase 2 (M6b): declarative, data-driven field-path
+> capability requirements — server-authoritative, zero code-execution risk,
+> covers the large majority of module rules. Phase 3 (separate later milestone,
+> opt-in): **sandboxed** server-side validators for computed game-rule
+> enforcement — its own threat model; never the default path.
 
 ### M7 · Layout-lite + theming scaffold
 - Fixed panel layout; one dark theme via the 3-tier SCSS token system; i18n scaffold.
