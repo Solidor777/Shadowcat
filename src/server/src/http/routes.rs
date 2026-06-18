@@ -16,7 +16,7 @@ use crate::auth::setup::{create_admin, now_millis};
 use crate::data::command::{Command, FieldChange, Operation};
 use crate::data::document::{Document, Scope, World, WorldRole};
 use crate::data::membership::PermissionContext;
-use crate::data::permission::{filter_command, filter_properties, resolve_access};
+use crate::data::permission::{cap, filter_command, filter_properties, resolve_access};
 use crate::data::repository::Repository;
 use crate::health::HealthStatus;
 use crate::http::error::AppError;
@@ -312,7 +312,9 @@ pub async fn list_documents(
         .into_iter()
         .filter_map(|d| {
             let access = resolve_access(ctx.user_id, ctx.world_role, &d);
-            access.can_read.then(|| filter_properties(&d, access))
+            access
+                .has(cap::READ)
+                .then(|| filter_properties(&d, &access))
         })
         .collect();
     Ok(Json(visible))
@@ -334,10 +336,10 @@ pub async fn get_document(
         .permission_context(world, user.id, user.role)
         .await?;
     let access = resolve_access(ctx.user_id, ctx.world_role, &doc);
-    if !access.can_read {
+    if !access.has(cap::READ) {
         return Err(AppError::NotFound);
     }
-    Ok(Json(filter_properties(&doc, access)))
+    Ok(Json(filter_properties(&doc, &access)))
 }
 
 #[derive(Deserialize)]

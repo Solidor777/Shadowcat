@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use uuid::Uuid;
 
 use crate::data::command::{Command, FieldChange, Operation};
@@ -5,22 +7,74 @@ use crate::data::document::{DocRole, Document, Visibility, WorldRole};
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 
-/// Effective access for a (user, document) pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Built-in, server-understood capabilities. Modules may grant additional
+/// namespaced capabilities (`<ns>:<verb>`); the server treats those as opaque
+/// tokens and enforces only possession (Phase 2 gates custom actions).
+pub mod cap {
+    pub const READ: &str = "core:read";
+    pub const WRITE_FIELDS: &str = "core:write_fields";
+    pub const MANAGE_EMBEDDED: &str = "core:manage_embedded";
+    pub const DELETE: &str = "core:delete";
+    pub const EDIT_PERMISSIONS: &str = "core:edit_permissions";
+    pub const CREATE: &str = "core:create";
+}
+
+/// The capability required to write a document field at `path`, or `None` when
+/// the path targets an immutable envelope field (not patchable via `Update`).
+pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
+    if path == "/system" || path.starts_with("/system/") {
+        Some(cap::WRITE_FIELDS)
+    } else if path == "/embedded" || path.starts_with("/embedded/") {
+        Some(cap::MANAGE_EMBEDDED)
+    } else if path == "/permissions" || path.starts_with("/permissions/") {
+        Some(cap::EDIT_PERMISSIONS)
+    } else {
+        None
+    }
+}
+
+/// A user's effective capabilities on a document. `all` is the GM/admin
+/// short-circuit (holds every capability); `caps` is the resolved set for a
+/// non-GM. `see_gm_only` continues to drive property-level read redaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Access {
-    pub can_read: bool,
-    pub can_write: bool,
+    pub caps: BTreeSet<String>,
+    pub all: bool,
     pub see_gm_only: bool,
 }
 
-/// Resolve a user's effective access to a document. A world GM has full
-/// access including GM-only properties; otherwise the document's per-user
-/// role (falling back to its default role) decides.
+impl Access {
+    /// Whether the actor holds capability `c` (GM holds everything).
+    pub fn has(&self, c: &str) -> bool {
+        self.all || self.caps.contains(c)
+    }
+}
+
+/// The built-in capability floor for a `DocRole` (before additive grants).
+fn role_floor(role: DocRole) -> BTreeSet<String> {
+    let mut s = BTreeSet::new();
+    match role {
+        DocRole::Owner => {
+            s.insert(cap::READ.to_string());
+            s.insert(cap::WRITE_FIELDS.to_string());
+        }
+        DocRole::Observer => {
+            s.insert(cap::READ.to_string());
+        }
+        DocRole::None => {}
+    }
+    s
+}
+
+/// Resolve a user's effective capabilities on a document. A world GM (or server
+/// admin, which resolves to GM) holds every capability. Otherwise the actor's
+/// `DocRole` (per-user, else the document default) seeds a built-in floor that
+/// the document's additive grants (`by_role`, `by_user`) widen.
 pub fn resolve_access(user: Uuid, world_role: WorldRole, doc: &Document) -> Access {
     if world_role == WorldRole::Gm {
         return Access {
-            can_read: true,
-            can_write: true,
+            caps: BTreeSet::new(),
+            all: true,
             see_gm_only: true,
         };
     }
@@ -30,28 +84,23 @@ pub fn resolve_access(user: Uuid, world_role: WorldRole, doc: &Document) -> Acce
         .get(&user)
         .copied()
         .unwrap_or(doc.permissions.default);
-    match role {
-        DocRole::Owner => Access {
-            can_read: true,
-            can_write: true,
-            see_gm_only: false,
-        },
-        DocRole::Observer => Access {
-            can_read: true,
-            can_write: false,
-            see_gm_only: false,
-        },
-        DocRole::None => Access {
-            can_read: false,
-            can_write: false,
-            see_gm_only: false,
-        },
+    let mut caps = role_floor(role);
+    if let Some(extra) = doc.permissions.capabilities.by_role.get(&role) {
+        caps.extend(extra.iter().cloned());
+    }
+    if let Some(extra) = doc.permissions.capabilities.by_user.get(&user) {
+        caps.extend(extra.iter().cloned());
+    }
+    Access {
+        caps,
+        all: false,
+        see_gm_only: false,
     }
 }
 
 /// Produce the recipient's view of a document: when `access.see_gm_only` is
 /// false, strip every property whose override is `GmOnly`.
-pub fn filter_properties(doc: &Document, access: Access) -> Document {
+pub fn filter_properties(doc: &Document, access: &Access) -> Document {
     let mut out = doc.clone();
     if access.see_gm_only {
         return out;
@@ -88,18 +137,18 @@ pub async fn filter_command(
         match op {
             Operation::Create { doc } => {
                 let access = resolve_access(ctx.user_id, ctx.world_role, doc);
-                if access.can_read {
+                if access.has(cap::READ) {
                     out_ops.push(Operation::Create {
-                        doc: filter_properties(doc, access),
+                        doc: filter_properties(doc, &access),
                     });
                 }
             }
             Operation::Delete { doc } => {
                 // A delete is visible to anyone who could read the document.
                 let access = resolve_access(ctx.user_id, ctx.world_role, doc);
-                if access.can_read {
+                if access.has(cap::READ) {
                     out_ops.push(Operation::Delete {
-                        doc: filter_properties(doc, access),
+                        doc: filter_properties(doc, &access),
                     });
                 }
             }
@@ -108,7 +157,7 @@ pub async fn filter_command(
                     continue;
                 };
                 let access = resolve_access(ctx.user_id, ctx.world_role, &cur);
-                if !access.can_read {
+                if !access.has(cap::READ) {
                     continue;
                 }
                 let kept: Vec<FieldChange> = if access.see_gm_only {
@@ -224,33 +273,59 @@ mod tests {
     }
 
     #[test]
-    fn gm_sees_everything() {
+    fn gm_holds_every_capability() {
         let a = resolve_access(
             Uuid::from_u128(5),
             WorldRole::Gm,
             &doc(Default::default(), serde_json::json!({})),
         );
-        assert_eq!(
-            a,
-            Access {
-                can_read: true,
-                can_write: true,
-                see_gm_only: true
-            }
-        );
+        assert!(a.all && a.see_gm_only);
+        assert!(a.has(cap::WRITE_FIELDS) && a.has(cap::MANAGE_EMBEDDED) && a.has("dnd5e:anything"));
     }
 
     #[test]
-    fn owner_observer_none_resolve_correctly() {
+    fn floor_grants_by_role() {
         let mut perms = PermissionSet::default();
         perms.users.insert(Uuid::from_u128(1), DocRole::Owner);
         perms.users.insert(Uuid::from_u128(2), DocRole::Observer);
         let d = doc(perms, serde_json::json!({}));
-        assert!(resolve_access(Uuid::from_u128(1), WorldRole::Player, &d).can_write);
+        // Owner: read + write fields, but NOT manage embedded by default.
+        let owner = resolve_access(Uuid::from_u128(1), WorldRole::Player, &d);
+        assert!(owner.has(cap::READ) && owner.has(cap::WRITE_FIELDS));
+        assert!(!owner.has(cap::MANAGE_EMBEDDED) && !owner.has(cap::DELETE));
+        // Observer: read only.
         let obs = resolve_access(Uuid::from_u128(2), WorldRole::Player, &d);
-        assert!(obs.can_read && !obs.can_write);
+        assert!(obs.has(cap::READ) && !obs.has(cap::WRITE_FIELDS));
+        // Stranger falls to default (None): nothing.
         let other = resolve_access(Uuid::from_u128(3), WorldRole::Player, &d);
-        assert!(!other.can_read);
+        assert!(!other.has(cap::READ));
+    }
+
+    #[test]
+    fn additive_grants_widen_the_floor() {
+        use crate::data::document::CapabilityGrants;
+        let mut perms = PermissionSet::default();
+        perms.users.insert(Uuid::from_u128(1), DocRole::Owner);
+        let mut grants = CapabilityGrants::default();
+        // Grant Owners on this doc the ability to manage embedded documents.
+        grants
+            .by_role
+            .entry(DocRole::Owner)
+            .or_default()
+            .insert(cap::MANAGE_EMBEDDED.to_string());
+        // Grant a specific user a custom module capability.
+        grants
+            .by_user
+            .entry(Uuid::from_u128(1))
+            .or_default()
+            .insert("dnd5e:cast".to_string());
+        perms.capabilities = grants;
+        let d = doc(perms, serde_json::json!({}));
+        let a = resolve_access(Uuid::from_u128(1), WorldRole::Player, &d);
+        assert!(a.has(cap::WRITE_FIELDS)); // floor retained
+        assert!(a.has(cap::MANAGE_EMBEDDED)); // role grant
+        assert!(a.has("dnd5e:cast")); // user grant
+        assert!(!a.has(cap::DELETE)); // not granted
     }
 
     #[test]
@@ -265,13 +340,13 @@ mod tests {
         let d = doc(perms, serde_json::json!({ "secret": 42, "public": 1 }));
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d);
-        let view = filter_properties(&d, player);
+        let view = filter_properties(&d, &player);
         assert_eq!(view.system.get("secret"), None);
         assert_eq!(view.system["public"], serde_json::json!(1));
 
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d);
         assert_eq!(
-            filter_properties(&d, gm).system["secret"],
+            filter_properties(&d, &gm).system["secret"],
             serde_json::json!(42)
         );
     }

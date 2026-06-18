@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::auth::role::ServerRole;
 use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
 use crate::data::document::{Document, Scope, World, WorldRole};
-use crate::data::permission::resolve_access;
+use crate::data::permission::{cap, resolve_access};
 use crate::data::repository::Repository;
 use crate::data::validation;
 use crate::data::DataError;
@@ -494,7 +494,7 @@ impl Repository for SqliteRepository {
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
                     validation::validate_system_size(doc)?;
-                    if !resolve_access(ctx.user_id, ctx.world_role, doc).can_write {
+                    if !resolve_access(ctx.user_id, ctx.world_role, doc).has(cap::WRITE_FIELDS) {
                         return Err(DataError::Forbidden);
                     }
                     // Create is non-clobbering: an existing id is a conflict,
@@ -515,7 +515,7 @@ impl Repository for SqliteRepository {
                     // Authorize against the stored doc, scoped to this world, so
                     // a GM of one world cannot delete another world's document.
                     check_command_scope(&cur, world_id)?;
-                    if !resolve_access(ctx.user_id, ctx.world_role, &cur).can_write {
+                    if !resolve_access(ctx.user_id, ctx.world_role, &cur).has(cap::WRITE_FIELDS) {
                         return Err(DataError::Forbidden);
                     }
                 }
@@ -524,7 +524,7 @@ impl Repository for SqliteRepository {
                         .await?
                         .ok_or_else(|| DataError::Conflict(format!("document {doc_id} missing")))?;
                     check_command_scope(&cur, world_id)?;
-                    if !resolve_access(ctx.user_id, ctx.world_role, &cur).can_write {
+                    if !resolve_access(ctx.user_id, ctx.world_role, &cur).has(cap::WRITE_FIELDS) {
                         return Err(DataError::Forbidden);
                     }
                     // Field-level OCC: every change's pre-image must equal the
