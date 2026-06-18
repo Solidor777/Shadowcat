@@ -19,3 +19,15 @@ target
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# Debug Dumps folder
+/debug/dumps/
+
+# Node
+node_modules/
+
+# Client build output
+/dist/
+
+# TS incremental build info
+*.tsbuildinfo

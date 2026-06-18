@@ -1,0 +1,4 @@
+packages:
+  - "src/types"
+  - "src/client/*"
+  - "src/modules/*"
