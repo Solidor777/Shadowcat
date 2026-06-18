@@ -1,5 +1,6 @@
 pub mod command;
 pub mod document;
+pub mod membership;
 pub mod migrate;
 pub mod permission;
 pub mod repository;

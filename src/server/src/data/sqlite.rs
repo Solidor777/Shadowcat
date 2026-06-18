@@ -73,6 +73,79 @@ impl SqliteRepository {
         })
     }
 
+    /// Create a world and seat its creator as the first GM, atomically.
+    /// Reuses the `world_members` table from 0001 (column `role`, serde-encoded
+    /// WorldRole), matching the existing `add_member`/`member_role` methods.
+    pub async fn create_world_owned(
+        &self,
+        name: &str,
+        creator: Uuid,
+        now: i64,
+    ) -> Result<World, DataError> {
+        let mut tx = self.pool.begin().await?;
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO worlds (id, name, seq, created_at, updated_at) VALUES (?, ?, 0, ?, ?)")
+            .bind(id.to_string())
+            .bind(name)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO world_members (world_id, user_id, role) VALUES (?, ?, ?)")
+            .bind(id.to_string())
+            .bind(creator.to_string())
+            .bind(serde_json::to_value(WorldRole::Gm)?.as_str().unwrap().to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(World {
+            id,
+            name: name.to_string(),
+            seq: 0,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    /// Change an existing member's role; `NotFound` if they are not a member.
+    pub async fn set_role(&self, world: Uuid, user: Uuid, role: WorldRole) -> Result<(), DataError> {
+        let res = sqlx::query("UPDATE world_members SET role = ? WHERE world_id = ? AND user_id = ?")
+            .bind(serde_json::to_value(role)?.as_str().unwrap().to_string())
+            .bind(world.to_string())
+            .bind(user.to_string())
+            .execute(&self.pool)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(DataError::NotFound);
+        }
+        Ok(())
+    }
+
+    pub async fn remove_member(&self, world: Uuid, user: Uuid) -> Result<(), DataError> {
+        sqlx::query("DELETE FROM world_members WHERE world_id = ? AND user_id = ?")
+            .bind(world.to_string())
+            .bind(user.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, WorldRole)>, DataError> {
+        let rows = sqlx::query("SELECT user_id, role FROM world_members WHERE world_id = ?")
+            .bind(world.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|r| {
+                let uid = Uuid::parse_str(r.get::<String, _>("user_id").as_str())
+                    .map_err(|e| DataError::OpFailed(e.to_string()))?;
+                let role: WorldRole =
+                    serde_json::from_value(serde_json::Value::String(r.get::<String, _>("role")))?;
+                Ok((uid, role))
+            })
+            .collect()
+    }
+
     pub async fn create_user(
         &self,
         username: &str,
@@ -520,6 +593,29 @@ mod tests {
             r.member_role(w.id, Uuid::from_u128(123)).await.unwrap(),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn world_owned_seats_creator_as_gm() {
+        let r = repo().await;
+        let creator = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", creator, 0).await.unwrap();
+        assert_eq!(r.member_role(w.id, creator).await.unwrap(), Some(WorldRole::Gm));
+        assert_eq!(r.member_role(w.id, Uuid::from_u128(123)).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn set_remove_and_list_members() {
+        let r = repo().await;
+        let gm = r.create_user("gm2", None, ServerRole::User, 0).await.unwrap();
+        let p = r.create_user("p2", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, p, WorldRole::Player).await.unwrap();
+        r.set_role(w.id, p, WorldRole::Spectator).await.unwrap();
+        assert_eq!(r.member_role(w.id, p).await.unwrap(), Some(WorldRole::Spectator));
+        assert_eq!(r.list_members(w.id).await.unwrap().len(), 2);
+        r.remove_member(w.id, p).await.unwrap();
+        assert_eq!(r.member_role(w.id, p).await.unwrap(), None);
     }
 
     fn world_doc(id: u128, world: Uuid, system: serde_json::Value) -> Document {
