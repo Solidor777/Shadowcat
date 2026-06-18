@@ -1,8 +1,11 @@
+use async_trait::async_trait;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
-use crate::data::document::{World, WorldRole};
+use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
+use crate::data::document::{Document, Scope, World, WorldRole};
+use crate::data::repository::Repository;
 use crate::data::DataError;
 
 /// SQLite-backed storage. Holds a connection pool; migrations are embedded
@@ -127,11 +130,160 @@ impl SqliteRepository {
             None => Ok(None),
         }
     }
+
+    /// Upsert a document row from its envelope, stamping `seq`.
+    async fn upsert_document<'e, E>(executor: E, doc: &Document, seq: i64) -> Result<(), DataError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        let (scope_kind, world_id, pack) = match &doc.scope {
+            Scope::Compendium { pack } => ("compendium", None, Some(pack.clone())),
+            Scope::World { world_id } => ("world", Some(world_id.to_string()), None),
+        };
+        let (source_id, source_pack, source_version) = match &doc.source {
+            Some(s) => (
+                Some(s.id.to_string()),
+                s.pack.clone(),
+                Some(s.version as i64),
+            ),
+            None => (None, None, None),
+        };
+        let json = serde_json::to_string(doc)?;
+        sqlx::query(
+            "INSERT INTO documents (id, scope_kind, world_id, pack, doc_type, schema_version, \
+             source_id, source_pack, source_version, owner_id, seq, json, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET scope_kind=excluded.scope_kind, world_id=excluded.world_id, \
+             pack=excluded.pack, doc_type=excluded.doc_type, schema_version=excluded.schema_version, \
+             source_id=excluded.source_id, source_pack=excluded.source_pack, \
+             source_version=excluded.source_version, owner_id=excluded.owner_id, seq=excluded.seq, \
+             json=excluded.json, updated_at=excluded.updated_at",
+        )
+        .bind(doc.id.to_string())
+        .bind(scope_kind)
+        .bind(world_id)
+        .bind(pack)
+        .bind(&doc.doc_type)
+        .bind(doc.schema_version as i64)
+        .bind(source_id)
+        .bind(source_pack)
+        .bind(source_version)
+        .bind(doc.owner.map(|o| o.to_string()))
+        .bind(seq)
+        .bind(json)
+        .bind(doc.created_at)
+        .bind(doc.updated_at)
+        .execute(executor)
+        .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Repository for SqliteRepository {
+    async fn apply_command(&self, cmd: UnsequencedCommand) -> Result<Command, DataError> {
+        let mut tx = self.pool.begin().await?;
+
+        // Allocate the next per-world seq from the single durable source.
+        let seq: i64 = sqlx::query("UPDATE worlds SET seq = seq + 1 WHERE id = ? RETURNING seq")
+            .bind(cmd.world_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(DataError::NotFound)?
+            .get("seq");
+
+        let sequenced = Command {
+            seq,
+            world_id: cmd.world_id,
+            author: cmd.author,
+            ts: cmd.ts,
+            ops: cmd.ops,
+        };
+
+        // Apply each operation.
+        for op in &sequenced.ops {
+            match op {
+                Operation::Create { doc } => {
+                    Self::upsert_document(&mut *tx, doc, seq).await?;
+                }
+                Operation::Delete { doc } => {
+                    sqlx::query("DELETE FROM documents WHERE id = ?")
+                        .bind(doc.id.to_string())
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                Operation::Update { doc_id, changes } => {
+                    let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
+                        .bind(doc_id.to_string())
+                        .fetch_optional(&mut *tx)
+                        .await?
+                        .ok_or(DataError::NotFound)?;
+                    let mut value: serde_json::Value =
+                        serde_json::from_str(row.get::<String, _>("json").as_str())?;
+                    for ch in changes {
+                        set_pointer(&mut value, &ch.path, ch.new.clone())?;
+                    }
+                    let doc: Document = serde_json::from_value(value)?;
+                    Self::upsert_document(&mut *tx, &doc, seq).await?;
+                }
+            }
+        }
+
+        // Append to the log.
+        sqlx::query("INSERT INTO world_events (world_id, seq, author_id, ts, command_json) VALUES (?, ?, ?, ?, ?)")
+            .bind(sequenced.world_id.to_string())
+            .bind(seq)
+            .bind(sequenced.author.to_string())
+            .bind(sequenced.ts)
+            .bind(serde_json::to_string(&sequenced)?)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(sequenced)
+    }
+
+    async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DataError> {
+        let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        match row {
+            Some(r) => Ok(Some(serde_json::from_str(
+                r.get::<String, _>("json").as_str(),
+            )?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn query_documents(
+        &self,
+        _world_id: Uuid,
+        _doc_type: &str,
+    ) -> Result<Vec<Document>, DataError> {
+        // TODO: query documents by world and type.
+        unimplemented!("query_documents")
+    }
+
+    async fn documents_by_source(
+        &self,
+        _pack: Option<&str>,
+        _source_id: Uuid,
+    ) -> Result<Vec<Document>, DataError> {
+        // TODO: query documents by provenance source.
+        unimplemented!("documents_by_source")
+    }
+
+    async fn events_since(&self, _world_id: Uuid, _seq: i64) -> Result<Vec<Command>, DataError> {
+        // TODO: replay the command log from a seq cursor.
+        unimplemented!("events_since")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::command::FieldChange;
 
     async fn repo() -> SqliteRepository {
         SqliteRepository::connect("sqlite::memory:").await.unwrap()
@@ -157,5 +309,137 @@ mod tests {
             r.member_role(w.id, Uuid::from_u128(123)).await.unwrap(),
             None
         );
+    }
+
+    fn world_doc(id: u128, world: Uuid, system: serde_json::Value) -> Document {
+        Document {
+            id: Uuid::from_u128(id),
+            scope: Scope::World { world_id: world },
+            doc_type: "actor".into(),
+            schema_version: 1,
+            source: None,
+            owner: None,
+            permissions: Default::default(),
+            embedded: Default::default(),
+            system,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_update_delete_round_trip_via_invert() {
+        let r = repo().await;
+        let w = r.create_world("W", 0).await.unwrap();
+        let author = r.create_user("author", "user", 0).await.unwrap();
+
+        // Create
+        let create = UnsequencedCommand {
+            world_id: w.id,
+            author,
+            ts: 1,
+            ops: vec![Operation::Create {
+                doc: world_doc(1, w.id, serde_json::json!({ "hp": 10 })),
+            }],
+        };
+        let c1 = r.apply_command(create.clone()).await.unwrap();
+        assert_eq!(c1.seq, 1);
+        assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_some());
+
+        // Update
+        let update = UnsequencedCommand {
+            world_id: w.id,
+            author,
+            ts: 2,
+            ops: vec![Operation::Update {
+                doc_id: Uuid::from_u128(1),
+                changes: vec![FieldChange {
+                    path: "/system/hp".into(),
+                    old: serde_json::json!(10),
+                    new: serde_json::json!(3),
+                }],
+            }],
+        };
+        let c2 = r.apply_command(update.clone()).await.unwrap();
+        assert_eq!(c2.seq, 2);
+        assert_eq!(
+            r.get_document(Uuid::from_u128(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .system["hp"],
+            serde_json::json!(3)
+        );
+
+        // Invert the update — hp returns to 10
+        r.apply_command(c2.invert()).await.unwrap();
+        assert_eq!(
+            r.get_document(Uuid::from_u128(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .system["hp"],
+            serde_json::json!(10)
+        );
+
+        // Invert the create — document gone
+        r.apply_command(c1.invert()).await.unwrap();
+        assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_command_on_unknown_world_fails_and_writes_nothing() {
+        let r = repo().await;
+        let author = r.create_user("author", "user", 0).await.unwrap();
+        let cmd = UnsequencedCommand {
+            world_id: Uuid::from_u128(999),
+            author,
+            ts: 1,
+            ops: vec![Operation::Create {
+                doc: world_doc(1, Uuid::from_u128(999), serde_json::json!({})),
+            }],
+        };
+        assert!(r.apply_command(cmd).await.is_err());
+        assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn seq_is_durable_across_reconnect() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m2.db");
+        let url = format!("sqlite://{}?mode=rwc", path.to_string_lossy());
+
+        let world_id;
+        let author;
+        {
+            let r = SqliteRepository::connect(&url).await.unwrap();
+            let w = r.create_world("W", 0).await.unwrap();
+            world_id = w.id;
+            author = r.create_user("author", "user", 0).await.unwrap();
+            r.apply_command(UnsequencedCommand {
+                world_id,
+                author,
+                ts: 1,
+                ops: vec![Operation::Create {
+                    doc: world_doc(1, world_id, serde_json::json!({})),
+                }],
+            })
+            .await
+            .unwrap();
+        }
+        // Reconnect: seq must continue from 2, not restart at 1.
+        let r = SqliteRepository::connect(&url).await.unwrap();
+        let c = r
+            .apply_command(UnsequencedCommand {
+                world_id,
+                author,
+                ts: 2,
+                ops: vec![Operation::Create {
+                    doc: world_doc(2, world_id, serde_json::json!({})),
+                }],
+            })
+            .await
+            .unwrap();
+        assert_eq!(c.seq, 2);
     }
 }

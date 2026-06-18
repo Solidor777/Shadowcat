@@ -2,6 +2,7 @@ pub mod command;
 pub mod document;
 pub mod migrate;
 pub mod permission;
+pub mod repository;
 pub mod sqlite;
 pub mod validation;
 
