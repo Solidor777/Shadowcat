@@ -31,3 +31,6 @@ node_modules/
 
 # TS incremental build info
 *.tsbuildinfo
+
+# Personal local Claude Code settings (permission allowlist, etc.)
+.claude/settings.local.json
