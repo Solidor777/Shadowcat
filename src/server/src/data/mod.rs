@@ -1,6 +1,7 @@
 pub mod command;
 pub mod document;
 pub mod migrate;
+pub mod permission;
 pub mod validation;
 
 use thiserror::Error;
