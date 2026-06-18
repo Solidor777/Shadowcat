@@ -13,7 +13,7 @@ The compiled client bundle is **embedded into the server binary** (`rust-embed`)
 
 Build-time toolchains never ship: Cargo builds the server, pnpm + Vite build the client, the result is one binary. A JavaScript package manager (pnpm) is a build-time dependency of the same class as Cargo — it produces static assets and is absent from the runtime.
 
-Source resides under `src/`: `src/server/` (Rust workspace), `src/client/{core,ui}/` (headless core + Svelte default UI), `src/modules/` (first-party default modules), `src/types/` (generated TS types). Build output goes to `dist/`.
+Source resides under `src/`: `src/server/` (Rust workspace), `src/client/{core,ui}/` (headless core + Svelte default UI), `src/modules/` (first-party default modules), `src/types/` (generated TS types). Build output goes to `dist/`. Binary assets shipped with the app (e.g., the icon) live in `assets/` at the repo root, outside `src/`.
 
 ## 2. Invariants
 

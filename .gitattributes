@@ -1,0 +1,7 @@
+# Generated TS bindings must stay LF so the CI ts-rs sync check
+# (cargo test regenerates LF on Linux) matches the committed file on every
+# platform, regardless of a contributor's core.autocrlf setting.
+src/types/generated/** text eol=lf
+
+# Binary assets — never normalize line endings.
+*.png binary
