@@ -364,18 +364,31 @@ async fn converges_with_publishing_during_resync() {
     let world = h.world;
     let publisher = tokio::spawn(async move {
         for n in 0..300 {
-            if pubc.send(create_intent(world, n)).await.is_err() {
-                break;
-            }
+            pubc.send(create_intent(world, n)).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
+        // Return the socket so it is NOT dropped here. Dropping a tungstenite
+        // stream tears the TCP connection down abruptly, which can RST away
+        // frames the slow server has not read yet — silently losing the tail of
+        // the publish. The caller keeps it open until the server has applied all.
+        pubc
     });
 
     // Let a backlog build on the unread `slow` connection, then drain while the
     // publisher keeps going.
     tokio::time::sleep(std::time::Duration::from_millis(40)).await;
     let seqs = drain_until_seq(&mut slow, 300).await;
-    publisher.await.unwrap();
+
+    // Keep the publisher socket open past its last send, then wait until the
+    // server has durably applied every published intent (the single-writer pool
+    // may still be draining the ingress backlog on a slow runner).
+    let _pubc = publisher.await.unwrap();
+    for _ in 0..150 {
+        if h.authoritative_seqs().await.last().copied() == Some(300) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 
     // The watermark invariant under test: events published while a resync replay
     // is in flight are never DROPPED. A drop would punch a gap into the delivered
