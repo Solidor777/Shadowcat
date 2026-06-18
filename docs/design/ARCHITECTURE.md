@@ -13,6 +13,8 @@ The compiled client bundle is **embedded into the server binary** (`rust-embed`)
 
 Build-time toolchains never ship: Cargo builds the server, pnpm + Vite build the client, the result is one binary. A JavaScript package manager (pnpm) is a build-time dependency of the same class as Cargo — it produces static assets and is absent from the runtime.
 
+Source resides under `src/`: `src/server/` (Rust workspace), `src/client/{core,ui}/` (headless core + Svelte default UI), `src/modules/` (first-party default modules), `src/types/` (generated TS types). Build output goes to `dist/`.
+
 ## 2. Invariants
 
 These hold across every subsystem. Violating one is an architectural defect, not a tradeoff.
@@ -37,7 +39,7 @@ These hold across every subsystem. Violating one is an architectural defect, not
 | DB access | sqlx (sqlite feature) | Apache-2.0/MIT | Vendor | Compile-time-checked queries; keeps the Postgres door open behind the trait. `rusqlite` is the fallback if sqlx maintenance degrades. |
 | Realtime protocol | custom event bus | — | Roll | Sequence numbers, per-world rooms, intent/confirm — domain logic. |
 | Scene simulation | hecs 0.11 + custom exec/persistence | MIT/Apache | Vendor + Roll | hecs for storage/queries (compositional fit for token emitters); the async execution and document↔ECS boundary are ours. |
-| Auth | argon2 + tower-sessions | MIT/Apache | Vendor | Password hashing; DB-backed sessions; server / GM / player / spectator + document observer roles. |
+| Auth | argon2 + tower-sessions | MIT/Apache | Vendor | Password hashing; DB-backed sessions; admin-provisioned accounts (no self-registration/email in v1); server / GM / player / spectator + document observer roles. |
 | Permissions | custom `PermissionContext` | — | Roll | Per-recipient broadcast filtering + property-level stripping is domain-specific. |
 | Validation / types | Zod v4 (`zod/mini`), ts-rs 12, Serde `deny_unknown_fields` | MIT/Apache | Vendor | Client-side schema validation; Rust→TS type generation; unknown fields rejected at both ends. |
 | Dice | custom TS engine | — | Roll | Core mechanic; full control over notation, hooks, broadcast. |
@@ -95,8 +97,8 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 
 Rendering and visibility techniques (raycast visibility polygons, fog of war, illumination) are implemented from **public sources only** — computational-geometry literature and public technique descriptions. No proprietary VTT or game-engine source is ingested, and no proprietary engine/product names appear in code. Public *documentation* and observable behavior of existing tools may inform the data and authority model; their source code may not.
 
-## 8. Open items (require confirmation before settled)
+## 8. Settled & open items
 
-- **Monorepo layout & source-dir naming.** `CLAUDE.md` states source resides in `src/`; the repo currently has an empty `source/`. A Rust + JS monorepo needs a server/client split. Proposed (pending consent): `server/`, `client/{core,ui}/`, `modules/`, `types/`, `docs/`. Confirm the root layout and resolve `src/` vs `source/`. **`PLAN.md` M1's monorepo deliverable is gated on this resolution** — the two docs must not assert a layout this item marks unsettled; update `CLAUDE.md` if the split is accepted.
-- **Account model.** v1 assumption: self-hosted, admin-creates-users, no email / password-reset flow. Confirm.
+**Settled:** source layout is under `src/` (see §1); v1 accounts are admin-provisioned, no self-registration/email (see §3). The empty `source/` directory is renamed to `src/` at M1.
+
 - **Per-milestone feature boundaries** are finalized in implementation plans, not here.

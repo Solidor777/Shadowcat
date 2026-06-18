@@ -7,7 +7,7 @@ Guiding rule: build what you cannot build on top of. Networking and permissions 
 ## Phase 1 — MVP (→ dogfood alpha)
 
 ### M1 · Project infrastructure
-- Monorepo workspace (Cargo + pnpm); Vite. **Root layout is gated on the `ARCHITECTURE.md` §8 open item (`src/` vs a `server/client/modules/types` split) — resolve and record consent, updating `CLAUDE.md` if the split is accepted, before this milestone begins.**
+- Monorepo workspace under `src/` (`src/server/` Rust, `src/client/{core,ui}/`, `src/modules/`, `src/types/`); build output in `dist/`. Cargo + pnpm workspaces; Vite. Rename the empty `source/` dir to `src/`.
 - CI: Rust tests, TS typecheck, lint, cargo-bloat budget.
 - ts-rs type pipeline (Rust→TS), CI-enforced sync.
 - SQLite-only data target. Release `opt-level="z"`.
@@ -95,4 +95,4 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
 - Backups: a basic backup + snapshot-restore deliverable (M12.5) satisfies the dogfood gate; Phase 4 adds scheduling / automation.
 - Rate limiting on WS / upload: introduced with the surfaces it protects, not only at hardening.
 - Error UX (disconnect, rejected optimistic op, failed upload): owned by M5 / M6 client work.
-- Account model: self-host admin-creates-users (confirm — `ARCHITECTURE.md` §8).
+- Account model: self-host, admin-provisioned accounts (no self-registration / email in v1).
