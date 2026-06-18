@@ -21,6 +21,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub setup_token: Option<String>,
     pub initialized: Arc<AtomicBool>,
+    pub ws: crate::ws::WsState,
 }
 
 impl AppState {
@@ -57,6 +58,8 @@ pub async fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(routes::health))
+        .route("/ws", get(crate::ws::conn::ws_handler))
+        .route("/api/debug/rooms", get(routes::debug_rooms))
         .route("/api/me", get(routes::me))
         .route("/api/login", axum::routing::post(routes::login))
         .route("/api/logout", axum::routing::post(routes::logout))
@@ -91,6 +94,7 @@ pub(crate) mod tests {
             config: Arc::new(Config::default()),
             setup_token: None,
             initialized: Arc::new(AtomicBool::new(false)),
+            ws: crate::ws::WsState::new(),
         }
     }
 
@@ -323,5 +327,18 @@ pub(crate) mod tests {
         let body: crate::health::HealthStatus = res.json();
         assert_eq!(body.status, "ok");
         assert!(body.db_connected);
+    }
+
+    #[tokio::test]
+    async fn debug_rooms_requires_admin() {
+        let server = server_with_user("u", "pw", ServerRole::User).await;
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({"username":"u","password":"pw"}))
+            .await;
+        server
+            .get("/api/debug/rooms")
+            .await
+            .assert_status(axum::http::StatusCode::FORBIDDEN);
     }
 }
