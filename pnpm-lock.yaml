@@ -42,6 +42,12 @@ importers:
         specifier: workspace:*
         version: link:../../types
 
+  src/client/ui:
+    dependencies:
+      '@shadowcat/core':
+        specifier: workspace:*
+        version: link:../core
+
   src/types: {}
 
 packages:
