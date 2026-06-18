@@ -19,6 +19,8 @@ impl SqliteRepository {
     /// and run migrations. Foreign keys are enabled per connection.
     pub async fn connect(url: &str) -> Result<Self, DataError> {
         let pool = SqlitePoolOptions::new()
+            // Single writer connection serializes apply_command transactions,
+            // avoiding SQLITE_BUSY contention on the per-world seq allocation.
             .max_connections(1)
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
@@ -179,6 +181,18 @@ impl SqliteRepository {
     }
 }
 
+/// A world-sequenced command may only carry documents scoped to its own world.
+/// A foreign scope would file the row outside this world's seq stream, making it
+/// unreachable by `events_since` for either world and breaking replay scoping.
+fn check_command_scope(doc: &Document, world_id: Uuid) -> Result<(), DataError> {
+    match &doc.scope {
+        Scope::World { world_id: w } if *w == world_id => Ok(()),
+        _ => Err(DataError::OpFailed(
+            "document scope does not match the command's world".into(),
+        )),
+    }
+}
+
 #[async_trait]
 impl Repository for SqliteRepository {
     async fn apply_command(&self, cmd: UnsequencedCommand) -> Result<Command, DataError> {
@@ -204,6 +218,7 @@ impl Repository for SqliteRepository {
         for op in &sequenced.ops {
             match op {
                 Operation::Create { doc } => {
+                    check_command_scope(doc, sequenced.world_id)?;
                     Self::upsert_document(&mut *tx, doc, seq).await?;
                 }
                 Operation::Delete { doc } => {
@@ -223,7 +238,18 @@ impl Repository for SqliteRepository {
                     for ch in changes {
                         set_pointer(&mut value, &ch.path, ch.new.clone())?;
                     }
-                    let doc: Document = serde_json::from_value(value)?;
+                    let mut doc: Document = serde_json::from_value(value)?;
+                    // Identity and world scope are immutable through an update:
+                    // changing id forks a duplicate row (load key != upsert key);
+                    // changing world files the row outside this world's seq stream.
+                    if doc.id != *doc_id {
+                        return Err(DataError::OpFailed(
+                            "update must not change the document id".into(),
+                        ));
+                    }
+                    check_command_scope(&doc, sequenced.world_id)?;
+                    // updated_at tracks last mutation; the command ts is authoritative.
+                    doc.updated_at = sequenced.ts;
                     Self::upsert_document(&mut *tx, &doc, seq).await?;
                 }
             }
@@ -441,5 +467,102 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(c.seq, 2);
+    }
+
+    #[tokio::test]
+    async fn create_with_foreign_world_scope_is_rejected() {
+        let r = repo().await;
+        let w = r.create_world("W", 0).await.unwrap();
+        let author = r.create_user("author", "user", 0).await.unwrap();
+        // Document scoped to a different world than the command sequences under.
+        let cmd = UnsequencedCommand {
+            world_id: w.id,
+            author,
+            ts: 1,
+            ops: vec![Operation::Create {
+                doc: world_doc(1, Uuid::from_u128(777), serde_json::json!({})),
+            }],
+        };
+        assert!(r.apply_command(cmd).await.is_err());
+        assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn update_cannot_change_document_id() {
+        let r = repo().await;
+        let w = r.create_world("W", 0).await.unwrap();
+        let author = r.create_user("author", "user", 0).await.unwrap();
+        r.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author,
+            ts: 1,
+            ops: vec![Operation::Create {
+                doc: world_doc(1, w.id, serde_json::json!({})),
+            }],
+        })
+        .await
+        .unwrap();
+
+        // An update whose pointer rewrites the envelope id is rejected before
+        // any write, so no forked duplicate row appears.
+        let bad = UnsequencedCommand {
+            world_id: w.id,
+            author,
+            ts: 2,
+            ops: vec![Operation::Update {
+                doc_id: Uuid::from_u128(1),
+                changes: vec![FieldChange {
+                    path: "/id".into(),
+                    old: serde_json::json!(Uuid::from_u128(1)),
+                    new: serde_json::json!(Uuid::from_u128(2)),
+                }],
+            }],
+        };
+        assert!(r.apply_command(bad).await.is_err());
+        assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_some());
+        assert!(r.get_document(Uuid::from_u128(2)).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn update_stamps_updated_at_from_command_ts() {
+        let r = repo().await;
+        let w = r.create_world("W", 0).await.unwrap();
+        let author = r.create_user("author", "user", 0).await.unwrap();
+        // world_doc sets updated_at = 0.
+        r.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author,
+            ts: 1,
+            ops: vec![Operation::Create {
+                doc: world_doc(1, w.id, serde_json::json!({ "hp": 1 })),
+            }],
+        })
+        .await
+        .unwrap();
+
+        r.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author,
+            ts: 42,
+            ops: vec![Operation::Update {
+                doc_id: Uuid::from_u128(1),
+                changes: vec![FieldChange {
+                    path: "/system/hp".into(),
+                    old: serde_json::json!(1),
+                    new: serde_json::json!(2),
+                }],
+            }],
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            r.get_document(Uuid::from_u128(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .updated_at,
+            42
+        );
     }
 }
