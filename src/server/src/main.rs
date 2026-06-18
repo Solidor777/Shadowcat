@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
         initialized: Arc::new(AtomicBool::new(initialized)),
     };
 
-    let app = http::router(state);
+    let app = http::router(state).await;
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
     tracing::info!(bind = %config.bind, "shadowcat listening");
     axum::serve(listener, app).await?;
