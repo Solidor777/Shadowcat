@@ -2,3 +2,9 @@
 name = "shadowcat"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+serde = { version = "1", features = ["derive"] }
+ts-rs = "12"
