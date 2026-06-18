@@ -31,7 +31,7 @@ Guiding rule: build what you cannot build on top of. Networking and permissions 
 - Server time source + client offset calibration (ahead of need).
 - Observability + desync telemetry; spawnable test-server binary; desync-convergence test harness — the project's highest-value test.
 
-### M5 · Document CRUD + permissions + server-side rollback
+### M5 · Document CRUD + permissions + server-side rollback 🚧 *(implemented on `m5-document-crud-permissions`; final review + merge pending)*
 - CRUD over HTTP + WS; `PermissionContext` (per-recipient filtering, property-level stripping).
 - Field-path updates + field-level merge; **server-side intent/confirm + rollback-to-authoritative** (the client-side optimistic-apply + rollback UX lands in M6 with the WS client and document store).
 - Compendium / world / embedded copy independence.
