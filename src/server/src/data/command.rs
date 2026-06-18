@@ -97,10 +97,16 @@ impl Command {
 /// Set `new` at JSON-pointer `pointer` in `root`, creating intermediate
 /// objects as needed. Existing array indices may be replaced; array growth
 /// and `-` append are out of scope (handled by the deferred merge engine).
+/// A non-empty pointer must begin with `/` (RFC 6901) or it is rejected as
+/// `BadPath`; empty path tokens (from a trailing slash) and `-` are treated
+/// as literal object keys.
 pub fn set_pointer(root: &mut Value, pointer: &str, new: Value) -> Result<(), DataError> {
     if pointer.is_empty() {
         *root = new;
         return Ok(());
+    }
+    if !pointer.starts_with('/') {
+        return Err(DataError::BadPath(pointer.to_string()));
     }
     let tokens: Vec<String> = pointer
         .split('/')
@@ -250,5 +256,90 @@ mod tests {
         let mut v = serde_json::json!({ "hp": 10 });
         let err = set_pointer(&mut v, "/hp/value", serde_json::json!(1));
         assert!(matches!(err, Err(DataError::BadPath(_))));
+    }
+
+    #[test]
+    fn set_pointer_rejects_missing_leading_slash() {
+        // A pointer without a leading "/" must error, not silently write the
+        // wrong field (e.g. "system/hp" must not land on top-level "hp").
+        let mut v = serde_json::json!({ "system": { "hp": 10 } });
+        assert!(matches!(
+            set_pointer(&mut v, "system/hp", serde_json::json!(5)),
+            Err(DataError::BadPath(_))
+        ));
+        assert!(matches!(
+            set_pointer(&mut v, "foo", serde_json::json!(5)),
+            Err(DataError::BadPath(_))
+        ));
+        assert_eq!(v, serde_json::json!({ "system": { "hp": 10 } }));
+    }
+
+    #[test]
+    fn command_round_trips_through_json() {
+        use crate::data::document::{DocRole, PermissionSet, Scope, Source, Visibility};
+
+        let mut perms = PermissionSet::default();
+        perms.default = DocRole::Observer;
+        perms.users.insert(Uuid::from_u128(5), DocRole::Owner);
+        perms
+            .property_overrides
+            .insert("/system/secret".into(), Visibility::GmOnly);
+
+        let mut embedded = std::collections::BTreeMap::new();
+        embedded.insert("items".to_string(), vec![doc(2)]);
+
+        let rich = Document {
+            id: Uuid::from_u128(1),
+            scope: Scope::World {
+                world_id: Uuid::from_u128(9),
+            },
+            doc_type: "actor".into(),
+            schema_version: 1,
+            source: Some(Source {
+                id: Uuid::from_u128(3),
+                pack: Some("dnd5e".into()),
+                version: 2,
+            }),
+            owner: Some(Uuid::from_u128(5)),
+            permissions: perms,
+            embedded,
+            system: serde_json::json!({ "hp": { "value": 10, "max": 12 }, "tags": ["a", "b"] }),
+            created_at: 1,
+            updated_at: 2,
+        };
+
+        let cmd = Command {
+            seq: 7,
+            world_id: Uuid::from_u128(9),
+            author: Uuid::from_u128(5),
+            ts: 100,
+            ops: vec![
+                Operation::Create { doc: rich },
+                Operation::Delete { doc: doc(4) },
+                Operation::Update {
+                    doc_id: Uuid::from_u128(1),
+                    changes: vec![
+                        FieldChange {
+                            path: "/system/hp/value".into(),
+                            old: serde_json::json!(10),
+                            new: serde_json::json!(3),
+                        },
+                        FieldChange {
+                            path: "/name".into(),
+                            old: serde_json::json!(null),
+                            new: serde_json::json!("Gandalf"),
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let s = serde_json::to_string(&cmd).unwrap();
+        assert!(
+            s.contains("\"op\":\"create\""),
+            "internally-tagged discriminator present"
+        );
+        let back: Command = serde_json::from_str(&s).unwrap();
+        assert_eq!(cmd, back);
     }
 }
