@@ -532,6 +532,13 @@ impl Repository for SqliteRepository {
                     let whole = serde_json::to_value(&cur)?;
                     for ch in changes {
                         validation::validate_field_path(&ch.path)?;
+                        // Updates may only touch the opaque `system` body. The
+                        // envelope (permissions, owner, scope, id, source, ...)
+                        // is not patchable, so document write access cannot be
+                        // escalated into ACL/visibility rewrites.
+                        if ch.path != "/system" && !ch.path.starts_with("/system/") {
+                            return Err(DataError::Forbidden);
+                        }
                         let actual = whole
                             .pointer(&ch.path)
                             .cloned()
@@ -544,6 +551,26 @@ impl Repository for SqliteRepository {
                         }
                     }
                 }
+            }
+        }
+
+        // Substitute the authoritative stored document into each Delete op: the
+        // client supplies only the id to delete, so the broadcast and the
+        // world_events log must carry server state, never the client body
+        // (whose forged permissions would otherwise drive per-recipient
+        // redaction and persist into the authoritative event log).
+        let mut authoritative_ops = Vec::with_capacity(ops.len());
+        for op in ops {
+            match op {
+                Operation::Delete { doc } => {
+                    let cur = Self::load_document(&mut *tx, doc.id)
+                        .await?
+                        .ok_or_else(|| {
+                            DataError::Conflict(format!("document {} missing", doc.id))
+                        })?;
+                    authoritative_ops.push(Operation::Delete { doc: cur });
+                }
+                other => authoritative_ops.push(other),
             }
         }
 
@@ -561,7 +588,7 @@ impl Repository for SqliteRepository {
             world_id,
             author: ctx.user_id,
             ts,
-            ops,
+            ops: authoritative_ops,
         };
 
         for op in &sequenced.ops {
@@ -1336,5 +1363,95 @@ mod tests {
             .apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: big }], 3)
             .await;
         assert!(matches!(too_large, Err(DataError::TooLarge(_))));
+    }
+
+    #[tokio::test]
+    async fn apply_intent_rejects_envelope_patch() {
+        use crate::data::document::DocRole;
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let doc = world_doc(1, w.id, serde_json::json!({ "hp": 1 }));
+        r.apply_intent(&ctx, w.id, vec![Operation::Create { doc: doc.clone() }], 1)
+            .await
+            .unwrap();
+        // Patching the ACL via a field path is refused even for a GM — only the
+        // /system body is patchable, so write access can't escalate to ACL edits.
+        let res = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id: doc.id,
+                    changes: vec![FieldChange {
+                        path: "/permissions/default".into(),
+                        old: serde_json::json!("none"),
+                        new: serde_json::json!("owner"),
+                    }],
+                }],
+                2,
+            )
+            .await;
+        assert!(matches!(res, Err(DataError::Forbidden)));
+        // The envelope is untouched (and the rejected intent consumed no seq).
+        assert_eq!(
+            r.get_document(doc.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .permissions
+                .default,
+            DocRole::None
+        );
+        assert_eq!(r.get_world(w.id).await.unwrap().unwrap().seq, 1);
+    }
+
+    #[tokio::test]
+    async fn apply_intent_delete_broadcasts_stored_doc_not_client_body() {
+        use crate::data::document::{DocRole, PermissionSet};
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        // Stored doc is GM-only with a real secret.
+        let mut stored = world_doc(1, w.id, serde_json::json!({ "secret": 1 }));
+        stored.permissions = PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        };
+        r.apply_intent(&ctx, w.id, vec![Operation::Create { doc: stored }], 1)
+            .await
+            .unwrap();
+        // A Delete carrying a forged body (same id, permissive perms, bogus
+        // system) must not drive the broadcast — the stored doc wins.
+        let mut forged = world_doc(1, w.id, serde_json::json!({ "secret": 999 }));
+        forged.permissions = PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        };
+        let cmd = r
+            .apply_intent(&ctx, w.id, vec![Operation::Delete { doc: forged }], 2)
+            .await
+            .unwrap();
+        let Operation::Delete { doc } = &cmd.ops[0] else {
+            panic!("expected Delete");
+        };
+        assert_eq!(doc.permissions.default, DocRole::None);
+        assert_eq!(doc.system["secret"], serde_json::json!(1));
     }
 }
