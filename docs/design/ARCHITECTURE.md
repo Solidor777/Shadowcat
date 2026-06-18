@@ -19,12 +19,12 @@ These hold across every subsystem. Violating one is an architectural defect, not
 
 1. **Server-authoritative state.** The client sends *intents*; the server validates, applies, and broadcasts. No client is trusted for state, visibility, or permissions.
 2. **Ordered, recoverable realtime.** Every broadcast carries a per-world monotonic sequence number from an atomic counter. Clients detect gaps and resync from a time-bounded event buffer, or a full snapshot. A server time source + client offset calibration exists in the networking layer before it has a consumer, so later wall-clock sync (audio, combat) is not a retrofit.
-3. **Optimistic with rollback.** Clients may apply an intent locally for responsiveness, tagged with an intent id; the server's confirmation reconciles, and divergence rolls back to authoritative state.
-4. **Permissions enforced server-side, per recipient.** One `PermissionContext` per connection gates reads/writes and filters every broadcast individually — hidden fields are stripped before transmission, never sent-then-hidden.
+3. **Optimistic with rollback.** Clients may apply an intent locally for responsiveness, tagged with an intent id; the server's confirmation reconciles, and divergence rolls back to authoritative state. Vision recomputation is exempt in v1 — it is server-authoritative without client prediction by design (see `PLAN.md` M9).
+4. **Permissions enforced server-side, per recipient.** One `PermissionContext` per connection gates reads/writes and filters every broadcast individually — hidden fields are stripped before transmission, never sent-then-hidden. The role model spans server roles (admin), world roles (GM / player / spectator), and document roles (owner / observer / none).
 5. **Documents are the source of truth; runtime state is derived.** Persistent data is a typed envelope plus an opaque, system-defined `system` body. Scene/runtime state (ECS) is hydrated from documents and is ephemeral.
-6. **Module and system logic runs on the client, GM-authoritative.** The server is relay + persistence + structural validation; it runs no third-party code in v1. This preserves the single-binary story and matches the cooperative-play trust model (install-time trust: only a GM activates modules).
-7. **The public module API is framework-neutral.** UI extension is via DOM / web-component mount points; logic via plain-TS hooks and services. The Svelte core never leaks into the public surface — modders use any framework.
-8. **Mutations flow through an undoable boundary.** Document and ECS mutations are expressed as discrete, reversible operations (command/event records) from the start. No undo UI ships in v1, but the boundary supports undo without a later rewrite.
+6. **Module and system logic runs on the client, GM-authoritative.** The server is relay + persistence + structural validation; it runs no third-party code in v1. The server's authority over module-computed state and the `system` body is **structural only** — size caps, field-path validity, `deny_unknown_fields`, and permissions; it performs **no semantic/mechanical validation** of system-defined content. GM-originated intents carrying module-computed state are accepted as authoritative on that basis. This is the cooperative-play trust model (install-time trust: only a GM activates modules) and is what keeps the server free of third-party code and the binary single.
+7. **The public module API is framework-neutral; the UI is extendable and replaceable.** UI *extension* is via DOM / web-component mount points; logic via plain-TS hooks and services. The **headless core** (document store, hook bus, module loader) is a **Svelte-free TS module** — no Svelte runtime in its dependency closure — so a module on any framework (React / Vue / vanilla) consumes it without transitively pulling Svelte. A module may **extend** (mount points / slots), **replace** the default UI wholesale (panels, the application shell, canvas overlays), but **cannot** replace the PixiJS canvas host itself — the renderer is engine-owned and modules draw into it through the render-layer API. The Svelte core never leaks into the public surface.
+8. **Mutations flow through an undoable boundary.** Document and ECS mutations are expressed as discrete, reversible operations (command/event records) from the start. This reversible representation is the **single shared substrate** for both optimistic rollback (reverting unconfirmed local speculation when authoritative state arrives) and undo (reverting confirmed, committed operations) — two distinct triggers and execution paths over one representation. No undo UI ships in v1, but the boundary supports it without a later rewrite.
 9. **Permissive licenses only.** MIT / Apache-2.0 / BSD / zlib / MPL-2.0. No GPL / AGPL / SSPL / proprietary in the runtime or required toolchain. Media codecs must be royalty-free.
 
 ## 3. Core technology (v1)
@@ -37,7 +37,7 @@ These hold across every subsystem. Violating one is an architectural defect, not
 | DB access | sqlx (sqlite feature) | Apache-2.0/MIT | Vendor | Compile-time-checked queries; keeps the Postgres door open behind the trait. `rusqlite` is the fallback if sqlx maintenance degrades. |
 | Realtime protocol | custom event bus | — | Roll | Sequence numbers, per-world rooms, intent/confirm — domain logic. |
 | Scene simulation | hecs 0.11 + custom exec/persistence | MIT/Apache | Vendor + Roll | hecs for storage/queries (compositional fit for token emitters); the async execution and document↔ECS boundary are ours. |
-| Auth | argon2 + tower-sessions | MIT/Apache | Vendor | Password hashing; DB-backed sessions. |
+| Auth | argon2 + tower-sessions | MIT/Apache | Vendor | Password hashing; DB-backed sessions; server / GM / player / spectator + document observer roles. |
 | Permissions | custom `PermissionContext` | — | Roll | Per-recipient broadcast filtering + property-level stripping is domain-specific. |
 | Validation / types | Zod v4 (`zod/mini`), ts-rs 12, Serde `deny_unknown_fields` | MIT/Apache | Vendor | Client-side schema validation; Rust→TS type generation; unknown fields rejected at both ends. |
 | Dice | custom TS engine | — | Roll | Core mechanic; full control over notation, hooks, broadcast. |
@@ -56,7 +56,14 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 | PostgreSQL | `Repository` trait | A real multi-tenant / many-concurrent-world hosted deployment. |
 | Full-text search engine (Tantivy) | `Core.search` API over FTS5 | FTS5 relevance/scale becomes inadequate (large compendium libraries, BM25 tuning, faceting). |
 | Asset conversion — images (`image` 0.25 + `webp`/libwebp), audio (`symphonia` + `opus`/`vorbis_rs`) | raw upload + static serving; asset pipeline | Phase 2 (images) / Phase 3 (audio). v1 stores and serves uploads unconverted. No FFmpeg; all replacements are royalty-free. |
+| Asset browser (regex/tag/dir search, preview/rename/move/tag) | asset pipeline + `Core.search` | Phase 2. |
+| Bulk import/export (assets + documents) | document CRUD | Phase 2. |
+| Rollable tables | dice engine + document model | Phase 2. |
+| Rich-text notes | document model / `system` body | Phase 2. |
+| Chat media linking (images, YouTube) | chat | Phase 2. YouTube = thumbnail + external link only (no IFrame/Data API), keeping the stack permissive. |
 | Audio mixer (Web Audio + `standardized-audio-context`) | event bus | Phase 3. Simple play/stop/loop/volume first; spatial/occlusion later. |
+| 3D dice | dice engine + a rendering-context decision | Phase 3. Decide up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer. |
+| Discord audio ducking | audio mixer hook points; secondary module | Phase 3+. OS audio-session monitoring (PipeWire / WASAPI / CoreAudio) — never the proprietary Discord Game SDK; requires a dependency/licensing review before integration. |
 | VFX, post-processing, photometric lighting, advanced vision modes, multi-level maps/portals | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
 | Undo/redo UI | undoable mutation boundary (invariant 8) | When users need it; no engine change required. |
 | Server-side untrusted execution (sandbox) | client-side GM-authoritative model | Only if a marketplace with untrusted authors is pursued — then WASM (wasmtime/extism) or rquickjs, never Deno. |
@@ -72,14 +79,17 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 - **FFmpeg as a hard dependency** — GPL contamination risk (libx264 etc.), LGPL static-link friction, and H.264/H.265/AAC patent exposure. Replaced by small royalty-free libraries.
 - **Tantivy in v1** — a third, non-transactional storage system; FTS5 is crash-consistent (updates inside the row's transaction) and sufficient at VTT scale.
 - **`steamworks` crate / Steam Rich Presence** — requires redistributing Valve's proprietary `steam_api`. Steam stays OpenID 2.0 auth + plain-executable distribution only.
+- **Discord Game SDK** — proprietary. Discord audio ducking (deferred) is implemented via OS audio-session APIs, never the SDK.
 - **specta / tauri-specta** — stuck in multi-year RC; `ts-rs` 12 is stable and maintained.
 - **Pure-Rust/WASM frontend** — would discard PixiJS and eliminate first-class UI moddability (modders would have to write Rust).
 
 ## 6. Data model & validation
 
 - **Envelope + opaque body.** A document is a typed Rust envelope (id, type, owner, permissions, `schema_version`) plus a `system` JSONB body the engine never interprets. Systems define the body's meaning.
-- **Schema migration is client-side and synchronous.** A `migrateData` step coerces a document from its stored `schema_version` to current on load/update — a pure data transform in the data-model layer, no sandbox. Arbitrary bulk fix-up *scripts* are a separate, far-future concern.
-- **Validation at boundaries.** The client validates the `system` body against the system's Zod schema before writes; the server enforces structural limits (size caps, field-path validity, `deny_unknown_fields`) and permissions. Derived values are computed, never stored.
+- **Copy independence.** Actors and items exist independently across compendium, world, and embedded copies: modifying a world copy never alters the compendium template, and an embedded copy is independent of the document it was instantiated from.
+- **Stable asset identity.** Assets are referenced by stable UUID from first upload, so moving or renaming an asset never breaks links — independent of when the browsing/conversion pipeline lands.
+- **Schema migration: mechanism now, migrations later.** Documents carry `schema_version` and the data-model layer exposes a synchronous, client-side `migrateData` seam (coerce a document from its stored version to current on load/update — pure transform, no sandbox). Because nothing ships before v1, there are **no documents in existence to migrate**: v1 builds the migration *machinery* and the seam runs as a no-op pass-through, but **no actual migrations are authored** until a post-ship schema change creates the first real use case. Arbitrary bulk fix-up *scripts* are a separate, far-future concern.
+- **Validation at boundaries.** The client validates the `system` body against the system's Zod schema before writes; the server enforces structural limits (size caps, field-path validity, `deny_unknown_fields`) and permissions, but never semantic correctness of the body (invariant 6). Derived values are computed, never stored.
 
 ## 7. Rendering provenance
 
@@ -87,6 +97,6 @@ Rendering and visibility techniques (raycast visibility polygons, fog of war, il
 
 ## 8. Open items (require confirmation before settled)
 
-- **Monorepo layout & source-dir naming.** `CLAUDE.md` states source resides in `src/`; the repo currently has an empty `source/`. A Rust + JS monorepo needs a server/client split. Proposed (pending consent): `server/`, `client/{core,ui}/`, `modules/`, `types/`, `docs/`. Confirm the root layout and resolve `src/` vs `source/`.
+- **Monorepo layout & source-dir naming.** `CLAUDE.md` states source resides in `src/`; the repo currently has an empty `source/`. A Rust + JS monorepo needs a server/client split. Proposed (pending consent): `server/`, `client/{core,ui}/`, `modules/`, `types/`, `docs/`. Confirm the root layout and resolve `src/` vs `source/`. **`PLAN.md` M1's monorepo deliverable is gated on this resolution** — the two docs must not assert a layout this item marks unsettled; update `CLAUDE.md` if the split is accepted.
 - **Account model.** v1 assumption: self-hosted, admin-creates-users, no email / password-reset flow. Confirm.
 - **Per-milestone feature boundaries** are finalized in implementation plans, not here.
