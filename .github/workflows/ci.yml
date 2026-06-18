@@ -6,25 +6,38 @@ on:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Format is OS-independent; run once to avoid redundant matrix cost.
       - name: Format
+        if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
+      # Clippy runs on every OS so cfg-gated code is linted on its own target.
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Test (emits ts-rs bindings)
         run: cargo test --all
+      # ts-rs regenerates bindings on test; the LF-committed files only match a
+      # Linux regen (a Windows working-tree regen may differ on EOL), so the
+      # sync check is Linux-only. .gitattributes pins these files to LF.
       - name: ts-rs bindings in sync
+        if: runner.os == 'Linux'
         run: git diff --exit-code src/types/generated
       - name: Release build
         run: cargo build --release
       - name: Binary size budget
+        shell: bash
         run: |
-          size=$(stat -c%s target/release/shadowcat)
+          bin="target/release/shadowcat${{ runner.os == 'Windows' && '.exe' || '' }}"
+          size=$(wc -c < "$bin")
           echo "release binary size: ${size} bytes"
           # 60 MiB guardrail; tighten as the binary's real baseline settles.
           test "${size}" -lt 62914560

@@ -1,3 +1,7 @@
+# Normalize all text files to LF in the repo regardless of a contributor's
+# core.autocrlf, so a Windows checkout never commits CRLF that breaks Linux CI.
+* text=auto eol=lf
+
 # Generated TS bindings must stay LF so the CI ts-rs sync check
 # (cargo test regenerates LF on Linux) matches the committed file on every
 # platform, regardless of a contributor's core.autocrlf setting.
