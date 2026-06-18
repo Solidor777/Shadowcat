@@ -284,25 +284,65 @@ impl Repository for SqliteRepository {
 
     async fn query_documents(
         &self,
-        _world_id: Uuid,
-        _doc_type: &str,
+        world_id: Uuid,
+        doc_type: &str,
     ) -> Result<Vec<Document>, DataError> {
-        // TODO: query documents by world and type.
-        unimplemented!("query_documents")
+        let rows = sqlx::query(
+            "SELECT json FROM documents WHERE world_id = ? AND doc_type = ? ORDER BY id",
+        )
+        .bind(world_id.to_string())
+        .bind(doc_type)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| Ok(serde_json::from_str(r.get::<String, _>("json").as_str())?))
+            .collect()
     }
 
     async fn documents_by_source(
         &self,
-        _pack: Option<&str>,
-        _source_id: Uuid,
+        pack: Option<&str>,
+        source_id: Uuid,
     ) -> Result<Vec<Document>, DataError> {
-        // TODO: query documents by provenance source.
-        unimplemented!("documents_by_source")
+        let rows = match pack {
+            Some(p) => {
+                sqlx::query(
+                    "SELECT json FROM documents WHERE source_pack = ? AND source_id = ? ORDER BY id",
+                )
+                .bind(p)
+                .bind(source_id.to_string())
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT json FROM documents WHERE source_pack IS NULL AND source_id = ? ORDER BY id",
+                )
+                .bind(source_id.to_string())
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+        rows.into_iter()
+            .map(|r| Ok(serde_json::from_str(r.get::<String, _>("json").as_str())?))
+            .collect()
     }
 
-    async fn events_since(&self, _world_id: Uuid, _seq: i64) -> Result<Vec<Command>, DataError> {
-        // TODO: replay the command log from a seq cursor.
-        unimplemented!("events_since")
+    async fn events_since(&self, world_id: Uuid, seq: i64) -> Result<Vec<Command>, DataError> {
+        let rows = sqlx::query(
+            "SELECT command_json FROM world_events WHERE world_id = ? AND seq > ? ORDER BY seq",
+        )
+        .bind(world_id.to_string())
+        .bind(seq)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(serde_json::from_str(
+                    r.get::<String, _>("command_json").as_str(),
+                )?)
+            })
+            .collect()
     }
 }
 
@@ -310,6 +350,7 @@ impl Repository for SqliteRepository {
 mod tests {
     use super::*;
     use crate::data::command::FieldChange;
+    use crate::data::document::Source;
 
     async fn repo() -> SqliteRepository {
         SqliteRepository::connect("sqlite::memory:").await.unwrap()
@@ -564,5 +605,80 @@ mod tests {
                 .updated_at,
             42
         );
+    }
+
+    #[tokio::test]
+    async fn query_documents_filters_by_world_and_type() {
+        let r = repo().await;
+        let w = r.create_world("W", 0).await.unwrap();
+        let author = r.create_user("author", "user", 0).await.unwrap();
+        for id in [1u128, 2] {
+            r.apply_command(UnsequencedCommand {
+                world_id: w.id,
+                author,
+                ts: 1,
+                ops: vec![Operation::Create {
+                    doc: world_doc(id, w.id, serde_json::json!({})),
+                }],
+            })
+            .await
+            .unwrap();
+        }
+        let actors = r.query_documents(w.id, "actor").await.unwrap();
+        assert_eq!(actors.len(), 2);
+        assert!(r.query_documents(w.id, "item").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn documents_by_source_finds_instances_for_push() {
+        let r = repo().await;
+        let w = r.create_world("W", 0).await.unwrap();
+        let author = r.create_user("author", "user", 0).await.unwrap();
+        let src = Uuid::from_u128(77);
+        let mut doc = world_doc(1, w.id, serde_json::json!({}));
+        doc.source = Some(Source {
+            id: src,
+            pack: Some("dnd5e".into()),
+            version: 1,
+        });
+        r.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author,
+            ts: 1,
+            ops: vec![Operation::Create { doc }],
+        })
+        .await
+        .unwrap();
+
+        let found = r.documents_by_source(Some("dnd5e"), src).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(r
+            .documents_by_source(Some("dnd5e"), Uuid::from_u128(0))
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn events_since_returns_the_suffix() {
+        let r = repo().await;
+        let w = r.create_world("W", 0).await.unwrap();
+        let author = r.create_user("author", "user", 0).await.unwrap();
+        for id in [1u128, 2, 3] {
+            r.apply_command(UnsequencedCommand {
+                world_id: w.id,
+                author,
+                ts: 1,
+                ops: vec![Operation::Create {
+                    doc: world_doc(id, w.id, serde_json::json!({})),
+                }],
+            })
+            .await
+            .unwrap();
+        }
+        let tail = r.events_since(w.id, 1).await.unwrap();
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].seq, 2);
+        assert_eq!(tail[1].seq, 3);
     }
 }
