@@ -9,7 +9,7 @@ use subtle::ConstantTimeEq;
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::auth::password::{hash_password, verify_password};
+use crate::auth::password::{hash_password, verify_password_async};
 use crate::auth::role::ServerRole;
 use crate::auth::session::{AdminUser, AuthUser, SessionUser};
 use crate::auth::setup::{create_admin, now_millis};
@@ -97,7 +97,7 @@ pub async fn login(
         .and_then(|u| u.password_hash.as_deref())
         .map(str::to_owned)
         .unwrap_or_else(|| anti_enumeration_phc().to_owned());
-    let verified = verify_password(&body.password, &verify_target);
+    let verified = verify_password_async(body.password, verify_target).await;
 
     // Only a user that actually has a stored credential may authenticate.
     let authed = record.filter(|u| u.password_hash.is_some());

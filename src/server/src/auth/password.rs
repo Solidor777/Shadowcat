@@ -22,6 +22,24 @@ pub fn verify_password(plain: &str, phc: &str) -> bool {
     }
 }
 
+/// Async wrapper: runs the CPU-bound Argon2 hash on a blocking thread so the
+/// async worker is not stalled for the ~tens of ms each hash costs. Owned
+/// `String` because `spawn_blocking` requires a `'static` closure.
+pub async fn hash_password_async(plain: String) -> Result<String, argon2::password_hash::Error> {
+    tokio::task::spawn_blocking(move || hash_password(&plain))
+        .await
+        .map_err(|_| argon2::password_hash::Error::Crypto)?
+}
+
+/// Async wrapper for the CPU-bound verify. A `spawn_blocking` join failure
+/// (panic) is treated as a verification failure — the safe default on the auth
+/// path. Owned `String`s for the `'static` closure.
+pub async fn verify_password_async(plain: String, phc: String) -> bool {
+    tokio::task::spawn_blocking(move || verify_password(&plain, &phc))
+        .await
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,5 +59,19 @@ mod tests {
         assert_ne!(a, b, "random salt must make hashes differ");
         assert!(verify_password("same", &a));
         assert!(verify_password("same", &b));
+    }
+
+    #[tokio::test]
+    async fn async_hash_then_async_verify_roundtrips() {
+        let hash = hash_password_async("correct horse".to_owned())
+            .await
+            .expect("hash");
+        assert!(verify_password_async("correct horse".to_owned(), hash.clone()).await);
+        assert!(!verify_password_async("wrong horse".to_owned(), hash).await);
+    }
+
+    #[tokio::test]
+    async fn async_verify_false_on_unparseable_phc() {
+        assert!(!verify_password_async("x".to_owned(), "not-a-phc-string".to_owned()).await);
     }
 }
