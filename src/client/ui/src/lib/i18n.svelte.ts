@@ -13,4 +13,11 @@ export function t(key: string, params?: I18nParams): string {
   return i18n.t(key, params);
 }
 
+/** The current locale, read reactively — invalidates on setLocale from any
+ * source (the Settings switcher, M7d-3 session-restore, etc.). */
+export function locale(): string {
+  subscribe();
+  return i18n.locale;
+}
+
 export type TFunc = typeof t;
