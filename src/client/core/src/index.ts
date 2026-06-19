@@ -28,6 +28,7 @@ export type {
   WsClientHandlers,
   WireWelcome,
   SearchPage,
+  SubscriptionHandle,
 } from "./ws-client";
 export { webSocketConnect } from "./transport";
 export type { Transport, TransportHandlers, Connect } from "./transport";

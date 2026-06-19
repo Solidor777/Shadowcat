@@ -18,6 +18,11 @@ export interface SearchPage {
   nextCursor?: string;
 }
 
+/** Handle to an active live search subscription (Core.subscribeSearch). */
+export interface SubscriptionHandle {
+  unsubscribe(): void;
+}
+
 /** The `Welcome` server frame (capability fields included). */
 export type WireWelcome = Extract<ServerMsg, { type: "welcome" }>;
 import type { Connect, Transport } from "./transport";
@@ -62,6 +67,9 @@ export class WsClient {
       timer: ReturnType<typeof setTimeout>;
     }
   >();
+  /** Active live search subscriptions, keyed by request_id; persists across
+   * updates until unsubscribe/disconnect. */
+  private subscriptions = new Map<string, (hits: WireSearchHit[]) => void>();
 
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -97,6 +105,9 @@ export class WsClient {
       p.reject(new Error(reason));
     }
     this.pending.clear();
+    // Live subscriptions are bound to this socket; a reconnect does not replay
+    // them, so drop them (the caller re-subscribes after reconnect if desired).
+    this.subscriptions.clear();
   }
 
   /** Send a client frame (no-op if currently disconnected). */
@@ -193,6 +204,12 @@ export class WsClient {
           this.pending.delete(msg.request_id);
           p.reject(new Error(msg.message));
         }
+        // A live subscription that errors server-side is dropped.
+        this.subscriptions.delete(msg.request_id);
+        break;
+      }
+      case "search_update": {
+        this.subscriptions.get(msg.request_id)?.(msg.hits);
         break;
       }
     }
@@ -221,6 +238,51 @@ export class WsClient {
         query,
         limit: opts.limit ?? 20,
         cursor: opts.cursor,
+        subscribe: false,
+      });
+    });
+  }
+
+  /**
+   * Core.subscribeSearch — live top-N search. Resolves once the initial result
+   * arrives (and fires `onUpdate` for it); subsequent server pushes fire
+   * `onUpdate(hits)`. `unsubscribe()` stops updates and tells the server. On
+   * disconnect the subscription is dropped and a pending initial rejects.
+   */
+  subscribeSearch(
+    query: string,
+    opts: { limit?: number; timeoutMs?: number },
+    onUpdate: (hits: WireSearchHit[]) => void,
+  ): Promise<SubscriptionHandle> {
+    const request_id = crypto.randomUUID();
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+    this.subscriptions.set(request_id, onUpdate);
+    return new Promise<SubscriptionHandle>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(request_id);
+        this.subscriptions.delete(request_id);
+        reject(new Error("subscribe request timeout"));
+      }, timeoutMs);
+      this.pending.set(request_id, {
+        resolve: (page) => {
+          onUpdate(page.hits);
+          resolve({
+            unsubscribe: () => {
+              this.subscriptions.delete(request_id);
+              this.send({ type: "unsubscribe", request_id });
+            },
+          });
+        },
+        reject,
+        timer,
+      });
+      this.send({
+        type: "search",
+        request_id,
+        query,
+        limit: opts.limit ?? 20,
+        cursor: undefined,
+        subscribe: true,
       });
     });
   }
