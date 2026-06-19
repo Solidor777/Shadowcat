@@ -213,6 +213,29 @@ impl SqliteRepository {
         Ok(id)
     }
 
+    /// The user's stored opaque UI-state JSON string, or `None` when unset.
+    pub async fn get_ui_state(&self, user: Uuid) -> Result<Option<String>, DataError> {
+        let row = sqlx::query("SELECT ui_state FROM users WHERE id = ?")
+            .bind(user.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.and_then(|r| r.get::<Option<String>, _>("ui_state")))
+    }
+
+    /// Replace the user's opaque UI-state JSON. `NotFound` if the user is absent.
+    /// The string is stored verbatim; shape/size are validated at the HTTP boundary.
+    pub async fn set_ui_state(&self, user: Uuid, json: &str) -> Result<(), DataError> {
+        let res = sqlx::query("UPDATE users SET ui_state = ? WHERE id = ?")
+            .bind(json)
+            .bind(user.to_string())
+            .execute(&self.pool)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(DataError::NotFound);
+        }
+        Ok(())
+    }
+
     pub async fn user_by_username(&self, username: &str) -> Result<Option<UserRecord>, DataError> {
         let row = sqlx::query(
             "SELECT id, username, password_hash, server_role FROM users WHERE username = ?",
@@ -981,6 +1004,43 @@ mod tests {
 
     async fn repo() -> SqliteRepository {
         SqliteRepository::connect("sqlite::memory:").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn ui_state_round_trips_and_defaults_to_none() {
+        let repo = repo().await;
+        let user = repo
+            .create_user("u", Some("hash"), ServerRole::User, 0)
+            .await
+            .unwrap();
+
+        // Unset → None.
+        assert_eq!(repo.get_ui_state(user).await.unwrap(), None);
+
+        // Set then read back verbatim.
+        repo.set_ui_state(user, r#"{"global":{"locale":"en"}}"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_ui_state(user).await.unwrap().as_deref(),
+            Some(r#"{"global":{"locale":"en"}}"#)
+        );
+
+        // Replace (not merge).
+        repo.set_ui_state(user, r#"{"global":{"locale":"fr"}}"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_ui_state(user).await.unwrap().as_deref(),
+            Some(r#"{"global":{"locale":"fr"}}"#)
+        );
+
+        // Unknown user → NotFound.
+        let ghost = Uuid::from_u128(1);
+        assert!(matches!(
+            repo.set_ui_state(ghost, "{}").await,
+            Err(DataError::NotFound)
+        ));
     }
 
     /// A world-scoped actor document with the given permissions and system body.
