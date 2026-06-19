@@ -30,6 +30,8 @@ export type { Listener } from "./store";
 export { ContributionRegistry } from "./contributions";
 export type { Contribution, Cardinality } from "./contributions";
 export { reconcileTopology } from "./topology";
+export { I18n } from "./i18n";
+export type { Messages, I18nParams } from "./i18n";
 export { OptimisticClient } from "./optimistic";
 export { WsClient } from "./ws-client";
 export type {
