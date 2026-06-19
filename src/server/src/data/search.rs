@@ -177,6 +177,26 @@ mod tests {
     }
 
     #[test]
+    fn build_match_caps_length_and_term_count() {
+        // Term count is capped at 16.
+        let many = (0..50)
+            .map(|i| format!("t{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let m = build_match(&many).unwrap();
+        assert_eq!(
+            m.matches('"').count() / 2,
+            16,
+            "term count must be capped at 16"
+        );
+        // Length is capped at 256 chars (one giant token is truncated, not rejected).
+        let huge = "a".repeat(10_000);
+        let m = build_match(&huge).unwrap();
+        // The single quoted+prefixed term is bounded by the 256-char cap.
+        assert!(m.len() <= 256 + 4, "query length must be capped");
+    }
+
+    #[test]
     fn build_match_punctuation_only_is_none() {
         // Punctuation-only input must not reach FTS5 as a term-less phrase
         // (which the parser rejects). It reduces to no terms → None → empty page.
