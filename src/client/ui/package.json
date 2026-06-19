@@ -10,6 +10,10 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
-    "test": "echo \"@shadowcat/ui: no tests\" && exit 0"
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@testing-library/svelte": "^5.3.1",
+    "jsdom": "^29.1.1"
   }
 }
