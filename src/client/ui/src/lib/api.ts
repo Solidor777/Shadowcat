@@ -82,11 +82,17 @@ export async function getUiState(): Promise<UiState> {
   };
 }
 
-export async function putUiState(state: UiState): Promise<void> {
+export async function putUiState(
+  state: UiState,
+  opts: { keepalive?: boolean } = {},
+): Promise<void> {
+  // `keepalive` lets the request outlive a page unload (the blob is within the
+  // server's 64KB cap, under keepalive's body limit).
   const res = await fetch("/api/me/ui-state", {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(state),
+    keepalive: opts.keepalive,
   });
   if (!res.ok) throw new Error(`PUT /api/me/ui-state → ${res.status}`);
 }

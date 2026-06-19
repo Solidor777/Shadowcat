@@ -1,7 +1,7 @@
 <script lang="ts">
   import { webSocketConnect } from "@shadowcat/core";
   import { getConfig, getMe, listWorlds, type Me } from "./lib/api";
-  import { loadSessionState, setLastWorld } from "./lib/sessionState.svelte";
+  import { loadSessionState, setLastWorld, flushOnUnload } from "./lib/sessionState.svelte";
   import { currentRoute, navigate } from "./lib/route.svelte";
   import { coreUi } from "./modules/core-ui/index";
   import { WorldSession } from "./lib/worldSession.svelte";
@@ -29,12 +29,18 @@
       const ui = await loadSessionState(); // applies the saved locale
       const last = ui.global.lastWorld;
       if (last) {
-        const worlds = await listWorlds();
-        if (worlds.some((w) => w.id === last)) {
-          enterWorld(last); // reload returns you to your last world
-          return;
+        // A transient /api/worlds failure here should degrade to world-select, not
+        // demote an authenticated session all the way back to Login.
+        try {
+          const worlds = await listWorlds();
+          if (worlds.some((w) => w.id === last)) {
+            enterWorld(last); // reload returns you to your last world
+            return;
+          }
+          setLastWorld(null); // stale (deleted / revoked) — clear it
+        } catch {
+          // fall through to world-select
         }
-        setLastWorld(null); // stale (deleted / revoked) — clear it
       }
       navigate({ name: "worlds" });
     } catch {
@@ -46,6 +52,15 @@
     }
   }
   boot();
+
+  // Best-effort persist of a still-pending ui_state change when the tab is hidden
+  // or unloaded (the debounce's trailing write would otherwise not fire).
+  if (typeof window !== "undefined") {
+    window.addEventListener("pagehide", flushOnUnload);
+    window.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") flushOnUnload();
+    });
+  }
 
   async function afterAuth() {
     try {

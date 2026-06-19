@@ -78,3 +78,12 @@ export async function flushSessionState(): Promise<void> {
   pendingDuringCooldown = false;
   await persist();
 }
+
+/** Best-effort flush on page hide/unload: a change made during the cooldown is
+ * otherwise only written by the trailing timer, which never fires if the tab
+ * closes first. `keepalive` lets the PUT survive the unload. */
+export function flushOnUnload(): void {
+  if (!loaded || !pendingDuringCooldown) return;
+  pendingDuringCooldown = false;
+  void putUiState(state, { keepalive: true }).catch((e) => logger.warn("ui_state unload flush failed", e));
+}

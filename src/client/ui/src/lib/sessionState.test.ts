@@ -6,6 +6,7 @@ import {
   getSessionState,
   setLastWorld,
   flushSessionState,
+  flushOnUnload,
 } from "./sessionState.svelte";
 
 beforeEach(() => i18n.setLocale("en"));
@@ -46,4 +47,20 @@ test("a locale change persists the new locale", async () => {
   i18n.setLocale("zz");
   await flushSessionState();
   expect(put.mock.calls.at(-1)?.[0].global.locale).toBe("zz");
+});
+
+test("flushOnUnload keepalive-persists a change made during the cooldown", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {},
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  setLastWorld("w1"); // leading-edge persist, cooldown timer armed
+  setLastWorld("w2"); // lands during cooldown → pending, not yet written
+  flushOnUnload();
+  expect(put).toHaveBeenLastCalledWith(
+    expect.objectContaining({ global: expect.objectContaining({ lastWorld: "w2" }) }),
+    { keepalive: true },
+  );
 });
