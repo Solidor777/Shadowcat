@@ -166,6 +166,53 @@ impl SqliteRepository {
             .collect()
     }
 
+    /// Worlds the user may access, with their effective role. A server admin is
+    /// GM on every world (mirrors `permission_context`); otherwise the user's
+    /// joined `world_members.role`. Ordered by world name.
+    pub async fn worlds_for_user(
+        &self,
+        user: Uuid,
+        server_role: ServerRole,
+    ) -> Result<Vec<(World, WorldRole)>, DataError> {
+        let rows = if server_role == ServerRole::Admin {
+            sqlx::query(
+                "SELECT id, name, seq, created_at, updated_at, NULL AS role \
+                 FROM worlds ORDER BY name",
+            )
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT w.id, w.name, w.seq, w.created_at, w.updated_at, m.role AS role \
+                 FROM worlds w \
+                 JOIN world_members m ON m.world_id = w.id \
+                 WHERE m.user_id = ? ORDER BY w.name",
+            )
+            .bind(user.to_string())
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        rows.into_iter()
+            .map(|r| {
+                let world = World {
+                    id: Uuid::parse_str(r.get::<String, _>("id").as_str())
+                        .map_err(|e| DataError::OpFailed(e.to_string()))?,
+                    name: r.get("name"),
+                    seq: r.get("seq"),
+                    created_at: r.get("created_at"),
+                    updated_at: r.get("updated_at"),
+                };
+                // Admin rows carry NULL role → GM; member rows decode their role.
+                let role = match r.get::<Option<String>, _>("role") {
+                    Some(s) => serde_json::from_value(serde_json::Value::String(s))?,
+                    None => WorldRole::Gm,
+                };
+                Ok((world, role))
+            })
+            .collect()
+    }
+
     /// Resolve a user's authority within a world: server admins are GM
     /// everywhere; a member resolves to their `role`; a non-member non-admin is
     /// `Forbidden` (cannot establish a context, so cannot join or write).
@@ -1004,6 +1051,37 @@ mod tests {
 
     async fn repo() -> SqliteRepository {
         SqliteRepository::connect("sqlite::memory:").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn worlds_for_user_scopes_to_membership_and_admin_sees_all() {
+        let repo = repo().await;
+        let a = repo.create_user("a", Some("h"), ServerRole::User, 0).await.unwrap();
+        let b = repo.create_user("b", Some("h"), ServerRole::User, 0).await.unwrap();
+        let admin = repo.create_user("ad", Some("h"), ServerRole::Admin, 0).await.unwrap();
+
+        // a GMs world1; b GMs world2 (each creator seated as GM).
+        let w1 = repo.create_world_owned("world1", a, 0).await.unwrap();
+        let w2 = repo.create_world_owned("world2", b, 0).await.unwrap();
+        // a is added to world2 as a player.
+        repo.add_member(w2.id, a, WorldRole::Player).await.unwrap();
+
+        // a sees only their two worlds, with the right roles; never b-only state.
+        let mut a_worlds = repo.worlds_for_user(a, ServerRole::User).await.unwrap();
+        a_worlds.sort_by(|x, y| x.0.name.cmp(&y.0.name));
+        assert_eq!(a_worlds.len(), 2);
+        assert_eq!((a_worlds[0].0.id, a_worlds[0].1), (w1.id, WorldRole::Gm));
+        assert_eq!((a_worlds[1].0.id, a_worlds[1].1), (w2.id, WorldRole::Player));
+
+        // b sees only world2.
+        let b_worlds = repo.worlds_for_user(b, ServerRole::User).await.unwrap();
+        assert_eq!(b_worlds.len(), 1);
+        assert_eq!(b_worlds[0].0.id, w2.id);
+
+        // A server admin sees every world as GM.
+        let admin_worlds = repo.worlds_for_user(admin, ServerRole::Admin).await.unwrap();
+        assert_eq!(admin_worlds.len(), 2);
+        assert!(admin_worlds.iter().all(|(_, r)| *r == WorldRole::Gm));
     }
 
     #[tokio::test]
