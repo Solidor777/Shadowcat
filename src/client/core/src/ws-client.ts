@@ -85,6 +85,18 @@ export class WsClient {
     this.running = false;
     this.transport?.close();
     this.transport = null;
+    this.failPending("client stopped");
+  }
+
+  /** Reject every in-flight correlated request (e.g. on disconnect/stop): the
+   * request was sent on a socket that will not answer it, so fail fast rather
+   * than wait out the timeout (which would also outlive the connection). */
+  private failPending(reason: string): void {
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error(reason));
+    }
+    this.pending.clear();
   }
 
   /** Send a client frame (no-op if currently disconnected). */
@@ -117,6 +129,9 @@ export class WsClient {
 
   private handleClose(): void {
     this.transport = null;
+    // In-flight requests were sent on the now-dead socket; a reconnect will not
+    // replay them, so reject rather than leave them hanging until timeout.
+    this.failPending("connection closed");
     if (this.running) this.scheduleReconnect();
   }
 

@@ -246,4 +246,15 @@ describe("WsClient", () => {
     await client.start();
     await expect(client.search("x", { timeoutMs: 1 })).rejects.toThrow(/timeout/i);
   });
+
+  it("stop() rejects in-flight searches instead of leaving them hanging", async () => {
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.search("x", { timeoutMs: 60_000 });
+    client.stop();
+    await expect(p).rejects.toThrow(/stopped/i);
+  });
 });
