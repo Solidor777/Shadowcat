@@ -14,6 +14,8 @@ export { MiddlewareChain } from "./middleware";
 export type { PipelineName, Middleware } from "./middleware";
 export { ManifestSchema, parseManifest } from "./manifest";
 export type { ModuleManifest, CapRequirement, HookDecl } from "./manifest";
+export { ModuleRegistry } from "./modules";
+export type { Module, ModuleContext, ModuleInfo } from "./modules";
 export { DocumentStore, setPointer, applyOperation } from "./store";
 export type { Listener } from "./store";
 export { OptimisticClient } from "./optimistic";
