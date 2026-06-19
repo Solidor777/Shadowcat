@@ -204,7 +204,7 @@ async fn handle_socket(
                                 break;
                             }
                         }
-                        Ok(ClientMsg::Search { request_id, query, limit, cursor }) => {
+                        Ok(ClientMsg::Search { request_id, query, limit, cursor, subscribe: _ }) => {
                             let from = cursor.as_deref().and_then(|c| c.parse::<i64>().ok());
                             let frame = match repo.search(&ctx, world_id, &query, limit, from).await {
                                 Ok(page) => ServerMsg::SearchResult {
@@ -224,6 +224,7 @@ async fn handle_socket(
                                 break;
                             }
                         }
+                        Ok(ClientMsg::Unsubscribe { .. }) => {}
                         Ok(ClientMsg::Hello { .. }) | Ok(ClientMsg::Pong) => {}
                         Err(_) => {
                             let _ = etx
