@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/svelte";
+import { render, screen, waitFor } from "@testing-library/svelte";
 import { test, expect } from "vitest";
 import { ContributionRegistry } from "@shadowcat/core";
 import Harness from "./__fixtures__/SurfaceHarness.svelte";
@@ -32,6 +32,5 @@ test("updates reactively when a contribution is added then disposed", async () =
   expect((await screen.findByTestId("probe")).textContent).toBe("live");
 
   dispose();
-  await Promise.resolve();
-  expect(screen.queryByTestId("probe")).toBeNull();
+  await waitFor(() => expect(screen.queryByTestId("probe")).toBeNull());
 });
