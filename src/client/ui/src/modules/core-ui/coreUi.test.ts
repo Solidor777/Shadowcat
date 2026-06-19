@@ -4,7 +4,7 @@ import { coreUi } from "./index";
 
 test("core-ui declares the region surfaces and contributes default panels", () => {
   const provided = (coreUi.manifest.provides ?? []).map((p) => p.contract);
-  expect(provided).toContain("shadowcat.surface:root");
+  expect(provided).toContain("shadowcat.surface:topbar");
   expect(provided).toContain("shadowcat.surface:sidebar");
 
   const contributions = new ContributionRegistry();

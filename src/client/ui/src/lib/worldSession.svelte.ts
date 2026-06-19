@@ -8,8 +8,9 @@ import {
   ServiceRegistry,
   MiddlewareChain,
   reconcileTopology,
-  silentLogger,
+  consoleLogger,
   type Connect,
+  type Logger,
   type Module,
   type WireWelcome,
 } from "@shadowcat/core";
@@ -23,6 +24,8 @@ export interface WorldSessionOpts {
   connect: Connect;
   /** The first-party shell module providing region surfaces. */
   coreUiModule: Module;
+  /** Diagnostics sink; defaults to the leveled console logger. */
+  logger?: Logger;
 }
 
 export class WorldSession {
@@ -35,16 +38,21 @@ export class WorldSession {
   #ws: WsClient | null = null;
   #optimistic: OptimisticClient;
   #modules: ModuleRegistry;
+  #logger: Logger;
+  /** One-time in-world bootstrap (module activation) guard — Welcome re-fires on
+   * every reconnect, so adding/activating core-ui must not repeat. */
+  #bootstrapped = false;
 
   constructor(private readonly opts: WorldSessionOpts) {
+    this.#logger = opts.logger ?? consoleLogger();
     this.#optimistic = new OptimisticClient(opts.selfId);
     this.#modules = new ModuleRegistry({
-      hooks: new HookBus(silentLogger),
+      hooks: new HookBus(this.#logger),
       services: new ServiceRegistry(),
       middleware: new MiddlewareChain(),
       store: this.store,
       client: this.#optimistic,
-      logger: silentLogger,
+      logger: this.#logger,
       contributions: this.contributions,
     });
   }
@@ -55,12 +63,18 @@ export class WorldSession {
     this.#ws = new WsClient({
       connect: this.opts.connect,
       handlers: {
-        onCommand: (cmd) => this.#optimistic.applyCommand(cmd),
+        // Feed both mirrors: the authoritative DocumentStore (exposed via
+        // AppContext for document-reading panels) and the optimistic client
+        // (base + pending view, given to modules as ctx.client).
+        onCommand: (cmd) => {
+          this.store.applyCommand(cmd);
+          this.#optimistic.applyCommand(cmd);
+        },
         onReject: (id) => this.#optimistic.reject(id),
         onWelcome: (w) => {
           void this.#onWelcome(w);
         },
-        onError: () => {},
+        onError: (e) => this.#logger.error("world session ws error", e),
       },
     });
     await this.#ws.start();
@@ -68,10 +82,19 @@ export class WorldSession {
   }
 
   async #onWelcome(w: WireWelcome): Promise<void> {
-    this.role = w.actor_role;
-    this.#modules.add(this.opts.coreUiModule);
-    await this.#modules.activate();
-    reconcileTopology(this.#modules.declarations(), w.contract_declarations, silentLogger);
+    try {
+      this.role = w.actor_role;
+      if (!this.#bootstrapped) {
+        // Set before the await so a second Welcome (reconnect) cannot re-enter
+        // and double-add the module.
+        this.#bootstrapped = true;
+        this.#modules.add(this.opts.coreUiModule);
+        await this.#modules.activate();
+      }
+      reconcileTopology(this.#modules.declarations(), w.contract_declarations, this.#logger);
+    } catch (e) {
+      this.#logger.error("world session welcome handling failed", e);
+    }
   }
 
   leave(): void {

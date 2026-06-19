@@ -5,19 +5,29 @@
   let { onEnter }: { onEnter: (worldId: string) => void } = $props();
   let worlds = $state<WorldEntry[]>([]);
   let newName = $state("");
+  let error = $state("");
 
   async function refresh() {
-    worlds = await listWorlds();
+    try {
+      worlds = await listWorlds();
+    } catch {
+      error = "Could not load worlds.";
+    }
   }
   refresh();
 
   async function create(e: SubmitEvent) {
     e.preventDefault();
     if (!newName.trim()) return;
-    const w = await createWorld(newName.trim());
-    newName = "";
-    await refresh();
-    onEnter(w.id);
+    error = "";
+    try {
+      const w = await createWorld(newName.trim());
+      newName = "";
+      await refresh();
+      onEnter(w.id);
+    } catch {
+      error = "Could not create world.";
+    }
   }
 </script>
 
@@ -33,6 +43,7 @@
     {/each}
     {#if worlds.length === 0}<li class="empty">No worlds yet.</li>{/if}
   </ul>
+  {#if error}<p role="alert">{error}</p>{/if}
   <form onsubmit={create}>
     <input bind:value={newName} placeholder="New world name" aria-label="New world name" />
     <button type="submit">Create world</button>

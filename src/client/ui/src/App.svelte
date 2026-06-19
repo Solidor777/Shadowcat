@@ -14,21 +14,31 @@
   let session = $state<WorldSession | null>(null);
 
   async function boot() {
-    const cfg = await getConfig();
-    if (!cfg.initialized) {
-      navigate({ name: "setup" });
+    try {
+      const cfg = await getConfig();
+      if (!cfg.initialized) {
+        navigate({ name: "setup" });
+        return;
+      }
+      me = await getMe();
+      navigate({ name: me ? "worlds" : "login" });
+    } catch {
+      // A transient backend failure must not wedge the SPA on "Loading…";
+      // fall through to Login (re-auth re-runs the checks).
+      navigate({ name: "login" });
+    } finally {
       booted = true;
-      return;
     }
-    me = await getMe();
-    navigate({ name: me ? "worlds" : "login" });
-    booted = true;
   }
   boot();
 
   async function afterAuth() {
-    me = await getMe();
-    navigate({ name: "worlds" });
+    try {
+      me = await getMe();
+    } catch {
+      me = null;
+    }
+    navigate({ name: me ? "worlds" : "login" });
   }
 
   function enterWorld(worldId: string) {

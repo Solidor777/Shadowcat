@@ -13,7 +13,6 @@ export const coreUi: Module = {
     version: "0.1.0",
     dependencies: {},
     provides: [
-      { contract: "shadowcat.surface:root", cardinality: "singleton" },
       { contract: "shadowcat.surface:topbar", cardinality: "singleton" },
       { contract: "shadowcat.surface:stage", cardinality: "singleton" },
       { contract: "shadowcat.surface:statusbar", cardinality: "singleton" },

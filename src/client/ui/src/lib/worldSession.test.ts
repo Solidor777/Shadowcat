@@ -1,5 +1,5 @@
 import { test, expect, vi } from "vitest";
-import { ContributionRegistry, type Connect } from "@shadowcat/core";
+import { ContributionRegistry, silentLogger, type Connect } from "@shadowcat/core";
 import { WorldSession } from "./worldSession.svelte";
 
 // `MockServer` is internal core test code (not barrel-exported), so use a minimal
@@ -16,9 +16,13 @@ const welcomeFrame = {
   contract_declarations: [],
 };
 
-function mockConnect(): Connect {
+// Deliver the Welcome `count` times to exercise reconnect-idempotency (the
+// server re-sends Welcome on every (re)connect).
+function mockConnect(count = 1): Connect {
   return (handlers) => {
-    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    queueMicrotask(() => {
+      for (let i = 0; i < count; i++) handlers.onMessage(JSON.stringify(welcomeFrame));
+    });
     return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
   };
 }
@@ -40,6 +44,7 @@ test("enter starts the socket, captures role from Welcome, activates core-ui", a
     selfId: "u1",
     connect: mockConnect(),
     coreUiModule: coreUiStub,
+    logger: silentLogger,
   });
 
   await session.enter("w1");
@@ -50,4 +55,22 @@ test("enter starts the socket, captures role from Welcome, activates core-ui", a
 
   session.leave();
   expect(session.state).toBe("closed");
+});
+
+test("a repeated Welcome (reconnect) does not re-add core-ui or throw", async () => {
+  coreUiStub.register.mockClear();
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(2),
+    coreUiModule: coreUiStub,
+    logger: silentLogger,
+  });
+
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  // Idempotent: the module is added/activated exactly once across two Welcomes.
+  await vi.waitFor(() => expect(coreUiStub.register).toHaveBeenCalledTimes(1));
+  // Give the second Welcome a tick to (not) double-add.
+  await Promise.resolve();
+  expect(coreUiStub.register).toHaveBeenCalledTimes(1);
 });
