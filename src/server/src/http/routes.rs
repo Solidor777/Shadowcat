@@ -277,6 +277,34 @@ pub struct CreateWorldRequest {
     pub name: String,
 }
 
+/// A world the caller can access, with their effective role. The client's
+/// world-select list item.
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct WorldEntry {
+    pub id: Uuid,
+    pub name: String,
+    pub role: WorldRole,
+}
+
+/// Worlds the authenticated caller may access.
+pub async fn list_worlds(
+    user: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<WorldEntry>>, AppError> {
+    let worlds = state.repo.worlds_for_user(user.id, user.role).await?;
+    Ok(Json(
+        worlds
+            .into_iter()
+            .map(|(w, role)| WorldEntry {
+                id: w.id,
+                name: w.name,
+                role,
+            })
+            .collect(),
+    ))
+}
+
 /// Any authenticated user may create a world; the creator is seated as its GM.
 pub async fn create_world(
     user: AuthUser,

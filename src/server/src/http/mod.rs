@@ -69,7 +69,10 @@ pub async fn router(state: AppState) -> Router {
         .route("/api/login", post(routes::login))
         .route("/api/logout", post(routes::logout))
         .route("/api/setup", post(routes::setup))
-        .route("/api/worlds", post(routes::create_world))
+        .route(
+            "/api/worlds",
+            post(routes::create_world).get(routes::list_worlds),
+        )
         .route(
             "/api/worlds/{id}/members",
             get(routes::list_members).post(routes::add_member),
@@ -268,6 +271,36 @@ pub(crate) mod tests {
             .get("/api/me")
             .await
             .assert_status(axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn list_worlds_returns_only_callers_worlds() {
+        let state = initialized_state().await;
+        seed_user(&state, "a").await;
+        seed_user(&state, "b").await;
+        let a = login_server(&state, "a").await;
+        let b = login_server(&state, "b").await;
+
+        // a creates world1 (GM); b creates world2 (GM).
+        a.post("/api/worlds")
+            .json(&serde_json::json!({ "name": "world1" }))
+            .await
+            .assert_status_ok();
+        b.post("/api/worlds")
+            .json(&serde_json::json!({ "name": "world2" }))
+            .await
+            .assert_status_ok();
+
+        // a sees exactly world1, as gm.
+        let worlds: serde_json::Value = a.get("/api/worlds").await.json();
+        let arr = worlds.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "world1");
+        assert_eq!(arr[0]["role"], "gm");
+        assert!(arr[0]["id"].is_string());
+
+        // a never sees b's world.
+        assert!(!worlds.to_string().contains("world2"));
     }
 
     #[tokio::test]
