@@ -446,6 +446,29 @@ impl SqliteRepository {
         }
     }
 
+    /// Depth-first descendant ids of `root` within one transaction (children
+    /// before parents), via the `parent_id` index. Excludes `root`. Used to
+    /// expand a parent delete into per-descendant reversible Delete ops.
+    async fn descendants_first(
+        tx: &mut sqlx::SqliteConnection,
+        root: Uuid,
+    ) -> Result<Vec<Uuid>, DataError> {
+        let mut out = Vec::new();
+        let child_rows = sqlx::query("SELECT id FROM documents WHERE parent_id = ? ORDER BY id")
+            .bind(root.to_string())
+            .fetch_all(&mut *tx)
+            .await?;
+        for r in child_rows {
+            let child = Uuid::parse_str(r.get::<String, _>("id").as_str())
+                .map_err(|e| DataError::OpFailed(e.to_string()))?;
+            // Recurse first so deeper descendants precede their parent.
+            let mut sub = Box::pin(Self::descendants_first(&mut *tx, child)).await?;
+            out.append(&mut sub);
+            out.push(child);
+        }
+        Ok(out)
+    }
+
     /// Upsert a document row from its envelope, stamping `seq`, and rewrite its
     /// FTS index row in the same transaction (crash-consistent). Takes a
     /// `&mut SqliteConnection` because it runs multiple statements; callers pass
@@ -745,11 +768,33 @@ impl Repository for SqliteRepository {
         for op in ops {
             match op {
                 Operation::Delete { doc } => {
-                    let cur = Self::load_document(&mut *tx, doc.id)
-                        .await?
-                        .ok_or_else(|| {
-                            DataError::Conflict(format!("document {} missing", doc.id))
+                    // A scene/parent delete expands to explicit Delete ops for
+                    // every descendant (children before parents) so each removal
+                    // is an individually reversible op (#8) and broadcasts to
+                    // clients (#2) — never a silent FK cascade. Descendants are
+                    // discovered here in Phase 2, so each is authorized against
+                    // its stored doc with the same DELETE gate Phase 1 applies to
+                    // the submitted op.
+                    for desc in Self::descendants_first(&mut *tx, doc.id).await? {
+                        let cur = Self::load_document(&mut *tx, desc).await?.ok_or_else(|| {
+                            DataError::Conflict(format!("descendant {desc} missing"))
                         })?;
+                        check_command_scope(&cur, world_id)?;
+                        if !resolve_access_world(
+                            ctx.user_id,
+                            ctx.world_role,
+                            &cur,
+                            &world_defaults,
+                        )
+                        .has(cap::DELETE)
+                        {
+                            return Err(DataError::Forbidden);
+                        }
+                        authoritative_ops.push(Operation::Delete { doc: cur });
+                    }
+                    let cur = Self::load_document(&mut *tx, doc.id).await?.ok_or_else(|| {
+                        DataError::Conflict(format!("document {} missing", doc.id))
+                    })?;
                     authoritative_ops.push(Operation::Delete { doc: cur });
                 }
                 other => authoritative_ops.push(other),
@@ -1123,6 +1168,64 @@ mod tests {
         assert_eq!(children[0].parent_id, Some(scene));
         // The scene itself has no parent, so it is not its own child.
         assert!(repo.query_children(token).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_scene_expands_to_descendant_delete_ops() {
+        let repo = repo().await;
+        let owner = repo
+            .create_user("u", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+        let scene = Uuid::from_u128(10);
+        let t1 = Uuid::from_u128(11);
+        let t2 = Uuid::from_u128(12);
+        let mk = |id, parent: Option<Uuid>, ty| {
+            let mut d = crate::data::document::tests::world_scoped_doc(world.id, id, ty);
+            d.parent_id = parent;
+            d.owner = Some(owner);
+            Operation::Create { doc: d }
+        };
+        repo.apply_command(UnsequencedCommand {
+            world_id: world.id,
+            author: owner,
+            ts: 0,
+            ops: vec![
+                mk(scene, None, "scene"),
+                mk(t1, Some(scene), "token"),
+                mk(t2, Some(scene), "token"),
+            ],
+        })
+        .await
+        .unwrap();
+
+        let ctx = repo
+            .permission_context(world.id, owner, ServerRole::User)
+            .await
+            .unwrap();
+        // Delete the scene only; expect the Command to carry 3 Delete ops.
+        let scene_doc = repo.get_document(scene).await.unwrap().unwrap();
+        let cmd = repo
+            .apply_intent(&ctx, world.id, vec![Operation::Delete { doc: scene_doc }], 1)
+            .await
+            .unwrap();
+        let deleted: Vec<Uuid> = cmd
+            .ops
+            .iter()
+            .filter_map(|o| match o {
+                Operation::Delete { doc } => Some(doc.id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deleted.len(), 3, "scene + 2 children");
+        assert!(deleted.contains(&scene) && deleted.contains(&t1) && deleted.contains(&t2));
+        // Children deleted before their parent (reversible-order invariant).
+        let scene_pos = deleted.iter().position(|&d| d == scene).unwrap();
+        assert!(deleted.iter().position(|&d| d == t1).unwrap() < scene_pos);
+        // Store is empty for the world's scene entities.
+        assert!(repo.query_children(scene).await.unwrap().is_empty());
+        assert!(repo.get_document(t1).await.unwrap().is_none());
     }
 
     #[tokio::test]
