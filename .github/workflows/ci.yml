@@ -13,6 +13,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+      # The server embeds the client bundle (dist/), so build it before any cargo
+      # step (the embed test reads it; the release build embeds it at compile time).
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build client bundle (embedded by the server)
+        run: pnpm --filter @shadowcat/ui build
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
