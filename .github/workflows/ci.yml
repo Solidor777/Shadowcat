@@ -100,6 +100,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The shadowcat lib embeds dist/ (rust-embed requires the folder at compile
+      # time), so the client must be built before any cargo build of the server.
+      - run: pnpm --filter @shadowcat/ui build
       # Pre-build the server so the in-test spawn does not pay the compile cost.
       - run: cargo build -p shadowcat --bin test_server
       - run: pnpm --filter @shadowcat/core test:e2e
