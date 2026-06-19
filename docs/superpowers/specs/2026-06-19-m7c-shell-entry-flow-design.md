@@ -26,9 +26,15 @@ A self-hoster opens the app in a browser and reaches a working table:
 
 ## 2. Decomposition
 
-- **M7c-1 — Client SPA + shell** (the bulk; pure `src/client/ui/` + `core`
-  consumption). Reachable via `vite dev` proxying `/api` + `/ws` to a spawned
-  test-server; the binary still serves the old static bundle until M7c-2.
+- **M7c-1 — Client SPA + shell. ✅ DONE** (merged `--no-ff` to local main, not
+  pushed). Hash router + typed API client + Vite dev proxy; plain-routed
+  Setup/Login/WorldSelect; App bootstrap; `WorldSession` controller; `core-ui`
+  module (region surfaces + default panels) + `Layout`; AppContext extension +
+  DocumentStore bridge. Single-reviewed: fixed the store-wiring Critical (feed
+  both mirrors), reconnect-idempotency + boot-resilience Importants, plus minors.
+  ui 18 unit tests + typecheck green. Reachable via `vite dev` proxying to a
+  test-server; the binary serves the old static bundle until M7c-2.
+  Plan: [`plans/2026-06-19-m7c-1-client-spa.md`](plans/2026-06-19-m7c-1-client-spa.md).
 - **M7c-2 — Server embed integration** (Rust). Flip `embed.rs` `static/` →
   `dist/`; rework `init_gate`; retire `src/server/static/`; client→server build
   ordering; embed tests. After this the binary serves the SPA.
