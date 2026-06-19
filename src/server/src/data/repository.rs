@@ -36,6 +36,10 @@ pub trait Repository: Send + Sync {
         doc_type: &str,
     ) -> Result<Vec<Document>, DataError>;
 
+    /// All documents whose `parent_id` equals `parent` (a scene's direct
+    /// children). Ordered by id for determinism.
+    async fn query_children(&self, parent: Uuid) -> Result<Vec<Document>, DataError>;
+
     async fn documents_by_source(
         &self,
         pack: Option<&str>,

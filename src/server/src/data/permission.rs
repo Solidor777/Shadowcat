@@ -370,6 +370,7 @@ mod tests {
             owner: None,
             permissions: perms,
             embedded: Default::default(),
+            parent_id: None,
             system,
             created_at: 0,
             updated_at: 0,

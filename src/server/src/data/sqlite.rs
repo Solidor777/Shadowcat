@@ -470,12 +470,13 @@ impl SqliteRepository {
         let json = serde_json::to_string(doc)?;
         sqlx::query(
             "INSERT INTO documents (id, scope_kind, world_id, pack, doc_type, schema_version, \
-             source_id, source_pack, source_version, owner_id, seq, json, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             source_id, source_pack, source_version, owner_id, parent_id, seq, json, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET scope_kind=excluded.scope_kind, world_id=excluded.world_id, \
              pack=excluded.pack, doc_type=excluded.doc_type, schema_version=excluded.schema_version, \
              source_id=excluded.source_id, source_pack=excluded.source_pack, \
-             source_version=excluded.source_version, owner_id=excluded.owner_id, seq=excluded.seq, \
+             source_version=excluded.source_version, owner_id=excluded.owner_id, \
+             parent_id=excluded.parent_id, seq=excluded.seq, \
              json=excluded.json, updated_at=excluded.updated_at",
         )
         .bind(doc.id.to_string())
@@ -488,6 +489,7 @@ impl SqliteRepository {
         .bind(source_pack)
         .bind(source_version)
         .bind(doc.owner.map(|o| o.to_string()))
+        .bind(doc.parent_id.map(|p| p.to_string()))
         .bind(seq)
         .bind(json)
         .bind(doc.created_at)
@@ -851,6 +853,16 @@ impl Repository for SqliteRepository {
             .collect()
     }
 
+    async fn query_children(&self, parent: Uuid) -> Result<Vec<Document>, DataError> {
+        let rows = sqlx::query("SELECT json FROM documents WHERE parent_id = ? ORDER BY id")
+            .bind(parent.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|r| Ok(serde_json::from_str(r.get::<String, _>("json").as_str())?))
+            .collect()
+    }
+
     async fn documents_by_source(
         &self,
         pack: Option<&str>,
@@ -1079,6 +1091,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parent_id_round_trips_and_query_children_filters() {
+        let repo = repo().await;
+        let owner = repo
+            .create_user("u", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+        let scene = Uuid::from_u128(10);
+        let token = Uuid::from_u128(11);
+        let scene_doc =
+            crate::data::document::tests::world_scoped_doc(world.id, scene, "scene");
+        let mut token_doc =
+            crate::data::document::tests::world_scoped_doc(world.id, token, "token");
+        token_doc.parent_id = Some(scene);
+        repo.apply_command(UnsequencedCommand {
+            world_id: world.id,
+            author: owner,
+            ts: 0,
+            ops: vec![
+                Operation::Create { doc: scene_doc },
+                Operation::Create { doc: token_doc },
+            ],
+        })
+        .await
+        .unwrap();
+
+        let children = repo.query_children(scene).await.unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].id, token);
+        assert_eq!(children[0].parent_id, Some(scene));
+        // The scene itself has no parent, so it is not its own child.
+        assert!(repo.query_children(token).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn contract_declarations_round_trip_and_default_empty() {
         use crate::data::document::{Cardinality, ContractDeclaration, ContractProvide};
         let repo = repo().await;
@@ -1208,6 +1255,7 @@ mod tests {
             owner: None,
             permissions: perms,
             embedded: Default::default(),
+            parent_id: None,
             system,
             created_at: 0,
             updated_at: 0,
@@ -1835,6 +1883,7 @@ mod tests {
             owner: None,
             permissions: Default::default(),
             embedded: Default::default(),
+            parent_id: None,
             system,
             created_at: 0,
             updated_at: 0,

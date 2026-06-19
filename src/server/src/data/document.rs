@@ -138,6 +138,11 @@ pub struct Document {
     pub permissions: PermissionSet,
     #[serde(default)]
     pub embedded: BTreeMap<String, Vec<Document>>,
+    /// Scene-entity link: the id of the scene (or other parent) this document
+    /// belongs to. `None` for top-level documents (actors, compendium entries,
+    /// scenes themselves). Immutable via field-path Update (envelope field).
+    #[serde(default)]
+    pub parent_id: Option<Uuid>,
     #[ts(type = "unknown")]
     pub system: serde_json::Value,
     pub created_at: i64,
@@ -155,7 +160,7 @@ pub struct World {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn sample_doc() -> Document {
@@ -174,10 +179,24 @@ mod tests {
             owner: Some(Uuid::from_u128(5)),
             permissions: PermissionSet::default(),
             embedded: BTreeMap::new(),
+            parent_id: None,
             system: serde_json::json!({ "hp": 10 }),
             created_at: 100,
             updated_at: 100,
         }
+    }
+
+    /// A world-scoped document with the given id/type and no parent; shared by
+    /// data, scene, and ws unit tests.
+    pub(crate) fn world_scoped_doc(world_id: Uuid, id: Uuid, doc_type: &str) -> Document {
+        let mut d = sample_doc();
+        d.id = id;
+        d.scope = Scope::World { world_id };
+        d.doc_type = doc_type.to_string();
+        d.source = None;
+        d.owner = None;
+        d.parent_id = None;
+        d
     }
 
     #[test]

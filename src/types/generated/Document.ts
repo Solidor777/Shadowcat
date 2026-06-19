@@ -6,4 +6,10 @@ import type { Source } from "./Source";
 /**
  * The persisted document: typed envelope around an opaque `system` body.
  */
-export type Document = { id: string, scope: Scope, doc_type: string, schema_version: number, source: Source | null, owner: string | null, permissions: PermissionSet, embedded: { [key in string]: Array<Document> }, system: unknown, created_at: bigint, updated_at: bigint, };
+export type Document = { id: string, scope: Scope, doc_type: string, schema_version: number, source: Source | null, owner: string | null, permissions: PermissionSet, embedded: { [key in string]: Array<Document> }, 
+/**
+ * Scene-entity link: the id of the scene (or other parent) this document
+ * belongs to. `None` for top-level documents (actors, compendium entries,
+ * scenes themselves). Immutable via field-path Update (envelope field).
+ */
+parent_id: string | null, system: unknown, created_at: bigint, updated_at: bigint, };

@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
         owner: Some(player),
         permissions: perms,
         embedded: Default::default(),
+        parent_id: None,
         system: serde_json::json!({ "name": "Player Dragon", "vision": { "range": 30 }, "hp": 10 }),
         created_at: 0,
         updated_at: 0,
@@ -79,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
             ..Default::default()
         },
         embedded: Default::default(),
+        parent_id: None,
         system: serde_json::json!({ "name": "Secret Dragon" }),
         created_at: 0,
         updated_at: 0,
