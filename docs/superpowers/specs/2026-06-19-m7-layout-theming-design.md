@@ -288,10 +288,12 @@ pure black.
 
 Each its own plan → execute → review cycle (mirroring M6a/b/c).
 
-- **M7a — Server surface.** `GET /api/worlds`, `GET /api/config`,
-  `GET/PUT /api/me/ui-state` + migration. Purely additive (existing static auth
-  flow untouched); independently shippable. Rust tests. Buddy-check candidate
-  (auth-adjacent reads: world-list visibility + `ui_state` on the users table).
+- **M7a — Server surface. ✅ DONE** (merged `--no-ff` to local main, not pushed).
+  `GET /api/worlds`, `GET /api/config`, `GET/PUT /api/me/ui-state` + migration
+  `0004_user_ui_state.sql`. Purely additive (existing static auth flow untouched).
+  136 lib + 12 integration tests green, clippy clean. Buddy-checked (two-reviewer):
+  no Critical/Important; cross-user world isolation, opaque-blob boundary, and
+  `/api/config` pre-init exposure all verified clean.
   Plan: [`superpowers/plans/2026-06-19-m7a-server-surface.md`](plans/2026-06-19-m7a-server-surface.md).
   (The `embed.rs` seam flip + `init_gate` rework + static retirement moved to M7c
   — they need the Svelte bundle to exist.)
