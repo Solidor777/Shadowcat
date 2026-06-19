@@ -851,14 +851,23 @@ mod tests {
         use crate::data::membership::PermissionContext;
 
         let r = repo().await;
-        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
-        let player = r.create_user("pl", None, ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
 
         // A doc the player owns (owner floor: read + write_fields).
         let mut perms = PermissionSet::default();
         perms.users.insert(player, DocRole::Owner);
-        let mut d = tests_doc(perms, serde_json::json!({ "vision": { "range": 30 }, "hp": 10 }));
+        let mut d = tests_doc(
+            perms,
+            serde_json::json!({ "vision": { "range": 30 }, "hp": 10 }),
+        );
         d.scope = Scope::World { world_id: w.id };
         let gm_ctx = PermissionContext {
             user_id: gm,
@@ -941,7 +950,10 @@ mod tests {
     async fn world_cap_requirements_round_trip() {
         use crate::auth::role::ServerRole;
         let r = repo().await;
-        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         // Default is empty.
         assert!(r.world_cap_requirements(w.id).await.unwrap().is_empty());

@@ -40,14 +40,10 @@ pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
 /// structural base. A requirement matches when `path` equals the prefix or is a
 /// descendant of it (matched on a `/` boundary so `/system/visionmode` does not
 /// match a `/system/vision` requirement).
-pub fn declared_caps_for_path<'a>(
-    path: &str,
-    reqs: &'a [CapabilityRequirement],
-) -> Vec<&'a str> {
+pub fn declared_caps_for_path<'a>(path: &str, reqs: &'a [CapabilityRequirement]) -> Vec<&'a str> {
     let mut out = Vec::new();
     for req in reqs {
-        let matches =
-            path == req.path_prefix || path.starts_with(&format!("{}/", req.path_prefix));
+        let matches = path == req.path_prefix || path.starts_with(&format!("{}/", req.path_prefix));
         if matches {
             out.extend(req.caps.iter().map(String::as_str));
         }
