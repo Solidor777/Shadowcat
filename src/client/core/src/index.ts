@@ -33,6 +33,7 @@ export {
   OperationSchema,
   ServerMsgSchema,
   CapabilityRequirementSchema,
+  SearchHitSchema,
 } from "./wire";
 export type {
   ServerMsg,
@@ -43,4 +44,5 @@ export type {
   WireFieldChange,
   WireScope,
   WireCapabilityRequirement,
+  WireSearchHit,
 } from "./wire";

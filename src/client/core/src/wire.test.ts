@@ -108,6 +108,18 @@ describe("parseServerMsg", () => {
     }
   });
 
+  it("parses a search_result frame", () => {
+    const m = parseServerMsg(
+      JSON.stringify({
+        type: "search_result",
+        request_id: "r1",
+        hits: [],
+        next_cursor: null,
+      }),
+    );
+    expect(m?.type).toBe("search_result");
+  });
+
   it("returns null on malformed or unknown frames", () => {
     expect(parseServerMsg("{not json")).toBeNull();
     expect(parseServerMsg(JSON.stringify({ type: "nope" }))).toBeNull();
