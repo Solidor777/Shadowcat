@@ -15,3 +15,15 @@
   <p>Role: {role}</p>
   <button onclick={doLogout}>Log out</button>
 </section>
+
+<style lang="scss">
+  .panel {
+    padding: var(--space-4);
+    display: grid;
+    gap: var(--space-3);
+  }
+  .panel p {
+    color: var(--text-muted);
+    margin: 0;
+  }
+</style>
