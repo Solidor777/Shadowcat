@@ -17,6 +17,7 @@ clap = { version = "4", features = ["derive", "env"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 axum = { version = "0.8", features = ["ws"] }
 dashmap = "6"
+hecs = "0.11"
 futures-util = "0.3"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "request-id", "util"] }
