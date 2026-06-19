@@ -4,7 +4,7 @@
   import { navigate } from "../../../lib/route.svelte";
   import { i18n, locale } from "../../../lib/i18n.svelte";
 
-  const { role, t } = getAppContext();
+  const { role, t, leaveWorld } = getAppContext();
   async function doLogout() {
     await logout();
     navigate({ name: "login" });
@@ -19,6 +19,7 @@
       {#each i18n.locales as loc (loc)}<option value={loc}>{loc}</option>{/each}
     </select>
   </label>
+  <button onclick={leaveWorld}>{t("settings.leaveWorld")}</button>
   <button onclick={doLogout}>{t("settings.logout")}</button>
 </section>
 
