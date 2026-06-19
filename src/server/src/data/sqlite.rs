@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::auth::role::ServerRole;
 use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
 use crate::data::document::{
-    CapabilityGrants, CapabilityRequirement, Document, Scope, World, WorldRole,
+    CapabilityGrants, CapabilityRequirement, ContractDeclaration, Document, Scope, World, WorldRole,
 };
 use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
@@ -380,6 +380,16 @@ impl SqliteRepository {
     ) -> Result<(), DataError> {
         let json = serde_json::to_string(reqs)?;
         self.set_setting(&world_caps_req_key(world), &json).await
+    }
+
+    /// Replace a world's UI contract declarations (stored as JSON in settings).
+    pub async fn set_world_contract_declarations(
+        &self,
+        world: Uuid,
+        decls: &[ContractDeclaration],
+    ) -> Result<(), DataError> {
+        let json = serde_json::to_string(decls)?;
+        self.set_setting(&world_contracts_key(world), &json).await
     }
 
     pub async fn add_member(
@@ -919,6 +929,16 @@ impl Repository for SqliteRepository {
         }
     }
 
+    async fn world_contract_declarations(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<ContractDeclaration>, DataError> {
+        match self.get_setting(&world_contracts_key(world)).await? {
+            Some(json) => Ok(serde_json::from_str(&json)?),
+            None => Ok(Vec::new()),
+        }
+    }
+
     async fn search(
         &self,
         ctx: &crate::data::membership::PermissionContext,
@@ -1043,6 +1063,11 @@ fn world_caps_req_key(world: Uuid) -> String {
     format!("world_caps_req:{world}")
 }
 
+/// Settings key holding a world's UI contract declarations (JSON).
+fn world_contracts_key(world: Uuid) -> String {
+    format!("world_contracts:{world}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1051,6 +1076,36 @@ mod tests {
 
     async fn repo() -> SqliteRepository {
         SqliteRepository::connect("sqlite::memory:").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn contract_declarations_round_trip_and_default_empty() {
+        use crate::data::document::{Cardinality, ContractDeclaration, ContractProvide};
+        let repo = repo().await;
+        let world = repo.create_world("w", 0).await.unwrap();
+
+        // Unset → empty.
+        assert!(repo
+            .world_contract_declarations(world.id)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let decls = vec![ContractDeclaration {
+            module_id: "core-ui".into(),
+            version: "0.1.0".into(),
+            provides: vec![ContractProvide {
+                contract: "shadowcat.surface:sidebar".into(),
+                cardinality: Cardinality::Singleton,
+            }],
+            requires: vec![],
+        }];
+        repo.set_world_contract_declarations(world.id, &decls)
+            .await
+            .unwrap();
+
+        let got = repo.world_contract_declarations(world.id).await.unwrap();
+        assert_eq!(got, decls);
     }
 
     #[tokio::test]

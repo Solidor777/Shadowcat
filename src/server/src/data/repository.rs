@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::data::command::{Command, UnsequencedCommand};
-use crate::data::document::{CapabilityGrants, CapabilityRequirement, Document, World};
+use crate::data::document::{
+    CapabilityGrants, CapabilityRequirement, ContractDeclaration, Document, World,
+};
 use crate::data::DataError;
 
 /// Storage contract. The only implementation in M2 is `SqliteRepository`;
@@ -55,6 +57,12 @@ pub trait Repository: Send + Sync {
         &self,
         world: Uuid,
     ) -> Result<Vec<CapabilityRequirement>, DataError>;
+
+    /// A world's UI contract declarations (GM-published). Empty when unset.
+    async fn world_contract_declarations(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<ContractDeclaration>, DataError>;
 
     /// Full-text search over a world's documents, ranked by relevance and
     /// filtered to what `ctx` may read. `cursor` is the raw-rank offset from a

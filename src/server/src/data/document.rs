@@ -78,6 +78,37 @@ pub struct CapabilityRequirement {
     pub caps: BTreeSet<String>,
 }
 
+/// Cardinality of a UI surface contract: one provider or many.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum Cardinality {
+    Singleton,
+    Multi,
+}
+
+/// A UI surface contract a module provides, with its cardinality.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct ContractProvide {
+    pub contract: String,
+    pub cardinality: Cardinality,
+}
+
+/// A module's UI contract declaration: what surface contracts it provides and
+/// which it requires an active provider for. Pure data — the server validates
+/// and distributes these strings; it never holds components or runs module code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct ContractDeclaration {
+    pub module_id: String,
+    pub version: String,
+    #[serde(default)]
+    pub provides: Vec<ContractProvide>,
+    #[serde(default)]
+    pub requires: Vec<String>,
+}
+
 /// Document-level permissions: default role, per-user overrides, property-level
 /// visibility keyed by JSON pointer, and additive capability grants.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
