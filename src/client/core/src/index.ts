@@ -12,8 +12,14 @@ export type { HookKind, HookDefinition, OnOptions, Handler, CoreHooks } from "./
 export { ServiceRegistry } from "./services";
 export { MiddlewareChain } from "./middleware";
 export type { PipelineName, Middleware } from "./middleware";
-export { ManifestSchema, parseManifest } from "./manifest";
-export type { ModuleManifest, CapRequirement, HookDecl } from "./manifest";
+export { ManifestSchema, parseManifest, declarationOf } from "./manifest";
+export type {
+  ModuleManifest,
+  CapRequirement,
+  HookDecl,
+  ContractProvide,
+  ContractDeclaration,
+} from "./manifest";
 export { ModuleRegistry } from "./modules";
 export type { Module, ModuleContext, ModuleInfo } from "./modules";
 export { loadModules } from "./loader";
@@ -21,6 +27,9 @@ export type { ImportFn, ModuleEntry } from "./loader";
 export { resolveCaps, canWritePath } from "./capabilities";
 export { DocumentStore, setPointer, applyOperation } from "./store";
 export type { Listener } from "./store";
+export { ContributionRegistry } from "./contributions";
+export type { Contribution, Cardinality } from "./contributions";
+export { reconcileTopology } from "./topology";
 export { OptimisticClient } from "./optimistic";
 export { WsClient } from "./ws-client";
 export type {
@@ -50,5 +59,6 @@ export type {
   WireFieldChange,
   WireScope,
   WireCapabilityRequirement,
+  WireContractDeclaration,
   WireSearchHit,
 } from "./wire";

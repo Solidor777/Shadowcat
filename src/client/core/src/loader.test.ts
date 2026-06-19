@@ -6,6 +6,7 @@ import { ServiceRegistry } from "./services";
 import { MiddlewareChain } from "./middleware";
 import { DocumentStore } from "./store";
 import { OptimisticClient } from "./optimistic";
+import { ContributionRegistry } from "./contributions";
 import { silentLogger } from "./logger";
 
 function registry() {
@@ -16,6 +17,7 @@ function registry() {
     store: new DocumentStore(),
     client: new OptimisticClient("self"),
     logger: silentLogger,
+    contributions: new ContributionRegistry(),
   });
 }
 
