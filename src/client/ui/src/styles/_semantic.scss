@@ -9,6 +9,7 @@
   --accent: var(--blue-500);
   --accent-hover: var(--blue-400);
   --accent-active: var(--blue-600);
+  --on-accent: #ffffff; // text/icon on an accent fill — 4.66:1 on --accent (WCAG AA)
   --danger: var(--red-500);
   --success: var(--green-500);
   --warning: var(--amber-500);
