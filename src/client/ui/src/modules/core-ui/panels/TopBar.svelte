@@ -1,9 +1,9 @@
 <script lang="ts">
   import { getAppContext } from "../../../lib/appContext";
-  const { world } = getAppContext();
+  const { world, t } = getAppContext();
 </script>
 
-<header class="topbar"><strong>shadowcat</strong> <span>world {world}</span></header>
+<header class="topbar"><strong>{t("app.name")}</strong> <span>{t("topbar.world", { world })}</span></header>
 
 <style lang="scss">
   .topbar {

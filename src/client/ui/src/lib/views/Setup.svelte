@@ -1,5 +1,6 @@
 <script lang="ts">
   import { setup } from "../api";
+  import { t } from "../i18n.svelte";
 
   let { onDone }: { onDone: () => void } = $props();
   let username = $state("");
@@ -15,20 +16,20 @@
     const { ok, status } = await setup(username, password, token || undefined);
     busy = false;
     if (ok) onDone();
-    else error = status === 403 ? "Invalid setup token." : `Setup failed (${status}).`;
+    else error = status === 403 ? t("setup.errorToken") : t("setup.errorGeneric", { status });
   }
 </script>
 
 <main class="entry">
-  <h1>Create the admin account</h1>
+  <h1>{t("setup.title")}</h1>
   <form onsubmit={submit}>
-    <label>Username <input bind:value={username} autocomplete="username" /></label>
-    <label>Password
+    <label>{t("common.username")} <input bind:value={username} autocomplete="username" /></label>
+    <label>{t("common.password")}
       <input type="password" bind:value={password} autocomplete="new-password" />
     </label>
-    <label>Setup token (if required) <input bind:value={token} /></label>
+    <label>{t("setup.token")} <input bind:value={token} /></label>
     {#if error}<p role="alert">{error}</p>{/if}
-    <button type="submit" disabled={busy}>Create admin</button>
+    <button type="submit" disabled={busy}>{t("setup.submit")}</button>
   </form>
 </main>
 

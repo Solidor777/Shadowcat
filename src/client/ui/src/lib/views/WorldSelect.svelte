@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { WorldEntry } from "@shadowcat/types";
   import { listWorlds, createWorld } from "../api";
+  import { t } from "../i18n.svelte";
 
   let { onEnter }: { onEnter: (worldId: string) => void } = $props();
   let worlds = $state<WorldEntry[]>([]);
@@ -11,7 +12,7 @@
     try {
       worlds = await listWorlds();
     } catch {
-      error = "Could not load worlds.";
+      error = t("worlds.errorLoad");
     }
   }
   refresh();
@@ -26,13 +27,13 @@
       await refresh();
       onEnter(w.id);
     } catch {
-      error = "Could not create world.";
+      error = t("worlds.errorCreate");
     }
   }
 </script>
 
 <main class="entry">
-  <h1>Your worlds</h1>
+  <h1>{t("worlds.title")}</h1>
   <ul>
     {#each worlds as world (world.id)}
       <li>
@@ -41,12 +42,12 @@
         </button>
       </li>
     {/each}
-    {#if worlds.length === 0}<li class="empty">No worlds yet.</li>{/if}
+    {#if worlds.length === 0}<li class="empty">{t("worlds.empty")}</li>{/if}
   </ul>
   {#if error}<p role="alert">{error}</p>{/if}
   <form onsubmit={create}>
-    <input bind:value={newName} placeholder="New world name" aria-label="New world name" />
-    <button type="submit">Create world</button>
+    <input bind:value={newName} placeholder={t("worlds.newName")} aria-label={t("worlds.newName")} />
+    <button type="submit">{t("worlds.create")}</button>
   </form>
 </main>
 

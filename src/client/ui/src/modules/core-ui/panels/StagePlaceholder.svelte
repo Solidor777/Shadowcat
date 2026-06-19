@@ -1,6 +1,9 @@
-<script lang="ts"></script>
+<script lang="ts">
+  import { getAppContext } from "../../../lib/appContext";
+  const { t } = getAppContext();
+</script>
 
-<section class="stage"><p>Scene rendering arrives in M8.</p></section>
+<section class="stage"><p>{t("stage.placeholder")}</p></section>
 
 <style lang="scss">
   .stage {
