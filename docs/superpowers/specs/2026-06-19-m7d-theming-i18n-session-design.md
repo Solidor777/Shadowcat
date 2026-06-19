@@ -154,9 +154,15 @@ session reads/writes.
   meet WCAG AA on the entry card, added a `--surface-sunken` token. All
   text/accent pairs ≥ AA; ui 18 tests + svelte-check green.
   Plan: [`plans/2026-06-19-m7d-1-theming.md`](plans/2026-06-19-m7d-1-theming.md).
-- **M7d-2 — i18n.** Neutral `I18n` core (core, barrel-exported) + Svelte adapter;
-  `en` catalog; route all strings through `t()`; locale switcher. Vitest (core +
-  adapter).
+- **M7d-2 — i18n. ✅ DONE** (merged `--no-ff` to local main, not pushed). Neutral
+  `I18n` core in `@shadowcat/core` (subscribe/snapshot, `{name}` interpolation,
+  missing-key→key) + Svelte `t` adapter via `createSubscriber` (+ reactive
+  `locale()`); one `en` catalog; all UI strings routed through `t()` (entry views
+  import directly, panels via `AppContext.t`); locale switcher in Settings.
+  Single-reviewed: no Critical/Important; added reactive `locale()` so the switcher
+  tracks restore-applied locale changes (M7d-3). core 104 + ui 21 tests + typecheck
+  green.
+  Plan: [`plans/2026-06-19-m7d-2-i18n.md`](plans/2026-06-19-m7d-2-i18n.md).
 - **M7d-3 — Session-restore.** `sessionState` load/restore/persist wiring;
   auto-enter `lastWorld`; reactive `activeTab`; the leave-world control. Vitest
   (mocked `api`).
