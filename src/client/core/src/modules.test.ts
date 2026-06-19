@@ -29,14 +29,18 @@ test("activates a contract provider before a requirer (topological by contract)"
   const r = new ModuleRegistry(deps());
   r.add({
     manifest: { id: "combat", version: "1.0.0", dependencies: {}, requires: ["s:sidebar"] },
-    register: vi.fn(() => order.push("combat")),
+    register: vi.fn(() => {
+      order.push("combat");
+    }),
   });
   r.add({
     manifest: {
       id: "sidebar", version: "1.0.0", dependencies: {},
       provides: [{ contract: "s:sidebar", cardinality: "singleton" }],
     },
-    register: vi.fn(() => order.push("sidebar")),
+    register: vi.fn(() => {
+      order.push("sidebar");
+    }),
   });
   await r.activate();
   expect(order).toEqual(["sidebar", "combat"]);
@@ -91,8 +95,9 @@ test("removes a module's contributions on unload", async () => {
   const r = new ModuleRegistry(d);
   r.add({
     manifest: { id: "m", version: "1.0.0", dependencies: {} },
-    register: (ctx) =>
-      ctx.contributions.contribute({ id: "p", contract: "s:sidebar", component: {} }),
+    register: (ctx) => {
+      ctx.contributions.contribute({ id: "p", contract: "s:sidebar", component: {} });
+    },
   });
   await r.activate();
   expect(reg.contributionsFor("s:sidebar")).toHaveLength(1);
