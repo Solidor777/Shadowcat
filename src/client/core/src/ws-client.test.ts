@@ -289,4 +289,57 @@ describe("WsClient", () => {
     client.stop();
     await expect(p).rejects.toThrow(/stopped/i);
   });
+
+  it("search rejects immediately when there is no live transport", async () => {
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
+      handlers: noop,
+    });
+    // Not started → transport is null. A long timeout would otherwise hang.
+    await expect(
+      client.search("x", { timeoutMs: 60_000 }),
+    ).rejects.toThrow(/not connected/i);
+  });
+
+  it("subscribeSearch rejects immediately when there is no live transport", async () => {
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
+      handlers: noop,
+    });
+    await expect(
+      client.subscribeSearch("x", { timeoutMs: 60_000 }, () => {}),
+    ).rejects.toThrow(/not connected/i);
+  });
+
+  it("a throwing onUpdate is surfaced, not thrown into the socket loop", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const errors: unknown[] = [];
+    const client = new WsClient({
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onError: (e) => errors.push(e) },
+    });
+    await client.start();
+    let calls = 0;
+    const p = client.subscribeSearch("dragon", { limit: 5 }, () => {
+      calls += 1;
+      if (calls === 1) throw new Error("handler boom");
+    });
+    const req = JSON.parse(sent.find((s) => JSON.parse(s).type === "search")!);
+    // Initial result fires onUpdate, which throws. The throw must not prevent the
+    // subscription promise from resolving, and must be routed to onError.
+    onMessage(
+      JSON.stringify({ type: "search_result", request_id: req.request_id, hits: [], next_cursor: null }),
+    );
+    const handle = await p;
+    expect(calls).toBe(1);
+    expect(errors).toHaveLength(1);
+    // The subscription is still live: a later update still dispatches.
+    onMessage(JSON.stringify({ type: "search_update", request_id: req.request_id, hits: [] }));
+    expect(calls).toBe(2);
+    handle.unsubscribe();
+  });
 });

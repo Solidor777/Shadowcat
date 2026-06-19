@@ -110,6 +110,21 @@ export class WsClient {
     this.subscriptions.clear();
   }
 
+  /** Run a consumer callback in isolation: a throw is routed to `onError` and
+   * never propagates into the socket message pump. A throw from `onError`
+   * itself is swallowed so the pump cannot die. */
+  private safeEmit(fn: () => void): void {
+    try {
+      fn();
+    } catch (err) {
+      try {
+        this.opts.handlers.onError?.(err);
+      } catch {
+        // onError must not break the pump; ignore its failure.
+      }
+    }
+  }
+
   /** Send a client frame (no-op if currently disconnected). */
   send(msg: ClientMsg): void {
     this.transport?.send(JSON.stringify(msg));
@@ -162,7 +177,7 @@ export class WsClient {
     switch (msg.type) {
       case "welcome":
         this.serverOffsetMs = msg.server_time - this.now();
-        this.opts.handlers.onWelcome?.(msg);
+        this.safeEmit(() => this.opts.handlers.onWelcome?.(msg));
         // Catch up anything applied-after our watermark (initial sync or a
         // reconnect gap). Idempotent: the server replays from from_seq.
         if (msg.current_seq >= this.nextExpected) {
@@ -173,7 +188,7 @@ export class WsClient {
         this.applyEvent(msg.command);
         break;
       case "reject":
-        this.opts.handlers.onReject?.(msg.intent_id, msg.reason);
+        this.safeEmit(() => this.opts.handlers.onReject?.(msg.intent_id, msg.reason));
         break;
       case "resync_begin":
         break;
@@ -209,7 +224,8 @@ export class WsClient {
         break;
       }
       case "search_update": {
-        this.subscriptions.get(msg.request_id)?.(msg.hits);
+        const handler = this.subscriptions.get(msg.request_id);
+        if (handler) this.safeEmit(() => handler(msg.hits));
         break;
       }
     }
@@ -227,6 +243,10 @@ export class WsClient {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<SearchPage>((resolve, reject) => {
+      if (!this.transport) {
+        reject(new Error("not connected"));
+        return;
+      }
       const timer = setTimeout(() => {
         this.pending.delete(request_id);
         reject(new Error("search request timeout"));
@@ -256,8 +276,12 @@ export class WsClient {
   ): Promise<SubscriptionHandle> {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
-    this.subscriptions.set(request_id, onUpdate);
     return new Promise<SubscriptionHandle>((resolve, reject) => {
+      if (!this.transport) {
+        reject(new Error("not connected"));
+        return;
+      }
+      this.subscriptions.set(request_id, onUpdate);
       const timer = setTimeout(() => {
         this.pending.delete(request_id);
         this.subscriptions.delete(request_id);
@@ -265,7 +289,7 @@ export class WsClient {
       }, timeoutMs);
       this.pending.set(request_id, {
         resolve: (page) => {
-          onUpdate(page.hits);
+          this.safeEmit(() => onUpdate(page.hits));
           resolve({
             unsubscribe: () => {
               this.subscriptions.delete(request_id);

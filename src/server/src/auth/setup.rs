@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use uuid::Uuid;
 
-use crate::auth::password::hash_password;
+use crate::auth::password::hash_password_async;
 use crate::config::Config;
 use crate::data::sqlite::SqliteRepository;
 use crate::http::error::AppError;
@@ -24,7 +24,9 @@ pub async fn create_admin(
     password: &str,
     now: i64,
 ) -> Result<Option<Uuid>, AppError> {
-    let hash = hash_password(password).map_err(|_| AppError::Internal)?;
+    let hash = hash_password_async(password.to_owned())
+        .await
+        .map_err(|_| AppError::Internal)?;
     repo.create_admin_if_none(username, &hash, now)
         .await
         .map_err(|_| AppError::Internal)
