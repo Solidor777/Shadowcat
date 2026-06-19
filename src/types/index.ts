@@ -26,3 +26,7 @@ export type { WsErrorCode } from "./generated/WsErrorCode";
 export type { Cardinality } from "./generated/Cardinality";
 export type { ContractProvide } from "./generated/ContractProvide";
 export type { ContractDeclaration } from "./generated/ContractDeclaration";
+
+// HTTP API DTOs
+export type { ServerConfig } from "./generated/ServerConfig";
+export type { WorldEntry } from "./generated/WorldEntry";

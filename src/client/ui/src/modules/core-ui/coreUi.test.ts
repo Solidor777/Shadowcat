@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { ContributionRegistry } from "@shadowcat/core";
+import { ContributionRegistry, type Contribution } from "@shadowcat/core";
 import { coreUi } from "./index";
 
 test("core-ui declares the region surfaces and contributes default panels", () => {
@@ -10,7 +10,7 @@ test("core-ui declares the region surfaces and contributes default panels", () =
   const contributions = new ContributionRegistry();
   // Minimal ModuleContext stand-in: only `contributions` is used by register.
   coreUi.register({
-    contributions: { contribute: (c) => contributions.contribute(c) },
+    contributions: { contribute: (c: Contribution) => contributions.contribute(c) },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any);
   expect(contributions.contributionsFor("shadowcat.surface:sidebar").length).toBeGreaterThan(0);
