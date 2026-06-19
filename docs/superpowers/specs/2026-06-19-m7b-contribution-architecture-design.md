@@ -203,11 +203,16 @@ Only `component` values are framework-specific.
   server now enforces consistent cardinality + singleton-has-one-provider.
   141 lib + 12 integration tests green, clippy clean.
   Plan: [`plans/2026-06-19-m7b-1-contract-server-mirror.md`](plans/2026-06-19-m7b-1-contract-server-mirror.md).
-- **M7b-2 — Client registry + resolution (`@shadowcat/core`).**
-  `ContributionRegistry`; `ModuleContext.contributions` + unload teardown;
-  manifest `provides`/`requires` (Zod + ts-rs alignment); generalized
-  `depsSatisfied`/`topoSort` + singleton loud-fail; `Welcome` reconciliation
-  warn. Vitest.
+- **M7b-2 — Client registry + resolution (`@shadowcat/core`). ✅ DONE** (merged
+  `--no-ff` to local main, not pushed). `ContributionRegistry`;
+  `ModuleContext.contributions` + unload teardown; manifest `provides`/`requires`
+  (Zod + ts-rs drift guard); generalized `depsSatisfied`/`topoSort` + singleton
+  loud-fail; `Welcome` `contract_declarations` wire schema + advisory
+  `reconcileTopology`. Buddy-checked (two-reviewer): no Critical/Important; added
+  the manifest→ts-rs drift guard, clarified reconcile scope (presence-only by
+  module_id; richer check → TODO), documented the non-recoverable singleton throw.
+  100 core unit tests + typecheck green.
+  Plan: [`plans/2026-06-19-m7b-2-client-registry.md`](plans/2026-06-19-m7b-2-client-registry.md).
 - **M7b-3 — Svelte `<Surface>` adapter + harness (`ui` package).** `<Surface>`
   component; `appContext`; a minimal test harness (a fake module contributing a
   component into a surface renders, reorders by `order`, and tears down on
