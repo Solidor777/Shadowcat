@@ -307,8 +307,7 @@ pub(crate) mod tests {
         assert_eq!(res.json::<serde_json::Value>()["initialized"], false);
 
         // Initialized: reports true.
-        let server =
-            axum_test::TestServer::new(router(initialized_state().await).await).unwrap();
+        let server = axum_test::TestServer::new(router(initialized_state().await).await).unwrap();
         let res = server.get("/api/config").await;
         res.assert_status_ok();
         assert_eq!(res.json::<serde_json::Value>()["initialized"], true);
@@ -765,7 +764,10 @@ pub(crate) mod tests {
             .get(&format!("/api/worlds/{world_id}/contracts"))
             .await
             .json();
-        assert_eq!(got[0]["provides"][0]["contract"], "shadowcat.surface:sidebar");
+        assert_eq!(
+            got[0]["provides"][0]["contract"],
+            "shadowcat.surface:sidebar"
+        );
 
         // Dangling requires (no provider) is rejected.
         let dangling = serde_json::json!([

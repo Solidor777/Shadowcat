@@ -163,9 +163,19 @@ session reads/writes.
   tracks restore-applied locale changes (M7d-3). core 104 + ui 21 tests + typecheck
   green.
   Plan: [`plans/2026-06-19-m7d-2-i18n.md`](plans/2026-06-19-m7d-2-i18n.md).
-- **M7d-3 — Session-restore.** `sessionState` load/restore/persist wiring;
-  auto-enter `lastWorld`; reactive `activeTab`; the leave-world control. Vitest
-  (mocked `api`).
+- **M7d-3 — Session-restore. ✅ DONE** (merged `--no-ff` to local main).
+  `getUiState`/`putUiState` api; `sessionState` (load + apply saved locale +
+  observe-locale + debounced PUT + `flushOnUnload` keepalive on pagehide);
+  `App` boot restore → **reload auto-enters `lastWorld`** (accessibility fallback
+  to world-select); `lastWorld` set on enter / cleared on leave; leave-world
+  control in Settings (`AppContext.leaveWorld`). Single-reviewed: fixed the
+  unload-loss durability gap + gentler worlds-fetch fallback. **`activeTab`
+  deferred** (no tabbed sidebar yet — schema slot retained for M11/M12). ui 30 +
+  core 104 tests + typecheck green.
+  Plan: [`plans/2026-06-19-m7d-3-session-restore.md`](plans/2026-06-19-m7d-3-session-restore.md).
+
+**M7d COMPLETE — and with it, M7.** The single binary serves a themed, localized,
+session-restoring SPA on the UI-as-modules contribution architecture.
 
 ## 8. Testing
 

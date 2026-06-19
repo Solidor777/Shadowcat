@@ -6,8 +6,8 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
-use ts_rs::TS;
 use tower_sessions::Session;
+use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::auth::password::{hash_password, verify_password_async};
@@ -94,7 +94,9 @@ pub async fn put_ui_state(
     Json(body): Json<serde_json::Value>,
 ) -> Result<StatusCode, AppError> {
     if !body.is_object() {
-        return Err(AppError::Unprocessable("ui_state must be a JSON object".into()));
+        return Err(AppError::Unprocessable(
+            "ui_state must be a JSON object".into(),
+        ));
     }
     // Cap the canonical compact serialization (what is actually persisted), not
     // the raw request bytes — deterministic regardless of client whitespace.

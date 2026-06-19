@@ -1111,9 +1111,18 @@ mod tests {
     #[tokio::test]
     async fn worlds_for_user_scopes_to_membership_and_admin_sees_all() {
         let repo = repo().await;
-        let a = repo.create_user("a", Some("h"), ServerRole::User, 0).await.unwrap();
-        let b = repo.create_user("b", Some("h"), ServerRole::User, 0).await.unwrap();
-        let admin = repo.create_user("ad", Some("h"), ServerRole::Admin, 0).await.unwrap();
+        let a = repo
+            .create_user("a", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let b = repo
+            .create_user("b", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let admin = repo
+            .create_user("ad", Some("h"), ServerRole::Admin, 0)
+            .await
+            .unwrap();
 
         // a GMs world1; b GMs world2 (each creator seated as GM).
         let w1 = repo.create_world_owned("world1", a, 0).await.unwrap();
@@ -1126,7 +1135,10 @@ mod tests {
         a_worlds.sort_by(|x, y| x.0.name.cmp(&y.0.name));
         assert_eq!(a_worlds.len(), 2);
         assert_eq!((a_worlds[0].0.id, a_worlds[0].1), (w1.id, WorldRole::Gm));
-        assert_eq!((a_worlds[1].0.id, a_worlds[1].1), (w2.id, WorldRole::Player));
+        assert_eq!(
+            (a_worlds[1].0.id, a_worlds[1].1),
+            (w2.id, WorldRole::Player)
+        );
 
         // b sees only world2.
         let b_worlds = repo.worlds_for_user(b, ServerRole::User).await.unwrap();
@@ -1134,7 +1146,10 @@ mod tests {
         assert_eq!(b_worlds[0].0.id, w2.id);
 
         // A server admin sees every world as GM.
-        let admin_worlds = repo.worlds_for_user(admin, ServerRole::Admin).await.unwrap();
+        let admin_worlds = repo
+            .worlds_for_user(admin, ServerRole::Admin)
+            .await
+            .unwrap();
         assert_eq!(admin_worlds.len(), 2);
         assert!(admin_worlds.iter().all(|(_, r)| *r == WorldRole::Gm));
     }

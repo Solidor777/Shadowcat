@@ -92,7 +92,16 @@ framework-neutral TS module**; Module API explicitly 0.x.
 > opt-in): **sandboxed** server-side validators for computed game-rule
 > enforcement — its own threat model; never the default path.
 
-### M7 · Layout-lite + theming scaffold
+### M7 · Layout-lite + theming scaffold ✅
+> **DONE** (merged to local main; pushed at milestone completion). Delivered across
+> M7a (server surface) · M7b (UI contribution architecture: server-mirrored
+> contract declarations + client `ContributionRegistry` + Svelte `<Surface>`) · M7c
+> (the SPA + `core-ui` shell + entry flow; the binary serves the embedded SPA) · M7d
+> (icon-derived 3-tier SCSS theme + framework-neutral i18n seam + `ui_state`
+> session-restore that returns you to your last world on reload). Specs/plans under
+> `superpowers/`. Deferred within M7: multi-provider singleton conflict policy +
+> capability version negotiation (`TODO.md`); `activeTab` restore + a tabbed sidebar
+> (M11/M12, when there are multiple sidebar panels).
 > Spec: [`superpowers/specs/2026-06-19-m7-layout-theming-design.md`](superpowers/specs/2026-06-19-m7-layout-theming-design.md).
 > Decomposed into **M7a** (server surface), **M7b** (UI contribution
 > architecture), **M7c** (shell + entry flow as modules + reactivity bridge),
