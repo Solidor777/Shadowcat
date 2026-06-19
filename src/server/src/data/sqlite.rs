@@ -5,7 +5,9 @@ use uuid::Uuid;
 
 use crate::auth::role::ServerRole;
 use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
-use crate::data::document::{CapabilityGrants, Document, Scope, World, WorldRole};
+use crate::data::document::{
+    CapabilityGrants, CapabilityRequirement, Document, Scope, World, WorldRole,
+};
 use crate::data::permission::{cap, required_cap_for_path, resolve_access_world};
 use crate::data::repository::Repository;
 use crate::data::validation;
@@ -295,6 +297,16 @@ impl SqliteRepository {
     ) -> Result<(), DataError> {
         let json = serde_json::to_string(grants)?;
         self.set_setting(&world_caps_key(world), &json).await
+    }
+
+    /// Replace a world's declarative capability requirements (stored as JSON).
+    pub async fn set_world_cap_requirements(
+        &self,
+        world: Uuid,
+        reqs: &[CapabilityRequirement],
+    ) -> Result<(), DataError> {
+        let json = serde_json::to_string(reqs)?;
+        self.set_setting(&world_caps_req_key(world), &json).await
     }
 
     pub async fn add_member(
@@ -761,11 +773,26 @@ impl Repository for SqliteRepository {
             None => Ok(CapabilityGrants::default()),
         }
     }
+
+    async fn world_cap_requirements(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<CapabilityRequirement>, DataError> {
+        match self.get_setting(&world_caps_req_key(world)).await? {
+            Some(json) => Ok(serde_json::from_str(&json)?),
+            None => Ok(Vec::new()),
+        }
+    }
 }
 
 /// Settings key holding a world's default capability grants (JSON).
 fn world_caps_key(world: Uuid) -> String {
     format!("world_caps:{world}")
+}
+
+/// Settings key holding a world's declarative capability requirements (JSON).
+fn world_caps_req_key(world: Uuid) -> String {
+    format!("world_caps_req:{world}")
 }
 
 #[cfg(test)]
@@ -776,6 +803,22 @@ mod tests {
 
     async fn repo() -> SqliteRepository {
         SqliteRepository::connect("sqlite::memory:").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn world_cap_requirements_round_trip() {
+        use crate::auth::role::ServerRole;
+        let r = repo().await;
+        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        // Default is empty.
+        assert!(r.world_cap_requirements(w.id).await.unwrap().is_empty());
+        let reqs = vec![CapabilityRequirement {
+            path_prefix: "/system/vision".into(),
+            caps: ["dnd5e:gm_vision".to_string()].into_iter().collect(),
+        }];
+        r.set_world_cap_requirements(w.id, &reqs).await.unwrap();
+        assert_eq!(r.world_cap_requirements(w.id).await.unwrap(), reqs);
     }
 
     #[tokio::test]
