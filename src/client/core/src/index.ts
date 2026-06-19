@@ -22,7 +22,7 @@ export { DocumentStore, setPointer, applyOperation } from "./store";
 export type { Listener } from "./store";
 export { OptimisticClient } from "./optimistic";
 export { WsClient } from "./ws-client";
-export type { WsClientOptions, WsClientHandlers } from "./ws-client";
+export type { WsClientOptions, WsClientHandlers, WireWelcome } from "./ws-client";
 export { webSocketConnect } from "./transport";
 export type { Transport, TransportHandlers, Connect } from "./transport";
 export {
@@ -31,6 +31,7 @@ export {
   CommandSchema,
   OperationSchema,
   ServerMsgSchema,
+  CapabilityRequirementSchema,
 } from "./wire";
 export type {
   ServerMsg,
@@ -40,4 +41,5 @@ export type {
   WireOperation,
   WireFieldChange,
   WireScope,
+  WireCapabilityRequirement,
 } from "./wire";

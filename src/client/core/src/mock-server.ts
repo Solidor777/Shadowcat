@@ -54,6 +54,9 @@ export class MockServer {
         world: this.world,
         current_seq: this.seq,
         server_time: this.now(),
+        world_default_grants: { by_role: {}, by_user: {} },
+        actor_role: "player",
+        capability_requirements: [],
       });
       return Promise.resolve(transport);
     };

@@ -4,7 +4,15 @@
 // emits in-order commands and rejects to its handlers; wiring to the document
 // store / optimistic engine is the caller's job.
 import type { RejectReason } from "@shadowcat/types";
-import { parseServerMsg, type ClientMsg, type WireCommand } from "./wire";
+import {
+  parseServerMsg,
+  type ClientMsg,
+  type ServerMsg,
+  type WireCommand,
+} from "./wire";
+
+/** The `Welcome` server frame (capability fields included). */
+export type WireWelcome = Extract<ServerMsg, { type: "welcome" }>;
 import type { Connect, Transport } from "./transport";
 
 export interface WsClientHandlers {
@@ -12,7 +20,7 @@ export interface WsClientHandlers {
   onCommand(cmd: WireCommand): void;
   /** An intent the server refused. */
   onReject?(intentId: string, reason: RejectReason): void;
-  onWelcome?(world: string, currentSeq: number): void;
+  onWelcome?(welcome: WireWelcome): void;
   /** A command that failed to apply (e.g. schema drift). Surfaced, never thrown
    * into the socket loop. */
   onError?(error: unknown): void;
@@ -112,7 +120,7 @@ export class WsClient {
     switch (msg.type) {
       case "welcome":
         this.serverOffsetMs = msg.server_time - this.now();
-        this.opts.handlers.onWelcome?.(msg.world, msg.current_seq);
+        this.opts.handlers.onWelcome?.(msg);
         // Catch up anything applied-after our watermark (initial sync or a
         // reconnect gap). Idempotent: the server replays from from_seq.
         if (msg.current_seq >= this.nextExpected) {
