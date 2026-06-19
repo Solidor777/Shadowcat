@@ -10,7 +10,13 @@ import { MiddlewareChain, type Middleware, type PipelineName } from "./middlewar
 import { DocumentStore } from "./store";
 import { OptimisticClient } from "./optimistic";
 import type { Logger } from "./logger";
-import { parseManifest, type ModuleManifest, type CapRequirement } from "./manifest";
+import {
+  parseManifest,
+  declarationOf,
+  type ModuleManifest,
+  type CapRequirement,
+  type ContractDeclaration,
+} from "./manifest";
 import { ContributionRegistry, type Contribution } from "./contributions";
 import { satisfies } from "./semver";
 
@@ -90,6 +96,13 @@ export class ModuleRegistry {
       if (r.active) out.push(...(r.module.manifest.requirements ?? []));
     }
     return out;
+  }
+
+  /** Active modules projected to their UI contract declarations. */
+  declarations(): ContractDeclaration[] {
+    return [...this.records.values()]
+      .filter((r) => r.active)
+      .map((r) => declarationOf(r.module.manifest));
   }
 
   async activate(): Promise<void> {

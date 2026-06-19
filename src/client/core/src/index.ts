@@ -29,6 +29,7 @@ export { DocumentStore, setPointer, applyOperation } from "./store";
 export type { Listener } from "./store";
 export { ContributionRegistry } from "./contributions";
 export type { Contribution, Cardinality } from "./contributions";
+export { reconcileTopology } from "./topology";
 export { OptimisticClient } from "./optimistic";
 export { WsClient } from "./ws-client";
 export type {
