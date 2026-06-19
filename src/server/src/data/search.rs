@@ -58,6 +58,32 @@ fn collect_leaves(value: &serde_json::Value, out: &mut String) {
     }
 }
 
+/// Build a safe FTS5 MATCH expression from untrusted input. Each whitespace
+/// token is stripped of embedded quotes, wrapped in double quotes (so any
+/// remaining FTS5 special characters are treated as literal token separators,
+/// never operators), and AND-combined. The final token gets a trailing `*` for
+/// type-ahead prefix matching. Returns `None` for an empty query.
+pub fn build_match(input: &str) -> Option<String> {
+    let terms: Vec<String> = input
+        .split_whitespace()
+        .map(|t| {
+            t.replace('"', " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if terms.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = terms.iter().map(|t| format!("\"{t}\"")).collect();
+    let last = parts.len() - 1;
+    parts[last].push('*');
+    Some(parts.join(" "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +135,27 @@ mod tests {
         // Keys and non-text leaves are not indexed.
         assert!(!c.contains("weapon"));
         assert!(!c.contains("true"));
+    }
+
+    #[test]
+    fn build_match_quotes_terms_and_prefixes_last() {
+        assert_eq!(build_match("gob scout").unwrap(), "\"gob\" \"scout\"*");
+        assert_eq!(build_match("dragon").unwrap(), "\"dragon\"*");
+    }
+
+    #[test]
+    fn build_match_neutralizes_fts_operators() {
+        let m = build_match("fire OR \"x\" -bomb").unwrap();
+        // Bare operators do not reach MATCH as syntax (every token is quoted).
+        assert!(!m.contains("OR "));
+        assert!(m.starts_with('"'));
+        // The stray quote is stripped, not emitted as a raw operator quote.
+        assert!(!m.contains("\"x\"\"x\""));
+    }
+
+    #[test]
+    fn build_match_empty_is_none() {
+        assert!(build_match("   ").is_none());
+        assert!(build_match("").is_none());
     }
 }
