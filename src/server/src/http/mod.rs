@@ -1,6 +1,5 @@
 pub mod embed;
 pub mod error;
-pub mod middleware;
 pub mod routes;
 
 use std::sync::atomic::AtomicBool;
@@ -106,10 +105,6 @@ pub async fn router(state: AppState) -> Router {
                 .delete(routes::delete_document),
         )
         .fallback(embed::static_handler)
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            middleware::init_gate,
-        ))
         .layer(sessions)
         .layer(
             // Last layer = outermost. Request id is stamped first, the trace span
@@ -183,10 +178,6 @@ pub(crate) mod tests {
     async fn setup_creates_admin_then_closes() {
         let server = fresh_server().await;
 
-        // Uninitialized: a normal page redirects to setup.
-        let redirect = server.get("/").await;
-        redirect.assert_status(axum::http::StatusCode::SEE_OTHER);
-
         let setup = server
             .post("/api/setup")
             .json(&serde_json::json!({
@@ -195,7 +186,7 @@ pub(crate) mod tests {
             .await;
         setup.assert_status(axum::http::StatusCode::NO_CONTENT);
 
-        // Now initialized: second setup is a conflict, and "/" serves index.
+        // Now initialized: a second setup is a conflict.
         server
             .post("/api/setup")
             .json(&serde_json::json!({
@@ -203,7 +194,6 @@ pub(crate) mod tests {
             }))
             .await
             .assert_status(axum::http::StatusCode::CONFLICT);
-        server.get("/").await.assert_status_ok();
 
         // The created admin can log in.
         server
@@ -437,8 +427,6 @@ pub(crate) mod tests {
             .json(&serde_json::json!({ "username": "x", "password": "y" }))
             .await
             .assert_status(axum::http::StatusCode::CONFLICT);
-        // Normal page served, not redirected to setup.
-        server.get("/").await.assert_status_ok();
         // The bootstrapped admin can log in.
         server
             .post("/api/login")
