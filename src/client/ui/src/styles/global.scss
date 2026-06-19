@@ -1,0 +1,71 @@
+@use "./primitives";
+@use "./semantic";
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--surface-sunken);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+h1,
+h2 {
+  font-weight: 600;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: 1px solid transparent;
+  border-radius: var(--radius-1);
+  padding: var(--space-2) var(--space-3);
+}
+button:hover {
+  background: var(--accent-hover);
+}
+button:active {
+  background: var(--accent-active);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+input {
+  font: inherit;
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  padding: var(--space-2);
+}
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+[role="alert"] {
+  color: var(--danger);
+}
+
+small {
+  color: var(--text-muted);
+}
