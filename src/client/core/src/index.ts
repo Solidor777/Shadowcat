@@ -9,6 +9,7 @@ export { silentLogger, consoleLogger } from "./logger";
 export type { Logger } from "./logger";
 export { HookBus, STOP } from "./hooks";
 export type { HookKind, HookDefinition, OnOptions, Handler, CoreHooks } from "./hooks";
+export { ServiceRegistry } from "./services";
 export { DocumentStore, setPointer, applyOperation } from "./store";
 export type { Listener } from "./store";
 export { OptimisticClient } from "./optimistic";
