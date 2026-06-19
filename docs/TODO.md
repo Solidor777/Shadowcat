@@ -3,7 +3,6 @@
 Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 
 ## Client core
-- TODO: `WsClient.search`/`subscribeSearch` issued while the transport is disconnected currently waits out `timeoutMs` (the `send` is a no-op, so no frame is ever answered). Fast-fail with an immediate rejection when there is no live transport, taking care not to reject one issued in the brief window during initial `connect`. (M6c-1/M6c-2 final-review minor; in-flight requests are already drained on disconnect/stop.)
 - TODO: Wrap consumer-handler dispatch in `WsClient.handleFrame` in a try/catch so a throwing handler (`onCommand`/`onReject`/`onWelcome`/`onUpdate`) cannot break the socket message pump. Currently a throwing callback propagates out through the transport `onMessage`. (M6c-2 final-review minor; pre-existing exposure, surfaced by the consumer-supplied `subscribeSearch` `onUpdate`.)
 
 ## Server / auth

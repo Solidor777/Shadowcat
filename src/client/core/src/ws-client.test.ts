@@ -289,4 +289,25 @@ describe("WsClient", () => {
     client.stop();
     await expect(p).rejects.toThrow(/stopped/i);
   });
+
+  it("search rejects immediately when there is no live transport", async () => {
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
+      handlers: noop,
+    });
+    // Not started → transport is null. A long timeout would otherwise hang.
+    await expect(
+      client.search("x", { timeoutMs: 60_000 }),
+    ).rejects.toThrow(/not connected/i);
+  });
+
+  it("subscribeSearch rejects immediately when there is no live transport", async () => {
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
+      handlers: noop,
+    });
+    await expect(
+      client.subscribeSearch("x", { timeoutMs: 60_000 }, () => {}),
+    ).rejects.toThrow(/not connected/i);
+  });
 });

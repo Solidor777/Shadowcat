@@ -227,6 +227,10 @@ export class WsClient {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<SearchPage>((resolve, reject) => {
+      if (!this.transport) {
+        reject(new Error("not connected"));
+        return;
+      }
       const timer = setTimeout(() => {
         this.pending.delete(request_id);
         reject(new Error("search request timeout"));
@@ -256,8 +260,12 @@ export class WsClient {
   ): Promise<SubscriptionHandle> {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
-    this.subscriptions.set(request_id, onUpdate);
     return new Promise<SubscriptionHandle>((resolve, reject) => {
+      if (!this.transport) {
+        reject(new Error("not connected"));
+        return;
+      }
+      this.subscriptions.set(request_id, onUpdate);
       const timer = setTimeout(() => {
         this.pending.delete(request_id);
         this.subscriptions.delete(request_id);
