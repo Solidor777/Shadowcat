@@ -1,5 +1,15 @@
 # M7b-2 — Client Contribution Registry + Resolution Implementation Plan
 
+## Buddy-check directives
+
+Modifies the foundational `ModuleRegistry` resolution (topo-sort + activation +
+new singleton loud-fail) — wide-blast-radius / subtle-algorithmic core, though
+no security or server surface. Final review is a **buddy-check** (two independent
+reviewers + debate), chosen by the human at handoff. Focus the reviewers on: the
+generalized `topoSort`/`depsSatisfied` correctness (cycle handling with contract
+edges, provider-before-requirer ordering), the singleton loud-fail logic, and the
+advisory (non-throwing) nature of `reconcileTopology`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: this project executes plans with
 > the **mainline-plan-execution** skill (inline, per-task spec-compliance check +
 > a single final branch review) — NOT subagent-driven-development or
@@ -402,80 +412,109 @@ git commit -m "feat(core): manifest provides/requires + declarationOf projection
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `src/client/core/src/modules.test.ts` (follow the file's existing
-`deps()`/module-builder helpers; a module's `manifest.provides`/`requires` drive
-resolution):
+First, update the file's `deps()` helper and imports. The existing `mod(id,
+dependencies, register)` helper cannot express `provides`/`requires`, so these
+tests use the inline `{ manifest, register }` form the file already uses for
+manifests with extra fields (e.g. the `collectRequirements`/`unload` tests).
+
+In `src/client/core/src/modules.test.ts`, add to the imports:
+```ts
+import { ContributionRegistry } from "./contributions";
+```
+and add `contributions` to `deps()`:
+```ts
+function deps() {
+  return {
+    hooks: new HookBus(silentLogger),
+    services: new ServiceRegistry(),
+    middleware: new MiddlewareChain(),
+    store: new DocumentStore(),
+    client: new OptimisticClient("self"),
+    logger: silentLogger,
+    contributions: new ContributionRegistry(),
+  };
+}
+```
+
+Then add the tests:
 
 ```ts
-it("activates a contract provider before a requirer (topological by contract)", async () => {
+test("activates a contract provider before a requirer (topological by contract)", async () => {
   const order: string[] = [];
-  const provider = mod({
-    id: "sidebar", version: "1.0.0", dependencies: {},
-    provides: [{ contract: "s:sidebar", cardinality: "singleton" }],
-  }, () => order.push("sidebar"));
-  const requirer = mod({
-    id: "combat", version: "1.0.0", dependencies: {},
-    requires: ["s:sidebar"],
-  }, () => order.push("combat"));
   const r = new ModuleRegistry(deps());
-  r.add(requirer);
-  r.add(provider);
+  r.add({
+    manifest: { id: "combat", version: "1.0.0", dependencies: {}, requires: ["s:sidebar"] },
+    register: vi.fn(() => order.push("combat")),
+  });
+  r.add({
+    manifest: {
+      id: "sidebar", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }],
+    },
+    register: vi.fn(() => order.push("sidebar")),
+  });
   await r.activate();
   expect(order).toEqual(["sidebar", "combat"]);
 });
 
-it("does not activate a module whose required contract has no provider", async () => {
-  const requirer = mod({
-    id: "combat", version: "1.0.0", dependencies: {}, requires: ["s:missing"],
-  });
+test("does not activate a module whose required contract has no provider", async () => {
   const r = new ModuleRegistry(deps());
-  r.add(requirer);
+  const reg = vi.fn();
+  r.add({
+    manifest: { id: "combat", version: "1.0.0", dependencies: {}, requires: ["s:missing"] },
+    register: reg,
+  });
   await r.activate();
-  expect(r.list().find((m) => m.id === "combat")?.active).toBe(false);
+  expect(reg).not.toHaveBeenCalled();
+  expect(r.list().find((m) => m.id === "combat")!.active).toBe(false);
 });
 
-it("throws when two active modules provide the same singleton contract", async () => {
-  const a = mod({ id: "a", version: "1.0.0", dependencies: {},
-    provides: [{ contract: "s:sidebar", cardinality: "singleton" }] });
-  const b = mod({ id: "b", version: "1.0.0", dependencies: {},
-    provides: [{ contract: "s:sidebar", cardinality: "singleton" }] });
+test("throws when two active modules provide the same singleton contract", async () => {
   const r = new ModuleRegistry(deps());
-  r.add(a);
-  r.add(b);
+  r.add({
+    manifest: { id: "a", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
+    register: vi.fn(),
+  });
+  r.add({
+    manifest: { id: "b", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
+    register: vi.fn(),
+  });
   await expect(r.activate()).rejects.toThrow(/singleton/);
 });
 
-it("allows two providers of a multi contract", async () => {
-  const a = mod({ id: "a", version: "1.0.0", dependencies: {},
-    provides: [{ contract: "s:panel", cardinality: "multi" }] });
-  const b = mod({ id: "b", version: "1.0.0", dependencies: {},
-    provides: [{ contract: "s:panel", cardinality: "multi" }] });
+test("allows two providers of a multi contract", async () => {
   const r = new ModuleRegistry(deps());
-  r.add(a);
-  r.add(b);
+  r.add({
+    manifest: { id: "a", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:panel", cardinality: "multi" }] },
+    register: vi.fn(),
+  });
+  r.add({
+    manifest: { id: "b", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:panel", cardinality: "multi" }] },
+    register: vi.fn(),
+  });
   await r.activate();
   expect(r.list().every((m) => m.active)).toBe(true);
 });
 
-it("removes a module's contributions on unload", async () => {
+test("removes a module's contributions on unload", async () => {
   const reg = new ContributionRegistry();
   const d = { ...deps(), contributions: reg };
-  const m = mod({ id: "m", version: "1.0.0", dependencies: {} }, (ctx) => {
-    ctx.contributions.contribute({ id: "p", contract: "s:sidebar", component: {} });
-  });
   const r = new ModuleRegistry(d);
-  r.add(m);
+  r.add({
+    manifest: { id: "m", version: "1.0.0", dependencies: {} },
+    register: (ctx) =>
+      ctx.contributions.contribute({ id: "p", contract: "s:sidebar", component: {} }),
+  });
   await r.activate();
   expect(reg.contributionsFor("s:sidebar")).toHaveLength(1);
   await r.unload("m");
   expect(reg.contributionsFor("s:sidebar")).toHaveLength(0);
 });
 ```
-
-Update the file's `deps()` helper to include `contributions: new ContributionRegistry()`
-and import `ContributionRegistry`. Add a `mod(manifest, register?)` helper if the
-file doesn't already have an equivalent (the existing module-builder pattern in
-`modules.test.ts` — reuse it; pass `provides`/`requires` through the manifest).
 
 - [ ] **Step 2: Run it to verify it fails**
 
@@ -715,7 +754,8 @@ import { reconcileTopology } from "./topology";
 import type { Logger } from "./logger";
 
 const decl = (module_id: string) => ({ module_id, version: "1", provides: [], requires: [] });
-const logger = (): Logger => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() });
+// Logger is { debug, warn, error } — no `info`.
+const logger = (): Logger => ({ debug: vi.fn(), warn: vi.fn(), error: vi.fn() });
 
 describe("reconcileTopology", () => {
   it("does not warn when local and remote module sets match", () => {
