@@ -1,5 +1,16 @@
 # M7a — Server Surface Implementation Plan
 
+## Buddy-check directives
+
+This branch touches an **auth-adjacent read surface** (world-list visibility +
+`ui_state` on the users table + a public pre-init config probe), flagged
+high-risk in spec §13. Final review is a **buddy-check** (two independent blind
+reviewers + structured debate via the `buddy-checking` skill), chosen by the
+human at execution handoff — not the single-reviewer default. Focus the
+reviewers on: cross-user world leakage, the opaque-blob validation boundary, and
+the pre-init reachability of `/api/config`.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: this project executes plans with
 > the **mainline-plan-execution** skill (inline, per-task spec-compliance check +
 > a single final branch review) — NOT subagent-driven-development or
@@ -41,8 +52,10 @@ bundle to exist; flipping now would break the running app's setup redirect).
   module; route tests live in the `http/mod.rs` `tests` module (alongside the
   existing M3/M5 route tests).
 - Run a single named test with `cargo test <name>` from the repo root (filters by
-  name across the workspace). Run the server crate's full suite with
-  `cargo test --bin shadowcat` (the binary crate) before each commit.
+  name across the workspace). The tested code + ts-rs `TS` types live in the
+  **lib** crate (`src/server/src/lib.rs`), so regenerate bindings and run the full
+  suite with `cargo test --lib` (bindings) / `cargo test -p shadowcat` (lib + bin
+  + integration). NOTE: `--bin shadowcat` runs zero of these tests.
 
 ---
 
@@ -653,8 +666,9 @@ git commit -m "feat(server): GET /api/worlds (caller-scoped world list)"
 
 - [ ] **Step 1: Run the server crate's whole suite**
 
-Run: `cargo test --bin shadowcat`
-Expected: PASS — all existing M3/M5 route tests plus the four new tests green.
+Run: `cargo test -p shadowcat`
+Expected: PASS — all existing M3/M5 route tests plus the four new tests green
+(lib + bin + integration targets).
 
 - [ ] **Step 2: Confirm generated types are committed and in sync**
 
@@ -664,7 +678,7 @@ nothing uncommitted).
 
 - [ ] **Step 3: Lint**
 
-Run: `cargo clippy --bin shadowcat -- -D warnings`
+Run: `cargo clippy -p shadowcat --all-targets -- -D warnings`
 Expected: no warnings.
 
 - [ ] **Step 4: Update ARCHITECTURE.md if it enumerates the HTTP surface**

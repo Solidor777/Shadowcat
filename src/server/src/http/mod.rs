@@ -58,13 +58,21 @@ pub async fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(routes::health))
+        .route("/api/config", get(routes::config))
         .route("/ws", get(crate::ws::conn::ws_handler))
         .route("/api/debug/rooms", get(routes::debug_rooms))
         .route("/api/me", get(routes::me))
+        .route(
+            "/api/me/ui-state",
+            get(routes::get_ui_state).put(routes::put_ui_state),
+        )
         .route("/api/login", post(routes::login))
         .route("/api/logout", post(routes::logout))
         .route("/api/setup", post(routes::setup))
-        .route("/api/worlds", post(routes::create_world))
+        .route(
+            "/api/worlds",
+            post(routes::create_world).get(routes::list_worlds),
+        )
         .route(
             "/api/worlds/{id}/members",
             get(routes::list_members).post(routes::add_member),
@@ -263,6 +271,93 @@ pub(crate) mod tests {
             .get("/api/me")
             .await
             .assert_status(axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn list_worlds_returns_only_callers_worlds() {
+        let state = initialized_state().await;
+        seed_user(&state, "a").await;
+        seed_user(&state, "b").await;
+        let a = login_server(&state, "a").await;
+        let b = login_server(&state, "b").await;
+
+        // a creates world1 (GM); b creates world2 (GM).
+        a.post("/api/worlds")
+            .json(&serde_json::json!({ "name": "world1" }))
+            .await
+            .assert_status_ok();
+        b.post("/api/worlds")
+            .json(&serde_json::json!({ "name": "world2" }))
+            .await
+            .assert_status_ok();
+
+        // a sees exactly world1, as gm.
+        let worlds: serde_json::Value = a.get("/api/worlds").await.json();
+        let arr = worlds.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "world1");
+        assert_eq!(arr[0]["role"], "gm");
+        assert!(arr[0]["id"].is_string());
+
+        // a never sees b's world.
+        assert!(!worlds.to_string().contains("world2"));
+    }
+
+    #[tokio::test]
+    async fn config_reports_initialized_state_and_is_public_pre_init() {
+        // Uninitialized: reachable (not redirected to setup) and reports false.
+        let fresh = fresh_server().await;
+        let res = fresh.get("/api/config").await;
+        res.assert_status_ok();
+        assert_eq!(res.json::<serde_json::Value>()["initialized"], false);
+
+        // Initialized: reports true.
+        let server =
+            axum_test::TestServer::new(router(initialized_state().await).await).unwrap();
+        let res = server.get("/api/config").await;
+        res.assert_status_ok();
+        assert_eq!(res.json::<serde_json::Value>()["initialized"], true);
+    }
+
+    #[tokio::test]
+    async fn ui_state_get_put_round_trip_and_validation() {
+        let state = initialized_state().await;
+        seed_user(&state, "u").await;
+        let u = login_server(&state, "u").await;
+
+        // Unauthenticated GET is rejected.
+        let anon = axum_test::TestServer::builder()
+            .save_cookies()
+            .build(router(state.clone()).await)
+            .unwrap();
+        anon.get("/api/me/ui-state")
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+
+        // Default is an empty object.
+        let got: serde_json::Value = u.get("/api/me/ui-state").await.json();
+        assert_eq!(got, serde_json::json!({}));
+
+        // Store an object, read it back.
+        u.put("/api/me/ui-state")
+            .json(&serde_json::json!({ "global": { "locale": "en" } }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let got: serde_json::Value = u.get("/api/me/ui-state").await.json();
+        assert_eq!(got["global"]["locale"], "en");
+
+        // A non-object body is rejected.
+        u.put("/api/me/ui-state")
+            .json(&serde_json::json!([1, 2, 3]))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // An over-cap body is rejected.
+        let big = "x".repeat(70 * 1024);
+        u.put("/api/me/ui-state")
+            .json(&serde_json::json!({ "blob": big }))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]

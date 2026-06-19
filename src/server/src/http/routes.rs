@@ -6,6 +6,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
+use ts_rs::TS;
 use tower_sessions::Session;
 use uuid::Uuid;
 
@@ -63,6 +64,62 @@ pub async fn me(user: AuthUser) -> Json<MeResponse> {
         id: user.id,
         username: user.username,
         server_role: user.role,
+    })
+}
+
+/// Upper bound on a stored UI-state blob. It is read/written whole per user and
+/// is small UI session state; far above any realistic payload.
+const MAX_UI_STATE_BYTES: usize = 64 * 1024;
+
+/// The caller's opaque UI-state object, or `{}` when unset.
+pub async fn get_ui_state(
+    user: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let val = match state.repo.get_ui_state(user.id).await? {
+        // Stored only after passing the object-shape check below, so a parse
+        // failure here is server-side corruption, not client-actionable.
+        Some(s) => serde_json::from_str(&s).map_err(|_| AppError::Internal)?,
+        None => serde_json::json!({}),
+    };
+    Ok(Json(val))
+}
+
+/// Replace the caller's UI-state. Validates object-shape + size only; the body
+/// is otherwise opaque (the client owns its structure).
+pub async fn put_ui_state(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<StatusCode, AppError> {
+    if !body.is_object() {
+        return Err(AppError::Unprocessable("ui_state must be a JSON object".into()));
+    }
+    // Cap the canonical compact serialization (what is actually persisted), not
+    // the raw request bytes — deterministic regardless of client whitespace.
+    let s = serde_json::to_string(&body).map_err(|_| AppError::Internal)?;
+    if s.len() > MAX_UI_STATE_BYTES {
+        return Err(AppError::Unprocessable(format!(
+            "ui_state too large (max {MAX_UI_STATE_BYTES} bytes)"
+        )));
+    }
+    state.repo.set_ui_state(user.id, &s).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Public server bootstrap info for the SPA's first-load routing (setup vs
+/// login). Exposes nothing beyond the `initialized` bit the setup-409 already
+/// reveals.
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct ServerConfig {
+    pub initialized: bool,
+}
+
+/// Whether a first admin exists. Unauthenticated; reachable before init.
+pub async fn config(State(state): State<AppState>) -> Json<ServerConfig> {
+    Json(ServerConfig {
+        initialized: state.initialized.load(Ordering::Relaxed),
     })
 }
 
@@ -220,6 +277,34 @@ fn world_of(doc: &Document) -> Result<Uuid, AppError> {
 #[derive(Deserialize)]
 pub struct CreateWorldRequest {
     pub name: String,
+}
+
+/// A world the caller can access, with their effective role. The client's
+/// world-select list item.
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct WorldEntry {
+    pub id: Uuid,
+    pub name: String,
+    pub role: WorldRole,
+}
+
+/// Worlds the authenticated caller may access.
+pub async fn list_worlds(
+    user: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<WorldEntry>>, AppError> {
+    let worlds = state.repo.worlds_for_user(user.id, user.role).await?;
+    Ok(Json(
+        worlds
+            .into_iter()
+            .map(|(w, role)| WorldEntry {
+                id: w.id,
+                name: w.name,
+                role,
+            })
+            .collect(),
+    ))
 }
 
 /// Any authenticated user may create a world; the creator is seated as its GM.
