@@ -366,11 +366,15 @@ impl SqliteRepository {
         }
     }
 
-    /// Upsert a document row from its envelope, stamping `seq`.
-    async fn upsert_document<'e, E>(executor: E, doc: &Document, seq: i64) -> Result<(), DataError>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
+    /// Upsert a document row from its envelope, stamping `seq`, and rewrite its
+    /// FTS index row in the same transaction (crash-consistent). Takes a
+    /// `&mut SqliteConnection` because it runs multiple statements; callers pass
+    /// `&mut *tx`.
+    async fn upsert_document(
+        conn: &mut sqlx::SqliteConnection,
+        doc: &Document,
+        seq: i64,
+    ) -> Result<(), DataError> {
         let (scope_kind, world_id, pack) = match &doc.scope {
             Scope::Compendium { pack } => ("compendium", None, Some(pack.clone())),
             Scope::World { world_id } => ("world", Some(world_id.to_string()), None),
@@ -396,7 +400,7 @@ impl SqliteRepository {
         )
         .bind(doc.id.to_string())
         .bind(scope_kind)
-        .bind(world_id)
+        .bind(world_id.clone())
         .bind(pack)
         .bind(&doc.doc_type)
         .bind(doc.schema_version as i64)
@@ -408,8 +412,32 @@ impl SqliteRepository {
         .bind(json)
         .bind(doc.created_at)
         .bind(doc.updated_at)
-        .execute(executor)
+        .execute(&mut *conn)
         .await?;
+        // Keep the FTS index in lockstep with the row, inside the same tx.
+        sqlx::query("DELETE FROM documents_fts WHERE doc_id = ?")
+            .bind(doc.id.to_string())
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("INSERT INTO documents_fts (content, doc_id, world_id) VALUES (?, ?, ?)")
+            .bind(crate::data::search::index_content(doc))
+            .bind(doc.id.to_string())
+            .bind(world_id)
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
+
+    /// Remove a document's FTS row. Call alongside every document delete so the
+    /// index never references a removed document.
+    async fn delete_document_fts(
+        conn: &mut sqlx::SqliteConnection,
+        id: Uuid,
+    ) -> Result<(), DataError> {
+        sqlx::query("DELETE FROM documents_fts WHERE doc_id = ?")
+            .bind(id.to_string())
+            .execute(conn)
+            .await?;
         Ok(())
     }
 }
@@ -452,7 +480,7 @@ impl Repository for SqliteRepository {
             match op {
                 Operation::Create { doc } => {
                     check_command_scope(doc, sequenced.world_id)?;
-                    Self::upsert_document(&mut *tx, doc, seq).await?;
+                    Self::upsert_document(&mut tx, doc, seq).await?;
                 }
                 Operation::Delete { doc } => {
                     check_command_scope(doc, sequenced.world_id)?;
@@ -460,6 +488,7 @@ impl Repository for SqliteRepository {
                         .bind(doc.id.to_string())
                         .execute(&mut *tx)
                         .await?;
+                    Self::delete_document_fts(&mut tx, doc.id).await?;
                 }
                 Operation::Update { doc_id, changes } => {
                     let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
@@ -484,7 +513,7 @@ impl Repository for SqliteRepository {
                     check_command_scope(&doc, sequenced.world_id)?;
                     // updated_at tracks last mutation; the command ts is authoritative.
                     doc.updated_at = sequenced.ts;
-                    Self::upsert_document(&mut *tx, &doc, seq).await?;
+                    Self::upsert_document(&mut tx, &doc, seq).await?;
                 }
             }
         }
@@ -659,12 +688,13 @@ impl Repository for SqliteRepository {
 
         for op in &sequenced.ops {
             match op {
-                Operation::Create { doc } => Self::upsert_document(&mut *tx, doc, seq).await?,
+                Operation::Create { doc } => Self::upsert_document(&mut tx, doc, seq).await?,
                 Operation::Delete { doc } => {
                     sqlx::query("DELETE FROM documents WHERE id = ?")
                         .bind(doc.id.to_string())
                         .execute(&mut *tx)
                         .await?;
+                    Self::delete_document_fts(&mut tx, doc.id).await?;
                 }
                 Operation::Update { doc_id, changes } => {
                     let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
@@ -688,7 +718,7 @@ impl Repository for SqliteRepository {
                     // pre-image, is what gets stored.
                     validation::validate_system_size(&doc)?;
                     doc.updated_at = ts;
-                    Self::upsert_document(&mut *tx, &doc, seq).await?;
+                    Self::upsert_document(&mut tx, &doc, seq).await?;
                 }
             }
         }
@@ -1044,6 +1074,84 @@ mod tests {
         r.apply_intent(&player_ctx, w.id, vec![Operation::Create { doc: plain }], 2)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn fts_sync_reflects_create_update_delete() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{FieldChange, Operation};
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({ "name": "Goblin" }));
+        d.scope = Scope::World { world_id: w.id };
+
+        // Create → indexed.
+        r.apply_intent(&ctx, w.id, vec![Operation::Create { doc: d.clone() }], 1)
+            .await
+            .unwrap();
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM documents_fts WHERE documents_fts MATCH 'Goblin' AND world_id = ?",
+        )
+        .bind(w.id.to_string())
+        .fetch_one(r.pool())
+        .await
+        .unwrap();
+        assert_eq!(n, 1);
+
+        // Update → re-indexed (old term gone, new term present).
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id: d.id,
+                changes: vec![FieldChange {
+                    path: "/system/name".into(),
+                    old: serde_json::json!("Goblin"),
+                    new: serde_json::json!("Orc"),
+                }],
+            }],
+            2,
+        )
+        .await
+        .unwrap();
+        let goblin: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM documents_fts WHERE documents_fts MATCH 'Goblin'",
+        )
+        .fetch_one(r.pool())
+        .await
+        .unwrap();
+        let orc: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM documents_fts WHERE documents_fts MATCH 'Orc'",
+        )
+        .fetch_one(r.pool())
+        .await
+        .unwrap();
+        assert_eq!((goblin, orc), (0, 1));
+
+        // Delete → removed.
+        r.apply_intent(&ctx, w.id, vec![Operation::Delete { doc: d.clone() }], 3)
+            .await
+            .unwrap();
+        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM documents_fts WHERE doc_id = ?")
+            .bind(d.id.to_string())
+            .fetch_one(r.pool())
+            .await
+            .unwrap();
+        assert_eq!(after, 0);
     }
 
     #[tokio::test]
