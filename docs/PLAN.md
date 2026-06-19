@@ -50,7 +50,11 @@ framework-neutral TS module**; Module API explicitly 0.x.
   representation; resolves the M5-deferred intent correlation client-side
   (`author` + seq FIFO).
 
-#### M6b · Modules + capabilities (declarative)
+#### M6b · Modules + capabilities (declarative) ✅
+> Spec: [`superpowers/specs/2026-06-18-m6b-modules-capabilities-design.md`](superpowers/specs/2026-06-18-m6b-modules-capabilities-design.md).
+> Plan: [`superpowers/plans/2026-06-18-m6b-modules-capabilities.md`](superpowers/plans/2026-06-18-m6b-modules-capabilities.md).
+> Server capability slice buddy-checked (two-reviewer) before merge; two Critical
+> bypasses (Create-path, ancestor-write) + a `Welcome` over-share fixed.
 - Versioned hook system (informational / mutating / cancellable); service
   registry + middleware.
 - Module manifest + loader (topo-sort, semver, hot-unload cleanup); local
