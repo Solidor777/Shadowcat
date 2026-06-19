@@ -720,3 +720,5 @@ Run: `graphify update .`
 ## Buddy-check directives
 
 Task 2 (the egress subscription engine) is **concurrency- and security-sensitive**: it mutates per-connection state inside the `select!` loop, adds a debounce-timer branch, runs `Repository::search` re-evaluations that push per-recipient-filtered results, and must clean up on disconnect — a defect could leak another recipient's data, wedge the egress loop, or unbounded-push. At the execution handoff, OFFER a buddy-check (`superpowers:buddy-checking`) over Task 2 before merge; the remaining tasks (frames, wire schemas, client API, e2e, docs) suit the standard single final-branch review. The human decides whether to take the offer.
+
+**Decision (accepted):** Execute inline (superpowers:executing-plans) with checkpoints. Run a buddy-check (`superpowers:buddy-checking`) over Task 2 (the egress subscription engine) before merge; standard single final-branch review for the remainder.
