@@ -1,0 +1,26 @@
+import type { Messages } from "@shadowcat/core";
+
+export const en: Messages = {
+  "app.name": "shadowcat",
+  "common.username": "Username",
+  "common.password": "Password",
+  "login.submit": "Log in",
+  "login.error": "Invalid username or password.",
+  "setup.title": "Create the admin account",
+  "setup.token": "Setup token (if required)",
+  "setup.submit": "Create admin",
+  "setup.errorToken": "Invalid setup token.",
+  "setup.errorGeneric": "Setup failed ({status}).",
+  "worlds.title": "Your worlds",
+  "worlds.empty": "No worlds yet.",
+  "worlds.newName": "New world name",
+  "worlds.create": "Create world",
+  "worlds.errorLoad": "Could not load worlds.",
+  "worlds.errorCreate": "Could not create world.",
+  "topbar.world": "world {world}",
+  "settings.title": "Settings",
+  "settings.role": "Role: {role}",
+  "settings.logout": "Log out",
+  "settings.language": "Language",
+  "stage.placeholder": "Scene rendering arrives in M8.",
+};

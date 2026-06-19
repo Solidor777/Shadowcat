@@ -7,11 +7,16 @@ import type { WorldRole } from "@shadowcat/types";
  * contribution registry the host renders plus the in-world session essentials
  * (document store, world id, actor role). M7d adds the i18n `t`.
  */
+/** Translate function shape (framework-neutral; the Svelte adapter supplies a
+ * reactive implementation). */
+export type TFunc = (key: string, params?: Record<string, string | number>) => string;
+
 export interface AppContext {
   contributions: ContributionRegistry;
   store: DocumentStore;
   world: string;
   role: WorldRole;
+  t: TFunc;
 }
 
 const KEY = Symbol("shadowcat.appContext");

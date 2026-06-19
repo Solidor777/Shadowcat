@@ -1,5 +1,6 @@
 <script lang="ts">
   import { login } from "../api";
+  import { t } from "../i18n.svelte";
 
   let { onAuthed }: { onAuthed: () => void } = $props();
   let username = $state("");
@@ -19,14 +20,14 @@
 </script>
 
 <main class="entry">
-  <h1>shadowcat</h1>
+  <h1>{t("app.name")}</h1>
   <form onsubmit={submit}>
-    <label>Username <input bind:value={username} autocomplete="username" /></label>
-    <label>Password
+    <label>{t("common.username")} <input bind:value={username} autocomplete="username" /></label>
+    <label>{t("common.password")}
       <input type="password" bind:value={password} autocomplete="current-password" />
     </label>
-    {#if error}<p role="alert">Invalid username or password.</p>{/if}
-    <button type="submit" disabled={busy}>Log in</button>
+    {#if error}<p role="alert">{t("login.error")}</p>{/if}
+    <button type="submit" disabled={busy}>{t("login.submit")}</button>
   </form>
 </main>
 
