@@ -14,7 +14,9 @@ use crate::auth::role::ServerRole;
 use crate::auth::session::{AdminUser, AuthUser, SessionUser};
 use crate::auth::setup::{create_admin, now_millis};
 use crate::data::command::{Command, FieldChange, Operation};
-use crate::data::document::{CapabilityGrants, Document, Scope, World, WorldRole};
+use crate::data::document::{
+    CapabilityGrants, CapabilityRequirement, Document, Scope, World, WorldRole,
+};
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{cap, filter_command, filter_properties, resolve_access_world};
 use crate::data::repository::Repository;
@@ -428,5 +430,37 @@ pub async fn set_world_capability_defaults(
     require_gm(&state, &user, world).await?;
     validate_grants(&grants)?;
     state.repo.set_world_cap_defaults(world, &grants).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// A world's declarative capability requirements. GM/admin only.
+pub async fn get_world_capability_requirements(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+) -> Result<Json<Vec<CapabilityRequirement>>, AppError> {
+    require_gm(&state, &user, world).await?;
+    Ok(Json(state.repo.world_cap_requirements(world).await?))
+}
+
+/// Replace a world's declarative capability requirements. GM/admin only.
+pub async fn set_world_capability_requirements(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+    Json(reqs): Json<Vec<CapabilityRequirement>>,
+) -> Result<StatusCode, AppError> {
+    require_gm(&state, &user, world).await?;
+    for req in &reqs {
+        if !req.path_prefix.starts_with('/') {
+            return Err(AppError::Unprocessable(
+                "path_prefix must start with /".into(),
+            ));
+        }
+        for token in &req.caps {
+            validate_capability(token)?;
+        }
+    }
+    state.repo.set_world_cap_requirements(world, &reqs).await?;
     Ok(StatusCode::NO_CONTENT)
 }
