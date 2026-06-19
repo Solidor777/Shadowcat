@@ -105,6 +105,9 @@ export class ModuleRegistry {
       .map((r) => declarationOf(r.module.manifest));
   }
 
+  // A singleton-conflict throw (below) is non-recoverable: it aborts the pass
+  // with earlier modules already active, so the registry must be discarded, not
+  // retried.
   async activate(): Promise<void> {
     const order = this.topoSort(); // throws on cycle
     for (const id of order) {

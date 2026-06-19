@@ -9,7 +9,12 @@ interface WireLike {
   module_id: string;
 }
 
-/** Warn for each module present on exactly one side, keyed by module_id. */
+/**
+ * Presence-only reconciliation: warn for each module present on exactly one
+ * side, keyed by `module_id`. Version and the `provides`/`requires` payload are
+ * NOT compared — a same-id/different-contract-set drift reconciles silently.
+ * Richer mismatch detection is deferred to module management (see TODO.md).
+ */
 export function reconcileTopology(
   local: ContractDeclaration[],
   remote: WireLike[],

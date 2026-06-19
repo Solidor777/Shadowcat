@@ -21,3 +21,8 @@ export type { ServerMsg } from "./generated/ServerMsg";
 export type { RejectReason } from "./generated/RejectReason";
 export type { ResyncSource } from "./generated/ResyncSource";
 export type { WsErrorCode } from "./generated/WsErrorCode";
+
+// UI contribution contracts
+export type { Cardinality } from "./generated/Cardinality";
+export type { ContractProvide } from "./generated/ContractProvide";
+export type { ContractDeclaration } from "./generated/ContractDeclaration";

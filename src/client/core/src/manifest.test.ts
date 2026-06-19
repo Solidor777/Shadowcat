@@ -1,5 +1,19 @@
-import { expect, test } from "vitest";
-import { parseManifest, declarationOf } from "./manifest";
+import { expect, test, expectTypeOf } from "vitest";
+import type * as Ts from "@shadowcat/types";
+import {
+  parseManifest,
+  declarationOf,
+  type ContractDeclaration,
+  type ContractProvide,
+} from "./manifest";
+
+// Drift guard: the hand-written manifest declaration shapes (consumed by
+// declarationOf / ModuleRegistry.declarations() and reconciled against the wire
+// topology) must stay pinned to the ts-rs generated types.
+test("manifest contract declaration shapes match the ts-rs types", () => {
+  expectTypeOf<ContractDeclaration>().toEqualTypeOf<Ts.ContractDeclaration>();
+  expectTypeOf<ContractProvide>().toEqualTypeOf<Ts.ContractProvide>();
+});
 
 test("accepts provides/requires and projects to a declaration", () => {
   const m = parseManifest({
