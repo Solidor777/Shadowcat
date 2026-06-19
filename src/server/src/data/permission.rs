@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 use crate::data::command::{Command, FieldChange, Operation};
-use crate::data::document::{CapabilityGrants, DocRole, Document, Visibility, WorldRole};
+use crate::data::document::{
+    CapabilityGrants, CapabilityRequirement, DocRole, Document, Visibility, WorldRole,
+};
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 
@@ -31,6 +33,26 @@ pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// Additional capabilities required to write `path`, declared by the world's
+/// capability requirements. Returned on top of `required_cap_for_path`'s
+/// structural base. A requirement matches when `path` equals the prefix or is a
+/// descendant of it (matched on a `/` boundary so `/system/visionmode` does not
+/// match a `/system/vision` requirement).
+pub fn declared_caps_for_path<'a>(
+    path: &str,
+    reqs: &'a [CapabilityRequirement],
+) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    for req in reqs {
+        let matches =
+            path == req.path_prefix || path.starts_with(&format!("{}/", req.path_prefix));
+        if matches {
+            out.extend(req.caps.iter().map(String::as_str));
+        }
+    }
+    out
 }
 
 /// A user's effective capabilities on a document. `all` is the GM/admin
@@ -305,6 +327,27 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[test]
+    fn declared_caps_match_prefix_on_boundaries() {
+        let reqs = vec![CapabilityRequirement {
+            path_prefix: "/system/vision".into(),
+            caps: ["dnd5e:gm_vision".to_string()].into_iter().collect(),
+        }];
+        // exact and descendant match
+        assert_eq!(
+            declared_caps_for_path("/system/vision", &reqs),
+            vec!["dnd5e:gm_vision"]
+        );
+        assert_eq!(
+            declared_caps_for_path("/system/vision/range", &reqs),
+            vec!["dnd5e:gm_vision"]
+        );
+        // sibling that merely shares a string prefix does NOT match (boundary check)
+        assert!(declared_caps_for_path("/system/visionmode", &reqs).is_empty());
+        // unrelated path
+        assert!(declared_caps_for_path("/system/hp", &reqs).is_empty());
     }
 
     #[test]

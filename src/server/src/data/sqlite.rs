@@ -8,7 +8,9 @@ use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
 use crate::data::document::{
     CapabilityGrants, CapabilityRequirement, Document, Scope, World, WorldRole,
 };
-use crate::data::permission::{cap, required_cap_for_path, resolve_access_world};
+use crate::data::permission::{
+    cap, declared_caps_for_path, required_cap_for_path, resolve_access_world,
+};
 use crate::data::repository::Repository;
 use crate::data::validation;
 use crate::data::DataError;
@@ -511,6 +513,7 @@ impl Repository for SqliteRepository {
         // single-writer pool holds one connection, so a settings query mid-tx
         // would deadlock.
         let world_defaults = self.world_cap_defaults(world_id).await?;
+        let world_reqs = self.world_cap_requirements(world_id).await?;
         let mut tx = self.pool.begin().await?;
 
         // Phase 1 — authorize, structurally validate, and check pre-images.
@@ -574,6 +577,18 @@ impl Repository for SqliteRepository {
                                 "intent denied: missing capability"
                             );
                             return Err(DataError::Forbidden);
+                        }
+                        // Declarative requirements are additive: a module/world
+                        // may demand extra capabilities for a sub-path on top of
+                        // the structural base above.
+                        for extra in declared_caps_for_path(&ch.path, &world_reqs) {
+                            if !access.has(extra) {
+                                tracing::debug!(
+                                    user = %ctx.user_id, path = %ch.path, capability = extra,
+                                    "intent denied: missing declared capability"
+                                );
+                                return Err(DataError::Forbidden);
+                            }
                         }
                         let actual = whole
                             .pointer(&ch.path)
@@ -803,6 +818,123 @@ mod tests {
 
     async fn repo() -> SqliteRepository {
         SqliteRepository::connect("sqlite::memory:").await.unwrap()
+    }
+
+    /// A world-scoped actor document with the given permissions and system body.
+    /// Callers overwrite `scope` with the real world id.
+    fn tests_doc(
+        perms: crate::data::document::PermissionSet,
+        system: serde_json::Value,
+    ) -> Document {
+        Document {
+            id: Uuid::new_v4(),
+            scope: Scope::World {
+                world_id: Uuid::from_u128(9),
+            },
+            doc_type: "actor".into(),
+            schema_version: 1,
+            source: None,
+            owner: None,
+            permissions: perms,
+            embedded: Default::default(),
+            system,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn declarative_requirement_blocks_writer_without_extra_cap() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{FieldChange, Operation};
+        use crate::data::document::{CapabilityRequirement, DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let player = r.create_user("pl", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+
+        // A doc the player owns (owner floor: read + write_fields).
+        let mut perms = PermissionSet::default();
+        perms.users.insert(player, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({ "vision": { "range": 30 }, "hp": 10 }));
+        d.scope = Scope::World { world_id: w.id };
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        r.apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: d.clone() }], 1)
+            .await
+            .unwrap();
+
+        // Require dnd5e:gm_vision to write /system/vision.
+        r.set_world_cap_requirements(
+            w.id,
+            &[CapabilityRequirement {
+                path_prefix: "/system/vision".into(),
+                caps: ["dnd5e:gm_vision".to_string()].into_iter().collect(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let player_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // Owner CAN write a non-restricted /system field (base cap only).
+        r.apply_intent(
+            &player_ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id: d.id,
+                changes: vec![FieldChange {
+                    path: "/system/hp".into(),
+                    old: serde_json::json!(10),
+                    new: serde_json::json!(8),
+                }],
+            }],
+            2,
+        )
+        .await
+        .unwrap();
+
+        // Owner CANNOT write /system/vision (lacks dnd5e:gm_vision).
+        let err = r
+            .apply_intent(
+                &player_ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id: d.id,
+                    changes: vec![FieldChange {
+                        path: "/system/vision/range".into(),
+                        old: serde_json::json!(30),
+                        new: serde_json::json!(60),
+                    }],
+                }],
+                3,
+            )
+            .await;
+        assert!(matches!(err, Err(DataError::Forbidden)));
+
+        // GM is unaffected (holds everything).
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id: d.id,
+                changes: vec![FieldChange {
+                    path: "/system/vision/range".into(),
+                    old: serde_json::json!(30),
+                    new: serde_json::json!(60),
+                }],
+            }],
+            4,
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
