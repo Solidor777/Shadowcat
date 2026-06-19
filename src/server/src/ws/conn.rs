@@ -54,11 +54,22 @@ enum Egress {
     Unsubscribe {
         request_id: Uuid,
     },
+    /// Register a derived scene-channel subscription (egress-owned).
+    SceneSubscribe {
+        request_id: Uuid,
+        channel: String,
+    },
+    /// Cancel a derived scene-channel subscription.
+    SceneUnsubscribe {
+        request_id: Uuid,
+    },
 }
 
 /// Max live search subscriptions per connection; a subscribe beyond this is
 /// rejected with `SearchError`.
 const MAX_SUBSCRIPTIONS: usize = 16;
+/// Max derived scene-channel subscriptions per connection.
+const MAX_SCENE_SUBSCRIPTIONS: usize = 16;
 /// Coalescing window: a burst of Events triggers at most one re-run per window.
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 
@@ -69,6 +80,13 @@ struct Sub {
     /// Last delivered result identity, in rank order. Used to suppress a push
     /// when re-evaluation yields an identical top-N.
     fingerprint: Vec<(Uuid, u64, i64)>,
+}
+
+/// A derived scene-channel subscription's stored state. `fingerprint` is the
+/// last delivered payload; a re-eval pushes only when it changes.
+struct SceneSub {
+    channel: String,
+    fingerprint: Option<serde_json::Value>,
 }
 
 /// A cheap, order-sensitive identity of a result page for no-op suppression:
@@ -275,8 +293,24 @@ async fn handle_socket(
                             }
                         }
                         Ok(ClientMsg::Hello { .. }) | Ok(ClientMsg::Pong) => {}
-                        // TODO: route scene-derived subscriptions to the egress task.
-                        Ok(ClientMsg::SceneSubscribe { .. }) | Ok(ClientMsg::SceneUnsubscribe { .. }) => {}
+                        Ok(ClientMsg::SceneSubscribe { request_id, channel }) => {
+                            if etx
+                                .send(Egress::SceneSubscribe { request_id, channel })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Ok(ClientMsg::SceneUnsubscribe { request_id }) => {
+                            if etx
+                                .send(Egress::SceneUnsubscribe { request_id })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
                         Err(_) => {
                             let _ = etx
                                 .send(Egress::Frame(Arc::new(ServerMsg::Error {
@@ -355,6 +389,8 @@ async fn egress_loop<S>(
     // current state with THIS connection's ctx (so per-recipient filtering and
     // the visibility-split index apply) and pushed only if its result changed.
     let mut subs: std::collections::HashMap<Uuid, Sub> = std::collections::HashMap::new();
+    let mut scene_subs: std::collections::HashMap<Uuid, SceneSub> =
+        std::collections::HashMap::new();
     let mut reeval_deadline: Option<tokio::time::Instant> = None;
 
     let mut next_expected = current_seq + 1;
@@ -400,6 +436,38 @@ async fn egress_loop<S>(
                 Some(Egress::Unsubscribe { request_id }) => {
                     subs.remove(&request_id);
                 }
+                Some(Egress::SceneSubscribe { request_id, channel }) => {
+                    if scene_subs.len() >= MAX_SCENE_SUBSCRIPTIONS {
+                        let f = ServerMsg::SceneError { request_id, message: "too many subscriptions".into() };
+                        if sink.send(text(&f)).await.is_err() { break; }
+                    } else {
+                        // Read the ECS and the seq it reflects under one borrow,
+                        // then drop it before awaiting the sink.
+                        let (payload, seq) = {
+                            let ecs = room.scene().read().await;
+                            (crate::scene::compute_derived(&channel, &ecs, &ctx), room.current_seq())
+                        };
+                        match payload {
+                            Some(p) => {
+                                let f = ServerMsg::SceneDerived {
+                                    request_id,
+                                    channel: channel.clone(),
+                                    computed_at_seq: seq,
+                                    payload: p.clone(),
+                                };
+                                if sink.send(text(&f)).await.is_err() { break; }
+                                scene_subs.insert(request_id, SceneSub { channel, fingerprint: Some(p) });
+                            }
+                            None => {
+                                let f = ServerMsg::SceneError { request_id, message: format!("unknown channel: {channel}") };
+                                if sink.send(text(&f)).await.is_err() { break; }
+                            }
+                        }
+                    }
+                }
+                Some(Egress::SceneUnsubscribe { request_id }) => {
+                    scene_subs.remove(&request_id);
+                }
                 None => break, // ingress gone
             },
             msg = rx.recv() => match msg {
@@ -425,7 +493,9 @@ async fn egress_loop<S>(
                         // under a sustained stream (starving updates). Arming
                         // only when idle fires ~150ms after the first Event of a
                         // burst, then re-arms on the next Event after it fires.
-                        if !subs.is_empty() && reeval_deadline.is_none() {
+                        if (!subs.is_empty() || !scene_subs.is_empty())
+                            && reeval_deadline.is_none()
+                        {
                             reeval_deadline = Some(tokio::time::Instant::now() + SEARCH_DEBOUNCE);
                         }
                     } else if send_filtered(&mut sink, repo.as_ref(), &ctx, &world_defaults, msg.as_ref()).await.is_err() {
@@ -480,6 +550,39 @@ async fn egress_loop<S>(
                 }
                 for id in dead {
                     subs.remove(&id);
+                }
+                // Re-evaluate derived scene subscriptions against the current ECS
+                // with this actor's ctx; push only when a channel's payload
+                // changed. The read borrow is dropped before awaiting the sink.
+                let (seq, snapshot) = {
+                    let ecs = room.scene().read().await;
+                    let mut out = Vec::new();
+                    for (id, s) in scene_subs.iter() {
+                        out.push((
+                            *id,
+                            s.channel.clone(),
+                            crate::scene::compute_derived(&s.channel, &ecs, &ctx),
+                        ));
+                    }
+                    (room.current_seq(), out)
+                };
+                for (id, channel, payload) in snapshot {
+                    if let Some(p) = payload {
+                        if let Some(sub) = scene_subs.get_mut(&id) {
+                            if sub.fingerprint.as_ref() != Some(&p) {
+                                sub.fingerprint = Some(p.clone());
+                                let f = ServerMsg::SceneDerived {
+                                    request_id: id,
+                                    channel,
+                                    computed_at_seq: seq,
+                                    payload: p,
+                                };
+                                if sink.send(text(&f)).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

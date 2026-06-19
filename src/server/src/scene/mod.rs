@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::data::command::{set_pointer, Operation};
 use crate::data::document::Document;
+use crate::data::membership::PermissionContext;
 
 /// A hydrated scene-entity document, one per hecs entity.
 pub struct SceneEntity {
@@ -93,6 +94,23 @@ impl SceneEcs {
 impl Default for SceneEcs {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Compute a derived payload for `channel` from the scene ECS, for one
+/// recipient. Returns `None` for unknown channels (→ SceneError). `ctx` is
+/// accepted so M9 vision can derive per recipient; the identity payload is
+/// non-sensitive and global.
+pub fn compute_derived(
+    channel: &str,
+    ecs: &SceneEcs,
+    _ctx: &PermissionContext,
+) -> Option<serde_json::Value> {
+    match channel {
+        // Seam proof only; replaced when M9 vision lands. Absent in release.
+        #[cfg(debug_assertions)]
+        "identity" => Some(serde_json::json!({ "entity_count": ecs.entity_count() })),
+        _ => None,
     }
 }
 
