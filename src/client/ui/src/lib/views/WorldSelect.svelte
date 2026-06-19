@@ -50,8 +50,34 @@
   </form>
 </main>
 
-<style>
-  .entry { max-width: 30rem; margin: 4rem auto; display: grid; gap: 1rem; }
-  ul { list-style: none; padding: 0; display: grid; gap: 0.5rem; }
-  form { display: flex; gap: 0.5rem; }
+<style lang="scss">
+  .entry {
+    max-width: 30rem;
+    margin: 4rem auto;
+    display: grid;
+    gap: var(--space-4);
+  }
+  ul {
+    list-style: none;
+    padding: 0;
+    display: grid;
+    gap: var(--space-2);
+  }
+  li button {
+    width: 100%;
+    text-align: left;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+  }
+  li button:hover {
+    border-color: var(--accent);
+    background: var(--surface-overlay);
+  }
+  .empty {
+    color: var(--text-muted);
+  }
+  form {
+    display: flex;
+    gap: var(--space-2);
+  }
 </style>

@@ -30,8 +30,25 @@
   </form>
 </main>
 
-<style>
-  .entry { max-width: 22rem; margin: 4rem auto; display: grid; gap: 1rem; }
-  form { display: grid; gap: 0.75rem; }
-  label { display: grid; gap: 0.25rem; }
+<style lang="scss">
+  .entry {
+    max-width: 22rem;
+    margin: 4rem auto;
+    display: grid;
+    gap: var(--space-4);
+    padding: var(--space-6);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-2);
+  }
+  form {
+    display: grid;
+    gap: var(--space-3);
+  }
+  label {
+    display: grid;
+    gap: var(--space-1);
+    color: var(--text-muted);
+    font-size: 0.875rem;
+  }
 </style>
