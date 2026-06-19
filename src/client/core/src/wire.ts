@@ -47,6 +47,21 @@ export const CapabilityRequirementSchema = z.object({
 });
 export type WireCapabilityRequirement = z.infer<typeof CapabilityRequirementSchema>;
 
+export const CardinalitySchema = z.enum(["singleton", "multi"]);
+
+export const ContractProvideSchema = z.object({
+  contract: z.string(),
+  cardinality: CardinalitySchema,
+});
+
+export const ContractDeclarationSchema = z.object({
+  module_id: z.string(),
+  version: z.string(),
+  provides: z.array(ContractProvideSchema),
+  requires: z.array(z.string()),
+});
+export type WireContractDeclaration = z.infer<typeof ContractDeclarationSchema>;
+
 export const PermissionSetSchema = z.object({
   default: DocRoleSchema,
   users: z.record(DocRoleSchema),
@@ -127,6 +142,7 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     world_default_grants: CapabilityGrantsSchema,
     actor_role: WorldRoleSchema,
     capability_requirements: z.array(CapabilityRequirementSchema),
+    contract_declarations: z.array(ContractDeclarationSchema),
   }),
   z.object({
     type: z.literal("event"),

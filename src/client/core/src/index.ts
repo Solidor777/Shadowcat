@@ -58,5 +58,6 @@ export type {
   WireFieldChange,
   WireScope,
   WireCapabilityRequirement,
+  WireContractDeclaration,
   WireSearchHit,
 } from "./wire";

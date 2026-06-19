@@ -57,6 +57,7 @@ export class MockServer {
         world_default_grants: { by_role: {}, by_user: {} },
         actor_role: "player",
         capability_requirements: [],
+        contract_declarations: [],
       });
       return Promise.resolve(transport);
     };

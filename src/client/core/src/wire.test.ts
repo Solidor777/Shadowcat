@@ -63,6 +63,9 @@ describe("wire drift guard — message discriminants", () => {
     expectTypeOf<W["capability_requirements"]>().toEqualTypeOf<
       T["capability_requirements"]
     >();
+    expectTypeOf<W["contract_declarations"]>().toEqualTypeOf<
+      T["contract_declarations"]
+    >();
   });
   it("ClientMsg type tags", () => {
     expectTypeOf<ClientMsg["type"]>().toEqualTypeOf<Ts.ClientMsg["type"]>();
@@ -83,6 +86,7 @@ describe("parseServerMsg", () => {
         world_default_grants: { by_role: {}, by_user: {} },
         actor_role: "player",
         capability_requirements: [],
+        contract_declarations: [],
       }),
     );
     expect(m?.type).toBe("welcome");
@@ -98,6 +102,7 @@ describe("parseServerMsg", () => {
         world_default_grants: { by_role: { owner: ["core:manage_embedded"] }, by_user: {} },
         actor_role: "gm",
         capability_requirements: [{ path_prefix: "/system/vision", caps: ["dnd5e:gm_vision"] }],
+        contract_declarations: [],
       }),
     );
     expect(m?.type).toBe("welcome");
