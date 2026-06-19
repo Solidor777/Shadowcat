@@ -95,6 +95,8 @@ pub async fn put_ui_state(
     if !body.is_object() {
         return Err(AppError::Unprocessable("ui_state must be a JSON object".into()));
     }
+    // Cap the canonical compact serialization (what is actually persisted), not
+    // the raw request bytes — deterministic regardless of client whitespace.
     let s = serde_json::to_string(&body).map_err(|_| AppError::Internal)?;
     if s.len() > MAX_UI_STATE_BYTES {
         return Err(AppError::Unprocessable(format!(
