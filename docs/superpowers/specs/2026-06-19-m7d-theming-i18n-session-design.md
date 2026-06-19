@@ -146,9 +146,14 @@ session reads/writes.
 
 ## 7. Decomposition
 
-- **M7d-1 — Theming.** `sass` dep; the 3-tier SCSS token files + `global.scss`
-  imported in `main.ts`; restyle entry views, `Layout`, `core-ui` panels with
-  tokens; WCAG check. Vitest token-application smoke + svelte-check.
+- **M7d-1 — Theming. ✅ DONE** (merged `--no-ff` to local main, not pushed).
+  `sass` dep; 3-tier SCSS token files (icon-derived slate-violet + `#2D6EE8`) →
+  CSS custom properties on `:root` + `global.scss` in `main.ts`; token-based
+  styling across entry views, `Layout`, `core-ui` panels. Single-reviewed: fixed
+  button `focus-visible`, lightened danger red (`#f37287`) + muted (`#9698AE`) to
+  meet WCAG AA on the entry card, added a `--surface-sunken` token. All
+  text/accent pairs ≥ AA; ui 18 tests + svelte-check green.
+  Plan: [`plans/2026-06-19-m7d-1-theming.md`](plans/2026-06-19-m7d-1-theming.md).
 - **M7d-2 — i18n.** Neutral `I18n` core (core, barrel-exported) + Svelte adapter;
   `en` catalog; route all strings through `t()`; locale switcher. Vitest (core +
   adapter).
