@@ -3,8 +3,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The built `shadowcat` binary serves the embedded SPA + /api on one origin — the
-// faithful e2e target. global-setup builds dist/ + the binary; webServer runs it
-// (Playwright owns its lifecycle) with an admin seeded and the setup window off.
+// faithful e2e target. The `e2e` npm script builds dist/ + the binary before
+// Playwright starts (deterministic; Playwright launches the webServer before any
+// globalSetup, so the build must precede `playwright test`). webServer runs the
+// prebuilt binary with an admin seeded and the setup window off.
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const bin = path.join(
   repoRoot,
@@ -15,7 +17,6 @@ const bin = path.join(
 
 export default defineConfig({
   testDir: "./e2e",
-  globalSetup: "./e2e/global-setup.ts",
   webServer: {
     command: `"${bin}"`,
     cwd: repoRoot,
