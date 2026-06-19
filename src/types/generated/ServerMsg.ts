@@ -2,6 +2,7 @@
 import type { CapabilityGrants } from "./CapabilityGrants";
 import type { CapabilityRequirement } from "./CapabilityRequirement";
 import type { Command } from "./Command";
+import type { ContractDeclaration } from "./ContractDeclaration";
 import type { RejectReason } from "./RejectReason";
 import type { ResyncSource } from "./ResyncSource";
 import type { SearchHit } from "./SearchHit";
@@ -11,4 +12,9 @@ import type { WsErrorCode } from "./WsErrorCode";
 /**
  * Server -> client frames.
  */
-export type ServerMsg = { "type": "welcome", world: string, current_seq: bigint, server_time: bigint, world_default_grants: CapabilityGrants, actor_role: WorldRole, capability_requirements: Array<CapabilityRequirement>, } | { "type": "event", command: Command, intent_id: string | null, } | { "type": "reject", intent_id: string, reason: RejectReason, } | { "type": "resync_begin", from_seq: bigint, to_seq: bigint, source: ResyncSource, } | { "type": "resync_end", current_seq: bigint, } | { "type": "time_pong", client_t0: bigint, server_t: bigint, } | { "type": "ping" } | { "type": "error", code: WsErrorCode, message: string, } | { "type": "search_result", request_id: string, hits: Array<SearchHit>, next_cursor: string | null, } | { "type": "search_error", request_id: string, message: string, } | { "type": "search_update", request_id: string, hits: Array<SearchHit>, };
+export type ServerMsg = { "type": "welcome", world: string, current_seq: bigint, server_time: bigint, world_default_grants: CapabilityGrants, actor_role: WorldRole, capability_requirements: Array<CapabilityRequirement>, 
+/**
+ * The world's UI contract declarations, so the client can validate its
+ * loaded module set against the world's declared topology.
+ */
+contract_declarations: Array<ContractDeclaration>, } | { "type": "event", command: Command, intent_id: string | null, } | { "type": "reject", intent_id: string, reason: RejectReason, } | { "type": "resync_begin", from_seq: bigint, to_seq: bigint, source: ResyncSource, } | { "type": "resync_end", current_seq: bigint, } | { "type": "time_pong", client_t0: bigint, server_t: bigint, } | { "type": "ping" } | { "type": "error", code: WsErrorCode, message: string, } | { "type": "search_result", request_id: string, hits: Array<SearchHit>, next_cursor: string | null, } | { "type": "search_error", request_id: string, message: string, } | { "type": "search_update", request_id: string, hits: Array<SearchHit>, };

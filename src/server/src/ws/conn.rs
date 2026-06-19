@@ -322,6 +322,13 @@ async fn egress_loop<S>(
             Vec::new()
         }
     };
+    let world_contracts = match repo.world_contract_declarations(world_id).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(world = %world_id, error = %e, "contract declarations unreadable; sending empty");
+            Vec::new()
+        }
+    };
     // Project the world grants to only what this actor needs to self-gate; other
     // users' UUIDs and grants must not cross to the client.
     let actor_grants = crate::data::permission::project_grants_for(&world_defaults, ctx.user_id);
@@ -333,6 +340,7 @@ async fn egress_loop<S>(
             world_default_grants: actor_grants,
             actor_role: ctx.world_role,
             capability_requirements: world_reqs,
+            contract_declarations: world_contracts,
         }))
         .await
         .is_err()

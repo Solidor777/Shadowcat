@@ -95,6 +95,9 @@ pub enum ServerMsg {
         world_default_grants: crate::data::document::CapabilityGrants,
         actor_role: crate::data::document::WorldRole,
         capability_requirements: Vec<crate::data::document::CapabilityRequirement>,
+        /// The world's UI contract declarations, so the client can validate its
+        /// loaded module set against the world's declared topology.
+        contract_declarations: Vec<crate::data::document::ContractDeclaration>,
     },
     /// A sequenced broadcast carrying the authoritative command. `intent_id` is
     /// the originator's correlation token; it is `None` on the shared broadcast
@@ -273,11 +276,13 @@ mod protocol_tests {
             world_default_grants: CapabilityGrants::default(),
             actor_role: WorldRole::Player,
             capability_requirements: Vec::new(),
+            contract_declarations: Vec::new(),
         };
         let json = serde_json::to_value(&w).unwrap();
         assert_eq!(json["type"], "welcome");
         assert_eq!(json["actor_role"], "player");
         assert!(json.get("world_default_grants").is_some());
         assert!(json.get("capability_requirements").is_some());
+        assert!(json.get("contract_declarations").is_some());
     }
 }
