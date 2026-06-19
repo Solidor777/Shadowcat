@@ -119,11 +119,17 @@ directly, and in-world components read `t` via `AppContext` (extended with `t`).
 ```
 
 ### 6.2 Load + restore
-After auth (login success / bootstrap with a session), `GET /api/me/ui-state`:
+On every authenticated load — including a **browser reload** (the session cookie
+persists, so `GET /api/me` still returns the user) — fetch `GET /api/me/ui-state`
+and:
 - apply `global.locale` to the `I18n` core;
 - if `global.lastWorld` is set and the user can still access it (present in
-  `GET /api/worlds`), **auto-enter** it (route to the table); else world-select;
+  `GET /api/worlds`), **auto-enter** it — route straight back into that world's
+  table, the same place the user left; else fall back to world-select (covers a
+  since-deleted world or revoked access);
 - restore `worlds[lastWorld].activeTab` as the sidebar's active tab.
+
+So **reload returns you to the world you were in**, not to world-select.
 
 ### 6.3 Persist (debounced)
 A `sessionState.svelte.ts` holds the blob and writes it back via debounced
