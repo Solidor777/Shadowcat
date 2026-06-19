@@ -243,11 +243,18 @@ async fn egress_loop<S>(
     // with apply_intent on the single-writer pool. A defaults change mid-session
     // takes effect on the client's next (re)connect.
     let world_defaults = repo.world_cap_defaults(world_id).await.unwrap_or_default();
+    let world_reqs = repo
+        .world_cap_requirements(world_id)
+        .await
+        .unwrap_or_default();
     if sink
         .send(text(&ServerMsg::Welcome {
             world: world_id,
             current_seq,
             server_time: now_millis(),
+            world_default_grants: world_defaults.clone(),
+            actor_role: ctx.world_role,
+            capability_requirements: world_reqs,
         }))
         .await
         .is_err()
