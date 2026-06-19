@@ -2443,3 +2443,13 @@ Run: `graphify update .`
 Task 10 (declarative capability enforcement in `apply_intent`) is **security-critical**: a defect is a privilege-escalation / authorization-bypass. Task 11 (Welcome now ships world grants + actor role to every client) widens what data crosses the trust boundary. At the execution handoff, OFFER a buddy-check (two independent blind reviewers + reconciliation per `superpowers:buddy-checking`) scoped to Tasks 9–12 (the server capability change set) before merge. The rest of the branch (pure-TS primitives with thorough unit tests) is suitable for the standard single final-branch review. The human decides whether to take the buddy-check offer.
 
 **Decision (accepted):** Execute inline (superpowers:executing-plans) with checkpoints. Run a buddy-check (`superpowers:buddy-checking`) over Tasks 9–12 before merge; standard single final-branch review for the remainder.
+
+**Buddy-check outcome (Tasks 9–12, done 2026-06-18, findings folded in):** Two
+blind reviewers converged (no unresolved disagreement). Fixed: two Critical
+bypasses — Create wrote a requirement-protected subtree with only the base cap,
+and an ancestor `/system` Update evaded a descendant requirement; one Important
+confidentiality leak — `Welcome` shipped the full `by_user` grant map to all
+clients (now projected per-actor); plus endpoint hardening (reject empty caps /
+out-of-namespace / trailing-slash prefixes, bound count) and a fail-open→logged
+`Welcome` read. Regression tests added. Committed in the `fix(m6b): close
+capability-enforcement bypasses found in buddy check` commit.
