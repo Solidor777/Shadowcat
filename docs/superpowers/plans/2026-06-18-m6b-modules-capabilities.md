@@ -2441,3 +2441,5 @@ Run: `graphify update .`
 ## Buddy-check directives
 
 Task 10 (declarative capability enforcement in `apply_intent`) is **security-critical**: a defect is a privilege-escalation / authorization-bypass. Task 11 (Welcome now ships world grants + actor role to every client) widens what data crosses the trust boundary. At the execution handoff, OFFER a buddy-check (two independent blind reviewers + reconciliation per `superpowers:buddy-checking`) scoped to Tasks 9–12 (the server capability change set) before merge. The rest of the branch (pure-TS primitives with thorough unit tests) is suitable for the standard single final-branch review. The human decides whether to take the buddy-check offer.
+
+**Decision (accepted):** Execute inline (superpowers:executing-plans) with checkpoints. Run a buddy-check (`superpowers:buddy-checking`) over Tasks 9–12 before merge; standard single final-branch review for the remainder.
