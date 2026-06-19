@@ -2,6 +2,13 @@
 // + required_cap_for_path + declarative requirements). ADVISORY ONLY: used to
 // gate module UI/actions for UX. The server remains authoritative — a bypass is
 // rejected at apply_intent.
+//
+// Mirrors the server's Update-path gate (canWritePath). The server additionally
+// gates Create against requirements present in the new body
+// (declared_caps_for_document); a client-side canCreateDoc mirror is not yet
+// provided, so the UI cannot pre-gate a create the server will reject. Advisory
+// only — the create is still enforced server-side.
+// TODO: Add a canCreateDoc advisory mirror of the server's Create-path check.
 import type { WorldRole } from "@shadowcat/types";
 import type { WireDocument, WireCapabilityRequirement } from "./wire";
 

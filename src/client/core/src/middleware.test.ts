@@ -35,6 +35,15 @@ test("a middleware that does not call next short-circuits", async () => {
   expect(reached).toBe(false);
 });
 
+test("calling next() twice is rejected", async () => {
+  const c = new MiddlewareChain();
+  c.use("intent-submit", async (_ctx, next) => {
+    await next();
+    await next(); // second call must throw
+  });
+  await expect(c.run("intent-submit", {})).rejects.toThrow(/multiple times/);
+});
+
 test("removeModule drops that module's middleware", async () => {
   const c = new MiddlewareChain();
   let ran = false;

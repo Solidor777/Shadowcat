@@ -21,7 +21,12 @@ export class MiddlewareChain {
 
   async run<C>(pipeline: PipelineName, ctx: C): Promise<void> {
     const arr = this.chains.get(pipeline) ?? [];
+    let called = -1;
     const dispatch = async (i: number): Promise<void> => {
+      // A middleware that calls next() twice would re-dispatch the tail; reject
+      // that rather than run handlers more than once.
+      if (i <= called) throw new Error("middleware called next() multiple times");
+      called = i;
       if (i >= arr.length) return;
       await arr[i].mw(ctx, () => dispatch(i + 1));
     };

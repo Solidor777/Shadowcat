@@ -56,26 +56,33 @@ export async function startTestServer(): Promise<TestServer> {
 
   let baseUrl = "";
   let fixture: Fixture | null = null;
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error("test_server did not start within 20s")),
-      20_000,
-    );
-    let buf = "";
-    proc.stdout!.on("data", (chunk: Buffer) => {
-      buf += chunk.toString();
-      const addr = /test_server: (http:\/\/[\d.:]+)/.exec(buf);
-      if (addr) baseUrl = addr[1];
-      const fx = /e2e-fixture: (\{.*\})/.exec(buf);
-      if (fx) fixture = JSON.parse(fx[1]) as Fixture;
-      if (baseUrl && fixture) {
-        clearTimeout(timer);
-        resolve();
-      }
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("test_server did not start within 20s")),
+        20_000,
+      );
+      let buf = "";
+      proc.stdout!.on("data", (chunk: Buffer) => {
+        buf += chunk.toString();
+        const addr = /test_server: (http:\/\/[\d.:]+)/.exec(buf);
+        if (addr) baseUrl = addr[1];
+        const fx = /e2e-fixture: (\{.*\})/.exec(buf);
+        if (fx) fixture = JSON.parse(fx[1]) as Fixture;
+        if (baseUrl && fixture) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      proc.on("error", reject);
+      proc.on("exit", (code) => reject(new Error(`test_server exited early (code ${code})`)));
     });
-    proc.on("error", reject);
-    proc.on("exit", (code) => reject(new Error(`test_server exited early (code ${code})`)));
-  });
+  } catch (err) {
+    // Boot failed (timeout / crash): reap the process so a failed startup never
+    // orphans a server holding the port — afterAll cannot, `server` is undefined.
+    stop();
+    throw err;
+  }
 
   // Startup is parsed; stop reading stdout and let the event loop ignore the
   // child so the test runner can exit promptly after stop() (the kill is async).

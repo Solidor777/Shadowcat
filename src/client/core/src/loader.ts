@@ -24,6 +24,9 @@ export async function loadModules(opts: {
   registry: ModuleRegistry;
 }): Promise<void> {
   for (const { manifest, entry } of opts.entries) {
+    // Validates the *discovered* manifest; ModuleRegistry.add re-parses the
+    // module's *own* manifest. Two distinct sources, bridged by the id check
+    // below — both parses are intentional.
     parseManifest(manifest);
     const module = normalize(await opts.importFn(entry));
     if (module.manifest.id !== manifest.id) {
