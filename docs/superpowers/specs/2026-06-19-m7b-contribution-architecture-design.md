@@ -195,11 +195,14 @@ Only `component` values are framework-specific.
 
 ## 7. Decomposition (one spec, three plan→execute→review cycles)
 
-- **M7b-1 — Contract schema + server mirror (Rust + shared types).** ts-rs
-  `ContractDeclaration`; settings-keyed repo accessors (no migration); `GET/PUT
-  /api/worlds/{id}/contracts` (GM-only, validated); `Welcome` extension. Rust
-  tests mirroring capability-requirements. **Buddy-check candidate** (new GM-only
-  write surface + Welcome change + validation correctness).
+- **M7b-1 — Contract schema + server mirror (Rust + shared types). ✅ DONE**
+  (merged `--no-ff` to local main, not pushed). ts-rs `ContractDeclaration`;
+  settings-keyed repo accessors (no migration); `GET/PUT /api/worlds/{id}/contracts`
+  (GM-only, validated); `Welcome` extension. Buddy-checked (two-reviewer): fixed
+  contradictory-topology gaps (mixed cardinality, duplicate `module_id`) — the
+  server now enforces consistent cardinality + singleton-has-one-provider.
+  141 lib + 12 integration tests green, clippy clean.
+  Plan: [`plans/2026-06-19-m7b-1-contract-server-mirror.md`](plans/2026-06-19-m7b-1-contract-server-mirror.md).
 - **M7b-2 — Client registry + resolution (`@shadowcat/core`).**
   `ContributionRegistry`; `ModuleContext.contributions` + unload teardown;
   manifest `provides`/`requires` (Zod + ts-rs alignment); generalized
