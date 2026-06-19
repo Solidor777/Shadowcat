@@ -5,6 +5,8 @@ export function isHealthy(status: HealthStatus): boolean {
   return status.status === "ok" && status.db_connected;
 }
 
+export { silentLogger, consoleLogger } from "./logger";
+export type { Logger } from "./logger";
 export { DocumentStore, setPointer, applyOperation } from "./store";
 export type { Listener } from "./store";
 export { OptimisticClient } from "./optimistic";
