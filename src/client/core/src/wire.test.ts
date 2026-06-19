@@ -120,6 +120,13 @@ describe("parseServerMsg", () => {
     expect(m?.type).toBe("search_result");
   });
 
+  it("parses a search_update frame", () => {
+    const m = parseServerMsg(
+      JSON.stringify({ type: "search_update", request_id: "r1", hits: [] }),
+    );
+    expect(m?.type).toBe("search_update");
+  });
+
   it("returns null on malformed or unknown frames", () => {
     expect(parseServerMsg("{not json")).toBeNull();
     expect(parseServerMsg(JSON.stringify({ type: "nope" }))).toBeNull();
