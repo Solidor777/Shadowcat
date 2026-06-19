@@ -33,6 +33,20 @@ pub fn index_content(doc: &Document) -> String {
     out
 }
 
+/// Like [`index_content`], but indexes only text a non-GM may read: GM-only
+/// properties are stripped first via the same `filter_properties` redaction used
+/// for document reads, so this is the index a non-GM search matches and snippets
+/// against. Keeps the searchable text in exact lockstep with what the recipient
+/// could otherwise see — no GM-only leak through MATCH, score, or snippet.
+pub fn index_content_public(doc: &Document) -> String {
+    let non_gm = crate::data::permission::Access {
+        caps: std::collections::BTreeSet::new(),
+        all: false,
+        see_gm_only: false,
+    };
+    index_content(&crate::data::permission::filter_properties(doc, &non_gm))
+}
+
 fn collect_leaves(value: &serde_json::Value, out: &mut String) {
     match value {
         serde_json::Value::String(s) => {
@@ -59,21 +73,18 @@ fn collect_leaves(value: &serde_json::Value, out: &mut String) {
 }
 
 /// Build a safe FTS5 MATCH expression from untrusted input. Each whitespace
-/// token is stripped of embedded quotes, wrapped in double quotes (so any
-/// remaining FTS5 special characters are treated as literal token separators,
-/// never operators), and AND-combined. The final token gets a trailing `*` for
-/// type-ahead prefix matching. Returns `None` for an empty query.
+/// token is reduced to its alphanumeric runs (every non-word character — quotes,
+/// FTS5 operators `-^*:()`, `NEAR`-inducing punctuation — becomes a separator),
+/// then each surviving token is wrapped in double quotes and AND-combined; the
+/// final token gets a trailing `*` for type-ahead prefix matching. Reducing to
+/// word characters means a punctuation-only query cannot reach the MATCH parser
+/// as a term-less phrase (which FTS5 would reject) — it yields `None`, an empty
+/// result, instead. Returns `None` for an empty query.
 pub fn build_match(input: &str) -> Option<String> {
     let terms: Vec<String> = input
-        .split_whitespace()
-        .map(|t| {
-            t.replace('"', " ")
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .map(|t| t.trim().to_string())
+        .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
+        .map(|t| t.to_string())
         .collect();
     if terms.is_empty() {
         return None;
@@ -157,5 +168,14 @@ mod tests {
     fn build_match_empty_is_none() {
         assert!(build_match("   ").is_none());
         assert!(build_match("").is_none());
+    }
+
+    #[test]
+    fn build_match_punctuation_only_is_none() {
+        // Punctuation-only input must not reach FTS5 as a term-less phrase
+        // (which the parser rejects). It reduces to no terms → None → empty page.
+        for q in ["---", "*", "\"\"\"", "()", ":::", "^", "- ^ *"] {
+            assert!(build_match(q).is_none(), "expected None for {q:?}");
+        }
     }
 }

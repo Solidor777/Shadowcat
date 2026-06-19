@@ -419,12 +419,17 @@ impl SqliteRepository {
             .bind(doc.id.to_string())
             .execute(&mut *conn)
             .await?;
-        sqlx::query("INSERT INTO documents_fts (content, doc_id, world_id) VALUES (?, ?, ?)")
-            .bind(crate::data::search::index_content(doc))
-            .bind(doc.id.to_string())
-            .bind(world_id)
-            .execute(&mut *conn)
-            .await?;
+        // Two visibility-split columns: `content` indexes only non-GM-readable
+        // text (GM-only properties stripped), `content_all` indexes everything.
+        sqlx::query(
+            "INSERT INTO documents_fts (content, content_all, doc_id, world_id) VALUES (?, ?, ?, ?)",
+        )
+        .bind(crate::data::search::index_content_public(doc))
+        .bind(crate::data::search::index_content(doc))
+        .bind(doc.id.to_string())
+        .bind(world_id)
+        .execute(&mut *conn)
+        .await?;
         Ok(())
     }
 
@@ -854,6 +859,12 @@ impl Repository for SqliteRepository {
     ) -> Result<crate::data::search::SearchPage, DataError> {
         use crate::data::search::{build_match, SearchHit, SearchPage};
 
+        // Bound the candidates examined per request: a query matching many docs
+        // the actor cannot read would otherwise page to exhaustion, one
+        // get_document per candidate, on the single-writer pool. On hitting the
+        // budget before `limit`, return a partial page + cursor to resume.
+        const MAX_SCAN: i64 = 500;
+
         let limit = limit.clamp(1, 100) as usize;
         let Some(match_expr) = build_match(query) else {
             return Ok(SearchPage {
@@ -863,29 +874,51 @@ impl Repository for SqliteRepository {
         };
         let world_defaults = self.world_cap_defaults(world_id).await?;
 
+        // Visibility-split index: a non-GM matches and snippets only the
+        // GM-only-stripped `content` column, so neither the MATCH (oracle), the
+        // bm25 score, nor the snippet can reveal GM-only text. A GM/admin
+        // searches the full `content_all` column. (Server admin resolves to the
+        // Gm world role in `permission_context`.)
+        let is_gm = ctx.world_role == WorldRole::Gm;
+        let column = if is_gm { "content_all" } else { "content" };
+        // Column-filter the MATCH to the chosen column. This whole expression is
+        // a bound parameter (?1) — `column` is a server-chosen literal, never user
+        // input. The snippet column index must be a literal in the SQL, so two
+        // static query strings are selected rather than building SQL at runtime.
+        let scoped_match = format!("{{{column}}} : ({match_expr})");
+        let sql = if is_gm {
+            "SELECT doc_id, bm25(documents_fts) AS score, \
+             snippet(documents_fts, 1, '<mark>', '</mark>', '…', 16) AS snippet \
+             FROM documents_fts \
+             WHERE documents_fts MATCH ?1 AND world_id = ?2 \
+             ORDER BY score LIMIT ?3 OFFSET ?4"
+        } else {
+            "SELECT doc_id, bm25(documents_fts) AS score, \
+             snippet(documents_fts, 0, '<mark>', '</mark>', '…', 16) AS snippet \
+             FROM documents_fts \
+             WHERE documents_fts MATCH ?1 AND world_id = ?2 \
+             ORDER BY score LIMIT ?3 OFFSET ?4"
+        };
+
         // Iterate the BM25-ranked candidates from `cursor`, reading each doc and
         // keeping only those the actor may read, until `limit` readable hits are
-        // collected or the candidates are exhausted. Over-iteration here is what
-        // prevents redaction from producing a short page.
-        let mut offset: i64 = cursor.unwrap_or(0);
+        // collected, the candidates are exhausted, or the scan budget is spent.
+        // Over-iteration here is what prevents redaction from producing a short
+        // page. A negative client cursor is clamped to the start.
+        let start: i64 = cursor.unwrap_or(0).max(0);
+        let mut offset: i64 = start;
         let mut hits: Vec<SearchHit> = Vec::with_capacity(limit);
-        let batch: i64 = (limit as i64).max(16);
+        let batch: i64 = (limit as i64).clamp(16, MAX_SCAN);
         let mut next_cursor: Option<i64> = None;
 
         'outer: loop {
-            let rows = sqlx::query(
-                "SELECT doc_id, bm25(documents_fts) AS score, \
-                 snippet(documents_fts, 0, '<mark>', '</mark>', '…', 16) AS snippet \
-                 FROM documents_fts \
-                 WHERE documents_fts MATCH ?1 AND world_id = ?2 \
-                 ORDER BY score LIMIT ?3 OFFSET ?4",
-            )
-            .bind(&match_expr)
-            .bind(world_id.to_string())
-            .bind(batch)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await?;
+            let rows = sqlx::query(sql)
+                .bind(&scoped_match)
+                .bind(world_id.to_string())
+                .bind(batch)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await?;
 
             if rows.is_empty() {
                 break; // exhausted; next_cursor stays None
@@ -916,6 +949,11 @@ impl Repository for SqliteRepository {
                 }
             }
 
+            if offset - start >= MAX_SCAN {
+                // Scan budget spent before `limit`; resume from here next page.
+                next_cursor = Some(offset);
+                break;
+            }
             if (rows.len() as i64) < batch {
                 break; // last batch was partial → no more candidates
             }
@@ -1334,8 +1372,23 @@ mod tests {
         assert_eq!(knight.hits.len(), 1);
         assert!(
             knight.hits[0].document.system.get("secret").is_none(),
-            "GM-only field leaked in search"
+            "GM-only field leaked in search document"
         );
+        // The snippet must not quote GM-only text either.
+        assert!(
+            !knight.hits[0].snippet.to_lowercase().contains("weakness"),
+            "GM-only field leaked in search snippet"
+        );
+
+        // Oracle closed: a non-GM searching the GM-only term gets no hit (the
+        // term is only in the GM-only `content_all` column).
+        let probe = r.search(&pl_ctx, w.id, "weakness", 10, None).await.unwrap();
+        assert_eq!(probe.hits.len(), 0, "GM-only term matchable by non-GM");
+
+        // A GM can still search their own GM-only field text.
+        let gm_probe = r.search(&gm_ctx, w.id, "weakness", 10, None).await.unwrap();
+        assert_eq!(gm_probe.hits.len(), 1);
+        assert_eq!(gm_probe.hits[0].document.id, sheet.id);
     }
 
     #[tokio::test]
