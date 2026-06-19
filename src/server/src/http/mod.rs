@@ -810,6 +810,29 @@ pub(crate) mod tests {
             .json(&malformed)
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // The same contract declared singleton by one module and multi by another
+        // is a cardinality contradiction and is rejected.
+        let mixed_cardinality = serde_json::json!([
+            { "module_id": "a", "version": "1.0.0",
+              "provides": [{ "contract": "shadowcat.surface:sidebar", "cardinality": "singleton" }], "requires": [] },
+            { "module_id": "b", "version": "1.0.0",
+              "provides": [{ "contract": "shadowcat.surface:sidebar", "cardinality": "multi" }], "requires": [] }
+        ]);
+        gm.put(&format!("/api/worlds/{world_id}/contracts"))
+            .json(&mixed_cardinality)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Two declarations for the same module_id (ambiguous topology) is rejected.
+        let dup_module = serde_json::json!([
+            { "module_id": "a", "version": "1.0.0", "provides": [], "requires": [] },
+            { "module_id": "a", "version": "2.0.0", "provides": [], "requires": [] }
+        ]);
+        gm.put(&format!("/api/worlds/{world_id}/contracts"))
+            .json(&dup_module)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]

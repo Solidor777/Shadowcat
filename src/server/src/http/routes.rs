@@ -612,26 +612,50 @@ fn validate_contract_declarations(decls: &[ContractDeclaration]) -> Result<(), A
         )));
     }
     let mut provided: HashSet<&str> = HashSet::new();
-    let mut singleton_count: HashMap<&str, usize> = HashMap::new();
+    let mut seen_modules: HashSet<&str> = HashSet::new();
+    let mut cardinality_of: HashMap<&str, Cardinality> = HashMap::new();
+    let mut provider_count: HashMap<&str, usize> = HashMap::new();
     for d in decls {
         if d.module_id.is_empty() || d.version.is_empty() {
             return Err(AppError::Unprocessable(
                 "declaration module_id and version must be non-empty".into(),
             ));
         }
+        // A module appears once: two declarations for one module_id is an
+        // ambiguous topology (which version/provides wins).
+        if !seen_modules.insert(d.module_id.as_str()) {
+            return Err(AppError::Unprocessable(format!(
+                "duplicate module_id '{}'",
+                d.module_id
+            )));
+        }
         for p in &d.provides {
             validate_contract_token(&p.contract)?;
             provided.insert(p.contract.as_str());
-            if p.cardinality == Cardinality::Singleton {
-                let n = singleton_count.entry(p.contract.as_str()).or_insert(0);
-                *n += 1;
-                if *n > 1 {
+            // A contract's cardinality must be consistent across all providers:
+            // one module asserting singleton while another asserts multi is a
+            // contradiction the consistency authority rejects.
+            match cardinality_of.get(p.contract.as_str()) {
+                Some(prev) if *prev != p.cardinality => {
                     return Err(AppError::Unprocessable(format!(
-                        "contract '{}' is singleton but provided more than once",
+                        "contract '{}' declared with conflicting cardinalities",
                         p.contract
                     )));
                 }
+                _ => {
+                    cardinality_of.insert(p.contract.as_str(), p.cardinality);
+                }
             }
+            *provider_count.entry(p.contract.as_str()).or_insert(0) += 1;
+        }
+    }
+    // A singleton contract must have exactly one provider (catches two singletons
+    // and the mixed singleton/multi case via the cardinality check above).
+    for (contract, card) in &cardinality_of {
+        if *card == Cardinality::Singleton && provider_count[contract] > 1 {
+            return Err(AppError::Unprocessable(format!(
+                "contract '{contract}' is singleton but provided more than once"
+            )));
         }
     }
     for d in decls {
