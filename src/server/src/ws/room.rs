@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use serde::Serialize;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -14,6 +14,7 @@ use crate::data::command::{Command, Operation};
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::DataError;
+use crate::scene::SceneEcs;
 use crate::ws::protocol::{ResyncSource, ServerMsg};
 
 const MAX_EVENTS: usize = 1024;
@@ -108,11 +109,12 @@ pub struct Room {
     ring: Mutex<RingBuffer>,
     publish_guard: Mutex<()>,
     current_seq: AtomicI64,
+    scene: RwLock<SceneEcs>,
     pub stats: RoomStats,
 }
 
 impl Room {
-    fn new(world_id: Uuid, seed_seq: i64) -> Self {
+    fn new(world_id: Uuid, seed_seq: i64, scene: SceneEcs) -> Self {
         let (tx, _rx) = broadcast::channel(BROADCAST_CAPACITY);
         Self {
             world_id,
@@ -120,8 +122,15 @@ impl Room {
             ring: Mutex::new(RingBuffer::new()),
             publish_guard: Mutex::new(()),
             current_seq: AtomicI64::new(seed_seq),
+            scene: RwLock::new(scene),
             stats: RoomStats::default(),
         }
+    }
+
+    /// Read access to the derived scene ECS for the per-connection derived
+    /// recompute. Writes happen only in `publish` under `publish_guard`.
+    pub fn scene(&self) -> &RwLock<SceneEcs> {
+        &self.scene
     }
 
     /// Subscribe to live frames; also returns the room's current seq so a joiner
@@ -152,6 +161,15 @@ impl Room {
     ) -> Result<Command, DataError> {
         let _guard = self.publish_guard.lock().await;
         let cmd = repo.apply_intent(ctx, self.world_id, ops, ts).await?;
+        // Hydrate the derived ECS from the committed command while still holding
+        // publish_guard, so the ECS is consistent with cmd.seq before the Event
+        // (and any derived recompute keyed to that seq) is observable.
+        {
+            let mut scene = self.scene.write().await;
+            for op in &cmd.ops {
+                scene.apply_op(op);
+            }
+        }
         let msg = Arc::new(ServerMsg::Event {
             command: cmd.clone(),
             intent_id: None,
@@ -229,10 +247,19 @@ impl RoomRegistry {
         let Some(world) = repo.get_world(world_id).await? else {
             return Ok(None);
         };
+        // Hydrate the derived ECS from persisted scene entities (#5): every scene
+        // doc plus its children.
+        let scenes = repo.query_documents(world_id, "scene").await?;
+        let mut docs = Vec::new();
+        for scene in &scenes {
+            docs.extend(repo.query_children(scene.id).await?);
+        }
+        docs.extend(scenes);
+        let scene_ecs = SceneEcs::from_documents(docs);
         let room = self
             .rooms
             .entry(world_id)
-            .or_insert_with(|| Arc::new(Room::new(world_id, world.seq)))
+            .or_insert_with(|| Arc::new(Room::new(world_id, world.seq, scene_ecs)))
             .clone();
         Ok(Some(room))
     }
@@ -361,6 +388,26 @@ mod room_tests {
             world_role: WorldRole::Gm,
         };
         (repo, world.id, ctx)
+    }
+
+    #[tokio::test]
+    async fn publish_hydrates_scene_ecs() {
+        let (repo, world_id, ctx) = repo_with_world().await;
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+        assert_eq!(room.scene().read().await.entity_count(), 0);
+
+        // Publish a scene doc (a scene entity by doc_type, no parent FK needed).
+        let mut scene = crate::data::document::tests::world_scoped_doc(
+            world_id,
+            Uuid::from_u128(20),
+            "scene",
+        );
+        scene.owner = Some(ctx.user_id);
+        room.publish(&repo, &ctx, vec![Operation::Create { doc: scene }], 0)
+            .await
+            .unwrap();
+        assert_eq!(room.scene().read().await.entity_count(), 1);
     }
 
     #[tokio::test]
