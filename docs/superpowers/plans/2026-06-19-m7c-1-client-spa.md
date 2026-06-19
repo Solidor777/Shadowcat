@@ -1198,7 +1198,15 @@ git commit -m "feat(ui): App root — bootstrap, entry routing, in-world Table"
 
 ---
 
-### Task 8: Playwright entry-flow smoke
+### Task 8: Playwright entry-flow smoke — MOVED TO M7c-2
+
+> **Moved to M7c-2 during execution.** Wiring Playwright against the M7c-1 SPA
+> requires a dual-process setup (`vite dev` + proxy + a dynamically-ported
+> test-server), which is brittle cross-platform. Once M7c-2's embed flip has the
+> single binary serving the SPA + `/api` on one origin, the e2e is a one-process
+> spawn (`startTestServer`, point Playwright `baseURL` at it) — simpler and more
+> faithful. M7c-1 ships full Vitest coverage of the entry flow + shell logic. The
+> task below is retained for M7c-2's plan.
 
 **Files:**
 - Modify: `src/client/ui/package.json` (add `@playwright/test`; `e2e` script)
