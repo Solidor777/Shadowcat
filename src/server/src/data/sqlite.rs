@@ -843,6 +843,86 @@ impl Repository for SqliteRepository {
             None => Ok(Vec::new()),
         }
     }
+
+    async fn search(
+        &self,
+        ctx: &crate::data::membership::PermissionContext,
+        world_id: Uuid,
+        query: &str,
+        limit: u32,
+        cursor: Option<i64>,
+    ) -> Result<crate::data::search::SearchPage, DataError> {
+        use crate::data::search::{build_match, SearchHit, SearchPage};
+
+        let limit = limit.clamp(1, 100) as usize;
+        let Some(match_expr) = build_match(query) else {
+            return Ok(SearchPage {
+                hits: Vec::new(),
+                next_cursor: None,
+            });
+        };
+        let world_defaults = self.world_cap_defaults(world_id).await?;
+
+        // Iterate the BM25-ranked candidates from `cursor`, reading each doc and
+        // keeping only those the actor may read, until `limit` readable hits are
+        // collected or the candidates are exhausted. Over-iteration here is what
+        // prevents redaction from producing a short page.
+        let mut offset: i64 = cursor.unwrap_or(0);
+        let mut hits: Vec<SearchHit> = Vec::with_capacity(limit);
+        let batch: i64 = (limit as i64).max(16);
+        let mut next_cursor: Option<i64> = None;
+
+        'outer: loop {
+            let rows = sqlx::query(
+                "SELECT doc_id, bm25(documents_fts) AS score, \
+                 snippet(documents_fts, 0, '<mark>', '</mark>', '…', 16) AS snippet \
+                 FROM documents_fts \
+                 WHERE documents_fts MATCH ?1 AND world_id = ?2 \
+                 ORDER BY score LIMIT ?3 OFFSET ?4",
+            )
+            .bind(&match_expr)
+            .bind(world_id.to_string())
+            .bind(batch)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
+
+            if rows.is_empty() {
+                break; // exhausted; next_cursor stays None
+            }
+
+            for row in &rows {
+                offset += 1;
+                let doc_id: String = row.get("doc_id");
+                let doc_id =
+                    Uuid::parse_str(&doc_id).map_err(|e| DataError::OpFailed(e.to_string()))?;
+                let Some(doc) = self.get_document(doc_id).await? else {
+                    continue;
+                };
+                let access =
+                    resolve_access_world(ctx.user_id, ctx.world_role, &doc, &world_defaults);
+                if !access.has(cap::READ) {
+                    continue;
+                }
+                hits.push(SearchHit {
+                    document: crate::data::permission::filter_properties(&doc, &access),
+                    score: row.get("score"),
+                    snippet: row.get("snippet"),
+                });
+                if hits.len() == limit {
+                    // More candidates may remain; hand back the rank offset.
+                    next_cursor = Some(offset);
+                    break 'outer;
+                }
+            }
+
+            if (rows.len() as i64) < batch {
+                break; // last batch was partial → no more candidates
+            }
+        }
+
+        Ok(SearchPage { hits, next_cursor })
+    }
 }
 
 /// Settings key holding a world's default capability grants (JSON).
@@ -1152,6 +1232,168 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(after, 0);
+    }
+
+    #[tokio::test]
+    async fn search_ranks_and_filters_by_read_access() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::Operation;
+        use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let pl_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // A readable doc (default Observer → player can read) and a GM-only doc
+        // (default None → player cannot read), both matching "dragon".
+        let mut readable = tests_doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "name": "Red Dragon" }),
+        );
+        readable.scope = Scope::World { world_id: w.id };
+        let mut secret = tests_doc(
+            PermissionSet {
+                default: DocRole::None,
+                ..Default::default()
+            },
+            serde_json::json!({ "name": "Secret Dragon" }),
+        );
+        secret.scope = Scope::World { world_id: w.id };
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: readable.clone(),
+            }],
+            1,
+        )
+        .await
+        .unwrap();
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: secret.clone(),
+            }],
+            2,
+        )
+        .await
+        .unwrap();
+
+        // GM sees both.
+        let gm_page = r.search(&gm_ctx, w.id, "dragon", 10, None).await.unwrap();
+        assert_eq!(gm_page.hits.len(), 2);
+
+        // Player sees only the readable one — the GM-only doc is never leaked.
+        let pl_page = r.search(&pl_ctx, w.id, "dragon", 10, None).await.unwrap();
+        assert_eq!(pl_page.hits.len(), 1);
+        assert_eq!(pl_page.hits[0].document.id, readable.id);
+        assert!(pl_page.hits[0].snippet.to_lowercase().contains("dragon"));
+
+        // GM-only property is redacted from a readable hit for the player.
+        let mut sheet = tests_doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "name": "Knight", "secret": "weakness" }),
+        );
+        sheet.scope = Scope::World { world_id: w.id };
+        sheet
+            .permissions
+            .property_overrides
+            .insert("/system/secret".into(), Visibility::GmOnly);
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: sheet.clone() }],
+            3,
+        )
+        .await
+        .unwrap();
+        let knight = r.search(&pl_ctx, w.id, "knight", 10, None).await.unwrap();
+        assert_eq!(knight.hits.len(), 1);
+        assert!(
+            knight.hits[0].document.system.get("secret").is_none(),
+            "GM-only field leaked in search"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_paginates_without_underfill() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::Operation;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let pl_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // 6 matching docs; alternating readable/secret. Player can read 3.
+        for i in 0..6 {
+            let role = if i % 2 == 0 {
+                DocRole::Observer
+            } else {
+                DocRole::None
+            };
+            let mut d = tests_doc(
+                PermissionSet {
+                    default: role,
+                    ..Default::default()
+                },
+                serde_json::json!({ "name": format!("dragon {i}") }),
+            );
+            d.scope = Scope::World { world_id: w.id };
+            r.apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: d }], i + 1)
+                .await
+                .unwrap();
+        }
+
+        // Page size 2: first page returns 2 readable hits despite interleaved secrets.
+        let p1 = r.search(&pl_ctx, w.id, "dragon", 2, None).await.unwrap();
+        assert_eq!(p1.hits.len(), 2);
+        assert!(p1.next_cursor.is_some());
+        let p2 = r
+            .search(&pl_ctx, w.id, "dragon", 2, p1.next_cursor)
+            .await
+            .unwrap();
+        assert_eq!(p2.hits.len(), 1); // only 3 readable total
+        assert!(p2.next_cursor.is_none());
     }
 
     #[tokio::test]

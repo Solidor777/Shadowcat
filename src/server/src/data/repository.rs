@@ -55,4 +55,16 @@ pub trait Repository: Send + Sync {
         &self,
         world: Uuid,
     ) -> Result<Vec<CapabilityRequirement>, DataError>;
+
+    /// Full-text search over a world's documents, ranked by relevance and
+    /// filtered to what `ctx` may read. `cursor` is the raw-rank offset from a
+    /// prior page (`None` for the first). Returns up to `limit` readable hits.
+    async fn search(
+        &self,
+        ctx: &crate::data::membership::PermissionContext,
+        world_id: Uuid,
+        query: &str,
+        limit: u32,
+        cursor: Option<i64>,
+    ) -> Result<crate::data::search::SearchPage, DataError>;
 }
