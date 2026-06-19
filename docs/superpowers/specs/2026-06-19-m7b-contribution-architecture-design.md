@@ -73,12 +73,13 @@ milestone (chat M11, combat tracker, browsers M12) build on.
 ## 4. Server mirror (Rust) — mirrors the capability-requirements pattern
 
 ### 4.1 Storage
-Per-world module contract declarations, GM-published. Stored by the **same
-mechanism the existing `capability_requirements` use** (the M7b-1 plan inspects
-`set_world_cap_requirements`/`world_cap_requirements` in `sqlite.rs` and mirrors
-it — same table-vs-column choice, same serde encoding), accessed by new parallel
-`SqliteRepository` methods `world_contract_declarations(world)` /
-`set_world_contract_declarations(world, decls)`. Migration-added if a new table.
+Per-world module contract declarations, GM-published. Stored exactly like
+`capability_requirements`: a JSON blob under a per-world key in the existing
+`settings` key-value table (`set_setting`/`get_setting`, key
+`world_contracts:{world}`) — **no migration**. New parallel `SqliteRepository`
+methods `world_contract_declarations(world)` (trait getter, like
+`world_cap_requirements`) and `set_world_contract_declarations(world, decls)`
+(inherent setter, like `set_world_cap_requirements`).
 
 ### 4.2 Endpoints (GM-only)
 - `GET /api/worlds/{id}/contracts` → `Vec<ContractDeclaration>`.
@@ -195,7 +196,7 @@ Only `component` values are framework-specific.
 ## 7. Decomposition (one spec, three plan→execute→review cycles)
 
 - **M7b-1 — Contract schema + server mirror (Rust + shared types).** ts-rs
-  `ContractDeclaration`; migration + repo accessors; `GET/PUT
+  `ContractDeclaration`; settings-keyed repo accessors (no migration); `GET/PUT
   /api/worlds/{id}/contracts` (GM-only, validated); `Welcome` extension. Rust
   tests mirroring capability-requirements. **Buddy-check candidate** (new GM-only
   write surface + Welcome change + validation correctness).
