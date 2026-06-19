@@ -66,8 +66,17 @@ framework-neutral TS module**; Module API explicitly 0.x.
   structural-only; no server-side module code.
 
 #### M6c · Search
-- Full FTS5: virtual table + write-time sync + a search protocol frame +
-  `Core.search`.
+> Decomposed into **M6c-1** (one-shot search) and **M6c-2** (live query
+> subscriptions). Spec: [`superpowers/specs/2026-06-18-m6c-search-design.md`](superpowers/specs/2026-06-18-m6c-search-design.md).
+- **M6c-1 ✅** — FTS5 virtual table (visibility-split index: GM-only-stripped
+  `content` + full `content_all`) + write-time transactional sync +
+  transport-agnostic `Repository::search` (BM25 rank, per-recipient read filter,
+  cursor pagination, scan cap) + WS `Search`/`SearchResult`/`SearchError`
+  request/response frames on a generic correlation layer + `Core.search`.
+  Search core buddy-checked (snippet/match/score confidentiality leak fixed).
+  Plan: [`superpowers/plans/2026-06-18-m6c-1-search.md`](superpowers/plans/2026-06-18-m6c-1-search.md).
+- **M6c-2** — live query subscriptions (server-pushed result updates) on the
+  same frame + core. Brainstorm→spec→plan when started.
 
 > **Capability roadmap.** Phase 1 (M5 follow-up, done): core-op capabilities +
 > per-document/world grants. Phase 2 (M6b): declarative, data-driven field-path
