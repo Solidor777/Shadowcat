@@ -65,9 +65,10 @@ framework-neutral TS module**; Module API explicitly 0.x.
   actor's role so the client replicates resolution). Server stays
   structural-only; no server-side module code.
 
-#### M6c · Search
+#### M6c · Search ✅
 > Decomposed into **M6c-1** (one-shot search) and **M6c-2** (live query
-> subscriptions). Spec: [`superpowers/specs/2026-06-18-m6c-search-design.md`](superpowers/specs/2026-06-18-m6c-search-design.md).
+> subscriptions); both complete — M6c (and the **M6 milestone**) done. Spec:
+> [`superpowers/specs/2026-06-18-m6c-search-design.md`](superpowers/specs/2026-06-18-m6c-search-design.md).
 - **M6c-1 ✅** — FTS5 virtual table (visibility-split index: GM-only-stripped
   `content` + full `content_all`) + write-time transactional sync +
   transport-agnostic `Repository::search` (BM25 rank, per-recipient read filter,
@@ -75,8 +76,14 @@ framework-neutral TS module**; Module API explicitly 0.x.
   request/response frames on a generic correlation layer + `Core.search`.
   Search core buddy-checked (snippet/match/score confidentiality leak fixed).
   Plan: [`superpowers/plans/2026-06-18-m6c-1-search.md`](superpowers/plans/2026-06-18-m6c-1-search.md).
-- **M6c-2** — live query subscriptions (server-pushed result updates) on the
-  same frame + core. Brainstorm→spec→plan when started.
+- **M6c-2 ✅** — live top-N search subscriptions over the M4 broadcast:
+  `Search{subscribe}` registers a per-connection subscription in the egress task;
+  a leading-edge 150ms-coalesced re-eval re-runs `Repository::search` (inheriting
+  per-recipient filtering + the visibility-split index) and pushes `SearchUpdate`
+  when an `(doc_id, score, updated_at)` fingerprint changes; 16/connection cap;
+  `Unsubscribe` + disconnect cleanup; client `Core.subscribeSearch`. Egress
+  engine buddy-checked (debounce-starvation fixed). Plan:
+  [`superpowers/plans/2026-06-18-m6c-2-live-search.md`](superpowers/plans/2026-06-18-m6c-2-live-search.md).
 
 > **Capability roadmap.** Phase 1 (M5 follow-up, done): core-op capabilities +
 > per-document/world grants. Phase 2 (M6b): declarative, data-driven field-path

@@ -32,13 +32,19 @@ pub enum ClientMsg {
     /// Heartbeat reply.
     Pong,
     /// A full-text search request, correlated by `request_id`. `cursor` is the
-    /// opaque page token returned by a prior `SearchResult`.
+    /// opaque page token returned by a prior `SearchResult`. When `subscribe` is
+    /// true, the initial `SearchResult` is followed by `SearchUpdate`s on change
+    /// (a live top-N subscription keyed by `request_id`).
     Search {
         request_id: Uuid,
         query: String,
         limit: u32,
         cursor: Option<String>,
+        #[serde(default)]
+        subscribe: bool,
     },
+    /// Cancel a live search subscription (idempotent; unknown id ignored).
+    Unsubscribe { request_id: Uuid },
 }
 
 /// Which tier served a resync.
@@ -126,6 +132,12 @@ pub enum ServerMsg {
     },
     /// The `Search` with this `request_id` failed.
     SearchError { request_id: Uuid, message: String },
+    /// A live subscription's refreshed top-N (full replace). Documents are
+    /// already filtered for the recipient.
+    SearchUpdate {
+        request_id: Uuid,
+        hits: Vec<SearchHit>,
+    },
 }
 
 impl ServerMsg {
@@ -211,6 +223,7 @@ mod protocol_tests {
             query: "dragon".into(),
             limit: 20,
             cursor: None,
+            subscribe: false,
         };
         let s = serde_json::to_string(&req).unwrap();
         assert!(s.contains("\"type\":\"search\""));
@@ -222,6 +235,32 @@ mod protocol_tests {
         };
         let s = serde_json::to_string(&err).unwrap();
         assert!(s.contains("\"type\":\"search_error\""));
+    }
+
+    #[test]
+    fn subscribe_defaults_false_and_live_frames_round_trip() {
+        // A one-shot Search frame (no `subscribe`) still deserializes (default false).
+        let oneshot: ClientMsg = serde_json::from_str(
+            r#"{"type":"search","request_id":"00000000-0000-0000-0000-000000000001","query":"x","limit":20,"cursor":null}"#,
+        )
+        .unwrap();
+        match oneshot {
+            ClientMsg::Search { subscribe, .. } => assert!(!subscribe),
+            _ => panic!("expected Search"),
+        }
+        let unsub = ClientMsg::Unsubscribe {
+            request_id: Uuid::from_u128(1),
+        };
+        assert!(serde_json::to_string(&unsub)
+            .unwrap()
+            .contains("\"type\":\"unsubscribe\""));
+        let upd = ServerMsg::SearchUpdate {
+            request_id: Uuid::from_u128(2),
+            hits: Vec::new(),
+        };
+        assert!(serde_json::to_string(&upd)
+            .unwrap()
+            .contains("\"type\":\"search_update\""));
     }
 
     #[test]

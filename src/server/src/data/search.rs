@@ -81,9 +81,15 @@ fn collect_leaves(value: &serde_json::Value, out: &mut String) {
 /// as a term-less phrase (which FTS5 would reject) — it yields `None`, an empty
 /// result, instead. Returns `None` for an empty query.
 pub fn build_match(input: &str) -> Option<String> {
-    let terms: Vec<String> = input
+    // Bound the work an untrusted query can drive: cap the length (by chars, so
+    // never splitting a UTF-8 boundary) and the number of terms.
+    const MAX_QUERY_CHARS: usize = 256;
+    const MAX_TERMS: usize = 16;
+    let capped: String = input.chars().take(MAX_QUERY_CHARS).collect();
+    let terms: Vec<String> = capped
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
+        .take(MAX_TERMS)
         .map(|t| t.to_string())
         .collect();
     if terms.is_empty() {
@@ -168,6 +174,26 @@ mod tests {
     fn build_match_empty_is_none() {
         assert!(build_match("   ").is_none());
         assert!(build_match("").is_none());
+    }
+
+    #[test]
+    fn build_match_caps_length_and_term_count() {
+        // Term count is capped at 16.
+        let many = (0..50)
+            .map(|i| format!("t{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let m = build_match(&many).unwrap();
+        assert_eq!(
+            m.matches('"').count() / 2,
+            16,
+            "term count must be capped at 16"
+        );
+        // Length is capped at 256 chars (one giant token is truncated, not rejected).
+        let huge = "a".repeat(10_000);
+        let m = build_match(&huge).unwrap();
+        // The single quoted+prefixed term is bounded by the 256-char cap.
+        assert!(m.len() <= 256 + 4, "query length must be capped");
     }
 
     #[test]

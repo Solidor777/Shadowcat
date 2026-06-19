@@ -167,6 +167,11 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     request_id: z.string(),
     message: z.string(),
   }),
+  z.object({
+    type: z.literal("search_update"),
+    request_id: z.string(),
+    hits: z.array(SearchHitSchema),
+  }),
 ]);
 
 export type WireScope = z.infer<typeof ScopeSchema>;
@@ -188,7 +193,9 @@ export type ClientMsg =
       query: string;
       limit: number;
       cursor?: string;
-    };
+      subscribe: boolean;
+    }
+  | { type: "unsubscribe"; request_id: string };
 
 /** Parse + validate an inbound text frame; `null` on malformed/unknown input. */
 export function parseServerMsg(text: string): ServerMsg | null {

@@ -39,8 +39,45 @@ pub struct WsQuery {
 /// Intents the ingress task hands to the egress task (which owns the sink).
 enum Egress {
     Frame(Arc<ServerMsg>),
-    TimePong { client_t0: i64, server_t: i64 },
+    TimePong {
+        client_t0: i64,
+        server_t: i64,
+    },
     Resync(i64),
+    /// Register a live search subscription (the egress task owns the registry).
+    Subscribe {
+        request_id: Uuid,
+        query: String,
+        limit: u32,
+    },
+    /// Cancel a live search subscription.
+    Unsubscribe {
+        request_id: Uuid,
+    },
+}
+
+/// Max live search subscriptions per connection; a subscribe beyond this is
+/// rejected with `SearchError`.
+const MAX_SUBSCRIPTIONS: usize = 16;
+/// Coalescing window: a burst of Events triggers at most one re-run per window.
+const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// A live search subscription's stored state.
+struct Sub {
+    query: String,
+    limit: u32,
+    /// Last delivered result identity, in rank order. Used to suppress a push
+    /// when re-evaluation yields an identical top-N.
+    fingerprint: Vec<(Uuid, u64, i64)>,
+}
+
+/// A cheap, order-sensitive identity of a result page for no-op suppression:
+/// `(doc_id, score-bits, updated_at)` per hit. Including `updated_at` makes a
+/// content edit that leaves rank/score unchanged still push a fresh snippet.
+fn search_fingerprint(hits: &[crate::data::search::SearchHit]) -> Vec<(Uuid, u64, i64)> {
+    hits.iter()
+        .map(|h| (h.document.id, h.score.to_bits(), h.document.updated_at))
+        .collect()
 }
 
 /// Session-gated upgrade. `AuthUser` enforces authentication (401 without a
@@ -204,23 +241,36 @@ async fn handle_socket(
                                 break;
                             }
                         }
-                        Ok(ClientMsg::Search { request_id, query, limit, cursor }) => {
-                            let from = cursor.as_deref().and_then(|c| c.parse::<i64>().ok());
-                            let frame = match repo.search(&ctx, world_id, &query, limit, from).await {
-                                Ok(page) => ServerMsg::SearchResult {
-                                    request_id,
-                                    hits: page.hits,
-                                    next_cursor: page.next_cursor.map(|n| n.to_string()),
-                                },
-                                Err(e) => {
-                                    tracing::debug!(world = %world_id, %request_id, error = %e, "search failed");
-                                    ServerMsg::SearchError {
-                                        request_id,
-                                        message: "search failed".into(),
-                                    }
+                        Ok(ClientMsg::Search { request_id, query, limit, cursor, subscribe }) => {
+                            if subscribe {
+                                // Subscriptions are owned by the egress task (it has
+                                // the registry, the broadcast, and the sink).
+                                if etx.send(Egress::Subscribe { request_id, query, limit }).await.is_err() {
+                                    break;
                                 }
-                            };
-                            if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
+                            } else {
+                                let from = cursor.as_deref().and_then(|c| c.parse::<i64>().ok());
+                                let frame = match repo.search(&ctx, world_id, &query, limit, from).await {
+                                    Ok(page) => ServerMsg::SearchResult {
+                                        request_id,
+                                        hits: page.hits,
+                                        next_cursor: page.next_cursor.map(|n| n.to_string()),
+                                    },
+                                    Err(e) => {
+                                        tracing::debug!(world = %world_id, %request_id, error = %e, "search failed");
+                                        ServerMsg::SearchError {
+                                            request_id,
+                                            message: "search failed".into(),
+                                        }
+                                    }
+                                };
+                                if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(ClientMsg::Unsubscribe { request_id }) => {
+                            if etx.send(Egress::Unsubscribe { request_id }).await.is_err() {
                                 break;
                             }
                         }
@@ -290,6 +340,13 @@ async fn egress_loop<S>(
         return;
     }
 
+    // Live search subscriptions owned by this connection. Each authoritative
+    // Event arms a debounce; on fire, every subscription is re-run against the
+    // current state with THIS connection's ctx (so per-recipient filtering and
+    // the visibility-split index apply) and pushed only if its result changed.
+    let mut subs: std::collections::HashMap<Uuid, Sub> = std::collections::HashMap::new();
+    let mut reeval_deadline: Option<tokio::time::Instant> = None;
+
     let mut next_expected = current_seq + 1;
     loop {
         tokio::select! {
@@ -305,6 +362,33 @@ async fn egress_loop<S>(
                         Ok(to_seq) => next_expected = (to_seq + 1).max(next_expected),
                         Err(_) => break,
                     }
+                }
+                Some(Egress::Subscribe { request_id, query, limit }) => {
+                    if subs.contains_key(&request_id) {
+                        // A duplicate id would silently orphan the prior sub.
+                        let f = ServerMsg::SearchError { request_id, message: "duplicate subscription id".into() };
+                        if sink.send(text(&f)).await.is_err() { break; }
+                    } else if subs.len() >= MAX_SUBSCRIPTIONS {
+                        let f = ServerMsg::SearchError { request_id, message: "too many subscriptions".into() };
+                        if sink.send(text(&f)).await.is_err() { break; }
+                    } else {
+                        match repo.search(&ctx, world_id, &query, limit, None).await {
+                            Ok(page) => {
+                                let fp = search_fingerprint(&page.hits);
+                                let f = ServerMsg::SearchResult { request_id, hits: page.hits, next_cursor: None };
+                                if sink.send(text(&f)).await.is_err() { break; }
+                                subs.insert(request_id, Sub { query, limit, fingerprint: fp });
+                            }
+                            Err(e) => {
+                                tracing::debug!(world = %world_id, %request_id, error = %e, "subscribe search failed");
+                                let f = ServerMsg::SearchError { request_id, message: "search failed".into() };
+                                if sink.send(text(&f)).await.is_err() { break; }
+                            }
+                        }
+                    }
+                }
+                Some(Egress::Unsubscribe { request_id }) => {
+                    subs.remove(&request_id);
                 }
                 None => break, // ingress gone
             },
@@ -325,6 +409,15 @@ async fn egress_loop<S>(
                         }
                         if send_filtered(&mut sink, repo.as_ref(), &ctx, &world_defaults, msg.as_ref()).await.is_err() { break; }
                         next_expected = seq + 1;
+                        // A world change may affect live subscriptions. Arm the
+                        // coalescing window on the LEADING edge only: re-arming
+                        // on every Event would push the deadline forward forever
+                        // under a sustained stream (starving updates). Arming
+                        // only when idle fires ~150ms after the first Event of a
+                        // burst, then re-arms on the next Event after it fires.
+                        if !subs.is_empty() && reeval_deadline.is_none() {
+                            reeval_deadline = Some(tokio::time::Instant::now() + SEARCH_DEBOUNCE);
+                        }
                     } else if send_filtered(&mut sink, repo.as_ref(), &ctx, &world_defaults, msg.as_ref()).await.is_err() {
                         break;
                     }
@@ -339,6 +432,46 @@ async fn egress_loop<S>(
                 }
                 Err(RecvError::Closed) => break,
             },
+            // Coalesced live-search re-evaluation: fires ~one debounce window
+            // after the first Event of a burst. Re-runs each subscription with
+            // this actor's ctx and pushes only when the result changed (no-op
+            // suppression). Cost is bounded — at most MAX_SUBSCRIPTIONS searches,
+            // each capped by the search scan budget, at most once per window —
+            // but it runs inline on the egress task. TODO: offload re-eval reads
+            // off the egress path (a read pool / spawned task) if busy worlds
+            // show broadcast lag from this coupling.
+            _ = tokio::time::sleep_until(reeval_deadline.unwrap_or_else(tokio::time::Instant::now)),
+                if reeval_deadline.is_some() =>
+            {
+                reeval_deadline = None;
+                let mut dead: Vec<Uuid> = Vec::new();
+                for (id, sub) in subs.iter_mut() {
+                    match repo.search(&ctx, world_id, &sub.query, sub.limit, None).await {
+                        Ok(page) => {
+                            let fp = search_fingerprint(&page.hits);
+                            if fp != sub.fingerprint {
+                                sub.fingerprint = fp;
+                                let f = ServerMsg::SearchUpdate { request_id: *id, hits: page.hits };
+                                // `return` (not `break`): a bare break would only
+                                // exit this inner for-loop, leaving the egress
+                                // loop running on a dead sink. Other arms `break`
+                                // the egress loop directly; here the send is
+                                // nested, so end the task outright.
+                                if sink.send(text(&f)).await.is_err() { return; }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(world = %world_id, subscription = %id, error = %e, "live re-eval failed");
+                            let f = ServerMsg::SearchError { request_id: *id, message: "search failed".into() };
+                            let _ = sink.send(text(&f)).await;
+                            dead.push(*id);
+                        }
+                    }
+                }
+                for id in dead {
+                    subs.remove(&id);
+                }
+            }
         }
     }
 }

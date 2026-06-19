@@ -247,6 +247,38 @@ describe("WsClient", () => {
     await expect(client.search("x", { timeoutMs: 1 })).rejects.toThrow(/timeout/i);
   });
 
+  it("subscribeSearch fires onUpdate for initial + updates, and unsubscribe stops dispatch", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    let calls = 0;
+    const p = client.subscribeSearch("dragon", { limit: 5 }, () => {
+      calls += 1;
+    });
+    const req = JSON.parse(sent.find((s) => JSON.parse(s).type === "search")!);
+    expect(req.subscribe).toBe(true);
+    onMessage(
+      JSON.stringify({ type: "search_result", request_id: req.request_id, hits: [], next_cursor: null }),
+    );
+    const handle = await p;
+    expect(calls).toBe(1); // initial fired via onUpdate
+
+    onMessage(JSON.stringify({ type: "search_update", request_id: req.request_id, hits: [] }));
+    expect(calls).toBe(2);
+
+    handle.unsubscribe();
+    expect(sent.some((s) => JSON.parse(s).type === "unsubscribe")).toBe(true);
+    onMessage(JSON.stringify({ type: "search_update", request_id: req.request_id, hits: [] }));
+    expect(calls).toBe(2); // no further dispatch after unsubscribe
+  });
+
   it("stop() rejects in-flight searches instead of leaving them hanging", async () => {
     const client = new WsClient({
       connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
