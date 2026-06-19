@@ -21,6 +21,8 @@ export type { ImportFn, ModuleEntry } from "./loader";
 export { resolveCaps, canWritePath } from "./capabilities";
 export { DocumentStore, setPointer, applyOperation } from "./store";
 export type { Listener } from "./store";
+export { ContributionRegistry } from "./contributions";
+export type { Contribution, Cardinality } from "./contributions";
 export { OptimisticClient } from "./optimistic";
 export { WsClient } from "./ws-client";
 export type {
