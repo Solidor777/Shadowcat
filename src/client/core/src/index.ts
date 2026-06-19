@@ -18,6 +18,7 @@ export { ModuleRegistry } from "./modules";
 export type { Module, ModuleContext, ModuleInfo } from "./modules";
 export { loadModules } from "./loader";
 export type { ImportFn, ModuleEntry } from "./loader";
+export { resolveCaps, canWritePath } from "./capabilities";
 export { DocumentStore, setPointer, applyOperation } from "./store";
 export type { Listener } from "./store";
 export { OptimisticClient } from "./optimistic";
