@@ -213,10 +213,17 @@ Only `component` values are framework-specific.
   module_id; richer check → TODO), documented the non-recoverable singleton throw.
   100 core unit tests + typecheck green.
   Plan: [`plans/2026-06-19-m7b-2-client-registry.md`](plans/2026-06-19-m7b-2-client-registry.md).
-- **M7b-3 — Svelte `<Surface>` adapter + harness (`ui` package).** `<Surface>`
-  component; `appContext`; a minimal test harness (a fake module contributing a
-  component into a surface renders, reorders by `order`, and tears down on
-  dispose). Vitest + @testing-library/svelte (new to the ui package).
+- **M7b-3 — Svelte `<Surface>` adapter + harness (`ui` package). ✅ DONE** (merged
+  `--no-ff` to local main, not pushed). `<Surface>` component (createSubscriber
+  bridge + Svelte 5 dynamic components); `appContext` (registry now; store/world/
+  role→M7c, t→M7d); the ui package's first test setup (Vitest +
+  @testing-library/svelte + jsdom). Single-reviewed (no Critical/Important; dispose
+  assertion hardened to poll). ui 4 + core 100 tests green, svelte-check clean.
+  Plan: [`plans/2026-06-19-m7b-3-surface-adapter.md`](plans/2026-06-19-m7b-3-surface-adapter.md).
+
+**M7b COMPLETE** — server mirror + client registry + Svelte host. Next: M7c (shell
++ entry flow as modules + the `embed.rs` seam flip), then M7d (theming + i18n +
+session).
 
 ## 8. Testing
 
