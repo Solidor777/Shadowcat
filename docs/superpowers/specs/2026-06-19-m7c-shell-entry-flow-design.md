@@ -149,11 +149,15 @@ real document panels yet — Settings/stubs don't read documents).
   transport (Welcome → role/world/reconcile, core-ui activation, leave teardown);
   `core-ui` surface registration + default contributions; `Layout` renders the
   region surfaces; AppContext provision.
-- **One Playwright smoke (M7c-1):** setup → login → world-select → enter table,
-  driven against `vite dev` + a spawned test-server (reuse the core e2e
-  `src/client/core/src/e2e/server-process.ts`). New dev-dep `@playwright/test`
-  + a CI job across the ubuntu/macos/windows matrix.
-- **Server (M7c-2):** embed tests (§10); `init_gate`-serves-SPA test.
+- **One Playwright smoke (M7c-2, moved from M7c-1):** setup → login →
+  world-select → enter table. **Moved to M7c-2** because once the binary serves
+  the SPA + `/api` on one origin (the embed flip), the e2e is a single-process
+  spawn (`startTestServer`, point Playwright `baseURL` at it) — far simpler and
+  more faithful than M7c-1's dual-process `vite dev` + proxy + dynamically-ported
+  test-server. New dev-dep `@playwright/test` + a CI job across the matrix, in
+  M7c-2.
+- **Server (M7c-2):** embed tests (§10); `init_gate`-serves-SPA test; the
+  Playwright entry-flow smoke against the built binary.
 - Responsive/touch reflow asserted in the `Layout` Vitest test (CLAUDE.md
   mobile invariant).
 
@@ -176,5 +180,8 @@ real document panels yet — Settings/stubs don't read documents).
 4. **M7c-1 / M7c-2 split** — client SPA, then server embed flip. §2.
 5. **Minimal structural styles** in M7c (scoped CSS, no tokens); theming is M7d.
    §3.
-6. **Playwright smoke** runs against `vite dev` + spawned test-server in M7c-1;
-   the binary-serves-SPA path is validated by M7c-2 embed tests. §11.
+6. **Playwright smoke → M7c-2** (moved from M7c-1): run against the built binary
+   serving SPA + `/api` on one origin (single-process spawn), which is simpler and
+   more faithful than M7c-1's dual-process `vite dev` + proxy + dynamically-ported
+   test-server. M7c-1 ships full Vitest coverage of the entry flow + shell logic;
+   the binary e2e lands with the embed flip. §11.
