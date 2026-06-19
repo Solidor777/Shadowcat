@@ -35,9 +35,18 @@ A self-hoster opens the app in a browser and reaches a working table:
   ui 18 unit tests + typecheck green. Reachable via `vite dev` proxying to a
   test-server; the binary serves the old static bundle until M7c-2.
   Plan: [`plans/2026-06-19-m7c-1-client-spa.md`](plans/2026-06-19-m7c-1-client-spa.md).
-- **M7c-2 — Server embed integration** (Rust). Flip `embed.rs` `static/` →
-  `dist/`; rework `init_gate`; retire `src/server/static/`; client→server build
-  ordering; embed tests. After this the binary serves the SPA.
+- **M7c-2 — Server embed integration. ✅ DONE** (merged `--no-ff` to local main,
+  not pushed). Flipped `embed.rs` `static/` → `../../dist/`; **removed** `init_gate`
+  (SPA + endpoint self-gating cover it); re-homed favicon/PWA assets into
+  `src/client/ui/public/`; retired `src/server/static/`; CI builds the client in
+  the `rust` matrix job before any cargo step; Playwright entry-flow smoke against
+  the built binary (`ui-e2e` CI job). Single-reviewed: no Critical/Important
+  (init_gate removal confirmed safe); fixed stale `/setup.html` references. Binary
+  hand-verified serving the SPA + login; release build embeds `dist/`.
+  Plan: [`plans/2026-06-19-m7c-2-server-embed.md`](plans/2026-06-19-m7c-2-server-embed.md).
+
+**M7c COMPLETE** — the single binary serves the running, navigable SPA. Next: M7d
+(theming + i18n + session-restore).
 
 ## 3. Non-goals (deferred)
 
