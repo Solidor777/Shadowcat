@@ -225,8 +225,11 @@ Additive; no change to the M5 write path or M4/M6 wire protocol.
 2. **`GET /api/config`** — public `{ initialized }` for Setup-vs-Login routing.
 3. **`GET/PUT /me/ui-state`** + migration — the §8 blob.
 4. **`embed.rs` seam flip** — `#[folder = "static/"]` → client `dist/`; retire all
-   of `src/server/static/`; update the single-binary build + embed tests; CI build
-   ordering (client → server).
+   of `src/server/static/`; rework `init_gate` to serve the SPA for the setup view
+   instead of redirecting to `/setup.html`; update the single-binary build + embed
+   tests; CI build ordering (client → server). **Lands in M7c, not M7a** — the flip
+   needs the Svelte bundle to exist (serving an empty `dist/` and breaking the
+   setup redirect otherwise), so it ships with the shell that produces `dist/`.
 
 ## 10. Theming — 3-tier SCSS token system
 
@@ -285,10 +288,13 @@ pure black.
 
 Each its own plan → execute → review cycle (mirroring M6a/b/c).
 
-- **M7a — Server surface.** `GET /worlds`, `GET /api/config`,
-  `GET/PUT /me/ui-state` + migration, `embed.rs` seam flip + static retirement +
-  build-ordering wiring. Rust tests. Buddy-check candidate (auth-adjacent reads +
-  embed seam).
+- **M7a — Server surface.** `GET /api/worlds`, `GET /api/config`,
+  `GET/PUT /api/me/ui-state` + migration. Purely additive (existing static auth
+  flow untouched); independently shippable. Rust tests. Buddy-check candidate
+  (auth-adjacent reads: world-list visibility + `ui_state` on the users table).
+  Plan: [`superpowers/plans/2026-06-19-m7a-server-surface.md`](plans/2026-06-19-m7a-server-surface.md).
+  (The `embed.rs` seam flip + `init_gate` rework + static retirement moved to M7c
+  — they need the Svelte bundle to exist.)
 - **M7b — UI contribution architecture.** Core manifest `provides`/`requires` +
   resolution generalization (incl. singleton loud-fail); the `ui.surfaces` host
   service in the ui package + Svelte mount/teardown + reactive `contributionsFor`.
@@ -297,7 +303,9 @@ Each its own plan → execute → review cycle (mirroring M6a/b/c).
   proxy), hash router, the `core-ui` module providing root/region surfaces,
   Setup/Login/WorldSelect/Table contributions, `WsClient`/`Welcome` lifecycle, the
   `createSubscriber` bridge, default panels (Settings + stubs) as contributions.
-  Vitest + the Playwright smoke.
+  **Also: the `embed.rs` seam flip → `dist/`, `init_gate` rework to serve the SPA
+  setup view, static retirement, and CI client→server build ordering** (moved from
+  M7a; needs the bundle this sub-milestone produces). Vitest + the Playwright smoke.
 - **M7d — Theming, i18n, session wiring.** 3-tier SCSS tokens + dark theme,
   `typesafe-i18n` + `en` + switcher, session-state load/save wiring, Settings
   panel content, responsive reflow. Remaining Vitest; `ARCHITECTURE.md` dependency
