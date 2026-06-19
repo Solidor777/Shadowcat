@@ -13,7 +13,7 @@ html,
 body {
   margin: 0;
   height: 100%;
-  background: var(--slate-950);
+  background: var(--surface-sunken);
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 16px;
@@ -43,6 +43,10 @@ button:active {
 button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 input {

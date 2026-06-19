@@ -1,5 +1,6 @@
 // Tier 2 — semantic aliases. The only tier components reference.
 :root {
+  --surface-sunken: var(--slate-950); // app backdrop / deepest surface
   --surface-base: var(--slate-900);
   --surface-raised: var(--slate-850);
   --surface-overlay: var(--slate-800);
