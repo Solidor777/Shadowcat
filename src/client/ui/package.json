@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@shadowcat/core": "workspace:*"
+    "@shadowcat/core": "workspace:*",
+    "@shadowcat/types": "workspace:^"
   },
   "scripts": {
     "dev": "vite",
