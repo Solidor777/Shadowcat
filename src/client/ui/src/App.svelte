@@ -1,6 +1,7 @@
 <script lang="ts">
   import { webSocketConnect } from "@shadowcat/core";
-  import { getConfig, getMe, type Me } from "./lib/api";
+  import { getConfig, getMe, listWorlds, type Me } from "./lib/api";
+  import { loadSessionState, setLastWorld } from "./lib/sessionState.svelte";
   import { currentRoute, navigate } from "./lib/route.svelte";
   import { coreUi } from "./modules/core-ui/index";
   import { WorldSession } from "./lib/worldSession.svelte";
@@ -21,7 +22,21 @@
         return;
       }
       me = await getMe();
-      navigate({ name: me ? "worlds" : "login" });
+      if (!me) {
+        navigate({ name: "login" });
+        return;
+      }
+      const ui = await loadSessionState(); // applies the saved locale
+      const last = ui.global.lastWorld;
+      if (last) {
+        const worlds = await listWorlds();
+        if (worlds.some((w) => w.id === last)) {
+          enterWorld(last); // reload returns you to your last world
+          return;
+        }
+        setLastWorld(null); // stale (deleted / revoked) — clear it
+      }
+      navigate({ name: "worlds" });
     } catch {
       // A transient backend failure must not wedge the SPA on "Loading…";
       // fall through to Login (re-auth re-runs the checks).
@@ -35,6 +50,7 @@
   async function afterAuth() {
     try {
       me = await getMe();
+      await loadSessionState();
     } catch {
       me = null;
     }
@@ -49,7 +65,15 @@
     const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), coreUiModule: coreUi });
     session = s;
     void s.enter(worldId);
+    setLastWorld(worldId);
     navigate({ name: "world", id: worldId });
+  }
+
+  function leaveWorld() {
+    session?.leave();
+    session = null;
+    setLastWorld(null);
+    navigate({ name: "worlds" });
   }
 
   const route = $derived(currentRoute());
@@ -60,7 +84,7 @@
 {:else if route.name === "setup"}
   <Setup onDone={() => navigate({ name: "login" })} />
 {:else if route.name === "world" && session?.role && session?.world}
-  <Table {session} />
+  <Table {session} {leaveWorld} />
 {:else if route.name === "world"}
   <p class="connecting">Connecting…</p>
 {:else if route.name === "worlds"}

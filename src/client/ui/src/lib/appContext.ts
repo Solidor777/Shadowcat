@@ -17,6 +17,8 @@ export interface AppContext {
   world: string;
   role: WorldRole;
   t: TFunc;
+  /** Leave the current world and return to world-select. */
+  leaveWorld: () => void;
 }
 
 const KEY = Symbol("shadowcat.appContext");

@@ -20,6 +20,7 @@ export const en: Messages = {
   "topbar.world": "world {world}",
   "settings.title": "Settings",
   "settings.role": "Role: {role}",
+  "settings.leaveWorld": "Leave world",
   "settings.logout": "Log out",
   "settings.language": "Language",
   "stage.placeholder": "Scene rendering arrives in M8.",

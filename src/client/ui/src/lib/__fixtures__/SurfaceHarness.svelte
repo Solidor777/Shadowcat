@@ -9,7 +9,7 @@
   // The registry is a fixed instance per render; capturing it once is intended.
   // store/world/role/t are unused by <Surface> but required by the AppContext shape.
   // svelte-ignore state_referenced_locally
-  setAppContext({ contributions: registry, store: new DocumentStore(), world: "test", role: "gm", t });
+  setAppContext({ contributions: registry, store: new DocumentStore(), world: "test", role: "gm", t, leaveWorld: () => {} });
 </script>
 
 <Surface {contract} />
