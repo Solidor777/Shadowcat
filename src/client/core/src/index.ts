@@ -5,11 +5,25 @@ export function isHealthy(status: HealthStatus): boolean {
   return status.status === "ok" && status.db_connected;
 }
 
+export { silentLogger, consoleLogger } from "./logger";
+export type { Logger } from "./logger";
+export { HookBus, STOP } from "./hooks";
+export type { HookKind, HookDefinition, OnOptions, Handler, CoreHooks } from "./hooks";
+export { ServiceRegistry } from "./services";
+export { MiddlewareChain } from "./middleware";
+export type { PipelineName, Middleware } from "./middleware";
+export { ManifestSchema, parseManifest } from "./manifest";
+export type { ModuleManifest, CapRequirement, HookDecl } from "./manifest";
+export { ModuleRegistry } from "./modules";
+export type { Module, ModuleContext, ModuleInfo } from "./modules";
+export { loadModules } from "./loader";
+export type { ImportFn, ModuleEntry } from "./loader";
+export { resolveCaps, canWritePath } from "./capabilities";
 export { DocumentStore, setPointer, applyOperation } from "./store";
 export type { Listener } from "./store";
 export { OptimisticClient } from "./optimistic";
 export { WsClient } from "./ws-client";
-export type { WsClientOptions, WsClientHandlers } from "./ws-client";
+export type { WsClientOptions, WsClientHandlers, WireWelcome } from "./ws-client";
 export { webSocketConnect } from "./transport";
 export type { Transport, TransportHandlers, Connect } from "./transport";
 export {
@@ -18,6 +32,7 @@ export {
   CommandSchema,
   OperationSchema,
   ServerMsgSchema,
+  CapabilityRequirementSchema,
 } from "./wire";
 export type {
   ServerMsg,
@@ -27,4 +42,5 @@ export type {
   WireOperation,
   WireFieldChange,
   WireScope,
+  WireCapabilityRequirement,
 } from "./wire";

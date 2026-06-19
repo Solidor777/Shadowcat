@@ -243,11 +243,26 @@ async fn egress_loop<S>(
     // with apply_intent on the single-writer pool. A defaults change mid-session
     // takes effect on the client's next (re)connect.
     let world_defaults = repo.world_cap_defaults(world_id).await.unwrap_or_default();
+    let world_reqs = match repo.world_cap_requirements(world_id).await {
+        Ok(r) => r,
+        Err(e) => {
+            // Fail open for the advisory client copy only; server-side
+            // enforcement reads requirements freshly per intent and fails closed.
+            tracing::warn!(world = %world_id, error = %e, "capability requirements unreadable; sending empty");
+            Vec::new()
+        }
+    };
+    // Project the world grants to only what this actor needs to self-gate; other
+    // users' UUIDs and grants must not cross to the client.
+    let actor_grants = crate::data::permission::project_grants_for(&world_defaults, ctx.user_id);
     if sink
         .send(text(&ServerMsg::Welcome {
             world: world_id,
             current_seq,
             server_time: now_millis(),
+            world_default_grants: actor_grants,
+            actor_role: ctx.world_role,
+            capability_requirements: world_reqs,
         }))
         .await
         .is_err()

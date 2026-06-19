@@ -8,8 +8,14 @@
     "@shadowcat/types": "workspace:*",
     "zod": "^3.23.8"
   },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
+    "ws": "^8.18.0"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts"
   }
 }

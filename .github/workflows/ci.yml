@@ -71,3 +71,23 @@ jobs:
       - run: pnpm -r test
       - run: pnpm lint
       - run: pnpm --filter @shadowcat/ui build
+
+  # Cross-runtime end-to-end: the real @shadowcat/core client driven against the
+  # real Rust test_server. Needs both toolchains, so it is its own single-OS job
+  # (the rust matrix already proves cross-OS build; this proves the boundary).
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Pre-build the server so the in-test spawn does not pay the compile cost.
+      - run: cargo build -p shadowcat --bin test_server
+      - run: pnpm --filter @shadowcat/core test:e2e

@@ -69,11 +69,17 @@ pub enum RejectReason {
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
-    /// Sent right after a successful join.
+    /// Sent right after a successful join. Carries the world's default capability
+    /// grants, the connecting actor's world role, and the declarative capability
+    /// requirements so the client can replicate access resolution for advisory
+    /// UI gating (the server remains authoritative).
     Welcome {
         world: Uuid,
         current_seq: i64,
         server_time: i64,
+        world_default_grants: crate::data::document::CapabilityGrants,
+        actor_role: crate::data::document::WorldRole,
+        capability_requirements: Vec<crate::data::document::CapabilityRequirement>,
     },
     /// A sequenced broadcast carrying the authoritative command. `intent_id` is
     /// the originator's correlation token; it is `None` on the shared broadcast
@@ -178,5 +184,23 @@ mod protocol_tests {
         };
         let s = serde_json::to_string(&e).unwrap();
         assert!(s.contains("\"code\":\"world_not_found\""));
+    }
+
+    #[test]
+    fn welcome_carries_caps_role_and_requirements() {
+        use crate::data::document::{CapabilityGrants, WorldRole};
+        let w = ServerMsg::Welcome {
+            world: Uuid::from_u128(1),
+            current_seq: 0,
+            server_time: 0,
+            world_default_grants: CapabilityGrants::default(),
+            actor_role: WorldRole::Player,
+            capability_requirements: Vec::new(),
+        };
+        let json = serde_json::to_value(&w).unwrap();
+        assert_eq!(json["type"], "welcome");
+        assert_eq!(json["actor_role"], "player");
+        assert!(json.get("world_default_grants").is_some());
+        assert!(json.get("capability_requirements").is_some());
     }
 }

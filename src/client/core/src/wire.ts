@@ -41,6 +41,12 @@ export const CapabilityGrantsSchema = z.object({
   by_user: z.record(z.array(z.string())),
 });
 
+export const CapabilityRequirementSchema = z.object({
+  path_prefix: z.string(),
+  caps: z.array(z.string()),
+});
+export type WireCapabilityRequirement = z.infer<typeof CapabilityRequirementSchema>;
+
 export const PermissionSetSchema = z.object({
   default: DocRoleSchema,
   users: z.record(DocRoleSchema),
@@ -111,6 +117,9 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     world: z.string(),
     current_seq: int,
     server_time: int,
+    world_default_grants: CapabilityGrantsSchema,
+    actor_role: WorldRoleSchema,
+    capability_requirements: z.array(CapabilityRequirementSchema),
   }),
   z.object({
     type: z.literal("event"),

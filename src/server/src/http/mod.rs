@@ -78,6 +78,11 @@ pub async fn router(state: AppState) -> Router {
             get(routes::get_world_capability_defaults).put(routes::set_world_capability_defaults),
         )
         .route(
+            "/api/worlds/{id}/capability-requirements",
+            get(routes::get_world_capability_requirements)
+                .put(routes::set_world_capability_requirements),
+        )
+        .route(
             "/api/worlds/{id}/documents",
             get(routes::list_documents).post(routes::create_document),
         )
@@ -625,5 +630,76 @@ pub(crate) mod tests {
             .json(&embed)
             .await
             .assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn world_capability_requirements_gm_only_crud() {
+        let state = initialized_state().await;
+        seed_user(&state, "gm").await;
+        let player_id = seed_user(&state, "pl").await;
+        let gm = login_server(&state, "gm").await;
+        let pl = login_server(&state, "pl").await;
+
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "W" }))
+            .await
+            .json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+        gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": player_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let reqs = serde_json::json!([
+            { "path_prefix": "/system/vision", "caps": ["dnd5e:gm_vision"] }
+        ]);
+
+        // A non-GM cannot set requirements.
+        pl.put(&format!("/api/worlds/{world_id}/capability-requirements"))
+            .json(&reqs)
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        // The GM sets them.
+        gm.put(&format!("/api/worlds/{world_id}/capability-requirements"))
+            .json(&reqs)
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // ...and reads them back.
+        let got: serde_json::Value = gm
+            .get(&format!("/api/worlds/{world_id}/capability-requirements"))
+            .await
+            .json();
+        assert_eq!(got[0]["path_prefix"], "/system/vision");
+
+        // A malformed path_prefix is rejected.
+        let bad = serde_json::json!([{ "path_prefix": "system", "caps": ["x:y"] }]);
+        gm.put(&format!("/api/worlds/{world_id}/capability-requirements"))
+            .json(&bad)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // An empty caps list (a fail-open no-op rule) is rejected.
+        let empty = serde_json::json!([{ "path_prefix": "/system/vision", "caps": [] }]);
+        gm.put(&format!("/api/worlds/{world_id}/capability-requirements"))
+            .json(&empty)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // A prefix outside the writable namespaces (silently inert) is rejected.
+        let dead = serde_json::json!([{ "path_prefix": "/nope", "caps": ["x:y"] }]);
+        gm.put(&format!("/api/worlds/{world_id}/capability-requirements"))
+            .json(&dead)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // A trailing-slash prefix (unmatchable, silently inert) is rejected.
+        let slash = serde_json::json!([{ "path_prefix": "/system/vision/", "caps": ["x:y"] }]);
+        gm.put(&format!("/api/worlds/{world_id}/capability-requirements"))
+            .json(&slash)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

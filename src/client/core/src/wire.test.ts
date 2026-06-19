@@ -54,6 +54,16 @@ describe("wire drift guard — message discriminants", () => {
   it("ServerMsg type tags", () => {
     expectTypeOf<ServerMsg["type"]>().toEqualTypeOf<Ts.ServerMsg["type"]>();
   });
+  it("Welcome capability fields match ts-rs", () => {
+    type W = Extract<ServerMsg, { type: "welcome" }>;
+    type T = Extract<Ts.ServerMsg, { type: "welcome" }>;
+    // i64 fields (current_seq/server_time) are intentionally number vs bigint;
+    // guard only the capability fields, which carry no i64 scalar mismatch.
+    expectTypeOf<W["actor_role"]>().toEqualTypeOf<T["actor_role"]>();
+    expectTypeOf<W["capability_requirements"]>().toEqualTypeOf<
+      T["capability_requirements"]
+    >();
+  });
   it("ClientMsg type tags", () => {
     expectTypeOf<ClientMsg["type"]>().toEqualTypeOf<Ts.ClientMsg["type"]>();
   });
@@ -70,9 +80,32 @@ describe("parseServerMsg", () => {
         world: "w",
         current_seq: 0,
         server_time: 1,
+        world_default_grants: { by_role: {}, by_user: {} },
+        actor_role: "player",
+        capability_requirements: [],
       }),
     );
     expect(m?.type).toBe("welcome");
+  });
+
+  it("parses welcome capability fields", () => {
+    const m = parseServerMsg(
+      JSON.stringify({
+        type: "welcome",
+        world: "w",
+        current_seq: 0,
+        server_time: 1,
+        world_default_grants: { by_role: { owner: ["core:manage_embedded"] }, by_user: {} },
+        actor_role: "gm",
+        capability_requirements: [{ path_prefix: "/system/vision", caps: ["dnd5e:gm_vision"] }],
+      }),
+    );
+    expect(m?.type).toBe("welcome");
+    if (m?.type === "welcome") {
+      expect(m.actor_role).toBe("gm");
+      expect(m.capability_requirements[0].path_prefix).toBe("/system/vision");
+      expect(m.world_default_grants.by_role.owner).toEqual(["core:manage_embedded"]);
+    }
   });
 
   it("returns null on malformed or unknown frames", () => {

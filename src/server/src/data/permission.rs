@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 use crate::data::command::{Command, FieldChange, Operation};
-use crate::data::document::{CapabilityGrants, DocRole, Document, Visibility, WorldRole};
+use crate::data::document::{
+    CapabilityGrants, CapabilityRequirement, DocRole, Document, Visibility, WorldRole,
+};
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 
@@ -31,6 +33,58 @@ pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// Whether `p` is a descendant of `ancestor` on a JSON-pointer boundary
+/// (`/a/b` is a descendant of `/a`, but `/ab` is not).
+fn is_descendant(p: &str, ancestor: &str) -> bool {
+    p.len() > ancestor.len()
+        && p.as_bytes()[ancestor.len()] == b'/'
+        && p.as_bytes()[..ancestor.len()] == *ancestor.as_bytes()
+}
+
+/// Whether two JSON-pointer paths overlap as subtrees: equal, or either is a
+/// descendant of the other.
+fn paths_overlap(a: &str, b: &str) -> bool {
+    a == b || is_descendant(a, b) || is_descendant(b, a)
+}
+
+/// Additional capabilities required to write `path`, declared by the world's
+/// capability requirements, on top of `required_cap_for_path`'s structural base.
+/// A requirement matches when the change path **overlaps** its prefix in either
+/// direction: the change writes into the protected subtree (descendant), is the
+/// prefix exactly, OR is an ancestor that *covers* the protected subtree (writing
+/// `/system` replaces `/system/vision` wholesale). The ancestor case is
+/// security-critical — a descendant-only check is bypassable by a coarse parent
+/// write. This over-approximates (an ancestor write that does not touch the
+/// protected leaf still demands the cap), the safe direction for an authz gate.
+/// Boundary-matched, so `/system/visionmode` does not match `/system/vision`.
+pub fn declared_caps_for_path<'a>(path: &str, reqs: &'a [CapabilityRequirement]) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    for req in reqs {
+        if paths_overlap(path, &req.path_prefix) {
+            out.extend(req.caps.iter().map(String::as_str));
+        }
+    }
+    out
+}
+
+/// Capabilities required to create/replace a whole document body, declared by the
+/// world's capability requirements. A requirement applies when its protected path
+/// is **present** in `doc_json` — the Create path writes the entire body at once,
+/// so a populated protected subtree must be authorized exactly as an Update to it
+/// would be. Closes the create-time bypass of declarative requirements.
+pub fn declared_caps_for_document<'a>(
+    doc_json: &serde_json::Value,
+    reqs: &'a [CapabilityRequirement],
+) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    for req in reqs {
+        if doc_json.pointer(&req.path_prefix).is_some() {
+            out.extend(req.caps.iter().map(String::as_str));
+        }
+    }
+    out
 }
 
 /// A user's effective capabilities on a document. `all` is the GM/admin
@@ -125,6 +179,21 @@ pub fn resolve_access_world(
         access.caps.extend(extra.iter().cloned());
     }
     access
+}
+
+/// Project world-default grants down to what a single actor needs to replicate
+/// access resolution client-side: the per-role tiers (world policy, no PII) plus
+/// **only** this actor's own per-user grants. Other users' UUIDs and grants are
+/// dropped — the full `by_user` map must never cross to a client.
+pub fn project_grants_for(grants: &CapabilityGrants, user: Uuid) -> CapabilityGrants {
+    CapabilityGrants {
+        by_role: grants.by_role.clone(),
+        by_user: grants
+            .by_user
+            .get(&user)
+            .map(|caps| std::iter::once((user, caps.clone())).collect())
+            .unwrap_or_default(),
+    }
 }
 
 /// Produce the recipient's view of a document: when `access.see_gm_only` is
@@ -305,6 +374,82 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[test]
+    fn declared_caps_match_prefix_on_boundaries() {
+        let reqs = vec![CapabilityRequirement {
+            path_prefix: "/system/vision".into(),
+            caps: ["dnd5e:gm_vision".to_string()].into_iter().collect(),
+        }];
+        // exact and descendant match
+        assert_eq!(
+            declared_caps_for_path("/system/vision", &reqs),
+            vec!["dnd5e:gm_vision"]
+        );
+        assert_eq!(
+            declared_caps_for_path("/system/vision/range", &reqs),
+            vec!["dnd5e:gm_vision"]
+        );
+        // sibling that merely shares a string prefix does NOT match (boundary check)
+        assert!(declared_caps_for_path("/system/visionmode", &reqs).is_empty());
+        // unrelated path
+        assert!(declared_caps_for_path("/system/hp", &reqs).is_empty());
+        // ANCESTOR write that covers the protected subtree DOES match (a coarse
+        // `/system` write replaces `/system/vision` wholesale).
+        assert_eq!(
+            declared_caps_for_path("/system", &reqs),
+            vec!["dnd5e:gm_vision"]
+        );
+    }
+
+    #[test]
+    fn declared_caps_for_document_matches_present_paths() {
+        let reqs = vec![CapabilityRequirement {
+            path_prefix: "/system/vision".into(),
+            caps: ["dnd5e:gm_vision".to_string()].into_iter().collect(),
+        }];
+        // body with a populated /system/vision subtree → requirement applies
+        let with = serde_json::json!({ "system": { "vision": { "range": 30 }, "hp": 10 } });
+        assert_eq!(
+            declared_caps_for_document(&with, &reqs),
+            vec!["dnd5e:gm_vision"]
+        );
+        // body without the protected path → no requirement
+        let without = serde_json::json!({ "system": { "hp": 10 } });
+        assert!(declared_caps_for_document(&without, &reqs).is_empty());
+    }
+
+    #[test]
+    fn project_grants_drops_other_users() {
+        use crate::data::document::CapabilityGrants;
+        let me = Uuid::from_u128(1);
+        let other = Uuid::from_u128(2);
+        let mut grants = CapabilityGrants::default();
+        grants
+            .by_role
+            .entry(DocRole::Owner)
+            .or_default()
+            .insert("core:manage_embedded".to_string());
+        grants
+            .by_user
+            .entry(me)
+            .or_default()
+            .insert("dnd5e:cast".to_string());
+        grants
+            .by_user
+            .entry(other)
+            .or_default()
+            .insert("dnd5e:secret".to_string());
+
+        let projected = project_grants_for(&grants, me);
+        // Role tiers are world policy — preserved.
+        assert_eq!(projected.by_role, grants.by_role);
+        // Only this actor's own per-user grant survives; the other user's UUID
+        // and grants are gone.
+        assert!(projected.by_user.contains_key(&me));
+        assert!(!projected.by_user.contains_key(&other));
+        assert_eq!(projected.by_user.len(), 1);
     }
 
     #[test]

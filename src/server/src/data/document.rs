@@ -67,6 +67,17 @@ pub struct CapabilityGrants {
     pub by_user: BTreeMap<Uuid, BTreeSet<String>>,
 }
 
+/// A declarative requirement: writing any field under `path_prefix` requires the
+/// actor to additionally hold every capability in `caps` (on top of the
+/// structural base capability for that path). Pure data — the server enforces
+/// possession and never interprets the meaning of the path or the capabilities.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct CapabilityRequirement {
+    pub path_prefix: String,
+    pub caps: BTreeSet<String>,
+}
+
 /// Document-level permissions: default role, per-user overrides, property-level
 /// visibility keyed by JSON pointer, and additive capability grants.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
