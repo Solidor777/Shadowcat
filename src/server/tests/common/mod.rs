@@ -104,7 +104,12 @@ pub fn intent_msg(intent_n: u64, ops: serde_json::Value) -> Message {
 
 /// A `create` op for a minimal world-scoped scene-entity document. `parent` set
 /// makes it a child; `None` + `doc_type == "scene"` makes it a scene.
-pub fn create_doc_op(world: Uuid, id: u128, parent: Option<u128>, doc_type: &str) -> serde_json::Value {
+pub fn create_doc_op(
+    world: Uuid,
+    id: u128,
+    parent: Option<u128>,
+    doc_type: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "op": "create",
         "doc": {

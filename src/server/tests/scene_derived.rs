@@ -33,7 +33,9 @@ async fn unknown_channel_errors() {
     let mut ws = h.connect().await;
     let _ = ws.next().await; // Welcome
 
-    ws.send(scene_subscribe(2, "no_such_channel")).await.unwrap();
+    ws.send(scene_subscribe(2, "no_such_channel"))
+        .await
+        .unwrap();
     let err = drain_until_type(&mut ws, "scene_error").await;
     assert!(err["message"].as_str().unwrap().contains("unknown channel"));
 }

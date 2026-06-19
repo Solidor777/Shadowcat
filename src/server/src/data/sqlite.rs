@@ -775,26 +775,23 @@ impl Repository for SqliteRepository {
                     // discovered here in Phase 2, so each is authorized against
                     // its stored doc with the same DELETE gate Phase 1 applies to
                     // the submitted op.
-                    for desc in Self::descendants_first(&mut *tx, doc.id).await? {
+                    for desc in Self::descendants_first(&mut tx, doc.id).await? {
                         let cur = Self::load_document(&mut *tx, desc).await?.ok_or_else(|| {
                             DataError::Conflict(format!("descendant {desc} missing"))
                         })?;
                         check_command_scope(&cur, world_id)?;
-                        if !resolve_access_world(
-                            ctx.user_id,
-                            ctx.world_role,
-                            &cur,
-                            &world_defaults,
-                        )
-                        .has(cap::DELETE)
+                        if !resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults)
+                            .has(cap::DELETE)
                         {
                             return Err(DataError::Forbidden);
                         }
                         authoritative_ops.push(Operation::Delete { doc: cur });
                     }
-                    let cur = Self::load_document(&mut *tx, doc.id).await?.ok_or_else(|| {
-                        DataError::Conflict(format!("document {} missing", doc.id))
-                    })?;
+                    let cur = Self::load_document(&mut *tx, doc.id)
+                        .await?
+                        .ok_or_else(|| {
+                            DataError::Conflict(format!("document {} missing", doc.id))
+                        })?;
                     authoritative_ops.push(Operation::Delete { doc: cur });
                 }
                 other => authoritative_ops.push(other),
@@ -1145,8 +1142,7 @@ mod tests {
         let world = repo.create_world_owned("w", owner, 0).await.unwrap();
         let scene = Uuid::from_u128(10);
         let token = Uuid::from_u128(11);
-        let scene_doc =
-            crate::data::document::tests::world_scoped_doc(world.id, scene, "scene");
+        let scene_doc = crate::data::document::tests::world_scoped_doc(world.id, scene, "scene");
         let mut token_doc =
             crate::data::document::tests::world_scoped_doc(world.id, token, "token");
         token_doc.parent_id = Some(scene);
@@ -1207,7 +1203,12 @@ mod tests {
         // Delete the scene only; expect the Command to carry 3 Delete ops.
         let scene_doc = repo.get_document(scene).await.unwrap().unwrap();
         let cmd = repo
-            .apply_intent(&ctx, world.id, vec![Operation::Delete { doc: scene_doc }], 1)
+            .apply_intent(
+                &ctx,
+                world.id,
+                vec![Operation::Delete { doc: scene_doc }],
+                1,
+            )
             .await
             .unwrap();
         let deleted: Vec<Uuid> = cmd

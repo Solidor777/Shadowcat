@@ -101,6 +101,9 @@ impl Default for SceneEcs {
 /// recipient. Returns `None` for unknown channels (→ SceneError). `ctx` is
 /// accepted so M9 vision can derive per recipient; the identity payload is
 /// non-sensitive and global.
+// `ecs` is read only by the debug-gated channel arm; it is genuinely unused in
+// release until M9's vision channel consumes it.
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub fn compute_derived(
     channel: &str,
     ecs: &SceneEcs,

@@ -398,11 +398,8 @@ mod room_tests {
         assert_eq!(room.scene().read().await.entity_count(), 0);
 
         // Publish a scene doc (a scene entity by doc_type, no parent FK needed).
-        let mut scene = crate::data::document::tests::world_scoped_doc(
-            world_id,
-            Uuid::from_u128(20),
-            "scene",
-        );
+        let mut scene =
+            crate::data::document::tests::world_scoped_doc(world_id, Uuid::from_u128(20), "scene");
         scene.owner = Some(ctx.user_id);
         room.publish(&repo, &ctx, vec![Operation::Create { doc: scene }], 0)
             .await
