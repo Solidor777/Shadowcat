@@ -1,5 +1,6 @@
 <script lang="ts">
   import { setAppContext } from "./appContext";
+  import { t } from "./i18n.svelte";
   import Layout from "./Layout.svelte";
   import type { WorldSession } from "./worldSession.svelte";
 
@@ -13,6 +14,7 @@
     store: session.store,
     world: session.world!,
     role: session.role!,
+    t,
   });
 </script>
 
