@@ -81,9 +81,15 @@ fn collect_leaves(value: &serde_json::Value, out: &mut String) {
 /// as a term-less phrase (which FTS5 would reject) — it yields `None`, an empty
 /// result, instead. Returns `None` for an empty query.
 pub fn build_match(input: &str) -> Option<String> {
-    let terms: Vec<String> = input
+    // Bound the work an untrusted query can drive: cap the length (by chars, so
+    // never splitting a UTF-8 boundary) and the number of terms.
+    const MAX_QUERY_CHARS: usize = 256;
+    const MAX_TERMS: usize = 16;
+    let capped: String = input.chars().take(MAX_QUERY_CHARS).collect();
+    let terms: Vec<String> = capped
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
+        .take(MAX_TERMS)
         .map(|t| t.to_string())
         .collect();
     if terms.is_empty() {

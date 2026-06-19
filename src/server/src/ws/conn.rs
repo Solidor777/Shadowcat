@@ -66,15 +66,17 @@ const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(15
 struct Sub {
     query: String,
     limit: u32,
-    /// Last delivered result identity `(doc_id, score-bits)`, in rank order.
-    /// Used to suppress a push when re-evaluation yields the same top-N.
-    fingerprint: Vec<(Uuid, u64)>,
+    /// Last delivered result identity, in rank order. Used to suppress a push
+    /// when re-evaluation yields an identical top-N.
+    fingerprint: Vec<(Uuid, u64, i64)>,
 }
 
-/// A cheap, order-sensitive identity of a result page for no-op suppression.
-fn search_fingerprint(hits: &[crate::data::search::SearchHit]) -> Vec<(Uuid, u64)> {
+/// A cheap, order-sensitive identity of a result page for no-op suppression:
+/// `(doc_id, score-bits, updated_at)` per hit. Including `updated_at` makes a
+/// content edit that leaves rank/score unchanged still push a fresh snippet.
+fn search_fingerprint(hits: &[crate::data::search::SearchHit]) -> Vec<(Uuid, u64, i64)> {
     hits.iter()
-        .map(|h| (h.document.id, h.score.to_bits()))
+        .map(|h| (h.document.id, h.score.to_bits(), h.document.updated_at))
         .collect()
 }
 
@@ -362,7 +364,11 @@ async fn egress_loop<S>(
                     }
                 }
                 Some(Egress::Subscribe { request_id, query, limit }) => {
-                    if subs.len() >= MAX_SUBSCRIPTIONS {
+                    if subs.contains_key(&request_id) {
+                        // A duplicate id would silently orphan the prior sub.
+                        let f = ServerMsg::SearchError { request_id, message: "duplicate subscription id".into() };
+                        if sink.send(text(&f)).await.is_err() { break; }
+                    } else if subs.len() >= MAX_SUBSCRIPTIONS {
                         let f = ServerMsg::SearchError { request_id, message: "too many subscriptions".into() };
                         if sink.send(text(&f)).await.is_err() { break; }
                     } else {
@@ -403,9 +409,13 @@ async fn egress_loop<S>(
                         }
                         if send_filtered(&mut sink, repo.as_ref(), &ctx, &world_defaults, msg.as_ref()).await.is_err() { break; }
                         next_expected = seq + 1;
-                        // A world change may affect live subscriptions; arm the
-                        // coalescing window (re-run at most once per debounce).
-                        if !subs.is_empty() {
+                        // A world change may affect live subscriptions. Arm the
+                        // coalescing window on the LEADING edge only: re-arming
+                        // on every Event would push the deadline forward forever
+                        // under a sustained stream (starving updates). Arming
+                        // only when idle fires ~150ms after the first Event of a
+                        // burst, then re-arms on the next Event after it fires.
+                        if !subs.is_empty() && reeval_deadline.is_none() {
                             reeval_deadline = Some(tokio::time::Instant::now() + SEARCH_DEBOUNCE);
                         }
                     } else if send_filtered(&mut sink, repo.as_ref(), &ctx, &world_defaults, msg.as_ref()).await.is_err() {
@@ -422,9 +432,14 @@ async fn egress_loop<S>(
                 }
                 Err(RecvError::Closed) => break,
             },
-            // Coalesced live-search re-evaluation: fires once per debounce window
-            // after the last Event. Re-runs each subscription with this actor's
-            // ctx and pushes only when the result changed (no-op suppression).
+            // Coalesced live-search re-evaluation: fires ~one debounce window
+            // after the first Event of a burst. Re-runs each subscription with
+            // this actor's ctx and pushes only when the result changed (no-op
+            // suppression). Cost is bounded — at most MAX_SUBSCRIPTIONS searches,
+            // each capped by the search scan budget, at most once per window —
+            // but it runs inline on the egress task. TODO: offload re-eval reads
+            // off the egress path (a read pool / spawned task) if busy worlds
+            // show broadcast lag from this coupling.
             _ = tokio::time::sleep_until(reeval_deadline.unwrap_or_else(tokio::time::Instant::now)),
                 if reeval_deadline.is_some() =>
             {
@@ -437,6 +452,11 @@ async fn egress_loop<S>(
                             if fp != sub.fingerprint {
                                 sub.fingerprint = fp;
                                 let f = ServerMsg::SearchUpdate { request_id: *id, hits: page.hits };
+                                // `return` (not `break`): a bare break would only
+                                // exit this inner for-loop, leaving the egress
+                                // loop running on a dead sink. Other arms `break`
+                                // the egress loop directly; here the send is
+                                // nested, so end the task outright.
                                 if sink.send(text(&f)).await.is_err() { return; }
                             }
                         }

@@ -184,6 +184,79 @@ async fn live_subscription_pushes_update_on_matching_create() {
 }
 
 #[tokio::test]
+async fn duplicate_subscription_id_is_rejected() {
+    let h = spawn().await;
+    let pl_cookie = h.add_member("pl", WorldRole::Player).await;
+    let mut sub = h.connect_with(&pl_cookie).await;
+
+    let frame = serde_json::json!({
+        "type": "search", "request_id": Uuid::from_u128(7),
+        "query": "dragon", "limit": 20, "cursor": null, "subscribe": true
+    });
+    send(&mut sub, frame.clone()).await;
+    next_of(&mut sub, "search_result", Duration::from_secs(5))
+        .await
+        .expect("initial search_result");
+
+    // A second subscribe with the same request_id must be rejected, not silently
+    // orphan the first subscription.
+    send(&mut sub, frame).await;
+    let err = next_of(&mut sub, "search_error", Duration::from_secs(5))
+        .await
+        .expect("search_error for duplicate id");
+    assert!(err["message"].as_str().unwrap().contains("duplicate"));
+}
+
+#[tokio::test]
+async fn burst_of_events_coalesces_without_starving() {
+    let h = spawn().await;
+    let pl_cookie = h.add_member("pl", WorldRole::Player).await;
+
+    let mut sub = h.connect_with(&pl_cookie).await;
+    send(
+        &mut sub,
+        serde_json::json!({
+            "type": "search", "request_id": Uuid::from_u128(8),
+            "query": "dragon", "limit": 20, "cursor": null, "subscribe": true
+        }),
+    )
+    .await;
+    next_of(&mut sub, "search_result", Duration::from_secs(5))
+        .await
+        .expect("initial search_result");
+
+    // Fire a rapid burst of readable creates; leading-edge debounce must still
+    // fire and reflect the final state (no starvation under a sustained stream).
+    let mut gm = h.connect_with(&h.cookie.clone()).await;
+    for n in 1..=3u128 {
+        send(
+            &mut gm,
+            create_intent(h.world, n, "Bronze Dragon", "observer"),
+        )
+        .await;
+    }
+
+    // Drain updates until one reflects all three (or the budget elapses).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut last = 0usize;
+    while tokio::time::Instant::now() < deadline {
+        match next_of(&mut sub, "search_update", Duration::from_secs(2)).await {
+            Some(u) => {
+                last = u["hits"].as_array().unwrap().len();
+                if last == 3 {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+    assert_eq!(
+        last, 3,
+        "live subscription must converge to the full burst result"
+    );
+}
+
+#[tokio::test]
 async fn live_subscription_never_pushes_unreadable_docs() {
     let h = spawn().await;
     let pl_cookie = h.add_member("pl", WorldRole::Player).await;
