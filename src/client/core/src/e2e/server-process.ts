@@ -1,7 +1,9 @@
-// Spawns the Rust test_server (debug build), parses its printed bind address and
-// e2e fixture, and exposes login + teardown. Node-only; used by *.e2e.test.ts,
-// which run in the dedicated e2e CI job (the default unit run excludes them).
-import { spawn, type ChildProcess } from "node:child_process";
+// Builds the Rust test_server (debug), then runs the binary DIRECTLY (not via
+// `cargo run`, which would spawn it as a hard-to-reap grandchild). Parses the
+// printed bind address + e2e fixture and exposes login + teardown. Node-only;
+// used by *.e2e.test.ts, run in the dedicated e2e CI job (the unit run excludes
+// them).
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -24,32 +26,31 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 
 export async function startTestServer(): Promise<TestServer> {
   const isWindows = process.platform === "win32";
-  const proc: ChildProcess = spawn(
-    "cargo",
-    ["run", "-q", "-p", "shadowcat", "--bin", "test_server"],
-    {
-      cwd: repoRoot,
-      stdio: ["ignore", "pipe", "inherit"],
-      // Windows needs the shell to resolve `cargo` via PATHEXT; POSIX runs the
-      // process in its own group so the whole tree (cargo -> test_server) can be
-      // signalled on teardown.
-      shell: isWindows,
-      detached: !isWindows,
-    },
-  );
+  const exe = path.join(repoRoot, "target", "debug", isWindows ? "test_server.exe" : "test_server");
 
-  // `cargo run` spawns test_server as a child, so killing `proc` alone orphans
-  // the server (holding its port). Kill the whole process tree.
+  // Build first (fast if already built; the CI job pre-builds). `shell` lets
+  // Windows resolve `cargo` via PATHEXT. Building separately means the long-lived
+  // process is the binary itself, not a cargo wrapper with a grandchild.
+  const build = spawnSync("cargo", ["build", "-p", "shadowcat", "--bin", "test_server"], {
+    cwd: repoRoot,
+    stdio: "inherit",
+    shell: isWindows,
+  });
+  if (build.status !== 0) throw new Error(`cargo build test_server failed (${build.status})`);
+
+  const proc: ChildProcess = spawn(exe, [], {
+    cwd: repoRoot,
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+
+  // `proc` IS the server (run directly, no cargo grandchild), so a direct kill
+  // reaps it — no orphaned process holding the port. /F on Windows for certainty.
   const stop = (): void => {
     if (proc.pid === undefined) return;
     if (isWindows) {
-      spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
+      spawnSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
     } else {
-      try {
-        process.kill(-proc.pid, "SIGTERM");
-      } catch {
-        proc.kill("SIGTERM");
-      }
+      proc.kill("SIGKILL");
     }
   };
 
@@ -57,8 +58,8 @@ export async function startTestServer(): Promise<TestServer> {
   let fixture: Fixture | null = null;
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error("test_server did not start within 220s")),
-      220_000,
+      () => reject(new Error("test_server did not start within 20s")),
+      20_000,
     );
     let buf = "";
     proc.stdout!.on("data", (chunk: Buffer) => {
