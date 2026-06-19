@@ -16,6 +16,8 @@ export { ManifestSchema, parseManifest } from "./manifest";
 export type { ModuleManifest, CapRequirement, HookDecl } from "./manifest";
 export { ModuleRegistry } from "./modules";
 export type { Module, ModuleContext, ModuleInfo } from "./modules";
+export { loadModules } from "./loader";
+export type { ImportFn, ModuleEntry } from "./loader";
 export { DocumentStore, setPointer, applyOperation } from "./store";
 export type { Listener } from "./store";
 export { OptimisticClient } from "./optimistic";
