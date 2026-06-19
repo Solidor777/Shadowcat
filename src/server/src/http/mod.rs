@@ -61,6 +61,10 @@ pub async fn router(state: AppState) -> Router {
         .route("/ws", get(crate::ws::conn::ws_handler))
         .route("/api/debug/rooms", get(routes::debug_rooms))
         .route("/api/me", get(routes::me))
+        .route(
+            "/api/me/ui-state",
+            get(routes::get_ui_state).put(routes::put_ui_state),
+        )
         .route("/api/login", post(routes::login))
         .route("/api/logout", post(routes::logout))
         .route("/api/setup", post(routes::setup))
@@ -263,6 +267,47 @@ pub(crate) mod tests {
             .get("/api/me")
             .await
             .assert_status(axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ui_state_get_put_round_trip_and_validation() {
+        let state = initialized_state().await;
+        seed_user(&state, "u").await;
+        let u = login_server(&state, "u").await;
+
+        // Unauthenticated GET is rejected.
+        let anon = axum_test::TestServer::builder()
+            .save_cookies()
+            .build(router(state.clone()).await)
+            .unwrap();
+        anon.get("/api/me/ui-state")
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+
+        // Default is an empty object.
+        let got: serde_json::Value = u.get("/api/me/ui-state").await.json();
+        assert_eq!(got, serde_json::json!({}));
+
+        // Store an object, read it back.
+        u.put("/api/me/ui-state")
+            .json(&serde_json::json!({ "global": { "locale": "en" } }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let got: serde_json::Value = u.get("/api/me/ui-state").await.json();
+        assert_eq!(got["global"]["locale"], "en");
+
+        // A non-object body is rejected.
+        u.put("/api/me/ui-state")
+            .json(&serde_json::json!([1, 2, 3]))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // An over-cap body is rejected.
+        let big = "x".repeat(70 * 1024);
+        u.put("/api/me/ui-state")
+            .json(&serde_json::json!({ "blob": big }))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]

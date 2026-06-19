@@ -66,6 +66,44 @@ pub async fn me(user: AuthUser) -> Json<MeResponse> {
     })
 }
 
+/// Upper bound on a stored UI-state blob. It is read/written whole per user and
+/// is small UI session state; far above any realistic payload.
+const MAX_UI_STATE_BYTES: usize = 64 * 1024;
+
+/// The caller's opaque UI-state object, or `{}` when unset.
+pub async fn get_ui_state(
+    user: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let val = match state.repo.get_ui_state(user.id).await? {
+        // Stored only after passing the object-shape check below, so a parse
+        // failure here is server-side corruption, not client-actionable.
+        Some(s) => serde_json::from_str(&s).map_err(|_| AppError::Internal)?,
+        None => serde_json::json!({}),
+    };
+    Ok(Json(val))
+}
+
+/// Replace the caller's UI-state. Validates object-shape + size only; the body
+/// is otherwise opaque (the client owns its structure).
+pub async fn put_ui_state(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<StatusCode, AppError> {
+    if !body.is_object() {
+        return Err(AppError::Unprocessable("ui_state must be a JSON object".into()));
+    }
+    let s = serde_json::to_string(&body).map_err(|_| AppError::Internal)?;
+    if s.len() > MAX_UI_STATE_BYTES {
+        return Err(AppError::Unprocessable(format!(
+            "ui_state too large (max {MAX_UI_STATE_BYTES} bytes)"
+        )));
+    }
+    state.repo.set_ui_state(user.id, &s).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// A real Argon2id hash of a throwaway password, computed once. The unknown-user
 /// login path verifies against it so it costs the same as a wrong-password path,
 /// removing a timing oracle that would otherwise reveal which usernames exist.
