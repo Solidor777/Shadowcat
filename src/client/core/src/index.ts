@@ -23,7 +23,12 @@ export { DocumentStore, setPointer, applyOperation } from "./store";
 export type { Listener } from "./store";
 export { OptimisticClient } from "./optimistic";
 export { WsClient } from "./ws-client";
-export type { WsClientOptions, WsClientHandlers, WireWelcome } from "./ws-client";
+export type {
+  WsClientOptions,
+  WsClientHandlers,
+  WireWelcome,
+  SearchPage,
+} from "./ws-client";
 export { webSocketConnect } from "./transport";
 export type { Transport, TransportHandlers, Connect } from "./transport";
 export {
