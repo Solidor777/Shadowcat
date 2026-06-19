@@ -1,0 +1,37 @@
+// Tier 1 — raw primitives. Palette sampled from assets/icon-256.png (cool
+// slate-violet charcoal + brand blue). PROVISIONAL: re-audited at M8 (canvas
+// overlays) and M12 (default sheets/browsers). Components must not reference
+// these directly — use the tier-2 semantic tokens.
+:root {
+  // Slate (surface) ramp
+  --slate-950: #16161f;
+  --slate-900: #1f1f2c;
+  --slate-850: #262635;
+  --slate-800: #2c2f40;
+  --slate-700: #363645;
+  --slate-600: #434558;
+  --slate-400: #6b6d85;
+  --slate-50: #e7e8f2;
+
+  // Blue (accent) ramp — the icon circle/eyes
+  --blue-600: #245ac0;
+  --blue-500: #2d6ee8;
+  --blue-400: #538aeb;
+  --blue-300: #7fa8f1;
+
+  // Semantic supplements, cool-tuned
+  --red-500: #e5556b;
+  --green-500: #3fb089;
+  --amber-500: #e0a23b;
+
+  // Scales
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --radius-1: 4px;
+  --radius-2: 8px;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}

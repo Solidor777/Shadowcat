@@ -1,0 +1,15 @@
+// Tier 2 — semantic aliases. The only tier components reference.
+:root {
+  --surface-base: var(--slate-900);
+  --surface-raised: var(--slate-850);
+  --surface-overlay: var(--slate-800);
+  --border: var(--slate-700);
+  --text-primary: var(--slate-50);
+  --text-muted: var(--slate-400);
+  --accent: var(--blue-500);
+  --accent-hover: var(--blue-400);
+  --accent-active: var(--blue-600);
+  --danger: var(--red-500);
+  --success: var(--green-500);
+  --warning: var(--amber-500);
+}
