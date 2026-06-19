@@ -9,7 +9,8 @@ use crate::data::document::{
     CapabilityGrants, CapabilityRequirement, Document, Scope, World, WorldRole,
 };
 use crate::data::permission::{
-    cap, declared_caps_for_path, required_cap_for_path, resolve_access_world,
+    cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
+    resolve_access_world,
 };
 use crate::data::repository::Repository;
 use crate::data::validation;
@@ -524,10 +525,24 @@ impl Repository for SqliteRepository {
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
                     validation::validate_system_size(doc)?;
-                    if !resolve_access_world(ctx.user_id, ctx.world_role, doc, &world_defaults)
-                        .has(cap::WRITE_FIELDS)
-                    {
+                    let access =
+                        resolve_access_world(ctx.user_id, ctx.world_role, doc, &world_defaults);
+                    if !access.has(cap::WRITE_FIELDS) {
                         return Err(DataError::Forbidden);
+                    }
+                    // Create writes the whole body at once, so any declared
+                    // requirement whose protected path is populated must be
+                    // authorized — otherwise Create is a wholesale bypass of the
+                    // declarative gate that Update enforces field-by-field.
+                    let doc_json = serde_json::to_value(doc)?;
+                    for extra in declared_caps_for_document(&doc_json, &world_reqs) {
+                        if !access.has(extra) {
+                            tracing::debug!(
+                                user = %ctx.user_id, doc = %doc.id, capability = extra,
+                                "create denied: missing declared capability"
+                            );
+                            return Err(DataError::Forbidden);
+                        }
                     }
                     // Create is non-clobbering: an existing id is a conflict,
                     // not a silent overwrite (unlike upsert in apply_command).
@@ -928,6 +943,25 @@ mod tests {
             .await;
         assert!(matches!(err, Err(DataError::Forbidden)));
 
+        // Owner CANNOT evade the requirement via a coarse ANCESTOR write to
+        // /system (which would replace the protected /system/vision subtree).
+        let err = r
+            .apply_intent(
+                &player_ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id: d.id,
+                    changes: vec![FieldChange {
+                        path: "/system".into(),
+                        old: serde_json::json!({ "vision": { "range": 30 }, "hp": 8 }),
+                        new: serde_json::json!({ "vision": { "range": 99 }, "hp": 8 }),
+                    }],
+                }],
+                3,
+            )
+            .await;
+        assert!(matches!(err, Err(DataError::Forbidden)));
+
         // GM is unaffected (holds everything).
         r.apply_intent(
             &gm_ctx,
@@ -944,6 +978,72 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn declarative_requirement_blocks_create_with_protected_subtree() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::Operation;
+        use crate::data::document::{CapabilityRequirement, DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+
+        // Require dnd5e:gm_vision to touch /system/vision.
+        r.set_world_cap_requirements(
+            w.id,
+            &[CapabilityRequirement {
+                path_prefix: "/system/vision".into(),
+                caps: ["dnd5e:gm_vision".to_string()].into_iter().collect(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let player_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // A doc the player will own, carrying a populated /system/vision subtree.
+        let mut perms = PermissionSet::default();
+        perms.users.insert(player, DocRole::Owner);
+        let mut protected = tests_doc(
+            perms.clone(),
+            serde_json::json!({ "vision": { "range": 120 }, "hp": 10 }),
+        );
+        protected.scope = Scope::World { world_id: w.id };
+        protected.owner = Some(player);
+
+        // CANNOT create it (would seed protected vision without the cap).
+        let err = r
+            .apply_intent(
+                &player_ctx,
+                w.id,
+                vec![Operation::Create {
+                    doc: protected.clone(),
+                }],
+                1,
+            )
+            .await;
+        assert!(matches!(err, Err(DataError::Forbidden)));
+
+        // CAN create a doc that does not populate the protected path.
+        let mut plain = tests_doc(perms, serde_json::json!({ "hp": 10 }));
+        plain.scope = Scope::World { world_id: w.id };
+        plain.owner = Some(player);
+        r.apply_intent(&player_ctx, w.id, vec![Operation::Create { doc: plain }], 2)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

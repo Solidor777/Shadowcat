@@ -680,5 +680,26 @@ pub(crate) mod tests {
             .json(&bad)
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // An empty caps list (a fail-open no-op rule) is rejected.
+        let empty = serde_json::json!([{ "path_prefix": "/system/vision", "caps": [] }]);
+        gm.put(&format!("/api/worlds/{world_id}/capability-requirements"))
+            .json(&empty)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // A prefix outside the writable namespaces (silently inert) is rejected.
+        let dead = serde_json::json!([{ "path_prefix": "/nope", "caps": ["x:y"] }]);
+        gm.put(&format!("/api/worlds/{world_id}/capability-requirements"))
+            .json(&dead)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // A trailing-slash prefix (unmatchable, silently inert) is rejected.
+        let slash = serde_json::json!([{ "path_prefix": "/system/vision/", "caps": ["x:y"] }]);
+        gm.put(&format!("/api/worlds/{world_id}/capability-requirements"))
+            .json(&slash)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

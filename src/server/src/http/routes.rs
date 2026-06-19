@@ -18,7 +18,9 @@ use crate::data::document::{
     CapabilityGrants, CapabilityRequirement, Document, Scope, World, WorldRole,
 };
 use crate::data::membership::PermissionContext;
-use crate::data::permission::{cap, filter_command, filter_properties, resolve_access_world};
+use crate::data::permission::{
+    cap, filter_command, filter_properties, required_cap_for_path, resolve_access_world,
+};
 use crate::data::repository::Repository;
 use crate::health::HealthStatus;
 use crate::http::error::AppError;
@@ -433,6 +435,11 @@ pub async fn set_world_capability_defaults(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Upper bound on the number of declarative requirements stored per world. The
+/// policy is parsed on every write and broadcast in the `Welcome` frame, so it
+/// is kept small; far above any realistic hand-authored ruleset.
+const MAX_CAPABILITY_REQUIREMENTS: usize = 256;
+
 /// A world's declarative capability requirements. GM/admin only.
 pub async fn get_world_capability_requirements(
     user: AuthUser,
@@ -451,11 +458,39 @@ pub async fn set_world_capability_requirements(
     Json(reqs): Json<Vec<CapabilityRequirement>>,
 ) -> Result<StatusCode, AppError> {
     require_gm(&state, &user, world).await?;
+    // Bound the stored policy: it is parsed on every write and broadcast in full
+    // to every client on connect, so an unbounded list amplifies across joiners.
+    if reqs.len() > MAX_CAPABILITY_REQUIREMENTS {
+        return Err(AppError::Unprocessable(format!(
+            "too many requirements (max {MAX_CAPABILITY_REQUIREMENTS})"
+        )));
+    }
     for req in &reqs {
-        if !req.path_prefix.starts_with('/') {
-            return Err(AppError::Unprocessable(
-                "path_prefix must start with /".into(),
-            ));
+        // A trailing slash makes the prefix unmatchable (the matcher appends its
+        // own `/`), so it would silently enforce nothing.
+        if req.path_prefix.ends_with('/') {
+            return Err(AppError::Unprocessable(format!(
+                "path_prefix '{}' must not end with /",
+                req.path_prefix
+            )));
+        }
+        // Reject prefixes outside the writable namespaces: they can never match a
+        // real field write, so the rule would be a silent no-op (false confidence
+        // that a path is protected when it is not).
+        if required_cap_for_path(&req.path_prefix).is_none() {
+            return Err(AppError::Unprocessable(format!(
+                "path_prefix '{}' is not within a writable namespace \
+                 (/system, /embedded, /permissions)",
+                req.path_prefix
+            )));
+        }
+        // A requirement with no capabilities enforces nothing — reject it rather
+        // than store a fail-open rule a GM believes is protecting a path.
+        if req.caps.is_empty() {
+            return Err(AppError::Unprocessable(format!(
+                "requirement for '{}' must list at least one capability",
+                req.path_prefix
+            )));
         }
         for token in &req.caps {
             validate_capability(token)?;
