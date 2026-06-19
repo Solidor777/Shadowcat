@@ -13,6 +13,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+      # The server embeds the client bundle (dist/), so build it before any cargo
+      # step (the embed test reads it; the release build embeds it at compile time).
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build client bundle (embedded by the server)
+        run: pnpm --filter @shadowcat/ui build
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -91,3 +103,22 @@ jobs:
       # Pre-build the server so the in-test spawn does not pay the compile cost.
       - run: cargo build -p shadowcat --bin test_server
       - run: pnpm --filter @shadowcat/core test:e2e
+
+  # Browser end-to-end: the built `shadowcat` binary serves the embedded SPA + /api
+  # on one origin; Playwright drives the entry flow against it. Needs both
+  # toolchains (global-setup builds dist/ + the binary), so its own single-OS job.
+  ui-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @shadowcat/ui exec playwright install --with-deps chromium
+      - run: pnpm --filter @shadowcat/ui e2e
