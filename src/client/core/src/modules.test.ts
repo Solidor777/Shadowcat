@@ -5,6 +5,7 @@ import { ServiceRegistry } from "./services";
 import { MiddlewareChain } from "./middleware";
 import { DocumentStore } from "./store";
 import { OptimisticClient } from "./optimistic";
+import { ContributionRegistry } from "./contributions";
 import { silentLogger } from "./logger";
 
 function deps() {
@@ -15,12 +16,89 @@ function deps() {
     store: new DocumentStore(),
     client: new OptimisticClient("self"),
     logger: silentLogger,
+    contributions: new ContributionRegistry(),
   };
 }
 
 function mod(id: string, dependencies: Record<string, string>, register = vi.fn()): Module {
   return { manifest: { id, version: "1.0.0", dependencies }, register };
 }
+
+test("activates a contract provider before a requirer (topological by contract)", async () => {
+  const order: string[] = [];
+  const r = new ModuleRegistry(deps());
+  r.add({
+    manifest: { id: "combat", version: "1.0.0", dependencies: {}, requires: ["s:sidebar"] },
+    register: vi.fn(() => order.push("combat")),
+  });
+  r.add({
+    manifest: {
+      id: "sidebar", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }],
+    },
+    register: vi.fn(() => order.push("sidebar")),
+  });
+  await r.activate();
+  expect(order).toEqual(["sidebar", "combat"]);
+});
+
+test("does not activate a module whose required contract has no provider", async () => {
+  const r = new ModuleRegistry(deps());
+  const reg = vi.fn();
+  r.add({
+    manifest: { id: "combat", version: "1.0.0", dependencies: {}, requires: ["s:missing"] },
+    register: reg,
+  });
+  await r.activate();
+  expect(reg).not.toHaveBeenCalled();
+  expect(r.list().find((m) => m.id === "combat")!.active).toBe(false);
+});
+
+test("throws when two active modules provide the same singleton contract", async () => {
+  const r = new ModuleRegistry(deps());
+  r.add({
+    manifest: { id: "a", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
+    register: vi.fn(),
+  });
+  r.add({
+    manifest: { id: "b", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
+    register: vi.fn(),
+  });
+  await expect(r.activate()).rejects.toThrow(/singleton/);
+});
+
+test("allows two providers of a multi contract", async () => {
+  const r = new ModuleRegistry(deps());
+  r.add({
+    manifest: { id: "a", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:panel", cardinality: "multi" }] },
+    register: vi.fn(),
+  });
+  r.add({
+    manifest: { id: "b", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:panel", cardinality: "multi" }] },
+    register: vi.fn(),
+  });
+  await r.activate();
+  expect(r.list().every((m) => m.active)).toBe(true);
+});
+
+test("removes a module's contributions on unload", async () => {
+  const reg = new ContributionRegistry();
+  const d = { ...deps(), contributions: reg };
+  const r = new ModuleRegistry(d);
+  r.add({
+    manifest: { id: "m", version: "1.0.0", dependencies: {} },
+    register: (ctx) =>
+      ctx.contributions.contribute({ id: "p", contract: "s:sidebar", component: {} }),
+  });
+  await r.activate();
+  expect(reg.contributionsFor("s:sidebar")).toHaveLength(1);
+  await r.unload("m");
+  expect(reg.contributionsFor("s:sidebar")).toHaveLength(0);
+});
 
 test("activate calls register in dependency order", async () => {
   const order: string[] = [];

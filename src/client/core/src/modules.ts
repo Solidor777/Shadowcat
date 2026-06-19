@@ -11,6 +11,7 @@ import { DocumentStore } from "./store";
 import { OptimisticClient } from "./optimistic";
 import type { Logger } from "./logger";
 import { parseManifest, type ModuleManifest, type CapRequirement } from "./manifest";
+import { ContributionRegistry, type Contribution } from "./contributions";
 import { satisfies } from "./semver";
 
 export interface ModuleContext {
@@ -27,6 +28,9 @@ export interface ModuleContext {
     has(name: string): boolean;
   };
   use<C>(pipeline: PipelineName, mw: Middleware<C>): void;
+  contributions: {
+    contribute(c: Contribution): () => void;
+  };
   store: DocumentStore;
   client: OptimisticClient;
   logger: Logger;
@@ -52,6 +56,7 @@ interface Deps {
   store: DocumentStore;
   client: OptimisticClient;
   logger: Logger;
+  contributions: ContributionRegistry;
 }
 
 interface ModuleRecord {
@@ -96,6 +101,17 @@ export class ModuleRegistry {
         this.deps.logger.warn(`module ${id} not activated: dependency unmet`);
         continue;
       }
+      // Loud-fail: a singleton contract must have exactly one active provider.
+      for (const p of r.module.manifest.provides ?? []) {
+        if (p.cardinality === "singleton") {
+          const others = this.activeProvidersOf(p.contract).filter((x) => x !== id);
+          if (others.length > 0) {
+            throw new Error(
+              `singleton contract ${p.contract} already provided by ${others[0]}`,
+            );
+          }
+        }
+      }
       await r.module.register(this.contextFor(id));
       r.active = true;
     }
@@ -115,6 +131,7 @@ export class ModuleRegistry {
     this.deps.hooks.removeModule(id);
     this.deps.services.removeModule(id);
     this.deps.middleware.removeModule(id);
+    this.deps.contributions.removeModule(id);
     r.active = false;
   }
 
@@ -123,6 +140,10 @@ export class ModuleRegistry {
       const dep = this.records.get(depId);
       if (!dep || !dep.active) return false;
       if (!satisfies(dep.module.manifest.version, range)) return false;
+    }
+    // Every required contract needs at least one active provider.
+    for (const contract of m.manifest.requires ?? []) {
+      if (this.activeProvidersOf(contract).length === 0) return false;
     }
     return true;
   }
@@ -134,6 +155,15 @@ export class ModuleRegistry {
   }
 
   private topoSort(): string[] {
+    // Index providers by contract so a requirer can be ordered after them.
+    const providersByContract = new Map<string, string[]>();
+    for (const r of this.records.values()) {
+      for (const p of r.module.manifest.provides ?? []) {
+        const arr = providersByContract.get(p.contract) ?? [];
+        arr.push(r.module.manifest.id);
+        providersByContract.set(p.contract, arr);
+      }
+    }
     const visited = new Set<string>();
     const onstack = new Set<string>();
     const out: string[] = [];
@@ -148,6 +178,13 @@ export class ModuleRegistry {
       for (const depId of Object.keys(r.module.manifest.dependencies)) {
         visit(depId, [...path, id]);
       }
+      // Contract edges: a requirer is ordered after every provider of its
+      // required contracts.
+      for (const contract of r.module.manifest.requires ?? []) {
+        for (const providerId of providersByContract.get(contract) ?? []) {
+          visit(providerId, [...path, id]);
+        }
+      }
       onstack.delete(id);
       visited.add(id);
       out.push(id);
@@ -157,7 +194,7 @@ export class ModuleRegistry {
   }
 
   private contextFor(moduleId: string): ModuleContext {
-    const { hooks, services, middleware, store, client, logger } = this.deps;
+    const { hooks, services, middleware, store, client, logger, contributions } = this.deps;
     return {
       moduleId,
       store,
@@ -176,6 +213,20 @@ export class ModuleRegistry {
         has: (name) => services.has(name),
       },
       use: (pipeline, mw) => middleware.use(pipeline, mw, { module: moduleId }),
+      contributions: {
+        contribute: (c) => contributions.contribute(c, { module: moduleId }),
+      },
     };
+  }
+
+  /** Active modules that provide `contract`. */
+  private activeProvidersOf(contract: string): string[] {
+    return [...this.records.values()]
+      .filter(
+        (r) =>
+          r.active &&
+          (r.module.manifest.provides ?? []).some((p) => p.contract === contract),
+      )
+      .map((r) => r.module.manifest.id);
   }
 }
