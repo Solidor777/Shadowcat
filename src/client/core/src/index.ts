@@ -10,6 +10,8 @@ export type { Logger } from "./logger";
 export { HookBus, STOP } from "./hooks";
 export type { HookKind, HookDefinition, OnOptions, Handler, CoreHooks } from "./hooks";
 export { ServiceRegistry } from "./services";
+export { MiddlewareChain } from "./middleware";
+export type { PipelineName, Middleware } from "./middleware";
 export { DocumentStore, setPointer, applyOperation } from "./store";
 export type { Listener } from "./store";
 export { OptimisticClient } from "./optimistic";
