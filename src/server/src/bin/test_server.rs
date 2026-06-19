@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
         owner: Some(player),
         permissions: perms,
         embedded: Default::default(),
-        system: serde_json::json!({ "vision": { "range": 30 }, "hp": 10 }),
+        system: serde_json::json!({ "name": "Player Dragon", "vision": { "range": 30 }, "hp": 10 }),
         created_at: 0,
         updated_at: 0,
     };
@@ -60,6 +60,33 @@ async fn main() -> anyhow::Result<()> {
         &gm_ctx,
         world.id,
         vec![Operation::Create { doc: doc.clone() }],
+        0,
+    )
+    .await?;
+
+    // A GM-only document (default None → the player cannot read it) for the e2e
+    // search-leak assertion: it also matches "dragon" but must never reach a
+    // player's results.
+    let secret = Document {
+        id: Uuid::new_v4(),
+        scope: Scope::World { world_id: world.id },
+        doc_type: "actor".into(),
+        schema_version: 1,
+        source: None,
+        owner: Some(gm),
+        permissions: PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        },
+        embedded: Default::default(),
+        system: serde_json::json!({ "name": "Secret Dragon" }),
+        created_at: 0,
+        updated_at: 0,
+    };
+    repo.apply_intent(
+        &gm_ctx,
+        world.id,
+        vec![Operation::Create { doc: secret }],
         0,
     )
     .await?;

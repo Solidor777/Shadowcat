@@ -189,4 +189,72 @@ describe("WsClient", () => {
     await waitFor(() => c.serverNow() === 5000);
     expect(c.serverNow()).toBe(5000);
   });
+
+  it("search resolves with the correlated result", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.search("dragon", { limit: 5 });
+    const req = JSON.parse(sent.find((s) => JSON.parse(s).type === "search")!);
+    expect(req.query).toBe("dragon");
+    onMessage(
+      JSON.stringify({
+        type: "search_result",
+        request_id: req.request_id,
+        hits: [],
+        next_cursor: "7",
+      }),
+    );
+    await expect(p).resolves.toEqual({ hits: [], nextCursor: "7" });
+  });
+
+  it("search rejects on a search_error frame", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.search("x");
+    const req = JSON.parse(sent.find((s) => JSON.parse(s).type === "search")!);
+    onMessage(
+      JSON.stringify({
+        type: "search_error",
+        request_id: req.request_id,
+        message: "boom",
+      }),
+    );
+    await expect(p).rejects.toThrow("boom");
+  });
+
+  it("search rejects on timeout", async () => {
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    await expect(client.search("x", { timeoutMs: 1 })).rejects.toThrow(/timeout/i);
+  });
+
+  it("stop() rejects in-flight searches instead of leaving them hanging", async () => {
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.search("x", { timeoutMs: 60_000 });
+    client.stop();
+    await expect(p).rejects.toThrow(/stopped/i);
+  });
 });

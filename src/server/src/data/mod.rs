@@ -4,6 +4,7 @@ pub mod membership;
 pub mod migrate;
 pub mod permission;
 pub mod repository;
+pub mod search;
 pub mod sqlite;
 pub mod validation;
 

@@ -111,6 +111,13 @@ export const CommandSchema = z.object({
   ops: z.array(OperationSchema),
 });
 
+export const SearchHitSchema = z.object({
+  document: DocumentSchema,
+  score: z.number(),
+  snippet: z.string(),
+});
+export type WireSearchHit = z.infer<typeof SearchHitSchema>;
+
 export const ServerMsgSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("welcome"),
@@ -149,6 +156,17 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     code: WsErrorCodeSchema,
     message: z.string(),
   }),
+  z.object({
+    type: z.literal("search_result"),
+    request_id: z.string(),
+    hits: z.array(SearchHitSchema),
+    next_cursor: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal("search_error"),
+    request_id: z.string(),
+    message: z.string(),
+  }),
 ]);
 
 export type WireScope = z.infer<typeof ScopeSchema>;
@@ -163,7 +181,14 @@ export type ClientMsg =
   | { type: "intent"; intent_id: string; ops: WireOperation[] }
   | { type: "resync_request"; from_seq: number }
   | { type: "time_ping"; client_t0: number }
-  | { type: "pong" };
+  | { type: "pong" }
+  | {
+      type: "search";
+      request_id: string;
+      query: string;
+      limit: number;
+      cursor?: string;
+    };
 
 /** Parse + validate an inbound text frame; `null` on malformed/unknown input. */
 export function parseServerMsg(text: string): ServerMsg | null {

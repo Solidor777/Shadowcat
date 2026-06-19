@@ -204,6 +204,26 @@ async fn handle_socket(
                                 break;
                             }
                         }
+                        Ok(ClientMsg::Search { request_id, query, limit, cursor }) => {
+                            let from = cursor.as_deref().and_then(|c| c.parse::<i64>().ok());
+                            let frame = match repo.search(&ctx, world_id, &query, limit, from).await {
+                                Ok(page) => ServerMsg::SearchResult {
+                                    request_id,
+                                    hits: page.hits,
+                                    next_cursor: page.next_cursor.map(|n| n.to_string()),
+                                },
+                                Err(e) => {
+                                    tracing::debug!(world = %world_id, %request_id, error = %e, "search failed");
+                                    ServerMsg::SearchError {
+                                        request_id,
+                                        message: "search failed".into(),
+                                    }
+                                }
+                            };
+                            if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
+                                break;
+                            }
+                        }
                         Ok(ClientMsg::Hello { .. }) | Ok(ClientMsg::Pong) => {}
                         Err(_) => {
                             let _ = etx

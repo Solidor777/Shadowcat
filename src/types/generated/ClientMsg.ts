@@ -4,4 +4,4 @@ import type { Operation } from "./Operation";
 /**
  * Client -> server frames.
  */
-export type ClientMsg = { "type": "hello", world: string, last_seq: bigint | null, } | { "type": "intent", intent_id: string, ops: Array<Operation>, } | { "type": "resync_request", from_seq: bigint, } | { "type": "time_ping", client_t0: bigint, } | { "type": "pong" };
+export type ClientMsg = { "type": "hello", world: string, last_seq: bigint | null, } | { "type": "intent", intent_id: string, ops: Array<Operation>, } | { "type": "resync_request", from_seq: bigint, } | { "type": "time_ping", client_t0: bigint, } | { "type": "pong" } | { "type": "search", request_id: string, query: string, limit: number, cursor: string | null, };

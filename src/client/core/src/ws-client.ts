@@ -9,7 +9,14 @@ import {
   type ClientMsg,
   type ServerMsg,
   type WireCommand,
+  type WireSearchHit,
 } from "./wire";
+
+/** A resolved page of search results (Core.search). */
+export interface SearchPage {
+  hits: WireSearchHit[];
+  nextCursor?: string;
+}
 
 /** The `Welcome` server frame (capability fields included). */
 export type WireWelcome = Extract<ServerMsg, { type: "welcome" }>;
@@ -46,6 +53,15 @@ export class WsClient {
    * reconnects so resync resumes from where application left off. */
   private nextExpected = 1;
   private serverOffsetMs = 0;
+  /** In-flight correlated requests (search), keyed by request_id. */
+  private pending = new Map<
+    string,
+    {
+      resolve: (page: SearchPage) => void;
+      reject: (e: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
 
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -69,6 +85,18 @@ export class WsClient {
     this.running = false;
     this.transport?.close();
     this.transport = null;
+    this.failPending("client stopped");
+  }
+
+  /** Reject every in-flight correlated request (e.g. on disconnect/stop): the
+   * request was sent on a socket that will not answer it, so fail fast rather
+   * than wait out the timeout (which would also outlive the connection). */
+  private failPending(reason: string): void {
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error(reason));
+    }
+    this.pending.clear();
   }
 
   /** Send a client frame (no-op if currently disconnected). */
@@ -101,6 +129,9 @@ export class WsClient {
 
   private handleClose(): void {
     this.transport = null;
+    // In-flight requests were sent on the now-dead socket; a reconnect will not
+    // replay them, so reject rather than leave them hanging until timeout.
+    this.failPending("connection closed");
     if (this.running) this.scheduleReconnect();
   }
 
@@ -146,7 +177,52 @@ export class WsClient {
         break;
       case "error":
         break;
+      case "search_result": {
+        const p = this.pending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.pending.delete(msg.request_id);
+          p.resolve({ hits: msg.hits, nextCursor: msg.next_cursor ?? undefined });
+        }
+        break;
+      }
+      case "search_error": {
+        const p = this.pending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.pending.delete(msg.request_id);
+          p.reject(new Error(msg.message));
+        }
+        break;
+      }
     }
+  }
+
+  /**
+   * Core.search — issue a correlated full-text search request and resolve with
+   * the page when the matching reply arrives. Rejects on a `search_error` frame
+   * or after `timeoutMs`.
+   */
+  search(
+    query: string,
+    opts: { limit?: number; cursor?: string; timeoutMs?: number } = {},
+  ): Promise<SearchPage> {
+    const request_id = crypto.randomUUID();
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+    return new Promise<SearchPage>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(request_id);
+        reject(new Error("search request timeout"));
+      }, timeoutMs);
+      this.pending.set(request_id, { resolve, reject, timer });
+      this.send({
+        type: "search",
+        request_id,
+        query,
+        limit: opts.limit ?? 20,
+        cursor: opts.cursor,
+      });
+    });
   }
 
   private applyEvent(cmd: WireCommand): void {

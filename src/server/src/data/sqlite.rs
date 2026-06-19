@@ -366,11 +366,15 @@ impl SqliteRepository {
         }
     }
 
-    /// Upsert a document row from its envelope, stamping `seq`.
-    async fn upsert_document<'e, E>(executor: E, doc: &Document, seq: i64) -> Result<(), DataError>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
+    /// Upsert a document row from its envelope, stamping `seq`, and rewrite its
+    /// FTS index row in the same transaction (crash-consistent). Takes a
+    /// `&mut SqliteConnection` because it runs multiple statements; callers pass
+    /// `&mut *tx`.
+    async fn upsert_document(
+        conn: &mut sqlx::SqliteConnection,
+        doc: &Document,
+        seq: i64,
+    ) -> Result<(), DataError> {
         let (scope_kind, world_id, pack) = match &doc.scope {
             Scope::Compendium { pack } => ("compendium", None, Some(pack.clone())),
             Scope::World { world_id } => ("world", Some(world_id.to_string()), None),
@@ -396,7 +400,7 @@ impl SqliteRepository {
         )
         .bind(doc.id.to_string())
         .bind(scope_kind)
-        .bind(world_id)
+        .bind(world_id.clone())
         .bind(pack)
         .bind(&doc.doc_type)
         .bind(doc.schema_version as i64)
@@ -408,8 +412,37 @@ impl SqliteRepository {
         .bind(json)
         .bind(doc.created_at)
         .bind(doc.updated_at)
-        .execute(executor)
+        .execute(&mut *conn)
         .await?;
+        // Keep the FTS index in lockstep with the row, inside the same tx.
+        sqlx::query("DELETE FROM documents_fts WHERE doc_id = ?")
+            .bind(doc.id.to_string())
+            .execute(&mut *conn)
+            .await?;
+        // Two visibility-split columns: `content` indexes only non-GM-readable
+        // text (GM-only properties stripped), `content_all` indexes everything.
+        sqlx::query(
+            "INSERT INTO documents_fts (content, content_all, doc_id, world_id) VALUES (?, ?, ?, ?)",
+        )
+        .bind(crate::data::search::index_content_public(doc))
+        .bind(crate::data::search::index_content(doc))
+        .bind(doc.id.to_string())
+        .bind(world_id)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    /// Remove a document's FTS row. Call alongside every document delete so the
+    /// index never references a removed document.
+    async fn delete_document_fts(
+        conn: &mut sqlx::SqliteConnection,
+        id: Uuid,
+    ) -> Result<(), DataError> {
+        sqlx::query("DELETE FROM documents_fts WHERE doc_id = ?")
+            .bind(id.to_string())
+            .execute(conn)
+            .await?;
         Ok(())
     }
 }
@@ -452,7 +485,7 @@ impl Repository for SqliteRepository {
             match op {
                 Operation::Create { doc } => {
                     check_command_scope(doc, sequenced.world_id)?;
-                    Self::upsert_document(&mut *tx, doc, seq).await?;
+                    Self::upsert_document(&mut tx, doc, seq).await?;
                 }
                 Operation::Delete { doc } => {
                     check_command_scope(doc, sequenced.world_id)?;
@@ -460,6 +493,7 @@ impl Repository for SqliteRepository {
                         .bind(doc.id.to_string())
                         .execute(&mut *tx)
                         .await?;
+                    Self::delete_document_fts(&mut tx, doc.id).await?;
                 }
                 Operation::Update { doc_id, changes } => {
                     let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
@@ -484,7 +518,7 @@ impl Repository for SqliteRepository {
                     check_command_scope(&doc, sequenced.world_id)?;
                     // updated_at tracks last mutation; the command ts is authoritative.
                     doc.updated_at = sequenced.ts;
-                    Self::upsert_document(&mut *tx, &doc, seq).await?;
+                    Self::upsert_document(&mut tx, &doc, seq).await?;
                 }
             }
         }
@@ -659,12 +693,13 @@ impl Repository for SqliteRepository {
 
         for op in &sequenced.ops {
             match op {
-                Operation::Create { doc } => Self::upsert_document(&mut *tx, doc, seq).await?,
+                Operation::Create { doc } => Self::upsert_document(&mut tx, doc, seq).await?,
                 Operation::Delete { doc } => {
                     sqlx::query("DELETE FROM documents WHERE id = ?")
                         .bind(doc.id.to_string())
                         .execute(&mut *tx)
                         .await?;
+                    Self::delete_document_fts(&mut tx, doc.id).await?;
                 }
                 Operation::Update { doc_id, changes } => {
                     let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
@@ -688,7 +723,7 @@ impl Repository for SqliteRepository {
                     // pre-image, is what gets stored.
                     validation::validate_system_size(&doc)?;
                     doc.updated_at = ts;
-                    Self::upsert_document(&mut *tx, &doc, seq).await?;
+                    Self::upsert_document(&mut tx, &doc, seq).await?;
                 }
             }
         }
@@ -812,6 +847,119 @@ impl Repository for SqliteRepository {
             Some(json) => Ok(serde_json::from_str(&json)?),
             None => Ok(Vec::new()),
         }
+    }
+
+    async fn search(
+        &self,
+        ctx: &crate::data::membership::PermissionContext,
+        world_id: Uuid,
+        query: &str,
+        limit: u32,
+        cursor: Option<i64>,
+    ) -> Result<crate::data::search::SearchPage, DataError> {
+        use crate::data::search::{build_match, SearchHit, SearchPage};
+
+        // Bound the candidates examined per request: a query matching many docs
+        // the actor cannot read would otherwise page to exhaustion, one
+        // get_document per candidate, on the single-writer pool. On hitting the
+        // budget before `limit`, return a partial page + cursor to resume.
+        const MAX_SCAN: i64 = 500;
+
+        let limit = limit.clamp(1, 100) as usize;
+        let Some(match_expr) = build_match(query) else {
+            return Ok(SearchPage {
+                hits: Vec::new(),
+                next_cursor: None,
+            });
+        };
+        let world_defaults = self.world_cap_defaults(world_id).await?;
+
+        // Visibility-split index: a non-GM matches and snippets only the
+        // GM-only-stripped `content` column, so neither the MATCH (oracle), the
+        // bm25 score, nor the snippet can reveal GM-only text. A GM/admin
+        // searches the full `content_all` column. (Server admin resolves to the
+        // Gm world role in `permission_context`.)
+        let is_gm = ctx.world_role == WorldRole::Gm;
+        let column = if is_gm { "content_all" } else { "content" };
+        // Column-filter the MATCH to the chosen column. This whole expression is
+        // a bound parameter (?1) — `column` is a server-chosen literal, never user
+        // input. The snippet column index must be a literal in the SQL, so two
+        // static query strings are selected rather than building SQL at runtime.
+        let scoped_match = format!("{{{column}}} : ({match_expr})");
+        let sql = if is_gm {
+            "SELECT doc_id, bm25(documents_fts) AS score, \
+             snippet(documents_fts, 1, '<mark>', '</mark>', '…', 16) AS snippet \
+             FROM documents_fts \
+             WHERE documents_fts MATCH ?1 AND world_id = ?2 \
+             ORDER BY score LIMIT ?3 OFFSET ?4"
+        } else {
+            "SELECT doc_id, bm25(documents_fts) AS score, \
+             snippet(documents_fts, 0, '<mark>', '</mark>', '…', 16) AS snippet \
+             FROM documents_fts \
+             WHERE documents_fts MATCH ?1 AND world_id = ?2 \
+             ORDER BY score LIMIT ?3 OFFSET ?4"
+        };
+
+        // Iterate the BM25-ranked candidates from `cursor`, reading each doc and
+        // keeping only those the actor may read, until `limit` readable hits are
+        // collected, the candidates are exhausted, or the scan budget is spent.
+        // Over-iteration here is what prevents redaction from producing a short
+        // page. A negative client cursor is clamped to the start.
+        let start: i64 = cursor.unwrap_or(0).max(0);
+        let mut offset: i64 = start;
+        let mut hits: Vec<SearchHit> = Vec::with_capacity(limit);
+        let batch: i64 = (limit as i64).clamp(16, MAX_SCAN);
+        let mut next_cursor: Option<i64> = None;
+
+        'outer: loop {
+            let rows = sqlx::query(sql)
+                .bind(&scoped_match)
+                .bind(world_id.to_string())
+                .bind(batch)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await?;
+
+            if rows.is_empty() {
+                break; // exhausted; next_cursor stays None
+            }
+
+            for row in &rows {
+                offset += 1;
+                let doc_id: String = row.get("doc_id");
+                let doc_id =
+                    Uuid::parse_str(&doc_id).map_err(|e| DataError::OpFailed(e.to_string()))?;
+                let Some(doc) = self.get_document(doc_id).await? else {
+                    continue;
+                };
+                let access =
+                    resolve_access_world(ctx.user_id, ctx.world_role, &doc, &world_defaults);
+                if !access.has(cap::READ) {
+                    continue;
+                }
+                hits.push(SearchHit {
+                    document: crate::data::permission::filter_properties(&doc, &access),
+                    score: row.get("score"),
+                    snippet: row.get("snippet"),
+                });
+                if hits.len() == limit {
+                    // More candidates may remain; hand back the rank offset.
+                    next_cursor = Some(offset);
+                    break 'outer;
+                }
+            }
+
+            if offset - start >= MAX_SCAN {
+                // Scan budget spent before `limit`; resume from here next page.
+                next_cursor = Some(offset);
+                break;
+            }
+            if (rows.len() as i64) < batch {
+                break; // last batch was partial → no more candidates
+            }
+        }
+
+        Ok(SearchPage { hits, next_cursor })
     }
 }
 
@@ -1044,6 +1192,261 @@ mod tests {
         r.apply_intent(&player_ctx, w.id, vec![Operation::Create { doc: plain }], 2)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn fts_sync_reflects_create_update_delete() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{FieldChange, Operation};
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({ "name": "Goblin" }));
+        d.scope = Scope::World { world_id: w.id };
+
+        // Create → indexed.
+        r.apply_intent(&ctx, w.id, vec![Operation::Create { doc: d.clone() }], 1)
+            .await
+            .unwrap();
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM documents_fts WHERE documents_fts MATCH 'Goblin' AND world_id = ?",
+        )
+        .bind(w.id.to_string())
+        .fetch_one(r.pool())
+        .await
+        .unwrap();
+        assert_eq!(n, 1);
+
+        // Update → re-indexed (old term gone, new term present).
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id: d.id,
+                changes: vec![FieldChange {
+                    path: "/system/name".into(),
+                    old: serde_json::json!("Goblin"),
+                    new: serde_json::json!("Orc"),
+                }],
+            }],
+            2,
+        )
+        .await
+        .unwrap();
+        let goblin: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM documents_fts WHERE documents_fts MATCH 'Goblin'",
+        )
+        .fetch_one(r.pool())
+        .await
+        .unwrap();
+        let orc: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM documents_fts WHERE documents_fts MATCH 'Orc'",
+        )
+        .fetch_one(r.pool())
+        .await
+        .unwrap();
+        assert_eq!((goblin, orc), (0, 1));
+
+        // Delete → removed.
+        r.apply_intent(&ctx, w.id, vec![Operation::Delete { doc: d.clone() }], 3)
+            .await
+            .unwrap();
+        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM documents_fts WHERE doc_id = ?")
+            .bind(d.id.to_string())
+            .fetch_one(r.pool())
+            .await
+            .unwrap();
+        assert_eq!(after, 0);
+    }
+
+    #[tokio::test]
+    async fn search_ranks_and_filters_by_read_access() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::Operation;
+        use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let pl_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // A readable doc (default Observer → player can read) and a GM-only doc
+        // (default None → player cannot read), both matching "dragon".
+        let mut readable = tests_doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "name": "Red Dragon" }),
+        );
+        readable.scope = Scope::World { world_id: w.id };
+        let mut secret = tests_doc(
+            PermissionSet {
+                default: DocRole::None,
+                ..Default::default()
+            },
+            serde_json::json!({ "name": "Secret Dragon" }),
+        );
+        secret.scope = Scope::World { world_id: w.id };
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: readable.clone(),
+            }],
+            1,
+        )
+        .await
+        .unwrap();
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: secret.clone(),
+            }],
+            2,
+        )
+        .await
+        .unwrap();
+
+        // GM sees both.
+        let gm_page = r.search(&gm_ctx, w.id, "dragon", 10, None).await.unwrap();
+        assert_eq!(gm_page.hits.len(), 2);
+
+        // Player sees only the readable one — the GM-only doc is never leaked.
+        let pl_page = r.search(&pl_ctx, w.id, "dragon", 10, None).await.unwrap();
+        assert_eq!(pl_page.hits.len(), 1);
+        assert_eq!(pl_page.hits[0].document.id, readable.id);
+        assert!(pl_page.hits[0].snippet.to_lowercase().contains("dragon"));
+
+        // GM-only property is redacted from a readable hit for the player.
+        let mut sheet = tests_doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "name": "Knight", "secret": "weakness" }),
+        );
+        sheet.scope = Scope::World { world_id: w.id };
+        sheet
+            .permissions
+            .property_overrides
+            .insert("/system/secret".into(), Visibility::GmOnly);
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: sheet.clone() }],
+            3,
+        )
+        .await
+        .unwrap();
+        let knight = r.search(&pl_ctx, w.id, "knight", 10, None).await.unwrap();
+        assert_eq!(knight.hits.len(), 1);
+        assert!(
+            knight.hits[0].document.system.get("secret").is_none(),
+            "GM-only field leaked in search document"
+        );
+        // The snippet must not quote GM-only text either.
+        assert!(
+            !knight.hits[0].snippet.to_lowercase().contains("weakness"),
+            "GM-only field leaked in search snippet"
+        );
+
+        // Oracle closed: a non-GM searching the GM-only term gets no hit (the
+        // term is only in the GM-only `content_all` column).
+        let probe = r.search(&pl_ctx, w.id, "weakness", 10, None).await.unwrap();
+        assert_eq!(probe.hits.len(), 0, "GM-only term matchable by non-GM");
+
+        // A GM can still search their own GM-only field text.
+        let gm_probe = r.search(&gm_ctx, w.id, "weakness", 10, None).await.unwrap();
+        assert_eq!(gm_probe.hits.len(), 1);
+        assert_eq!(gm_probe.hits[0].document.id, sheet.id);
+    }
+
+    #[tokio::test]
+    async fn search_paginates_without_underfill() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::Operation;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let pl_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // 6 matching docs; alternating readable/secret. Player can read 3.
+        for i in 0..6 {
+            let role = if i % 2 == 0 {
+                DocRole::Observer
+            } else {
+                DocRole::None
+            };
+            let mut d = tests_doc(
+                PermissionSet {
+                    default: role,
+                    ..Default::default()
+                },
+                serde_json::json!({ "name": format!("dragon {i}") }),
+            );
+            d.scope = Scope::World { world_id: w.id };
+            r.apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: d }], i + 1)
+                .await
+                .unwrap();
+        }
+
+        // Page size 2: first page returns 2 readable hits despite interleaved secrets.
+        let p1 = r.search(&pl_ctx, w.id, "dragon", 2, None).await.unwrap();
+        assert_eq!(p1.hits.len(), 2);
+        assert!(p1.next_cursor.is_some());
+        let p2 = r
+            .search(&pl_ctx, w.id, "dragon", 2, p1.next_cursor)
+            .await
+            .unwrap();
+        assert_eq!(p2.hits.len(), 1); // only 3 readable total
+        assert!(p2.next_cursor.is_none());
     }
 
     #[tokio::test]
