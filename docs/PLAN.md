@@ -93,9 +93,36 @@ framework-neutral TS module**; Module API explicitly 0.x.
 > enforcement — its own threat model; never the default path.
 
 ### M7 · Layout-lite + theming scaffold
-- Fixed panel layout; one dark theme via the 3-tier SCSS token system; i18n scaffold.
-- Session state persisted in the DB.
+> Spec: [`superpowers/specs/2026-06-19-m7-layout-theming-design.md`](superpowers/specs/2026-06-19-m7-layout-theming-design.md).
+> Decomposed into **M7a** (server surface), **M7b** (UI contribution
+> architecture), **M7c** (shell + entry flow as modules + reactivity bridge),
+> **M7d** (theming + i18n + session + tests) — each its own plan+execute cycle.
+
+First Svelte 5 UI over the headless M6 core, built as a **UI-as-modules
+contribution architecture**: every UI element (regions, panels, later combat
+tracker / dice tray / HUDs) is a module contributing components into **surfaces**
+(named string-contract mount points) declared by other modules, with
+contract-based (`provides`/`requires`) dependencies resolved on the existing M6b
+module system. Core owns contract resolution; the ui package hosts surfaces via a
+framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
+- Full entry flow: first-run setup → login → world select → in-world table shell.
+  Vite bundle replaces `src/server/static/`; `embed.rs` seam flips to `dist/`.
+- Fixed VTT-standard region layout (top bar · tool rail · stage · sidebar ·
+  status bar) provided by a first-party `core-ui` module; default panels are
+  contributions. Stage is an M8 canvas placeholder.
+- One dark theme (palette derived from `assets/icon`) via the 3-tier SCSS token
+  system; i18n scaffold (`typesafe-i18n`, one `en` locale).
+- Session state persisted in the DB: per-user opaque `ui_state` blob (server
+  validates object+size-cap only; client owns structure).
+- New server surface: `GET /worlds`, public `GET /api/config`, `GET/PUT
+  /me/ui-state` + migration.
 - The token set is proven against panel chrome and **explicitly re-audited when the first themed canvas overlays land (M8) and again when default-module sheets/browsers land (M12)** — the early set is not treated as final.
+- **Pre-release framing:** no public release until ≥2 internal systems exercise
+  the API (Phase 4 freeze gate), so the contribution API is built in full now and
+  hardens through internal use — unfrozen, not third-party-stable. Deferred (no
+  definable answer without a real second provider): multi-provider `singleton`
+  conflict policy + capability version negotiation (logged in `TODO.md`;
+  deterministic loud-fail placeholder until then).
 - Excludes: drag-resize, pop-out / multi-window, multi-theme, user themes, module styling modes.
 
 ### M8 · ECS + scene rendering
