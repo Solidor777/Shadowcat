@@ -39,7 +39,7 @@ impl AppState {
             SetupTokenPolicy::Required(Some(v)) => Some(v),
             SetupTokenPolicy::Required(None) => {
                 let token = uuid::Uuid::new_v4().simple().to_string();
-                tracing::info!(%token, "setup token required; provide it on /setup.html");
+                tracing::info!(%token, "setup token required; enter it in the setup form the app shows on first run");
                 Some(token)
             }
         }
