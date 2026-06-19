@@ -61,3 +61,32 @@ export async function createWorld(name: string): Promise<WorldEntry> {
   if (!res.ok) throw new Error(`/api/worlds → ${res.status}`);
   return (await res.json()) as WorldEntry;
 }
+
+/** Per-user UI session state. The server stores this opaquely (object + size cap);
+ * the client owns the structure. */
+export interface UiState {
+  global: { locale: string; lastWorld: string | null };
+  worlds: Record<string, { activeTab?: string }>;
+}
+
+function defaultUiState(): UiState {
+  return { global: { locale: "en", lastWorld: null }, worlds: {} };
+}
+
+export async function getUiState(): Promise<UiState> {
+  const raw = await getJson<Partial<UiState>>("/api/me/ui-state");
+  const def = defaultUiState();
+  return {
+    global: { ...def.global, ...(raw.global ?? {}) },
+    worlds: raw.worlds ?? {},
+  };
+}
+
+export async function putUiState(state: UiState): Promise<void> {
+  const res = await fetch("/api/me/ui-state", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(state),
+  });
+  if (!res.ok) throw new Error(`PUT /api/me/ui-state → ${res.status}`);
+}

@@ -33,3 +33,21 @@ test("listWorlds returns the world array", async () => {
   const worlds = await api.listWorlds();
   expect(worlds[0].name).toBe("W");
 });
+
+test("getUiState normalizes an empty server blob to defaults", async () => {
+  mockFetch(200, {});
+  const s = await api.getUiState();
+  expect(s).toEqual({ global: { locale: "en", lastWorld: null }, worlds: {} });
+});
+
+test("getUiState passes through a stored blob", async () => {
+  mockFetch(200, { global: { locale: "en", lastWorld: "w1" }, worlds: { w1: { activeTab: "settings" } } });
+  const s = await api.getUiState();
+  expect(s.global.lastWorld).toBe("w1");
+});
+
+test("putUiState PUTs the blob", async () => {
+  const f = mockFetch(204);
+  await api.putUiState({ global: { locale: "en", lastWorld: null }, worlds: {} });
+  expect(f).toHaveBeenCalledWith("/api/me/ui-state", expect.objectContaining({ method: "PUT" }));
+});
