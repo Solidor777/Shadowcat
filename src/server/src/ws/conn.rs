@@ -275,6 +275,8 @@ async fn handle_socket(
                             }
                         }
                         Ok(ClientMsg::Hello { .. }) | Ok(ClientMsg::Pong) => {}
+                        // TODO: route scene-derived subscriptions to the egress task.
+                        Ok(ClientMsg::SceneSubscribe { .. }) | Ok(ClientMsg::SceneUnsubscribe { .. }) => {}
                         Err(_) => {
                             let _ = etx
                                 .send(Egress::Frame(Arc::new(ServerMsg::Error {
