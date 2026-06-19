@@ -91,6 +91,11 @@ pub async fn router(state: AppState) -> Router {
                 .put(routes::set_world_capability_requirements),
         )
         .route(
+            "/api/worlds/{id}/contracts",
+            get(routes::get_world_contract_declarations)
+                .put(routes::set_world_contract_declarations),
+        )
+        .route(
             "/api/worlds/{id}/documents",
             get(routes::list_documents).post(routes::create_document),
         )
@@ -725,6 +730,86 @@ pub(crate) mod tests {
             .json(&embed)
             .await
             .assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn contract_declarations_gm_crud_and_validation() {
+        let state = initialized_state().await;
+        seed_user(&state, "gm").await;
+        let player_id = seed_user(&state, "pl").await;
+        let gm = login_server(&state, "gm").await;
+        let pl = login_server(&state, "pl").await;
+
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "W" }))
+            .await
+            .json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+        gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": player_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let valid = serde_json::json!([
+            { "module_id": "sidebar", "version": "1.0.0",
+              "provides": [{ "contract": "shadowcat.surface:sidebar", "cardinality": "singleton" }],
+              "requires": [] },
+            { "module_id": "combat", "version": "1.0.0",
+              "provides": [], "requires": ["shadowcat.surface:sidebar"] }
+        ]);
+
+        // A non-GM cannot read or write.
+        pl.put(&format!("/api/worlds/{world_id}/contracts"))
+            .json(&valid)
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+        pl.get(&format!("/api/worlds/{world_id}/contracts"))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        // The GM sets a valid set and reads it back.
+        gm.put(&format!("/api/worlds/{world_id}/contracts"))
+            .json(&valid)
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let got: serde_json::Value = gm
+            .get(&format!("/api/worlds/{world_id}/contracts"))
+            .await
+            .json();
+        assert_eq!(got[0]["provides"][0]["contract"], "shadowcat.surface:sidebar");
+
+        // Dangling requires (no provider) is rejected.
+        let dangling = serde_json::json!([
+            { "module_id": "combat", "version": "1.0.0", "provides": [],
+              "requires": ["shadowcat.surface:nonexistent"] }
+        ]);
+        gm.put(&format!("/api/worlds/{world_id}/contracts"))
+            .json(&dangling)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Two singleton providers of the same contract is rejected.
+        let dup_singleton = serde_json::json!([
+            { "module_id": "a", "version": "1.0.0",
+              "provides": [{ "contract": "shadowcat.surface:sidebar", "cardinality": "singleton" }], "requires": [] },
+            { "module_id": "b", "version": "1.0.0",
+              "provides": [{ "contract": "shadowcat.surface:sidebar", "cardinality": "singleton" }], "requires": [] }
+        ]);
+        gm.put(&format!("/api/worlds/{world_id}/contracts"))
+            .json(&dup_singleton)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // A malformed contract string is rejected.
+        let malformed = serde_json::json!([
+            { "module_id": "a", "version": "1.0.0",
+              "provides": [{ "contract": "no-colon", "cardinality": "multi" }], "requires": [] }
+        ]);
+        gm.put(&format!("/api/worlds/{world_id}/contracts"))
+            .json(&malformed)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]

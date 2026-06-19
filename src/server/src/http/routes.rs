@@ -16,7 +16,8 @@ use crate::auth::session::{AdminUser, AuthUser, SessionUser};
 use crate::auth::setup::{create_admin, now_millis};
 use crate::data::command::{Command, FieldChange, Operation};
 use crate::data::document::{
-    CapabilityGrants, CapabilityRequirement, Document, Scope, World, WorldRole,
+    CapabilityGrants, CapabilityRequirement, Cardinality, ContractDeclaration, Document, Scope,
+    World, WorldRole,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
@@ -582,5 +583,92 @@ pub async fn set_world_capability_requirements(
         }
     }
     state.repo.set_world_cap_requirements(world, &reqs).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Upper bound on the number of contract declarations stored per world. Parsed
+/// on every write and broadcast in `Welcome`; far above any realistic module set.
+const MAX_CONTRACT_DECLARATIONS: usize = 256;
+
+/// Structural validation of a contract id: `<namespace>:<name>`, both non-empty.
+fn validate_contract_token(token: &str) -> Result<(), AppError> {
+    match token.split_once(':') {
+        Some((ns, name)) if !ns.is_empty() && !name.is_empty() => Ok(()),
+        _ => Err(AppError::Unprocessable(format!(
+            "malformed contract '{token}' (expected <namespace>:<name>)"
+        ))),
+    }
+}
+
+/// Validate a world's contract declaration set: bounded count, well-formed
+/// non-empty fields, no duplicate `singleton` provider, and every `requires`
+/// satisfied by some `provides` in the set. Fail-closed — the server is the
+/// consistency authority.
+fn validate_contract_declarations(decls: &[ContractDeclaration]) -> Result<(), AppError> {
+    use std::collections::{HashMap, HashSet};
+    if decls.len() > MAX_CONTRACT_DECLARATIONS {
+        return Err(AppError::Unprocessable(format!(
+            "too many declarations (max {MAX_CONTRACT_DECLARATIONS})"
+        )));
+    }
+    let mut provided: HashSet<&str> = HashSet::new();
+    let mut singleton_count: HashMap<&str, usize> = HashMap::new();
+    for d in decls {
+        if d.module_id.is_empty() || d.version.is_empty() {
+            return Err(AppError::Unprocessable(
+                "declaration module_id and version must be non-empty".into(),
+            ));
+        }
+        for p in &d.provides {
+            validate_contract_token(&p.contract)?;
+            provided.insert(p.contract.as_str());
+            if p.cardinality == Cardinality::Singleton {
+                let n = singleton_count.entry(p.contract.as_str()).or_insert(0);
+                *n += 1;
+                if *n > 1 {
+                    return Err(AppError::Unprocessable(format!(
+                        "contract '{}' is singleton but provided more than once",
+                        p.contract
+                    )));
+                }
+            }
+        }
+    }
+    for d in decls {
+        for req in &d.requires {
+            validate_contract_token(req)?;
+            if !provided.contains(req.as_str()) {
+                return Err(AppError::Unprocessable(format!(
+                    "required contract '{req}' has no provider in the declared set"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A world's UI contract declarations. GM/admin only.
+pub async fn get_world_contract_declarations(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+) -> Result<Json<Vec<ContractDeclaration>>, AppError> {
+    require_gm(&state, &user, world).await?;
+    Ok(Json(state.repo.world_contract_declarations(world).await?))
+}
+
+/// Replace a world's UI contract declarations. GM/admin only; validated.
+pub async fn set_world_contract_declarations(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+    Json(decls): Json<Vec<ContractDeclaration>>,
+) -> Result<StatusCode, AppError> {
+    require_gm(&state, &user, world).await?;
+    validate_contract_declarations(&decls)?;
+    state
+        .repo
+        .set_world_contract_declarations(world, &decls)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
