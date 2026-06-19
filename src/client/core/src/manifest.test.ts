@@ -1,5 +1,42 @@
 import { expect, test } from "vitest";
-import { parseManifest } from "./manifest";
+import { parseManifest, declarationOf } from "./manifest";
+
+test("accepts provides/requires and projects to a declaration", () => {
+  const m = parseManifest({
+    id: "sidebar",
+    version: "1.0.0",
+    dependencies: {},
+    provides: [{ contract: "s:sidebar", cardinality: "singleton" }],
+    requires: ["s:root"],
+  });
+  expect(declarationOf(m)).toEqual({
+    module_id: "sidebar",
+    version: "1.0.0",
+    provides: [{ contract: "s:sidebar", cardinality: "singleton" }],
+    requires: ["s:root"],
+  });
+});
+
+test("defaults provides/requires to empty in a projection", () => {
+  const m = parseManifest({ id: "m", version: "1.0.0", dependencies: {} });
+  expect(declarationOf(m)).toEqual({
+    module_id: "m",
+    version: "1.0.0",
+    provides: [],
+    requires: [],
+  });
+});
+
+test("rejects an invalid cardinality", () => {
+  expect(() =>
+    parseManifest({
+      id: "m",
+      version: "1.0.0",
+      dependencies: {},
+      provides: [{ contract: "s:x", cardinality: "lots" }],
+    }),
+  ).toThrow();
+});
 
 test("valid manifest parses with defaults", () => {
   const m = parseManifest({ id: "dnd5e", version: "1.0.0", dependencies: {} });

@@ -12,8 +12,14 @@ export type { HookKind, HookDefinition, OnOptions, Handler, CoreHooks } from "./
 export { ServiceRegistry } from "./services";
 export { MiddlewareChain } from "./middleware";
 export type { PipelineName, Middleware } from "./middleware";
-export { ManifestSchema, parseManifest } from "./manifest";
-export type { ModuleManifest, CapRequirement, HookDecl } from "./manifest";
+export { ManifestSchema, parseManifest, declarationOf } from "./manifest";
+export type {
+  ModuleManifest,
+  CapRequirement,
+  HookDecl,
+  ContractProvide,
+  ContractDeclaration,
+} from "./manifest";
 export { ModuleRegistry } from "./modules";
 export type { Module, ModuleContext, ModuleInfo } from "./modules";
 export { loadModules } from "./loader";
