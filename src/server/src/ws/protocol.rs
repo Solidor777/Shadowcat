@@ -9,6 +9,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::data::command::{Command, Operation};
+use crate::data::search::SearchHit;
 
 /// Client -> server frames.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -30,6 +31,14 @@ pub enum ClientMsg {
     TimePing { client_t0: i64 },
     /// Heartbeat reply.
     Pong,
+    /// A full-text search request, correlated by `request_id`. `cursor` is the
+    /// opaque page token returned by a prior `SearchResult`.
+    Search {
+        request_id: Uuid,
+        query: String,
+        limit: u32,
+        cursor: Option<String>,
+    },
 }
 
 /// Which tier served a resync.
@@ -108,6 +117,15 @@ pub enum ServerMsg {
     Ping,
     /// A non-fatal or fatal error, by code.
     Error { code: WsErrorCode, message: String },
+    /// Results for the `Search` with this `request_id`. Documents are already
+    /// filtered for the recipient. `next_cursor` is `None` when exhausted.
+    SearchResult {
+        request_id: Uuid,
+        hits: Vec<SearchHit>,
+        next_cursor: Option<String>,
+    },
+    /// The `Search` with this `request_id` failed.
+    SearchError { request_id: Uuid, message: String },
 }
 
 impl ServerMsg {
@@ -184,6 +202,26 @@ mod protocol_tests {
         };
         let s = serde_json::to_string(&e).unwrap();
         assert!(s.contains("\"code\":\"world_not_found\""));
+    }
+
+    #[test]
+    fn search_frames_round_trip() {
+        let req = ClientMsg::Search {
+            request_id: Uuid::from_u128(1),
+            query: "dragon".into(),
+            limit: 20,
+            cursor: None,
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"type\":\"search\""));
+        let _back: ClientMsg = serde_json::from_str(&s).unwrap();
+
+        let err = ServerMsg::SearchError {
+            request_id: Uuid::from_u128(2),
+            message: "x".into(),
+        };
+        let s = serde_json::to_string(&err).unwrap();
+        assert!(s.contains("\"type\":\"search_error\""));
     }
 
     #[test]
