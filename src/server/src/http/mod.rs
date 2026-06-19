@@ -58,6 +58,7 @@ pub async fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(routes::health))
+        .route("/api/config", get(routes::config))
         .route("/ws", get(crate::ws::conn::ws_handler))
         .route("/api/debug/rooms", get(routes::debug_rooms))
         .route("/api/me", get(routes::me))
@@ -267,6 +268,22 @@ pub(crate) mod tests {
             .get("/api/me")
             .await
             .assert_status(axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn config_reports_initialized_state_and_is_public_pre_init() {
+        // Uninitialized: reachable (not redirected to setup) and reports false.
+        let fresh = fresh_server().await;
+        let res = fresh.get("/api/config").await;
+        res.assert_status_ok();
+        assert_eq!(res.json::<serde_json::Value>()["initialized"], false);
+
+        // Initialized: reports true.
+        let server =
+            axum_test::TestServer::new(router(initialized_state().await).await).unwrap();
+        let res = server.get("/api/config").await;
+        res.assert_status_ok();
+        assert_eq!(res.json::<serde_json::Value>()["initialized"], true);
     }
 
     #[tokio::test]

@@ -19,7 +19,7 @@ pub async fn init_gate(State(state): State<AppState>, req: Request, next: Next) 
     let path = req.uri().path();
     let allowed = matches!(
         path,
-        "/api/setup" | "/setup.html" | "/auth.js" | "/styles.css" | "/health"
+        "/api/setup" | "/api/config" | "/setup.html" | "/auth.js" | "/styles.css" | "/health"
     );
     if allowed {
         next.run(req).await

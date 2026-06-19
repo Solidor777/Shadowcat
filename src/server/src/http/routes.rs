@@ -6,6 +6,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
+use ts_rs::TS;
 use tower_sessions::Session;
 use uuid::Uuid;
 
@@ -102,6 +103,22 @@ pub async fn put_ui_state(
     }
     state.repo.set_ui_state(user.id, &s).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Public server bootstrap info for the SPA's first-load routing (setup vs
+/// login). Exposes nothing beyond the `initialized` bit the setup-409 already
+/// reveals.
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct ServerConfig {
+    pub initialized: bool,
+}
+
+/// Whether a first admin exists. Unauthenticated; reachable before init.
+pub async fn config(State(state): State<AppState>) -> Json<ServerConfig> {
+    Json(ServerConfig {
+        initialized: state.initialized.load(Ordering::Relaxed),
+    })
 }
 
 /// A real Argon2id hash of a throwaway password, computed once. The unknown-user
