@@ -2,6 +2,7 @@ import { render, screen, fireEvent } from "@testing-library/svelte";
 import { test, expect } from "vitest";
 import type { SceneTool } from "@shadowcat/render";
 import { SceneInteractionBridge } from "../../lib/sceneInteraction";
+import { fakeSceneHost } from "../../lib/__fixtures__/fakeSceneHost";
 import { setAppContextForTest } from "../../lib/__fixtures__/appContextTest";
 import ToolRail from "./ToolRail.svelte";
 
@@ -9,7 +10,7 @@ import ToolRail from "./ToolRail.svelte";
 function captureScene(): { scene: SceneInteractionBridge; tools: (SceneTool | null)[] } {
   const tools: (SceneTool | null)[] = [];
   const scene = new SceneInteractionBridge();
-  scene.attach({ setActiveTool: (t) => tools.push(t), snap: (p) => p, setDraggingToken: () => {}, previewOverlay: () => {}, clearOverlay: () => {} });
+  scene.attach(fakeSceneHost({ setActiveTool: (t) => tools.push(t) }));
   return { scene, tools };
 }
 

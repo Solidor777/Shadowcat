@@ -1,6 +1,7 @@
 import { test, expect } from "vitest";
 import { DocumentStore, AssetResolver, buildSceneDoc, type WireOperation } from "@shadowcat/core";
 import { SceneInteractionBridge } from "../../lib/sceneInteraction";
+import { fakeSceneHost } from "../../lib/__fixtures__/fakeSceneHost";
 import { ToolController, makeDrawTool, type ToolContext, type DrawMode } from "./controller.svelte";
 
 const ev = {} as PointerEvent;
@@ -11,11 +12,10 @@ function setup(mode: DrawMode, withScene = true) {
   const previews: Array<Array<{ points: number[]; closed: boolean }>> = [];
   let cleared = 0;
   const bridge = new SceneInteractionBridge();
-  bridge.attach({
-    setActiveTool: () => {}, snap: (p) => p, setDraggingToken: () => {},
+  bridge.attach(fakeSceneHost({
     previewOverlay: (s) => previews.push(s as Array<{ points: number[]; closed: boolean }>),
     clearOverlay: () => { cleared++; },
-  });
+  }));
   const sent: WireOperation[][] = [];
   const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1" };
   const controller = new ToolController(ctx);

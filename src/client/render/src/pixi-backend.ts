@@ -1,6 +1,6 @@
-import { Application, Container, Graphics, Sprite, Assets, type Filter } from "pixi.js";
+import { Application, Container, Graphics, Sprite, Text, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend } from "./backend";
-import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
 
 /** The real DisplayBackend over pixi.js v8. The only GL-touching module (kept out
  * of unit tests; covered by Playwright). Layer containers parent under one `world`
@@ -11,6 +11,8 @@ export class PixiBackend implements DisplayBackend {
   private readonly grid = new Graphics();
   private readonly maskOverlay = new Graphics();
   private readonly toolOverlay = new Graphics();
+  private readonly measureGraphics = new Graphics();
+  private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
   private readonly shapes = new Map<string, Graphics>();
   private readonly tokens = new Map<string, Sprite>();
   /** Last-loaded image URL per token, so a tweening token doesn't reload each frame. */
@@ -33,7 +35,13 @@ export class PixiBackend implements DisplayBackend {
       this.world.addChild(c);
       if (id === "grid") c.addChild(this.grid);
       if (id === "mask") c.addChild(this.maskOverlay);
-      if (id === "overlays") c.addChild(this.toolOverlay);
+      if (id === "overlays") {
+        c.addChild(this.toolOverlay);
+        c.addChild(this.measureGraphics);
+        this.measureText.anchor.set(0.5);
+        this.measureText.visible = false;
+        c.addChild(this.measureText);
+      }
     }
     // Re-parent in z-order (addChild appends; order array is authoritative).
     for (const id of orderedIds) {
@@ -147,6 +155,19 @@ export class PixiBackend implements DisplayBackend {
 
   clearOverlay(): void {
     this.toolOverlay.clear();
+  }
+
+  drawMeasure(from: Point, to: Point, label: string): void {
+    this.measureGraphics.clear();
+    this.measureGraphics.moveTo(from.x, from.y).lineTo(to.x, to.y).stroke({ width: 2, color: 0xffd400 });
+    this.measureText.text = label;
+    this.measureText.position.set((from.x + to.x) / 2, (from.y + to.y) / 2);
+    this.measureText.visible = true;
+  }
+
+  clearMeasure(): void {
+    this.measureGraphics.clear();
+    this.measureText.visible = false;
   }
 
   startTicker(cb: (dtMs: number) => void): void {

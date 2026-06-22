@@ -1,21 +1,21 @@
 import { test, expect } from "vitest";
 import type { SceneTool, SceneToolHost, Point } from "@shadowcat/render";
 import { SceneInteractionBridge } from "./sceneInteraction";
+import { fakeSceneHost } from "./__fixtures__/fakeSceneHost";
 
 const tool: SceneTool = { onPointerDown: () => true, onPointerMove: () => {}, onPointerUp: () => {} };
 
 function fakeHost(): SceneToolHost & { tools: (SceneTool | null)[]; drags: (string | null)[] } {
   const tools: (SceneTool | null)[] = [];
   const drags: (string | null)[] = [];
-  return {
-    tools,
-    drags,
-    setActiveTool: (t) => tools.push(t),
-    snap: (p: Point) => ({ x: p.x + 1, y: p.y + 1 }),
-    setDraggingToken: (id) => drags.push(id),
-    previewOverlay: () => {},
-    clearOverlay: () => {},
-  };
+  return Object.assign(
+    fakeSceneHost({
+      setActiveTool: (t) => tools.push(t),
+      snap: (p: Point) => ({ x: p.x + 1, y: p.y + 1 }),
+      setDraggingToken: (id) => drags.push(id),
+    }),
+    { tools, drags },
+  );
 }
 
 test("a detached bridge no-ops and snaps to identity", () => {
@@ -41,7 +41,7 @@ test("preview overlay forwards to the host; detached is a no-op", () => {
   let previews = 0;
   let cleared = 0;
   expect(() => bridge.previewOverlay([])).not.toThrow(); // detached: no-op
-  bridge.attach({ setActiveTool: () => {}, snap: (p) => p, setDraggingToken: () => {}, previewOverlay: () => previews++, clearOverlay: () => cleared++ });
+  bridge.attach(fakeSceneHost({ previewOverlay: () => previews++, clearOverlay: () => cleared++ }));
   bridge.previewOverlay([{ points: [0, 0, 1, 1], closed: false, stroke: null, fill: null }]);
   bridge.clearOverlay();
   expect(previews).toBe(1);

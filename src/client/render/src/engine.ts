@@ -170,6 +170,18 @@ export class RenderEngine implements SceneToolHost {
     this.opts.backend.clearOverlay();
   }
 
+  gridDistance(a: Point, b: Point): number {
+    return this.grid.distance(a, b);
+  }
+
+  drawMeasure(from: Point, to: Point, label: string): void {
+    this.opts.backend.drawMeasure(from, to, label);
+  }
+
+  clearMeasure(): void {
+    this.opts.backend.clearMeasure();
+  }
+
   /** Swap the active grid (from the active scene's `system.grid`) and redraw lines. */
   setGrid(spec: GridSpec): void {
     this.grid = new Grid(spec);

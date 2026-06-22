@@ -83,4 +83,10 @@ export interface SceneToolHost {
   previewOverlay(shapes: Omit<ShapeNodeSpec, "layer">[]): void;
   /** Clear the ephemeral preview overlay. */
   clearOverlay(): void;
+  /** Whole-cell distance between two scene points via the active grid (measurement). */
+  gridDistance(a: Point, b: Point): number;
+  /** Draw the client-local measurement overlay (a segment + a distance label). */
+  drawMeasure(from: Point, to: Point, label: string): void;
+  /** Clear the measurement overlay. */
+  clearMeasure(): void;
 }

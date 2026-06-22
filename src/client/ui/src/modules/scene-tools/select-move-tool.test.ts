@@ -1,7 +1,7 @@
 import { test, expect } from "vitest";
 import { DocumentStore, AssetResolver, buildTokenDoc, type WireOperation } from "@shadowcat/core";
-import type { SceneToolHost } from "@shadowcat/render";
 import { SceneInteractionBridge } from "../../lib/sceneInteraction";
+import { fakeSceneHost } from "../../lib/__fixtures__/fakeSceneHost";
 import { makeSelectMoveTool, type ToolContext } from "./controller.svelte";
 
 const ev = {} as PointerEvent;
@@ -14,8 +14,7 @@ function setup() {
   });
   const drags: (string | null)[] = [];
   const bridge = new SceneInteractionBridge();
-  const host: SceneToolHost = { setActiveTool: () => {}, snap: (p) => p, setDraggingToken: (id) => drags.push(id), previewOverlay: () => {}, clearOverlay: () => {} };
-  bridge.attach(host);
+  bridge.attach(fakeSceneHost({ setDraggingToken: (id) => drags.push(id) }));
   const sent: WireOperation[][] = [];
   let t = 0;
   const ctx: ToolContext = {
