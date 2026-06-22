@@ -151,6 +151,7 @@ export class RenderEngine implements SceneToolHost {
     this.panning = false;
     this.activePointerId = null;
     this.tokens.setDragging(null);
+    this.clearOverlay(); // discard any in-progress tool preview (the old tool's up won't fire)
   }
 
   snap(p: Point): Point {

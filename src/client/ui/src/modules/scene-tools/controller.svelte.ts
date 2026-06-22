@@ -90,6 +90,14 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
   };
 }
 
+/** A draw gesture has visible extent: a freehand path of ≥2 points, or a two-corner
+ * shape whose corners are ≥1 unit apart. A pure click has none — persisting it would
+ * write an invisible junk drawing to the scene + event log. */
+function hasExtent(mode: DrawMode, a: Point, b: Point, freehand: number[]): boolean {
+  if (mode === "freehand") return freehand.length >= 4;
+  return Math.hypot(b.x - a.x, b.y - a.y) >= 1;
+}
+
 /** Preview/persist points for a two-corner shape (or the freehand path). */
 function shapePath(mode: DrawMode, a: Point, b: Point, freehand: number[]): { points: number[]; closed: boolean } {
   switch (mode) {
@@ -127,8 +135,9 @@ export function makeDrawTool(ctx: ToolContext, controller: ToolController): Scen
     onPointerUp(p: Point): void {
       if (!anchor) return;
       const scene = activeScene(ctx);
-      if (scene) {
-        const mode = controller.drawMode;
+      const mode = controller.drawMode;
+      // A pure click has no extent — skip it so no invisible drawing is persisted.
+      if (scene && hasExtent(mode, anchor, p, freehand)) {
         const points = mode === "freehand" ? freehand : [anchor.x, anchor.y, p.x, p.y];
         ctx.dispatchIntent([
           {

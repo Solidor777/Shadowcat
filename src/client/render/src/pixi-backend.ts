@@ -123,8 +123,11 @@ export class PixiBackend implements DisplayBackend {
     if (!g) {
       g = new Graphics();
       this.shapes.set(id, g);
-      this.layers.get(spec.layer)?.addChild(g);
     }
+    // (Re)parent into the target layer. id→layer is stable for M8d's doc-backed shapes,
+    // but addChild moves the node so a future layer-varying reconciler can't leak it.
+    const layer = this.layers.get(spec.layer);
+    if (layer && g.parent !== layer) layer.addChild(g);
     g.clear();
     paintShape(g, spec);
   }

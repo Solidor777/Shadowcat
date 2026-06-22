@@ -341,6 +341,14 @@ test("previewOverlay / clearOverlay forward to the backend", () => {
   expect(backend.overlay).toHaveLength(0);
 });
 
+test("setActiveTool discards an in-progress preview overlay (mid-gesture tool swap)", () => {
+  const { backend, engine } = makeEngine();
+  engine.previewOverlay([{ points: [0, 0, 5, 5], closed: false, stroke: null, fill: null }]);
+  expect(backend.overlay).toHaveLength(1);
+  engine.setActiveTool(null);
+  expect(backend.overlay).toHaveLength(0);
+});
+
 test("registerLayerFilter forwards to the backend and disposes", () => {
   const backend = new MockBackend();
   const engine = new RenderEngine({ store: new DocumentStore(), assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 } });

@@ -51,6 +51,19 @@ test("a rect drag persists a rect drawing with its two corner points", () => {
   if (op.op === "create") expect(op.doc.system).toMatchObject({ shape: { kind: "rect", points: [0, 0, 10, 20] } });
 });
 
+test("a pure click (no extent) persists nothing but still clears the preview", () => {
+  const { tool, sent, clears } = setup("freehand");
+  tool.onPointerDown({ x: 5, y: 5 }, ev);
+  tool.onPointerUp({ x: 5, y: 5 }, ev); // no move → no extent
+  expect(sent).toHaveLength(0);
+  expect(clears()).toBe(1);
+  // a zero-extent rect click also persists nothing
+  const r = setup("rect");
+  r.tool.onPointerDown({ x: 0, y: 0 }, ev);
+  r.tool.onPointerUp({ x: 0, y: 0 }, ev);
+  expect(r.sent).toHaveLength(0);
+});
+
 test("draw is unhandled with no active scene", () => {
   const { tool, sent } = setup("freehand", false);
   expect(tool.onPointerDown({ x: 0, y: 0 }, ev)).toBe(false);
