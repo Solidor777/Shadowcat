@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::data::command::{Command, UnsequencedCommand};
 use crate::data::document::{
-    CapabilityGrants, CapabilityRequirement, ContractDeclaration, Document, World,
+    CapabilityRequirement, ContractDeclaration, Document, World, WorldCapDefaults,
 };
 use crate::data::DataError;
 
@@ -58,7 +58,7 @@ pub trait Repository: Send + Sync {
 
     /// A world's default capability grants (additive over the per-document
     /// `DocRole` floor). Empty when unset.
-    async fn world_cap_defaults(&self, world: Uuid) -> Result<CapabilityGrants, DataError>;
+    async fn world_cap_defaults(&self, world: Uuid) -> Result<WorldCapDefaults, DataError>;
 
     /// A world's declarative capability requirements (additive over the
     /// structural base capability for each field path). Empty when unset.

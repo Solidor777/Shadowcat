@@ -763,8 +763,7 @@ pub(crate) mod tests {
 
         // A non-GM cannot set world defaults.
         let defaults = serde_json::json!({
-            "by_role": { "owner": ["core:manage_embedded"] },
-            "by_user": {}
+            "all": { "by_role": { "owner": ["core:manage_embedded"] }, "by_user": {} }
         });
         pl.put(&format!("/api/worlds/{world_id}/capability-defaults"))
             .json(&defaults)

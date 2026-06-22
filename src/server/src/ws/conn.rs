@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::auth::role::ServerRole;
 use crate::auth::session::AuthUser;
-use crate::data::document::CapabilityGrants;
+use crate::data::document::WorldCapDefaults;
 use crate::data::membership::PermissionContext;
 use crate::data::permission::filter_command;
 use crate::data::repository::Repository;
@@ -137,7 +137,7 @@ async fn send_filtered<S>(
     sink: &mut S,
     repo: &dyn Repository,
     ctx: &PermissionContext,
-    world_defaults: &CapabilityGrants,
+    world_defaults: &WorldCapDefaults,
     msg: &ServerMsg,
 ) -> Result<(), ()>
 where
@@ -445,7 +445,7 @@ async fn egress_loop<S>(
     };
     // Project the world grants to only what this actor needs to self-gate; other
     // users' UUIDs and grants must not cross to the client.
-    let actor_grants = crate::data::permission::project_grants_for(&world_defaults, ctx.user_id);
+    let actor_grants = crate::data::permission::project_grants_for(&world_defaults.all, ctx.user_id);
     if sink
         .send(text(&ServerMsg::Welcome {
             world: world_id,
@@ -718,7 +718,7 @@ async fn replay<S>(
     room: &Room,
     repo: &dyn Repository,
     ctx: &PermissionContext,
-    world_defaults: &CapabilityGrants,
+    world_defaults: &WorldCapDefaults,
     from_seq: i64,
 ) -> Result<i64, ()>
 where

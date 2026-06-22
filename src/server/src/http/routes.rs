@@ -16,8 +16,8 @@ use crate::auth::session::{AdminUser, AuthUser, SessionUser};
 use crate::auth::setup::{create_admin, now_millis};
 use crate::data::command::{Command, FieldChange, Operation};
 use crate::data::document::{
-    CapabilityGrants, CapabilityRequirement, Cardinality, ContractDeclaration, Document, Scope,
-    World, WorldRole,
+    CapabilityRequirement, Cardinality, ContractDeclaration, Document, Scope, World,
+    WorldCapDefaults, WorldRole,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
@@ -401,11 +401,13 @@ pub async fn list_documents(
         .permission_context(world, user.id, user.role)
         .await?;
     let world_defaults = state.repo.world_cap_defaults(world).await?;
+    // Every result shares `q.type`, so resolve the type-scoped grants once.
+    let world_grants = world_defaults.grants_for(&q.r#type);
     let docs = state.repo.query_documents(world, &q.r#type).await?;
     let visible = docs
         .into_iter()
         .filter_map(|d| {
-            let access = resolve_access_world(ctx.user_id, ctx.world_role, &d, &world_defaults);
+            let access = resolve_access_world(ctx.user_id, ctx.world_role, &d, &world_grants);
             access
                 .has(cap::READ)
                 .then(|| filter_properties(&d, &access))
@@ -442,7 +444,12 @@ pub async fn get_document(
         .await
         .map_err(by_id_not_found)?;
     let world_defaults = state.repo.world_cap_defaults(world).await?;
-    let access = resolve_access_world(ctx.user_id, ctx.world_role, &doc, &world_defaults);
+    let access = resolve_access_world(
+        ctx.user_id,
+        ctx.world_role,
+        &doc,
+        &world_defaults.grants_for(&doc.doc_type),
+    );
     if !access.has(cap::READ) {
         return Err(AppError::NotFound);
     }
@@ -516,8 +523,24 @@ fn validate_capability(token: &str) -> Result<(), AppError> {
     }
 }
 
-fn validate_grants(grants: &CapabilityGrants) -> Result<(), AppError> {
-    for set in grants.by_role.values().chain(grants.by_user.values()) {
+fn validate_grants(defaults: &WorldCapDefaults) -> Result<(), AppError> {
+    // Per-document grants (all + every doc-type override).
+    for g in std::iter::once(&defaults.all).chain(defaults.by_type.values()) {
+        for set in g.by_role.values().chain(g.by_user.values()) {
+            for token in set {
+                validate_capability(token)?;
+            }
+        }
+    }
+    // World-level role_caps (all + every doc-type override).
+    let role_sets = defaults.role_caps.all.values().chain(
+        defaults
+            .role_caps
+            .by_type
+            .values()
+            .flat_map(|m| m.values()),
+    );
+    for set in role_sets {
         for token in set {
             validate_capability(token)?;
         }
@@ -525,26 +548,26 @@ fn validate_grants(grants: &CapabilityGrants) -> Result<(), AppError> {
     Ok(())
 }
 
-/// A world's default capability grants. GM/admin only.
+/// A world's capability configuration. GM/admin only.
 pub async fn get_world_capability_defaults(
     user: AuthUser,
     State(state): State<AppState>,
     Path(world): Path<Uuid>,
-) -> Result<Json<CapabilityGrants>, AppError> {
+) -> Result<Json<WorldCapDefaults>, AppError> {
     require_gm(&state, &user, world).await?;
     Ok(Json(state.repo.world_cap_defaults(world).await?))
 }
 
-/// Replace a world's default capability grants. GM/admin only.
+/// Replace a world's capability configuration. GM/admin only.
 pub async fn set_world_capability_defaults(
     user: AuthUser,
     State(state): State<AppState>,
     Path(world): Path<Uuid>,
-    Json(grants): Json<CapabilityGrants>,
+    Json(defaults): Json<WorldCapDefaults>,
 ) -> Result<StatusCode, AppError> {
     require_gm(&state, &user, world).await?;
-    validate_grants(&grants)?;
-    state.repo.set_world_cap_defaults(world, &grants).await?;
+    validate_grants(&defaults)?;
+    state.repo.set_world_cap_defaults(world, &defaults).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

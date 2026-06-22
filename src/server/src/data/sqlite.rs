@@ -6,7 +6,8 @@ use uuid::Uuid;
 use crate::auth::role::ServerRole;
 use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
 use crate::data::document::{
-    CapabilityGrants, CapabilityRequirement, ContractDeclaration, Document, Scope, World, WorldRole,
+    CapabilityRequirement, ContractDeclaration, Document, Scope, World, WorldCapDefaults,
+    WorldRole,
 };
 use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
@@ -536,14 +537,14 @@ impl SqliteRepository {
         Ok(())
     }
 
-    /// Set a world's default capability grants (additive over the per-document
-    /// floor). Stored as JSON in the settings table.
+    /// Set a world's capability configuration (per-document defaults + world-level
+    /// role_caps). Stored as JSON in the settings table.
     pub async fn set_world_cap_defaults(
         &self,
         world: Uuid,
-        grants: &CapabilityGrants,
+        defaults: &WorldCapDefaults,
     ) -> Result<(), DataError> {
-        let json = serde_json::to_string(grants)?;
+        let json = serde_json::to_string(defaults)?;
         self.set_setting(&world_caps_key(world), &json).await
     }
 
@@ -895,8 +896,12 @@ impl Repository for SqliteRepository {
                             check_command_scope(&parent, world_id)?;
                         }
                     }
-                    let access =
-                        resolve_access_world(ctx.user_id, ctx.world_role, doc, &world_defaults);
+                    let access = resolve_access_world(
+                        ctx.user_id,
+                        ctx.world_role,
+                        doc,
+                        &world_defaults.grants_for(&doc.doc_type),
+                    );
                     if !access.has(cap::WRITE_FIELDS) {
                         return Err(DataError::Forbidden);
                     }
@@ -932,7 +937,7 @@ impl Repository for SqliteRepository {
                     // Authorize against the stored doc, scoped to this world, so
                     // a GM of one world cannot delete another world's document.
                     check_command_scope(&cur, world_id)?;
-                    if !resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults)
+                    if !resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults.grants_for(&cur.doc_type))
                         .has(cap::DELETE)
                     {
                         return Err(DataError::Forbidden);
@@ -944,7 +949,7 @@ impl Repository for SqliteRepository {
                         .ok_or_else(|| DataError::Conflict(format!("document {doc_id} missing")))?;
                     check_command_scope(&cur, world_id)?;
                     let access =
-                        resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults);
+                        resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults.grants_for(&cur.doc_type));
                     // Field-level OCC: every change's pre-image must equal the
                     // current value at its pointer (absent reads as Null).
                     let whole = serde_json::to_value(&cur)?;
@@ -1011,7 +1016,7 @@ impl Repository for SqliteRepository {
                             DataError::Conflict(format!("descendant {desc} missing"))
                         })?;
                         check_command_scope(&cur, world_id)?;
-                        if !resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults)
+                        if !resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults.grants_for(&cur.doc_type))
                             .has(cap::DELETE)
                         {
                             return Err(DataError::Forbidden);
@@ -1210,10 +1215,10 @@ impl Repository for SqliteRepository {
         }))
     }
 
-    async fn world_cap_defaults(&self, world: Uuid) -> Result<CapabilityGrants, DataError> {
+    async fn world_cap_defaults(&self, world: Uuid) -> Result<WorldCapDefaults, DataError> {
         match self.get_setting(&world_caps_key(world)).await? {
             Some(json) => Ok(serde_json::from_str(&json)?),
-            None => Ok(CapabilityGrants::default()),
+            None => Ok(WorldCapDefaults::default()),
         }
     }
 
@@ -1320,8 +1325,12 @@ impl Repository for SqliteRepository {
                 let Some(doc) = self.get_document(doc_id).await? else {
                     continue;
                 };
-                let access =
-                    resolve_access_world(ctx.user_id, ctx.world_role, &doc, &world_defaults);
+                let access = resolve_access_world(
+                    ctx.user_id,
+                    ctx.world_role,
+                    &doc,
+                    &world_defaults.grants_for(&doc.doc_type),
+                );
                 if !access.has(cap::READ) {
                     continue;
                 }
@@ -3244,11 +3253,15 @@ mod tests {
         let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         // World default: Owners hold core:manage_embedded everywhere in this world.
-        let mut wd = CapabilityGrants::default();
-        wd.by_role
+        let mut all = CapabilityGrants::default();
+        all.by_role
             .entry(DocRole::Owner)
             .or_default()
             .insert(crate::data::permission::cap::MANAGE_EMBEDDED.to_string());
+        let wd = WorldCapDefaults {
+            all,
+            ..Default::default()
+        };
         r.set_world_cap_defaults(w.id, &wd).await.unwrap();
 
         let gm_ctx = PermissionContext {

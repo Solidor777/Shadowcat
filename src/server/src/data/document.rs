@@ -39,7 +39,7 @@ pub enum Visibility {
     GmOnly,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum WorldRole {
@@ -65,6 +65,63 @@ pub struct CapabilityGrants {
     pub by_role: BTreeMap<DocRole, BTreeSet<String>>,
     #[serde(default)]
     pub by_user: BTreeMap<Uuid, BTreeSet<String>>,
+}
+
+/// World-level capability configuration (one row per world, JSON in settings).
+/// `all`/`by_type` are additive per-document grants over the `DocRole` floor,
+/// doc-type-scoped. `role_caps` carries world-level capabilities keyed by
+/// `WorldRole` (e.g. `core:create`) — distinct because creation has no document
+/// and thus no `DocRole`. GM/admin is never keyed here; it holds every capability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WorldCapDefaults {
+    #[serde(default)]
+    pub all: CapabilityGrants,
+    #[serde(default)]
+    pub by_type: BTreeMap<String, CapabilityGrants>,
+    #[serde(default)]
+    pub role_caps: RoleCaps,
+}
+
+/// World-level capabilities keyed by `WorldRole`, doc-type-scopable. Holds the
+/// `core:create` policy: a non-GM may create a document of `doc_type` only if
+/// their role is granted `core:create` in `all` or `by_type[doc_type]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RoleCaps {
+    #[serde(default)]
+    pub all: BTreeMap<WorldRole, BTreeSet<String>>,
+    #[serde(default)]
+    pub by_type: BTreeMap<String, BTreeMap<WorldRole, BTreeSet<String>>>,
+}
+
+impl WorldCapDefaults {
+    /// Per-document additive grants for `doc_type`: `all` unioned with
+    /// `by_type[doc_type]`.
+    pub fn grants_for(&self, doc_type: &str) -> CapabilityGrants {
+        let mut g = self.all.clone();
+        if let Some(t) = self.by_type.get(doc_type) {
+            for (r, caps) in &t.by_role {
+                g.by_role.entry(*r).or_default().extend(caps.iter().cloned());
+            }
+            for (u, caps) in &t.by_user {
+                g.by_user.entry(*u).or_default().extend(caps.iter().cloned());
+            }
+        }
+        g
+    }
+
+    /// Whether `role` holds world-level `cap` for `doc_type` (`role_caps`).
+    pub fn role_has(&self, role: WorldRole, doc_type: &str, cap: &str) -> bool {
+        self.role_caps
+            .all
+            .get(&role)
+            .is_some_and(|s| s.contains(cap))
+            || self
+                .role_caps
+                .by_type
+                .get(doc_type)
+                .and_then(|m| m.get(&role))
+                .is_some_and(|s| s.contains(cap))
+    }
 }
 
 /// A declarative requirement: writing any field under `path_prefix` requires the
@@ -162,6 +219,49 @@ pub struct World {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn grants_for_merges_all_and_by_type() {
+        let mut d = WorldCapDefaults::default();
+        d.all
+            .by_role
+            .entry(DocRole::Owner)
+            .or_default()
+            .insert("core:manage_embedded".into());
+        d.by_type
+            .entry("token".into())
+            .or_default()
+            .by_role
+            .entry(DocRole::Owner)
+            .or_default()
+            .insert("dnd5e:move".into());
+
+        let g = d.grants_for("token");
+        let owner = g.by_role.get(&DocRole::Owner).unwrap();
+        assert!(owner.contains("core:manage_embedded") && owner.contains("dnd5e:move"));
+        // A type with no override gets only `all`.
+        assert!(!d
+            .grants_for("actor")
+            .by_role
+            .get(&DocRole::Owner)
+            .unwrap()
+            .contains("dnd5e:move"));
+    }
+
+    #[test]
+    fn role_has_checks_all_and_by_type() {
+        let mut d = WorldCapDefaults::default();
+        d.role_caps
+            .by_type
+            .entry("token".into())
+            .or_default()
+            .entry(WorldRole::Player)
+            .or_default()
+            .insert("core:create".into());
+        assert!(d.role_has(WorldRole::Player, "token", "core:create"));
+        assert!(!d.role_has(WorldRole::Player, "actor", "core:create"));
+        assert!(!d.role_has(WorldRole::Spectator, "token", "core:create"));
+    }
 
     fn sample_doc() -> Document {
         Document {
