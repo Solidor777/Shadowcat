@@ -190,3 +190,123 @@ async fn list_returns_world_assets() {
     let list: Vec<serde_json::Value> = res.json().await.unwrap();
     assert_eq!(list.len(), 2);
 }
+
+// --- Buddy-check regression tests ---
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rejected_upload_does_not_consume_rate_quota() {
+    use common::spawn_with;
+    // GM rate pinned to 1/min. A rejected upload must be refunded so the one
+    // real upload still fits the budget.
+    let h = spawn_with(|c| {
+        c.upload_rate_per_min = 1;
+        c.upload_rate_per_min_gm = Some(1);
+    })
+    .await;
+    // Rejected (non-image) — should refund its slot.
+    let bad = h
+        .upload("bad.png", "image/png", b"%PDF-1.7 nope".to_vec())
+        .await;
+    assert_eq!(bad.status(), 400);
+    // The single real upload still succeeds (quota was refunded, not burned).
+    let good = h.upload("ok.png", "image/png", PNG_1X1.to_vec()).await;
+    assert_eq!(
+        good.status(),
+        200,
+        "refund failed; quota was consumed by the rejected upload"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_replace_leaves_original_intact() {
+    let h = spawn().await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap().to_string();
+
+    // Replace with non-image bytes → 400; the DB write and rename never run.
+    let res = h
+        .client
+        .post(format!("http://{}/api/assets/{}/replace", h.addr, id))
+        .multipart(
+            reqwest::multipart::Form::new().part(
+                "file",
+                reqwest::multipart::Part::bytes(b"%PDF-1.7 nope".to_vec())
+                    .file_name("x.png")
+                    .mime_str("image/png")
+                    .unwrap(),
+            ),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+
+    // Original is untouched: version still 1, original bytes served.
+    let got = h
+        .client
+        .get(format!("http://{}/api/assets/{}", h.addr, id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(got.status(), 200);
+    assert_eq!(got.bytes().await.unwrap().as_ref(), PNG_1X1);
+    assert_eq!(
+        h.repo
+            .get_asset(uuid::Uuid::parse_str(&id).unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .version,
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_is_idempotent_second_is_404() {
+    let h = spawn().await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap().to_string();
+    let url = format!("http://{}/api/assets/{}", h.addr, id);
+
+    assert_eq!(h.client.delete(&url).send().await.unwrap().status(), 204);
+    // The atomic DELETE..RETURNING means the second delete finds no row → 404,
+    // not a second 204 + duplicate broadcast.
+    assert_eq!(h.client.delete(&url).send().await.unwrap().status(), 404);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_304_when_etag_in_comma_list() {
+    let h = spawn().await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap();
+    let url = format!("http://{}/api/assets/{}", h.addr, id);
+    let etag = h.client.get(&url).send().await.unwrap().headers()["etag"]
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    // A browser-style multi-ETag If-None-Match must still match → 304.
+    let res = h
+        .client
+        .get(&url)
+        .header("if-none-match", format!("\"stale-9\", {etag}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 304);
+}

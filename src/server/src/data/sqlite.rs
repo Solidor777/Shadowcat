@@ -133,18 +133,18 @@ impl SqliteRepository {
     }
 
     /// Remove the record, returning it (so the caller can delete the file).
+    /// Single atomic `DELETE ... RETURNING` so two concurrent deletes can't both
+    /// observe the row and double-fire side effects (file remove + broadcast) —
+    /// only the call that actually removes the row gets `Some`.
     pub async fn delete_asset(
         &self,
         id: Uuid,
     ) -> Result<Option<crate::data::asset::Asset>, DataError> {
-        let existing = self.get_asset(id).await?;
-        if existing.is_some() {
-            sqlx::query("DELETE FROM assets WHERE id = ?")
-                .bind(id.to_string())
-                .execute(&self.pool)
-                .await?;
-        }
-        Ok(existing)
+        let row = sqlx::query("DELETE FROM assets WHERE id = ? RETURNING *")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|r| Self::asset_from_row(&r)).transpose()
     }
 
     pub async fn list_assets_by_world(
