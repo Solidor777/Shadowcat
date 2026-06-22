@@ -23,6 +23,17 @@ export interface SubscriptionHandle {
   unsubscribe(): void;
 }
 
+/** A SceneDerived frame delivered to a scene subscription. */
+export interface SceneFrame {
+  payload: unknown;
+  computedAtSeq: number;
+}
+
+/** Handle to an active SceneDerived subscription. */
+export interface SceneSubscription {
+  unsubscribe(): void;
+}
+
 /** The `Welcome` server frame (capability fields included). */
 export type WireWelcome = Extract<ServerMsg, { type: "welcome" }>;
 import type { Connect, Transport } from "./transport";
@@ -72,6 +83,13 @@ export class WsClient {
   /** Active live search subscriptions, keyed by request_id; persists across
    * updates until unsubscribe/disconnect. */
   private subscriptions = new Map<string, (hits: WireSearchHit[]) => void>();
+  /** Active scene subscriptions, keyed by request_id (ongoing onUpdate dispatch). */
+  private sceneSubs = new Map<string, (frame: SceneFrame) => void>();
+  /** In-flight scene-subscribe initial promises, keyed by request_id. */
+  private scenePending = new Map<
+    string,
+    { resolve: (s: SceneSubscription) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >();
 
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -110,6 +128,14 @@ export class WsClient {
     // Live subscriptions are bound to this socket; a reconnect does not replay
     // them, so drop them (the caller re-subscribes after reconnect if desired).
     this.subscriptions.clear();
+    for (const p of this.scenePending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error(reason));
+    }
+    this.scenePending.clear();
+    // Scene subscriptions are bound to this socket; WorldSession re-subscribes on
+    // the next Welcome, so drop them here.
+    this.sceneSubs.clear();
   }
 
   /** Run a consumer callback in isolation: a throw is routed to `onError` and
@@ -233,6 +259,32 @@ export class WsClient {
       case "asset_changed":
         this.safeEmit(() => this.opts.handlers.onAssetChanged?.({ uuid: msg.uuid, op: msg.op }));
         break;
+      case "scene_derived": {
+        const handler = this.sceneSubs.get(msg.request_id);
+        if (handler) this.safeEmit(() => handler({ payload: msg.payload, computedAtSeq: msg.computed_at_seq }));
+        const init = this.scenePending.get(msg.request_id);
+        if (init) {
+          clearTimeout(init.timer);
+          this.scenePending.delete(msg.request_id);
+          init.resolve({
+            unsubscribe: () => {
+              this.sceneSubs.delete(msg.request_id);
+              this.send({ type: "scene_unsubscribe", request_id: msg.request_id });
+            },
+          });
+        }
+        break;
+      }
+      case "scene_error": {
+        const init = this.scenePending.get(msg.request_id);
+        if (init) {
+          clearTimeout(init.timer);
+          this.scenePending.delete(msg.request_id);
+          init.reject(new Error(msg.message));
+        }
+        this.sceneSubs.delete(msg.request_id);
+        break;
+      }
     }
   }
 
@@ -313,6 +365,34 @@ export class WsClient {
         cursor: undefined,
         subscribe: true,
       });
+    });
+  }
+
+  /**
+   * Subscribe to a SceneDerived channel. Resolves once the first frame arrives;
+   * `onUpdate` fires for every frame. Rejects on `scene_error`, timeout, or no
+   * transport. Dropped on disconnect (WorldSession re-subscribes on reconnect).
+   */
+  subscribeScene(
+    channel: string,
+    onUpdate: (frame: SceneFrame) => void,
+    opts: { timeoutMs?: number } = {},
+  ): Promise<SceneSubscription> {
+    const request_id = crypto.randomUUID();
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+    return new Promise<SceneSubscription>((resolve, reject) => {
+      if (!this.transport) {
+        reject(new Error("not connected"));
+        return;
+      }
+      this.sceneSubs.set(request_id, onUpdate);
+      const timer = setTimeout(() => {
+        this.scenePending.delete(request_id);
+        this.sceneSubs.delete(request_id);
+        reject(new Error("scene subscribe timeout"));
+      }, timeoutMs);
+      this.scenePending.set(request_id, { resolve, reject, timer });
+      this.send({ type: "scene_subscribe", request_id, channel });
     });
   }
 
