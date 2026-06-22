@@ -186,6 +186,17 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 - GM vision mode. Server-authoritative geometric vision only (exempt from the optimistic path by design).
 - Excludes: photometric / illumination coupling, darkvision / tremorsense / height, Web-Worker optimistic vision.
 
+### Pre-M10 cleanup ✅
+> Triaged `POST_WORK_FINDINGS.md` + `TODO.md` and closed every fixable item not blocked on unbuilt
+> infra. 12 tasks: by-id routes 404-to-non-members; embedded-child size cap + GmOnly redaction; last-GM
+> guard; asset-replace rate-limit; per-user ping limiter; deterministic broadcast-`Lagged` test; a
+> two-axis capability model — `WorldCapDefaults {all, by_type, role_caps}` with doc_type-scoped
+> per-document grants + a GM-configured `WorldRole` `core:create` gate (GM-only by default); members
+> endpoint returns usernames + see-as picker labels by username; convergent offline-intent replay
+> (predict + queue while reconnecting, FIFO flush after resync). Spec/plan in `docs/superpowers/`.
+> Deferred (blocked on infra): merge engine, module management, M12 multi-scene, rotation authoring,
+> world/scene deletion, `tower_sessions` sweep.
+
 ### M10 · Tokens
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
