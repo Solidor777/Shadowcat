@@ -42,6 +42,7 @@ async fn spawn() -> Harness {
         setup_token: None,
         initialized: Arc::new(AtomicBool::new(true)),
         ws: shadowcat::ws::WsState::new(),
+        upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
     };
     let app = http::router(state).await;
 

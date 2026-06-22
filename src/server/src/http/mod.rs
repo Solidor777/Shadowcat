@@ -6,6 +6,7 @@ pub mod routes;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, post};
 use axum::Router;
 
@@ -105,6 +106,10 @@ pub async fn router(state: AppState) -> Router {
             get(routes::get_document)
                 .patch(routes::patch_document)
                 .delete(routes::delete_document),
+        )
+        .route(
+            "/api/worlds/{world}/assets",
+            post(assets::upload).layer(DefaultBodyLimit::disable()),
         )
         .fallback(embed::static_handler)
         .layer(sessions)

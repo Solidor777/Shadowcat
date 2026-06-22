@@ -252,8 +252,8 @@ async fn write_ops(
 }
 
 /// Resolve the caller's context and require world-GM authority (server admins
-/// resolve to GM). Used to gate membership management.
-async fn require_gm(
+/// resolve to GM). Used to gate membership management and asset mutation.
+pub(crate) async fn require_gm(
     state: &AppState,
     user: &AuthUser,
     world: Uuid,

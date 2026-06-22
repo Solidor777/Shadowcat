@@ -56,6 +56,133 @@ impl Default for UploadRateLimiter {
     }
 }
 
+use crate::auth::session::AuthUser;
+use crate::data::asset::Asset;
+use crate::http::error::AppError;
+use crate::http::{routes::require_gm, AppState};
+use axum::extract::{Multipart, Path, State};
+use axum::Json;
+use tokio::io::AsyncWriteExt;
+
+/// Stream a multipart "file" field to `dest`, enforcing `max_bytes` as bytes
+/// arrive (never buffering the whole body), and validating the leading bytes are
+/// a supported image. Returns (detected_content_type, byte_size, original_name).
+/// On any failure the partial file is removed.
+async fn store_streamed(
+    mut multipart: Multipart,
+    dest: &std::path::Path,
+    max_bytes: u64,
+) -> Result<(&'static str, i64, String), AppError> {
+    let field = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("multipart error: {e}")))?
+        .ok_or_else(|| AppError::BadRequest("missing file field".into()))?;
+    let original_name = field.file_name().unwrap_or("upload").to_string();
+
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|_| AppError::Internal)?;
+    }
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    let mut head: Vec<u8> = Vec::with_capacity(16);
+    let mut total: u64 = 0;
+    let mut detected: Option<&'static str> = None;
+
+    let mut field = field;
+    loop {
+        let chunk = match field.chunk().await {
+            Ok(Some(c)) => c,
+            Ok(None) => break,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(dest).await;
+                return Err(AppError::BadRequest(format!("multipart error: {e}")));
+            }
+        };
+        total += chunk.len() as u64;
+        if total > max_bytes {
+            let _ = tokio::fs::remove_file(dest).await;
+            return Err(AppError::PayloadTooLarge(format!(
+                "file exceeds {max_bytes} bytes"
+            )));
+        }
+        if detected.is_none() {
+            head.extend_from_slice(&chunk);
+            if head.len() >= 12 {
+                match detect_image_type(&head) {
+                    Some(ct) => detected = Some(ct),
+                    None => {
+                        let _ = tokio::fs::remove_file(dest).await;
+                        return Err(AppError::BadRequest("unsupported or non-image file".into()));
+                    }
+                }
+            }
+        }
+        if file.write_all(&chunk).await.is_err() {
+            let _ = tokio::fs::remove_file(dest).await;
+            return Err(AppError::Internal);
+        }
+    }
+    file.flush().await.map_err(|_| AppError::Internal)?;
+
+    // Files shorter than 12 bytes never reached the detector; decide on the head.
+    let ct = match detected.or_else(|| detect_image_type(&head)) {
+        Some(ct) => ct,
+        None => {
+            let _ = tokio::fs::remove_file(dest).await;
+            return Err(AppError::BadRequest("unsupported or non-image file".into()));
+        }
+    };
+    Ok((ct, total as i64, original_name))
+}
+
+/// `POST /api/worlds/{world}/assets` — GM/owner-gated multipart image upload.
+pub async fn upload(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(world): Path<uuid::Uuid>,
+    multipart: Multipart,
+) -> Result<Json<Asset>, AppError> {
+    let ctx = require_gm(&state, &user, world).await?;
+    let now = crate::ws::time::now_millis();
+    if !state.upload_rate.check(
+        user.id,
+        now,
+        state.config.effective_rate_per_min(ctx.world_role),
+    ) {
+        return Err(AppError::TooManyRequests("upload rate limit exceeded".into()));
+    }
+    let id = uuid::Uuid::new_v4();
+    let storage_key = format!("{world}/{id}");
+    let dest = state
+        .config
+        .assets_path()
+        .join(world.to_string())
+        .join(id.to_string());
+    let max = state.config.effective_max_bytes(ctx.world_role);
+    let (content_type, byte_size, original_name) = store_streamed(multipart, &dest, max).await?;
+
+    let asset = Asset {
+        id,
+        world_id: world,
+        storage_key,
+        original_name,
+        content_type: content_type.to_string(),
+        byte_size,
+        created_by: user.id,
+        created_at: now,
+        version: 1,
+    };
+    if let Err(e) = state.repo.insert_asset(&asset).await {
+        let _ = tokio::fs::remove_file(&dest).await; // keep disk and DB consistent
+        return Err(e.into());
+    }
+    Ok(Json(asset))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -19,11 +19,19 @@ use uuid::Uuid;
 pub struct Harness {
     pub addr: String,
     pub cookie: String,
+    pub client: reqwest::Client, // cookie-jar client, already logged in
+    pub user: Uuid,              // the seeded user's id
     pub world: Uuid,
     pub repo: Arc<SqliteRepository>,
 }
 
 pub async fn spawn() -> Harness {
+    spawn_with(|_| {}).await
+}
+
+/// Like `spawn`, but `mutate` can tweak the `Config` before the server starts
+/// (e.g. set a tiny upload cap). Uses a per-run tempdir for asset storage.
+pub async fn spawn_with(mutate: impl FnOnce(&mut Config)) -> Harness {
     let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
     let hash = hash_password("pw").unwrap();
     let uid = repo
@@ -32,12 +40,19 @@ pub async fn spawn() -> Harness {
         .unwrap();
     let world = repo.create_world_owned("test", uid, 0).await.unwrap();
 
+    let assets_dir = std::env::temp_dir().join(format!("shadowcat-assets-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&assets_dir).unwrap();
+    let mut cfg = Config::default();
+    cfg.assets_dir = Some(assets_dir.to_string_lossy().into_owned());
+    mutate(&mut cfg);
+
     let state = AppState {
         repo: repo.clone(),
-        config: Arc::new(Config::default()),
+        config: Arc::new(cfg),
         setup_token: None,
         initialized: Arc::new(AtomicBool::new(true)),
         ws: shadowcat::ws::WsState::new(),
+        upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
     };
     let app = http::router(state).await;
 
@@ -71,6 +86,8 @@ pub async fn spawn() -> Harness {
     Harness {
         addr,
         cookie,
+        client,
+        user: uid,
         world: world.id,
         repo,
     }
@@ -79,7 +96,31 @@ pub async fn spawn() -> Harness {
 pub type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// Minimal valid PNG (1×1) — passes magic-byte detection.
+pub const PNG_1X1: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+    0x42, 0x60, 0x82,
+];
+
 impl Harness {
+    /// Upload `bytes` as `name` to this world; returns the raw response.
+    pub async fn upload(&self, name: &str, content_type: &str, bytes: Vec<u8>) -> reqwest::Response {
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(name.to_string())
+            .mime_str(content_type)
+            .unwrap();
+        let form = reqwest::multipart::Form::new().part("file", part);
+        self.client
+            .post(format!("http://{}/api/worlds/{}/assets", self.addr, self.world))
+            .multipart(form)
+            .send()
+            .await
+            .unwrap()
+    }
+
     pub async fn connect(&self) -> Ws {
         let url = format!("ws://{}/ws?world={}", self.addr, self.world);
         let mut req = url.into_client_request().unwrap();

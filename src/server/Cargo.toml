@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "io-util"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 serde = { version = "1", features = ["derive"] }
 ts-rs = { version = "12", features = ["uuid-impl"] }
@@ -39,7 +39,7 @@ winresource = "0.1"
 tempfile = "3"
 axum-test = "17"
 tokio-tungstenite = "0.24"
-reqwest = { version = "0.12", default-features = false, features = ["json", "cookies"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "multipart"] }
 futures-util = "0.3"
 tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "net", "time"] }
 uuid = { version = "1", features = ["v4"] }
