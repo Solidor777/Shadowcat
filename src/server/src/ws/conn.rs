@@ -54,10 +54,12 @@ enum Egress {
     Unsubscribe {
         request_id: Uuid,
     },
-    /// Register a derived scene-channel subscription (egress-owned).
+    /// Register a derived scene-channel subscription (egress-owned). `as_user` (GM-only
+    /// see-as-player) is authorized + resolved in the egress handler.
     SceneSubscribe {
         request_id: Uuid,
         channel: String,
+        as_user: Option<Uuid>,
     },
     /// Cancel a derived scene-channel subscription.
     SceneUnsubscribe {
@@ -83,10 +85,13 @@ struct Sub {
 }
 
 /// A derived scene-channel subscription's stored state. `fingerprint` is the
-/// last delivered payload; a re-eval pushes only when it changes.
+/// last delivered payload; a re-eval pushes only when it changes. `view_ctx` is the effective
+/// context the channel is computed for: the connection's own ctx, or — for a GM see-as-player
+/// subscription (M9c-2) — the server-resolved target player's context.
 struct SceneSub {
     channel: String,
     fingerprint: Option<serde_json::Value>,
+    view_ctx: PermissionContext,
 }
 
 /// A cheap, order-sensitive identity of a result page for no-op suppression:
@@ -296,9 +301,9 @@ async fn handle_socket(
                             }
                         }
                         Ok(ClientMsg::Hello { .. }) | Ok(ClientMsg::Pong) => {}
-                        Ok(ClientMsg::SceneSubscribe { request_id, channel }) => {
+                        Ok(ClientMsg::SceneSubscribe { request_id, channel, as_user }) => {
                             if etx
-                                .send(Egress::SceneSubscribe { request_id, channel })
+                                .send(Egress::SceneSubscribe { request_id, channel, as_user })
                                 .await
                                 .is_err()
                             {
@@ -352,19 +357,21 @@ async fn handle_socket(
     tracing::info!(world = %world_id, user = %user_id, "ws disconnected");
 }
 
-/// Accumulate + persist per-(scene,player) explored fog (M9c) from a `vision` **masked** payload,
-/// then inject the player's scene-tagged `explored` cell sets. No-op for a GM (`mode:"all"`) or any
-/// payload without masked polygons. Runs after the ECS read lock is dropped (it does async DB I/O);
-/// `grid` carries each scene's cell size, captured under that lock. Explored is emitted only for
-/// scenes the player currently has vision in (the payload's polygons) — a token-less player gets no
-/// explored (full fog), consistent with empty = see-nothing. The accumulation is monotone, so the
-/// DB write happens only when the explored set grows.
+/// Inject the player's scene-tagged `explored` cell sets into a `vision` **masked** payload, and —
+/// when `accumulate` — mark the currently-visible cells into the player's stored explored and
+/// persist on growth. No-op for a GM (`mode:"all"`) or any payload without masked polygons. Runs
+/// after the ECS read lock is dropped (it does async DB I/O); `grid` carries each scene's cell size,
+/// captured under that lock. Explored is emitted only for scenes the player currently has vision in
+/// (the payload's polygons) — a token-less player gets no explored. `accumulate` is FALSE for a GM
+/// see-as-player view (M9c-2): it is a read-only observer that emits the target's stored explored
+/// but must NOT grow the target's memory from the GM's session.
 async fn enrich_vision_explored(
     payload: &mut serde_json::Value,
     grid: &std::collections::HashMap<Uuid, f64>,
     repo: &SqliteRepository,
     world: Uuid,
     user: Uuid,
+    accumulate: bool,
 ) {
     if payload.get("mode").and_then(|m| m.as_str()) != Some("masked") {
         return;
@@ -399,7 +406,7 @@ async fn enrich_vision_explored(
             Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob),
             _ => crate::scene::explored::ExploredSet::new(),
         };
-        if set.mark_polygons(&scene_polys, cell) > 0 {
+        if accumulate && set.mark_polygons(&scene_polys, cell) > 0 {
             let _ = repo.set_explored(world, scene, user, &set.to_bytes()).await;
         }
         let cells: Vec<i32> = set.iter().flat_map(|(i, j)| [i, j]).collect();
@@ -511,24 +518,47 @@ async fn egress_loop<S>(
                 Some(Egress::Unsubscribe { request_id }) => {
                     subs.remove(&request_id);
                 }
-                Some(Egress::SceneSubscribe { request_id, channel }) => {
+                Some(Egress::SceneSubscribe { request_id, channel, as_user }) => {
                     if scene_subs.len() >= MAX_SCENE_SUBSCRIPTIONS {
                         let f = ServerMsg::SceneError { request_id, message: "too many subscriptions".into() };
                         if sink.send(text(&f)).await.is_err() { break; }
                     } else {
-                        // Read the ECS and the seq it reflects under one borrow,
-                        // then drop it before awaiting the sink. Capture per-scene grid
-                        // sizes under the same lock for the post-lock explored accumulation.
+                        // Resolve the effective view context. `as_user` (see-as-player, M9c-2) is
+                        // GM-ONLY, and the target's role is resolved SERVER-SIDE — a non-GM can never
+                        // view as another user, and a client-supplied role/scope is never trusted.
+                        // This is the player-to-player access boundary.
+                        let view_ctx = match as_user {
+                            None => ctx,
+                            Some(target) => {
+                                if ctx.world_role != crate::data::document::WorldRole::Gm {
+                                    let f = ServerMsg::SceneError { request_id, message: "not authorized to view as another user".into() };
+                                    if sink.send(text(&f)).await.is_err() { break; }
+                                    continue;
+                                }
+                                match repo.member_role(world_id, target).await {
+                                    Ok(Some(role)) => PermissionContext { user_id: target, world_role: role },
+                                    _ => {
+                                        let f = ServerMsg::SceneError { request_id, message: "target user is not a member of this world".into() };
+                                        if sink.send(text(&f)).await.is_err() { break; }
+                                        continue;
+                                    }
+                                }
+                            }
+                        };
+                        // Persist explored only for the connection's OWN view; a GM see-as is a
+                        // read-only observer that must not grow the target player's memory.
+                        let accumulate = view_ctx.user_id == ctx.user_id;
+                        // Read the ECS and the seq it reflects under one borrow, then drop it before
+                        // awaiting the sink. Grid sizes are captured under the same lock for the
+                        // post-lock explored step. Computed for `view_ctx` (own, or the see-as target).
                         let (payload, seq, grid) = {
                             let ecs = room.scene().read().await;
-                            // Watermark = the seq the ECS reflects, read under
-                            // the same lock so it can never trail the payload.
-                            (crate::scene::compute_derived(&channel, &ecs, &ctx), ecs.committed_seq(), ecs.scene_grid_sizes())
+                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx), ecs.committed_seq(), ecs.scene_grid_sizes())
                         };
                         match payload {
                             Some(mut p) => {
                                 if channel == "vision" {
-                                    enrich_vision_explored(&mut p, &grid, repo.as_ref(), world_id, ctx.user_id).await;
+                                    enrich_vision_explored(&mut p, &grid, repo.as_ref(), world_id, view_ctx.user_id, accumulate).await;
                                 }
                                 let f = ServerMsg::SceneDerived {
                                     request_id,
@@ -537,7 +567,7 @@ async fn egress_loop<S>(
                                     payload: p.clone(),
                                 };
                                 if sink.send(text(&f)).await.is_err() { break; }
-                                scene_subs.insert(request_id, SceneSub { channel, fingerprint: Some(p) });
+                                scene_subs.insert(request_id, SceneSub { channel, fingerprint: Some(p), view_ctx });
                             }
                             None => {
                                 let f = ServerMsg::SceneError { request_id, message: format!("unknown channel: {channel}") };
@@ -632,9 +662,9 @@ async fn egress_loop<S>(
                 for id in dead {
                     subs.remove(&id);
                 }
-                // Re-evaluate derived scene subscriptions against the current ECS
-                // with this actor's ctx; push only when a channel's payload
-                // changed. The read borrow is dropped before awaiting the sink.
+                // Re-evaluate derived scene subscriptions against the current ECS, each with its
+                // own effective view ctx (own, or a GM see-as target); push only when a channel's
+                // payload changed. The read borrow is dropped before awaiting the sink.
                 let (seq, snapshot, grid) = {
                     let ecs = room.scene().read().await;
                     let mut out = Vec::new();
@@ -642,15 +672,18 @@ async fn egress_loop<S>(
                         out.push((
                             *id,
                             s.channel.clone(),
-                            crate::scene::compute_derived(&s.channel, &ecs, &ctx),
+                            s.view_ctx,
+                            crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx),
                         ));
                     }
                     (ecs.committed_seq(), out, ecs.scene_grid_sizes())
                 };
-                for (id, channel, payload) in snapshot {
+                for (id, channel, view_ctx, payload) in snapshot {
                     if let Some(mut p) = payload {
                         if channel == "vision" {
-                            enrich_vision_explored(&mut p, &grid, repo.as_ref(), world_id, ctx.user_id).await;
+                            // See-as (view_ctx != own) is read-only: emit the target's explored, never persist.
+                            let accumulate = view_ctx.user_id == ctx.user_id;
+                            enrich_vision_explored(&mut p, &grid, repo.as_ref(), world_id, view_ctx.user_id, accumulate).await;
                         }
                         if let Some(sub) = scene_subs.get_mut(&id) {
                             if sub.fingerprint.as_ref() != Some(&p) {
@@ -737,7 +770,7 @@ mod tests {
             "mode": "masked",
             "polygons": [{ "scene": scene, "points": [0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0] }]
         });
-        enrich_vision_explored(&mut payload, &grid, &repo, world, user).await;
+        enrich_vision_explored(&mut payload, &grid, &repo, world, user, true).await;
 
         // The payload gained a scene-tagged explored cell set (9 cells × 2 coords).
         let explored = payload["explored"].as_array().unwrap();
@@ -757,7 +790,7 @@ mod tests {
             "mode": "masked",
             "polygons": [{ "scene": scene, "points": [0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0] }]
         });
-        enrich_vision_explored(&mut again, &grid, &repo, world, user).await;
+        enrich_vision_explored(&mut again, &grid, &repo, world, user, true).await;
         assert_eq!(
             again["explored"][0]["cells"].as_array().unwrap().len(),
             9 * 2
@@ -773,8 +806,50 @@ mod tests {
 
         // A GM payload (no fog) is left untouched — no explored memory.
         let mut gm = json!({ "mode": "all" });
-        enrich_vision_explored(&mut gm, &grid, &repo, world, user).await;
+        enrich_vision_explored(&mut gm, &grid, &repo, world, user, true).await;
         assert_eq!(gm, json!({ "mode": "all" }));
+    }
+
+    /// A GM see-as-player view (`accumulate = false`) emits the target's stored explored but is a
+    /// read-only observer: it never grows the target's persisted memory from the GM's session.
+    #[tokio::test]
+    async fn enrich_see_as_player_is_read_only() {
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let world = Uuid::from_u128(1);
+        let scene = Uuid::from_u128(10);
+        let target = Uuid::from_u128(20);
+        let grid = std::collections::HashMap::from([(scene, 100.0)]);
+
+        // Seed the target with one explored cell (as if they'd been there).
+        let mut seed = crate::scene::explored::ExploredSet::new();
+        seed.mark_polygons(
+            &[vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0]],
+            100.0,
+        );
+        repo.set_explored(world, scene, target, &seed.to_bytes())
+            .await
+            .unwrap();
+
+        // The GM views as the target over a polygon covering a 3×3 block (would mark 9 cells if it
+        // accumulated). Read-only: emits the stored 1 cell, persists nothing new.
+        let mut payload = json!({
+            "mode": "masked",
+            "polygons": [{ "scene": scene, "points": [0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0] }]
+        });
+        enrich_vision_explored(&mut payload, &grid, &repo, world, target, false).await;
+        assert_eq!(
+            payload["explored"][0]["cells"].as_array().unwrap().len(),
+            1 * 2,
+            "emits only the target's stored explored"
+        );
+        assert_eq!(
+            crate::scene::explored::ExploredSet::from_bytes(
+                &repo.get_explored(scene, target).await.unwrap().unwrap()
+            )
+            .len(),
+            1,
+            "see-as did not grow the target's persisted memory"
+        );
     }
 
     /// A token-less player (masked + empty polygons) accumulates nothing and emits empty explored
@@ -790,6 +865,7 @@ mod tests {
             &repo,
             Uuid::from_u128(1),
             Uuid::from_u128(2),
+            true,
         )
         .await;
         assert_eq!(payload["explored"].as_array().unwrap().len(), 0);
