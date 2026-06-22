@@ -21,6 +21,7 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean } {
     clearOverlay() {},
     drawMeasure() {},
     clearMeasure() {},
+    drawPings() {},
     startTicker() {},
     resize() {},
     destroy() { this.destroyed = true; },

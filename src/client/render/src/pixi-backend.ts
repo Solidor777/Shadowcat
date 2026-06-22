@@ -13,6 +13,7 @@ export class PixiBackend implements DisplayBackend {
   private readonly toolOverlay = new Graphics();
   private readonly measureGraphics = new Graphics();
   private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
+  private readonly pingGraphics = new Graphics();
   private readonly shapes = new Map<string, Graphics>();
   private readonly tokens = new Map<string, Sprite>();
   /** Last-loaded image URL per token, so a tweening token doesn't reload each frame. */
@@ -41,6 +42,7 @@ export class PixiBackend implements DisplayBackend {
         this.measureText.anchor.set(0.5);
         this.measureText.visible = false;
         c.addChild(this.measureText);
+        c.addChild(this.pingGraphics);
       }
     }
     // Re-parent in z-order (addChild appends; order array is authoritative).
@@ -168,6 +170,13 @@ export class PixiBackend implements DisplayBackend {
   clearMeasure(): void {
     this.measureGraphics.clear();
     this.measureText.visible = false;
+  }
+
+  drawPings(rings: { x: number; y: number; radius: number; alpha: number }[]): void {
+    this.pingGraphics.clear();
+    for (const r of rings) {
+      this.pingGraphics.circle(r.x, r.y, r.radius).stroke({ width: 3, color: 0xffd400, alpha: r.alpha });
+    }
   }
 
   startTicker(cb: (dtMs: number) => void): void {

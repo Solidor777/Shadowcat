@@ -15,6 +15,7 @@ export class MockBackend implements DisplayBackend {
   shapes = new Map<string, ShapeNodeSpec>();
   overlay: Omit<ShapeNodeSpec, "layer">[] = [];
   measure: { from: Point; to: Point; label: string } | null = null;
+  pings: { x: number; y: number; radius: number; alpha: number }[] = [];
   tick: ((dtMs: number) => void) | undefined;
   destroyed = false;
 
@@ -65,6 +66,9 @@ export class MockBackend implements DisplayBackend {
   }
   clearMeasure(): void {
     this.measure = null;
+  }
+  drawPings(rings: { x: number; y: number; radius: number; alpha: number }[]): void {
+    this.pings = rings;
   }
   startTicker(cb: (dtMs: number) => void): void {
     this.tick = cb;

@@ -12,6 +12,7 @@ export function fakeSceneHost(over: Partial<SceneToolHost> = {}): SceneToolHost 
     gridDistance: () => 0,
     drawMeasure: () => {},
     clearMeasure: () => {},
+    addPing: () => {},
     ...over,
   };
 }

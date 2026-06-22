@@ -36,6 +36,8 @@ export interface DisplayBackend {
   drawMeasure(from: Point, to: Point, label: string): void;
   /** Clear the measurement overlay. */
   clearMeasure(): void;
+  /** Redraw the transient ping rings (expanding/fading outline circles). */
+  drawPings(rings: { x: number; y: number; radius: number; alpha: number }[]): void;
   /** Register the per-frame render ticker callback (drives tweens). */
   startTicker(cb: (dtMs: number) => void): void;
   /** Resize the renderer/viewport to CSS pixels (HiDPI handled by the backend). */

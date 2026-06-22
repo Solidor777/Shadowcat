@@ -230,6 +230,16 @@ test("reconcileNow re-resolves token images (AssetChanged path)", () => {
   expect(backend.tokens.get("t1")!.url).toBe(assets.url("i1"));
 });
 
+test("addPing renders an expanding ring driven by the ticker", () => {
+  const { backend, engine } = makeEngine();
+  engine.start();
+  engine.addPing(5, 5);
+  backend.tick!(100); // drive one frame
+  expect(backend.pings).toHaveLength(1);
+  expect(backend.pings[0]).toMatchObject({ x: 5, y: 5 });
+  expect(backend.pings[0].alpha).toBeLessThan(1); // fading
+});
+
 test("start registers the backend ticker", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();

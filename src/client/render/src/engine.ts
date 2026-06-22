@@ -9,6 +9,7 @@ import { SceneReconciler } from "./reconciler";
 import { TokenView } from "./token-view";
 import { DrawingView } from "./drawing-view";
 import { TemplateView } from "./template-view";
+import { PingView } from "./ping-view";
 
 /** Handle to a scene subscription (structurally matches @shadowcat/core's). */
 export interface SceneSubscription {
@@ -49,6 +50,9 @@ export class RenderEngine implements SceneToolHost {
   private readonly tokens: TokenView;
   private readonly drawings: DrawingView;
   private readonly templates: TemplateView;
+  private readonly pings = new PingView();
+  /** Whether ping rings were drawn last frame, so the ticker stops redrawing once idle. */
+  private pingsActive = false;
   private readonly gridColor: number;
   private viewport = { width: 0, height: 0 };
   private unsubscribe: (() => void) | null = null;
@@ -92,7 +96,15 @@ export class RenderEngine implements SceneToolHost {
       this.templates.reconcile();
       this.flushPendingDerived();
     });
-    this.opts.backend.startTicker((dt) => this.tokens.tick(dt));
+    this.opts.backend.startTicker((dt) => {
+      this.tokens.tick(dt);
+      const rings = this.pings.tick(dt);
+      // Redraw only while rings live (plus one final clear when they expire).
+      if (rings.length > 0 || this.pingsActive) {
+        this.opts.backend.drawPings(rings);
+        this.pingsActive = rings.length > 0;
+      }
+    });
     if (this.opts.subscribeScene) {
       // M8a's debug channel; M9 swaps a real vision channel (polygon payload).
       this.sceneSub = this.opts.subscribeScene("identity", (f) => this.onSceneFrame(f));
@@ -180,6 +192,10 @@ export class RenderEngine implements SceneToolHost {
 
   clearMeasure(): void {
     this.opts.backend.clearMeasure();
+  }
+
+  addPing(x: number, y: number): void {
+    this.pings.add(x, y);
   }
 
   /** Swap the active grid (from the active scene's `system.grid`) and redraw lines. */

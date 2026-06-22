@@ -54,4 +54,8 @@ export class SceneInteractionBridge implements SceneInteraction {
   clearMeasure(): void {
     this.#host?.clearMeasure();
   }
+
+  addPing(x: number, y: number): void {
+    this.#host?.addPing(x, y);
+  }
 }

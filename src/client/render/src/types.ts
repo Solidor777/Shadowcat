@@ -89,4 +89,6 @@ export interface SceneToolHost {
   drawMeasure(from: Point, to: Point, label: string): void;
   /** Clear the measurement overlay. */
   clearMeasure(): void;
+  /** Spawn a transient ping ring at scene `(x,y)` (from a received/own ping). */
+  addPing(x: number, y: number): void;
 }
