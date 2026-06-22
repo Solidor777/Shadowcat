@@ -268,6 +268,18 @@ pub async fn replace(
 ) -> Result<Json<Asset>, AppError> {
     let existing = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
     let ctx = require_gm(&state, &user, existing.world_id).await?;
+    // Replace streams a full file like upload, so it shares the per-user tiered
+    // rate limit — the cap is on total write volume, not per-endpoint.
+    let now = crate::ws::time::now_millis();
+    if !state.upload_rate.check(
+        user.id,
+        now,
+        state.config.effective_rate_per_min(ctx.world_role),
+    ) {
+        return Err(AppError::TooManyRequests(
+            "replace rate limit exceeded".into(),
+        ));
+    }
 
     // Stream the new bytes to a per-request temp file. A unique name (not a
     // fixed `<uuid>.tmp`) keeps two concurrent replaces of the same asset from
@@ -275,43 +287,57 @@ pub async fn replace(
     let final_path = state.config.assets_path().join(&existing.storage_key);
     let tmp_path = final_path.with_file_name(format!("{id}.{}.tmp", uuid::Uuid::new_v4()));
     let max = state.config.effective_max_bytes(ctx.world_role);
-    let (content_type, byte_size, _name) = store_streamed(multipart, &tmp_path, max).await?;
 
-    // Commit to the DB BEFORE swapping the live file. If the DB write fails the
-    // live bytes are untouched and the record stays consistent (tmp is removed).
-    // If the rename later fails, the DB is one version ahead of unchanged bytes
-    // — clients re-fetch (ETag changed) and the next replace lands correctly;
-    // the inverse order would strand new bytes under a stale ETag (broken 304).
-    let version = match state
-        .repo
-        .replace_asset_bytes(id, &existing.storage_key, content_type, byte_size)
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => {
+    // Fallible work in one block so any failure refunds the rate-limit hit `check`
+    // recorded — a rejected replace must not burn quota.
+    let outcome: Result<Asset, AppError> = async {
+        let (content_type, byte_size, _name) = store_streamed(multipart, &tmp_path, max).await?;
+
+        // Commit to the DB BEFORE swapping the live file. If the DB write fails the
+        // live bytes are untouched and the record stays consistent (tmp is removed).
+        // If the rename later fails, the DB is one version ahead of unchanged bytes
+        // — clients re-fetch (ETag changed) and the next replace lands correctly;
+        // the inverse order would strand new bytes under a stale ETag (broken 304).
+        let version = match state
+            .repo
+            .replace_asset_bytes(id, &existing.storage_key, content_type, byte_size)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Err(e.into());
+            }
+        };
+        if let Err(e) = tokio::fs::rename(&tmp_path, &final_path).await {
             let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(e.into());
+            tracing::error!(?e, %id, "asset replace rename failed after DB commit");
+            return Err(AppError::Internal);
         }
-    };
-    if let Err(e) = tokio::fs::rename(&tmp_path, &final_path).await {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        tracing::error!(?e, %id, "asset replace rename failed after DB commit");
-        return Err(AppError::Internal);
-    }
 
-    if let Some(room) = state.ws.rooms.get(existing.world_id) {
-        room.broadcast_aux(ServerMsg::AssetChanged {
-            uuid: id,
-            op: AssetOp::Replaced,
-        });
-    }
+        if let Some(room) = state.ws.rooms.get(existing.world_id) {
+            room.broadcast_aux(ServerMsg::AssetChanged {
+                uuid: id,
+                op: AssetOp::Replaced,
+            });
+        }
 
-    Ok(Json(Asset {
-        content_type: content_type.to_string(),
-        byte_size,
-        version,
-        ..existing
-    }))
+        Ok(Asset {
+            content_type: content_type.to_string(),
+            byte_size,
+            version,
+            ..existing
+        })
+    }
+    .await;
+
+    match outcome {
+        Ok(asset) => Ok(Json(asset)),
+        Err(e) => {
+            state.upload_rate.refund(user.id, now);
+            Err(e)
+        }
+    }
 }
 
 /// `DELETE /api/assets/{uuid}` — GM/owner-gated. Undo-exempt.

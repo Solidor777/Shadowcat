@@ -218,6 +218,61 @@ async fn rejected_upload_does_not_consume_rate_quota() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replace_is_rate_limited_per_user() {
+    use common::spawn_with;
+    // Shared per-user budget (upload + replace) pinned to 2/min for the GM.
+    let h = spawn_with(|c| {
+        c.upload_rate_per_min = 2;
+        c.upload_rate_per_min_gm = Some(2);
+    })
+    .await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap().to_string();
+    // Op 2 (first replace) fits the 2/min budget.
+    assert_eq!(
+        h.replace(&id, "m.png", "image/png", PNG_1X1.to_vec()).await.status(),
+        200
+    );
+    // Op 3 exceeds it — replace participates in the per-user rate limit.
+    assert_eq!(
+        h.replace(&id, "m.png", "image/png", PNG_1X1.to_vec()).await.status(),
+        429
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rejected_replace_does_not_consume_rate_quota() {
+    use common::spawn_with;
+    let h = spawn_with(|c| {
+        c.upload_rate_per_min = 2;
+        c.upload_rate_per_min_gm = Some(2);
+    })
+    .await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap().to_string();
+    // Rejected (non-image) replace → 400; its rate slot is refunded.
+    assert_eq!(
+        h.replace(&id, "x.png", "image/png", b"%PDF-1.7 nope".to_vec()).await.status(),
+        400
+    );
+    // The good replace still fits (upload=1, bad refunded, good=2).
+    assert_eq!(
+        h.replace(&id, "m.png", "image/png", PNG_1X1.to_vec()).await.status(),
+        200
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failed_replace_leaves_original_intact() {
     let h = spawn().await;
     let asset: serde_json::Value = h

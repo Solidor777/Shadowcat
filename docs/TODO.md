@@ -5,9 +5,6 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 ## Server / auth
 - TODO: Periodically sweep expired rows from the `tower_sessions` table. Expired rows can never load (the store filters `expiry_date > now`), so this is housekeeping, not correctness — wire a sweep when session volume grows.
 
-## Server / assets
-- TODO: Rate-limit the asset replace endpoint (`POST /assets/{uuid}/replace`). It streams a full new file like upload but is currently only GM-gated + magic-byte validated (per the M8b spec, which scopes the per-user rate limit to upload only). A GM can replace-loop a near-cap file unbounded. Update the M8b spec to extend the tiered rate limit to replace, then add the same `upload_rate.check`/`refund` guard the upload handler uses. (Surfaced by the M8b-1 buddy check; spec-compliant today, hardening deferred.)
-
 ## Data layer
 - TODO: Purge `explored_fog` rows on world/scene/user deletion. The M9c table denormalizes `world_id` for a world-scoped purge, but no deletion path consumes it yet (worlds aren't deletable; scene deletion goes through the `apply_intent` document cascade, which doesn't touch `explored_fog`). Orphaned rows are harmless (reads key on the exact never-reused `(scene_id, user_id)` UUIDs) but accumulate unboundedly over a server's lifetime. Wire a `DELETE FROM explored_fog WHERE world_id = ?` (and a per-scene purge into the scene-delete cascade) when world/scene deletion lands; index `world_id` then. (Surfaced by the M9c-1 buddy check.)
 - TODO: `command::set_pointer` is set-only — an Update that conceptually removes a key writes `null` (key stays present as null) rather than removing it. `null` ≠ absent. Resolve removal semantics when the merge engine lands.

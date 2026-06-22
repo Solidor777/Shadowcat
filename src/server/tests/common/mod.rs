@@ -131,6 +131,27 @@ impl Harness {
             .unwrap()
     }
 
+    /// Replace asset `id`'s bytes with `bytes` as `name`; returns the raw response.
+    pub async fn replace(
+        &self,
+        id: &str,
+        name: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> reqwest::Response {
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(name.to_string())
+            .mime_str(content_type)
+            .unwrap();
+        let form = reqwest::multipart::Form::new().part("file", part);
+        self.client
+            .post(format!("http://{}/api/assets/{}/replace", self.addr, id))
+            .multipart(form)
+            .send()
+            .await
+            .unwrap()
+    }
+
     pub async fn connect(&self) -> Ws {
         self.connect_as(&self.cookie).await
     }
