@@ -20,6 +20,9 @@ pub fn is_scene_entity(doc: &Document) -> bool {
     doc.doc_type == "scene" || doc.parent_id.is_some()
 }
 
+/// A resolved token move: `(scene id, committed start, post-image end)`.
+pub type TokenMove = (Uuid, (f64, f64), (f64, f64));
+
 /// The per-world derived world. Writes are serialized by the caller
 /// (`Room::publish` under `publish_guard`); reads (derived recompute) take a
 /// shared borrow.
@@ -115,44 +118,41 @@ impl SceneEcs {
         self.index.len()
     }
 
-    /// The committed `system.(x,y)` of a token entity, if present (the move segment start).
-    pub fn token_pos(&self, token_id: Uuid) -> Option<(f64, f64)> {
+    /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,
+    /// post_image_end)`. The end is the committed `system` with **all** changes applied in
+    /// array order (last-write-wins) — exactly what `apply_intent` commits — so a wholesale
+    /// `/system` write or duplicate `/system/x` changes cannot evade the collision check by
+    /// presenting a safe target while committing an unsafe one. `None` if `token_id` is not a
+    /// token with `(x,y)`. Reads the authoritative ECS state, never the client's `old`.
+    pub fn token_move(
+        &self,
+        token_id: Uuid,
+        changes: &[crate::data::command::FieldChange],
+    ) -> Option<TokenMove> {
         let &e = self.index.get(&token_id)?;
         let tok = self.world.get::<&SceneEntity>(e).ok()?;
         if tok.doc.doc_type != "token" {
             return None;
         }
-        Some((sys_f64(&tok.doc, "/x")?, sys_f64(&tok.doc, "/y")?))
+        let scene = tok.doc.parent_id?;
+        let cx = sys_f64(&tok.doc, "/x")?;
+        let cy = sys_f64(&tok.doc, "/y")?;
+        let mut v = serde_json::to_value(&tok.doc).ok()?;
+        for ch in changes {
+            let _ = set_pointer(&mut v, &ch.path, ch.new.clone());
+        }
+        let nx = v.pointer("/system/x").and_then(|x| x.as_f64())?;
+        let ny = v.pointer("/system/y").and_then(|x| x.as_f64())?;
+        Some((scene, (cx, cy), (nx, ny)))
     }
 
     /// Engine-owned movement collision (M9a, the second ARCHITECTURE #6 geometric
-    /// exception). True if moving token `token_id` from its committed `system.(x,y)` to
-    /// `(new_x,new_y)` crosses any `blocksMove` wall in the token's scene. Reads the
-    /// authoritative current position from the ECS — never the client's claimed pre-image.
-    pub fn blocks_move(&self, token_id: Uuid, new_x: f64, new_y: f64) -> bool {
-        let (x0, y0, scene) = {
-            let Some(&e) = self.index.get(&token_id) else {
-                return false;
-            };
-            let Ok(tok) = self.world.get::<&SceneEntity>(e) else {
-                return false;
-            };
-            if tok.doc.doc_type != "token" {
-                return false;
-            }
-            let Some(x0) = sys_f64(&tok.doc, "/x") else {
-                return false;
-            };
-            let Some(y0) = sys_f64(&tok.doc, "/y") else {
-                return false;
-            };
-            let Some(scene) = tok.doc.parent_id else {
-                return false;
-            };
-            (x0, y0, scene)
-        };
-        let a0 = (x0, y0);
-        let a1 = (new_x, new_y);
+    /// exception). True if the move segment `a0→a1` crosses any `blocksMove` wall in `scene`.
+    /// A no-op move (`a0 == a1`) never blocks.
+    pub fn blocks_move(&self, scene: Uuid, a0: (f64, f64), a1: (f64, f64)) -> bool {
+        if a0 == a1 {
+            return false;
+        }
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
@@ -334,60 +334,102 @@ mod tests {
             (0.0, 5.0),
             (10.0, 5.0)
         )); // crossing
+        assert!(segments_cross(
+            (2.0, 0.0),
+            (8.0, 0.0),
+            (0.0, 0.0),
+            (10.0, 0.0)
+        )); // collinear OVERLAP (sliding along a wall)
+    }
+
+    fn fc(path: &str, new: serde_json::Value) -> crate::data::command::FieldChange {
+        crate::data::command::FieldChange {
+            path: path.into(),
+            old: json!(0),
+            new,
+        }
     }
 
     #[test]
-    fn blocks_move_only_for_crossing_blocksmove_walls_in_scene() {
-        let scene = 10u128;
-        let mut ecs = SceneEcs::from_documents(
-            vec![
-                doc(scene, None, "scene"),
-                entity_doc(11, scene, "token", json!({ "x": 0, "y": 0 })),
-                entity_doc(
-                    12,
-                    scene,
-                    "wall",
-                    json!({ "seg": {"x1":0,"y1":10,"x2":10,"y2":0}, "blocksMove": true }),
-                ),
-            ],
-            0,
-        );
-        // (0,0)->(10,10) crosses the wall line x+y=10.
-        assert!(ecs.blocks_move(Uuid::from_u128(11), 10.0, 10.0));
-        // (0,0)->(1,1) stays on the near side (sum 2 < 10) → no crossing.
-        assert!(!ecs.blocks_move(Uuid::from_u128(11), 1.0, 1.0));
-        // A blocksMove:false wall does not block.
-        ecs.apply_op(&Operation::Update {
-            doc_id: Uuid::from_u128(12),
-            changes: vec![crate::data::command::FieldChange {
-                path: "/system/blocksMove".into(),
-                old: json!(true),
-                new: json!(false),
-            }],
-        });
-        assert!(!ecs.blocks_move(Uuid::from_u128(11), 10.0, 10.0));
-    }
+    fn blocks_move_geometry_scene_scoping_and_filters() {
+        let scene = Uuid::from_u128(10);
+        let other = Uuid::from_u128(20);
+        let cross = json!({ "seg": {"x1":0,"y1":10,"x2":10,"y2":0}, "blocksMove": true });
 
-    #[test]
-    fn blocks_move_ignores_walls_in_other_scenes_and_non_tokens() {
+        // Scene 10 has one crossing blocksMove wall.
         let ecs = SceneEcs::from_documents(
             vec![
                 doc(10, None, "scene"),
+                entity_doc(12, 10, "wall", cross.clone()),
+            ],
+            0,
+        );
+        assert!(ecs.blocks_move(scene, (0.0, 0.0), (10.0, 10.0))); // crosses the wall
+        assert!(!ecs.blocks_move(scene, (0.0, 0.0), (1.0, 1.0))); // misses (sum 2 < 10)
+        assert!(!ecs.blocks_move(scene, (0.0, 0.0), (0.0, 0.0))); // a no-op move never blocks
+
+        // Scene scoping: an identical crossing wall in scene 20 blocks a scene-20 move but NOT
+        // a scene-10 move (the `parent_id == Some(scene)` filter).
+        let ecs_scope = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
                 doc(20, None, "scene"),
-                entity_doc(11, 10, "token", json!({ "x": 0, "y": 0 })),
+                entity_doc(24, 20, "wall", cross.clone()),
+            ],
+            0,
+        );
+        assert!(ecs_scope.blocks_move(other, (0.0, 0.0), (10.0, 10.0))); // blocks in scene 20
+        assert!(!ecs_scope.blocks_move(scene, (0.0, 0.0), (10.0, 10.0))); // not in scene 10
+
+        // A scene whose only crossing wall is blocksMove:false must not block movement.
+        let ecs2 = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
                 entity_doc(
-                    22,
-                    20,
+                    13,
+                    10,
                     "wall",
-                    json!({ "seg": {"x1":0,"y1":10,"x2":10,"y2":0}, "blocksMove": true }),
+                    json!({ "seg": {"x1":0,"y1":10,"x2":10,"y2":0}, "blocksMove": false }),
                 ),
             ],
             0,
         );
-        // The wall is in scene 20; the token is in scene 10 → no block.
-        assert!(!ecs.blocks_move(Uuid::from_u128(11), 10.0, 10.0));
-        // An unknown / non-token id never blocks.
-        assert!(!ecs.blocks_move(Uuid::from_u128(22), 5.0, 5.0));
+        assert!(!ecs2.blocks_move(scene, (0.0, 0.0), (10.0, 10.0)));
+    }
+
+    #[test]
+    fn token_move_uses_post_image_resisting_forged_bypasses() {
+        let ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                entity_doc(11, 10, "token", json!({ "x": 0, "y": 0 })),
+            ],
+            0,
+        );
+        let id = Uuid::from_u128(11);
+        // A normal two-axis move.
+        let (s, a0, a1) = ecs
+            .token_move(
+                id,
+                &[fc("/system/x", json!(10)), fc("/system/y", json!(10))],
+            )
+            .unwrap();
+        assert_eq!(s, Uuid::from_u128(10));
+        assert_eq!(a0, (0.0, 0.0));
+        assert_eq!(a1, (10.0, 10.0));
+        // Bypass A: a wholesale `/system` write — the post-image reads the new x/y.
+        let whole = fc("/system", json!({ "x": 50, "y": 50 }));
+        assert_eq!(ecs.token_move(id, &[whole]).unwrap().2, (50.0, 50.0));
+        // Bypass B: duplicate `/system/x` — last write wins, mirroring apply_intent.
+        let dup = ecs
+            .token_move(id, &[fc("/system/x", json!(5)), fc("/system/x", json!(50))])
+            .unwrap();
+        assert_eq!(dup.2 .0, 50.0);
+        // A non-position update is a no-op move (committed == post-image).
+        let noop = ecs.token_move(id, &[fc("/system/hp", json!(5))]).unwrap();
+        assert_eq!(noop.1, noop.2);
+        // A non-token id resolves to nothing.
+        assert!(ecs.token_move(Uuid::from_u128(99), &[]).is_none());
     }
 
     #[test]

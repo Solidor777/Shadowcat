@@ -44,9 +44,13 @@ export class WallView {
 function toSpec(doc: WireDocument): ShapeNodeSpec | null {
   const s = doc.system as WallSystem | undefined;
   if (!s?.seg) return null;
+  const { x1, y1, x2, y2 } = s.seg;
+  // The opaque `system` is server-structural-only, so guard the coords (a malformed
+  // wall just doesn't render rather than pushing NaN into the geometry).
+  if (![x1, y1, x2, y2].every((n) => Number.isFinite(n))) return null;
   return {
     layer: "walls",
-    points: [s.seg.x1, s.seg.y1, s.seg.x2, s.seg.y2],
+    points: [x1, y1, x2, y2],
     closed: false,
     stroke: { color: WALL_COLOR, width: WALL_WIDTH },
     fill: null,

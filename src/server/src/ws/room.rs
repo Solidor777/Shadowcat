@@ -178,19 +178,11 @@ impl Room {
             let scene = self.scene.read().await;
             for op in &ops {
                 if let Operation::Update { doc_id, changes } = op {
-                    let nx = changes
-                        .iter()
-                        .find(|c| c.path == "/system/x")
-                        .and_then(|c| c.new.as_f64());
-                    let ny = changes
-                        .iter()
-                        .find(|c| c.path == "/system/y")
-                        .and_then(|c| c.new.as_f64());
-                    if nx.is_none() && ny.is_none() {
-                        continue; // not a position update
-                    }
-                    if let Some((cx, cy)) = scene.token_pos(*doc_id) {
-                        if scene.blocks_move(*doc_id, nx.unwrap_or(cx), ny.unwrap_or(cy)) {
+                    // Validate the POST-IMAGE position (the committed system + all changes
+                    // applied), so a wholesale `/system` write or duplicate `/system/x`
+                    // changes can't present a safe target while committing an unsafe one.
+                    if let Some((scene_id, a0, a1)) = scene.token_move(*doc_id, changes) {
+                        if scene.blocks_move(scene_id, a0, a1) {
                             return Err(DataError::Forbidden);
                         }
                     }
@@ -512,6 +504,44 @@ mod room_tests {
         };
 
         let seq_before = room.current_seq();
+        // Forged bypass A: a single wholesale `/system` write that relocates the token past the
+        // wall must be caught (the post-image, not a leaf-path match, is validated).
+        let whole = Operation::Update {
+            doc_id: token_id,
+            changes: vec![FieldChange {
+                path: "/system".into(),
+                old: json!({ "x": 0, "y": 0 }),
+                new: json!({ "x": 10, "y": 10 }),
+            }],
+        };
+        assert!(matches!(
+            room.publish(&repo, &player, vec![whole], 0).await,
+            Err(crate::data::DataError::Forbidden)
+        ));
+        assert_eq!(room.current_seq(), seq_before);
+        // Forged bypass B: duplicate `/system/x` (safe-then-unsafe) — last write wins, so the
+        // committed x=11 crosses; the gate validates against that, not the first change.
+        let dup = Operation::Update {
+            doc_id: token_id,
+            changes: vec![
+                FieldChange {
+                    path: "/system/x".into(),
+                    old: json!(0),
+                    new: json!(1),
+                },
+                FieldChange {
+                    path: "/system/x".into(),
+                    old: json!(0),
+                    new: json!(11),
+                },
+            ],
+        };
+        assert!(matches!(
+            room.publish(&repo, &player, vec![dup], 0).await,
+            Err(crate::data::DataError::Forbidden)
+        ));
+        assert_eq!(room.current_seq(), seq_before);
+
         // Player move (0,0)->(10,10) crosses the wall → rejected before the write.
         let blocked = room
             .publish(&repo, &player, vec![mv(10, 10, 0, 0)], 0)
