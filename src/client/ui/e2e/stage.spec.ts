@@ -119,6 +119,27 @@ test("ping a location via the tool rail; the relayed ping renders", async ({ pag
   await expect(host).toHaveAttribute("data-last-ping", /.+/, { timeout: 15_000 });
 });
 
+test("draw a wall via the tool rail; the wall renders", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Username").fill("ops");
+  await page.getByLabel("Password").fill("pw-boot");
+  await page.getByRole("button", { name: "Log in" }).click();
+  await page.getByLabel("New world name").fill("Wall World");
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = page.locator(".stage-host");
+  await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  await page.getByTestId("tool-wall").click();
+  const canvas = page.getByTestId("stage-canvas");
+  const box = (await canvas.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2 - 60, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 60, box.y + box.height / 2 + 20, { steps: 3 });
+  await page.mouse.up();
+  await expect(host).toHaveAttribute("data-wall-count", "1", { timeout: 15_000 });
+});
+
 test("the identity SceneDerived spike reaches the mask slot", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("Username").fill("ops");
