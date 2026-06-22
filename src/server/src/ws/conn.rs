@@ -445,7 +445,9 @@ async fn egress_loop<S>(
                         // then drop it before awaiting the sink.
                         let (payload, seq) = {
                             let ecs = room.scene().read().await;
-                            (crate::scene::compute_derived(&channel, &ecs, &ctx), room.current_seq())
+                            // Watermark = the seq the ECS reflects, read under
+                            // the same lock so it can never trail the payload.
+                            (crate::scene::compute_derived(&channel, &ecs, &ctx), ecs.committed_seq())
                         };
                         match payload {
                             Some(p) => {
@@ -564,7 +566,7 @@ async fn egress_loop<S>(
                             crate::scene::compute_derived(&s.channel, &ecs, &ctx),
                         ));
                     }
-                    (room.current_seq(), out)
+                    (ecs.committed_seq(), out)
                 };
                 for (id, channel, payload) in snapshot {
                     if let Some(p) = payload {

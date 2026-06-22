@@ -40,6 +40,11 @@ pub trait Repository: Send + Sync {
     /// children). Ordered by id for determinism.
     async fn query_children(&self, parent: Uuid) -> Result<Vec<Document>, DataError>;
 
+    /// All scene-entity documents in `world` — scenes plus anything with a
+    /// parent. Mirrors `scene::is_scene_entity` so initial ECS hydration and the
+    /// live `apply_op` path share one definition of "scene entity".
+    async fn query_scene_entities(&self, world: Uuid) -> Result<Vec<Document>, DataError>;
+
     async fn documents_by_source(
         &self,
         pack: Option<&str>,

@@ -26,6 +26,12 @@ pub fn is_scene_entity(doc: &Document) -> bool {
 pub struct SceneEcs {
     world: hecs::World,
     index: HashMap<Uuid, hecs::Entity>,
+    /// Per-world seq of the last command reflected in this ECS. Updated under
+    /// the same `scene.write()` lock as the entities in `Room::publish`, so a
+    /// reader holding the read lock sees a consistent `(entities, seq)` pair and
+    /// the derived `computed_at_seq` watermark can never be below the state it
+    /// describes (#2).
+    committed_seq: i64,
 }
 
 impl SceneEcs {
@@ -33,12 +39,15 @@ impl SceneEcs {
         Self {
             world: hecs::World::new(),
             index: HashMap::new(),
+            committed_seq: 0,
         }
     }
 
-    /// Hydrate from a document set (scene entities only; others are ignored).
-    pub fn from_documents(docs: Vec<Document>) -> Self {
+    /// Hydrate from a document set (scene entities only; others are ignored),
+    /// reflecting state as of `seq` (the world's current seq at hydration).
+    pub fn from_documents(docs: Vec<Document>, seq: i64) -> Self {
         let mut ecs = Self::new();
+        ecs.committed_seq = seq;
         for doc in docs {
             if is_scene_entity(&doc) {
                 let id = doc.id;
@@ -47,6 +56,16 @@ impl SceneEcs {
             }
         }
         ecs
+    }
+
+    /// Record the seq of the command just applied (called under the write lock).
+    pub fn set_committed_seq(&mut self, seq: i64) {
+        self.committed_seq = seq;
+    }
+
+    /// The seq the ECS currently reflects — emitted as `computed_at_seq`.
+    pub fn committed_seq(&self) -> i64 {
+        self.committed_seq
     }
 
     /// Reflect one already-committed authoritative op into the derived world.
@@ -60,6 +79,12 @@ impl SceneEcs {
                 self.index.insert(doc.id, e);
             }
             Operation::Update { doc_id, changes } => {
+                // An Update never changes scene-entity membership: `parent_id`
+                // and `doc_type` are envelope fields, immutable via field-path
+                // Update (`required_cap_for_path` maps them to no capability).
+                // INVARIANT: if `parent_id` becomes mutable, this arm must
+                // re-evaluate `is_scene_entity` and spawn/despawn accordingly.
+                // TODO: re-evaluate is_scene_entity here once parent_id is mutable.
                 if let Some(&e) = self.index.get(doc_id) {
                     if let Ok(mut comp) = self.world.get::<&mut SceneEntity>(e) {
                         // Mirror the same field-path changes apply_intent applied
@@ -134,12 +159,16 @@ mod tests {
 
     #[test]
     fn hydrate_counts_scene_entities_only() {
-        let ecs = SceneEcs::from_documents(vec![
-            doc(10, None, "scene"),
-            doc(11, Some(10), "token"),
-            doc(99, None, "actor"), // not a scene entity → ignored
-        ]);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                doc(11, Some(10), "token"),
+                doc(99, None, "actor"), // not a scene entity → ignored
+            ],
+            0,
+        );
         assert_eq!(ecs.entity_count(), 2);
+        assert_eq!(ecs.committed_seq(), 0);
     }
 
     #[test]
@@ -165,5 +194,16 @@ mod tests {
             doc: doc(11, Some(10), "token"),
         });
         assert_eq!(ecs.entity_count(), 0);
+    }
+
+    #[test]
+    fn committed_seq_tracks_last_applied_command() {
+        // The watermark is the seq emitted as `computed_at_seq`; it advances only
+        // via set_committed_seq, called under the same write lock as apply_op so a
+        // reader never sees a watermark ahead of (or behind) the entities.
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 3);
+        assert_eq!(ecs.committed_seq(), 3);
+        ecs.set_committed_seq(7);
+        assert_eq!(ecs.committed_seq(), 7);
     }
 }

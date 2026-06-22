@@ -449,24 +449,43 @@ impl SqliteRepository {
     /// Depth-first descendant ids of `root` within one transaction (children
     /// before parents), via the `parent_id` index. Excludes `root`. Used to
     /// expand a parent delete into per-descendant reversible Delete ops.
+    ///
+    /// The `seen` set (seeded with `root`) makes the walk terminate on any
+    /// self-reference or cycle: a single `INSERT` whose `parent_id` equals its
+    /// own `id` satisfies the self-FK and commits, so without this guard a
+    /// `WHERE parent_id = root` row referencing `root` would recurse forever.
     async fn descendants_first(
         tx: &mut sqlx::SqliteConnection,
         root: Uuid,
     ) -> Result<Vec<Uuid>, DataError> {
+        let mut seen = std::collections::HashSet::from([root]);
         let mut out = Vec::new();
+        Self::collect_descendants(tx, root, &mut seen, &mut out).await?;
+        Ok(out)
+    }
+
+    async fn collect_descendants(
+        tx: &mut sqlx::SqliteConnection,
+        node: Uuid,
+        seen: &mut std::collections::HashSet<Uuid>,
+        out: &mut Vec<Uuid>,
+    ) -> Result<(), DataError> {
         let child_rows = sqlx::query("SELECT id FROM documents WHERE parent_id = ? ORDER BY id")
-            .bind(root.to_string())
+            .bind(node.to_string())
             .fetch_all(&mut *tx)
             .await?;
         for r in child_rows {
             let child = Uuid::parse_str(r.get::<String, _>("id").as_str())
                 .map_err(|e| DataError::OpFailed(e.to_string()))?;
+            // Skip already-visited nodes (self-reference / cycle guard).
+            if !seen.insert(child) {
+                continue;
+            }
             // Recurse first so deeper descendants precede their parent.
-            let mut sub = Box::pin(Self::descendants_first(&mut *tx, child)).await?;
-            out.append(&mut sub);
+            Box::pin(Self::collect_descendants(&mut *tx, child, seen, out)).await?;
             out.push(child);
         }
-        Ok(out)
+        Ok(())
     }
 
     /// Upsert a document row from its envelope, stamping `seq`, and rewrite its
@@ -577,12 +596,33 @@ impl Repository for SqliteRepository {
             .ok_or(DataError::NotFound)?
             .get("seq");
 
+        // Expand each Delete into its descendants (children-first) so a parent
+        // delete removes children through explicit, logged ops rather than the
+        // silent SQL FK cascade (#2/#8). apply_command is the trusted substrate
+        // (undo/replay), so unlike apply_intent the descendants are not
+        // capability-checked.
+        let mut ops = Vec::with_capacity(cmd.ops.len());
+        for op in cmd.ops {
+            match op {
+                Operation::Delete { doc } => {
+                    for desc in Self::descendants_first(&mut tx, doc.id).await? {
+                        let cur = Self::load_document(&mut *tx, desc).await?.ok_or_else(|| {
+                            DataError::Conflict(format!("descendant {desc} missing"))
+                        })?;
+                        ops.push(Operation::Delete { doc: cur });
+                    }
+                    ops.push(Operation::Delete { doc });
+                }
+                other => ops.push(other),
+            }
+        }
+
         let sequenced = Command {
             seq,
             world_id: cmd.world_id,
             author: cmd.author,
             ts: cmd.ts,
-            ops: cmd.ops,
+            ops,
         };
 
         // Apply each operation.
@@ -664,6 +704,22 @@ impl Repository for SqliteRepository {
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
                     validation::validate_system_size(doc)?;
+                    // A self-referential parent_id satisfies the self-FK and
+                    // commits, then poisons the doc's deletion (the descendant
+                    // walk would loop). Reject it; and when the parent already
+                    // exists it must be in this world (an unborn same-command
+                    // parent is left to the FK at apply time, so batched
+                    // scene+children creates still pass).
+                    if let Some(pid) = doc.parent_id {
+                        if pid == doc.id {
+                            return Err(DataError::OpFailed(
+                                "document cannot be its own parent".into(),
+                            ));
+                        }
+                        if let Some(parent) = Self::load_document(&mut *tx, pid).await? {
+                            check_command_scope(&parent, world_id)?;
+                        }
+                    }
                     let access =
                         resolve_access_world(ctx.user_id, ctx.world_role, doc, &world_defaults);
                     if !access.has(cap::WRITE_FIELDS) {
@@ -900,6 +956,19 @@ impl Repository for SqliteRepository {
             .bind(parent.to_string())
             .fetch_all(&self.pool)
             .await?;
+        rows.into_iter()
+            .map(|r| Ok(serde_json::from_str(r.get::<String, _>("json").as_str())?))
+            .collect()
+    }
+
+    async fn query_scene_entities(&self, world: Uuid) -> Result<Vec<Document>, DataError> {
+        let rows = sqlx::query(
+            "SELECT json FROM documents WHERE world_id = ? \
+             AND (doc_type = 'scene' OR parent_id IS NOT NULL) ORDER BY id",
+        )
+        .bind(world.to_string())
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter()
             .map(|r| Ok(serde_json::from_str(r.get::<String, _>("json").as_str())?))
             .collect()
@@ -1227,6 +1296,169 @@ mod tests {
         // Store is empty for the world's scene entities.
         assert!(repo.query_children(scene).await.unwrap().is_empty());
         assert!(repo.get_document(t1).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn self_referential_parent_create_is_rejected() {
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({ "name": "Loop" }));
+        d.scope = Scope::World { world_id: w.id };
+        d.parent_id = Some(d.id); // its own parent poisons the descendant walk
+        let err = r
+            .apply_intent(&ctx, w.id, vec![Operation::Create { doc: d }], 1)
+            .await
+            .unwrap_err();
+        // OpFailed, not Forbidden: the self-parent check precedes the access check.
+        assert!(
+            matches!(&err, DataError::OpFailed(m) if m.contains("own parent")),
+            "expected self-parent rejection, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_world_parent_create_is_rejected() {
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let wa = r.create_world_owned("A", gm, 0).await.unwrap();
+        let wb = r.create_world_owned("B", gm, 0).await.unwrap();
+        // Parent persisted in world B (the self-FK references the global documents
+        // table, so a cross-world parent_id satisfies the FK and must be caught by
+        // the scope check instead).
+        let parent_id = Uuid::from_u128(77);
+        let parent = crate::data::document::tests::world_scoped_doc(wb.id, parent_id, "scene");
+        r.apply_command(UnsequencedCommand {
+            world_id: wb.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Create { doc: parent }],
+        })
+        .await
+        .unwrap();
+        // Child in world A pointing at the world-B parent.
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut child = tests_doc(perms, serde_json::json!({}));
+        child.scope = Scope::World { world_id: wa.id };
+        child.parent_id = Some(parent_id);
+        let err = r
+            .apply_intent(&ctx, wa.id, vec![Operation::Create { doc: child }], 1)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, DataError::OpFailed(m) if m.contains("scope")),
+            "expected cross-world parent rejection, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn self_referential_parent_delete_terminates() {
+        // The trusted apply_command path does not reject a self-parent (only
+        // apply_intent does), so a self-referential row can reach the store via
+        // replay or migration. The descendant walk's visited-set must terminate
+        // rather than recurse forever; without it this test stack-overflows.
+        let r = repo().await;
+        let owner = r
+            .create_user("u", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = r.create_world_owned("w", owner, 0).await.unwrap();
+        let id = Uuid::from_u128(42);
+        let mut d = crate::data::document::tests::world_scoped_doc(world.id, id, "scene");
+        d.parent_id = Some(id); // self-referential
+        d.owner = Some(owner);
+        r.apply_command(UnsequencedCommand {
+            world_id: world.id,
+            author: owner,
+            ts: 0,
+            ops: vec![Operation::Create { doc: d.clone() }],
+        })
+        .await
+        .unwrap();
+        let cmd = r
+            .apply_command(UnsequencedCommand {
+                world_id: world.id,
+                author: owner,
+                ts: 1,
+                ops: vec![Operation::Delete { doc: d }],
+            })
+            .await
+            .unwrap();
+        // The self-reference yields no extra descendant op — just the row itself.
+        let deletes = cmd
+            .ops
+            .iter()
+            .filter(|o| matches!(o, Operation::Delete { .. }))
+            .count();
+        assert_eq!(deletes, 1);
+        assert!(r.get_document(id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn query_scene_entities_returns_scenes_and_children_only() {
+        // Guards loader/predicate drift: query_scene_entities must select exactly
+        // the docs is_scene_entity accepts (scenes plus anything with a parent).
+        let r = repo().await;
+        let owner = r
+            .create_user("u", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = r.create_world_owned("w", owner, 0).await.unwrap();
+        let scene = Uuid::from_u128(10);
+        let token = Uuid::from_u128(11);
+        let actor = Uuid::from_u128(12);
+        let mk = |id, parent: Option<Uuid>, ty| {
+            let mut d = crate::data::document::tests::world_scoped_doc(world.id, id, ty);
+            d.parent_id = parent;
+            d.owner = Some(owner);
+            Operation::Create { doc: d }
+        };
+        r.apply_command(UnsequencedCommand {
+            world_id: world.id,
+            author: owner,
+            ts: 0,
+            ops: vec![
+                mk(scene, None, "scene"),
+                mk(token, Some(scene), "token"),
+                mk(actor, None, "actor"), // top-level non-scene → excluded
+            ],
+        })
+        .await
+        .unwrap();
+        let ids: Vec<Uuid> = r
+            .query_scene_entities(world.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert!(ids.contains(&scene) && ids.contains(&token));
+        assert!(
+            !ids.contains(&actor),
+            "top-level non-scene doc must be excluded"
+        );
+        assert_eq!(ids.len(), 2);
     }
 
     #[tokio::test]

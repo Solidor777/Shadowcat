@@ -169,6 +169,9 @@ impl Room {
             for op in &cmd.ops {
                 scene.apply_op(op);
             }
+            // Stamp the seq the ECS now reflects under the same lock, so a
+            // derived reader sees a consistent (entities, seq) pair.
+            scene.set_committed_seq(cmd.seq);
         }
         let msg = Arc::new(ServerMsg::Event {
             command: cmd.clone(),
@@ -247,15 +250,11 @@ impl RoomRegistry {
         let Some(world) = repo.get_world(world_id).await? else {
             return Ok(None);
         };
-        // Hydrate the derived ECS from persisted scene entities (#5): every scene
-        // doc plus its children.
-        let scenes = repo.query_documents(world_id, "scene").await?;
-        let mut docs = Vec::new();
-        for scene in &scenes {
-            docs.extend(repo.query_children(scene.id).await?);
-        }
-        docs.extend(scenes);
-        let scene_ecs = SceneEcs::from_documents(docs);
+        // Hydrate the derived ECS from persisted scene entities (#5) using the
+        // same definition as the live path (`is_scene_entity`), so the loader and
+        // the predicate cannot drift. Stamp it with the world's current seq.
+        let docs = repo.query_scene_entities(world_id).await?;
+        let scene_ecs = SceneEcs::from_documents(docs, world.seq);
         let room = self
             .rooms
             .entry(world_id)
