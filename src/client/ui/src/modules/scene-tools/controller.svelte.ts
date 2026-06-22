@@ -5,6 +5,7 @@
 import type { SceneTool, Point } from "@shadowcat/render";
 import { buildTokenDoc, type ReadableDocuments, type AssetResolver, type WireOperation } from "@shadowcat/core";
 import type { SceneInteraction } from "../../lib/sceneInteraction";
+import { topTokenAt } from "./hit-test";
 
 export type ToolId = "select" | "place";
 
@@ -16,6 +17,8 @@ export interface ToolContext {
   documents: ReadableDocuments;
   assets: AssetResolver;
   world: string;
+  /** Monotonic clock for drag-intent coalescing; defaults to Date.now (injected in tests). */
+  now?: () => number;
 }
 
 /** The active scene (single scene in M8d §15) + its grid cell size (default 100). */
@@ -48,12 +51,6 @@ export class ToolController {
   }
 }
 
-const noopTool = (): SceneTool => ({
-  onPointerDown: (_p: Point): boolean => false,
-  onPointerMove: (): void => {},
-  onPointerUp: (): void => {},
-});
-
 /** Click stamps a token (the selected asset) at the snapped cell of the active scene.
  * No scene or no selected asset → unhandled (the camera pans instead). */
 export function makePlaceTool(ctx: ToolContext, controller: ToolController): SceneTool {
@@ -83,7 +80,65 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
   };
 }
 
-// TODO: select/move tool — pick + drag tokens → coalesced position intents.
-function makeSelectMoveTool(_ctx: ToolContext, _controller: ToolController): SceneTool {
-  return noopTool();
+/** Leading-edge coalescing window for drag-move intents: the first move sends
+ * immediately, then at most one per window, with the final position flushed on release.
+ * Caps optimistic-pending churn during a drag without starving the remote view. */
+const DRAG_THROTTLE_MS = 50;
+
+/** Pick a token on pointerdown and drag it: the local sprite snaps to the pointer (via
+ * setDraggingToken), and snapped position-update intents stream coalesced to the server
+ * (and other clients), with the final position flushed on release. Picks nothing →
+ * unhandled, so the camera pans. */
+export function makeSelectMoveTool(ctx: ToolContext, _controller: ToolController): SceneTool {
+  const now = ctx.now ?? ((): number => Date.now());
+  let draggingId: string | null = null;
+  let offset: Point = { x: 0, y: 0 };
+  let pending: Point | null = null; // latest snapped target not yet sent
+  let lastSentAt = -Infinity;
+
+  const sendMove = (id: string, target: Point): void => {
+    const sys = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
+    ctx.dispatchIntent([
+      {
+        op: "update",
+        doc_id: id,
+        changes: [
+          { path: "/system/x", old: sys?.x ?? null, new: target.x },
+          { path: "/system/y", old: sys?.y ?? null, new: target.y },
+        ],
+      },
+    ]);
+  };
+
+  return {
+    onPointerDown(p: Point): boolean {
+      const id = topTokenAt(ctx.documents.query("token"), p);
+      if (!id) return false;
+      const sys = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
+      offset = { x: p.x - (sys?.x ?? p.x), y: p.y - (sys?.y ?? p.y) }; // grab point within the token
+      draggingId = id;
+      pending = null;
+      lastSentAt = -Infinity;
+      ctx.scene.setDraggingToken(id);
+      return true;
+    },
+    onPointerMove(p: Point): void {
+      if (!draggingId) return;
+      const target = ctx.scene.snap({ x: p.x - offset.x, y: p.y - offset.y });
+      pending = target;
+      const t = now();
+      if (t - lastSentAt >= DRAG_THROTTLE_MS) {
+        sendMove(draggingId, target);
+        lastSentAt = t;
+        pending = null;
+      }
+    },
+    onPointerUp(): void {
+      if (!draggingId) return;
+      if (pending) sendMove(draggingId, pending); // flush the final position
+      ctx.scene.setDraggingToken(null);
+      draggingId = null;
+      pending = null;
+    },
+  };
 }
