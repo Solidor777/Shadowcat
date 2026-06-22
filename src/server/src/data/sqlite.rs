@@ -219,6 +219,24 @@ impl SqliteRepository {
         })
     }
 
+    /// Count a world's GMs. The last GM may be neither removed nor demoted
+    /// (availability guard); a server admin remains GM everywhere, so the world is
+    /// never permanently orphaned — the guard only blocks accidental self-lockout.
+    async fn gm_count(&self, world: Uuid) -> Result<i64, DataError> {
+        let gm = serde_json::to_value(WorldRole::Gm)?
+            .as_str()
+            .unwrap()
+            .to_string();
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM world_members WHERE world_id = ? AND role = ?",
+        )
+        .bind(world.to_string())
+        .bind(gm)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n)
+    }
+
     /// Change an existing member's role; `NotFound` if they are not a member.
     pub async fn set_role(
         &self,
@@ -226,6 +244,14 @@ impl SqliteRepository {
         user: Uuid,
         role: WorldRole,
     ) -> Result<(), DataError> {
+        if role != WorldRole::Gm
+            && matches!(self.member_role(world, user).await?, Some(WorldRole::Gm))
+            && self.gm_count(world).await? <= 1
+        {
+            return Err(DataError::Conflict(
+                "cannot demote the world's only GM".into(),
+            ));
+        }
         let res =
             sqlx::query("UPDATE world_members SET role = ? WHERE world_id = ? AND user_id = ?")
                 .bind(serde_json::to_value(role)?.as_str().unwrap().to_string())
@@ -240,6 +266,13 @@ impl SqliteRepository {
     }
 
     pub async fn remove_member(&self, world: Uuid, user: Uuid) -> Result<(), DataError> {
+        if matches!(self.member_role(world, user).await?, Some(WorldRole::Gm))
+            && self.gm_count(world).await? <= 1
+        {
+            return Err(DataError::Conflict(
+                "cannot remove the world's only GM".into(),
+            ));
+        }
         sqlx::query("DELETE FROM world_members WHERE world_id = ? AND user_id = ?")
             .bind(world.to_string())
             .bind(user.to_string())
@@ -1341,6 +1374,34 @@ mod tests {
 
     async fn repo() -> SqliteRepository {
         SqliteRepository::connect("sqlite::memory:").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn cannot_remove_sole_gm() {
+        let r = repo().await;
+        let gm = r.create_user("gm", Some("h"), ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let err = r.remove_member(w.id, gm).await.unwrap_err();
+        assert!(matches!(err, DataError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn cannot_demote_sole_gm() {
+        let r = repo().await;
+        let gm = r.create_user("gm", Some("h"), ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let err = r.set_role(w.id, gm, WorldRole::Player).await.unwrap_err();
+        assert!(matches!(err, DataError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn can_remove_gm_when_another_exists() {
+        let r = repo().await;
+        let gm1 = r.create_user("gm1", Some("h"), ServerRole::User, 0).await.unwrap();
+        let gm2 = r.create_user("gm2", Some("h"), ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm1, 0).await.unwrap();
+        r.add_member(w.id, gm2, WorldRole::Gm).await.unwrap();
+        assert!(r.remove_member(w.id, gm1).await.is_ok());
     }
 
     #[tokio::test]
