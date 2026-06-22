@@ -16,6 +16,9 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - TODO: Resolve multi-provider conflict policy for `singleton` surface contracts in the UI contribution architecture — when two modules provide the same `singleton` contract (e.g. both claim "the sidebar"), decide the winner (load order, explicit priority, or user selection) instead of the current deterministic loud-fail. Design once a real second provider exists to validate the semantics; the contract model already carries the `singleton`/`multi` cardinality marker the policy slots into.
 - TODO: Add capability version negotiation to contract-based module dependencies (`requires`) — match a required contract against a provider by version range, not presence alone. Deferred until multiple providers of a contract exist at differing versions.
 
+## Client / intents
+- TODO: Replay (or visibly block) optimistic intents issued while the world socket is disconnected. `WorldSession.dispatchIntent` drops a dispatch when `WsClient` has no transport (logged), avoiding an orphaned pending entry that would mis-correlate the FIFO confirm of the next echo; a reconnect does not replay the dropped action. Add a replay-on-resync queue (or a "reconnecting" UI block) when offline editing matters.
+
 ## Client / render
 - TODO: Lerp token rotation along the shortest signed delta (`((b-a+540)%360)-180`) with a wrap-aware ε-settle, when M8d-2 adds rotation control. M8d-1's `TokenAnimator` lerps rotation as a raw scalar (350°→10° tweens the long way); cannot manifest until rotation is authorable. (Surfaced by the M8d-1 buddy check.)
 - TODO: Select the active scene deterministically once multiple scene documents can exist (M8d scene authoring). `SceneReconciler` renders `store.query("scene")[0]` (insertion-order); with >1 scene this picks an arbitrary background. Add explicit active-scene selection with M8d. (Surfaced by the M8c-1 buddy check.)

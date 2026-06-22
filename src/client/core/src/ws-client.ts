@@ -163,6 +163,11 @@ export class WsClient {
     return this.nextExpected - 1;
   }
 
+  /** True when a live transport is attached, so `send` will actually transmit. */
+  get connected(): boolean {
+    return this.transport !== null;
+  }
+
   /** Estimated server clock. */
   serverNow(): number {
     return this.now() + this.serverOffsetMs;

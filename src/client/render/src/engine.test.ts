@@ -268,6 +268,32 @@ test("snap delegates to the active grid; setGrid changes it", () => {
   expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 125, y: 175 });
 });
 
+test("a second pointer mid-gesture is ignored (single-pointer dispatch)", () => {
+  const { backend, engine } = makeEngine();
+  engine.setViewport(300, 200);
+  engine.start();
+  // Pointer 1 starts a camera pan.
+  engine.dispatchPointerDown({ x: 0, y: 0 }, { pointerId: 1 } as PointerEvent);
+  // Pointer 2 (a second finger) must not hijack the gesture or pan the camera.
+  engine.dispatchPointerDown({ x: 100, y: 0 }, { pointerId: 2 } as PointerEvent);
+  engine.dispatchPointerMove({ x: 200, y: 0 }, { pointerId: 2 } as PointerEvent);
+  expect(backend.camera!.x).toBe(0); // only pointer 1 owns the gesture; no pan from p2
+  // Pointer 1 still drives the pan.
+  engine.dispatchPointerMove({ x: 40, y: 0 }, { pointerId: 1 } as PointerEvent);
+  expect(backend.camera!.x).toBe(40);
+});
+
+test("switching the active tool releases the dragging latch", () => {
+  const { store, backend, engine } = makeEngine();
+  engine.start();
+  store.applyCommand(tokenCmd(1, "t1", 0));
+  engine.setDraggingToken("t1");
+  engine.setActiveTool(null); // a tool swap must clear the latch
+  // With dragging cleared, a move now tweens (does not snap to the new position).
+  store.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "update", doc_id: "t1", changes: [{ path: "/system/x", old: 0, new: 100 }] }] });
+  expect(backend.tokens.get("t1")!.x).toBeLessThan(100);
+});
+
 test("setDraggingToken makes a moved token snap instead of tween", () => {
   const { store, backend, engine } = makeEngine();
   engine.start();

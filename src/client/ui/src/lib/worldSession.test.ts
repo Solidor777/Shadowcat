@@ -186,6 +186,28 @@ test("dispatchIntent predicts via ctx.client and sends one correlated intent fra
   expect(intents[0].ops).toEqual([{ op: "create", doc }]);
 });
 
+test("dispatchIntent while disconnected drops the action (no orphaned prediction)", async () => {
+  let capturedClient: { get(id: string): unknown } | null = null;
+  const stub = {
+    manifest: { id: "core-ui", version: "0.1.0", dependencies: {}, provides: [{ contract: "shadowcat.surface:root", cardinality: "singleton" as const }] },
+    register: (ctx: { client: { get(id: string): unknown } }) => { capturedClient = ctx.client; },
+  };
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: stub, logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(capturedClient).not.toBeNull());
+
+  session.leave(); // tears down the socket → no transport
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } }, "tok-x");
+  session.dispatchIntent([{ op: "create", doc }]);
+
+  // Neither predicted (no orphaned pending to mis-correlate) nor transmitted.
+  expect(capturedClient!.get("tok-x")).toBeUndefined();
+  expect(sent.filter((m) => m.type === "intent")).toHaveLength(0);
+});
+
 test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Welcome", async () => {
   let push!: (frame: unknown) => void;
   const sent: Array<Record<string, unknown>> = [];

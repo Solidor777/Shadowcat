@@ -82,12 +82,17 @@ export class WorldSession {
 
   /** Predict `ops` optimistically AND transmit them as one correlated Intent. The
    * single `intent_id` ties the local prediction to the server echo/reject (FIFO
-   * confirm). The send is a no-op while disconnected (WsClient guards transport);
-   * the prediction still shows locally and is reconciled on the next resync. */
+   * confirm). Predict only when the socket can transmit: a prediction with no matching
+   * send is an orphaned pending entry that mis-correlates the FIFO confirm of the next
+   * real echo. A disconnected dispatch is dropped (logged) — there is no offline queue. */
   dispatchIntent(ops: WireOperation[]): void {
+    if (!this.#ws?.connected) {
+      this.#logger.warn("dropping intent: world socket not connected");
+      return;
+    }
     const intentId = crypto.randomUUID();
     this.#optimistic.applyIntent(intentId, ops);
-    this.#ws?.send({ type: "intent", intent_id: intentId, ops });
+    this.#ws.send({ type: "intent", intent_id: intentId, ops });
   }
 
   /** Subscribe to asset replace/delete notices; returns an unsubscribe. */

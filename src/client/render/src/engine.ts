@@ -56,6 +56,9 @@ export class RenderEngine implements SceneToolHost {
   private toolGesture = false;
   private panning = false;
   private lastPan: Point = { x: 0, y: 0 };
+  /** The pointer that owns the in-flight gesture; events from other pointers
+   * (multi-touch / pen+mouse) are ignored until it ends. Single-pointer by design. */
+  private activePointerId: number | null = null;
   private pendingDerived: { input: VisibilityInput; seq: number } | null = null;
   /** Highest computed_at_seq applied to the mask; guards against regressing to an
    * older derived frame (latest-wins). */
@@ -132,8 +135,12 @@ export class RenderEngine implements SceneToolHost {
 
   setActiveTool(tool: SceneTool | null): void {
     this.activeTool = tool;
-    this.toolGesture = false; // a tool swap cancels any in-flight gesture ownership
+    // A tool swap cancels any in-flight gesture ownership and releases the dragging
+    // latch, so an interrupted drag cannot strand a token in snap-no-tween mode.
+    this.toolGesture = false;
     this.panning = false;
+    this.activePointerId = null;
+    this.tokens.setDragging(null);
   }
 
   snap(p: Point): Point {
@@ -151,6 +158,8 @@ export class RenderEngine implements SceneToolHost {
   }
 
   dispatchPointerDown(screen: Point, ev: PointerEvent): void {
+    if (this.toolGesture || this.panning) return; // a gesture already owns the canvas
+    this.activePointerId = ev.pointerId;
     if (this.activeTool && this.activeTool.onPointerDown(this.camera.screenToScene(screen), ev)) {
       this.toolGesture = true; // the tool claimed this gesture
       return;
@@ -160,6 +169,7 @@ export class RenderEngine implements SceneToolHost {
   }
 
   dispatchPointerMove(screen: Point, ev: PointerEvent): void {
+    if (ev.pointerId !== this.activePointerId) return; // a non-owning pointer
     if (this.toolGesture && this.activeTool) {
       this.activeTool.onPointerMove(this.camera.screenToScene(screen), ev);
       return;
@@ -172,11 +182,13 @@ export class RenderEngine implements SceneToolHost {
   }
 
   dispatchPointerUp(screen: Point, ev: PointerEvent): void {
+    if (ev.pointerId !== this.activePointerId) return; // a non-owning pointer
     if (this.toolGesture && this.activeTool) {
       this.activeTool.onPointerUp(this.camera.screenToScene(screen), ev);
     }
     this.toolGesture = false;
     this.panning = false;
+    this.activePointerId = null;
   }
 
   setViewport(width: number, height: number): void {

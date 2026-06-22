@@ -93,8 +93,11 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
   const now = ctx.now ?? ((): number => Date.now());
   let draggingId: string | null = null;
   let offset: Point = { x: 0, y: 0 };
-  let pending: Point | null = null; // latest snapped target not yet sent
+  let moved = false;
   let lastSentAt = -Infinity;
+
+  /** Snapped token center for a pointer at scene point `p`, holding the grab offset. */
+  const targetFor = (p: Point): Point => ctx.scene.snap({ x: p.x - offset.x, y: p.y - offset.y });
 
   const sendMove = (id: string, target: Point): void => {
     const sys = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
@@ -117,28 +120,28 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
       const sys = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
       offset = { x: p.x - (sys?.x ?? p.x), y: p.y - (sys?.y ?? p.y) }; // grab point within the token
       draggingId = id;
-      pending = null;
+      moved = false;
       lastSentAt = -Infinity;
       ctx.scene.setDraggingToken(id);
       return true;
     },
     onPointerMove(p: Point): void {
       if (!draggingId) return;
-      const target = ctx.scene.snap({ x: p.x - offset.x, y: p.y - offset.y });
-      pending = target;
+      moved = true;
       const t = now();
       if (t - lastSentAt >= DRAG_THROTTLE_MS) {
-        sendMove(draggingId, target);
+        sendMove(draggingId, targetFor(p)); // leading-edge coalesced stream
         lastSentAt = t;
-        pending = null;
       }
     },
-    onPointerUp(): void {
+    onPointerUp(p: Point): void {
       if (!draggingId) return;
-      if (pending) sendMove(draggingId, pending); // flush the final position
+      // Send the authoritative release position (a pure click that never moved sends
+      // nothing). This captures a touch/pen lift-off delta the throttled stream missed.
+      if (moved) sendMove(draggingId, targetFor(p));
       ctx.scene.setDraggingToken(null);
       draggingId = null;
-      pending = null;
+      moved = false;
     },
   };
 }
