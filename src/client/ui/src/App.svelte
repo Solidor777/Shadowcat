@@ -4,6 +4,7 @@
   import { loadSessionState, setLastWorld, flushOnUnload } from "./lib/sessionState.svelte";
   import { currentRoute, navigate } from "./lib/route.svelte";
   import { coreUi } from "./modules/core-ui/index";
+  import { sceneTools } from "./modules/scene-tools/index";
   import { WorldSession } from "./lib/worldSession.svelte";
   import Setup from "./lib/views/Setup.svelte";
   import Login from "./lib/views/Login.svelte";
@@ -77,7 +78,7 @@
     const wsUrl =
       (location.protocol === "https:" ? "wss:" : "ws:") +
       "//" + location.host + "/ws?world=" + worldId;
-    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), coreUiModule: coreUi });
+    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), coreUiModule: coreUi, featureModules: [sceneTools] });
     session = s;
     void s.enter(worldId);
     setLastWorld(worldId);

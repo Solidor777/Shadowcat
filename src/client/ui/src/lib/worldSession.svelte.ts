@@ -30,6 +30,8 @@ export interface WorldSessionOpts {
   connect: Connect;
   /** The first-party shell module providing region surfaces. */
   coreUiModule: Module;
+  /** Additional feature modules activated after core-ui (e.g. scene-tools). */
+  featureModules?: Module[];
   /** Diagnostics sink; defaults to the leveled console logger. */
   logger?: Logger;
 }
@@ -164,6 +166,7 @@ export class WorldSession {
         // and double-add the module.
         this.#bootstrapped = true;
         this.#modules.add(this.opts.coreUiModule);
+        for (const m of this.opts.featureModules ?? []) this.#modules.add(m);
         await this.#modules.activate();
       }
       reconcileTopology(this.#modules.declarations(), w.contract_declarations, this.#logger);
