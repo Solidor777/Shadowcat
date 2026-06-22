@@ -60,6 +60,104 @@ impl SqliteRepository {
         &self.pool
     }
 
+    /// Insert a new asset record. `version` starts at 1.
+    pub async fn insert_asset(&self, a: &crate::data::asset::Asset) -> Result<(), DataError> {
+        sqlx::query(
+            "INSERT INTO assets \
+             (id, world_id, storage_key, original_name, content_type, byte_size, created_by, created_at, version) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(a.id.to_string())
+        .bind(a.world_id.to_string())
+        .bind(&a.storage_key)
+        .bind(&a.original_name)
+        .bind(&a.content_type)
+        .bind(a.byte_size)
+        .bind(a.created_by.to_string())
+        .bind(a.created_at)
+        .bind(a.version)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    fn asset_from_row(
+        row: &sqlx::sqlite::SqliteRow,
+    ) -> Result<crate::data::asset::Asset, DataError> {
+        let parse = |s: String| Uuid::parse_str(&s).map_err(|e| DataError::OpFailed(e.to_string()));
+        Ok(crate::data::asset::Asset {
+            id: parse(row.get::<String, _>("id"))?,
+            world_id: parse(row.get::<String, _>("world_id"))?,
+            storage_key: row.get("storage_key"),
+            original_name: row.get("original_name"),
+            content_type: row.get("content_type"),
+            byte_size: row.get("byte_size"),
+            created_by: parse(row.get::<String, _>("created_by"))?,
+            created_at: row.get("created_at"),
+            version: row.get("version"),
+        })
+    }
+
+    pub async fn get_asset(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<crate::data::asset::Asset>, DataError> {
+        let row = sqlx::query("SELECT * FROM assets WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|r| Self::asset_from_row(&r)).transpose()
+    }
+
+    /// Swap the bytes behind a stable id; bump and return the new version.
+    pub async fn replace_asset_bytes(
+        &self,
+        id: Uuid,
+        storage_key: &str,
+        content_type: &str,
+        byte_size: i64,
+    ) -> Result<i64, DataError> {
+        let v: i64 = sqlx::query(
+            "UPDATE assets SET storage_key = ?, content_type = ?, byte_size = ?, version = version + 1 \
+             WHERE id = ? RETURNING version",
+        )
+        .bind(storage_key)
+        .bind(content_type)
+        .bind(byte_size)
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(DataError::NotFound)?
+        .get("version");
+        Ok(v)
+    }
+
+    /// Remove the record, returning it (so the caller can delete the file).
+    pub async fn delete_asset(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<crate::data::asset::Asset>, DataError> {
+        let existing = self.get_asset(id).await?;
+        if existing.is_some() {
+            sqlx::query("DELETE FROM assets WHERE id = ?")
+                .bind(id.to_string())
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(existing)
+    }
+
+    pub async fn list_assets_by_world(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<crate::data::asset::Asset>, DataError> {
+        let rows = sqlx::query("SELECT * FROM assets WHERE world_id = ? ORDER BY created_at, id")
+            .bind(world.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(Self::asset_from_row).collect()
+    }
+
     pub async fn create_world(&self, name: &str, now: i64) -> Result<World, DataError> {
         let id = Uuid::new_v4();
         sqlx::query(
@@ -1459,6 +1557,51 @@ mod tests {
             "top-level non-scene doc must be excluded"
         );
         assert_eq!(ids.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn asset_insert_get_replace_delete_list_round_trip() {
+        use crate::data::asset::Asset;
+        let r = repo().await;
+        let owner = r
+            .create_user("u", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = r.create_world_owned("w", owner, 0).await.unwrap();
+        let id = Uuid::from_u128(500);
+        let a = Asset {
+            id,
+            world_id: world.id,
+            storage_key: format!("{}/{}", world.id, id),
+            original_name: "battlemap.png".into(),
+            content_type: "image/png".into(),
+            byte_size: 1234,
+            created_by: owner,
+            created_at: 0,
+            version: 1,
+        };
+        r.insert_asset(&a).await.unwrap();
+        assert_eq!(r.get_asset(id).await.unwrap().unwrap(), a);
+
+        // Replace bumps version and updates byte metadata.
+        let v = r
+            .replace_asset_bytes(id, &a.storage_key, "image/jpeg", 4321)
+            .await
+            .unwrap();
+        assert_eq!(v, 2);
+        let after = r.get_asset(id).await.unwrap().unwrap();
+        assert_eq!(
+            (after.version, after.byte_size, after.content_type.as_str()),
+            (2, 4321, "image/jpeg")
+        );
+
+        // List returns the world's assets.
+        assert_eq!(r.list_assets_by_world(world.id).await.unwrap().len(), 1);
+
+        // Delete returns the removed record and empties the store.
+        assert_eq!(r.delete_asset(id).await.unwrap().unwrap().id, id);
+        assert!(r.get_asset(id).await.unwrap().is_none());
+        assert!(r.list_assets_by_world(world.id).await.unwrap().is_empty());
     }
 
     #[tokio::test]
