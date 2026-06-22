@@ -172,3 +172,19 @@ async fn delete_removes_record_and_file_and_broadcasts() {
     let frame = drain_until_type(&mut ws, "asset_changed").await;
     assert_eq!(frame["op"], "deleted");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn list_returns_world_assets() {
+    let h = spawn().await;
+    h.upload("a.png", "image/png", PNG_1X1.to_vec()).await;
+    h.upload("b.png", "image/png", PNG_1X1.to_vec()).await;
+    let res = h
+        .client
+        .get(format!("http://{}/api/worlds/{}/assets", h.addr, h.world))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let list: Vec<serde_json::Value> = res.json().await.unwrap();
+    assert_eq!(list.len(), 2);
+}

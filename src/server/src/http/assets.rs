@@ -289,6 +289,19 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `GET /api/worlds/{world}/assets` — membership-gated list (b-2 grid source).
+pub async fn list(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(world): Path<uuid::Uuid>,
+) -> Result<Json<Vec<Asset>>, AppError> {
+    state
+        .repo
+        .permission_context(world, user.id, user.role)
+        .await?;
+    Ok(Json(state.repo.list_assets_by_world(world).await?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
