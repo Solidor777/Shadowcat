@@ -397,7 +397,9 @@ impl SqliteRepository {
     }
 
     /// Upsert the player's explored-cell blob for a scene. Keyed `(scene_id, user_id)`; `world_id`
-    /// is denormalized for world-scoped cleanup. Write is whole-blob last-writer-wins: two of the
+    /// is denormalized for a future world-scoped purge (not yet wired — worlds aren't deletable;
+    /// orphans are harmless as reads key on the exact never-reused UUIDs). Write is whole-blob
+    /// last-writer-wins: two of the
     /// user's sockets accumulating concurrently can transiently drop a cell one added but the other
     /// didn't observe. Self-healing: explored is a re-derivable dimmed-memory layer (a dropped cell
     /// re-marks the next time vision covers it) and the live `visible` mask is always exact, so a

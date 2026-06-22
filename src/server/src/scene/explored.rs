@@ -12,6 +12,12 @@ use std::collections::BTreeSet;
 /// A grid-cell coordinate. `BTreeSet` ordering gives a deterministic serialization.
 pub type Cell = (i32, i32);
 
+/// Hard cap on candidate cells scanned per polygon. The visibility polygon's bbox is bounded by
+/// the scene's wall/viewpoint extent, but a wall authored at an extreme coordinate with a tiny
+/// grid size could otherwise span billions of cells and stall the dispatch path. Exceeding the cap
+/// skips the polygon (marks no cells → under-reveal, the fail-safe direction).
+const MAX_CELLS_PER_POLYGON: i64 = 4_000_000;
+
 /// A sparse explored-cell set for one (scene, player).
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct ExploredSet {
@@ -42,8 +48,9 @@ impl ExploredSet {
 
     /// Mark every cell whose center lies inside any polygon in `polys` (flat `[x,y,…]` coords),
     /// at `cell_size` world units per cell. Returns the count of newly-added cells (0 ⇒ no growth).
-    /// Each polygon's candidate cells are bounded by its bbox, so the cost is O(polygon area /
-    /// cell area) — the visibility polygon is wall/viewpoint-bounded, never the full plane.
+    /// Each polygon's candidate cells are bounded by its bbox (the visibility polygon is
+    /// wall/viewpoint-bounded for a sane scene); a polygon whose bbox would span more than
+    /// `MAX_CELLS_PER_POLYGON` cells is skipped (under-reveal) to bound the dispatch-path cost.
     pub fn mark_polygons(&mut self, polys: &[Vec<f64>], cell_size: f64) -> usize {
         if cell_size <= 0.0 {
             return 0;
@@ -61,10 +68,16 @@ impl ExploredSet {
                 maxx = maxx.max(x);
                 maxy = maxy.max(y);
             }
+            // `f64 as i32` saturates (no UB) on an extreme coordinate; the cap below then skips it.
             let i0 = (minx / cell_size).floor() as i32;
             let i1 = (maxx / cell_size).floor() as i32;
             let j0 = (miny / cell_size).floor() as i32;
             let j1 = (maxy / cell_size).floor() as i32;
+            let span = (i1 as i64 - i0 as i64 + 1) * (j1 as i64 - j0 as i64 + 1);
+            if span > MAX_CELLS_PER_POLYGON {
+                tracing::warn!(span, "explored cell scan exceeds cap; skipping polygon");
+                continue;
+            }
             for i in i0..=i1 {
                 for j in j0..=j1 {
                     let cx = (i as f64 + 0.5) * cell_size;
@@ -168,6 +181,16 @@ mod tests {
         let set = ExploredSet::from_bytes(&bytes);
         assert_eq!(set.len(), 1);
         assert!(set.contains((1, 2)));
+    }
+
+    #[test]
+    fn skips_a_polygon_whose_bbox_exceeds_the_cell_cap() {
+        let mut set = ExploredSet::new();
+        // A 3000×3000 polygon at cell_size 1 → 9,000,000 candidate cells > the 4M cap → skipped
+        // (under-reveal) rather than stalling the dispatch path.
+        let big = vec![0.0, 0.0, 3000.0, 0.0, 3000.0, 3000.0, 0.0, 3000.0];
+        assert_eq!(set.mark_polygons(&[big], 1.0), 0);
+        assert!(set.is_empty());
     }
 
     #[test]
