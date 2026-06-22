@@ -77,6 +77,29 @@ test("place a token via the tool rail, then drag it", async ({ page }) => {
   await expect(host).toHaveAttribute("data-token-count", "1");
 });
 
+test("draw a freehand stroke via the tool rail; the drawing renders", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Username").fill("ops");
+  await page.getByLabel("Password").fill("pw-boot");
+  await page.getByRole("button", { name: "Log in" }).click();
+  await page.getByLabel("New world name").fill("Draw World");
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = page.locator(".stage-host");
+  await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  await page.getByTestId("tool-draw").click();
+  const canvas = page.getByTestId("stage-canvas");
+  const box = (await canvas.boundingBox())!;
+  // Drag a freehand path across the canvas.
+  await page.mouse.move(box.x + box.width / 2 - 40, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 30, { steps: 3 });
+  await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2, { steps: 3 });
+  await page.mouse.up();
+  await expect(host).toHaveAttribute("data-shape-count", "1", { timeout: 15_000 });
+});
+
 test("the identity SceneDerived spike reaches the mask slot", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("Username").fill("ops");

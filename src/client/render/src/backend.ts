@@ -1,4 +1,4 @@
-import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec } from "./types";
 
 /** The narrow GL abstraction the render model drives. The real implementation is
  * `pixi-backend.ts` (Playwright-covered); `MockBackend` covers it in unit tests.
@@ -23,6 +23,15 @@ export interface DisplayBackend {
   setToken(id: string, spec: TokenNodeSpec): void;
   /** Remove a token render node. */
   removeToken(id: string): void;
+  /** Upsert a drawn shape node in `spec.layer` (drawings/templates reconcilers). */
+  setShape(id: string, spec: ShapeNodeSpec): void;
+  /** Remove a drawn shape node. */
+  removeShape(id: string): void;
+  /** Replace the ephemeral overlay (in the `overlays` layer) with these shapes — the
+   * tool preview / measurement; never document-backed. */
+  drawOverlay(shapes: Omit<ShapeNodeSpec, "layer">[]): void;
+  /** Clear the ephemeral overlay. */
+  clearOverlay(): void;
   /** Register the per-frame render ticker callback (drives tweens). */
   startTicker(cb: (dtMs: number) => void): void;
   /** Resize the renderer/viewport to CSS pixels (HiDPI handled by the backend). */

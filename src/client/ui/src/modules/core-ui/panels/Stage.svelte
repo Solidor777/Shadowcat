@@ -82,6 +82,7 @@
           e.setGrid(spec);
         }
         host.dataset.tokenCount = String(documents.query("token").length);
+        host.dataset.shapeCount = String(documents.query("drawing").length + documents.query("template").length);
       };
       onDocs();
       offGrid = documents.subscribe(onDocs);

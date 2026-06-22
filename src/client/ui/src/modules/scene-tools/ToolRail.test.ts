@@ -9,7 +9,7 @@ import ToolRail from "./ToolRail.svelte";
 function captureScene(): { scene: SceneInteractionBridge; tools: (SceneTool | null)[] } {
   const tools: (SceneTool | null)[] = [];
   const scene = new SceneInteractionBridge();
-  scene.attach({ setActiveTool: (t) => tools.push(t), snap: (p) => p, setDraggingToken: () => {} });
+  scene.attach({ setActiveTool: (t) => tools.push(t), snap: (p) => p, setDraggingToken: () => {}, previewOverlay: () => {}, clearOverlay: () => {} });
   return { scene, tools };
 }
 
@@ -37,8 +37,20 @@ test("selecting a different tool switches the active tool", async () => {
   expect(screen.getByTestId("tool-place").getAttribute("aria-pressed")).toBe("true");
 });
 
+test("the draw and template tools activate and reveal their controls", async () => {
+  const { scene, tools } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-draw"));
+  expect(tools.at(-1)).not.toBeNull();
+  expect(screen.getByTestId("draw-mode")).toBeTruthy(); // draw controls shown
+  await fireEvent.click(screen.getByTestId("tool-template"));
+  expect(screen.getByTestId("template-mode")).toBeTruthy();
+  expect(screen.queryByTestId("draw-mode")).toBeNull(); // switched away from draw
+});
+
 test("a non-GM sees no tool buttons", () => {
   render(ToolRail, { context: setAppContextForTest({ role: "player" }) });
   expect(screen.queryByTestId("tool-select")).toBeNull();
   expect(screen.queryByTestId("tool-place")).toBeNull();
+  expect(screen.queryByTestId("tool-draw")).toBeNull();
 });

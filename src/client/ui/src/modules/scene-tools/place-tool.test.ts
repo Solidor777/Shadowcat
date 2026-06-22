@@ -18,7 +18,7 @@ function docsWithScene(withScene: boolean): DocumentStore {
 /** A scene bridge whose snap shifts by +1 so the test proves snap is applied. */
 function snapBridge(): SceneInteractionBridge {
   const bridge = new SceneInteractionBridge();
-  const host: SceneToolHost = { setActiveTool: () => {}, snap: (p) => ({ x: p.x + 1, y: p.y + 1 }), setDraggingToken: () => {} };
+  const host: SceneToolHost = { setActiveTool: () => {}, snap: (p) => ({ x: p.x + 1, y: p.y + 1 }), setDraggingToken: () => {}, previewOverlay: () => {}, clearOverlay: () => {} };
   bridge.attach(host);
   return bridge;
 }

@@ -4,7 +4,7 @@
 // mount; before/after attachment every call no-ops (snap is identity) so a tool
 // component never crashes when no canvas is mounted. Render types are type-only imports
 // (zero runtime dependency on @shadowcat/render here).
-import type { SceneTool, SceneToolHost, Point } from "@shadowcat/render";
+import type { SceneTool, SceneToolHost, Point, ShapeNodeSpec } from "@shadowcat/render";
 
 /** The host-facing seam plus late-attachment. */
 export interface SceneInteraction extends SceneToolHost {
@@ -33,5 +33,13 @@ export class SceneInteractionBridge implements SceneInteraction {
 
   setDraggingToken(id: string | null): void {
     this.#host?.setDraggingToken(id);
+  }
+
+  previewOverlay(shapes: Omit<ShapeNodeSpec, "layer">[]): void {
+    this.#host?.previewOverlay(shapes);
+  }
+
+  clearOverlay(): void {
+    this.#host?.clearOverlay();
   }
 }

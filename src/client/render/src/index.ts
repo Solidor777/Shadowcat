@@ -1,6 +1,8 @@
-export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec, SceneTool, SceneToolHost } from "./types";
+export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec, ShapeNodeSpec, SceneTool, SceneToolHost } from "./types";
 export { TokenAnimator } from "./token-animator";
 export { TokenView } from "./token-view";
+export { DrawingView } from "./drawing-view";
+export { TemplateView } from "./template-view";
 export { LayerRegistry, CORE_LAYERS, type CoreLayerId } from "./layers";
 export { Camera } from "./camera";
 export { Grid, type GridKind, type GridSpec } from "./grid";
@@ -10,3 +12,4 @@ export { SceneReconciler } from "./reconciler";
 export { Compositor } from "./compositor";
 export { RenderEngine, type RenderEngineOpts, type SubscribeScene, type SceneSubscription } from "./engine";
 export { PixiBackend, createPixiBackend } from "./pixi-backend";
+export { parseColor, rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints } from "./geometry";

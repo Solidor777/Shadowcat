@@ -1,12 +1,14 @@
 import type { ReadableDocuments, AssetResolver } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { VisibilityInput, SceneTool, SceneToolHost, Point } from "./types";
+import type { VisibilityInput, SceneTool, SceneToolHost, Point, ShapeNodeSpec } from "./types";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
 import { LayerRegistry } from "./layers";
 import { SceneReconciler } from "./reconciler";
 import { TokenView } from "./token-view";
+import { DrawingView } from "./drawing-view";
+import { TemplateView } from "./template-view";
 
 /** Handle to a scene subscription (structurally matches @shadowcat/core's). */
 export interface SceneSubscription {
@@ -45,6 +47,8 @@ export class RenderEngine implements SceneToolHost {
   private grid: Grid;
   private readonly reconciler: SceneReconciler;
   private readonly tokens: TokenView;
+  private readonly drawings: DrawingView;
+  private readonly templates: TemplateView;
   private readonly gridColor: number;
   private viewport = { width: 0, height: 0 };
   private unsubscribe: (() => void) | null = null;
@@ -69,6 +73,8 @@ export class RenderEngine implements SceneToolHost {
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend);
     this.tokens = new TokenView(opts.store, opts.assets, opts.backend);
+    this.drawings = new DrawingView(opts.store, opts.backend);
+    this.templates = new TemplateView(opts.store, opts.backend);
     this.compositor = new Compositor(opts.backend);
   }
 
@@ -77,9 +83,13 @@ export class RenderEngine implements SceneToolHost {
     this.applyCamera();
     this.reconciler.reconcile();
     this.tokens.reconcile();
+    this.drawings.reconcile();
+    this.templates.reconcile();
     this.unsubscribe = this.opts.store.subscribe(() => {
       this.reconciler.reconcile();
       this.tokens.reconcile();
+      this.drawings.reconcile();
+      this.templates.reconcile();
       this.flushPendingDerived();
     });
     this.opts.backend.startTicker((dt) => this.tokens.tick(dt));
@@ -141,6 +151,7 @@ export class RenderEngine implements SceneToolHost {
     this.panning = false;
     this.activePointerId = null;
     this.tokens.setDragging(null);
+    this.clearOverlay(); // discard any in-progress tool preview (the old tool's up won't fire)
   }
 
   snap(p: Point): Point {
@@ -149,6 +160,14 @@ export class RenderEngine implements SceneToolHost {
 
   setDraggingToken(id: string | null): void {
     this.tokens.setDragging(id);
+  }
+
+  previewOverlay(shapes: Omit<ShapeNodeSpec, "layer">[]): void {
+    this.opts.backend.drawOverlay(shapes);
+  }
+
+  clearOverlay(): void {
+    this.opts.backend.clearOverlay();
   }
 
   /** Swap the active grid (from the active scene's `system.grid`) and redraw lines. */

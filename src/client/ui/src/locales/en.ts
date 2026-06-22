@@ -34,4 +34,8 @@ export const en: Messages = {
   "tools.select": "Select / Move",
   "tools.place": "Place token",
   "tools.placeHint": "Pick an asset, then click the map to place a token.",
+  "tools.draw": "Draw",
+  "tools.template": "Template",
+  "tools.shape": "Shape",
+  "tools.color": "Color",
 };
