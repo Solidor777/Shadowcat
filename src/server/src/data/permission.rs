@@ -203,6 +203,20 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
     if access.see_gm_only {
         return out;
     }
+    // Each embedded child carries its own `property_overrides`, independent of the
+    // parent's. A non-GM recipient must not see any GmOnly field at any depth, so
+    // recurse with the same recipient access (the `see_gm_only` flag is the
+    // recipient's, applied at every level) before stripping the parent's own.
+    let embedded = std::mem::take(&mut out.embedded);
+    out.embedded = embedded
+        .into_iter()
+        .map(|(k, v)| {
+            (
+                k,
+                v.into_iter().map(|c| filter_properties(&c, access)).collect(),
+            )
+        })
+        .collect();
     let gm_only: Vec<String> = doc
         .permissions
         .property_overrides
@@ -214,8 +228,7 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
     for pointer in gm_only {
         strip_pointer(&mut whole, &pointer);
     }
-    out = serde_json::from_value(whole).expect("filtered document deserializes");
-    out
+    serde_json::from_value(whole).expect("filtered document deserializes")
 }
 
 /// The recipient's view of a broadcast command: ops on unreadable documents
@@ -529,6 +542,90 @@ mod tests {
         assert_eq!(
             filter_properties(&d, &gm).system["secret"],
             serde_json::json!(42)
+        );
+    }
+
+    #[test]
+    fn embedded_child_gm_only_is_stripped_for_non_gm() {
+        let mut child = doc(PermissionSet::default(), serde_json::json!({ "secret": 9, "shown": 2 }));
+        child
+            .permissions
+            .property_overrides
+            .insert("/system/secret".into(), Visibility::GmOnly);
+        let mut parent = doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "public": 1 }),
+        );
+        parent.embedded.insert("items".into(), vec![child]);
+
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &parent);
+        let view = filter_properties(&parent, &player);
+        let child_view = &view.embedded.get("items").unwrap()[0];
+        assert_eq!(child_view.system.get("secret"), None, "child gm-only stripped");
+        assert_eq!(child_view.system["shown"], serde_json::json!(2));
+
+        // The GM sees the embedded child's gm-only field.
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &parent);
+        let gm_view = filter_properties(&parent, &gm);
+        assert_eq!(
+            gm_view.embedded.get("items").unwrap()[0].system["secret"],
+            serde_json::json!(9)
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_command_create_strips_embedded_gm_only() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, Operation};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+
+        let mut child = doc(PermissionSet::default(), serde_json::json!({ "secret": 9, "shown": 2 }));
+        child
+            .permissions
+            .property_overrides
+            .insert("/system/secret".into(), Visibility::GmOnly);
+        let mut parent = doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "public": 1 }),
+        );
+        parent.scope = Scope::World { world_id: w.id };
+        parent.embedded.insert("items".into(), vec![child]);
+
+        let cmd = Command {
+            seq: 1,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Create { doc: parent.clone() }],
+        };
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let filtered = filter_command(&r, &cmd, &player, &CapabilityGrants::default()).await;
+        let Operation::Create { doc } = &filtered.ops[0] else {
+            panic!("expected Create");
+        };
+        assert!(
+            doc.embedded.get("items").unwrap()[0]
+                .system
+                .get("secret")
+                .is_none(),
+            "embedded child gm-only stripped on the Create broadcast"
         );
     }
 
