@@ -159,8 +159,8 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 - **Includes splitting today's monolithic entry views + `core-ui`** — not just greenfield. The contract-only element-boundary discipline (and new in-game UI shipping as `src/modules/*` packages) is adopted from M8d onward, so this milestone is mechanical extraction, not a redesign.
 - Excludes: changing the contract/surface model itself (already built in M6b/M7).
 
-### M9 · Walls + vision + fog
-> **In progress.** Cross-cutting spec `superpowers/specs/2026-06-22-m9-walls-vision-fog-design.md`
+### M9 · Walls + vision + fog ✅
+> **COMPLETE** (merged + pushed). Cross-cutting spec `superpowers/specs/2026-06-22-m9-walls-vision-fog-design.md`
 > (decisions locked), decomposed **M9a → M9b → M9c**. **M9a DONE** (merged + pushed): wall
 > `doc_type` + render + wall tool; **server-authoritative movement-blocking** (a non-GM token move
 > crossing a `blocksMove` wall is rejected before the write — the first server-side semantic
@@ -174,9 +174,13 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > explored fog (`explored_fog` table + sparse cell set + dispatch-layer accumulation), a three-state
 > fog shader (unexplored = darkest / explored = dimmed / visible = clear), and a GM see-all/preview
 > toggle. Two blind security reviews (no Critical/Important; isolation + fail-closed + under-reveal
-> race verified) — cell-scan cap, cleanup TODO, player wire test folded in. **M9c-2** (GM
-> see-as-player — a flagged protocol fork: `SceneSubscribe{as_user}` + GM-only authorization) is the
-> only remaining M9 piece; spec'd in `superpowers/plans/2026-06-22-m9c-fog.md`.
+> race verified) — cell-scan cap, cleanup TODO, player wire test folded in. **M9c-2 DONE** (merged +
+> pushed): **GM see-as-player** via a GM-authorized `SceneSubscribe{as_user}` (Approach B, chosen on
+> the user durable/secure/performant directive over the spec "all masks to GM" variant — see §10 D-V3
+> + the plan's decision #5). The server resolves the target role server-side (non-GM/non-member
+> rejected), computes the `vision` payload as that player, and see-as is read-only; the client adds a
+> unified GM vision dropdown. Two blind security reviews: BOTH PASS, no Critical/Important (the
+> player-to-player `as_user` boundary is airtight) — dup-sub-id guard + stale-picker reset folded in.
 - Vector walls as ECS components; movement blocking.
 - Rust raycasting; per-player visibility polygons (`geo` union); PixiJS masks; persistent fog of war.
 - GM vision mode. Server-authoritative geometric vision only (exempt from the optimistic path by design).
