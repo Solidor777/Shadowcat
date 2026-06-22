@@ -1,4 +1,4 @@
-import type { LineSeg, CameraTransform, VisibilityInput } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec } from "./types";
 
 /** The narrow GL abstraction the render model drives. The real implementation is
  * `pixi-backend.ts` (Playwright-covered); `MockBackend` covers it in unit tests.
@@ -19,6 +19,12 @@ export interface DisplayBackend {
   /** Module-facing shader-filter seam: attach an opaque filter to a layer; returns a
    * dispose. No engine consumer in M8 (token fx / Phase-3 VFX are future consumers). */
   addLayerFilter(layerId: string, filter: unknown): () => void;
+  /** Upsert a token render node (create if new; update transform/size/texture otherwise). */
+  setToken(id: string, spec: TokenNodeSpec): void;
+  /** Remove a token render node. */
+  removeToken(id: string): void;
+  /** Register the per-frame render ticker callback (drives tweens). */
+  startTicker(cb: (dtMs: number) => void): void;
   /** Resize the renderer/viewport to CSS pixels (HiDPI handled by the backend). */
   resize(width: number, height: number): void;
   /** Release all GPU resources and detach the canvas. */
