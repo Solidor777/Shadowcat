@@ -146,6 +146,15 @@ impl Room {
         self.current_seq.load(Ordering::Acquire)
     }
 
+    /// Broadcast a non-sequenced, out-of-band frame (e.g. AssetChanged). Unlike
+    /// `publish`, it does NOT push to the ring or bump `current_seq`, so a
+    /// lagging receiver that resyncs from the ring/log never replays it — by
+    /// design, since the frame's source of truth (the asset `version`) is
+    /// re-read on any access. Best-effort: drops if there are no receivers.
+    pub fn broadcast_aux(&self, msg: ServerMsg) {
+        let _ = self.tx.send(std::sync::Arc::new(msg));
+    }
+
     /// The one authoritative write path: authorize/validate/sequence `ops`
     /// through `apply_intent`, append to the ring, and broadcast — serialized
     /// per world by `publish_guard` so broadcast order equals seq order. The
