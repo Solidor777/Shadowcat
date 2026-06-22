@@ -22,6 +22,8 @@
     subscribeScene: (c, cb) => session.subscribeScene(c, cb),
     dispatchIntent: (ops) => session.dispatchIntent(ops),
     scene: session.sceneInteraction,
+    sendPing: (x, y) => session.sendPing(x, y),
+    onPing: (cb) => session.onPing(cb),
     leaveWorld,
   });
 </script>

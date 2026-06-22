@@ -49,6 +49,8 @@ export interface WsClientHandlers {
   onError?(error: unknown): void;
   /** An out-of-band asset mutation notice (replace/delete); carries no seq. */
   onAssetChanged?(msg: { uuid: string; op: "replaced" | "deleted" }): void;
+  /** An out-of-band relayed location ping (carries no seq). */
+  onScenePing?(msg: { scene: string; x: number; y: number; user: string }): void;
 }
 
 export interface WsClientOptions {
@@ -263,6 +265,11 @@ export class WsClient {
       }
       case "asset_changed":
         this.safeEmit(() => this.opts.handlers.onAssetChanged?.({ uuid: msg.uuid, op: msg.op }));
+        break;
+      case "scene_ping":
+        this.safeEmit(() =>
+          this.opts.handlers.onScenePing?.({ scene: msg.scene, x: msg.x, y: msg.y, user: msg.user }),
+        );
         break;
       case "scene_derived": {
         const handler = this.sceneSubs.get(msg.request_id);

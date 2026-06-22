@@ -21,6 +21,8 @@
     subscribeScene: () => ({ unsubscribe() {} }),
     dispatchIntent: () => {},
     scene: new SceneInteractionBridge(),
+    sendPing: () => {},
+    onPing: () => () => {},
     leaveWorld: () => {},
   });
 </script>
