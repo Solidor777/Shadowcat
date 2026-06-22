@@ -13,6 +13,9 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean } {
     setCameraTransform() {},
     setVisibility() {},
     addLayerFilter() { return () => {}; },
+    setToken() {},
+    removeToken() {},
+    startTicker() {},
     resize() {},
     destroy() { this.destroyed = true; },
   };
