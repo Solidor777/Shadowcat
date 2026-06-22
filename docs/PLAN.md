@@ -139,7 +139,16 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 - Render-layer / filter abstraction spiked against the vision mask path first.
 - Scene load, grid (square / hex), camera pan/zoom; basic token placement; measurement / template / drawing tools; pings.
 - Minimal raw asset upload + static serving (scene backgrounds, token art), with **stable UUID asset identity from first upload** (links survive rename/move); no conversion / browsing / tagging — the full asset pipeline is Phase 2.
+- **Token rendering is forward-looking** (M8d ships static images only): tokens render as scene **sprites** — Container-based visuals, not raw images — behind a token-visual *source* abstraction that admits **multi-face, animated, and procedurally-generated** visuals later; **client-side tweening** toward document-authoritative transforms (ephemeral, never persisted/ECS); **fx** via the render-layer filter seam; **emotes** as transient overlays. A per-frame render ticker (animation/tween/fx) and a generalized `DisplayBackend` node API arrive with motion. M8 implements only static-image tokens; the architecture must not preclude the rest (full token features = M10). Detailed in the M8d spec.
 - Excludes: post-processing, multi-level maps, portals.
+
+### M8.5 · UI packaging decomposition
+> Planned (own brainstorm→spec→plan cycle); exact sequencing confirmable — recommended after the M8 UI/render foundation and before M12 (default modules), which depends on per-element packaging. Realizes the **target client UI packaging** in [`design/ARCHITECTURE.md`](design/ARCHITECTURE.md) §1.
+- Extract the **entry flow** (setup / login / world select / world management) into its own **swappable package** a self-hoster can replace to integrate external auth/identity (today plain views inside `@shadowcat/ui`).
+- Split the first-party `core-ui` module into **per-element in-game packages** under `src/modules/*` (each region / panel / tool its own module), so each is independently moddable/replaceable.
+- Separate the **thin app shell** (bootstrap, routing, session, surface host) from both entry and content.
+- **Includes splitting today's monolithic entry views + `core-ui`** — not just greenfield. The contract-only element-boundary discipline (and new in-game UI shipping as `src/modules/*` packages) is adopted from M8d onward, so this milestone is mechanical extraction, not a redesign.
+- Excludes: changing the contract/surface model itself (already built in M6b/M7).
 
 ### M9 · Walls + vision + fog
 - Vector walls as ECS components; movement blocking.
@@ -149,6 +158,7 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 
 ### M10 · Tokens
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
+- Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
 ### M11 · Dice + chat
 - From-scratch dice engine (notation, modifiers, advantage/disadvantage, DCs, success counting, tiers); hook integration; sequenced results.
