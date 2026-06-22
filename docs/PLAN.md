@@ -165,9 +165,12 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > `doc_type` + render + wall tool; **server-authoritative movement-blocking** (a non-GM token move
 > crossing a `blocksMove` wall is rejected before the write — the first server-side semantic
 > geometry, a new ARCHITECTURE #6 exception; buddy-checked, a Critical post-image bypass fixed).
-> **M9b** (server vision raycasting + `vision` SceneDerived channel + two-state fog shader) is
-> planned (`superpowers/plans/2026-06-22-m9b-vision.md`) — the heaviest, security-sensitive unit.
-> **M9c** (persistent fog + GM vision mode) remains.
+> **M9b DONE** (merged + pushed): clean-room visibility-polygon raycaster (angular sweep over
+> `blocksSight` walls), per-recipient `vision` SceneDerived channel shipping scene-tagged polygons,
+> engine-owned two-state fog mask (inverse-masked white-fill union — no `geo` dep). GM → `mode:"all"`;
+> a player gets only their own polygons; a token-less player gets full fog. Two blind security
+> reviews reconciled: fail-closed garbled payload, cross-scene scoping, ±π seam (see the plan's
+> "Implementation deviations"). **M9c** (persistent explored fog + GM see-as-player toggle) remains.
 - Vector walls as ECS components; movement blocking.
 - Rust raycasting; per-player visibility polygons (`geo` union); PixiJS masks; persistent fog of war.
 - GM vision mode. Server-authoritative geometric vision only (exempt from the optimistic path by design).
