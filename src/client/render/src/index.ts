@@ -5,3 +5,4 @@ export { Grid, type GridKind, type GridSpec } from "./grid";
 export type { DisplayBackend } from "./backend";
 export { MockBackend } from "./backend.mock";
 export { SceneReconciler } from "./reconciler";
+export { RenderEngine, type RenderEngineOpts } from "./engine";
