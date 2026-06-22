@@ -79,6 +79,9 @@ export type WireDocument = {
   owner: string | null;
   permissions: z.infer<typeof PermissionSetSchema>;
   embedded: Record<string, WireDocument[]>;
+  // Scene-entity link: the parent scene's id (or other parent); null for top-level
+  // docs (actors, compendium entries, scenes). Immutable via field-path Update.
+  parent_id: string | null;
   // `z.unknown()` infers an optional property; the value is the opaque system body.
   system?: unknown;
   created_at: number;
@@ -96,6 +99,7 @@ export const DocumentSchema: z.ZodType<WireDocument> = z.lazy(() =>
     owner: z.string().nullable(),
     permissions: PermissionSetSchema,
     embedded: z.record(z.array(DocumentSchema)),
+    parent_id: z.string().nullable(),
     system: z.unknown(),
     created_at: int,
     updated_at: int,

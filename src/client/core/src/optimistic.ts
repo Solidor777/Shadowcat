@@ -12,7 +12,7 @@
 // needed on the client (the M2 reversible representation backs server-side
 // rollback / undo, not this local prediction). The server stays authoritative:
 // optimism is a prediction, replaced by `base` on confirm or discarded on reject.
-import { applyOperation, type Listener } from "./store";
+import { applyOperation, type Listener, type ReadableDocuments } from "./store";
 import type { WireCommand, WireDocument, WireOperation } from "./wire";
 
 interface Pending {
@@ -20,7 +20,7 @@ interface Pending {
   ops: WireOperation[];
 }
 
-export class OptimisticClient {
+export class OptimisticClient implements ReadableDocuments {
   private base = new Map<string, WireDocument>();
   private view = new Map<string, WireDocument>();
   private pending: Pending[] = [];

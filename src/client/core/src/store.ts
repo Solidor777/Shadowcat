@@ -78,8 +78,20 @@ export function applyOperation(
 
 export type Listener = () => void;
 
+/** Read-only document source the render engine consumes. Satisfied by both the
+ * authoritative `DocumentStore` and the `OptimisticClient` view, so the canvas can
+ * render predicted (unconfirmed) documents for immediate placement/move feedback while
+ * the authoritative store remains the rollback base. `appliedSeq` (confirmed-seq on
+ * both) backs the derived-frame watermark. */
+export interface ReadableDocuments {
+  query(docType: string): WireDocument[];
+  get(id: string): WireDocument | undefined;
+  subscribe(listener: Listener): () => void;
+  readonly appliedSeq: number;
+}
+
 /** Authoritative mirror of one world's documents. */
-export class DocumentStore {
+export class DocumentStore implements ReadableDocuments {
   private docs = new Map<string, WireDocument>();
   private listeners = new Set<Listener>();
   /** Highest authoritative seq applied. */

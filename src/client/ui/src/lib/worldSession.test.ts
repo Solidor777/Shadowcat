@@ -1,5 +1,5 @@
 import { test, expect, vi } from "vitest";
-import { ContributionRegistry, silentLogger, type Connect } from "@shadowcat/core";
+import { ContributionRegistry, silentLogger, buildTokenDoc, type Connect } from "@shadowcat/core";
 import { WorldSession } from "./worldSession.svelte";
 
 // `MockServer` is internal core test code (not barrel-exported), so use a minimal
@@ -99,6 +99,113 @@ test("applies asset_changed to the resolver and notifies subscribers", async () 
   // Resolver cache-busts on replace, and subscribers are notified.
   expect(session.assets.url("a1")).not.toBe(before);
   expect(got).toEqual([{ uuid: "a1", op: "replaced" }]);
+});
+
+function sceneCreates(sent: Array<Record<string, unknown>>): unknown[] {
+  return sent.filter(
+    (m) =>
+      m.type === "intent" &&
+      Array.isArray(m.ops) &&
+      (m.ops as Array<{ op: string; doc?: { doc_type?: string } }>).some(
+        (o) => o.op === "create" && o.doc?.doc_type === "scene",
+      ),
+  );
+}
+
+// A connect whose Welcome frames are pushed by the test AFTER enter() resolves —
+// matching reality (Welcome arrives over an established socket, so intents the
+// session dispatches while handling Welcome are actually transmitted).
+function pushConnect(sent: Array<Record<string, unknown>>): { connect: Connect; push: (f: unknown) => void } {
+  let push!: (f: unknown) => void;
+  const connect: Connect = (handlers) => {
+    push = (f) => handlers.onMessage(JSON.stringify(f));
+    return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => handlers.onClose() });
+  };
+  return { connect, push: (f: unknown) => push(f) };
+}
+
+test("auto-creates a default scene on GM entry, exactly once across reconnect Welcomes", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, actor_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: coreUiStub, logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame);
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  // A reconnect re-fires Welcome; the optimistic-view guard must not double-create.
+  push(gmFrame);
+  await new Promise((r) => setTimeout(r, 20));
+  expect(sceneCreates(sent)).toHaveLength(1);
+});
+
+test("does not auto-create a scene for a non-GM actor", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: coreUiStub, logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // actor_role: "player"
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(sceneCreates(sent)).toHaveLength(0);
+});
+
+test("dispatchIntent predicts via ctx.client and sends one correlated intent frame", async () => {
+  // A core-ui stand-in whose register captures ctx.client (the optimistic view
+  // modules read), so the prediction is observable.
+  let capturedClient: { get(id: string): unknown } | null = null;
+  const stub = {
+    manifest: {
+      id: "core-ui",
+      version: "0.1.0",
+      dependencies: {},
+      provides: [{ contract: "shadowcat.surface:root", cardinality: "singleton" as const }],
+    },
+    register: (ctx: { client: { get(id: string): unknown } }) => {
+      capturedClient = ctx.client;
+    },
+  };
+  const sent: Array<Record<string, unknown>> = [];
+  const connect: Connect = (handlers) => {
+    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => handlers.onClose() });
+  };
+  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: stub, logger: silentLogger });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(capturedClient).not.toBeNull());
+
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } }, "tok-1");
+  session.dispatchIntent([{ op: "create", doc }]);
+
+  // Prediction: the optimistic view (ctx.client) shows the new doc immediately.
+  expect(capturedClient!.get("tok-1")).toBeTruthy();
+  // Send: exactly one intent frame, with a generated id and the same ops.
+  const intents = sent.filter((m) => m.type === "intent");
+  expect(intents).toHaveLength(1);
+  expect(typeof intents[0].intent_id).toBe("string");
+  expect((intents[0].intent_id as string).length).toBeGreaterThan(0);
+  expect(intents[0].ops).toEqual([{ op: "create", doc }]);
+});
+
+test("dispatchIntent while disconnected drops the action (no orphaned prediction)", async () => {
+  let capturedClient: { get(id: string): unknown } | null = null;
+  const stub = {
+    manifest: { id: "core-ui", version: "0.1.0", dependencies: {}, provides: [{ contract: "shadowcat.surface:root", cardinality: "singleton" as const }] },
+    register: (ctx: { client: { get(id: string): unknown } }) => { capturedClient = ctx.client; },
+  };
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: stub, logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(capturedClient).not.toBeNull());
+
+  session.leave(); // tears down the socket → no transport
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } }, "tok-x");
+  session.dispatchIntent([{ op: "create", doc }]);
+
+  // Neither predicted (no orphaned pending to mis-correlate) nor transmitted.
+  expect(capturedClient!.get("tok-x")).toBeUndefined();
+  expect(sent.filter((m) => m.type === "intent")).toHaveLength(0);
 });
 
 test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Welcome", async () => {

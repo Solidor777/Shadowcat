@@ -1,6 +1,6 @@
-import type { DocumentStore, AssetResolver } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { VisibilityInput } from "./types";
+import type { VisibilityInput, SceneTool, SceneToolHost, Point } from "./types";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
@@ -20,7 +20,10 @@ export type SubscribeScene = (
 ) => SceneSubscription;
 
 export interface RenderEngineOpts {
-  store: DocumentStore;
+  /** Document source to render. The host passes the optimistic view so predicted
+   * (unconfirmed) creates/moves render immediately; the authoritative store is the
+   * rollback base. */
+  store: ReadableDocuments;
   assets: AssetResolver;
   backend: DisplayBackend;
   grid: GridSpec;
@@ -34,17 +37,28 @@ export interface RenderEngineOpts {
 
 /** Orchestrates the render model over a DisplayBackend: layers, camera, grid, and
  * the store-driven reconciler. Framework- and Pixi-free (the backend is injected). */
-export class RenderEngine {
+export class RenderEngine implements SceneToolHost {
   readonly camera = new Camera();
   readonly compositor: Compositor;
   private readonly layers = new LayerRegistry();
-  private readonly grid: Grid;
+  /** Reassignable: the active scene's grid drives snapping + lines (M8d §15). */
+  private grid: Grid;
   private readonly reconciler: SceneReconciler;
   private readonly tokens: TokenView;
   private readonly gridColor: number;
   private viewport = { width: 0, height: 0 };
   private unsubscribe: (() => void) | null = null;
   private sceneSub: SceneSubscription | null = null;
+  /** Active canvas tool (null = camera owns all gestures). */
+  private activeTool: SceneTool | null = null;
+  /** Gesture ownership for the in-flight pointer drag: a tool claimed the down, or
+   * the camera is panning. Both false between gestures. */
+  private toolGesture = false;
+  private panning = false;
+  private lastPan: Point = { x: 0, y: 0 };
+  /** The pointer that owns the in-flight gesture; events from other pointers
+   * (multi-touch / pen+mouse) are ignored until it ends. Single-pointer by design. */
+  private activePointerId: number | null = null;
   private pendingDerived: { input: VisibilityInput; seq: number } | null = null;
   /** Highest computed_at_seq applied to the mask; guards against regressing to an
    * older derived frame (latest-wins). */
@@ -113,6 +127,68 @@ export class RenderEngine {
    * consumer in M8 — the first consumers are token fx / Phase-3 VFX. */
   registerLayerFilter(layerId: string, filter: unknown): () => void {
     return this.opts.backend.addLayerFilter(layerId, filter);
+  }
+
+  // --- SceneToolHost: the canvas interaction seam (M8d §7). The host (Stage)
+  // feeds DOM pointer events as screen points; the engine converts to scene coords
+  // and routes to the active tool first, falling back to camera pan. ---
+
+  setActiveTool(tool: SceneTool | null): void {
+    this.activeTool = tool;
+    // A tool swap cancels any in-flight gesture ownership and releases the dragging
+    // latch, so an interrupted drag cannot strand a token in snap-no-tween mode.
+    this.toolGesture = false;
+    this.panning = false;
+    this.activePointerId = null;
+    this.tokens.setDragging(null);
+  }
+
+  snap(p: Point): Point {
+    return this.grid.snap(p);
+  }
+
+  setDraggingToken(id: string | null): void {
+    this.tokens.setDragging(id);
+  }
+
+  /** Swap the active grid (from the active scene's `system.grid`) and redraw lines. */
+  setGrid(spec: GridSpec): void {
+    this.grid = new Grid(spec);
+    this.redrawGrid();
+  }
+
+  dispatchPointerDown(screen: Point, ev: PointerEvent): void {
+    if (this.toolGesture || this.panning) return; // a gesture already owns the canvas
+    this.activePointerId = ev.pointerId;
+    if (this.activeTool && this.activeTool.onPointerDown(this.camera.screenToScene(screen), ev)) {
+      this.toolGesture = true; // the tool claimed this gesture
+      return;
+    }
+    this.panning = true; // no tool / not handled → camera pans
+    this.lastPan = screen;
+  }
+
+  dispatchPointerMove(screen: Point, ev: PointerEvent): void {
+    if (ev.pointerId !== this.activePointerId) return; // a non-owning pointer
+    if (this.toolGesture && this.activeTool) {
+      this.activeTool.onPointerMove(this.camera.screenToScene(screen), ev);
+      return;
+    }
+    if (this.panning) {
+      this.camera.panBy(screen.x - this.lastPan.x, screen.y - this.lastPan.y);
+      this.lastPan = screen;
+      this.applyCamera();
+    }
+  }
+
+  dispatchPointerUp(screen: Point, ev: PointerEvent): void {
+    if (ev.pointerId !== this.activePointerId) return; // a non-owning pointer
+    if (this.toolGesture && this.activeTool) {
+      this.activeTool.onPointerUp(this.camera.screenToScene(screen), ev);
+    }
+    this.toolGesture = false;
+    this.panning = false;
+    this.activePointerId = null;
   }
 
   setViewport(width: number, height: number): void {

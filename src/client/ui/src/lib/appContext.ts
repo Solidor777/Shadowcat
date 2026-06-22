@@ -1,6 +1,7 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, AssetResolver, SceneFrame, SceneSubscription } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
+import type { SceneInteraction } from "./sceneInteraction";
 
 /**
  * Ambient app state contributed components read via Svelte context. Carries the
@@ -13,7 +14,11 @@ export type TFunc = (key: string, params?: Record<string, string | number>) => s
 
 export interface AppContext {
   contributions: ContributionRegistry;
+  /** Authoritative (confirmed-only) document mirror — the rollback base. */
   store: DocumentStore;
+  /** Optimistic (predicted) document view — the canvas render source, so a placed or
+   * dragged document shows immediately. */
+  documents: ReadableDocuments;
   world: string;
   role: WorldRole;
   t: TFunc;
@@ -24,6 +29,12 @@ export interface AppContext {
   /** Subscribe to a SceneDerived channel; the session re-establishes it across
    * reconnects. Returns a synchronous unsubscribe handle. */
   subscribeScene(channel: string, onUpdate: (f: SceneFrame) => void): SceneSubscription;
+  /** Predict + transmit document operations as one correlated optimistic intent
+   * (the module write path). `ctx.client`/`store` reflect the prediction. */
+  dispatchIntent(ops: WireOperation[]): void;
+  /** Canvas interaction seam: set the active tool, snap to grid, mark a dragged
+   * token. No-ops until the Stage attaches the render engine. */
+  scene: SceneInteraction;
   /** Leave the current world and return to world-select. */
   leaveWorld: () => void;
 }

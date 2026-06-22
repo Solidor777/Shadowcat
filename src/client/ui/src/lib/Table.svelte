@@ -13,12 +13,15 @@
   setAppContext({
     contributions: session.contributions,
     store: session.store,
+    documents: session.documents,
     world: session.world!,
     role: session.role!,
     t,
     assets: session.assets,
     onAssetChanged: (cb) => session.onAssetChanged(cb),
     subscribeScene: (c, cb) => session.subscribeScene(c, cb),
+    dispatchIntent: (ops) => session.dispatchIntent(ops),
+    scene: session.sceneInteraction,
     leaveWorld,
   });
 </script>

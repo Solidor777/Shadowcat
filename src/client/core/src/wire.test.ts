@@ -137,4 +137,43 @@ describe("parseServerMsg", () => {
     expect(parseServerMsg(JSON.stringify({ type: "nope" }))).toBeNull();
     expect(parseServerMsg(JSON.stringify({ type: "welcome" }))).toBeNull();
   });
+
+  it("round-trips parent_id on a create op's document (scene-entity link)", () => {
+    const doc = (id: string, parent_id: string | null): unknown => ({
+      id,
+      scope: { kind: "world", world_id: "w1" },
+      doc_type: "token",
+      schema_version: 1,
+      source: null,
+      owner: null,
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      embedded: {},
+      parent_id,
+      system: { x: 0, y: 0 },
+      created_at: 0,
+      updated_at: 0,
+    });
+    const m = parseServerMsg(
+      JSON.stringify({
+        type: "event",
+        intent_id: null,
+        command: {
+          seq: 1,
+          world_id: "w1",
+          author: "a",
+          ts: 0,
+          ops: [
+            { op: "create", doc: doc("t1", "scene-1") },
+            { op: "create", doc: doc("s1", null) },
+          ],
+        },
+      }),
+    );
+    expect(m?.type).toBe("event");
+    if (m?.type === "event") {
+      const [tokenOp, sceneOp] = m.command.ops;
+      if (tokenOp.op === "create") expect(tokenOp.doc.parent_id).toBe("scene-1");
+      if (sceneOp.op === "create") expect(sceneOp.doc.parent_id).toBeNull();
+    }
+  });
 });

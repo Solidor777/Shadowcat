@@ -48,6 +48,7 @@ function createIntent(world: string, id: string, name: string, role: "observer" 
             capabilities: { by_role: {}, by_user: {} },
           },
           embedded: {},
+          parent_id: null,
           system: { name },
           created_at: 0,
           updated_at: 0,

@@ -8,11 +8,29 @@ function tokenDoc(id: string, x: number, y: number, asset: string): WireDocument
     id, scope: { kind: "world", world_id: "w1" }, doc_type: "token", schema_version: 1,
     source: null, owner: null,
     permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
-    embedded: {}, system: { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset } },
+    embedded: {}, parent_id: null, system: { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset } },
     created_at: 0, updated_at: 0,
   };
 }
 const cmd = (seq: number, ops: WireOperation[]) => ({ seq, world_id: "w1", author: "a", ts: 0, ops });
+
+test("a dragging token snaps to its new position; a non-dragging one tweens", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const view = new TokenView(store, new AssetResolver(), backend);
+  store.applyCommand(cmd(1, [{ op: "create", doc: tokenDoc("t1", 0, 0, "img1") }]));
+  view.reconcile();
+  // Mark dragging: the local dragger must follow the pointer with no tween lag.
+  view.setDragging("t1");
+  store.applyCommand(cmd(2, [{ op: "update", doc_id: "t1", changes: [{ path: "/system/x", old: 0, new: 100 }] }]));
+  view.reconcile();
+  expect(backend.tokens.get("t1")!.x).toBe(100); // snapped immediately
+  // Clear dragging: a subsequent move tweens (current lags behind target).
+  view.setDragging(null);
+  store.applyCommand(cmd(3, [{ op: "update", doc_id: "t1", changes: [{ path: "/system/x", old: 100, new: 200 }] }]));
+  view.reconcile();
+  expect(backend.tokens.get("t1")!.x).toBeLessThan(200);
+});
 
 test("reconcile creates a token node at its center transform with the resolved url", () => {
   const store = new DocumentStore();

@@ -1,4 +1,4 @@
-import type { DocumentStore, AssetResolver, WireDocument } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, WireDocument } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec } from "./types";
 import { TokenAnimator } from "./token-animator";
@@ -18,12 +18,19 @@ interface TokenSystem {
 export class TokenView {
   private readonly animator = new TokenAnimator();
   private readonly specs = new Map<string, TokenNodeSpec>();
+  /** A locally-dragged token id snaps to its target each reconcile (no tween lag);
+   * remote tokens still tween. Set by the move tool via the engine. */
+  private dragging: string | null = null;
 
   constructor(
-    private readonly store: DocumentStore,
+    private readonly store: ReadableDocuments,
     private readonly assets: AssetResolver,
     private readonly backend: DisplayBackend,
   ) {}
+
+  setDragging(id: string | null): void {
+    this.dragging = id;
+  }
 
   reconcile(): void {
     const seen = new Set<string>();
@@ -32,8 +39,11 @@ export class TokenView {
       if (!spec) continue;
       seen.add(doc.id);
       this.specs.set(doc.id, spec);
+      // Dragging the local token: drop its tween state so setTarget re-snaps it to
+      // the authoritative position immediately (a brand-new id always snaps).
+      if (doc.id === this.dragging) this.animator.remove(doc.id);
       this.animator.setTarget(doc.id, { x: spec.x, y: spec.y, rotation: spec.rotation });
-      this.push(doc.id); // immediate: new tokens snapped, visual current
+      this.push(doc.id); // immediate: new/dragged tokens snapped, visual current
     }
     for (const id of [...this.specs.keys()]) {
       if (seen.has(id)) continue;

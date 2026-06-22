@@ -13,6 +13,7 @@ function sceneDoc(background: string | null): WireDocument {
     owner: null,
     permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
     embedded: {},
+    parent_id: null,
     system: background === null ? {} : { background },
     created_at: 0,
     updated_at: 0,

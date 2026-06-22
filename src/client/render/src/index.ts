@@ -1,4 +1,4 @@
-export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec } from "./types";
+export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec, SceneTool, SceneToolHost } from "./types";
 export { TokenAnimator } from "./token-animator";
 export { TokenView } from "./token-view";
 export { LayerRegistry, CORE_LAYERS, type CoreLayerId } from "./layers";

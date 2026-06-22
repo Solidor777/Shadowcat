@@ -30,4 +30,8 @@ export const en: Messages = {
   "assets.empty": "No assets yet.",
   "assets.selected": "Selected: {id}",
   "assets.error": "Asset operation failed: {message}",
+  "tools.title": "Tools",
+  "tools.select": "Select / Move",
+  "tools.place": "Place token",
+  "tools.placeHint": "Pick an asset, then click the map to place a token.",
 };

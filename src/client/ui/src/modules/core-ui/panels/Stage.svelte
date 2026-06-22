@@ -4,6 +4,7 @@
     RenderEngine,
     createPixiBackend,
     type DisplayBackend,
+    type Point,
   } from "@shadowcat/render";
 
   /** Backend factory; defaults to the real Pixi backend. Tests inject a fake
@@ -15,7 +16,7 @@
     createBackend?: (canvas: HTMLCanvasElement) => Promise<DisplayBackend>;
   } = $props();
 
-  const { store, assets, onAssetChanged, subscribeScene } = getAppContext();
+  const { documents, assets, onAssetChanged, subscribeScene, scene } = getAppContext();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -41,6 +42,8 @@
     let disposed = false;
     let observer: ResizeObserver | null = null;
     let offAsset: (() => void) | null = null;
+    let offGrid: (() => void) | null = null;
+    let detachScene: (() => void) | null = null;
     // Aborts all pointer/wheel listeners on teardown (and on any $effect re-run),
     // so a stale listener set can never call into a destroyed engine.
     const controller = new AbortController();
@@ -49,7 +52,7 @@
       const backend = await createBackend(canvas);
       if (disposed) { backend.destroy(); return; } // teardown raced the async init
       engine = new RenderEngine({
-        store,
+        store: documents,
         assets,
         backend,
         grid: { kind: "square", size: 100 },
@@ -57,18 +60,37 @@
         subscribeScene,
         onDerivedApplied: () => { host.dataset.sceneDerived = "1"; },
       });
+      const e = engine;
       // setViewport (resize + initial grid) then start (camera + reconcile +
       // store subscription). start's applyCamera redraws the grid once more with
       // identical inputs — idempotent initial-frame work, intentional.
-      engine.setViewport(host.clientWidth, host.clientHeight);
-      engine.start();
-      wireCamera(engine, controller.signal);
+      e.setViewport(host.clientWidth, host.clientHeight);
+      e.start();
+      // Tools reach this engine via the AppContext scene bridge.
+      detachScene = scene.attach(e);
+      wirePointer(e, controller.signal);
+      // Drive the grid from the active scene's system.grid (M8d §15), updating only on
+      // a real change so a token drag does not rebuild the grid each frame; also expose
+      // the rendered token count as a test/observability signal (mirrors render-ready).
+      let lastGridKey = "";
+      const onDocs = (): void => {
+        const g = (documents.query("scene")[0]?.system as { grid?: { kind: "square" | "hex"; size: number } } | undefined)?.grid;
+        const spec = g ?? { kind: "square" as const, size: 100 };
+        const key = `${spec.kind}:${spec.size}`;
+        if (key !== lastGridKey) {
+          lastGridKey = key;
+          e.setGrid(spec);
+        }
+        host.dataset.tokenCount = String(documents.query("token").length);
+      };
+      onDocs();
+      offGrid = documents.subscribe(onDocs);
       // AssetChanged mutates the AssetResolver (cache-bust / placeholder) without a
       // document mutation, so the store-subscription reconcile never fires for it.
       // Re-reconcile explicitly so a replaced/deleted background re-resolves.
-      offAsset = onAssetChanged(() => engine?.reconcileNow());
+      offAsset = onAssetChanged(() => e.reconcileNow());
       observer = new ResizeObserver(() => {
-        if (engine) engine.setViewport(host.clientWidth, host.clientHeight);
+        e.setViewport(host.clientWidth, host.clientHeight);
       });
       observer.observe(host);
       host.dataset.renderReady = "true";
@@ -81,6 +103,8 @@
 
     return () => {
       disposed = true;
+      detachScene?.();
+      offGrid?.();
       offAsset?.();
       controller.abort();
       observer?.disconnect();
@@ -88,25 +112,22 @@
     };
   });
 
-  /** Pointer/wheel gestures → camera. Unified pointer events (#10). Listeners are
+  /** Pointer/wheel gestures → the engine's tool-aware dispatcher (active tool first,
+   * camera pan as the no-tool fallback). Unified pointer events (#10); listeners are
    * bound to `signal` so teardown removes them all in one `abort()`. */
-  function wireCamera(engine: RenderEngine, signal: AbortSignal): void {
-    let dragging = false;
-    let lastX = 0;
-    let lastY = 0;
+  function wirePointer(engine: RenderEngine, signal: AbortSignal): void {
+    const local = (e: PointerEvent): Point => {
+      const r = canvas.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    };
     canvas.addEventListener("pointerdown", (e) => {
-      dragging = true; lastX = e.clientX; lastY = e.clientY;
       canvas.setPointerCapture(e.pointerId);
+      engine.dispatchPointerDown(local(e), e);
     }, { signal });
-    canvas.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
-      engine.camera.panBy(e.clientX - lastX, e.clientY - lastY);
-      lastX = e.clientX; lastY = e.clientY;
-      engine.applyCamera();
-    }, { signal });
-    const endDrag = (): void => { dragging = false; };
-    canvas.addEventListener("pointerup", endDrag, { signal });
-    canvas.addEventListener("pointercancel", endDrag, { signal });
+    canvas.addEventListener("pointermove", (e) => engine.dispatchPointerMove(local(e), e), { signal });
+    const up = (e: PointerEvent): void => engine.dispatchPointerUp(local(e), e);
+    canvas.addEventListener("pointerup", up, { signal });
+    canvas.addEventListener("pointercancel", up, { signal });
     canvas.addEventListener("wheel", (e) => {
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();

@@ -9,15 +9,18 @@ import {
   ServiceRegistry,
   MiddlewareChain,
   reconcileTopology,
+  buildSceneDoc,
   consoleLogger,
   type Connect,
   type Logger,
   type Module,
   type WireWelcome,
+  type WireOperation,
   type SceneFrame,
   type SceneSubscription,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
+import { SceneInteractionBridge } from "./sceneInteraction";
 
 export type ConnState = "connecting" | "open" | "closed";
 
@@ -27,6 +30,8 @@ export interface WorldSessionOpts {
   connect: Connect;
   /** The first-party shell module providing region surfaces. */
   coreUiModule: Module;
+  /** Additional feature modules activated after core-ui (e.g. scene-tools). */
+  featureModules?: Module[];
   /** Diagnostics sink; defaults to the leveled console logger. */
   logger?: Logger;
 }
@@ -35,6 +40,9 @@ export class WorldSession {
   readonly store = new DocumentStore();
   readonly contributions = new ContributionRegistry();
   readonly assets = new AssetResolver();
+  /** Canvas interaction bridge: the Stage attaches the engine; tool components reach
+   * it via AppContext. Stable across Stage remount (M8d §16). */
+  readonly sceneInteraction = new SceneInteractionBridge();
   #assetListeners = new Set<(msg: { uuid: string; op: "replaced" | "deleted" }) => void>();
   #sceneSubs = new Map<
     string,
@@ -46,6 +54,12 @@ export class WorldSession {
 
   #ws: WsClient | null = null;
   #optimistic: OptimisticClient;
+  /** The optimistic (predicted) document view — the canvas render source, so a placed
+   * or dragged document shows immediately. `store` stays the authoritative rollback base
+   * (panels that want confirmed-only state read it). */
+  get documents(): OptimisticClient {
+    return this.#optimistic;
+  }
   #modules: ModuleRegistry;
   #logger: Logger;
   /** One-time in-world bootstrap (module activation) guard — Welcome re-fires on
@@ -64,6 +78,21 @@ export class WorldSession {
       logger: this.#logger,
       contributions: this.contributions,
     });
+  }
+
+  /** Predict `ops` optimistically AND transmit them as one correlated Intent. The
+   * single `intent_id` ties the local prediction to the server echo/reject (FIFO
+   * confirm). Predict only when the socket can transmit: a prediction with no matching
+   * send is an orphaned pending entry that mis-correlates the FIFO confirm of the next
+   * real echo. A disconnected dispatch is dropped (logged) — there is no offline queue. */
+  dispatchIntent(ops: WireOperation[]): void {
+    if (!this.#ws?.connected) {
+      this.#logger.warn("dropping intent: world socket not connected");
+      return;
+    }
+    const intentId = crypto.randomUUID();
+    this.#optimistic.applyIntent(intentId, ops);
+    this.#ws.send({ type: "intent", intent_id: intentId, ops });
   }
 
   /** Subscribe to asset replace/delete notices; returns an unsubscribe. */
@@ -148,6 +177,7 @@ export class WorldSession {
         // and double-add the module.
         this.#bootstrapped = true;
         this.#modules.add(this.opts.coreUiModule);
+        for (const m of this.opts.featureModules ?? []) this.#modules.add(m);
         await this.#modules.activate();
       }
       reconcileTopology(this.#modules.declarations(), w.contract_declarations, this.#logger);
@@ -161,6 +191,14 @@ export class WorldSession {
         rec.handle?.unsubscribe();
         rec.handle = null;
         this.#establishScene(id, rec);
+      }
+      // M8d §15: ensure an active scene exists so the place tool has a parent to
+      // attach tokens to. GM-only (players can't author the world's first scene);
+      // guard on the optimistic view (includes the pending create) so a reconnect
+      // Welcome — or a scene from another GM — does not double-create. The rare
+      // multi-GM simultaneous-first-entry double-create is accepted (M12 dedupes).
+      if (this.role === "gm" && this.world && this.#optimistic.query("scene").length === 0) {
+        this.dispatchIntent([{ op: "create", doc: buildSceneDoc(this.world) }]);
       }
     } catch (e) {
       this.#logger.error("world session welcome handling failed", e);

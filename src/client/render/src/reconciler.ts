@@ -1,4 +1,4 @@
-import type { DocumentStore, AssetResolver, WireDocument } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, WireDocument } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 
 /** The scene document's engine-reserved system fields (M8 §4.2: opaque to the
@@ -11,7 +11,7 @@ interface SceneSystem {
  * background only; M8d adds per-doc_type handlers (token/wall/tile/…). */
 export class SceneReconciler {
   constructor(
-    private readonly store: DocumentStore,
+    private readonly store: ReadableDocuments,
     private readonly assets: AssetResolver,
     private readonly backend: DisplayBackend,
   ) {}
