@@ -45,6 +45,11 @@ pub enum ClientMsg {
     },
     /// Cancel a live search subscription (idempotent; unknown id ignored).
     Unsubscribe { request_id: Uuid },
+    /// Subscribe to a derived scene channel (e.g. M9 "vision"). M8a recognizes
+    /// only the debug "identity" channel; unknown channels yield SceneError.
+    SceneSubscribe { request_id: Uuid, channel: String },
+    /// Cancel a derived subscription by request id.
+    SceneUnsubscribe { request_id: Uuid },
 }
 
 /// Which tier served a resync.
@@ -141,6 +146,18 @@ pub enum ServerMsg {
         request_id: Uuid,
         hits: Vec<SearchHit>,
     },
+    /// A derived-state push: coalesced, per recipient, ordered after the
+    /// document events it reflects via `computed_at_seq`. `payload` is opaque to
+    /// the transport (#6).
+    SceneDerived {
+        request_id: Uuid,
+        channel: String,
+        computed_at_seq: i64,
+        #[ts(type = "unknown")]
+        payload: serde_json::Value,
+    },
+    /// A derived subscription failed (e.g. unknown channel).
+    SceneError { request_id: Uuid, message: String },
 }
 
 impl ServerMsg {
@@ -264,6 +281,28 @@ mod protocol_tests {
         assert!(serde_json::to_string(&upd)
             .unwrap()
             .contains("\"type\":\"search_update\""));
+    }
+
+    #[test]
+    fn scene_frames_round_trip() {
+        let sub = ClientMsg::SceneSubscribe {
+            request_id: Uuid::from_u128(1),
+            channel: "identity".into(),
+        };
+        let j = serde_json::to_value(&sub).unwrap();
+        assert_eq!(j["type"], "scene_subscribe");
+        assert_eq!(j["channel"], "identity");
+
+        let d = ServerMsg::SceneDerived {
+            request_id: Uuid::from_u128(1),
+            channel: "identity".into(),
+            computed_at_seq: 7,
+            payload: serde_json::json!({ "entity_count": 3 }),
+        };
+        let j = serde_json::to_value(&d).unwrap();
+        assert_eq!(j["type"], "scene_derived");
+        assert_eq!(j["computed_at_seq"], 7);
+        assert_eq!(j["payload"]["entity_count"], 3);
     }
 
     #[test]
