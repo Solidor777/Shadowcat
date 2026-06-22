@@ -140,7 +140,7 @@ mod tests {
     fn accumulation_is_monotone_no_growth_on_revisit() {
         let mut set = ExploredSet::new();
         let poly = vec![0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0];
-        let first = set.mark_polygons(&[poly.clone()], 100.0);
+        let first = set.mark_polygons(std::slice::from_ref(&poly), 100.0);
         assert_eq!(first, 9); // a 3×3 block of cells
         let again = set.mark_polygons(&[poly], 100.0);
         assert_eq!(again, 0, "revisiting the same area adds no cells");
