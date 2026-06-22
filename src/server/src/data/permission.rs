@@ -234,6 +234,24 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
     serde_json::from_value(whole).expect("filtered document deserializes")
 }
 
+/// Collect every `GmOnly` property pointer in `doc` and its embedded descendants,
+/// each expressed absolute to `doc` (call with `prefix = ""` for parent-absolute
+/// paths: a child at `embedded[key][i]` contributes `/embedded/<key>/<i>{pointer}`).
+/// Lets `Update`-delta redaction honor hidden fields at any embedded depth — the
+/// same coverage `filter_properties` gives whole-document egress.
+fn collect_gm_only(doc: &Document, prefix: &str, out: &mut Vec<String>) {
+    for (p, v) in &doc.permissions.property_overrides {
+        if *v == Visibility::GmOnly {
+            out.push(format!("{prefix}{p}"));
+        }
+    }
+    for (key, children) in &doc.embedded {
+        for (idx, child) in children.iter().enumerate() {
+            collect_gm_only(child, &format!("{prefix}/embedded/{key}/{idx}"), out);
+        }
+    }
+}
+
 /// The recipient's view of a broadcast command: ops on unreadable documents
 /// are dropped, GmOnly properties/changes stripped. seq/world/author/ts are
 /// preserved so the recipient's sequence guard never sees a false gap — a fully
@@ -297,13 +315,12 @@ pub async fn filter_command(
                 let kept: Vec<FieldChange> = if access.see_gm_only {
                     changes.clone()
                 } else {
-                    let gm_only: Vec<String> = cur
-                        .permissions
-                        .property_overrides
-                        .iter()
-                        .filter(|(_, v)| **v == Visibility::GmOnly)
-                        .map(|(p, _)| p.clone())
-                        .collect();
+                    // Collect GmOnly pointers across the parent AND its embedded
+                    // descendants (parent-absolute), so an Update into
+                    // `/embedded/<child>/...` is redacted against the child's own
+                    // overrides — not just the parent's. Matches filter_properties.
+                    let mut gm_only = Vec::new();
+                    collect_gm_only(&cur, "", &mut gm_only);
                     changes
                         .iter()
                         .filter_map(|ch| redact_change(ch, &gm_only))
@@ -735,6 +752,113 @@ mod tests {
         } else {
             panic!("expected Update");
         }
+    }
+
+    #[tokio::test]
+    async fn filter_command_update_redacts_embedded_child_gm_only() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, FieldChange, Operation};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let mut child = doc(
+            PermissionSet::default(),
+            serde_json::json!({ "secret": 1, "shown": 2 }),
+        );
+        child
+            .permissions
+            .property_overrides
+            .insert("/system/secret".into(), Visibility::GmOnly);
+        let mut parent = doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "public": 0 }),
+        );
+        parent.scope = Scope::World { world_id: w.id };
+        parent.embedded.insert("items".into(), vec![child]);
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: parent.clone(),
+            }],
+            1,
+        )
+        .await
+        .unwrap();
+
+        let cmd = Command {
+            seq: 2,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id: parent.id,
+                changes: vec![
+                    // Direct write of the embedded child's gm-only field → dropped.
+                    FieldChange {
+                        path: "/embedded/items/0/system/secret".into(),
+                        old: serde_json::json!(1),
+                        new: serde_json::json!(9),
+                    },
+                    // Wholesale rewrite of the child's /system (ancestor of the gm-only
+                    // leaf) → the hidden leaf is stripped from old + new, sibling kept.
+                    FieldChange {
+                        path: "/embedded/items/0/system".into(),
+                        old: serde_json::json!({ "secret": 1, "shown": 2 }),
+                        new: serde_json::json!({ "secret": 9, "shown": 3 }),
+                    },
+                    // Unrelated public parent field → kept.
+                    FieldChange {
+                        path: "/system/public".into(),
+                        old: serde_json::json!(0),
+                        new: serde_json::json!(5),
+                    },
+                ],
+            }],
+        };
+
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let filtered = filter_command(&r, &cmd, &player, &WorldCapDefaults::default()).await;
+        let Operation::Update { changes, .. } = &filtered.ops[0] else {
+            panic!("expected Update");
+        };
+        assert_eq!(
+            changes.len(),
+            2,
+            "the direct gm-only embedded change is dropped"
+        );
+        let sys = changes
+            .iter()
+            .find(|c| c.path == "/embedded/items/0/system")
+            .unwrap();
+        assert!(sys.new.get("secret").is_none(), "secret stripped from new");
+        assert!(sys.old.get("secret").is_none(), "secret stripped from old");
+        assert_eq!(sys.new["shown"], serde_json::json!(3));
+        assert!(changes.iter().any(|c| c.path == "/system/public"));
+
+        // GM sees all three unredacted.
+        let gm_view = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
+        let Operation::Update { changes, .. } = &gm_view.ops[0] else {
+            panic!("expected Update");
+        };
+        assert_eq!(changes.len(), 3);
     }
 
     #[tokio::test]
