@@ -7,7 +7,7 @@ import { buildTokenDoc, buildSceneEntityDoc, type ReadableDocuments, type AssetR
 import type { SceneInteraction } from "../../lib/sceneInteraction";
 import { topTokenAt } from "./hit-test";
 
-export type ToolId = "select" | "place" | "draw" | "template";
+export type ToolId = "select" | "place" | "draw" | "template" | "measure";
 export type DrawMode = "freehand" | "rect" | "ellipse" | "line";
 export type TemplateMode = "circle" | "cone" | "rect" | "line";
 
@@ -51,6 +51,7 @@ export class ToolController {
       place: makePlaceTool(ctx, this),
       draw: makeDrawTool(ctx, this),
       template: makeTemplateTool(ctx, this),
+      measure: makeMeasureTool(ctx),
     };
   }
 
@@ -96,6 +97,27 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
 function hasExtent(mode: DrawMode, a: Point, b: Point, freehand: number[]): boolean {
   if (mode === "freehand") return freehand.length >= 4;
   return Math.hypot(b.x - a.x, b.y - a.y) >= 1;
+}
+
+/** Drag to measure: a client-local segment + whole-cell distance label. Never persists a
+ * document or broadcasts (#3) — purely an overlay on the dragging client. */
+export function makeMeasureTool(ctx: ToolContext): SceneTool {
+  let anchor: Point | null = null;
+  return {
+    onPointerDown(p: Point): boolean {
+      anchor = p;
+      return true; // measuring works anywhere; claim the gesture
+    },
+    onPointerMove(p: Point): void {
+      if (!anchor) return;
+      ctx.scene.drawMeasure(anchor, p, String(ctx.scene.gridDistance(anchor, p)));
+    },
+    onPointerUp(): void {
+      if (!anchor) return;
+      ctx.scene.clearMeasure();
+      anchor = null;
+    },
+  };
 }
 
 /** Preview/persist points for a two-corner shape (or the freehand path). */
