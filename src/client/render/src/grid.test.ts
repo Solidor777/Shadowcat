@@ -17,6 +17,18 @@ test("square grid lines cover the viewport rect", () => {
   expect(horizontals.length).toBe(3);
 });
 
+test("square grid lines are deterministic for non-integer (panned/zoomed) rects", () => {
+  const g = new Grid({ kind: "square", size: 100 });
+  // A rect with fractional origin/extent, as screenToScene produces under pan/zoom.
+  const lines = g.lines({ x: 10.3, y: 5.7, w: 280.4, h: 190.2 });
+  const verticals = lines.filter((l) => l.x1 === l.x2).map((l) => l.x1).sort((a, b) => a - b);
+  const horizontals = lines.filter((l) => l.y1 === l.y2).map((l) => l.y1).sort((a, b) => a - b);
+  // floor(10.3/100)=0 .. ceil(290.7/100)=3 → x at 0,100,200,300 (no FP-dropped edge).
+  expect(verticals).toEqual([0, 100, 200, 300]);
+  // floor(5.7/100)=0 .. ceil(195.9/100)=2 → y at 0,100,200.
+  expect(horizontals).toEqual([0, 100, 200]);
+});
+
 test("hex snap round-trips: a snapped point snaps to itself", () => {
   const g = new Grid({ kind: "hex", size: 50 });
   const snapped = g.snap({ x: 137, y: 221 });

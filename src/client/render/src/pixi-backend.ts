@@ -11,6 +11,8 @@ export class PixiBackend implements DisplayBackend {
   private readonly grid = new Graphics();
   private background: Sprite | null = null;
   private backgroundUrl: string | null = null;
+  /** Monotonic counter disambiguating concurrent background loads. */
+  private loadSeq = 0;
 
   constructor(private readonly app: Application) {
     this.app.stage.addChild(this.world);
@@ -34,16 +36,20 @@ export class PixiBackend implements DisplayBackend {
 
   setBackground(spec: { url: string } | null): void {
     if (spec === null) {
+      this.loadSeq++; // invalidate any in-flight load
       this.background?.destroy();
       this.background = null;
       this.backgroundUrl = null;
       return;
     }
-    if (spec.url === this.backgroundUrl) return; // unchanged
+    if (spec.url === this.backgroundUrl) return; // steady-state no-op
     this.backgroundUrl = spec.url;
+    // Guard on a monotonic load token, not URL equality: two in-flight loads of
+    // the SAME url (set X → set Y → set X) would both pass a URL check and the
+    // earlier one would flash a stale sprite. The token admits only the latest.
+    const token = ++this.loadSeq;
     void Assets.load(spec.url).then((texture) => {
-      // A teardown or a newer background may have raced ahead; bail if stale.
-      if (this.backgroundUrl !== spec.url) return;
+      if (token !== this.loadSeq) return; // superseded by a newer set/clear/destroy
       this.background?.destroy();
       const sprite = new Sprite(texture);
       this.background = sprite;
@@ -53,6 +59,7 @@ export class PixiBackend implements DisplayBackend {
 
   drawGrid(lines: LineSeg[], color: number): void {
     this.grid.clear();
+    if (lines.length === 0) return; // nothing to stroke (e.g. a 0×0 viewport)
     for (const l of lines) this.grid.moveTo(l.x1, l.y1).lineTo(l.x2, l.y2);
     this.grid.stroke({ width: 1, color, alpha: 0.5 });
   }
@@ -67,6 +74,7 @@ export class PixiBackend implements DisplayBackend {
   }
 
   destroy(): void {
+    this.loadSeq++; // invalidate any in-flight background load post-destroy
     // Release GPU resources + remove the canvas; children/textures included.
     this.app.destroy({ removeView: true }, { children: true, texture: true });
   }

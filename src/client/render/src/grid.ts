@@ -51,12 +51,19 @@ export class Grid {
   private squareLines(rect: SceneRect): LineSeg[] {
     const s = this.spec.size;
     const out: LineSeg[] = [];
-    const x0 = Math.floor(rect.x / s) * s;
-    const y0 = Math.floor(rect.y / s) * s;
-    for (let x = x0; x <= rect.x + rect.w; x += s) {
+    // Integer cell indexing rather than float accumulation: exact under the
+    // non-integer scene rects a panned/zoomed camera produces (screenToScene
+    // divides by scale), so the edge line never flickers on/off from FP drift.
+    const cxLo = Math.floor(rect.x / s);
+    const cxHi = Math.ceil((rect.x + rect.w) / s);
+    for (let i = cxLo; i <= cxHi; i++) {
+      const x = i * s;
       out.push({ x1: x, y1: rect.y, x2: x, y2: rect.y + rect.h });
     }
-    for (let y = y0; y <= rect.y + rect.h; y += s) {
+    const cyLo = Math.floor(rect.y / s);
+    const cyHi = Math.ceil((rect.y + rect.h) / s);
+    for (let i = cyLo; i <= cyHi; i++) {
+      const y = i * s;
       out.push({ x1: rect.x, y1: y, x2: rect.x + rect.w, y2: y });
     }
     return out;

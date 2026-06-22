@@ -17,6 +17,9 @@ export class SceneReconciler {
   ) {}
 
   reconcile(): void {
+    // M8c-1 assumes a single active scene; `[0]` is insertion-order. Deterministic
+    // active-scene selection among multiple scene docs is deferred to M8d (see
+    // docs/TODO.md) when scene authoring can create more than one.
     const scene = this.store.query("scene")[0] as WireDocument | undefined;
     const bg = (scene?.system as SceneSystem | undefined)?.background;
     if (typeof bg === "string" && bg.length > 0) {
