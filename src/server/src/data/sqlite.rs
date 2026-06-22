@@ -381,6 +381,48 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// The player's serialized explored-cell blob for a scene (M9c), or `None` when unexplored.
+    /// Per-(scene, user) SECRET memory — never broadcast; dispatched per-recipient over `vision`.
+    pub async fn get_explored(
+        &self,
+        scene: Uuid,
+        user: Uuid,
+    ) -> Result<Option<Vec<u8>>, DataError> {
+        let row = sqlx::query("SELECT cells FROM explored_fog WHERE scene_id = ? AND user_id = ?")
+            .bind(scene.to_string())
+            .bind(user.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get::<Vec<u8>, _>("cells")))
+    }
+
+    /// Upsert the player's explored-cell blob for a scene. Keyed `(scene_id, user_id)`; `world_id`
+    /// is denormalized for world-scoped cleanup. Write is whole-blob last-writer-wins: two of the
+    /// user's sockets accumulating concurrently can transiently drop a cell one added but the other
+    /// didn't observe. Self-healing: explored is a re-derivable dimmed-memory layer (a dropped cell
+    /// re-marks the next time vision covers it) and the live `visible` mask is always exact, so a
+    /// transient loss never reveals more than it should — only delays a memory cell.
+    pub async fn set_explored(
+        &self,
+        world: Uuid,
+        scene: Uuid,
+        user: Uuid,
+        cells: &[u8],
+    ) -> Result<(), DataError> {
+        sqlx::query(
+            "INSERT INTO explored_fog (world_id, scene_id, user_id, cells) VALUES (?, ?, ?, ?) \
+             ON CONFLICT(scene_id, user_id) DO UPDATE SET cells = excluded.cells, \
+             world_id = excluded.world_id",
+        )
+        .bind(world.to_string())
+        .bind(scene.to_string())
+        .bind(user.to_string())
+        .bind(cells)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn user_by_username(&self, username: &str) -> Result<Option<UserRecord>, DataError> {
         let row = sqlx::query(
             "SELECT id, username, password_hash, server_role FROM users WHERE username = ?",
@@ -1715,6 +1757,52 @@ mod tests {
             repo.set_ui_state(ghost, "{}").await,
             Err(DataError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn explored_fog_round_trips_and_is_per_scene_user() {
+        let repo = repo().await;
+        let world = Uuid::from_u128(9);
+        let scene_a = Uuid::from_u128(10);
+        let scene_b = Uuid::from_u128(11);
+        let alice = Uuid::from_u128(20);
+        let bob = Uuid::from_u128(21);
+
+        // Unexplored → None.
+        assert_eq!(repo.get_explored(scene_a, alice).await.unwrap(), None);
+
+        // Set then read back the exact blob.
+        repo.set_explored(world, scene_a, alice, &[1, 2, 3, 4])
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_explored(scene_a, alice).await.unwrap(),
+            Some(vec![1, 2, 3, 4])
+        );
+
+        // Upsert replaces (whole-blob), keyed (scene, user).
+        repo.set_explored(world, scene_a, alice, &[9, 9])
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_explored(scene_a, alice).await.unwrap(),
+            Some(vec![9, 9])
+        );
+
+        // Isolation: another user and another scene are independent (no cross-player leak).
+        assert_eq!(repo.get_explored(scene_a, bob).await.unwrap(), None);
+        assert_eq!(repo.get_explored(scene_b, alice).await.unwrap(), None);
+        repo.set_explored(world, scene_b, alice, &[7])
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_explored(scene_a, alice).await.unwrap(),
+            Some(vec![9, 9])
+        );
+        assert_eq!(
+            repo.get_explored(scene_b, alice).await.unwrap(),
+            Some(vec![7])
+        );
     }
 
     /// A world-scoped actor document with the given permissions and system body.
