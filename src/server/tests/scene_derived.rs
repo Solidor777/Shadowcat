@@ -184,6 +184,22 @@ async fn see_as_a_non_member_is_rejected() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn duplicate_scene_subscribe_id_is_rejected() {
+    // A reused request_id would silently orphan the prior scene sub (mirrors the search path guard).
+    let h = spawn().await;
+    let mut ws = h.connect().await;
+    let _ = ws.next().await; // Welcome
+    ws.send(scene_subscribe(5, "vision")).await.unwrap();
+    let _ = drain_until_type(&mut ws, "scene_derived").await; // the first registers
+    ws.send(scene_subscribe(5, "vision")).await.unwrap(); // same request_id
+    let err = drain_until_type(&mut ws, "scene_error").await;
+    assert!(err["message"]
+        .as_str()
+        .unwrap()
+        .contains("duplicate subscription id"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unknown_channel_errors() {
     let h = spawn().await;
     let mut ws = h.connect().await;

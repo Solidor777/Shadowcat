@@ -110,6 +110,11 @@
         host.dataset.wallCount = String(documents.query("wall").length);
         // See-as-player candidates: distinct token owners the GM sees (best-effort labels).
         playerOptions = [...new Set(documents.query("token").map((t) => t.owner).filter((o): o is string => !!o))];
+        // If the selected see-as target's token left, fall back to "See all" (drops the stale sub).
+        if (gmView.startsWith("as:") && !playerOptions.includes(gmView.slice(3))) {
+          gmView = "all";
+          applyGmView();
+        }
       };
       onDocs();
       offGrid = documents.subscribe(onDocs);

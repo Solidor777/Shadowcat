@@ -519,7 +519,11 @@ async fn egress_loop<S>(
                     subs.remove(&request_id);
                 }
                 Some(Egress::SceneSubscribe { request_id, channel, as_user }) => {
-                    if scene_subs.len() >= MAX_SCENE_SUBSCRIPTIONS {
+                    if scene_subs.contains_key(&request_id) {
+                        // A duplicate id would silently orphan the prior sub (mirrors the search path).
+                        let f = ServerMsg::SceneError { request_id, message: "duplicate subscription id".into() };
+                        if sink.send(text(&f)).await.is_err() { break; }
+                    } else if scene_subs.len() >= MAX_SCENE_SUBSCRIPTIONS {
                         let f = ServerMsg::SceneError { request_id, message: "too many subscriptions".into() };
                         if sink.send(text(&f)).await.is_err() { break; }
                     } else {
