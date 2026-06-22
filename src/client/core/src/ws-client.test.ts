@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { WsClient } from "./ws-client";
 import { MockServer } from "./mock-server";
 import { DocumentStore } from "./store";
-import type { ClientMsg, WireOperation } from "./wire";
+import type { ClientMsg, ServerMsg, WireOperation } from "./wire";
+import type { Connect } from "./transport";
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 const noop = { onCommand: () => {} };
@@ -66,6 +67,25 @@ describe("WsClient", () => {
 
     expect(store.get("d1")).toBeDefined();
     expect(store.get("d2")).toBeDefined();
+  });
+
+  it("dispatches asset_changed frames to onAssetChanged", async () => {
+    const seen: Array<{ uuid: string; op: string }> = [];
+    // A bare transport whose handlers we capture, so the test can push an
+    // arbitrary out-of-band server frame.
+    let push!: (frame: ServerMsg) => void;
+    const connect: Connect = (handlers) => {
+      push = (frame) => handlers.onMessage(JSON.stringify(frame));
+      return Promise.resolve({ send: () => {}, close: () => {} });
+    };
+    const client = new WsClient({
+      connect,
+      handlers: { onCommand: () => {}, onAssetChanged: (m) => seen.push(m) },
+    });
+    await client.start();
+    push({ type: "asset_changed", uuid: "a1", op: "replaced" });
+    await flush();
+    expect(seen).toEqual([{ uuid: "a1", op: "replaced" }]);
   });
 
   it("applies live events in order", async () => {
