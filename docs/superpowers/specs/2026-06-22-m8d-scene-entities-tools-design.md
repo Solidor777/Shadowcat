@@ -156,8 +156,8 @@ package** and the seam-discipline proof:
   `ctx.client` for intents, the ping transport) — **never imports `core-ui`** — so it
   validates the contract-only discipline before the M8.5 decomposition.
 - It needs the `RenderEngine` interaction API + `AssetResolver` + the ping send — so
-  `AppContext` exposes the engine's tool API (or a thin `scene` service). **Exact
-  wiring is a §13 confirm item.**
+  `AppContext` exposes the engine's tool API (or a thin `scene` service). **Wiring
+  resolved in §16** (thin `scene` service + `dispatchIntent` seam).
 
 ## 9. Drawing + template entities (M8d-2)
 
@@ -264,3 +264,58 @@ M8d-2 is split for tractability (each independently shippable + buddy-checked):
 - Measurement/template **broadcast** to other players; multi-level maps; post-fx.
 - The full M8.5 UI decomposition (M8d only adds `scene-tools` as a new module; it
   does not split `core-ui` or extract the entry package).
+
+## 16. Interaction wiring — **resolved autonomously 2026-06-22** (the §8 confirm item)
+
+> Resolves the open "exact wiring" item §8 flagged. Decided on the merits while the
+> user is away (per the overnight "continue through M8/M9" directive), following the
+> established `subscribeScene` thin-seam convention. **The whole UI contribution API is
+> pre-release/unfrozen (PLAN M7), so this is reversible internal surface — flagged for
+> morning review.** Two facts forced the decision: (a) the `RenderEngine` is created
+> lazily inside `Stage.svelte`'s effect and is not reachable from a module; (b)
+> `ctx.client` (`OptimisticClient`) only *predicts* — nothing transmits a module's
+> intent over the WS (`scene-tools` is the first feature to write from a module).
+
+Two thin function-seams are added (mirroring how `subscribeScene` is exposed), not a
+direct engine handle:
+
+1. **`scene: SceneInteraction`** on `AppContext` (and the stable owner lives on
+   `WorldSession`, so it survives Stage remount). Forwards to a late-attached
+   `SceneToolHost` (the engine); no-ops / identity when detached:
+   ```ts
+   interface Point { x: number; y: number }
+   interface SceneTool {
+     onPointerDown(p: Point, ev: PointerEvent): boolean; // scene coords; true = handled
+     onPointerMove(p: Point, ev: PointerEvent): void;
+     onPointerUp(p: Point, ev: PointerEvent): void;
+   }
+   interface SceneToolHost {                 // implemented by RenderEngine
+     setActiveTool(tool: SceneTool | null): void;
+     snap(p: Point): Point;                  // engine owns the active scene's Grid
+     previewOverlay(draw: (o: OverlayDraw) => void): void; // ephemeral, overlays layer
+     clearOverlay(): void;
+   }
+   interface SceneInteraction extends SceneToolHost {
+     attach(host: SceneToolHost): () => void; // Stage calls on engine mount; returns detach
+   }
+   ```
+   - The engine keeps DOM out of itself (testability invariant): `Stage.svelte`'s
+     pointer listeners call new engine methods `dispatchPointerDown/Move/Up(screen, ev)`;
+     the engine converts screen→scene (`camera.screenToScene`), routes to the active
+     tool first, and falls back to camera pan/zoom when no tool handles it. This is the
+     §7 "tool-aware dispatcher replaces direct `wireCamera`" — dispatch logic in the
+     engine, DOM binding stays in Stage.
+   - Ephemeral previews draw into the existing `overlays` core layer via a new backend
+     `drawOverlay(segs/shape)/clearOverlay` method (mock records; Pixi draws a Graphics).
+
+2. **`dispatchIntent(ops: WireOperation[]): void`** on `AppContext` (and used internally
+   by `WorldSession` for scene auto-create). Generates one `intent_id`, calls
+   `optimistic.applyIntent(id, ops)` **and** `ws.send({ type:"intent", intent_id:id, ops })`
+   — the missing predict-and-send seam. `ctx.client` stays the read/predict view (§7's
+   "issues via `ctx.client`" is realized as predict-via-client + send-via-dispatchIntent,
+   one correlated id). GM-gating is advisory client-side; the server remains authoritative.
+
+**Module placement:** `scene-tools` lands at `src/client/ui/src/modules/scene-tools/`,
+co-located with the only existing module (`core-ui`), importing only shared `lib/*`
+(`appContext`, `api`) — never `core-ui` internals (the contract-only discipline). M8.5
+relocates both to standalone packages; M8d does not invent a new package/build now (§14).
