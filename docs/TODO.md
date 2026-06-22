@@ -14,9 +14,6 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - TODO: Resolve multi-provider conflict policy for `singleton` surface contracts in the UI contribution architecture — when two modules provide the same `singleton` contract (e.g. both claim "the sidebar"), decide the winner (load order, explicit priority, or user selection) instead of the current deterministic loud-fail. Design once a real second provider exists to validate the semantics; the contract model already carries the `singleton`/`multi` cardinality marker the policy slots into.
 - TODO: Add capability version negotiation to contract-based module dependencies (`requires`) — match a required contract against a provider by version range, not presence alone. Deferred until multiple providers of a contract exist at differing versions.
 
-## Client / intents
-- TODO: Replay (or visibly block) optimistic intents issued while the world socket is disconnected. `WorldSession.dispatchIntent` drops a dispatch when `WsClient` has no transport (logged), avoiding an orphaned pending entry that would mis-correlate the FIFO confirm of the next echo; a reconnect does not replay the dropped action. Add a replay-on-resync queue (or a "reconnecting" UI block) when offline editing matters.
-
 ## Server / ws
 - TODO: Make the ping rate limit per-user (on `AppState`) instead of per-connection. `conn.rs`'s `ScenePing` limiter is a per-connection sliding window (30/min) that resets on reconnect, so a user with N concurrent sockets gets N×30/min — a weaker abuse backstop than the per-user `UploadRateLimiter`. Accepted as a defensible choice for a transient cosmetic ping (membership-gated, silent drop, best-effort relay); upgrade to a per-user `PingRateLimiter` on `AppState` if ping abuse becomes a concern. (Deviation from the M8d-3b plan Task 4, surfaced by the buddy check.)
 

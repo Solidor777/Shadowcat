@@ -230,6 +230,41 @@ test("dispatchIntent while disconnected drops the action (no orphaned prediction
   expect(sent.filter((m) => m.type === "intent")).toHaveLength(0);
 });
 
+test("an intent dispatched while reconnecting is predicted, queued, and flushed after resync", async () => {
+  let capturedClient: { get(id: string): unknown } | null = null;
+  const stub = {
+    manifest: { id: "core-ui", version: "0.1.0", dependencies: {}, provides: [{ contract: "shadowcat.surface:root", cardinality: "singleton" as const }] },
+    register: (ctx: { client: { get(id: string): unknown } }) => { capturedClient = ctx.client; },
+  };
+  const sent: Array<Record<string, unknown>> = [];
+  let handlers!: { onMessage: (d: string) => void; onClose: () => void };
+  let connectCount = 0;
+  const connect: Connect = (h) => {
+    connectCount++;
+    handlers = h;
+    return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => h.onClose() });
+  };
+  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: stub, logger: silentLogger });
+  await session.enter("w1");
+  handlers.onMessage(JSON.stringify(welcomeFrame));
+  await vi.waitFor(() => expect(capturedClient).not.toBeNull());
+
+  // Transport drops but the client stays running → reconnecting.
+  handlers.onClose();
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } }, "tok-off");
+  session.dispatchIntent([{ op: "create", doc }]);
+  // Predicted immediately, but NOT transmitted while offline.
+  expect(capturedClient!.get("tok-off")).toBeTruthy();
+  const offSent = (): Array<Record<string, unknown>> =>
+    sent.filter((m) => m.type === "intent" && JSON.stringify(m.ops).includes("tok-off"));
+  expect(offSent()).toHaveLength(0);
+
+  // Reconnect fires (backoff), then a fresh Welcome → resync completes → flush.
+  await vi.waitFor(() => expect(connectCount).toBe(2), { timeout: 2000 });
+  handlers.onMessage(JSON.stringify(welcomeFrame));
+  await vi.waitFor(() => expect(offSent()).toHaveLength(1));
+});
+
 test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Welcome", async () => {
   let push!: (frame: unknown) => void;
   const sent: Array<Record<string, unknown>> = [];
