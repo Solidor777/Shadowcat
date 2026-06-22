@@ -1,3 +1,4 @@
+pub mod assets;
 pub mod embed;
 pub mod error;
 pub mod routes;
@@ -21,6 +22,7 @@ pub struct AppState {
     pub setup_token: Option<String>,
     pub initialized: Arc<AtomicBool>,
     pub ws: crate::ws::WsState,
+    pub upload_rate: Arc<assets::UploadRateLimiter>,
 }
 
 impl AppState {
@@ -131,6 +133,7 @@ pub(crate) mod tests {
             setup_token: None,
             initialized: Arc::new(AtomicBool::new(false)),
             ws: crate::ws::WsState::new(),
+            upload_rate: Arc::new(assets::UploadRateLimiter::new()),
         }
     }
 

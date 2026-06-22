@@ -14,6 +14,7 @@ async fn main() -> anyhow::Result<()> {
     init_tracing();
 
     let repo = SqliteRepository::connect(&config.db).await?;
+    std::fs::create_dir_all(config.assets_path())?;
 
     // Headless bootstrap (remote hosting): seed admin from config if present.
     let seeded = shadowcat::auth::setup::bootstrap_admin(&repo, &config).await?;
@@ -26,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
         setup_token,
         initialized: Arc::new(AtomicBool::new(initialized)),
         ws: shadowcat::ws::WsState::new(),
+        upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
     };
 
     let app = http::router(state).await;
