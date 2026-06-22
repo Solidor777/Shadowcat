@@ -16,10 +16,20 @@
     createBackend?: (canvas: HTMLCanvasElement) => Promise<DisplayBackend>;
   } = $props();
 
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing } = getAppContext();
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, role } = getAppContext();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
+  /** Live engine handle for the GM fog-preview control (set after async init). */
+  let engineRef: RenderEngine | null = null;
+  /** GM-only client-side fog preview: render the player view (full fog) over the GM's see-all. */
+  let fogPreview = $state(false);
+
+  function toggleFogPreview(): void {
+    fogPreview = !fogPreview;
+    engineRef?.setFogPreview(fogPreview);
+    host.dataset.fogPreview = String(fogPreview);
+  }
 
   /** Resolve a CSS custom property (which may be a `var()` alias) to a 0xRRGGBB
    * number by reading the computed `color` off a throwaway probe — getPropertyValue
@@ -69,6 +79,8 @@
       e.start();
       // Tools reach this engine via the AppContext scene bridge.
       detachScene = scene.attach(e);
+      engineRef = e;
+      if (fogPreview) e.setFogPreview(true); // survive an $effect re-run with preview on
       wirePointer(e, controller.signal);
       // Drive the grid from the active scene's system.grid (M8d §15), updating only on
       // a real change so a token drag does not rebuild the grid each frame; also expose
@@ -101,6 +113,7 @@
         e.setViewport(host.clientWidth, host.clientHeight);
       });
       observer.observe(host);
+      host.dataset.fogPreview = String(fogPreview);
       host.dataset.renderReady = "true";
     })().catch(() => {
       // Pixi init failed (e.g. no WebGL context). Mark the host so the failure is
@@ -111,6 +124,7 @@
 
     return () => {
       disposed = true;
+      engineRef = null;
       detachScene?.();
       offGrid?.();
       offPing?.();
@@ -149,6 +163,17 @@
 
 <div class="stage-host" bind:this={host}>
   <canvas bind:this={canvas} data-testid="stage-canvas"></canvas>
+  {#if role === "gm"}
+    <button
+      class="fog-toggle"
+      class:active={fogPreview}
+      data-testid="gm-fog-toggle"
+      onclick={toggleFogPreview}
+      aria-pressed={fogPreview}
+    >
+      {fogPreview ? "Show all" : "Preview fog"}
+    </button>
+  {/if}
 </div>
 
 <style lang="scss">
@@ -161,5 +186,21 @@
   }
   canvas {
     display: block;
+  }
+  .fog-toggle {
+    position: absolute;
+    top: var(--space-2, 0.5rem);
+    right: var(--space-2, 0.5rem);
+    padding: var(--space-1, 0.25rem) var(--space-2, 0.5rem);
+    font-size: 0.8125rem;
+    color: var(--text-on-surface, #e8e8f0);
+    background: var(--surface-raised, #1c1c24);
+    border: 1px solid var(--border-subtle, #363645);
+    border-radius: var(--radius-sm, 0.25rem);
+    cursor: pointer;
+    min-height: 2.25rem; /* touch target (#10) */
+  }
+  .fog-toggle.active {
+    border-color: var(--accent, #2d6ee8);
   }
 </style>

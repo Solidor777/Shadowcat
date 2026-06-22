@@ -87,6 +87,12 @@ export class RenderEngine implements SceneToolHost {
   /** Highest computed_at_seq applied to the mask; guards against regressing to an
    * older derived frame (latest-wins). */
   private lastAppliedSeq = -1;
+  /** The last derived visibility, re-rendered when the GM fog preview toggles. */
+  private lastInput: VisibilityInput = { mode: "all", visible: [], explored: [] };
+  /** GM-only client preview: when true a no-fog (`mode:"all"`) frame renders as full fog, so the
+   * GM can preview a vision-less player's view. Only ever ADDS fog to the GM's own view (D-V3,
+   * no server path) — it can never reveal more than the frame already carries. */
+  private fogPreview = false;
 
   constructor(private readonly opts: RenderEngineOpts) {
     this.grid = new Grid(opts.grid);
@@ -154,8 +160,26 @@ export class RenderEngine implements SceneToolHost {
 
   private applyDerived(input: VisibilityInput, seq: number): void {
     this.lastAppliedSeq = seq;
-    this.compositor.setVisibility(input);
-    this.opts.onDerivedApplied?.(input);
+    this.lastInput = input;
+    this.renderVisibility();
+  }
+
+  /** Apply the last derived visibility through the GM fog-preview override. */
+  private renderVisibility(): void {
+    const eff: VisibilityInput =
+      this.fogPreview && this.lastInput.mode === "all"
+        ? { mode: "masked", visible: [], explored: [] }
+        : this.lastInput;
+    this.compositor.setVisibility(eff);
+    this.opts.onDerivedApplied?.(eff);
+  }
+
+  /** GM-only: toggle the client-side fog preview. `on` renders a no-fog frame as full fog so the
+   * GM can preview the player view (see-as-player is M9c-2). Client-only (D-V3); only adds fog to
+   * the GM's own view, so it cannot leak. */
+  setFogPreview(on: boolean): void {
+    this.fogPreview = on;
+    this.renderVisibility();
   }
 
   /** Parse a `vision` payload into a VisibilityInput. Fail CLOSED: fog is the only client-side

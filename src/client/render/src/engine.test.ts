@@ -206,6 +206,29 @@ test("a masked frame rasterizes the active scene's explored cells into dimmed-me
   });
 });
 
+test("setFogPreview renders a GM no-fog frame as full fog and restores on toggle off", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const modes: string[] = [];
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+    onDerivedApplied: (i) => { modes.push(i.mode); },
+  });
+  engine.start();
+  // A GM frame: no fog.
+  onUpdate({ payload: { mode: "all" }, computedAtSeq: 0 });
+  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [] });
+  // Preview on → the same frame renders as full fog (masked, empty) without a new derived frame.
+  engine.setFogPreview(true);
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [] });
+  // Preview off → restores no-fog.
+  engine.setFogPreview(false);
+  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [] });
+  expect(modes).toEqual(["all", "masked", "all"]);
+});
+
 test("subscribeScene: a frame above the watermark defers until the store advances", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
