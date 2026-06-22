@@ -301,6 +301,29 @@ context. Manifest:
 
 ---
 
+### Task 7b (added mid-execution): render from the optimistic view
+
+**Discovered cascade.** The engine reads `AppContext.store` (the authoritative
+`DocumentStore`); optimistically created/moved tokens live in the `OptimisticClient`
+view. Authoritative-only rendering means a placed token appears only after the server
+round-trip and the §6 "dragger snaps to the pointer" is impossible — both are required.
+Render from the optimistic view; the authoritative store stays the rollback base. M8c/
+M8d-1 only ever rendered authoritative docs (no optimistic creates existed yet), so this
+surfaces now. Decompose, not descope.
+
+**Files:**
+- Modify: `src/client/core/src/store.ts` (`ReadableDocuments` interface) + `index.ts` export
+- Modify: `src/client/render/src/{reconciler,token-view,engine}.ts` (accept `ReadableDocuments`)
+- Modify: `src/client/ui/src/lib/appContext.ts` (`documents: ReadableDocuments`) + `worldSession.svelte.ts` (expose the optimistic view) + `Table.svelte` + fixtures
+- Modify: `src/client/ui/src/modules/core-ui/panels/Stage.svelte` (engine reads `documents`)
+- Test: `engine.test.ts` (an optimistic-only create renders)
+
+**Interface:** `ReadableDocuments { query(docType): WireDocument[]; get(id): WireDocument | undefined; subscribe(l: Listener): () => void; appliedSeq: number }` — satisfied by both `DocumentStore` and `OptimisticClient`. `appliedSeq` on both tracks confirmed seq (the derived-frame watermark stays correct).
+
+- [ ] Test: an engine over an `OptimisticClient`; `applyIntent` a token create (no authoritative command) → `reconcile` → backend has the token (typecheck is the red→green gate, since runtime is structural).
+- [ ] Retype + export; expose `WorldSession.documents` (the optimistic view); `AppContext.documents`; Stage passes `documents` as the engine store; fixtures default to a `DocumentStore`.
+- [ ] Commit: `feat(m8d-2): render the scene from the optimistic view (immediate placement/move)`
+
 ### Task 8: place tool + mini asset picker
 
 **Files:**

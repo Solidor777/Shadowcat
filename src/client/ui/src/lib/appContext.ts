@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, AssetResolver, SceneFrame, SceneSubscription, WireOperation } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 
@@ -14,7 +14,11 @@ export type TFunc = (key: string, params?: Record<string, string | number>) => s
 
 export interface AppContext {
   contributions: ContributionRegistry;
+  /** Authoritative (confirmed-only) document mirror — the rollback base. */
   store: DocumentStore;
+  /** Optimistic (predicted) document view — the canvas render source, so a placed or
+   * dragged document shows immediately. */
+  documents: ReadableDocuments;
   world: string;
   role: WorldRole;
   t: TFunc;

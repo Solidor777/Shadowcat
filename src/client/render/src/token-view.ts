@@ -1,4 +1,4 @@
-import type { DocumentStore, AssetResolver, WireDocument } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, WireDocument } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec } from "./types";
 import { TokenAnimator } from "./token-animator";
@@ -23,7 +23,7 @@ export class TokenView {
   private dragging: string | null = null;
 
   constructor(
-    private readonly store: DocumentStore,
+    private readonly store: ReadableDocuments,
     private readonly assets: AssetResolver,
     private readonly backend: DisplayBackend,
   ) {}

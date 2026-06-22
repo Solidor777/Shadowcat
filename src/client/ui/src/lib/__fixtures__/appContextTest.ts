@@ -9,6 +9,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
   const ctx: AppContext = {
     contributions: over.contributions ?? new ContributionRegistry(),
     store: over.store ?? new DocumentStore(),
+    documents: over.documents ?? over.store ?? new DocumentStore(),
     assets: over.assets ?? new AssetResolver(),
     world: over.world ?? "w1",
     role: over.role ?? "gm",

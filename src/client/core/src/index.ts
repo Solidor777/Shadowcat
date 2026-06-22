@@ -26,7 +26,7 @@ export { loadModules } from "./loader";
 export type { ImportFn, ModuleEntry } from "./loader";
 export { resolveCaps, canWritePath } from "./capabilities";
 export { DocumentStore, setPointer, applyOperation } from "./store";
-export type { Listener } from "./store";
+export type { Listener, ReadableDocuments } from "./store";
 export { ContributionRegistry } from "./contributions";
 export type { Contribution, Cardinality } from "./contributions";
 export { reconcileTopology } from "./topology";

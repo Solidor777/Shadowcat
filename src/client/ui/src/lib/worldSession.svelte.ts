@@ -54,6 +54,12 @@ export class WorldSession {
 
   #ws: WsClient | null = null;
   #optimistic: OptimisticClient;
+  /** The optimistic (predicted) document view — the canvas render source, so a placed
+   * or dragged document shows immediately. `store` stays the authoritative rollback base
+   * (panels that want confirmed-only state read it). */
+  get documents(): OptimisticClient {
+    return this.#optimistic;
+  }
   #modules: ModuleRegistry;
   #logger: Logger;
   /** One-time in-world bootstrap (module activation) guard — Welcome re-fires on

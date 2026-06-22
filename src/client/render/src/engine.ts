@@ -1,4 +1,4 @@
-import type { DocumentStore, AssetResolver } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { VisibilityInput, SceneTool, SceneToolHost, Point } from "./types";
 import { Camera } from "./camera";
@@ -20,7 +20,10 @@ export type SubscribeScene = (
 ) => SceneSubscription;
 
 export interface RenderEngineOpts {
-  store: DocumentStore;
+  /** Document source to render. The host passes the optimistic view so predicted
+   * (unconfirmed) creates/moves render immediately; the authoritative store is the
+   * rollback base. */
+  store: ReadableDocuments;
   assets: AssetResolver;
   backend: DisplayBackend;
   grid: GridSpec;

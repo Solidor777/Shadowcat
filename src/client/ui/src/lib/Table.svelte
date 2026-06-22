@@ -13,6 +13,7 @@
   setAppContext({
     contributions: session.contributions,
     store: session.store,
+    documents: session.documents,
     world: session.world!,
     role: session.role!,
     t,

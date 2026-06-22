@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { DocumentStore, AssetResolver } from "@shadowcat/core";
+import { DocumentStore, OptimisticClient, AssetResolver } from "@shadowcat/core";
 import { RenderEngine, MockBackend } from "./index";
 import type { SceneTool } from "./index";
 
@@ -275,6 +275,20 @@ test("setDraggingToken makes a moved token snap instead of tween", () => {
   engine.setDraggingToken("t1");
   store.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "update", doc_id: "t1", changes: [{ path: "/system/x", old: 0, new: 100 }] }] });
   expect(backend.tokens.get("t1")!.x).toBe(100); // snapped, no tween lag
+});
+
+test("renders documents from an optimistic source (predicted, unconfirmed)", () => {
+  const oc = new OptimisticClient("u1");
+  const backend = new MockBackend();
+  const engine = new RenderEngine({ store: oc, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 } });
+  engine.start();
+  // A predicted create with no authoritative command behind it must still render.
+  oc.applyIntent("i1", [{ op: "create", doc: {
+    id: "t1", scope: { kind: "world", world_id: "w1" }, doc_type: "token", schema_version: 1,
+    source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+    embedded: {}, parent_id: "s1", system: { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "i1" } }, created_at: 0, updated_at: 0,
+  } }]);
+  expect(backend.tokens.has("t1")).toBe(true);
 });
 
 test("registerLayerFilter forwards to the backend and disposes", () => {

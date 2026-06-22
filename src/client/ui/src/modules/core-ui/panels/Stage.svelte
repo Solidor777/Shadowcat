@@ -15,7 +15,7 @@
     createBackend?: (canvas: HTMLCanvasElement) => Promise<DisplayBackend>;
   } = $props();
 
-  const { store, assets, onAssetChanged, subscribeScene } = getAppContext();
+  const { documents, assets, onAssetChanged, subscribeScene } = getAppContext();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -49,7 +49,7 @@
       const backend = await createBackend(canvas);
       if (disposed) { backend.destroy(); return; } // teardown raced the async init
       engine = new RenderEngine({
-        store,
+        store: documents,
         assets,
         backend,
         grid: { kind: "square", size: 100 },

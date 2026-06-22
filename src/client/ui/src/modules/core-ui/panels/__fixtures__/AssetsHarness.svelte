@@ -12,6 +12,7 @@
   setAppContext({
     contributions: undefined as never,
     store: undefined as never,
+    documents: undefined as never,
     world: "w1",
     role: "gm",
     t,
