@@ -10,3 +10,4 @@ export { SceneReconciler } from "./reconciler";
 export { Compositor } from "./compositor";
 export { RenderEngine, type RenderEngineOpts, type SubscribeScene, type SceneSubscription } from "./engine";
 export { PixiBackend, createPixiBackend } from "./pixi-backend";
+export { parseColor, rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints } from "./geometry";
