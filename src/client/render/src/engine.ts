@@ -111,8 +111,8 @@ export class RenderEngine implements SceneToolHost {
       }
     });
     if (this.opts.subscribeScene) {
-      // M8a's debug channel; M9 swaps a real vision channel (polygon payload).
-      this.sceneSub = this.opts.subscribeScene("identity", (f) => this.onSceneFrame(f));
+      // The real M9 vision channel: per-recipient visibility polygons (or mode:"all" for the GM).
+      this.sceneSub = this.opts.subscribeScene("vision", (f) => this.onSceneFrame(f));
     }
   }
 
@@ -122,7 +122,7 @@ export class RenderEngine implements SceneToolHost {
     // mask to an older derived state (defends the M9 consumer against reordering).
     if (frame.computedAtSeq <= this.lastAppliedSeq) return;
     if (this.pendingDerived && frame.computedAtSeq <= this.pendingDerived.seq) return;
-    const input = this.toVisibility(); // M9: parse frame.payload polygons
+    const input = this.toVisibility(frame.payload);
     if (this.opts.store.appliedSeq >= frame.computedAtSeq) {
       this.applyDerived(input, frame.computedAtSeq);
     } else {
@@ -144,10 +144,15 @@ export class RenderEngine implements SceneToolHost {
     this.opts.onDerivedApplied?.();
   }
 
-  /** M8 identity: full visibility regardless of payload. M9 will take the frame
-   * payload and parse polygon geometry into `visible`. */
-  private toVisibility(): VisibilityInput {
-    return { visible: [] };
+  /** Parse a `vision` payload into a VisibilityInput. `{mode:"all"}` (GM / no fog) →
+   * empty masked-off; `{mode:"masked", polygons:[[x,y,…],…]}` → fog outside those polygons
+   * (empty polygons ⇒ full fog). A missing/garbled payload defaults to `all` (fail-open to
+   * no-fog is safe for the GM-authoritative model; the server gates secrecy per-recipient). */
+  private toVisibility(payload: unknown): VisibilityInput {
+    const p = payload as { mode?: string; polygons?: number[][] } | null | undefined;
+    if (!p || p.mode !== "masked") return { mode: "all", visible: [] };
+    const polygons = Array.isArray(p.polygons) ? p.polygons : [];
+    return { mode: "masked", visible: polygons.map((points) => ({ points })) };
   }
 
   /** Module-facing shader-filter seam (0.x). Forwards to the backend; no engine
