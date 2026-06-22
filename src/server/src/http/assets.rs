@@ -265,6 +265,30 @@ pub async fn replace(
     }))
 }
 
+/// `DELETE /api/assets/{uuid}` — GM/owner-gated. Undo-exempt.
+pub async fn delete(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<StatusCode, AppError> {
+    let existing = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
+    require_gm(&state, &user, existing.world_id).await?;
+
+    state.repo.delete_asset(id).await?;
+    let path = state.config.assets_path().join(&existing.storage_key);
+    if let Err(e) = tokio::fs::remove_file(&path).await {
+        // Record is gone; a missing file is not fatal (it becomes a no-op).
+        tracing::warn!(?e, %id, "asset file remove failed after record delete");
+    }
+    if let Some(room) = state.ws.rooms.get(existing.world_id) {
+        room.broadcast_aux(ServerMsg::AssetChanged {
+            uuid: id,
+            op: AssetOp::Deleted,
+        });
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

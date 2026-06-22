@@ -111,7 +111,7 @@ pub async fn router(state: AppState) -> Router {
             "/api/worlds/{world}/assets",
             post(assets::upload).layer(DefaultBodyLimit::disable()),
         )
-        .route("/api/assets/{uuid}", get(assets::serve))
+        .route("/api/assets/{uuid}", get(assets::serve).delete(assets::delete))
         .route(
             "/api/assets/{uuid}/replace",
             post(assets::replace).layer(DefaultBodyLimit::disable()),

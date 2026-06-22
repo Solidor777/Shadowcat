@@ -143,3 +143,32 @@ async fn replace_swaps_bytes_bumps_version_and_broadcasts() {
     assert_eq!(frame["uuid"], id);
     assert_eq!(frame["op"], "replaced");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_removes_record_and_file_and_broadcasts() {
+    use common::drain_until_type;
+    let h = spawn().await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap().to_string();
+    let uuid = uuid::Uuid::parse_str(&id).unwrap();
+
+    let mut ws = h.connect().await;
+    let _ = ws.next().await;
+
+    let res = h
+        .client
+        .delete(format!("http://{}/api/assets/{}", h.addr, id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert!(h.repo.get_asset(uuid).await.unwrap().is_none());
+
+    let frame = drain_until_type(&mut ws, "asset_changed").await;
+    assert_eq!(frame["op"], "deleted");
+}
