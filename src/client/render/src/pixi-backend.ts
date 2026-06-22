@@ -1,6 +1,6 @@
 import { Application, Container, Graphics, Sprite, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend } from "./backend";
-import type { LineSeg, CameraTransform, VisibilityInput } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec } from "./types";
 
 /** The real DisplayBackend over pixi.js v8. The only GL-touching module (kept out
  * of unit tests; covered by Playwright). Layer containers parent under one `world`
@@ -10,6 +10,7 @@ export class PixiBackend implements DisplayBackend {
   private readonly layers = new Map<string, Container>();
   private readonly grid = new Graphics();
   private readonly maskOverlay = new Graphics();
+  private readonly tokens = new Map<string, Sprite>();
   private background: Sprite | null = null;
   private backgroundUrl: string | null = null;
   /** Monotonic counter disambiguating concurrent background loads. */
@@ -79,6 +80,36 @@ export class PixiBackend implements DisplayBackend {
     if (input.visible.length > 0) {
       // (M9) fog composition over the mask slot.
     }
+  }
+
+  setToken(id: string, spec: TokenNodeSpec): void {
+    let sprite = this.tokens.get(id);
+    if (!sprite) {
+      sprite = new Sprite();
+      sprite.anchor.set(0.5); // (x,y) is the token center
+      this.tokens.set(id, sprite);
+      this.layers.get("tokens")?.addChild(sprite);
+    }
+    sprite.position.set(spec.x, spec.y);
+    sprite.width = spec.w;
+    sprite.height = spec.h;
+    sprite.angle = spec.rotation;
+    void Assets.load(spec.url).then((texture) => {
+      // The sprite may have been removed (or re-textured) while loading.
+      if (this.tokens.get(id) === sprite) sprite.texture = texture;
+    });
+  }
+
+  removeToken(id: string): void {
+    const sprite = this.tokens.get(id);
+    if (sprite) {
+      sprite.destroy();
+      this.tokens.delete(id);
+    }
+  }
+
+  startTicker(cb: (dtMs: number) => void): void {
+    this.app.ticker.add((ticker) => cb(ticker.deltaMS));
   }
 
   addLayerFilter(layerId: string, filter: unknown): () => void {

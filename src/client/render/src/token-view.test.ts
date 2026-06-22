@@ -1,7 +1,7 @@
 import { test, expect } from "vitest";
 import { DocumentStore, AssetResolver } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
-import type { WireDocument } from "@shadowcat/core";
+import type { WireDocument, WireOperation } from "@shadowcat/core";
 
 function tokenDoc(id: string, x: number, y: number, asset: string): WireDocument {
   return {
@@ -12,7 +12,7 @@ function tokenDoc(id: string, x: number, y: number, asset: string): WireDocument
     created_at: 0, updated_at: 0,
   };
 }
-const cmd = (seq: number, ops: object[]) => ({ seq, world_id: "w1", author: "a", ts: 0, ops });
+const cmd = (seq: number, ops: WireOperation[]) => ({ seq, world_id: "w1", author: "a", ts: 0, ops });
 
 test("reconcile creates a token node at its center transform with the resolved url", () => {
   const store = new DocumentStore();
