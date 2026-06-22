@@ -100,6 +100,25 @@ test("draw a freehand stroke via the tool rail; the drawing renders", async ({ p
   await expect(host).toHaveAttribute("data-shape-count", "1", { timeout: 15_000 });
 });
 
+test("ping a location via the tool rail; the relayed ping renders", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Username").fill("ops");
+  await page.getByLabel("Password").fill("pw-boot");
+  await page.getByRole("button", { name: "Log in" }).click();
+  await page.getByLabel("New world name").fill("Ping World");
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = page.locator(".stage-host");
+  await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  await page.getByTestId("tool-ping").click();
+  const canvas = page.getByTestId("stage-canvas");
+  const box = (await canvas.boundingBox())!;
+  await canvas.click({ position: { x: box.width / 2, y: box.height / 2 } });
+  // The server relays the ping back to the sender → Stage's onPing sets data-last-ping.
+  await expect(host).toHaveAttribute("data-last-ping", /.+/, { timeout: 15_000 });
+});
+
 test("the identity SceneDerived spike reaches the mask slot", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("Username").fill("ops");

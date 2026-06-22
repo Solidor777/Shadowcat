@@ -19,7 +19,7 @@ function setup() {
   let t = 0;
   const ctx: ToolContext = {
     scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs,
-    assets: new AssetResolver(), world: "w1", now: () => t,
+    assets: new AssetResolver(), world: "w1", sendPing: () => {}, now: () => t,
   };
   const tool = makeSelectMoveTool(ctx);
   return { tool, sent, drags, setTime: (n: number) => { t = n; } };

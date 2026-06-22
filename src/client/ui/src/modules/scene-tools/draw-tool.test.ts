@@ -17,7 +17,7 @@ function setup(mode: DrawMode, withScene = true) {
     clearOverlay: () => { cleared++; },
   }));
   const sent: WireOperation[][] = [];
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1" };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", sendPing: () => {} };
   const controller = new ToolController(ctx);
   controller.drawMode = mode;
   return { tool: makeDrawTool(ctx, controller), previews, sent, clears: () => cleared };

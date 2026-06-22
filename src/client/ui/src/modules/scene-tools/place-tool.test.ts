@@ -30,6 +30,7 @@ function ctxWith(documents: DocumentStore): { ctx: ToolContext; sent: WireOperat
     documents,
     assets: new AssetResolver(),
     world: "w1",
+    sendPing: () => {},
   };
   return { ctx, sent };
 }

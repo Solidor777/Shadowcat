@@ -17,7 +17,7 @@ function setup() {
     clearMeasure: () => { cleared++; },
   }));
   const sent: WireOperation[][] = [];
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: new DocumentStore(), assets: new AssetResolver(), world: "w1" };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: new DocumentStore(), assets: new AssetResolver(), world: "w1", sendPing: () => {} };
   return { tool: makeMeasureTool(ctx), measures, sent, clears: () => cleared };
 }
 

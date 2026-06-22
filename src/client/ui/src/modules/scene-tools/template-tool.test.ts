@@ -17,7 +17,7 @@ function setup(mode: TemplateMode) {
     clearOverlay: () => { cleared++; },
   }));
   const sent: WireOperation[][] = [];
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1" };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", sendPing: () => {} };
   const controller = new ToolController(ctx);
   controller.templateMode = mode;
   return { tool: makeTemplateTool(ctx, controller), previews, sent, clears: () => cleared };

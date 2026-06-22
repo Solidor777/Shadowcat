@@ -49,6 +49,16 @@ test("the draw and template tools activate and reveal their controls", async () 
   expect(screen.queryByTestId("draw-mode")).toBeNull(); // switched away from draw
 });
 
+test("the measure and ping tools are available and activate", async () => {
+  const { scene, tools } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-measure"));
+  expect(tools.at(-1)).not.toBeNull();
+  await fireEvent.click(screen.getByTestId("tool-ping"));
+  expect(tools.at(-1)).not.toBeNull();
+  expect(screen.getByTestId("tool-ping").getAttribute("aria-pressed")).toBe("true");
+});
+
 test("a non-GM sees no tool buttons", () => {
   render(ToolRail, { context: setAppContextForTest({ role: "player" }) });
   expect(screen.queryByTestId("tool-select")).toBeNull();
