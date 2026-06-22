@@ -56,6 +56,15 @@ impl WsState {
             ping_rate: Arc::new(PingRateLimiter::new()),
         }
     }
+
+    /// A `WsState` whose rooms use a custom broadcast ring capacity. Test-only:
+    /// shrinking the ring forces the lag-driven resync path deterministically.
+    pub fn with_broadcast_capacity(capacity: usize) -> Self {
+        Self {
+            rooms: Arc::new(RoomRegistry::with_capacity(capacity)),
+            ping_rate: Arc::new(PingRateLimiter::new()),
+        }
+    }
 }
 
 impl Default for WsState {
