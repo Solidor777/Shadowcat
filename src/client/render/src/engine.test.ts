@@ -343,6 +343,18 @@ test("start renders existing drawing and template docs", () => {
   expect(backend.shapes.has("tm1")).toBe(true);
 });
 
+test("start renders existing wall docs into the walls layer", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const engine = new RenderEngine({ store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 } });
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: { id: "wl1", scope: { kind: "world", world_id: "w1" }, doc_type: "wall", schema_version: 1, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } }, embedded: {}, parent_id: "s1", system: { seg: { x1: 0, y1: 0, x2: 50, y2: 50 }, blocksSight: true, blocksMove: true }, created_at: 0, updated_at: 0 } }],
+  });
+  engine.start();
+  expect(backend.shapes.get("wl1")?.layer).toBe("walls");
+});
+
 test("previewOverlay / clearOverlay forward to the backend", () => {
   const { backend, engine } = makeEngine();
   engine.previewOverlay([{ points: [0, 0, 5, 5], closed: false, stroke: { color: 0, width: 1 }, fill: null }]);
