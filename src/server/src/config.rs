@@ -24,6 +24,8 @@ pub struct Cli {
     pub setup_token: Option<String>,
     #[arg(long)]
     pub session_key: Option<String>,
+    #[arg(long)]
+    pub assets_dir: Option<String>,
 }
 
 /// Effective server configuration after layering. Precedence (high→low):
@@ -37,6 +39,16 @@ pub struct Config {
     /// "auto" | "off" | "required" | <explicit token>.
     pub setup_token: String,
     pub session_key: Option<String>,
+    /// Asset storage root. `None` → sibling `assets/` beside the db file.
+    pub assets_dir: Option<String>,
+    /// Regular-uploader size cap (bytes). Default 25 MiB.
+    pub upload_max_bytes: u64,
+    /// Regular-uploader uploads per minute. Default 20.
+    pub upload_rate_per_min: u32,
+    /// GM/owner size cap; `None` → 2× `upload_max_bytes`.
+    pub upload_max_bytes_gm: Option<u64>,
+    /// GM/owner uploads per minute; `None` → 2× `upload_rate_per_min`.
+    pub upload_rate_per_min_gm: Option<u32>,
 }
 
 impl Default for Config {
@@ -48,6 +60,11 @@ impl Default for Config {
             admin_password: None,
             setup_token: "auto".into(),
             session_key: None,
+            assets_dir: None,
+            upload_max_bytes: 25 * 1024 * 1024,
+            upload_rate_per_min: 20,
+            upload_max_bytes_gm: None,
+            upload_rate_per_min_gm: None,
         }
     }
 }
@@ -94,7 +111,43 @@ impl Config {
         if let Some(v) = cli.session_key {
             cfg.session_key = Some(v);
         }
+        if let Some(v) = cli.assets_dir {
+            cfg.assets_dir = Some(v);
+        }
         Ok(cfg)
+    }
+
+    /// Resolve the asset storage root: explicit `assets_dir`, else a sibling
+    /// `assets/` directory beside the db file (built via std::path, #2).
+    pub fn assets_path(&self) -> std::path::PathBuf {
+        if let Some(dir) = &self.assets_dir {
+            return std::path::PathBuf::from(dir);
+        }
+        std::path::Path::new(&self.db)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("assets")
+    }
+
+    /// Role-tiered upload size cap (GM defaults to 2× the regular value).
+    pub fn effective_max_bytes(&self, role: crate::data::document::WorldRole) -> u64 {
+        match role {
+            crate::data::document::WorldRole::Gm => self
+                .upload_max_bytes_gm
+                .unwrap_or(self.upload_max_bytes.saturating_mul(2)),
+            _ => self.upload_max_bytes,
+        }
+    }
+
+    /// Role-tiered uploads-per-minute (GM defaults to 2× the regular value).
+    pub fn effective_rate_per_min(&self, role: crate::data::document::WorldRole) -> u32 {
+        match role {
+            crate::data::document::WorldRole::Gm => self
+                .upload_rate_per_min_gm
+                .unwrap_or(self.upload_rate_per_min.saturating_mul(2)),
+            _ => self.upload_rate_per_min,
+        }
     }
 
     /// True when the bind host resolves to a loopback address. `0.0.0.0` /
@@ -130,6 +183,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn asset_defaults_and_tiering() {
+        use crate::data::document::WorldRole;
+        let cfg = Config::default();
+        // Default size cap 25 MiB, rate 20/min; GM = 2x when unset.
+        assert_eq!(cfg.upload_max_bytes, 25 * 1024 * 1024);
+        assert_eq!(cfg.effective_max_bytes(WorldRole::Player), 25 * 1024 * 1024);
+        assert_eq!(cfg.effective_max_bytes(WorldRole::Gm), 50 * 1024 * 1024);
+        assert_eq!(cfg.effective_rate_per_min(WorldRole::Player), 20);
+        assert_eq!(cfg.effective_rate_per_min(WorldRole::Gm), 40);
+    }
+
+    #[test]
+    fn assets_path_defaults_to_db_sibling() {
+        let mut cfg = Config {
+            db: "/data/shadowcat.db".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            cfg.assets_path(),
+            std::path::PathBuf::from("/data").join("assets")
+        );
+        cfg.assets_dir = Some("/custom/assets".into());
+        assert_eq!(
+            cfg.assets_path(),
+            std::path::PathBuf::from("/custom/assets")
+        );
+    }
+
+    #[test]
     fn defaults_apply_when_nothing_set() {
         let cfg = Config::default();
         assert_eq!(cfg.bind, "127.0.0.1:30000");
@@ -148,6 +230,7 @@ mod tests {
             admin_password: None,
             setup_token: None,
             session_key: None,
+            assets_dir: None,
         };
         let cfg = Config::load(cli).expect("load");
         assert_eq!(cfg.bind, "0.0.0.0:8080");

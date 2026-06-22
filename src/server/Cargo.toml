@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "io-util"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 serde = { version = "1", features = ["derive"] }
 ts-rs = { version = "12", features = ["uuid-impl"] }
@@ -15,7 +15,7 @@ thiserror = "2"
 argon2 = { version = "0.5", features = ["std"] }
 clap = { version = "4", features = ["derive", "env"] }
 figment = { version = "0.10", features = ["toml", "env"] }
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 dashmap = "6"
 hecs = "0.11"
 futures-util = "0.3"
@@ -39,7 +39,7 @@ winresource = "0.1"
 tempfile = "3"
 axum-test = "17"
 tokio-tungstenite = "0.24"
-reqwest = { version = "0.12", default-features = false, features = ["json", "cookies"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "multipart"] }
 futures-util = "0.3"
 tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "net", "time"] }
 uuid = { version = "1", features = ["v4"] }

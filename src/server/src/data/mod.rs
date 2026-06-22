@@ -1,3 +1,4 @@
+pub mod asset;
 pub mod command;
 pub mod document;
 pub mod membership;
@@ -7,6 +8,8 @@ pub mod repository;
 pub mod search;
 pub mod sqlite;
 pub mod validation;
+
+pub use asset::Asset;
 
 use thiserror::Error;
 

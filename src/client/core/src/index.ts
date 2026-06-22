@@ -64,3 +64,5 @@ export type {
   WireContractDeclaration,
   WireSearchHit,
 } from "./wire";
+export { AssetResolver } from "./assets";
+export type { AssetOp } from "./assets";

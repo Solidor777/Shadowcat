@@ -109,6 +109,7 @@ async fn main() -> anyhow::Result<()> {
         setup_token: None,
         initialized: Arc::new(AtomicBool::new(true)),
         ws: shadowcat::ws::WsState::new(),
+        upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
     };
     let app = http::router(state).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

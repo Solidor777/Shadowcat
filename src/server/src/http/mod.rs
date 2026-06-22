@@ -1,3 +1,4 @@
+pub mod assets;
 pub mod embed;
 pub mod error;
 pub mod routes;
@@ -5,6 +6,7 @@ pub mod routes;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, post};
 use axum::Router;
 
@@ -21,6 +23,7 @@ pub struct AppState {
     pub setup_token: Option<String>,
     pub initialized: Arc<AtomicBool>,
     pub ws: crate::ws::WsState,
+    pub upload_rate: Arc<assets::UploadRateLimiter>,
 }
 
 impl AppState {
@@ -104,6 +107,20 @@ pub async fn router(state: AppState) -> Router {
                 .patch(routes::patch_document)
                 .delete(routes::delete_document),
         )
+        .route(
+            "/api/worlds/{world}/assets",
+            post(assets::upload)
+                .get(assets::list)
+                .layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/assets/{uuid}",
+            get(assets::serve).delete(assets::delete),
+        )
+        .route(
+            "/api/assets/{uuid}/replace",
+            post(assets::replace).layer(DefaultBodyLimit::disable()),
+        )
         .fallback(embed::static_handler)
         .layer(sessions)
         .layer(
@@ -131,6 +148,7 @@ pub(crate) mod tests {
             setup_token: None,
             initialized: Arc::new(AtomicBool::new(false)),
             ws: crate::ws::WsState::new(),
+            upload_rate: Arc::new(assets::UploadRateLimiter::new()),
         }
     }
 

@@ -13,6 +13,8 @@ pub enum AppError {
     Conflict(String),
     BadRequest(String),
     Unprocessable(String),
+    PayloadTooLarge(String),
+    TooManyRequests(String),
     Internal,
 }
 
@@ -54,6 +56,8 @@ impl IntoResponse for AppError {
             AppError::Conflict(m) => (StatusCode::CONFLICT, m),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             AppError::Unprocessable(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),
+            AppError::PayloadTooLarge(m) => (StatusCode::PAYLOAD_TOO_LARGE, m),
+            AppError::TooManyRequests(m) => (StatusCode::TOO_MANY_REQUESTS, m),
             AppError::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal error".to_string(),

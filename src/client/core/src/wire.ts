@@ -200,6 +200,11 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     request_id: z.string(),
     message: z.string(),
   }),
+  z.object({
+    type: z.literal("asset_changed"),
+    uuid: z.string(),
+    op: z.enum(["replaced", "deleted"]),
+  }),
 ]);
 
 export type WireScope = z.infer<typeof ScopeSchema>;

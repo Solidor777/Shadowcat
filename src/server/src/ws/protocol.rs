@@ -84,6 +84,15 @@ pub enum RejectReason {
     Invalid,
 }
 
+/// The kind of asset mutation an `AssetChanged` frame reports.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum AssetOp {
+    Replaced,
+    Deleted,
+}
+
 /// Server -> client frames.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
@@ -158,6 +167,9 @@ pub enum ServerMsg {
     },
     /// A derived subscription failed (e.g. unknown channel).
     SceneError { request_id: Uuid, message: String },
+    /// Out-of-band asset mutation notice. Carries no seq and is never buffered
+    /// or resynced; holders re-resolve against the record's `version`.
+    AssetChanged { uuid: Uuid, op: AssetOp },
 }
 
 impl ServerMsg {
@@ -182,6 +194,19 @@ impl ServerMsg {
 mod protocol_tests {
     use super::*;
     use uuid::Uuid;
+
+    #[test]
+    fn asset_changed_is_out_of_band_and_serializes_snake_case() {
+        let m = ServerMsg::AssetChanged {
+            uuid: Uuid::from_u128(7),
+            op: AssetOp::Replaced,
+        };
+        // Out-of-band: no event seq, so egress sends it without gap/resync logic.
+        assert_eq!(m.event_seq(), None);
+        let s = serde_json::to_string(&m).unwrap();
+        assert!(s.contains("\"type\":\"asset_changed\""), "got {s}");
+        assert!(s.contains("\"op\":\"replaced\""), "got {s}");
+    }
 
     #[test]
     fn client_hello_round_trips_and_is_tagged() {
