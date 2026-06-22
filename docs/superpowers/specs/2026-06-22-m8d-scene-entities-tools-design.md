@@ -223,6 +223,37 @@ Server → world:   Ping { scene: <id>, x, y, user: <id> }   (broadcast_aux, no 
 5. **Measurement is client-local only** (no broadcast) in M8d — **approved**.
 6. **d-1 / d-2 split** (render vs interact) — **approved**.
 
+## 15. Scene lifecycle (added + user-approved 2026-06-22)
+
+Discovered mid-M8d-2: nothing creates a `scene` document in the running app (only test
+helpers), so the place tool had no active scene to parent tokens to (see
+`scene-lifecycle-gap`). Approved minimal resolution (full scene management — multiple
+scenes, browser, switching, dimensions — remains M12):
+
+- **Scene `system` schema** (client-owned; server structural-only #6):
+  `{ grid: { kind: "square"|"hex", size: number }, background: <uuid> | null }`.
+  (Dimensions deferred — the canvas pans freely; M9 fog may add bounds later.)
+- **Default scene on world entry:** on entry, after initial resync, if no `scene` doc
+  exists **and** the actor is a GM, the client creates one (optimistic intent,
+  `doc_type:"scene"`, world scope, default `grid: square/100`, `background: null`).
+  Idempotent guard (create only if none). The rare multi-GM-simultaneous-first-entry
+  double-create race is accepted (cosmetic; M12 scene management dedupes).
+- **Active scene** = the single `scene` doc (`store.query("scene")[0]`) in M8d; tokens/
+  drawings/templates parent to its id. Multiple scenes + selection → M12.
+- **Stage reads the grid from the active scene** (`system.grid`) instead of hardcoding
+  square/100; fallback to square/100 when no scene yet. Also unblocks the deferred M8c
+  background-render + M8d-1 token-render e2e (a scene can now be authored).
+
+This lands as the **scene-prelude tasks of M8d-2** (below).
+
+## 14b. Decomposition refinement (M8d-2 split)
+
+M8d-2 is split for tractability (each independently shippable + buddy-checked):
+- **M8d-2** — scene lifecycle (§15) + the interaction/tool API (§7) + the `scene-tools`
+  module (§8) + token **place / select / move** (the core interactive loop).
+- **M8d-3** — **drawing** + **template** entities (§9) + **measurement** (§10) + **pings**
+  (§11, the only server work). Builds on the M8d-2 interaction API + module.
+
 ## 14. Out of scope / deferred
 
 - M9 vision/walls (walls as entities arrive with M9); real fog.

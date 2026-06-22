@@ -32,9 +32,11 @@ vision mode. Geometric vision only — no lighting/illumination coupling (Phase 
 - **#5** Walls are documents; the per-world ECS (M8a) hydrates them as vector
   segments; vision is derived runtime state (ephemeral, recomputed), never a document.
 - **#6 (server structural-only)** The server runs no semantic game logic — **except**
-  the geometric vision/fog system, which is engine-owned (not module/system code) and
-  is the deliberate server-authoritative exception (#3). Movement-blocking is **not** a
-  server exception (§7) — it stays client-side under the cooperative-trust model.
+  the engine-owned **geometric** systems: vision/fog **and movement-collision** (§5).
+  Both are engine-owned (not module/system code), server-authoritative (#3), and read
+  the same ECS-hydrated wall segments + token positions. (ARCHITECTURE.md #6 currently
+  names only vision as the exception; **amend it to include movement-collision when M9a
+  lands.**)
 - **#7 (clean-room, ARCHITECTURE §7)** Raycasting / visibility-polygon / fog
   techniques come from **public computational-geometry literature only** — no
   proprietary VTT/engine source; no proprietary names in code. `geo` for polygon ops.
@@ -80,16 +82,26 @@ structural-only):
 - **Per-recipient wall visibility** is just document permission filtering (#4) — no new
   machinery; reuses M5's `PermissionContext`.
 
-## 5. Movement blocking (M9a) — client-side
+## 5. Movement blocking (M9a) — server-authoritative
 
-**Decision: movement-blocking is client-side, not a server exception.** The server
-stays structural-only (#6); only *vision* is the server-authoritative geometric
-exception. The M8d-2 move tool consults the client's wall set (wall docs in the store)
-and rejects/clamps a drag whose path crosses a `blocksMove` segment (segment-segment
-intersection, client-side). Under the cooperative-trust model (#6: install-time trust,
-GM-authoritative), client-enforced movement is acceptable for v1; server-enforced
-collision is a Phase-4 hardening concern if ever needed. *(This is a confirm item —
-§10.1.)*
+**Decision (user 2026-06-22): movement-blocking is server-authoritative.** A token
+drag is a **request**; the server executes it or denies it. On a token position-update
+intent (the M8d-2 move tool's optimistic intent touching `/system/x`,`/system/y`), the
+server intersects the move path against the scene's `blocksMove` wall segments — already
+in the server's ECS for vision — and **rejects** the intent if it crosses (the M6
+optimistic path rolls the client back). If denied, there is no movement.
+
+- **Why server, not client:** a stray/modified-client drag past a wall must never
+  produce an authoritative position behind it. Combined with server-authoritative
+  vision (which recomputes only on *confirmed* moves), this guarantees a rejected move
+  reveals **nothing** — no secret leak. This is the load-bearing reason (a peek can ruin
+  the game), and it makes movement-collision a second engine-owned geometric exception
+  to #6 (§2), reusing the vision ECS data.
+- **Client UX nicety (advisory, not the authority):** the move tool MAY pre-clamp the
+  drag against `blocksMove` walls client-side to avoid a snap-back flicker, but the
+  **server is the gate**; the client pre-check is never trusted.
+- **GM override:** a GM-only "ignore walls" move bypasses the server check (server
+  honors the GM's authority), so the GM can reposition freely.
 
 ## 6. Vision (M9b) — server raycasting → SceneDerived → client mask
 
@@ -128,14 +140,20 @@ Per M8 §6.3 D-V2/D-V3:
   path-dependent (not recomputable from current positions) → the **server stores +
   accumulates** it (union each new `visible` into the player's `explored` for that
   scene) and dispatches it. Consistent across a player's devices.
-- **Storage shape (the §6.3-open decision):** **a per-(scene,player) coarse cell/tile
-  "explored" bitmap**, not an accumulated polygon union. Rationale: a polygon union
-  grows unboundedly complex as a player explores (every visit adds vertices →
-  ever-heavier geometry + dispatch); a fixed-resolution explored grid is **bounded**
-  (O(cells)), trivially accumulated (set cells touched by `visible` to explored), cheap
-  to store/diff/dispatch, and good enough for the dimmed "you've been here" memory. The
-  *live* `visible` mask stays a precise polygon (crisp edges); only the *persisted
-  explored* memory is cell-quantized. *(Confirm item — §10.2.)*
+- **Storage shape (user 2026-06-22): BOTH modes, GM-configurable per scene, defaulting
+  to the cell bitmap.**
+  - **Default — sparse per-(scene,player) explored-cell set** (a "visited cells"
+    bitmap): **bounded** (O(explored area), no growth on revisit), trivially accumulated
+    (mark cells touched by `visible`), cheap to store/diff/dispatch, robust. Boundary is
+    cell-quantized — fine for the *dimmed* memory layer. Sparse-by-cell-coord so it needs
+    no scene dimensions.
+  - **Opt-in — accumulated polygon union** (`geo::union` of every `visible`): crisp
+    explored edges, no resolution choice; cost is unbounded vertex growth + union
+    robustness over a long session. For GMs who want pixel-crisp explored memory and
+    accept the cost.
+  - The *live* `visible` mask is always a precise polygon (crisp current-vision edge);
+    the GM setting only changes the *persisted explored* representation. The fog shader
+    consumes both modes identically (it rasterizes whatever explored mask it's given).
 - **GM vision mode (D-V3):** the GM is authoritative and receives everything (all
   walls, full scene); GM fog is a **client-side toggle** — "see all" (no mask) /
   "see as player X" (apply that player's visible+explored masks the GM also receives).
@@ -145,10 +163,12 @@ Per M8 §6.3 D-V2/D-V3:
 
 Dependency order **M9a → M9b → M9c** (build walls before vision; vision before fog):
 
-- **M9a — Walls + movement blocking** *(docs + tool + client collision)*: the wall
-  `doc_type` + hydration into the ECS wall set; the wall-draw tool (scene-tools);
-  client-side movement-blocking in the move tool. No vision yet. Headless-testable
-  (wall hydration; segment-intersection collision math).
+- **M9a — Walls + server movement-blocking** *(docs + tool + server collision)*: the
+  wall `doc_type` + hydration into the ECS wall set; the wall-draw tool (scene-tools);
+  **server-authoritative** validation of token position-update intents against
+  `blocksMove` walls (reject-on-cross → M6 rollback), with an optional client pre-clamp
+  + GM override. No vision yet. Headless-testable (wall hydration; server-side
+  segment-intersection collision math; reject path).
 - **M9b — Server vision + live visibility mask** *(the core)*: the Rust raycaster +
   visibility-polygon + `geo`-union; the `vision` `SceneDerived` channel (per-recipient,
   coalesced, computed-at-seq); the client maps polygons → the M8c `Compositor`; the
@@ -175,20 +195,19 @@ pattern.
   computational-geometry literature; no proprietary VTT/engine source is consulted or
   named. Recorded per-file as the M8 render work did.
 
-## 10. Decisions to confirm (autonomous — review before M9a)
+## 10. Decisions — **CONFIRMED (user 2026-06-22)**
 
-1. **Movement-blocking is client-side** (cooperative-trust #6), not a server exception.
-   *(Recommend client-side; server-enforced collision deferred to Phase-4 if needed.)*
-2. **Persisted explored fog = a coarse per-(scene,player) cell bitmap** (bounded),
-   while the live `visible` mask stays a precise polygon. *(Recommend; the alternative —
-   accumulated polygon union — grows unbounded.)*
+1. **Movement-blocking is SERVER-authoritative** (§5) — drags are requests the server
+   executes or denies; a denied move never produces an authoritative position (no secret
+   leak). Second engine-owned geometric exception to #6. Client pre-clamp is an advisory
+   UX nicety only; GM override bypasses.
+2. **Persisted explored fog = BOTH modes, GM-configurable, default = sparse cell set**
+   (§7); polygon-union opt-in. Live `visible` always a precise polygon.
 3. **Wall = segment + `blocksSight`/`blocksMove`** in M9; doors / one-way / windows /
-   sound deferred.
-4. **`vision` is a new `SceneDerived` channel** reusing the M8c plumbing (vs a bespoke
-   transport) — already implied by §6.3, restated for confirmation.
-5. **Decomposition M9a/M9b/M9c.**
-6. **M9 depends on the scene-lifecycle decision** ([[scene-lifecycle-gap]]) landing
-   first (walls/vision are per-scene).
+   sound deferred. **Confirmed.**
+4. **`vision` is a new `SceneDerived` channel** reusing the M8c plumbing. **Confirmed.**
+5. **Decomposition M9a/M9b/M9c.** **Confirmed.**
+6. **M9 depends on the scene lifecycle** (M8d §15, approved) landing first.
 
 ## 11. Out of scope (PLAN M9 exclusions + deferrals)
 
