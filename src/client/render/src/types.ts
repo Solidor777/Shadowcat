@@ -49,3 +49,23 @@ export interface TokenNodeSpec {
   rotation: number;
   url: string;
 }
+
+/** A canvas tool. The engine routes pointer events (in scene coords) to the active
+ * tool first; `onPointerDown` returning true claims the gesture (else camera pans). */
+export interface SceneTool {
+  onPointerDown(p: Point, ev: PointerEvent): boolean;
+  onPointerMove(p: Point, ev: PointerEvent): void;
+  onPointerUp(p: Point, ev: PointerEvent): void;
+}
+
+/** The engine surface tools drive (via the AppContext `scene` bridge). The
+ * RenderEngine implements this; a detached bridge no-ops. */
+export interface SceneToolHost {
+  /** Set (or clear) the active tool; the no-tool case falls back to camera pan/zoom. */
+  setActiveTool(tool: SceneTool | null): void;
+  /** Snap a scene point to the active grid (cell/vertex). */
+  snap(p: Point): Point;
+  /** Mark a token as locally dragging so its sprite snaps to the authoritative
+   * transform (no tween lag) while a remote move still tweens; null clears it. */
+  setDraggingToken(id: string | null): void;
+}
