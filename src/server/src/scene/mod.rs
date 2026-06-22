@@ -2,6 +2,8 @@
 //! never authoritative. Holds one hecs entity per scene-entity document so
 //! engine-owned systems (M9 vision, M10 pathfinding) can query spatial state.
 
+pub mod vision;
+
 use std::collections::HashMap;
 
 use uuid::Uuid;
