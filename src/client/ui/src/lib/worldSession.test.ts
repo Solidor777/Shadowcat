@@ -74,3 +74,29 @@ test("a repeated Welcome (reconnect) does not re-add core-ui or throw", async ()
   await Promise.resolve();
   expect(coreUiStub.register).toHaveBeenCalledTimes(1);
 });
+
+test("applies asset_changed to the resolver and notifies subscribers", async () => {
+  // A connect that delivers Welcome and lets the test push later frames.
+  let push!: (frame: unknown) => void;
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
+  };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    coreUiModule: coreUiStub,
+    logger: silentLogger,
+  });
+  const got: Array<{ uuid: string; op: string }> = [];
+  session.onAssetChanged((m) => got.push(m));
+  await session.enter("w1");
+
+  const before = session.assets.url("a1"); // "/api/assets/a1"
+  push({ type: "asset_changed", uuid: "a1", op: "replaced" });
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  // Resolver cache-busts on replace, and subscribers are notified.
+  expect(session.assets.url("a1")).not.toBe(before);
+  expect(got).toEqual([{ uuid: "a1", op: "replaced" }]);
+});

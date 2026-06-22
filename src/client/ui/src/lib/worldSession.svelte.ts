@@ -3,6 +3,7 @@ import {
   OptimisticClient,
   DocumentStore,
   ContributionRegistry,
+  AssetResolver,
   ModuleRegistry,
   HookBus,
   ServiceRegistry,
@@ -31,6 +32,8 @@ export interface WorldSessionOpts {
 export class WorldSession {
   readonly store = new DocumentStore();
   readonly contributions = new ContributionRegistry();
+  readonly assets = new AssetResolver();
+  #assetListeners = new Set<(msg: { uuid: string; op: "replaced" | "deleted" }) => void>();
   state = $state<ConnState>("closed");
   role = $state<WorldRole | null>(null);
   world = $state<string | null>(null);
@@ -57,6 +60,12 @@ export class WorldSession {
     });
   }
 
+  /** Subscribe to asset replace/delete notices; returns an unsubscribe. */
+  onAssetChanged(cb: (msg: { uuid: string; op: "replaced" | "deleted" }) => void): () => void {
+    this.#assetListeners.add(cb);
+    return () => this.#assetListeners.delete(cb);
+  }
+
   async enter(worldId: string): Promise<void> {
     this.world = worldId;
     this.state = "connecting";
@@ -75,6 +84,11 @@ export class WorldSession {
           void this.#onWelcome(w);
         },
         onError: (e) => this.#logger.error("world session ws error", e),
+        onAssetChanged: (msg) => {
+          // Bump the resolver first so a notified panel re-resolves the new URL.
+          this.assets.onAssetChanged(msg);
+          for (const cb of this.#assetListeners) cb(msg);
+        },
       },
     });
     await this.#ws.start();
