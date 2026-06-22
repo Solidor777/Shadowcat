@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, AssetResolver } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, AssetResolver, SceneFrame, SceneSubscription } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 
 /**
@@ -21,6 +21,9 @@ export interface AppContext {
   assets: AssetResolver;
   /** Subscribe to asset replace/delete notices; returns an unsubscribe. */
   onAssetChanged(cb: (msg: { uuid: string; op: "replaced" | "deleted" }) => void): () => void;
+  /** Subscribe to a SceneDerived channel; the session re-establishes it across
+   * reconnects. Returns a synchronous unsubscribe handle. */
+  subscribeScene(channel: string, onUpdate: (f: SceneFrame) => void): SceneSubscription;
   /** Leave the current world and return to world-select. */
   leaveWorld: () => void;
 }

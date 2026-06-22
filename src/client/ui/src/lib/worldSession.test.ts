@@ -100,3 +100,28 @@ test("applies asset_changed to the resolver and notifies subscribers", async () 
   expect(session.assets.url("a1")).not.toBe(before);
   expect(got).toEqual([{ uuid: "a1", op: "replaced" }]);
 });
+
+test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Welcome", async () => {
+  let push!: (frame: unknown) => void;
+  const sent: Array<Record<string, unknown>> = [];
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => push(welcomeFrame));
+    return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => handlers.onClose() });
+  };
+  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: coreUiStub, logger: silentLogger });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const frames: unknown[] = [];
+  session.subscribeScene("identity", (f) => frames.push(f));
+  await vi.waitFor(() => expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(1));
+  const req = sent.find((m) => m.type === "scene_subscribe")!;
+  // First frame resolves the underlying ws subscription + fires onUpdate.
+  push({ type: "scene_derived", request_id: req.request_id, channel: "identity", computed_at_seq: 0, payload: {} });
+  await vi.waitFor(() => expect(frames).toHaveLength(1));
+
+  // A second Welcome (reconnect) must re-establish the subscription.
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(2));
+});

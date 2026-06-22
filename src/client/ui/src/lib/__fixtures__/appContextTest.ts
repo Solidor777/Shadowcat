@@ -13,6 +13,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     role: over.role ?? "gm",
     t: over.t ?? ((k: string) => k),
     onAssetChanged: over.onAssetChanged ?? (() => () => {}),
+    subscribeScene: over.subscribeScene ?? (() => ({ unsubscribe() {} })),
     leaveWorld: over.leaveWorld ?? (() => {}),
   };
   return new Map([[__APP_CONTEXT_KEY__, ctx]]);

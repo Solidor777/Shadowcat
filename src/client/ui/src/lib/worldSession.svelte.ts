@@ -14,6 +14,8 @@ import {
   type Logger,
   type Module,
   type WireWelcome,
+  type SceneFrame,
+  type SceneSubscription,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 
@@ -34,6 +36,10 @@ export class WorldSession {
   readonly contributions = new ContributionRegistry();
   readonly assets = new AssetResolver();
   #assetListeners = new Set<(msg: { uuid: string; op: "replaced" | "deleted" }) => void>();
+  #sceneSubs = new Map<
+    string,
+    { channel: string; onUpdate: (f: SceneFrame) => void; handle: SceneSubscription | null }
+  >();
   state = $state<ConnState>("closed");
   role = $state<WorldRole | null>(null);
   world = $state<string | null>(null);
@@ -64,6 +70,41 @@ export class WorldSession {
   onAssetChanged(cb: (msg: { uuid: string; op: "replaced" | "deleted" }) => void): () => void {
     this.#assetListeners.add(cb);
     return () => this.#assetListeners.delete(cb);
+  }
+
+  /** Subscribe to a SceneDerived channel. Returns a synchronous handle; the
+   * underlying WS subscription is (re)established on every Welcome so derived state
+   * survives a reconnect. */
+  subscribeScene(channel: string, onUpdate: (f: SceneFrame) => void): SceneSubscription {
+    const id = crypto.randomUUID();
+    const rec = { channel, onUpdate, handle: null as SceneSubscription | null };
+    this.#sceneSubs.set(id, rec);
+    this.#establishScene(id, rec);
+    return {
+      unsubscribe: () => {
+        this.#sceneSubs.delete(id);
+        rec.handle?.unsubscribe();
+        rec.handle = null;
+      },
+    };
+  }
+
+  #establishScene(
+    id: string,
+    rec: { channel: string; onUpdate: (f: SceneFrame) => void; handle: SceneSubscription | null },
+  ): void {
+    const ws = this.#ws;
+    if (!ws) return;
+    void ws
+      .subscribeScene(rec.channel, rec.onUpdate)
+      .then((h) => {
+        // Still registered (and the same record)? keep the handle; else drop it.
+        if (this.#sceneSubs.get(id) === rec) rec.handle = h;
+        else h.unsubscribe();
+      })
+      .catch(() => {
+        // Dropped (e.g. disconnect during connect); re-established on the next Welcome.
+      });
   }
 
   async enter(worldId: string): Promise<void> {
@@ -106,6 +147,13 @@ export class WorldSession {
         await this.#modules.activate();
       }
       reconcileTopology(this.#modules.declarations(), w.contract_declarations, this.#logger);
+      // Scene subscriptions are dropped by the WS on disconnect; re-establish each
+      // on every (re)connect so derived state (vision) survives a reconnect. No-op
+      // on the first Welcome (none registered until the render engine subscribes).
+      for (const [id, rec] of this.#sceneSubs) {
+        rec.handle = null;
+        this.#establishScene(id, rec);
+      }
     } catch (e) {
       this.#logger.error("world session welcome handling failed", e);
     }
