@@ -67,7 +67,7 @@ export class RenderEngine {
   }
 
   private onSceneFrame(frame: { payload: unknown; computedAtSeq: number }): void {
-    const input = this.toVisibility(frame.payload);
+    const input = this.toVisibility(); // M9: parse frame.payload polygons
     if (this.opts.store.appliedSeq >= frame.computedAtSeq) {
       this.applyDerived(input);
     } else {
@@ -88,8 +88,9 @@ export class RenderEngine {
     this.opts.onDerivedApplied?.();
   }
 
-  /** M8 identity: any payload ⇒ full visibility. M9 parses polygon geometry. */
-  private toVisibility(_payload: unknown): VisibilityInput {
+  /** M8 identity: full visibility regardless of payload. M9 takes the frame payload
+   * and parses polygon geometry into `visible`. */
+  private toVisibility(): VisibilityInput {
     return { visible: [] };
   }
 
