@@ -1,6 +1,6 @@
 import type { ReadableDocuments, AssetResolver } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { VisibilityInput, SceneTool, SceneToolHost, Point, ShapeNodeSpec } from "./types";
+import type { VisibilityInput, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon } from "./types";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
@@ -11,6 +11,19 @@ import { DrawingView } from "./drawing-view";
 import { TemplateView } from "./template-view";
 import { WallView } from "./wall-view";
 import { PingView } from "./ping-view";
+
+/** Rasterize a flat `[i,j,…]` explored-cell list into one square rect polygon per cell at
+ * `size` world units. Cell `(i,j)` covers `[i*size,(i+1)*size) × [j*size,(j+1)*size)`. The fog
+ * shader unions overlapping rects by overdraw, so per-cell rects (vs merged runs) are correct. */
+function cellsToRects(cells: number[], size: number): Polygon[] {
+  const rects: Polygon[] = [];
+  for (let k = 0; k + 1 < cells.length; k += 2) {
+    const x = cells[k] * size;
+    const y = cells[k + 1] * size;
+    rects.push({ points: [x, y, x + size, y, x + size, y + size, x, y + size] });
+  }
+  return rects;
+}
 
 /** Handle to a scene subscription (structurally matches @shadowcat/core's). */
 export interface SceneSubscription {
@@ -156,12 +169,16 @@ export class RenderEngine implements SceneToolHost {
    * across scenes). */
   private toVisibility(payload: unknown): VisibilityInput {
     const p = payload as
-      | { mode?: string; polygons?: { scene?: string; points?: number[] }[] }
+      | {
+          mode?: string;
+          polygons?: { scene?: string; points?: number[] }[];
+          explored?: { scene?: string; cell?: number; cells?: number[] }[];
+        }
       | null
       | undefined;
-    if (p?.mode === "all") return { mode: "all", visible: [] };
+    if (p?.mode === "all") return { mode: "all", visible: [], explored: [] };
     // Garbled/missing/unknown mode → full fog. Only a well-formed `masked` payload reveals.
-    if (p?.mode !== "masked") return { mode: "masked", visible: [] };
+    if (p?.mode !== "masked") return { mode: "masked", visible: [], explored: [] };
     const activeScene = this.opts.store.query("scene")[0]?.id;
     const polygons = Array.isArray(p.polygons) ? p.polygons : [];
     const visible = polygons
@@ -170,7 +187,21 @@ export class RenderEngine implements SceneToolHost {
           !!g && g.scene === activeScene && Array.isArray(g.points) && g.points.length >= 6,
       )
       .map((g) => ({ points: g.points }));
-    return { mode: "masked", visible };
+    // `explored` is the dimmed memory layer: scene-tagged cell sets rasterized to rect polygons,
+    // filtered to the active scene (cross-scene guard, like `visible`). Missing/garbled → no
+    // explored (fail-safe: more fog, never less).
+    const exploredGroups = Array.isArray(p.explored) ? p.explored : [];
+    const explored = exploredGroups
+      .filter(
+        (g): g is { scene?: string; cell: number; cells: number[] } =>
+          !!g &&
+          g.scene === activeScene &&
+          typeof g.cell === "number" &&
+          g.cell > 0 &&
+          Array.isArray(g.cells),
+      )
+      .flatMap((g) => cellsToRects(g.cells, g.cell));
+    return { mode: "masked", visible, explored };
   }
 
   /** Module-facing shader-filter seam (0.x). Forwards to the backend; no engine
