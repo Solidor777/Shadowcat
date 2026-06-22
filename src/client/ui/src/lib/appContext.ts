@@ -21,6 +21,8 @@ export interface AppContext {
   documents: ReadableDocuments;
   world: string;
   role: WorldRole;
+  /** userId → username for the world's members (GM-only source; empty for players). */
+  members: Map<string, string>;
   t: TFunc;
   /** Resolves asset UUIDs to serve URLs, cache-busting on replace. */
   assets: AssetResolver;

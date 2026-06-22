@@ -16,6 +16,7 @@
     documents: session.documents,
     world: session.world!,
     role: session.role!,
+    members: session.members,
     t,
     assets: session.assets,
     onAssetChanged: (cb) => session.onAssetChanged(cb),

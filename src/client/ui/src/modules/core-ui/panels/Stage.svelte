@@ -16,7 +16,7 @@
     createBackend?: (canvas: HTMLCanvasElement) => Promise<DisplayBackend>;
   } = $props();
 
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, role } = getAppContext();
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, role, members } = getAppContext();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -192,7 +192,7 @@
       <option value="all">See all</option>
       <option value="fog">Preview fog</option>
       {#each playerOptions as owner (owner)}
-        <option value={`as:${owner}`}>See as {owner.slice(0, 8)}</option>
+        <option value={`as:${owner}`}>See as {members.get(owner) ?? owner.slice(0, 8)}</option>
       {/each}
     </select>
   {/if}

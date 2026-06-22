@@ -14,9 +14,6 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - TODO: Resolve multi-provider conflict policy for `singleton` surface contracts in the UI contribution architecture — when two modules provide the same `singleton` contract (e.g. both claim "the sidebar"), decide the winner (load order, explicit priority, or user selection) instead of the current deterministic loud-fail. Design once a real second provider exists to validate the semantics; the contract model already carries the `singleton`/`multi` cardinality marker the policy slots into.
 - TODO: Add capability version negotiation to contract-based module dependencies (`requires`) — match a required contract against a provider by version range, not presence alone. Deferred until multiple providers of a contract exist at differing versions.
 
-## Client / UI (M9c-2)
-- TODO: Label the GM see-as-player picker by username, not a truncated user id. Stage.svelte derives see-as candidates from distinct token `owner`s the GM sees and labels each "See as <first 8 of uuid>" — functional but unfriendly. There is no members/username source exposed client-side (Welcome carries only the actor's own role). Add a world-members source (a `GET /api/worlds/{id}/members` → `[{user_id, username, role}]`, or include members in Welcome) and label the picker by username; also list members with no token. (Surfaced building M9c-2.)
-
 ## Client / intents
 - TODO: Replay (or visibly block) optimistic intents issued while the world socket is disconnected. `WorldSession.dispatchIntent` drops a dispatch when `WsClient` has no transport (logged), avoiding an orphaned pending entry that would mis-correlate the FIFO confirm of the next echo; a reconnect does not replay the dropped action. Add a replay-on-resync queue (or a "reconnecting" UI block) when offline editing matters.
 

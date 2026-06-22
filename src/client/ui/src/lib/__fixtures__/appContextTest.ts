@@ -13,6 +13,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     assets: over.assets ?? new AssetResolver(),
     world: over.world ?? "w1",
     role: over.role ?? "gm",
+    members: over.members ?? new Map(),
     t: over.t ?? ((k: string) => k),
     onAssetChanged: over.onAssetChanged ?? (() => () => {}),
     subscribeScene: over.subscribeScene ?? (() => ({ unsubscribe() {} })),

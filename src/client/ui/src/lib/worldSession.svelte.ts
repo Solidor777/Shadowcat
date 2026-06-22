@@ -21,6 +21,7 @@ import {
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import { SceneInteractionBridge } from "./sceneInteraction";
+import { listWorldMembers } from "./api";
 
 export type ConnState = "connecting" | "open" | "closed";
 
@@ -52,6 +53,9 @@ export class WorldSession {
   state = $state<ConnState>("closed");
   role = $state<WorldRole | null>(null);
   world = $state<string | null>(null);
+  /** userId → username for see-as labels; fetched on a GM's Welcome (the members
+   * endpoint is GM-gated, so this stays empty for players). */
+  members = $state(new Map<string, string>());
 
   #ws: WsClient | null = null;
   #optimistic: OptimisticClient;
@@ -194,6 +198,16 @@ export class WorldSession {
   async #onWelcome(w: WireWelcome): Promise<void> {
     try {
       this.role = w.actor_role;
+      // Fetch member usernames for see-as labels (GM only; the endpoint 403s
+      // players). Best-effort: a failure leaves the picker on short-id fallback.
+      if (w.actor_role === "gm") {
+        try {
+          const list = await listWorldMembers(w.world);
+          this.members = new Map(list.map((m) => [m.user, m.username]));
+        } catch (e) {
+          this.#logger.warn("member list fetch failed", e);
+        }
+      }
       if (!this.#bootstrapped) {
         // Set before the await so a second Welcome (reconnect) cannot re-enter
         // and double-add the module.
