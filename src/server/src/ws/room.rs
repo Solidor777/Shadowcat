@@ -169,6 +169,26 @@ impl Room {
         ts: i64,
     ) -> Result<Command, DataError> {
         let _guard = self.publish_guard.lock().await;
+        // M9a: server-authoritative movement collision (engine-owned geometry — the second
+        // ARCHITECTURE #6 exception). A non-GM token move whose path crosses a `blocksMove`
+        // wall is rejected BEFORE the write, so it consumes no seq and the client rolls back.
+        // GM moves ignore walls (the override, M9 §5). The move start is the authoritative
+        // ECS position, never the client's claimed pre-image.
+        if ctx.world_role != crate::data::document::WorldRole::Gm {
+            let scene = self.scene.read().await;
+            for op in &ops {
+                if let Operation::Update { doc_id, changes } = op {
+                    // Validate the POST-IMAGE position (the committed system + all changes
+                    // applied), so a wholesale `/system` write or duplicate `/system/x`
+                    // changes can't present a safe target while committing an unsafe one.
+                    if let Some((scene_id, a0, a1)) = scene.token_move(*doc_id, changes) {
+                        if scene.blocks_move(scene_id, a0, a1) {
+                            return Err(DataError::Forbidden);
+                        }
+                    }
+                }
+            }
+        }
         let cmd = repo.apply_intent(ctx, self.world_id, ops, ts).await?;
         // Hydrate the derived ECS from the committed command while still holding
         // publish_guard, so the ECS is consistent with cmd.seq before the Event
@@ -413,6 +433,137 @@ mod room_tests {
             .await
             .unwrap();
         assert_eq!(room.scene().read().await.entity_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn movement_blocked_for_player_crossing_wall_but_gm_bypasses() {
+        use crate::data::command::FieldChange;
+        use crate::data::document::DocRole;
+        use serde_json::json;
+
+        let (repo, world_id, gm) = repo_with_world().await;
+        let p = repo
+            .create_user("p", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world_id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let wall_id = Uuid::from_u128(12);
+
+        let mut scene = wdoc(world_id, scene_id, "scene");
+        scene.owner = Some(gm.user_id);
+        room.publish(&repo, &gm, vec![Operation::Create { doc: scene }], 0)
+            .await
+            .unwrap();
+
+        // Token owned (writable) by the player, at (0,0).
+        let mut token = wdoc(world_id, token_id, "token");
+        token.parent_id = Some(scene_id);
+        token.owner = Some(p);
+        token.permissions.users.insert(p, DocRole::Owner);
+        token.system = json!({ "x": 0, "y": 0 });
+        room.publish(&repo, &gm, vec![Operation::Create { doc: token }], 0)
+            .await
+            .unwrap();
+
+        // A blocksMove wall on the diagonal x+y=10.
+        let mut wall = wdoc(world_id, wall_id, "wall");
+        wall.parent_id = Some(scene_id);
+        wall.owner = Some(gm.user_id);
+        wall.system =
+            json!({ "seg": { "x1": 0, "y1": 10, "x2": 10, "y2": 0 }, "blocksMove": true });
+        room.publish(&repo, &gm, vec![Operation::Create { doc: wall }], 0)
+            .await
+            .unwrap();
+
+        let mv = |nx: i64, ny: i64, ox: i64, oy: i64| Operation::Update {
+            doc_id: token_id,
+            changes: vec![
+                FieldChange {
+                    path: "/system/x".into(),
+                    old: json!(ox),
+                    new: json!(nx),
+                },
+                FieldChange {
+                    path: "/system/y".into(),
+                    old: json!(oy),
+                    new: json!(ny),
+                },
+            ],
+        };
+
+        let seq_before = room.current_seq();
+        // Forged bypass A: a single wholesale `/system` write that relocates the token past the
+        // wall must be caught (the post-image, not a leaf-path match, is validated).
+        let whole = Operation::Update {
+            doc_id: token_id,
+            changes: vec![FieldChange {
+                path: "/system".into(),
+                old: json!({ "x": 0, "y": 0 }),
+                new: json!({ "x": 10, "y": 10 }),
+            }],
+        };
+        assert!(matches!(
+            room.publish(&repo, &player, vec![whole], 0).await,
+            Err(crate::data::DataError::Forbidden)
+        ));
+        assert_eq!(room.current_seq(), seq_before);
+        // Forged bypass B: duplicate `/system/x` (safe-then-unsafe) — last write wins, so the
+        // committed x=11 crosses; the gate validates against that, not the first change.
+        let dup = Operation::Update {
+            doc_id: token_id,
+            changes: vec![
+                FieldChange {
+                    path: "/system/x".into(),
+                    old: json!(0),
+                    new: json!(1),
+                },
+                FieldChange {
+                    path: "/system/x".into(),
+                    old: json!(0),
+                    new: json!(11),
+                },
+            ],
+        };
+        assert!(matches!(
+            room.publish(&repo, &player, vec![dup], 0).await,
+            Err(crate::data::DataError::Forbidden)
+        ));
+        assert_eq!(room.current_seq(), seq_before);
+
+        // Player move (0,0)->(10,10) crosses the wall → rejected before the write.
+        let blocked = room
+            .publish(&repo, &player, vec![mv(10, 10, 0, 0)], 0)
+            .await;
+        assert!(matches!(blocked, Err(crate::data::DataError::Forbidden)));
+        assert_eq!(
+            room.current_seq(),
+            seq_before,
+            "a blocked move consumes no seq"
+        );
+
+        // The same player move that does NOT cross is allowed (so the block above was the
+        // collision gate, not an authorization failure).
+        room.publish(&repo, &player, vec![mv(1, 1, 0, 0)], 0)
+            .await
+            .unwrap();
+        assert_eq!(room.current_seq(), seq_before + 1);
+
+        // A GM move across the wall bypasses the collision gate (the "ignore walls" override).
+        room.publish(&repo, &gm, vec![mv(10, 10, 1, 1)], 0)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

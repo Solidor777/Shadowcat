@@ -20,6 +20,9 @@ pub fn is_scene_entity(doc: &Document) -> bool {
     doc.doc_type == "scene" || doc.parent_id.is_some()
 }
 
+/// A resolved token move: `(scene id, committed start, post-image end)`.
+pub type TokenMove = (Uuid, (f64, f64), (f64, f64));
+
 /// The per-world derived world. Writes are serialized by the caller
 /// (`Room::publish` under `publish_guard`); reads (derived recompute) take a
 /// shared borrow.
@@ -114,6 +117,103 @@ impl SceneEcs {
     pub fn entity_count(&self) -> usize {
         self.index.len()
     }
+
+    /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,
+    /// post_image_end)`. The end is the committed `system` with **all** changes applied in
+    /// array order (last-write-wins) — exactly what `apply_intent` commits — so a wholesale
+    /// `/system` write or duplicate `/system/x` changes cannot evade the collision check by
+    /// presenting a safe target while committing an unsafe one. `None` if `token_id` is not a
+    /// token with `(x,y)`. Reads the authoritative ECS state, never the client's `old`.
+    pub fn token_move(
+        &self,
+        token_id: Uuid,
+        changes: &[crate::data::command::FieldChange],
+    ) -> Option<TokenMove> {
+        let &e = self.index.get(&token_id)?;
+        let tok = self.world.get::<&SceneEntity>(e).ok()?;
+        if tok.doc.doc_type != "token" {
+            return None;
+        }
+        let scene = tok.doc.parent_id?;
+        let cx = sys_f64(&tok.doc, "/x")?;
+        let cy = sys_f64(&tok.doc, "/y")?;
+        let mut v = serde_json::to_value(&tok.doc).ok()?;
+        for ch in changes {
+            let _ = set_pointer(&mut v, &ch.path, ch.new.clone());
+        }
+        let nx = v.pointer("/system/x").and_then(|x| x.as_f64())?;
+        let ny = v.pointer("/system/y").and_then(|x| x.as_f64())?;
+        Some((scene, (cx, cy), (nx, ny)))
+    }
+
+    /// Engine-owned movement collision (M9a, the second ARCHITECTURE #6 geometric
+    /// exception). True if the move segment `a0→a1` crosses any `blocksMove` wall in `scene`.
+    /// A no-op move (`a0 == a1`) never blocks.
+    pub fn blocks_move(&self, scene: Uuid, a0: (f64, f64), a1: (f64, f64)) -> bool {
+        if a0 == a1 {
+            return false;
+        }
+        for w in self.world.query::<&SceneEntity>().iter() {
+            if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
+                continue;
+            }
+            if w.doc
+                .system
+                .pointer("/blocksMove")
+                .and_then(|v| v.as_bool())
+                != Some(true)
+            {
+                continue;
+            }
+            let (Some(x1), Some(y1), Some(x2), Some(y2)) = (
+                sys_f64(&w.doc, "/seg/x1"),
+                sys_f64(&w.doc, "/seg/y1"),
+                sys_f64(&w.doc, "/seg/x2"),
+                sys_f64(&w.doc, "/seg/y2"),
+            ) else {
+                continue;
+            };
+            if segments_cross(a0, a1, (x1, y1), (x2, y2)) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Read an `f64` from a document's opaque `system` body via JSON pointer (ints coerce).
+fn sys_f64(doc: &Document, pointer: &str) -> Option<f64> {
+    doc.system.pointer(pointer).and_then(|v| v.as_f64())
+}
+
+/// Signed area ×2 of triangle abc; >0 = ccw, <0 = cw, 0 = collinear.
+fn orient(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
+    (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+}
+
+/// Is `p` within the axis-aligned bounding box of segment `ab` (collinearity assumed)?
+fn on_segment(a: (f64, f64), b: (f64, f64), p: (f64, f64)) -> bool {
+    p.0 >= a.0.min(b.0) && p.0 <= a.0.max(b.0) && p.1 >= a.1.min(b.1) && p.1 <= a.1.max(b.1)
+}
+
+/// Do segments `p1p2` and `p3p4` intersect (proper crossing or a touching endpoint /
+/// T-junction)? Source: standard orientation/cross-product segment-intersection test
+/// (CLRS "Determining whether two segments intersect"). A move that merely touches a wall
+/// counts as blocked (conservative — a token cannot end on or graze a wall).
+fn segments_cross(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), p4: (f64, f64)) -> bool {
+    let d1 = orient(p3, p4, p1);
+    let d2 = orient(p3, p4, p2);
+    let d3 = orient(p1, p2, p3);
+    let d4 = orient(p1, p2, p4);
+    if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
+        && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
+    {
+        return true;
+    }
+    (d1 == 0.0 && on_segment(p3, p4, p1))
+        || (d2 == 0.0 && on_segment(p3, p4, p2))
+        || (d3 == 0.0 && on_segment(p1, p2, p3))
+        || (d4 == 0.0 && on_segment(p1, p2, p4))
 }
 
 impl Default for SceneEcs {
@@ -194,6 +294,142 @@ mod tests {
             doc: doc(11, Some(10), "token"),
         });
         assert_eq!(ecs.entity_count(), 0);
+    }
+
+    fn entity_doc(id: u128, parent: u128, ty: &str, system: serde_json::Value) -> Document {
+        let mut d = doc(id, Some(parent), ty);
+        d.system = system;
+        d
+    }
+
+    #[test]
+    fn segments_cross_truth_table() {
+        assert!(segments_cross(
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (10.0, 0.0)
+        )); // X crossing
+        assert!(!segments_cross(
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (0.0, 5.0),
+            (10.0, 5.0)
+        )); // parallel
+        assert!(!segments_cross(
+            (0.0, 0.0),
+            (5.0, 0.0),
+            (10.0, 0.0),
+            (15.0, 0.0)
+        )); // collinear disjoint
+        assert!(segments_cross(
+            (0.0, 0.0),
+            (5.0, 0.0),
+            (5.0, 0.0),
+            (5.0, 5.0)
+        )); // touching endpoint (T)
+        assert!(segments_cross(
+            (0.0, 0.0),
+            (5.0, 10.0),
+            (0.0, 5.0),
+            (10.0, 5.0)
+        )); // crossing
+        assert!(segments_cross(
+            (2.0, 0.0),
+            (8.0, 0.0),
+            (0.0, 0.0),
+            (10.0, 0.0)
+        )); // collinear OVERLAP (sliding along a wall)
+    }
+
+    fn fc(path: &str, new: serde_json::Value) -> crate::data::command::FieldChange {
+        crate::data::command::FieldChange {
+            path: path.into(),
+            old: json!(0),
+            new,
+        }
+    }
+
+    #[test]
+    fn blocks_move_geometry_scene_scoping_and_filters() {
+        let scene = Uuid::from_u128(10);
+        let other = Uuid::from_u128(20);
+        let cross = json!({ "seg": {"x1":0,"y1":10,"x2":10,"y2":0}, "blocksMove": true });
+
+        // Scene 10 has one crossing blocksMove wall.
+        let ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                entity_doc(12, 10, "wall", cross.clone()),
+            ],
+            0,
+        );
+        assert!(ecs.blocks_move(scene, (0.0, 0.0), (10.0, 10.0))); // crosses the wall
+        assert!(!ecs.blocks_move(scene, (0.0, 0.0), (1.0, 1.0))); // misses (sum 2 < 10)
+        assert!(!ecs.blocks_move(scene, (0.0, 0.0), (0.0, 0.0))); // a no-op move never blocks
+
+        // Scene scoping: an identical crossing wall in scene 20 blocks a scene-20 move but NOT
+        // a scene-10 move (the `parent_id == Some(scene)` filter).
+        let ecs_scope = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                doc(20, None, "scene"),
+                entity_doc(24, 20, "wall", cross.clone()),
+            ],
+            0,
+        );
+        assert!(ecs_scope.blocks_move(other, (0.0, 0.0), (10.0, 10.0))); // blocks in scene 20
+        assert!(!ecs_scope.blocks_move(scene, (0.0, 0.0), (10.0, 10.0))); // not in scene 10
+
+        // A scene whose only crossing wall is blocksMove:false must not block movement.
+        let ecs2 = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                entity_doc(
+                    13,
+                    10,
+                    "wall",
+                    json!({ "seg": {"x1":0,"y1":10,"x2":10,"y2":0}, "blocksMove": false }),
+                ),
+            ],
+            0,
+        );
+        assert!(!ecs2.blocks_move(scene, (0.0, 0.0), (10.0, 10.0)));
+    }
+
+    #[test]
+    fn token_move_uses_post_image_resisting_forged_bypasses() {
+        let ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                entity_doc(11, 10, "token", json!({ "x": 0, "y": 0 })),
+            ],
+            0,
+        );
+        let id = Uuid::from_u128(11);
+        // A normal two-axis move.
+        let (s, a0, a1) = ecs
+            .token_move(
+                id,
+                &[fc("/system/x", json!(10)), fc("/system/y", json!(10))],
+            )
+            .unwrap();
+        assert_eq!(s, Uuid::from_u128(10));
+        assert_eq!(a0, (0.0, 0.0));
+        assert_eq!(a1, (10.0, 10.0));
+        // Bypass A: a wholesale `/system` write — the post-image reads the new x/y.
+        let whole = fc("/system", json!({ "x": 50, "y": 50 }));
+        assert_eq!(ecs.token_move(id, &[whole]).unwrap().2, (50.0, 50.0));
+        // Bypass B: duplicate `/system/x` — last write wins, mirroring apply_intent.
+        let dup = ecs
+            .token_move(id, &[fc("/system/x", json!(5)), fc("/system/x", json!(50))])
+            .unwrap();
+        assert_eq!(dup.2 .0, 50.0);
+        // A non-position update is a no-op move (committed == post-image).
+        let noop = ecs.token_move(id, &[fc("/system/hp", json!(5))]).unwrap();
+        assert_eq!(noop.1, noop.2);
+        // A non-token id resolves to nothing.
+        assert!(ecs.token_move(Uuid::from_u128(99), &[]).is_none());
     }
 
     #[test]

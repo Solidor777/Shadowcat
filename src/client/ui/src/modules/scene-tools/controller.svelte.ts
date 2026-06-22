@@ -7,7 +7,7 @@ import { buildTokenDoc, buildSceneEntityDoc, type ReadableDocuments, type AssetR
 import type { SceneInteraction } from "../../lib/sceneInteraction";
 import { topTokenAt } from "./hit-test";
 
-export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping";
+export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping" | "wall";
 export type DrawMode = "freehand" | "rect" | "ellipse" | "line";
 export type TemplateMode = "circle" | "cone" | "rect" | "line";
 
@@ -55,6 +55,7 @@ export class ToolController {
       template: makeTemplateTool(ctx, this),
       measure: makeMeasureTool(ctx),
       ping: makePingTool(ctx),
+      wall: makeWallTool(ctx),
     };
   }
 
@@ -100,6 +101,47 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
 function hasExtent(mode: DrawMode, a: Point, b: Point, freehand: number[]): boolean {
   if (mode === "freehand") return freehand.length >= 4;
   return Math.hypot(b.x - a.x, b.y - a.y) >= 1;
+}
+
+/** Wall preview/segment color (matches the WallView render color). */
+const WALL_COLOR = 0xd06060;
+
+/** Drag to draw a wall segment (snapped endpoints); release persists a `wall` doc
+ * (`blocksSight`+`blocksMove`). The server's collision check reads the same `seg`. GM-gated
+ * (all rail tools are). No active scene → unhandled. */
+export function makeWallTool(ctx: ToolContext): SceneTool {
+  let anchor: Point | null = null;
+  return {
+    onPointerDown(p: Point): boolean {
+      if (!activeScene(ctx)) return false;
+      anchor = ctx.scene.snap(p);
+      return true;
+    },
+    onPointerMove(p: Point): void {
+      if (!anchor) return;
+      const b = ctx.scene.snap(p);
+      ctx.scene.previewOverlay([{ points: [anchor.x, anchor.y, b.x, b.y], closed: false, stroke: { color: WALL_COLOR, width: 4 }, fill: null }]);
+    },
+    onPointerUp(p: Point): void {
+      if (!anchor) return;
+      const scene = activeScene(ctx);
+      const b = ctx.scene.snap(p);
+      if (scene && Math.hypot(b.x - anchor.x, b.y - anchor.y) >= 1) {
+        ctx.dispatchIntent([
+          {
+            op: "create",
+            doc: buildSceneEntityDoc(ctx.world, scene.id, "wall", {
+              seg: { x1: anchor.x, y1: anchor.y, x2: b.x, y2: b.y },
+              blocksSight: true,
+              blocksMove: true,
+            }),
+          },
+        ]);
+      }
+      ctx.scene.clearOverlay();
+      anchor = null;
+    },
+  };
 }
 
 /** Click to ping a location: broadcasts a transient marker. The server relays it back to

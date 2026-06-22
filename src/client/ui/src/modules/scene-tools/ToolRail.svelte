@@ -25,6 +25,7 @@
     { id: "template", label: t("tools.template") },
     { id: "measure", label: t("tools.measure") },
     { id: "ping", label: t("tools.ping") },
+    { id: "wall", label: t("tools.wall") },
   ];
   const drawModes: DrawMode[] = ["freehand", "rect", "ellipse", "line"];
   const templateModes: TemplateMode[] = ["circle", "cone", "rect", "line"];

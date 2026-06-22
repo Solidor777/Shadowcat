@@ -38,6 +38,7 @@ export const en: Messages = {
   "tools.template": "Template",
   "tools.measure": "Measure",
   "tools.ping": "Ping",
+  "tools.wall": "Wall",
   "tools.shape": "Shape",
   "tools.color": "Color",
 };
