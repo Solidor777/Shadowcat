@@ -839,7 +839,7 @@ mod tests {
         enrich_vision_explored(&mut payload, &grid, &repo, world, target, false).await;
         assert_eq!(
             payload["explored"][0]["cells"].as_array().unwrap().len(),
-            1 * 2,
+            2, // one stored cell × 2 coords
             "emits only the target's stored explored"
         );
         assert_eq!(
