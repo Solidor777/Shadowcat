@@ -5,6 +5,7 @@
   --surface-raised: var(--slate-850);
   --surface-overlay: var(--slate-800);
   --border: var(--slate-700);
+  --grid-line: var(--slate-700); // canvas grid overlay (decoupled from UI --border)
   --text-primary: var(--slate-50);
   --text-muted: var(--slate-400);
   --accent: var(--blue-500);

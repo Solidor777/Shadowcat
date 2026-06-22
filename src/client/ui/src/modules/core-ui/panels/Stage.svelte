@@ -20,12 +20,20 @@
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
 
-  /** Sample a CSS custom property as a 0xRRGGBB number (canvas chrome reads tokens). */
+  /** Resolve a CSS custom property (which may be a `var()` alias) to a 0xRRGGBB
+   * number by reading the computed `color` off a throwaway probe — getPropertyValue
+   * returns the unresolved `var(...)` string for aliased custom properties. */
   function readColor(token: string, fallback: number): number {
     if (typeof getComputedStyle !== "function" || !host) return fallback;
-    const raw = getComputedStyle(host).getPropertyValue(token).trim();
-    const m = /^#([0-9a-f]{6})$/i.exec(raw);
-    return m ? parseInt(m[1], 16) : fallback;
+    const probe = document.createElement("span");
+    probe.style.color = `var(${token})`;
+    probe.style.display = "none";
+    host.appendChild(probe);
+    const rgb = getComputedStyle(probe).color; // "rgb(r, g, b)" or ""
+    host.removeChild(probe);
+    const m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(rgb);
+    if (!m) return fallback;
+    return (Number(m[1]) << 16) | (Number(m[2]) << 8) | Number(m[3]);
   }
 
   $effect(() => {
