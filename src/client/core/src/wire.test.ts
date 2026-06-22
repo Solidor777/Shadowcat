@@ -132,6 +132,15 @@ describe("parseServerMsg", () => {
     expect(m?.type).toBe("search_update");
   });
 
+  it("parses an inbound scene_ping frame", () => {
+    const m = parseServerMsg(JSON.stringify({ type: "scene_ping", scene: "s1", x: 12, y: 34, user: "u1" }));
+    expect(m?.type).toBe("scene_ping");
+    if (m?.type === "scene_ping") {
+      expect(m.x).toBe(12);
+      expect(m.user).toBe("u1");
+    }
+  });
+
   it("returns null on malformed or unknown frames", () => {
     expect(parseServerMsg("{not json")).toBeNull();
     expect(parseServerMsg(JSON.stringify({ type: "nope" }))).toBeNull();

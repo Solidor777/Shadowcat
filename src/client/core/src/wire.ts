@@ -209,6 +209,13 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     uuid: z.string(),
     op: z.enum(["replaced", "deleted"]),
   }),
+  z.object({
+    type: z.literal("scene_ping"),
+    scene: z.string(),
+    x: z.number(),
+    y: z.number(),
+    user: z.string(),
+  }),
 ]);
 
 export type WireScope = z.infer<typeof ScopeSchema>;
@@ -234,7 +241,8 @@ export type ClientMsg =
     }
   | { type: "unsubscribe"; request_id: string }
   | { type: "scene_subscribe"; request_id: string; channel: string }
-  | { type: "scene_unsubscribe"; request_id: string };
+  | { type: "scene_unsubscribe"; request_id: string }
+  | { type: "scene_ping"; scene: string; x: number; y: number };
 
 /** Parse + validate an inbound text frame; `null` on malformed/unknown input. */
 export function parseServerMsg(text: string): ServerMsg | null {
