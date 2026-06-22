@@ -126,6 +126,7 @@ export class RenderEngine {
    * mutation, so the `store.subscribe` reconcile never fires for them. */
   reconcileNow(): void {
     this.reconciler.reconcile();
+    this.tokens.reconcile(); // re-resolve token images too (AssetChanged path)
   }
 
   /** Push the camera transform to the backend and redraw the grid for the new view. */

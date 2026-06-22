@@ -189,6 +189,27 @@ test("start renders existing token docs and re-reconciles on store change", () =
   expect(backend.tokens.has("t1")).toBe(true);
 });
 
+test("reconcileNow re-resolves token images (AssetChanged path)", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const engine = new RenderEngine({ store, assets, backend, grid: { kind: "square", size: 100 } });
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: {
+      id: "t1", scope: { kind: "world", world_id: "w1" }, doc_type: "token", schema_version: 1,
+      source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      embedded: {}, system: { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "i1" } }, created_at: 0, updated_at: 0,
+    } }],
+  });
+  engine.start();
+  const before = backend.tokens.get("t1")!.url;
+  assets.onAssetChanged({ uuid: "i1", op: "replaced" }); // cache-bust, no store change
+  engine.reconcileNow();
+  expect(backend.tokens.get("t1")!.url).not.toBe(before);
+  expect(backend.tokens.get("t1")!.url).toBe(assets.url("i1"));
+});
+
 test("start registers the backend ticker", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
