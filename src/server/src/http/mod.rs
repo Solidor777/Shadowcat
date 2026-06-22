@@ -588,6 +588,38 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn list_members_is_gm_only_and_returns_usernames() {
+        let state = initialized_state().await;
+        seed_user(&state, "gm").await;
+        let player_id = seed_user(&state, "pl").await;
+        let gm = login_server(&state, "gm").await;
+        let pl = login_server(&state, "pl").await;
+
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "W" }))
+            .await
+            .json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+        gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": player_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // GM sees members with usernames.
+        let members: serde_json::Value =
+            gm.get(&format!("/api/worlds/{world_id}/members")).await.json();
+        let arr = members.as_array().unwrap();
+        assert!(arr.iter().any(|m| m["username"] == "gm"));
+        assert!(arr.iter().any(|m| m["username"] == "pl"));
+
+        // A non-GM member is forbidden from listing members.
+        pl.get(&format!("/api/worlds/{world_id}/members"))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn by_id_routes_hide_existence_from_non_members() {
         let state = initialized_state().await;
         seed_user(&state, "gm").await;

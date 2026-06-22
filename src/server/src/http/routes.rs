@@ -326,6 +326,7 @@ pub async fn create_world(
 #[derive(Serialize)]
 pub struct MemberEntry {
     pub user: Uuid,
+    pub username: String,
     pub role: WorldRole,
 }
 
@@ -339,7 +340,11 @@ pub async fn list_members(
     Ok(Json(
         members
             .into_iter()
-            .map(|(user, role)| MemberEntry { user, role })
+            .map(|(user, username, role)| MemberEntry {
+                user,
+                username,
+                role,
+            })
             .collect(),
     ))
 }

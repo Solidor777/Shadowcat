@@ -282,18 +282,26 @@ impl SqliteRepository {
         Ok(())
     }
 
-    pub async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, WorldRole)>, DataError> {
-        let rows = sqlx::query("SELECT user_id, role FROM world_members WHERE world_id = ?")
-            .bind(world.to_string())
-            .fetch_all(&self.pool)
-            .await?;
+    pub async fn list_members(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<(Uuid, String, WorldRole)>, DataError> {
+        let rows = sqlx::query(
+            "SELECT m.user_id, u.username, m.role \
+             FROM world_members m JOIN users u ON u.id = m.user_id \
+             WHERE m.world_id = ?",
+        )
+        .bind(world.to_string())
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter()
             .map(|r| {
                 let uid = Uuid::parse_str(r.get::<String, _>("user_id").as_str())
                     .map_err(|e| DataError::OpFailed(e.to_string()))?;
+                let username: String = r.get("username");
                 let role: WorldRole =
                     serde_json::from_value(serde_json::Value::String(r.get::<String, _>("role")))?;
-                Ok((uid, role))
+                Ok((uid, username, role))
             })
             .collect()
     }
@@ -1396,6 +1404,15 @@ mod tests {
 
     async fn repo() -> SqliteRepository {
         SqliteRepository::connect("sqlite::memory:").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_members_includes_usernames() {
+        let r = repo().await;
+        let gm = r.create_user("alice", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let members = r.list_members(w.id).await.unwrap();
+        assert!(members.iter().any(|(_, name, _)| name == "alice"));
     }
 
     #[tokio::test]
