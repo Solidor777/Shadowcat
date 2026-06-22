@@ -14,7 +14,7 @@ function setup() {
   });
   const drags: (string | null)[] = [];
   const bridge = new SceneInteractionBridge();
-  const host: SceneToolHost = { setActiveTool: () => {}, snap: (p) => p, setDraggingToken: (id) => drags.push(id) };
+  const host: SceneToolHost = { setActiveTool: () => {}, snap: (p) => p, setDraggingToken: (id) => drags.push(id), previewOverlay: () => {}, clearOverlay: () => {} };
   bridge.attach(host);
   const sent: WireOperation[][] = [];
   let t = 0;

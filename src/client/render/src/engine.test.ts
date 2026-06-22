@@ -317,6 +317,30 @@ test("renders documents from an optimistic source (predicted, unconfirmed)", () 
   expect(backend.tokens.has("t1")).toBe(true);
 });
 
+test("start renders existing drawing and template docs", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const engine = new RenderEngine({ store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 } });
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      { op: "create", doc: { id: "d1", scope: { kind: "world", world_id: "w1" }, doc_type: "drawing", schema_version: 1, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } }, embedded: {}, parent_id: "s1", system: { shape: { kind: "freehand", points: [0, 0, 5, 5] }, stroke: { color: "#fff", width: 1 }, fill: null }, created_at: 0, updated_at: 0 } },
+      { op: "create", doc: { id: "tm1", scope: { kind: "world", world_id: "w1" }, doc_type: "template", schema_version: 1, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } }, embedded: {}, parent_id: "s1", system: { shape: { kind: "circle", x: 0, y: 0, size: 10, direction: 0 }, color: "#3388ff" }, created_at: 0, updated_at: 0 } },
+    ],
+  });
+  engine.start();
+  expect(backend.shapes.has("d1")).toBe(true);
+  expect(backend.shapes.has("tm1")).toBe(true);
+});
+
+test("previewOverlay / clearOverlay forward to the backend", () => {
+  const { backend, engine } = makeEngine();
+  engine.previewOverlay([{ points: [0, 0, 5, 5], closed: false, stroke: { color: 0, width: 1 }, fill: null }]);
+  expect(backend.overlay).toHaveLength(1);
+  engine.clearOverlay();
+  expect(backend.overlay).toHaveLength(0);
+});
+
 test("registerLayerFilter forwards to the backend and disposes", () => {
   const backend = new MockBackend();
   const engine = new RenderEngine({ store: new DocumentStore(), assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 } });

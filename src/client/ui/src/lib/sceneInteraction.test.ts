@@ -13,6 +13,8 @@ function fakeHost(): SceneToolHost & { tools: (SceneTool | null)[]; drags: (stri
     setActiveTool: (t) => tools.push(t),
     snap: (p: Point) => ({ x: p.x + 1, y: p.y + 1 }),
     setDraggingToken: (id) => drags.push(id),
+    previewOverlay: () => {},
+    clearOverlay: () => {},
   };
 }
 
@@ -32,6 +34,18 @@ test("an attached bridge forwards to the host", () => {
   expect(host.tools).toEqual([tool]);
   expect(host.drags).toEqual(["t1"]);
   expect(bridge.snap({ x: 5, y: 7 })).toEqual({ x: 6, y: 8 }); // host snap
+});
+
+test("preview overlay forwards to the host; detached is a no-op", () => {
+  const bridge = new SceneInteractionBridge();
+  let previews = 0;
+  let cleared = 0;
+  expect(() => bridge.previewOverlay([])).not.toThrow(); // detached: no-op
+  bridge.attach({ setActiveTool: () => {}, snap: (p) => p, setDraggingToken: () => {}, previewOverlay: () => previews++, clearOverlay: () => cleared++ });
+  bridge.previewOverlay([{ points: [0, 0, 1, 1], closed: false, stroke: null, fill: null }]);
+  bridge.clearOverlay();
+  expect(previews).toBe(1);
+  expect(cleared).toBe(1);
 });
 
 test("detach restores no-op behavior", () => {

@@ -9,7 +9,7 @@ import ToolRail from "./ToolRail.svelte";
 function captureScene(): { scene: SceneInteractionBridge; tools: (SceneTool | null)[] } {
   const tools: (SceneTool | null)[] = [];
   const scene = new SceneInteractionBridge();
-  scene.attach({ setActiveTool: (t) => tools.push(t), snap: (p) => p, setDraggingToken: () => {} });
+  scene.attach({ setActiveTool: (t) => tools.push(t), snap: (p) => p, setDraggingToken: () => {}, previewOverlay: () => {}, clearOverlay: () => {} });
   return { scene, tools };
 }
 

@@ -79,4 +79,8 @@ export interface SceneToolHost {
   /** Mark a token as locally dragging so its sprite snaps to the authoritative
    * transform (no tween lag) while a remote move still tweens; null clears it. */
   setDraggingToken(id: string | null): void;
+  /** Draw an ephemeral, non-document preview (tool in-progress shape) into the overlay. */
+  previewOverlay(shapes: Omit<ShapeNodeSpec, "layer">[]): void;
+  /** Clear the ephemeral preview overlay. */
+  clearOverlay(): void;
 }
