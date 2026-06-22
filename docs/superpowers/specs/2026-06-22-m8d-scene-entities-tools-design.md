@@ -246,13 +246,18 @@ scenes, browser, switching, dimensions — remains M12):
 
 This lands as the **scene-prelude tasks of M8d-2** (below).
 
-## 14b. Decomposition refinement (M8d-2 split)
+## 14b. Decomposition refinement (M8d-2 / M8d-3 split)
 
-M8d-2 is split for tractability (each independently shippable + buddy-checked):
-- **M8d-2** — scene lifecycle (§15) + the interaction/tool API (§7) + the `scene-tools`
-  module (§8) + token **place / select / move** (the core interactive loop).
-- **M8d-3** — **drawing** + **template** entities (§9) + **measurement** (§10) + **pings**
-  (§11, the only server work). Builds on the M8d-2 interaction API + module.
+M8d is split for tractability (each independently shippable + buddy-checked):
+- **M8d-2 ✅** — scene lifecycle (§15) + the interaction/tool API (§7) + the `scene-tools`
+  module (§8) + token **place / select / move** (the core interactive loop). DONE.
+- **M8d-3** — split again (4 features + server work): each its own plan+execute+review.
+  - **M8d-3a** — **drawing** + **template** entities (§9): the generic shape backend node +
+    the ephemeral **preview-overlay** API (the draw tool needs live feedback) + pure shape
+    geometry (all `kind`s) + the `drawing`/`template` reconcilers + the **draw** + **template**
+    tools (mode-selectable shapes). Client-only.
+  - **M8d-3b** — **measurement** (§10, reuses the 3a overlay API) + **pings** (§11, the only
+    **server** work). Completes M8 → push.
 
 ## 14. Out of scope / deferred
 
