@@ -30,6 +30,21 @@ pub struct Rect {
 /// corner to the geometry behind it (otherwise the polygon clips to the endpoint).
 const EPS: f64 = 1e-4;
 
+/// Normalize an angle into `[-π, π)` so the `±EPS` nudges near the `atan2` ±π seam sort into
+/// true angular order (otherwise a nudged angle just past π lands at the wrong end of the
+/// sorted list, producing a self-intersecting sliver at the -x axis).
+fn wrap_angle(a: f64) -> f64 {
+    use std::f64::consts::{PI, TAU};
+    let mut a = a % TAU;
+    if a < -PI {
+        a += TAU;
+    }
+    if a >= PI {
+        a -= TAU;
+    }
+    a
+}
+
 impl Rect {
     fn edges(&self) -> [Seg; 4] {
         let tl = (self.minx, self.miny);
@@ -114,9 +129,9 @@ pub fn visibility_polygon(viewpoint: P, walls: &[Seg], bound: Rect) -> Vec<P> {
     for s in &segs {
         for p in [s.a, s.b] {
             let ang = (p.1 - viewpoint.1).atan2(p.0 - viewpoint.0);
-            angles.push(ang - EPS);
+            angles.push(wrap_angle(ang - EPS));
             angles.push(ang);
-            angles.push(ang + EPS);
+            angles.push(wrap_angle(ang + EPS));
         }
     }
     angles.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -227,6 +242,38 @@ mod tests {
             !point_in_poly(&poly, (50.0, 0.0)),
             "outside the room wall is occluded"
         );
+    }
+
+    #[test]
+    fn wall_straddling_the_minus_x_seam_has_no_spurious_hole() {
+        // A wall crossing the -x axis from the viewpoint exercises the atan2 ±π seam where the
+        // ±EPS nudges wrap. The shadow behind it must be occluded and the front visible, with
+        // no sliver hole punched at the seam (which would leak occluded geometry).
+        let wall = [Seg {
+            a: (-10.0, -5.0),
+            b: (-10.0, 5.0),
+        }];
+        let poly = visibility_polygon((0.0, 0.0), &wall, bound());
+        assert!(
+            point_in_poly(&poly, (-5.0, 0.0)),
+            "in front of the seam-straddling wall is visible"
+        );
+        assert!(
+            !point_in_poly(&poly, (-50.0, 0.0)),
+            "behind the seam-straddling wall is occluded (no seam sliver)"
+        );
+    }
+
+    #[test]
+    fn viewpoint_on_a_wall_endpoint_does_not_panic() {
+        // Degenerate: the viewpoint coincides with a wall endpoint (atan2(0,0)=0). Must yield a
+        // finite polygon (under-reveal is acceptable; a panic or NaN vertex is not).
+        let wall = [Seg {
+            a: (0.0, 0.0),
+            b: (20.0, 0.0),
+        }];
+        let poly = visibility_polygon((0.0, 0.0), &wall, bound());
+        assert!(poly.iter().all(|(x, y)| x.is_finite() && y.is_finite()));
     }
 
     #[test]

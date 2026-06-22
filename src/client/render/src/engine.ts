@@ -145,15 +145,32 @@ export class RenderEngine implements SceneToolHost {
     this.opts.onDerivedApplied?.(input);
   }
 
-  /** Parse a `vision` payload into a VisibilityInput. `{mode:"all"}` (GM / no fog) →
-   * empty masked-off; `{mode:"masked", polygons:[[x,y,…],…]}` → fog outside those polygons
-   * (empty polygons ⇒ full fog). A missing/garbled payload defaults to `all` (fail-open to
-   * no-fog is safe for the GM-authoritative model; the server gates secrecy per-recipient). */
+  /** Parse a `vision` payload into a VisibilityInput. Fail CLOSED: fog is the only client-side
+   * secrecy gate (the document layer still delivers non-`gm_only` token/wall positions to
+   * players), so ONLY an explicit `{mode:"all"}` clears it and ONLY an explicit `{mode:"masked"}`
+   * reveals the supplied polygons. Any other payload — missing, garbled, or unknown-mode
+   * (protocol skew) — yields full fog (`{mode:"masked", visible:[]}`), revealing nothing.
+   * `{mode:"masked", polygons:[{scene,points:[x,y,…]},…]}` → fog outside those polygons; empty ⇒
+   * full fog. Each polygon is filtered to the active scene so a polygon for a token in another
+   * scene cannot punch a hole into this scene's fog (scene coordinates are scene-local and reused
+   * across scenes). */
   private toVisibility(payload: unknown): VisibilityInput {
-    const p = payload as { mode?: string; polygons?: number[][] } | null | undefined;
-    if (!p || p.mode !== "masked") return { mode: "all", visible: [] };
+    const p = payload as
+      | { mode?: string; polygons?: { scene?: string; points?: number[] }[] }
+      | null
+      | undefined;
+    if (p?.mode === "all") return { mode: "all", visible: [] };
+    // Garbled/missing/unknown mode → full fog. Only a well-formed `masked` payload reveals.
+    if (p?.mode !== "masked") return { mode: "masked", visible: [] };
+    const activeScene = this.opts.store.query("scene")[0]?.id;
     const polygons = Array.isArray(p.polygons) ? p.polygons : [];
-    return { mode: "masked", visible: polygons.map((points) => ({ points })) };
+    const visible = polygons
+      .filter(
+        (g): g is { scene?: string; points: number[] } =>
+          !!g && g.scene === activeScene && Array.isArray(g.points) && g.points.length >= 6,
+      )
+      .map((g) => ({ points: g.points }));
+    return { mode: "masked", visible };
   }
 
   /** Module-facing shader-filter seam (0.x). Forwards to the backend; no engine

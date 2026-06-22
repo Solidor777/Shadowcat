@@ -152,11 +152,14 @@ impl SceneEcs {
         Some((scene, (cx, cy), (nx, ny)))
     }
 
-    /// Per-player visibility polygons (M9b): one star-shaped polygon per token the user owns,
-    /// computed against that token's scene's `blocksSight` walls. The server raycasts the FULL
-    /// wall set (so a `gm_only` wall the player never receives still occludes); the player only
-    /// ever gets their own polygons (#4). Empty when the player controls no tokens.
-    pub fn player_vision_polygons(&self, user_id: Uuid) -> Vec<Vec<vision::P>> {
+    /// Per-player visibility polygons (M9b), each tagged with the scene it belongs to: one
+    /// star-shaped polygon per token the user owns, computed against that token's scene's
+    /// `blocksSight` walls. The server raycasts the FULL wall set (so a `gm_only` wall the player
+    /// never receives still occludes); the player only ever gets their own polygons (#4). The
+    /// scene tag lets the client cut fog holes only for the scene it is rendering — a token in
+    /// scene B must not punch a hole into scene A's fog (scene coordinates are scene-local).
+    /// Empty when the player controls no tokens.
+    pub fn player_vision_polygons(&self, user_id: Uuid) -> Vec<(Uuid, Vec<vision::P>)> {
         // Collect owned-token viewpoints first (drops the query borrow before the wall queries).
         let mut viewpoints: Vec<(Uuid, vision::P)> = Vec::new();
         for e in self.world.query::<&SceneEntity>().iter() {
@@ -175,7 +178,7 @@ impl SceneEcs {
         for (scene, vp) in viewpoints {
             let walls = self.sight_walls(scene);
             let bound = vision::bound_for(vp, &walls, VISION_BOUND_MARGIN);
-            out.push(vision::visibility_polygon(vp, &walls, bound));
+            out.push((scene, vision::visibility_polygon(vp, &walls, bound)));
         }
         out
     }
@@ -302,14 +305,19 @@ pub fn compute_derived(
         // Per-player vision (M9b): the GM sees all; a player gets ONLY their own visibility
         // polygons (#4 per-recipient). A token-less player gets empty polygons → full fog (the
         // client masks everything outside `polygons`, so empty = see nothing, never see-all).
+        // Each polygon carries its `scene` so the client cuts fog holes only for the scene it
+        // renders — a token in another scene must not punch a hole into the active scene's fog.
         "vision" => {
             if ctx.world_role == crate::data::document::WorldRole::Gm {
                 Some(serde_json::json!({ "mode": "all" }))
             } else {
-                let polygons: Vec<Vec<f64>> = ecs
+                let polygons: Vec<serde_json::Value> = ecs
                     .player_vision_polygons(ctx.user_id)
                     .into_iter()
-                    .map(|poly| poly.into_iter().flat_map(|(x, y)| [x, y]).collect())
+                    .map(|(scene, poly)| {
+                        let points: Vec<f64> = poly.into_iter().flat_map(|(x, y)| [x, y]).collect();
+                        serde_json::json!({ "scene": scene, "points": points })
+                    })
                     .collect();
                 Some(serde_json::json!({ "mode": "masked", "polygons": polygons }))
             }
@@ -542,11 +550,13 @@ mod tests {
 
         // GM sees all (no fog).
         assert_eq!(compute_derived("vision", &ecs, &gm).unwrap()["mode"], "all");
-        // The token owner gets one non-empty visibility polygon.
+        // The token owner gets one non-empty visibility polygon, tagged with its scene so the
+        // client cuts holes only for the scene it renders (cross-scene leak guard).
         let pv = compute_derived("vision", &ecs, &pl).unwrap();
         assert_eq!(pv["mode"], "masked");
         assert_eq!(pv["polygons"].as_array().unwrap().len(), 1);
-        assert!(!pv["polygons"][0].as_array().unwrap().is_empty());
+        assert_eq!(pv["polygons"][0]["scene"], json!(Uuid::from_u128(10)));
+        assert!(!pv["polygons"][0]["points"].as_array().unwrap().is_empty());
         // A player who controls no token gets empty polygons → full fog (never see-all).
         let ov = compute_derived("vision", &ecs, &other).unwrap();
         assert_eq!(ov["mode"], "masked");
