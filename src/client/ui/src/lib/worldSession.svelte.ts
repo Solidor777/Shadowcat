@@ -9,6 +9,7 @@ import {
   ServiceRegistry,
   MiddlewareChain,
   reconcileTopology,
+  buildSceneDoc,
   consoleLogger,
   type Connect,
   type Logger,
@@ -172,6 +173,14 @@ export class WorldSession {
         rec.handle?.unsubscribe();
         rec.handle = null;
         this.#establishScene(id, rec);
+      }
+      // M8d §15: ensure an active scene exists so the place tool has a parent to
+      // attach tokens to. GM-only (players can't author the world's first scene);
+      // guard on the optimistic view (includes the pending create) so a reconnect
+      // Welcome — or a scene from another GM — does not double-create. The rare
+      // multi-GM simultaneous-first-entry double-create is accepted (M12 dedupes).
+      if (this.role === "gm" && this.world && this.#optimistic.query("scene").length === 0) {
+        this.dispatchIntent([{ op: "create", doc: buildSceneDoc(this.world) }]);
       }
     } catch (e) {
       this.#logger.error("world session welcome handling failed", e);

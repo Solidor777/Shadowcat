@@ -101,6 +101,54 @@ test("applies asset_changed to the resolver and notifies subscribers", async () 
   expect(got).toEqual([{ uuid: "a1", op: "replaced" }]);
 });
 
+function sceneCreates(sent: Array<Record<string, unknown>>): unknown[] {
+  return sent.filter(
+    (m) =>
+      m.type === "intent" &&
+      Array.isArray(m.ops) &&
+      (m.ops as Array<{ op: string; doc?: { doc_type?: string } }>).some(
+        (o) => o.op === "create" && o.doc?.doc_type === "scene",
+      ),
+  );
+}
+
+// A connect whose Welcome frames are pushed by the test AFTER enter() resolves —
+// matching reality (Welcome arrives over an established socket, so intents the
+// session dispatches while handling Welcome are actually transmitted).
+function pushConnect(sent: Array<Record<string, unknown>>): { connect: Connect; push: (f: unknown) => void } {
+  let push!: (f: unknown) => void;
+  const connect: Connect = (handlers) => {
+    push = (f) => handlers.onMessage(JSON.stringify(f));
+    return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => handlers.onClose() });
+  };
+  return { connect, push: (f: unknown) => push(f) };
+}
+
+test("auto-creates a default scene on GM entry, exactly once across reconnect Welcomes", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, actor_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: coreUiStub, logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame);
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  // A reconnect re-fires Welcome; the optimistic-view guard must not double-create.
+  push(gmFrame);
+  await new Promise((r) => setTimeout(r, 20));
+  expect(sceneCreates(sent)).toHaveLength(1);
+});
+
+test("does not auto-create a scene for a non-GM actor", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: coreUiStub, logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // actor_role: "player"
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(sceneCreates(sent)).toHaveLength(0);
+});
+
 test("dispatchIntent predicts via ctx.client and sends one correlated intent frame", async () => {
   // A core-ui stand-in whose register captures ctx.client (the optimistic view
   // modules read), so the prediction is observable.
