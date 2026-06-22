@@ -93,6 +93,12 @@ export class RenderEngine {
     return { visible: [] };
   }
 
+  /** Module-facing shader-filter seam (0.x). Forwards to the backend; no engine
+   * consumer in M8 — the first consumers are token fx / Phase-3 VFX. */
+  registerLayerFilter(layerId: string, filter: unknown): () => void {
+    return this.opts.backend.addLayerFilter(layerId, filter);
+  }
+
   setViewport(width: number, height: number): void {
     this.viewport = { width, height };
     this.opts.backend.resize(width, height);

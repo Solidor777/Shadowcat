@@ -16,6 +16,9 @@ export interface DisplayBackend {
   setVisibility(input: VisibilityInput): void;
   /** Apply the camera transform to the world container. */
   setCameraTransform(t: CameraTransform): void;
+  /** Module-facing shader-filter seam: attach an opaque filter to a layer; returns a
+   * dispose. No engine consumer in M8 (token fx / Phase-3 VFX are future consumers). */
+  addLayerFilter(layerId: string, filter: unknown): () => void;
   /** Resize the renderer/viewport to CSS pixels (HiDPI handled by the backend). */
   resize(width: number, height: number): void;
   /** Release all GPU resources and detach the canvas. */

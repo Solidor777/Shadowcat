@@ -130,3 +130,13 @@ test("destroy unsubscribes the scene subscription", () => {
   engine.destroy();
   expect(unsubscribed).toBe(true);
 });
+
+test("registerLayerFilter forwards to the backend and disposes", () => {
+  const backend = new MockBackend();
+  const engine = new RenderEngine({ store: new DocumentStore(), assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 } });
+  const filter = {};
+  const dispose = engine.registerLayerFilter("tokens", filter);
+  expect(backend.filters).toEqual([{ layerId: "tokens", filter }]);
+  dispose();
+  expect(backend.filters).toEqual([]);
+});
