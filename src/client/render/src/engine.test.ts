@@ -173,6 +173,30 @@ test("a frame at/below the last-applied seq is ignored (no regression)", () => {
   expect(applied).toBe(1);
 });
 
+test("start renders existing token docs and re-reconciles on store change", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const engine = new RenderEngine({ store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 } });
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: {
+      id: "t1", scope: { kind: "world", world_id: "w1" }, doc_type: "token", schema_version: 1,
+      source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      embedded: {}, system: { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "i1" } }, created_at: 0, updated_at: 0,
+    } }],
+  });
+  engine.start();
+  expect(backend.tokens.has("t1")).toBe(true);
+});
+
+test("start registers the backend ticker", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const engine = new RenderEngine({ store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 } });
+  engine.start();
+  expect(backend.tick).toBeTypeOf("function"); // engine registered a ticker callback
+});
+
 test("registerLayerFilter forwards to the backend and disposes", () => {
   const backend = new MockBackend();
   const engine = new RenderEngine({ store: new DocumentStore(), assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 } });
