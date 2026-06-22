@@ -115,6 +115,16 @@ impl SceneEcs {
         self.index.len()
     }
 
+    /// The committed `system.(x,y)` of a token entity, if present (the move segment start).
+    pub fn token_pos(&self, token_id: Uuid) -> Option<(f64, f64)> {
+        let &e = self.index.get(&token_id)?;
+        let tok = self.world.get::<&SceneEntity>(e).ok()?;
+        if tok.doc.doc_type != "token" {
+            return None;
+        }
+        Some((sys_f64(&tok.doc, "/x")?, sys_f64(&tok.doc, "/y")?))
+    }
+
     /// Engine-owned movement collision (M9a, the second ARCHITECTURE #6 geometric
     /// exception). True if moving token `token_id` from its committed `system.(x,y)` to
     /// `(new_x,new_y)` crosses any `blocksMove` wall in the token's scene. Reads the
