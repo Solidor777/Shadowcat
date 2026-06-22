@@ -6,5 +6,5 @@ export type { DisplayBackend } from "./backend";
 export { MockBackend } from "./backend.mock";
 export { SceneReconciler } from "./reconciler";
 export { Compositor } from "./compositor";
-export { RenderEngine, type RenderEngineOpts } from "./engine";
+export { RenderEngine, type RenderEngineOpts, type SubscribeScene, type SceneSubscription } from "./engine";
 export { PixiBackend, createPixiBackend } from "./pixi-backend";
