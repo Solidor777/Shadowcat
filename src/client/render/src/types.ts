@@ -32,3 +32,20 @@ export interface VisibilityInput {
   visible: Polygon[];
   explored?: Polygon[];
 }
+
+/** A token's animatable transform (scene coords; `(x,y)` = center). */
+export interface TokenTransform {
+  x: number;
+  y: number;
+  rotation: number;
+}
+
+/** A resolved token render node: transform + size + resolved image URL. */
+export interface TokenNodeSpec {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rotation: number;
+  url: string;
+}

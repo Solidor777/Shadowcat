@@ -1,4 +1,6 @@
-export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput } from "./types";
+export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec } from "./types";
+export { TokenAnimator } from "./token-animator";
+export { TokenView } from "./token-view";
 export { LayerRegistry, CORE_LAYERS, type CoreLayerId } from "./layers";
 export { Camera } from "./camera";
 export { Grid, type GridKind, type GridSpec } from "./grid";

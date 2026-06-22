@@ -6,6 +6,7 @@ import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
 import { LayerRegistry } from "./layers";
 import { SceneReconciler } from "./reconciler";
+import { TokenView } from "./token-view";
 
 /** Handle to a scene subscription (structurally matches @shadowcat/core's). */
 export interface SceneSubscription {
@@ -39,6 +40,7 @@ export class RenderEngine {
   private readonly layers = new LayerRegistry();
   private readonly grid: Grid;
   private readonly reconciler: SceneReconciler;
+  private readonly tokens: TokenView;
   private readonly gridColor: number;
   private viewport = { width: 0, height: 0 };
   private unsubscribe: (() => void) | null = null;
@@ -52,6 +54,7 @@ export class RenderEngine {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend);
+    this.tokens = new TokenView(opts.store, opts.assets, opts.backend);
     this.compositor = new Compositor(opts.backend);
   }
 
@@ -59,10 +62,13 @@ export class RenderEngine {
     this.opts.backend.ensureLayers(this.layers.orderedIds());
     this.applyCamera();
     this.reconciler.reconcile();
+    this.tokens.reconcile();
     this.unsubscribe = this.opts.store.subscribe(() => {
       this.reconciler.reconcile();
+      this.tokens.reconcile();
       this.flushPendingDerived();
     });
+    this.opts.backend.startTicker((dt) => this.tokens.tick(dt));
     if (this.opts.subscribeScene) {
       // M8a's debug channel; M9 swaps a real vision channel (polygon payload).
       this.sceneSub = this.opts.subscribeScene("identity", (f) => this.onSceneFrame(f));
@@ -120,6 +126,7 @@ export class RenderEngine {
    * mutation, so the `store.subscribe` reconcile never fires for them. */
   reconcileNow(): void {
     this.reconciler.reconcile();
+    this.tokens.reconcile(); // re-resolve token images too (AssetChanged path)
   }
 
   /** Push the camera transform to the backend and redraw the grid for the new view. */
