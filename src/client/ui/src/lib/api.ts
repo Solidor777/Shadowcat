@@ -1,4 +1,4 @@
-import type { WorldEntry, ServerConfig } from "@shadowcat/types";
+import type { WorldEntry, ServerConfig, Asset } from "@shadowcat/types";
 
 /** Local mirror of the server's MeResponse (not ts-rs-exported). */
 export interface Me {
@@ -95,4 +95,35 @@ export async function putUiState(
     keepalive: opts.keepalive,
   });
   if (!res.ok) throw new Error(`PUT /api/me/ui-state → ${res.status}`);
+}
+
+/** Upload an image to a world; returns the created asset record. */
+export async function uploadAsset(world: string, file: File): Promise<Asset> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`/api/worlds/${world}/assets`, { method: "POST", body: form });
+  if (!res.ok) throw new Error(`upload failed: ${res.status}`);
+  return (await res.json()) as Asset;
+}
+
+/** List a world's assets (the grid source). */
+export async function listAssets(world: string): Promise<Asset[]> {
+  const res = await fetch(`/api/worlds/${world}/assets`);
+  if (!res.ok) throw new Error(`list failed: ${res.status}`);
+  return (await res.json()) as Asset[];
+}
+
+/** Replace an asset's bytes behind its stable UUID; returns the updated record. */
+export async function replaceAsset(uuid: string, file: File): Promise<Asset> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`/api/assets/${uuid}/replace`, { method: "POST", body: form });
+  if (!res.ok) throw new Error(`replace failed: ${res.status}`);
+  return (await res.json()) as Asset;
+}
+
+/** Delete an asset (file + record). */
+export async function deleteAsset(uuid: string): Promise<void> {
+  const res = await fetch(`/api/assets/${uuid}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`delete failed: ${res.status}`);
 }
