@@ -2,12 +2,13 @@
 // only through the public AppContext seams (the scene bridge for tool activation/snap,
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
-import type { SceneTool, Point } from "@shadowcat/render";
-import { buildTokenDoc, type ReadableDocuments, type AssetResolver, type WireOperation } from "@shadowcat/core";
+import { rectPoints, ellipsePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
+import { buildTokenDoc, buildSceneEntityDoc, type ReadableDocuments, type AssetResolver, type WireOperation } from "@shadowcat/core";
 import type { SceneInteraction } from "../../lib/sceneInteraction";
 import { topTokenAt } from "./hit-test";
 
-export type ToolId = "select" | "place";
+export type ToolId = "select" | "place" | "draw";
+export type DrawMode = "freehand" | "rect" | "ellipse" | "line";
 
 /** The AppContext slice the tools need. `documents` is the optimistic view, so a
  * just-auto-created scene / just-placed token is visible to the tools immediately. */
@@ -35,12 +36,16 @@ export class ToolController {
   active = $state<ToolId | null>(null);
   /** The token art the place tool stamps; chosen in the asset picker. */
   selectedAsset = $state<string | null>(null);
+  /** Draw-tool shape mode + stroke color. */
+  drawMode = $state<DrawMode>("freehand");
+  strokeColor = $state("#e0e0e0");
   readonly #tools: Record<ToolId, SceneTool>;
 
   constructor(private readonly ctx: ToolContext) {
     this.#tools = {
       select: makeSelectMoveTool(ctx),
       place: makePlaceTool(ctx, this),
+      draw: makeDrawTool(ctx, this),
     };
   }
 
@@ -77,6 +82,64 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
     },
     onPointerMove(): void {},
     onPointerUp(): void {},
+  };
+}
+
+/** Preview/persist points for a two-corner shape (or the freehand path). */
+function shapePath(mode: DrawMode, a: Point, b: Point, freehand: number[]): { points: number[]; closed: boolean } {
+  switch (mode) {
+    case "freehand":
+      return { points: freehand, closed: false };
+    case "line":
+      return { points: [a.x, a.y, b.x, b.y], closed: false };
+    case "rect":
+      return { points: rectPoints(a.x, a.y, b.x, b.y), closed: true };
+    case "ellipse":
+      return { points: ellipsePoints(a.x, a.y, b.x, b.y), closed: true };
+  }
+}
+
+/** Drag to draw: freehand collects the path; rect/ellipse/line span two corners. A live
+ * preview overlays while dragging; release persists a `drawing` doc (optimistic). No active
+ * scene → unhandled (camera pans). */
+export function makeDrawTool(ctx: ToolContext, controller: ToolController): SceneTool {
+  let anchor: Point | null = null;
+  let freehand: number[] = [];
+
+  return {
+    onPointerDown(p: Point): boolean {
+      if (!activeScene(ctx)) return false;
+      anchor = p;
+      freehand = [p.x, p.y];
+      return true;
+    },
+    onPointerMove(p: Point): void {
+      if (!anchor) return;
+      if (controller.drawMode === "freehand") freehand.push(p.x, p.y);
+      const { points, closed } = shapePath(controller.drawMode, anchor, p, freehand);
+      ctx.scene.previewOverlay([{ points, closed, stroke: { color: parseColor(controller.strokeColor), width: 2 }, fill: null }]);
+    },
+    onPointerUp(p: Point): void {
+      if (!anchor) return;
+      const scene = activeScene(ctx);
+      if (scene) {
+        const mode = controller.drawMode;
+        const points = mode === "freehand" ? freehand : [anchor.x, anchor.y, p.x, p.y];
+        ctx.dispatchIntent([
+          {
+            op: "create",
+            doc: buildSceneEntityDoc(ctx.world, scene.id, "drawing", {
+              shape: { kind: mode, points },
+              stroke: { color: controller.strokeColor, width: 2 },
+              fill: null,
+            }),
+          },
+        ]);
+      }
+      ctx.scene.clearOverlay();
+      anchor = null;
+      freehand = [];
+    },
   };
 }
 

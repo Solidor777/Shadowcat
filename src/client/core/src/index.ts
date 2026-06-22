@@ -68,5 +68,5 @@ export type {
 } from "./wire";
 export { AssetResolver } from "./assets";
 export type { AssetOp } from "./assets";
-export { buildSceneDoc, buildTokenDoc } from "./scene-docs";
+export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc } from "./scene-docs";
 export type { SceneSystem, TokenSystem } from "./scene-docs";

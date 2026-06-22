@@ -57,3 +57,9 @@ export function buildSceneDoc(worldId: string, system: Partial<SceneSystem> = {}
 export function buildTokenDoc(worldId: string, sceneId: string, system: TokenSystem, id?: string): WireDocument {
   return envelope(worldId, "token", sceneId, system, id);
 }
+
+/** A generic scene-entity document (drawing/template/…) parented to `sceneId`; the
+ * `system` shape is the caller's (client-owned, server structural-only). */
+export function buildSceneEntityDoc(worldId: string, sceneId: string, docType: string, system: unknown, id?: string): WireDocument {
+  return envelope(worldId, docType, sceneId, system, id);
+}
