@@ -38,7 +38,7 @@ export class WorldSession {
   #assetListeners = new Set<(msg: { uuid: string; op: "replaced" | "deleted" }) => void>();
   #sceneSubs = new Map<
     string,
-    { channel: string; onUpdate: (f: SceneFrame) => void; handle: SceneSubscription | null }
+    { channel: string; onUpdate: (f: SceneFrame) => void; handle: SceneSubscription | null; gen: number }
   >();
   state = $state<ConnState>("closed");
   role = $state<WorldRole | null>(null);
@@ -77,12 +77,13 @@ export class WorldSession {
    * survives a reconnect. */
   subscribeScene(channel: string, onUpdate: (f: SceneFrame) => void): SceneSubscription {
     const id = crypto.randomUUID();
-    const rec = { channel, onUpdate, handle: null as SceneSubscription | null };
+    const rec = { channel, onUpdate, handle: null as SceneSubscription | null, gen: 0 };
     this.#sceneSubs.set(id, rec);
     this.#establishScene(id, rec);
     return {
       unsubscribe: () => {
         this.#sceneSubs.delete(id);
+        rec.gen++; // invalidate any in-flight establish for this record
         rec.handle?.unsubscribe();
         rec.handle = null;
       },
@@ -91,15 +92,18 @@ export class WorldSession {
 
   #establishScene(
     id: string,
-    rec: { channel: string; onUpdate: (f: SceneFrame) => void; handle: SceneSubscription | null },
+    rec: { channel: string; onUpdate: (f: SceneFrame) => void; handle: SceneSubscription | null; gen: number },
   ): void {
     const ws = this.#ws;
     if (!ws) return;
+    const gen = ++rec.gen; // this attempt's generation
     void ws
       .subscribeScene(rec.channel, rec.onUpdate)
       .then((h) => {
-        // Still registered (and the same record)? keep the handle; else drop it.
-        if (this.#sceneSubs.get(id) === rec) rec.handle = h;
+        // Keep the handle only if this record is still active AND this is still the
+        // latest establish attempt; a superseded attempt (re-establish on a new
+        // Welcome, or an unsubscribe) self-disposes so no duplicate sub leaks.
+        if (this.#sceneSubs.get(id) === rec && rec.gen === gen) rec.handle = h;
         else h.unsubscribe();
       })
       .catch(() => {
@@ -151,6 +155,10 @@ export class WorldSession {
       // on every (re)connect so derived state (vision) survives a reconnect. No-op
       // on the first Welcome (none registered until the render engine subscribes).
       for (const [id, rec] of this.#sceneSubs) {
+        // Tear down a live handle from a prior connect before re-subscribing; the
+        // gen bump inside #establishScene invalidates any still-in-flight attempt,
+        // so a flapping reconnect can't leak a duplicate server subscription.
+        rec.handle?.unsubscribe();
         rec.handle = null;
         this.#establishScene(id, rec);
       }

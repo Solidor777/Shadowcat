@@ -121,7 +121,11 @@ test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Wel
   push({ type: "scene_derived", request_id: req.request_id, channel: "identity", computed_at_seq: 0, payload: {} });
   await vi.waitFor(() => expect(frames).toHaveLength(1));
 
-  // A second Welcome (reconnect) must re-establish the subscription.
+  // A second Welcome (reconnect) must re-establish the subscription — and tear down
+  // the prior one, so no duplicate server subscription leaks.
   push(welcomeFrame);
   await vi.waitFor(() => expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(2));
+  await vi.waitFor(() =>
+    expect(sent.some((m) => m.type === "scene_unsubscribe" && m.request_id === req.request_id)).toBe(true),
+  );
 });
