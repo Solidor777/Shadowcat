@@ -1,6 +1,14 @@
 import { test, expect, vi } from "vitest";
 import { ContributionRegistry, silentLogger, buildTokenDoc, type Connect } from "@shadowcat/core";
 import { WorldSession } from "./worldSession.svelte";
+import { listWorldMembers } from "./api";
+
+// The members fetch hits the network; stub it (default empty for the player/GM
+// tests that don't care, overridable per test).
+vi.mock("./api", async (importActual) => {
+  const actual = await importActual<typeof import("./api")>();
+  return { ...actual, listWorldMembers: vi.fn().mockResolvedValue([]) };
+});
 
 // `MockServer` is internal core test code (not barrel-exported), so use a minimal
 // inline Connect that delivers one valid Welcome frame on connect and ignores
@@ -228,6 +236,23 @@ test("dispatchIntent while disconnected drops the action (no orphaned prediction
   // Neither predicted (no orphaned pending to mis-correlate) nor transmitted.
   expect(capturedClient!.get("tok-x")).toBeUndefined();
   expect(sent.filter((m) => m.type === "intent")).toHaveLength(0);
+});
+
+test("a GM Welcome populates members in place (stable reference) for see-as labels", async () => {
+  vi.mocked(listWorldMembers).mockResolvedValueOnce([
+    { user: "u9", username: "Zara", role: "player" },
+  ]);
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: coreUiStub, logger: silentLogger });
+  // AppContext captures this reference at mount; it must stay valid as members load.
+  const captured = session.members;
+  await session.enter("w1");
+  push({ ...welcomeFrame, actor_role: "gm" });
+  await vi.waitFor(() => expect(session.members.get("u9")).toBe("Zara"));
+  // Mutated in place, never reassigned — the captured snapshot sees the update.
+  expect(session.members).toBe(captured);
+  expect(captured.get("u9")).toBe("Zara");
 });
 
 test("an intent dispatched while reconnecting is predicted, queued, and flushed after resync", async () => {

@@ -3,6 +3,17 @@
 Living record of issues surfaced during review/audit. NOT a to-do list — entries
 are observations awaiting triage, not committed work.
 
+- Title: offline-intent flush can precede the async `#onWelcome` body on reconnect.
+  Summary: `WsClient` fires `onResyncComplete` (→ `WorldSession.#flushOfflineQueue`)
+  synchronously on the caught-up Welcome branch / on `resync_end`, while
+  `#onWelcome` runs as an unawaited `void` async (it awaits a member fetch before
+  re-establishing scene subscriptions). So queued offline intents can transmit
+  before scene subs re-establish. Not a correctness defect: flushed intents reach
+  the server regardless, and scene-derived read state is eventually consistent via
+  the egress re-evaluation debounce; FIFO confirm-correlation is unaffected.
+  Status: Accepted (eventually-consistent ordering). If a stricter ordering is ever
+  needed, gate the flush on an "onWelcome settled" promise.
+
 - Title: capability model — `core:delete` is GM-only by default (behavior change
   from M5). Summary: the capability floor grants Owners `core:read` +
   `core:write_fields` but NOT `core:delete`, so a document Owner can no longer

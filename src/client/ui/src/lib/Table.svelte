@@ -20,7 +20,7 @@
     t,
     assets: session.assets,
     onAssetChanged: (cb) => session.onAssetChanged(cb),
-    subscribeScene: (c, cb) => session.subscribeScene(c, cb),
+    subscribeScene: (c, cb, opts) => session.subscribeScene(c, cb, opts),
     dispatchIntent: (ops) => session.dispatchIntent(ops),
     scene: session.sceneInteraction,
     sendPing: (x, y) => session.sendPing(x, y),

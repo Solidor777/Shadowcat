@@ -22,6 +22,7 @@ import {
 import type { WorldRole } from "@shadowcat/types";
 import { SceneInteractionBridge } from "./sceneInteraction";
 import { listWorldMembers } from "./api";
+import { SvelteMap } from "svelte/reactivity";
 
 export type ConnState = "connecting" | "open" | "closed";
 
@@ -54,8 +55,10 @@ export class WorldSession {
   role = $state<WorldRole | null>(null);
   world = $state<string | null>(null);
   /** userId → username for see-as labels; fetched on a GM's Welcome (the members
-   * endpoint is GM-gated, so this stays empty for players). */
-  members = $state(new Map<string, string>());
+   * endpoint is GM-gated, so this stays empty for players). A stable reactive Map
+   * (mutated in place, never reassigned) so the reference captured into AppContext
+   * at mount stays valid and consumers re-render when it populates on (re)connect. */
+  readonly members = new SvelteMap<string, string>();
 
   #ws: WsClient | null = null;
   #optimistic: OptimisticClient;
@@ -232,7 +235,10 @@ export class WorldSession {
       if (w.actor_role === "gm") {
         try {
           const list = await listWorldMembers(w.world);
-          this.members = new Map(list.map((m) => [m.user, m.username]));
+          // Mutate in place (not reassign) so the AppContext-captured reference
+          // stays valid; reconnect re-populates the same Map.
+          this.members.clear();
+          for (const m of list) this.members.set(m.user, m.username);
         } catch (e) {
           this.#logger.warn("member list fetch failed", e);
         }

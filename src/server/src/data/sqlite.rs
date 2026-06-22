@@ -219,22 +219,38 @@ impl SqliteRepository {
         })
     }
 
-    /// Count a world's GMs. The last GM may be neither removed nor demoted
-    /// (availability guard); a server admin remains GM everywhere, so the world is
-    /// never permanently orphaned — the guard only blocks accidental self-lockout.
-    async fn gm_count(&self, world: Uuid) -> Result<i64, DataError> {
+    /// Whether `user` is the world's sole GM, evaluated on the supplied tx
+    /// connection so the read and the caller's mutation are atomic — without the
+    /// shared tx, the count check and the mutation are separate connection
+    /// acquisitions and two concurrent removals could each pass the check (TOCTOU)
+    /// and orphan the world. A server admin remains GM everywhere, so the world is
+    /// never permanently orphaned; the guard only blocks accidental self-lockout.
+    async fn is_last_gm(
+        tx: &mut sqlx::SqliteConnection,
+        world: Uuid,
+        user: Uuid,
+    ) -> Result<bool, DataError> {
         let gm = serde_json::to_value(WorldRole::Gm)?
             .as_str()
             .unwrap()
             .to_string();
+        let target: Option<String> =
+            sqlx::query_scalar("SELECT role FROM world_members WHERE world_id = ? AND user_id = ?")
+                .bind(world.to_string())
+                .bind(user.to_string())
+                .fetch_optional(&mut *tx)
+                .await?;
+        if target.as_deref() != Some(gm.as_str()) {
+            return Ok(false);
+        }
         let n: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM world_members WHERE world_id = ? AND role = ?",
         )
         .bind(world.to_string())
-        .bind(gm)
-        .fetch_one(&self.pool)
+        .bind(&gm)
+        .fetch_one(&mut *tx)
         .await?;
-        Ok(n)
+        Ok(n <= 1)
     }
 
     /// Change an existing member's role; `NotFound` if they are not a member.
@@ -244,10 +260,8 @@ impl SqliteRepository {
         user: Uuid,
         role: WorldRole,
     ) -> Result<(), DataError> {
-        if role != WorldRole::Gm
-            && matches!(self.member_role(world, user).await?, Some(WorldRole::Gm))
-            && self.gm_count(world).await? <= 1
-        {
+        let mut tx = self.pool.begin().await?;
+        if role != WorldRole::Gm && Self::is_last_gm(&mut tx, world, user).await? {
             return Err(DataError::Conflict(
                 "cannot demote the world's only GM".into(),
             ));
@@ -257,18 +271,18 @@ impl SqliteRepository {
                 .bind(serde_json::to_value(role)?.as_str().unwrap().to_string())
                 .bind(world.to_string())
                 .bind(user.to_string())
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
         if res.rows_affected() == 0 {
             return Err(DataError::NotFound);
         }
+        tx.commit().await?;
         Ok(())
     }
 
     pub async fn remove_member(&self, world: Uuid, user: Uuid) -> Result<(), DataError> {
-        if matches!(self.member_role(world, user).await?, Some(WorldRole::Gm))
-            && self.gm_count(world).await? <= 1
-        {
+        let mut tx = self.pool.begin().await?;
+        if Self::is_last_gm(&mut tx, world, user).await? {
             return Err(DataError::Conflict(
                 "cannot remove the world's only GM".into(),
             ));
@@ -276,8 +290,9 @@ impl SqliteRepository {
         sqlx::query("DELETE FROM world_members WHERE world_id = ? AND user_id = ?")
             .bind(world.to_string())
             .bind(user.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
