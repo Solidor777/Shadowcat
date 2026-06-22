@@ -42,8 +42,10 @@ pub async fn spawn_with(mutate: impl FnOnce(&mut Config)) -> Harness {
 
     let assets_dir = std::env::temp_dir().join(format!("shadowcat-assets-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&assets_dir).unwrap();
-    let mut cfg = Config::default();
-    cfg.assets_dir = Some(assets_dir.to_string_lossy().into_owned());
+    let mut cfg = Config {
+        assets_dir: Some(assets_dir.to_string_lossy().into_owned()),
+        ..Config::default()
+    };
     mutate(&mut cfg);
 
     let state = AppState {
@@ -107,14 +109,22 @@ pub const PNG_1X1: &[u8] = &[
 
 impl Harness {
     /// Upload `bytes` as `name` to this world; returns the raw response.
-    pub async fn upload(&self, name: &str, content_type: &str, bytes: Vec<u8>) -> reqwest::Response {
+    pub async fn upload(
+        &self,
+        name: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> reqwest::Response {
         let part = reqwest::multipart::Part::bytes(bytes)
             .file_name(name.to_string())
             .mime_str(content_type)
             .unwrap();
         let form = reqwest::multipart::Form::new().part("file", part);
         self.client
-            .post(format!("http://{}/api/worlds/{}/assets", self.addr, self.world))
+            .post(format!(
+                "http://{}/api/worlds/{}/assets",
+                self.addr, self.world
+            ))
             .multipart(form)
             .send()
             .await

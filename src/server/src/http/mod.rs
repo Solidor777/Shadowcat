@@ -113,7 +113,10 @@ pub async fn router(state: AppState) -> Router {
                 .get(assets::list)
                 .layer(DefaultBodyLimit::disable()),
         )
-        .route("/api/assets/{uuid}", get(assets::serve).delete(assets::delete))
+        .route(
+            "/api/assets/{uuid}",
+            get(assets::serve).delete(assets::delete),
+        )
         .route(
             "/api/assets/{uuid}/replace",
             post(assets::replace).layer(DefaultBodyLimit::disable()),

@@ -196,11 +196,19 @@ mod tests {
 
     #[test]
     fn assets_path_defaults_to_db_sibling() {
-        let mut cfg = Config::default();
-        cfg.db = "/data/shadowcat.db".into();
-        assert_eq!(cfg.assets_path(), std::path::PathBuf::from("/data").join("assets"));
+        let mut cfg = Config {
+            db: "/data/shadowcat.db".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            cfg.assets_path(),
+            std::path::PathBuf::from("/data").join("assets")
+        );
         cfg.assets_dir = Some("/custom/assets".into());
-        assert_eq!(cfg.assets_path(), std::path::PathBuf::from("/custom/assets"));
+        assert_eq!(
+            cfg.assets_path(),
+            std::path::PathBuf::from("/custom/assets")
+        );
     }
 
     #[test]

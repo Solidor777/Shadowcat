@@ -6,7 +6,9 @@ use shadowcat::data::repository::Repository;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn upload_persists_record_and_file() {
     let h = spawn().await;
-    let res = h.upload("battlemap.png", "image/png", PNG_1X1.to_vec()).await;
+    let res = h
+        .upload("battlemap.png", "image/png", PNG_1X1.to_vec())
+        .await;
     assert_eq!(res.status(), 200, "body: {:?}", res.text().await);
     let asset: serde_json::Value = res.json().await.unwrap();
     assert_eq!(asset["content_type"], "image/png");

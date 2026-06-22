@@ -157,7 +157,9 @@ pub async fn upload(
         now,
         state.config.effective_rate_per_min(ctx.world_role),
     ) {
-        return Err(AppError::TooManyRequests("upload rate limit exceeded".into()));
+        return Err(AppError::TooManyRequests(
+            "upload rate limit exceeded".into(),
+        ));
     }
     let id = uuid::Uuid::new_v4();
     let storage_key = format!("{world}/{id}");
@@ -203,7 +205,11 @@ pub async fn serve(
         .await?;
 
     let etag = format!("\"{}-{}\"", id, asset.version);
-    if headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) == Some(etag.as_str()) {
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        == Some(etag.as_str())
+    {
         return Ok((StatusCode::NOT_MODIFIED).into_response());
     }
 
@@ -313,9 +319,15 @@ mod tests {
             detect_image_type(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
             Some("image/png")
         );
-        assert_eq!(detect_image_type(&[0xFF, 0xD8, 0xFF, 0x00]), Some("image/jpeg"));
+        assert_eq!(
+            detect_image_type(&[0xFF, 0xD8, 0xFF, 0x00]),
+            Some("image/jpeg")
+        );
         assert_eq!(detect_image_type(b"GIF89a..."), Some("image/gif"));
-        assert_eq!(detect_image_type(b"RIFF\0\0\0\0WEBPxxxx"), Some("image/webp"));
+        assert_eq!(
+            detect_image_type(b"RIFF\0\0\0\0WEBPxxxx"),
+            Some("image/webp")
+        );
         assert_eq!(detect_image_type(b"%PDF-1.7"), None);
         assert_eq!(detect_image_type(b"<svg"), None); // SVG excluded in M8
         assert_eq!(detect_image_type(&[0x89]), None); // too short to decide
@@ -328,7 +340,7 @@ mod tests {
         assert!(rl.check(u, 1_000, 2));
         assert!(rl.check(u, 1_500, 2));
         assert!(!rl.check(u, 1_800, 2)); // 3rd within the window → rejected
-        // 61s later the earlier hits have aged out.
+                                         // 61s later the earlier hits have aged out.
         assert!(rl.check(u, 62_001, 2));
     }
 }
