@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getAppContext } from "../../lib/appContext";
   import { ToolController, type ToolId } from "./controller.svelte";
+  import AssetPicker from "./AssetPicker.svelte";
 
   const ctx = getAppContext();
   // The controller is fixed per ToolRail instance; capturing the context once is intended.
@@ -8,7 +9,7 @@
   const controller = new ToolController({
     scene: ctx.scene,
     dispatchIntent: ctx.dispatchIntent,
-    store: ctx.store,
+    documents: ctx.documents,
     assets: ctx.assets,
     world: ctx.world,
   });
@@ -37,6 +38,9 @@
         {tool.label}
       </button>
     {/each}
+    {#if controller.active === "place"}
+      <AssetPicker {controller} />
+    {/if}
   </div>
 {/if}
 
