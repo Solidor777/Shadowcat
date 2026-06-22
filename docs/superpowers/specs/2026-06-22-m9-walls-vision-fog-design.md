@@ -156,8 +156,17 @@ Per M8 §6.3 D-V2/D-V3:
     consumes both modes identically (it rasterizes whatever explored mask it's given).
 - **GM vision mode (D-V3):** the GM is authoritative and receives everything (all
   walls, full scene); GM fog is a **client-side toggle** — "see all" (no mask) /
-  "see as player X" (apply that player's visible+explored masks the GM also receives).
-  No extra server path.
+  "see as player X".
+  - **M9c-1:** "see all" + a client-only full-fog preview. Client-only, no server path.
+  - **M9c-2 (revises this note; user-directed 2026-06-22, durable/secure/performant):**
+    "see as player X" is implemented as an **on-demand, GM-authorized** path, NOT by the
+    GM continuously receiving every player's masks. The GM sends `scene_subscribe` with an
+    `as_user` parameter; the server **rejects it for non-GMs** and, for a GM, computes the
+    `vision` payload as that single player (server-resolved target context) and returns only
+    their masks. Chosen over the original "no extra server path / GM receives all masks"
+    variant for least-privilege (only the actively-viewed player's secret state is sent),
+    performance (O(1 player) on demand vs O(all players) always), and an explicit, auditable
+    wire contract. The `as_user` authorization gate is the security-critical surface.
 
 ## 8. Decomposition
 
