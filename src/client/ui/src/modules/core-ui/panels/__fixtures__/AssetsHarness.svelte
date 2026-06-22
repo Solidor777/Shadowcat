@@ -17,6 +17,7 @@
     assets: new AssetResolver(),
     onAssetChanged,
     subscribeScene: () => ({ unsubscribe() {} }),
+    dispatchIntent: () => {},
     leaveWorld: () => {},
   });
 </script>

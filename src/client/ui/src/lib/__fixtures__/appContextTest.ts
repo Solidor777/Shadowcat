@@ -14,6 +14,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     t: over.t ?? ((k: string) => k),
     onAssetChanged: over.onAssetChanged ?? (() => () => {}),
     subscribeScene: over.subscribeScene ?? (() => ({ unsubscribe() {} })),
+    dispatchIntent: over.dispatchIntent ?? (() => {}),
     leaveWorld: over.leaveWorld ?? (() => {}),
   };
   return new Map([[__APP_CONTEXT_KEY__, ctx]]);

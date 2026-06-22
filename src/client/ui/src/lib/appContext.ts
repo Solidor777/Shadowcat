@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, AssetResolver, SceneFrame, SceneSubscription } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, AssetResolver, SceneFrame, SceneSubscription, WireOperation } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 
 /**
@@ -24,6 +24,9 @@ export interface AppContext {
   /** Subscribe to a SceneDerived channel; the session re-establishes it across
    * reconnects. Returns a synchronous unsubscribe handle. */
   subscribeScene(channel: string, onUpdate: (f: SceneFrame) => void): SceneSubscription;
+  /** Predict + transmit document operations as one correlated optimistic intent
+   * (the module write path). `ctx.client`/`store` reflect the prediction. */
+  dispatchIntent(ops: WireOperation[]): void;
   /** Leave the current world and return to world-select. */
   leaveWorld: () => void;
 }
