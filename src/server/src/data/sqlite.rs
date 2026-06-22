@@ -905,6 +905,19 @@ impl Repository for SqliteRepository {
                     if !access.has(cap::WRITE_FIELDS) {
                         return Err(DataError::Forbidden);
                     }
+                    // World-level create authorization: GM/admin hold every
+                    // capability; any other actor's WorldRole must hold core:create
+                    // for this doc type. Create has no document, so this rides
+                    // WorldRole (role_caps), not the per-document DocRole.
+                    if ctx.world_role != WorldRole::Gm
+                        && !world_defaults.role_has(ctx.world_role, &doc.doc_type, cap::CREATE)
+                    {
+                        tracing::debug!(
+                            user = %ctx.user_id, doc_type = %doc.doc_type,
+                            "create denied: missing core:create"
+                        );
+                        return Err(DataError::Forbidden);
+                    }
                     // Create writes the whole body at once, so any declared
                     // requirement whose protected path is populated must be
                     // authorized — otherwise Create is a wholesale bypass of the
@@ -2052,6 +2065,19 @@ mod tests {
         .await
         .unwrap();
 
+        // Grant Players create so this test exercises the declarative requirement,
+        // not the world-level create floor (which is GM-only by default).
+        let mut create_defaults = WorldCapDefaults::default();
+        create_defaults
+            .role_caps
+            .all
+            .entry(WorldRole::Player)
+            .or_default()
+            .insert("core:create".into());
+        r.set_world_cap_defaults(w.id, &create_defaults)
+            .await
+            .unwrap();
+
         let player_ctx = PermissionContext {
             user_id: player,
             world_role: WorldRole::Player,
@@ -2527,6 +2553,100 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[tokio::test]
+    async fn non_gm_create_denied_by_default() {
+        use crate::data::document::DocRole;
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        let p_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        // Player owns the doc (passes the WRITE_FIELDS floor) but the world grants
+        // no core:create, so creation is denied — isolating the create gate.
+        let mut doc = world_doc(1, w.id, serde_json::json!({}));
+        doc.permissions.users.insert(player, DocRole::Owner);
+        let err = r
+            .apply_intent(&p_ctx, w.id, vec![Operation::Create { doc }], 1)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::Forbidden));
+    }
+
+    #[tokio::test]
+    async fn non_gm_create_allowed_with_role_grant() {
+        use crate::data::document::DocRole;
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        let p_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let mut wd = WorldCapDefaults::default();
+        wd.role_caps
+            .all
+            .entry(WorldRole::Player)
+            .or_default()
+            .insert("core:create".into());
+        r.set_world_cap_defaults(w.id, &wd).await.unwrap();
+
+        let mut doc = world_doc(1, w.id, serde_json::json!({}));
+        doc.permissions.users.insert(player, DocRole::Owner);
+        assert!(r
+            .apply_intent(&p_ctx, w.id, vec![Operation::Create { doc }], 1)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn role_grant_is_type_scoped() {
+        use crate::data::document::DocRole;
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        let p_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        // Players may create tokens only.
+        let mut wd = WorldCapDefaults::default();
+        wd.role_caps
+            .by_type
+            .entry("token".into())
+            .or_default()
+            .entry(WorldRole::Player)
+            .or_default()
+            .insert("core:create".into());
+        r.set_world_cap_defaults(w.id, &wd).await.unwrap();
+
+        let mut tok = world_doc(1, w.id, serde_json::json!({}));
+        tok.doc_type = "token".into();
+        tok.permissions.users.insert(player, DocRole::Owner);
+        assert!(r
+            .apply_intent(&p_ctx, w.id, vec![Operation::Create { doc: tok }], 1)
+            .await
+            .is_ok());
+
+        let mut act = world_doc(2, w.id, serde_json::json!({}));
+        act.permissions.users.insert(player, DocRole::Owner);
+        let err = r
+            .apply_intent(&p_ctx, w.id, vec![Operation::Create { doc: act }], 2)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::Forbidden));
     }
 
     #[tokio::test]
