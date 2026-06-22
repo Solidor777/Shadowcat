@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::auth::role::ServerRole;
 use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
 use crate::data::document::{
-    CapabilityGrants, CapabilityRequirement, ContractDeclaration, Document, Scope, World, WorldRole,
+    CapabilityRequirement, ContractDeclaration, Document, Scope, World, WorldCapDefaults, WorldRole,
 };
 use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
@@ -219,6 +219,40 @@ impl SqliteRepository {
         })
     }
 
+    /// Whether `user` is the world's sole GM, evaluated on the supplied tx
+    /// connection so the read and the caller's mutation are atomic — without the
+    /// shared tx, the count check and the mutation are separate connection
+    /// acquisitions and two concurrent removals could each pass the check (TOCTOU)
+    /// and orphan the world. A server admin remains GM everywhere, so the world is
+    /// never permanently orphaned; the guard only blocks accidental self-lockout.
+    async fn is_last_gm(
+        tx: &mut sqlx::SqliteConnection,
+        world: Uuid,
+        user: Uuid,
+    ) -> Result<bool, DataError> {
+        let gm = serde_json::to_value(WorldRole::Gm)?
+            .as_str()
+            .unwrap()
+            .to_string();
+        let target: Option<String> =
+            sqlx::query_scalar("SELECT role FROM world_members WHERE world_id = ? AND user_id = ?")
+                .bind(world.to_string())
+                .bind(user.to_string())
+                .fetch_optional(&mut *tx)
+                .await?;
+        if target.as_deref() != Some(gm.as_str()) {
+            return Ok(false);
+        }
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM world_members WHERE world_id = ? AND role = ?",
+        )
+        .bind(world.to_string())
+        .bind(&gm)
+        .fetch_one(&mut *tx)
+        .await?;
+        Ok(n <= 1)
+    }
+
     /// Change an existing member's role; `NotFound` if they are not a member.
     pub async fn set_role(
         &self,
@@ -226,40 +260,62 @@ impl SqliteRepository {
         user: Uuid,
         role: WorldRole,
     ) -> Result<(), DataError> {
+        let mut tx = self.pool.begin().await?;
+        if role != WorldRole::Gm && Self::is_last_gm(&mut tx, world, user).await? {
+            return Err(DataError::Conflict(
+                "cannot demote the world's only GM".into(),
+            ));
+        }
         let res =
             sqlx::query("UPDATE world_members SET role = ? WHERE world_id = ? AND user_id = ?")
                 .bind(serde_json::to_value(role)?.as_str().unwrap().to_string())
                 .bind(world.to_string())
                 .bind(user.to_string())
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
         if res.rows_affected() == 0 {
             return Err(DataError::NotFound);
         }
+        tx.commit().await?;
         Ok(())
     }
 
     pub async fn remove_member(&self, world: Uuid, user: Uuid) -> Result<(), DataError> {
+        let mut tx = self.pool.begin().await?;
+        if Self::is_last_gm(&mut tx, world, user).await? {
+            return Err(DataError::Conflict(
+                "cannot remove the world's only GM".into(),
+            ));
+        }
         sqlx::query("DELETE FROM world_members WHERE world_id = ? AND user_id = ?")
             .bind(world.to_string())
             .bind(user.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
-    pub async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, WorldRole)>, DataError> {
-        let rows = sqlx::query("SELECT user_id, role FROM world_members WHERE world_id = ?")
-            .bind(world.to_string())
-            .fetch_all(&self.pool)
-            .await?;
+    pub async fn list_members(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<(Uuid, String, WorldRole)>, DataError> {
+        let rows = sqlx::query(
+            "SELECT m.user_id, u.username, m.role \
+             FROM world_members m JOIN users u ON u.id = m.user_id \
+             WHERE m.world_id = ?",
+        )
+        .bind(world.to_string())
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter()
             .map(|r| {
                 let uid = Uuid::parse_str(r.get::<String, _>("user_id").as_str())
                     .map_err(|e| DataError::OpFailed(e.to_string()))?;
+                let username: String = r.get("username");
                 let role: WorldRole =
                     serde_json::from_value(serde_json::Value::String(r.get::<String, _>("role")))?;
-                Ok((uid, role))
+                Ok((uid, username, role))
             })
             .collect()
     }
@@ -503,14 +559,14 @@ impl SqliteRepository {
         Ok(())
     }
 
-    /// Set a world's default capability grants (additive over the per-document
-    /// floor). Stored as JSON in the settings table.
+    /// Set a world's capability configuration (per-document defaults + world-level
+    /// role_caps). Stored as JSON in the settings table.
     pub async fn set_world_cap_defaults(
         &self,
         world: Uuid,
-        grants: &CapabilityGrants,
+        defaults: &WorldCapDefaults,
     ) -> Result<(), DataError> {
-        let json = serde_json::to_string(grants)?;
+        let json = serde_json::to_string(defaults)?;
         self.set_setting(&world_caps_key(world), &json).await
     }
 
@@ -862,9 +918,26 @@ impl Repository for SqliteRepository {
                             check_command_scope(&parent, world_id)?;
                         }
                     }
-                    let access =
-                        resolve_access_world(ctx.user_id, ctx.world_role, doc, &world_defaults);
+                    let access = resolve_access_world(
+                        ctx.user_id,
+                        ctx.world_role,
+                        doc,
+                        &world_defaults.grants_for(&doc.doc_type),
+                    );
                     if !access.has(cap::WRITE_FIELDS) {
+                        return Err(DataError::Forbidden);
+                    }
+                    // World-level create authorization: GM/admin hold every
+                    // capability; any other actor's WorldRole must hold core:create
+                    // for this doc type. Create has no document, so this rides
+                    // WorldRole (role_caps), not the per-document DocRole.
+                    if ctx.world_role != WorldRole::Gm
+                        && !world_defaults.role_has(ctx.world_role, &doc.doc_type, cap::CREATE)
+                    {
+                        tracing::debug!(
+                            user = %ctx.user_id, doc_type = %doc.doc_type,
+                            "create denied: missing core:create"
+                        );
                         return Err(DataError::Forbidden);
                     }
                     // Create writes the whole body at once, so any declared
@@ -899,8 +972,13 @@ impl Repository for SqliteRepository {
                     // Authorize against the stored doc, scoped to this world, so
                     // a GM of one world cannot delete another world's document.
                     check_command_scope(&cur, world_id)?;
-                    if !resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults)
-                        .has(cap::DELETE)
+                    if !resolve_access_world(
+                        ctx.user_id,
+                        ctx.world_role,
+                        &cur,
+                        &world_defaults.grants_for(&cur.doc_type),
+                    )
+                    .has(cap::DELETE)
                     {
                         return Err(DataError::Forbidden);
                     }
@@ -910,8 +988,12 @@ impl Repository for SqliteRepository {
                         .await?
                         .ok_or_else(|| DataError::Conflict(format!("document {doc_id} missing")))?;
                     check_command_scope(&cur, world_id)?;
-                    let access =
-                        resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults);
+                    let access = resolve_access_world(
+                        ctx.user_id,
+                        ctx.world_role,
+                        &cur,
+                        &world_defaults.grants_for(&cur.doc_type),
+                    );
                     // Field-level OCC: every change's pre-image must equal the
                     // current value at its pointer (absent reads as Null).
                     let whole = serde_json::to_value(&cur)?;
@@ -978,8 +1060,13 @@ impl Repository for SqliteRepository {
                             DataError::Conflict(format!("descendant {desc} missing"))
                         })?;
                         check_command_scope(&cur, world_id)?;
-                        if !resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults)
-                            .has(cap::DELETE)
+                        if !resolve_access_world(
+                            ctx.user_id,
+                            ctx.world_role,
+                            &cur,
+                            &world_defaults.grants_for(&cur.doc_type),
+                        )
+                        .has(cap::DELETE)
                         {
                             return Err(DataError::Forbidden);
                         }
@@ -1177,10 +1264,10 @@ impl Repository for SqliteRepository {
         }))
     }
 
-    async fn world_cap_defaults(&self, world: Uuid) -> Result<CapabilityGrants, DataError> {
+    async fn world_cap_defaults(&self, world: Uuid) -> Result<WorldCapDefaults, DataError> {
         match self.get_setting(&world_caps_key(world)).await? {
             Some(json) => Ok(serde_json::from_str(&json)?),
-            None => Ok(CapabilityGrants::default()),
+            None => Ok(WorldCapDefaults::default()),
         }
     }
 
@@ -1287,8 +1374,12 @@ impl Repository for SqliteRepository {
                 let Some(doc) = self.get_document(doc_id).await? else {
                     continue;
                 };
-                let access =
-                    resolve_access_world(ctx.user_id, ctx.world_role, &doc, &world_defaults);
+                let access = resolve_access_world(
+                    ctx.user_id,
+                    ctx.world_role,
+                    &doc,
+                    &world_defaults.grants_for(&doc.doc_type),
+                );
                 if !access.has(cap::READ) {
                     continue;
                 }
@@ -1341,6 +1432,58 @@ mod tests {
 
     async fn repo() -> SqliteRepository {
         SqliteRepository::connect("sqlite::memory:").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_members_includes_usernames() {
+        let r = repo().await;
+        let gm = r
+            .create_user("alice", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let members = r.list_members(w.id).await.unwrap();
+        assert!(members.iter().any(|(_, name, _)| name == "alice"));
+    }
+
+    #[tokio::test]
+    async fn cannot_remove_sole_gm() {
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let err = r.remove_member(w.id, gm).await.unwrap_err();
+        assert!(matches!(err, DataError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn cannot_demote_sole_gm() {
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let err = r.set_role(w.id, gm, WorldRole::Player).await.unwrap_err();
+        assert!(matches!(err, DataError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn can_remove_gm_when_another_exists() {
+        let r = repo().await;
+        let gm1 = r
+            .create_user("gm1", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let gm2 = r
+            .create_user("gm2", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm1, 0).await.unwrap();
+        r.add_member(w.id, gm2, WorldRole::Gm).await.unwrap();
+        assert!(r.remove_member(w.id, gm1).await.is_ok());
     }
 
     #[tokio::test]
@@ -1982,6 +2125,19 @@ mod tests {
         .await
         .unwrap();
 
+        // Grant Players create so this test exercises the declarative requirement,
+        // not the world-level create floor (which is GM-only by default).
+        let mut create_defaults = WorldCapDefaults::default();
+        create_defaults
+            .role_caps
+            .all
+            .entry(WorldRole::Player)
+            .or_default()
+            .insert("core:create".into());
+        r.set_world_cap_defaults(w.id, &create_defaults)
+            .await
+            .unwrap();
+
         let player_ctx = PermissionContext {
             user_id: player,
             world_role: WorldRole::Player,
@@ -2457,6 +2613,109 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[tokio::test]
+    async fn non_gm_create_denied_by_default() {
+        use crate::data::document::DocRole;
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        let p_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        // Player owns the doc (passes the WRITE_FIELDS floor) but the world grants
+        // no core:create, so creation is denied — isolating the create gate.
+        let mut doc = world_doc(1, w.id, serde_json::json!({}));
+        doc.permissions.users.insert(player, DocRole::Owner);
+        let err = r
+            .apply_intent(&p_ctx, w.id, vec![Operation::Create { doc }], 1)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::Forbidden));
+    }
+
+    #[tokio::test]
+    async fn non_gm_create_allowed_with_role_grant() {
+        use crate::data::document::DocRole;
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        let p_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let mut wd = WorldCapDefaults::default();
+        wd.role_caps
+            .all
+            .entry(WorldRole::Player)
+            .or_default()
+            .insert("core:create".into());
+        r.set_world_cap_defaults(w.id, &wd).await.unwrap();
+
+        let mut doc = world_doc(1, w.id, serde_json::json!({}));
+        doc.permissions.users.insert(player, DocRole::Owner);
+        assert!(r
+            .apply_intent(&p_ctx, w.id, vec![Operation::Create { doc }], 1)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn role_grant_is_type_scoped() {
+        use crate::data::document::DocRole;
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        let p_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        // Players may create tokens only.
+        let mut wd = WorldCapDefaults::default();
+        wd.role_caps
+            .by_type
+            .entry("token".into())
+            .or_default()
+            .entry(WorldRole::Player)
+            .or_default()
+            .insert("core:create".into());
+        r.set_world_cap_defaults(w.id, &wd).await.unwrap();
+
+        let mut tok = world_doc(1, w.id, serde_json::json!({}));
+        tok.doc_type = "token".into();
+        tok.permissions.users.insert(player, DocRole::Owner);
+        assert!(r
+            .apply_intent(&p_ctx, w.id, vec![Operation::Create { doc: tok }], 1)
+            .await
+            .is_ok());
+
+        let mut act = world_doc(2, w.id, serde_json::json!({}));
+        act.permissions.users.insert(player, DocRole::Owner);
+        let err = r
+            .apply_intent(&p_ctx, w.id, vec![Operation::Create { doc: act }], 2)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::Forbidden));
     }
 
     #[tokio::test]
@@ -3183,11 +3442,15 @@ mod tests {
         let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         // World default: Owners hold core:manage_embedded everywhere in this world.
-        let mut wd = CapabilityGrants::default();
-        wd.by_role
+        let mut all = CapabilityGrants::default();
+        all.by_role
             .entry(DocRole::Owner)
             .or_default()
             .insert(crate::data::permission::cap::MANAGE_EMBEDDED.to_string());
+        let wd = WorldCapDefaults {
+            all,
+            ..Default::default()
+        };
         r.set_world_cap_defaults(w.id, &wd).await.unwrap();
 
         let gm_ctx = PermissionContext {

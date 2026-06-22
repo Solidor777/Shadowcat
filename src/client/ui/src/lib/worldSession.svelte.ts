@@ -21,6 +21,8 @@ import {
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import { SceneInteractionBridge } from "./sceneInteraction";
+import { listWorldMembers } from "./api";
+import { SvelteMap } from "svelte/reactivity";
 
 export type ConnState = "connecting" | "open" | "closed";
 
@@ -52,9 +54,17 @@ export class WorldSession {
   state = $state<ConnState>("closed");
   role = $state<WorldRole | null>(null);
   world = $state<string | null>(null);
+  /** userId → username for see-as labels; fetched on a GM's Welcome (the members
+   * endpoint is GM-gated, so this stays empty for players). A stable reactive Map
+   * (mutated in place, never reassigned) so the reference captured into AppContext
+   * at mount stays valid and consumers re-render when it populates on (re)connect. */
+  readonly members = new SvelteMap<string, string>();
 
   #ws: WsClient | null = null;
   #optimistic: OptimisticClient;
+  /** Intents predicted while reconnecting (transport down but the client is still
+   * `running`), queued to flush in FIFO order after the next resync completes. */
+  #offlineQueue: { intentId: string; ops: WireOperation[] }[] = [];
   /** The optimistic (predicted) document view — the canvas render source, so a placed
    * or dragged document shows immediately. `store` stays the authoritative rollback base
    * (panels that want confirmed-only state read it). */
@@ -81,19 +91,42 @@ export class WorldSession {
     });
   }
 
-  /** Predict `ops` optimistically AND transmit them as one correlated Intent. The
+  /** Predict `ops` optimistically and transmit them as one correlated Intent. The
    * single `intent_id` ties the local prediction to the server echo/reject (FIFO
-   * confirm). Predict only when the socket can transmit: a prediction with no matching
-   * send is an orphaned pending entry that mis-correlates the FIFO confirm of the next
-   * real echo. A disconnected dispatch is dropped (logged) — there is no offline queue. */
+   * confirm). While reconnecting (transport down but `running`), predict AND queue:
+   * every offline intent queues, so optimistic FIFO order equals the eventual send
+   * order and the confirm-correlation contract holds. A flush happens after resync
+   * (the optimistic view rebases onto authoritative state first). When stopped, drop
+   * without an orphaned pending entry. */
   dispatchIntent(ops: WireOperation[]): void {
-    if (!this.#ws?.connected) {
-      this.#logger.warn("dropping intent: world socket not connected");
+    const intentId = crypto.randomUUID();
+    if (this.#ws?.connected) {
+      this.#optimistic.applyIntent(intentId, ops);
+      this.#ws.send({ type: "intent", intent_id: intentId, ops });
       return;
     }
-    const intentId = crypto.randomUUID();
-    this.#optimistic.applyIntent(intentId, ops);
-    this.#ws.send({ type: "intent", intent_id: intentId, ops });
+    if (this.#ws?.running) {
+      // Reconnecting: predict now (immediate feedback) and queue for FIFO replay.
+      this.#optimistic.applyIntent(intentId, ops);
+      this.#offlineQueue.push({ intentId, ops });
+      return;
+    }
+    // Stopped (or no socket): no reconnect is coming, so drop without predicting —
+    // an orphaned pending entry would mis-correlate the next live echo.
+    this.#logger.warn("dropping intent: world session stopped");
+  }
+
+  /** Transmit intents queued while offline, in FIFO order. Called after a resync
+   * completes (authoritative state is current and the optimistic view has rebased),
+   * so the already-predicted intents converge as their echoes confirm them. */
+  #flushOfflineQueue(): void {
+    if (!this.#ws?.connected || this.#offlineQueue.length === 0) return;
+    const queued = this.#offlineQueue;
+    this.#offlineQueue = [];
+    for (const { intentId, ops } of queued) {
+      // Prediction was applied at dispatch; only transmit, preserving order.
+      this.#ws.send({ type: "intent", intent_id: intentId, ops });
+    }
   }
 
   /** Subscribe to asset replace/delete notices; returns an unsubscribe. */
@@ -176,6 +209,9 @@ export class WorldSession {
         onWelcome: (w) => {
           void this.#onWelcome(w);
         },
+        // After resync, authoritative state is current and the optimistic view has
+        // rebased; replay any intents queued while offline so they converge.
+        onResyncComplete: () => this.#flushOfflineQueue(),
         onError: (e) => this.#logger.error("world session ws error", e),
         onAssetChanged: (msg) => {
           // Bump the resolver first so a notified panel re-resolves the new URL.
@@ -194,6 +230,19 @@ export class WorldSession {
   async #onWelcome(w: WireWelcome): Promise<void> {
     try {
       this.role = w.actor_role;
+      // Fetch member usernames for see-as labels (GM only; the endpoint 403s
+      // players). Best-effort: a failure leaves the picker on short-id fallback.
+      if (w.actor_role === "gm") {
+        try {
+          const list = await listWorldMembers(w.world);
+          // Mutate in place (not reassign) so the AppContext-captured reference
+          // stays valid; reconnect re-populates the same Map.
+          this.members.clear();
+          for (const m of list) this.members.set(m.user, m.username);
+        } catch (e) {
+          this.#logger.warn("member list fetch failed", e);
+        }
+      }
       if (!this.#bootstrapped) {
         // Set before the await so a second Welcome (reconnect) cannot re-enter
         // and double-add the module.

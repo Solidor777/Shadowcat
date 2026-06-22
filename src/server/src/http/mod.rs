@@ -588,6 +588,87 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn list_members_is_gm_only_and_returns_usernames() {
+        let state = initialized_state().await;
+        seed_user(&state, "gm").await;
+        let player_id = seed_user(&state, "pl").await;
+        let gm = login_server(&state, "gm").await;
+        let pl = login_server(&state, "pl").await;
+
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "W" }))
+            .await
+            .json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+        gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": player_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // GM sees members with usernames.
+        let members: serde_json::Value = gm
+            .get(&format!("/api/worlds/{world_id}/members"))
+            .await
+            .json();
+        let arr = members.as_array().unwrap();
+        assert!(arr.iter().any(|m| m["username"] == "gm"));
+        assert!(arr.iter().any(|m| m["username"] == "pl"));
+
+        // A non-GM member is forbidden from listing members.
+        pl.get(&format!("/api/worlds/{world_id}/members"))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn by_id_routes_hide_existence_from_non_members() {
+        let state = initialized_state().await;
+        seed_user(&state, "gm").await;
+        seed_user(&state, "st").await;
+        let gm = login_server(&state, "gm").await;
+        let st = login_server(&state, "st").await;
+
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "W" }))
+            .await
+            .json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+
+        let doc_id = Uuid::from_u128(321);
+        let doc = doc_json(
+            doc_id,
+            &world_id,
+            serde_json::json!({ "hp": 1 }),
+            gm_only_perms(),
+        );
+        gm.post(&format!("/api/worlds/{world_id}/documents"))
+            .json(&doc)
+            .await
+            .assert_status_ok();
+
+        // A non-member must not distinguish "exists but forbidden" (403) from
+        // "nonexistent" (404): every by-id document route returns 404.
+        st.get(&format!("/api/documents/{doc_id}"))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+        st.patch(&format!("/api/documents/{doc_id}"))
+            .json(&serde_json::json!({ "changes": [] }))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+        st.delete(&format!("/api/documents/{doc_id}"))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+
+        // World-scoped routes still return 403 to a non-member: the world id is
+        // supplied by the caller, so a membership denial leaks nothing.
+        st.get(&format!("/api/worlds/{world_id}/documents?type=actor"))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn conflicting_patch_returns_conflict() {
         let state = initialized_state().await;
         seed_user(&state, "gm").await;
@@ -716,8 +797,7 @@ pub(crate) mod tests {
 
         // A non-GM cannot set world defaults.
         let defaults = serde_json::json!({
-            "by_role": { "owner": ["core:manage_embedded"] },
-            "by_user": {}
+            "all": { "by_role": { "owner": ["core:manage_embedded"] }, "by_user": {} }
         });
         pl.put(&format!("/api/worlds/{world_id}/capability-defaults"))
             .json(&defaults)

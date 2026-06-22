@@ -18,7 +18,8 @@ dedicated `assets` table (not blobs, not `documents`). HTTP handlers in a new
 `AssetChanged{uuid, op}` out-of-band (no world seq) via a new `Room::broadcast_aux`;
 the durable source of truth is the record's `version`, so resync needs no replay.
 Uploads stream chunk-by-chunk to disk (bounded memory) with a role-tiered size cap +
-per-user rate limit.
+per-user rate limit. (Pre-M10 cleanup: the per-user tiered rate limit now also covers
+`POST /assets/{uuid}/replace`, not upload only — same `upload_rate.check`/`refund` guard.)
 
 **Tech Stack:** Rust, axum 0.8 (add `multipart` feature), sqlx (SQLite, single-writer
 pool), ts-rs (Rust→TS type export), Zod (client wire validation), Svelte 5 client

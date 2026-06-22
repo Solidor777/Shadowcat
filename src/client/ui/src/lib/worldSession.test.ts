@@ -1,6 +1,14 @@
 import { test, expect, vi } from "vitest";
 import { ContributionRegistry, silentLogger, buildTokenDoc, type Connect } from "@shadowcat/core";
 import { WorldSession } from "./worldSession.svelte";
+import { listWorldMembers } from "./api";
+
+// The members fetch hits the network; stub it (default empty for the player/GM
+// tests that don't care, overridable per test).
+vi.mock("./api", async (importActual) => {
+  const actual = await importActual<typeof import("./api")>();
+  return { ...actual, listWorldMembers: vi.fn().mockResolvedValue([]) };
+});
 
 // `MockServer` is internal core test code (not barrel-exported), so use a minimal
 // inline Connect that delivers one valid Welcome frame on connect and ignores
@@ -228,6 +236,58 @@ test("dispatchIntent while disconnected drops the action (no orphaned prediction
   // Neither predicted (no orphaned pending to mis-correlate) nor transmitted.
   expect(capturedClient!.get("tok-x")).toBeUndefined();
   expect(sent.filter((m) => m.type === "intent")).toHaveLength(0);
+});
+
+test("a GM Welcome populates members in place (stable reference) for see-as labels", async () => {
+  vi.mocked(listWorldMembers).mockResolvedValueOnce([
+    { user: "u9", username: "Zara", role: "player" },
+  ]);
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: coreUiStub, logger: silentLogger });
+  // AppContext captures this reference at mount; it must stay valid as members load.
+  const captured = session.members;
+  await session.enter("w1");
+  push({ ...welcomeFrame, actor_role: "gm" });
+  await vi.waitFor(() => expect(session.members.get("u9")).toBe("Zara"));
+  // Mutated in place, never reassigned — the captured snapshot sees the update.
+  expect(session.members).toBe(captured);
+  expect(captured.get("u9")).toBe("Zara");
+});
+
+test("an intent dispatched while reconnecting is predicted, queued, and flushed after resync", async () => {
+  let capturedClient: { get(id: string): unknown } | null = null;
+  const stub = {
+    manifest: { id: "core-ui", version: "0.1.0", dependencies: {}, provides: [{ contract: "shadowcat.surface:root", cardinality: "singleton" as const }] },
+    register: (ctx: { client: { get(id: string): unknown } }) => { capturedClient = ctx.client; },
+  };
+  const sent: Array<Record<string, unknown>> = [];
+  let handlers!: { onMessage: (d: string) => void; onClose: () => void };
+  let connectCount = 0;
+  const connect: Connect = (h) => {
+    connectCount++;
+    handlers = h;
+    return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => h.onClose() });
+  };
+  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: stub, logger: silentLogger });
+  await session.enter("w1");
+  handlers.onMessage(JSON.stringify(welcomeFrame));
+  await vi.waitFor(() => expect(capturedClient).not.toBeNull());
+
+  // Transport drops but the client stays running → reconnecting.
+  handlers.onClose();
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } }, "tok-off");
+  session.dispatchIntent([{ op: "create", doc }]);
+  // Predicted immediately, but NOT transmitted while offline.
+  expect(capturedClient!.get("tok-off")).toBeTruthy();
+  const offSent = (): Array<Record<string, unknown>> =>
+    sent.filter((m) => m.type === "intent" && JSON.stringify(m.ops).includes("tok-off"));
+  expect(offSent()).toHaveLength(0);
+
+  // Reconnect fires (backoff), then a fresh Welcome → resync completes → flush.
+  await vi.waitFor(() => expect(connectCount).toBe(2), { timeout: 2000 });
+  handlers.onMessage(JSON.stringify(welcomeFrame));
+  await vi.waitFor(() => expect(offSent()).toHaveLength(1));
 });
 
 test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Welcome", async () => {

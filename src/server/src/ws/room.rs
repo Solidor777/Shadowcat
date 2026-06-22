@@ -114,8 +114,8 @@ pub struct Room {
 }
 
 impl Room {
-    fn new(world_id: Uuid, seed_seq: i64, scene: SceneEcs) -> Self {
-        let (tx, _rx) = broadcast::channel(BROADCAST_CAPACITY);
+    fn new(world_id: Uuid, seed_seq: i64, scene: SceneEcs, broadcast_capacity: usize) -> Self {
+        let (tx, _rx) = broadcast::channel(broadcast_capacity);
         Self {
             world_id,
             tx,
@@ -257,12 +257,26 @@ impl Room {
 /// callers or connections.
 pub struct RoomRegistry {
     rooms: DashMap<Uuid, Arc<Room>>,
+    /// Broadcast ring capacity for rooms created by this registry. Production uses
+    /// `BROADCAST_CAPACITY`; test harnesses shrink it to force the lag path.
+    broadcast_capacity: usize,
 }
 
 impl RoomRegistry {
     pub fn new() -> Self {
         Self {
             rooms: DashMap::new(),
+            broadcast_capacity: BROADCAST_CAPACITY,
+        }
+    }
+
+    /// A registry whose rooms use a custom broadcast ring capacity. Test-only: a
+    /// tiny capacity lets a non-reading client deterministically overflow the ring
+    /// and exercise the `Lagged` → resync path.
+    pub fn with_capacity(broadcast_capacity: usize) -> Self {
+        Self {
+            rooms: DashMap::new(),
+            broadcast_capacity,
         }
     }
 
@@ -287,7 +301,14 @@ impl RoomRegistry {
         let room = self
             .rooms
             .entry(world_id)
-            .or_insert_with(|| Arc::new(Room::new(world_id, world.seq, scene_ecs)))
+            .or_insert_with(|| {
+                Arc::new(Room::new(
+                    world_id,
+                    world.seq,
+                    scene_ecs,
+                    self.broadcast_capacity,
+                ))
+            })
             .clone();
         Ok(Some(room))
     }

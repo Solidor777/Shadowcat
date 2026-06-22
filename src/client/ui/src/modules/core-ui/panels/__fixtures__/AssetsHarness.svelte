@@ -15,6 +15,7 @@
     documents: undefined as never,
     world: "w1",
     role: "gm",
+    members: new Map(),
     t,
     assets: new AssetResolver(),
     onAssetChanged,

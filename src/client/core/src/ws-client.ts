@@ -44,6 +44,10 @@ export interface WsClientHandlers {
   /** An intent the server refused. */
   onReject?(intentId: string, reason: RejectReason): void;
   onWelcome?(welcome: WireWelcome): void;
+  /** Fires once per (re)connect after any resync replay is fully applied (or
+   * immediately when no replay is needed). The seam for replaying actions queued
+   * while offline, after the optimistic view has rebased onto authoritative state. */
+  onResyncComplete?(): void;
   /** A command that failed to apply (e.g. schema drift). Surfaced, never thrown
    * into the socket loop. */
   onError?(error: unknown): void;
@@ -67,7 +71,7 @@ const defaultSleep = (ms: number): Promise<void> =>
 
 export class WsClient {
   private transport: Transport | null = null;
-  private running = false;
+  private running_ = false;
   private reconnectAttempt = 0;
   /** Next seq to apply; the client-side ordering watermark. Persists across
    * reconnects so resync resumes from where application left off. */
@@ -107,12 +111,12 @@ export class WsClient {
 
   /** Open the connection (and keep it open across drops until `stop`). */
   async start(): Promise<void> {
-    this.running = true;
+    this.running_ = true;
     await this.open();
   }
 
   stop(): void {
-    this.running = false;
+    this.running_ = false;
     this.transport?.close();
     this.transport = null;
     this.failPending("client stopped");
@@ -170,13 +174,19 @@ export class WsClient {
     return this.transport !== null;
   }
 
+  /** True between `start` and `stop`: a dropped transport will reconnect. Lets a
+   * caller distinguish "reconnecting" (queue + retry) from "stopped" (give up). */
+  get running(): boolean {
+    return this.running_;
+  }
+
   /** Estimated server clock. */
   serverNow(): number {
     return this.now() + this.serverOffsetMs;
   }
 
   private async open(): Promise<void> {
-    if (!this.running) return;
+    if (!this.running_) return;
     try {
       this.transport = await this.opts.connect({
         onMessage: (d) => this.handleFrame(d),
@@ -193,7 +203,7 @@ export class WsClient {
     // In-flight requests were sent on the now-dead socket; a reconnect will not
     // replay them, so reject rather than leave them hanging until timeout.
     this.failPending("connection closed");
-    if (this.running) this.scheduleReconnect();
+    if (this.running_) this.scheduleReconnect();
   }
 
   private scheduleReconnect(): void {
@@ -217,6 +227,10 @@ export class WsClient {
         // reconnect gap). Idempotent: the server replays from from_seq.
         if (msg.current_seq >= this.nextExpected) {
           this.send({ type: "resync_request", from_seq: this.nextExpected });
+          // onResyncComplete fires on the resulting resync_end.
+        } else {
+          // Already caught up: no replay will arrive, so signal completion now.
+          this.safeEmit(() => this.opts.handlers.onResyncComplete?.());
         }
         break;
       case "event":
@@ -229,6 +243,7 @@ export class WsClient {
         break;
       case "resync_end":
         this.nextExpected = Math.max(this.nextExpected, msg.current_seq + 1);
+        this.safeEmit(() => this.opts.handlers.onResyncComplete?.());
         break;
       case "time_pong":
         this.serverOffsetMs = msg.server_t - this.now();

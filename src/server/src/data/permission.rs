@@ -4,7 +4,8 @@ use uuid::Uuid;
 
 use crate::data::command::{Command, FieldChange, Operation};
 use crate::data::document::{
-    CapabilityGrants, CapabilityRequirement, DocRole, Document, Visibility, WorldRole,
+    CapabilityGrants, CapabilityRequirement, DocRole, Document, Visibility, WorldCapDefaults,
+    WorldRole,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
@@ -203,6 +204,22 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
     if access.see_gm_only {
         return out;
     }
+    // Each embedded child carries its own `property_overrides`, independent of the
+    // parent's. A non-GM recipient must not see any GmOnly field at any depth, so
+    // recurse with the same recipient access (the `see_gm_only` flag is the
+    // recipient's, applied at every level) before stripping the parent's own.
+    let embedded = std::mem::take(&mut out.embedded);
+    out.embedded = embedded
+        .into_iter()
+        .map(|(k, v)| {
+            (
+                k,
+                v.into_iter()
+                    .map(|c| filter_properties(&c, access))
+                    .collect(),
+            )
+        })
+        .collect();
     let gm_only: Vec<String> = doc
         .permissions
         .property_overrides
@@ -214,8 +231,25 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
     for pointer in gm_only {
         strip_pointer(&mut whole, &pointer);
     }
-    out = serde_json::from_value(whole).expect("filtered document deserializes");
-    out
+    serde_json::from_value(whole).expect("filtered document deserializes")
+}
+
+/// Collect every `GmOnly` property pointer in `doc` and its embedded descendants,
+/// each expressed absolute to `doc` (call with `prefix = ""` for parent-absolute
+/// paths: a child at `embedded[key][i]` contributes `/embedded/<key>/<i>{pointer}`).
+/// Lets `Update`-delta redaction honor hidden fields at any embedded depth — the
+/// same coverage `filter_properties` gives whole-document egress.
+fn collect_gm_only(doc: &Document, prefix: &str, out: &mut Vec<String>) {
+    for (p, v) in &doc.permissions.property_overrides {
+        if *v == Visibility::GmOnly {
+            out.push(format!("{prefix}{p}"));
+        }
+    }
+    for (key, children) in &doc.embedded {
+        for (idx, child) in children.iter().enumerate() {
+            collect_gm_only(child, &format!("{prefix}/embedded/{key}/{idx}"), out);
+        }
+    }
 }
 
 /// The recipient's view of a broadcast command: ops on unreadable documents
@@ -229,7 +263,7 @@ pub async fn filter_command(
     repo: &dyn Repository,
     cmd: &Command,
     ctx: &PermissionContext,
-    world_defaults: &CapabilityGrants,
+    world_defaults: &WorldCapDefaults,
 ) -> Command {
     // `world_defaults` is passed in (loaded once per connection / request) rather
     // than fetched here: this runs per event per recipient on the egress hot
@@ -239,7 +273,12 @@ pub async fn filter_command(
     for op in &cmd.ops {
         match op {
             Operation::Create { doc } => {
-                let access = resolve_access_world(ctx.user_id, ctx.world_role, doc, world_defaults);
+                let access = resolve_access_world(
+                    ctx.user_id,
+                    ctx.world_role,
+                    doc,
+                    &world_defaults.grants_for(&doc.doc_type),
+                );
                 if access.has(cap::READ) {
                     out_ops.push(Operation::Create {
                         doc: filter_properties(doc, &access),
@@ -248,7 +287,12 @@ pub async fn filter_command(
             }
             Operation::Delete { doc } => {
                 // A delete is visible to anyone who could read the document.
-                let access = resolve_access_world(ctx.user_id, ctx.world_role, doc, world_defaults);
+                let access = resolve_access_world(
+                    ctx.user_id,
+                    ctx.world_role,
+                    doc,
+                    &world_defaults.grants_for(&doc.doc_type),
+                );
                 if access.has(cap::READ) {
                     out_ops.push(Operation::Delete {
                         doc: filter_properties(doc, &access),
@@ -259,21 +303,24 @@ pub async fn filter_command(
                 let Ok(Some(cur)) = repo.get_document(*doc_id).await else {
                     continue;
                 };
-                let access =
-                    resolve_access_world(ctx.user_id, ctx.world_role, &cur, world_defaults);
+                let access = resolve_access_world(
+                    ctx.user_id,
+                    ctx.world_role,
+                    &cur,
+                    &world_defaults.grants_for(&cur.doc_type),
+                );
                 if !access.has(cap::READ) {
                     continue;
                 }
                 let kept: Vec<FieldChange> = if access.see_gm_only {
                     changes.clone()
                 } else {
-                    let gm_only: Vec<String> = cur
-                        .permissions
-                        .property_overrides
-                        .iter()
-                        .filter(|(_, v)| **v == Visibility::GmOnly)
-                        .map(|(p, _)| p.clone())
-                        .collect();
+                    // Collect GmOnly pointers across the parent AND its embedded
+                    // descendants (parent-absolute), so an Update into
+                    // `/embedded/<child>/...` is redacted against the child's own
+                    // overrides — not just the parent's. Matches filter_properties.
+                    let mut gm_only = Vec::new();
+                    collect_gm_only(&cur, "", &mut gm_only);
                     changes
                         .iter()
                         .filter_map(|ch| redact_change(ch, &gm_only))
@@ -532,6 +579,102 @@ mod tests {
         );
     }
 
+    #[test]
+    fn embedded_child_gm_only_is_stripped_for_non_gm() {
+        let mut child = doc(
+            PermissionSet::default(),
+            serde_json::json!({ "secret": 9, "shown": 2 }),
+        );
+        child
+            .permissions
+            .property_overrides
+            .insert("/system/secret".into(), Visibility::GmOnly);
+        let mut parent = doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "public": 1 }),
+        );
+        parent.embedded.insert("items".into(), vec![child]);
+
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &parent);
+        let view = filter_properties(&parent, &player);
+        let child_view = &view.embedded.get("items").unwrap()[0];
+        assert_eq!(
+            child_view.system.get("secret"),
+            None,
+            "child gm-only stripped"
+        );
+        assert_eq!(child_view.system["shown"], serde_json::json!(2));
+
+        // The GM sees the embedded child's gm-only field.
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &parent);
+        let gm_view = filter_properties(&parent, &gm);
+        assert_eq!(
+            gm_view.embedded.get("items").unwrap()[0].system["secret"],
+            serde_json::json!(9)
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_command_create_strips_embedded_gm_only() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, Operation};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+
+        let mut child = doc(
+            PermissionSet::default(),
+            serde_json::json!({ "secret": 9, "shown": 2 }),
+        );
+        child
+            .permissions
+            .property_overrides
+            .insert("/system/secret".into(), Visibility::GmOnly);
+        let mut parent = doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "public": 1 }),
+        );
+        parent.scope = Scope::World { world_id: w.id };
+        parent.embedded.insert("items".into(), vec![child]);
+
+        let cmd = Command {
+            seq: 1,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Create {
+                doc: parent.clone(),
+            }],
+        };
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let filtered = filter_command(&r, &cmd, &player, &WorldCapDefaults::default()).await;
+        let Operation::Create { doc } = &filtered.ops[0] else {
+            panic!("expected Create");
+        };
+        assert!(
+            doc.embedded.get("items").unwrap()[0]
+                .system
+                .get("secret")
+                .is_none(),
+            "embedded child gm-only stripped on the Create broadcast"
+        );
+    }
+
     #[tokio::test]
     async fn filter_command_strips_and_preserves_seq() {
         use crate::auth::role::ServerRole;
@@ -593,7 +736,7 @@ mod tests {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let filtered = filter_command(&r, &cmd, &player, &CapabilityGrants::default()).await;
+        let filtered = filter_command(&r, &cmd, &player, &WorldCapDefaults::default()).await;
         assert_eq!(filtered.seq, 2);
         if let Operation::Update { changes, .. } = &filtered.ops[0] {
             assert_eq!(changes.len(), 1);
@@ -603,12 +746,119 @@ mod tests {
         }
 
         // GM sees both changes.
-        let gm_view = filter_command(&r, &cmd, &gm_ctx, &CapabilityGrants::default()).await;
+        let gm_view = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
         if let Operation::Update { changes, .. } = &gm_view.ops[0] {
             assert_eq!(changes.len(), 2);
         } else {
             panic!("expected Update");
         }
+    }
+
+    #[tokio::test]
+    async fn filter_command_update_redacts_embedded_child_gm_only() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, FieldChange, Operation};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let mut child = doc(
+            PermissionSet::default(),
+            serde_json::json!({ "secret": 1, "shown": 2 }),
+        );
+        child
+            .permissions
+            .property_overrides
+            .insert("/system/secret".into(), Visibility::GmOnly);
+        let mut parent = doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "public": 0 }),
+        );
+        parent.scope = Scope::World { world_id: w.id };
+        parent.embedded.insert("items".into(), vec![child]);
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: parent.clone(),
+            }],
+            1,
+        )
+        .await
+        .unwrap();
+
+        let cmd = Command {
+            seq: 2,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id: parent.id,
+                changes: vec![
+                    // Direct write of the embedded child's gm-only field → dropped.
+                    FieldChange {
+                        path: "/embedded/items/0/system/secret".into(),
+                        old: serde_json::json!(1),
+                        new: serde_json::json!(9),
+                    },
+                    // Wholesale rewrite of the child's /system (ancestor of the gm-only
+                    // leaf) → the hidden leaf is stripped from old + new, sibling kept.
+                    FieldChange {
+                        path: "/embedded/items/0/system".into(),
+                        old: serde_json::json!({ "secret": 1, "shown": 2 }),
+                        new: serde_json::json!({ "secret": 9, "shown": 3 }),
+                    },
+                    // Unrelated public parent field → kept.
+                    FieldChange {
+                        path: "/system/public".into(),
+                        old: serde_json::json!(0),
+                        new: serde_json::json!(5),
+                    },
+                ],
+            }],
+        };
+
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let filtered = filter_command(&r, &cmd, &player, &WorldCapDefaults::default()).await;
+        let Operation::Update { changes, .. } = &filtered.ops[0] else {
+            panic!("expected Update");
+        };
+        assert_eq!(
+            changes.len(),
+            2,
+            "the direct gm-only embedded change is dropped"
+        );
+        let sys = changes
+            .iter()
+            .find(|c| c.path == "/embedded/items/0/system")
+            .unwrap();
+        assert!(sys.new.get("secret").is_none(), "secret stripped from new");
+        assert!(sys.old.get("secret").is_none(), "secret stripped from old");
+        assert_eq!(sys.new["shown"], serde_json::json!(3));
+        assert!(changes.iter().any(|c| c.path == "/system/public"));
+
+        // GM sees all three unredacted.
+        let gm_view = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
+        let Operation::Update { changes, .. } = &gm_view.ops[0] else {
+            panic!("expected Update");
+        };
+        assert_eq!(changes.len(), 3);
     }
 
     #[tokio::test]
@@ -687,7 +937,7 @@ mod tests {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let filtered = filter_command(&r, &cmd, &player, &CapabilityGrants::default()).await;
+        let filtered = filter_command(&r, &cmd, &player, &WorldCapDefaults::default()).await;
         let Operation::Update { changes, .. } = &filtered.ops[0] else {
             panic!("expected Update");
         };
@@ -706,7 +956,7 @@ mod tests {
         assert_eq!(public.new, serde_json::json!(40));
 
         // The GM sees every change unredacted.
-        let gm_view = filter_command(&r, &cmd, &gm_ctx, &CapabilityGrants::default()).await;
+        let gm_view = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
         let Operation::Update { changes, .. } = &gm_view.ops[0] else {
             panic!("expected Update");
         };

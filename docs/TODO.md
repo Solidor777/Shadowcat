@@ -5,9 +5,6 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 ## Server / auth
 - TODO: Periodically sweep expired rows from the `tower_sessions` table. Expired rows can never load (the store filters `expiry_date > now`), so this is housekeeping, not correctness — wire a sweep when session volume grows.
 
-## Server / assets
-- TODO: Rate-limit the asset replace endpoint (`POST /assets/{uuid}/replace`). It streams a full new file like upload but is currently only GM-gated + magic-byte validated (per the M8b spec, which scopes the per-user rate limit to upload only). A GM can replace-loop a near-cap file unbounded. Update the M8b spec to extend the tiered rate limit to replace, then add the same `upload_rate.check`/`refund` guard the upload handler uses. (Surfaced by the M8b-1 buddy check; spec-compliant today, hardening deferred.)
-
 ## Data layer
 - TODO: Purge `explored_fog` rows on world/scene/user deletion. The M9c table denormalizes `world_id` for a world-scoped purge, but no deletion path consumes it yet (worlds aren't deletable; scene deletion goes through the `apply_intent` document cascade, which doesn't touch `explored_fog`). Orphaned rows are harmless (reads key on the exact never-reused `(scene_id, user_id)` UUIDs) but accumulate unboundedly over a server's lifetime. Wire a `DELETE FROM explored_fog WHERE world_id = ?` (and a per-scene purge into the scene-delete cascade) when world/scene deletion lands; index `world_id` then. (Surfaced by the M9c-1 buddy check.)
 - TODO: `command::set_pointer` is set-only — an Update that conceptually removes a key writes `null` (key stays present as null) rather than removing it. `null` ≠ absent. Resolve removal semantics when the merge engine lands.
@@ -16,15 +13,6 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - TODO: Extend `reconcileTopology` beyond presence-by-`module_id` to flag version and `provides`/`requires` mismatches for modules present on both sides (a stale local build providing a contract the world no longer declares currently reconciles silently). Land with module management / hard topology enforcement.
 - TODO: Resolve multi-provider conflict policy for `singleton` surface contracts in the UI contribution architecture — when two modules provide the same `singleton` contract (e.g. both claim "the sidebar"), decide the winner (load order, explicit priority, or user selection) instead of the current deterministic loud-fail. Design once a real second provider exists to validate the semantics; the contract model already carries the `singleton`/`multi` cardinality marker the policy slots into.
 - TODO: Add capability version negotiation to contract-based module dependencies (`requires`) — match a required contract against a provider by version range, not presence alone. Deferred until multiple providers of a contract exist at differing versions.
-
-## Client / UI (M9c-2)
-- TODO: Label the GM see-as-player picker by username, not a truncated user id. Stage.svelte derives see-as candidates from distinct token `owner`s the GM sees and labels each "See as <first 8 of uuid>" — functional but unfriendly. There is no members/username source exposed client-side (Welcome carries only the actor's own role). Add a world-members source (a `GET /api/worlds/{id}/members` → `[{user_id, username, role}]`, or include members in Welcome) and label the picker by username; also list members with no token. (Surfaced building M9c-2.)
-
-## Client / intents
-- TODO: Replay (or visibly block) optimistic intents issued while the world socket is disconnected. `WorldSession.dispatchIntent` drops a dispatch when `WsClient` has no transport (logged), avoiding an orphaned pending entry that would mis-correlate the FIFO confirm of the next echo; a reconnect does not replay the dropped action. Add a replay-on-resync queue (or a "reconnecting" UI block) when offline editing matters.
-
-## Server / ws
-- TODO: Make the ping rate limit per-user (on `AppState`) instead of per-connection. `conn.rs`'s `ScenePing` limiter is a per-connection sliding window (30/min) that resets on reconnect, so a user with N concurrent sockets gets N×30/min — a weaker abuse backstop than the per-user `UploadRateLimiter`. Accepted as a defensible choice for a transient cosmetic ping (membership-gated, silent drop, best-effort relay); upgrade to a per-user `PingRateLimiter` on `AppState` if ping abuse becomes a concern. (Deviation from the M8d-3b plan Task 4, surfaced by the buddy check.)
 
 ## Client / render
 - TODO: Lerp token rotation along the shortest signed delta (`((b-a+540)%360)-180`) with a wrap-aware ε-settle, when M8d-2 adds rotation control. M8d-1's `TokenAnimator` lerps rotation as a raw scalar (350°→10° tweens the long way); cannot manifest until rotation is authorable. (Surfaced by the M8d-1 buddy check.)

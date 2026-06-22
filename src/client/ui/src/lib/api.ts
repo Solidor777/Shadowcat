@@ -56,6 +56,17 @@ export function listWorlds(): Promise<WorldEntry[]> {
   return getJson<WorldEntry[]>("/api/worlds");
 }
 
+/** A world member (GM-only endpoint). Mirrors the server's MemberEntry. */
+export interface WorldMember {
+  user: string;
+  username: string;
+  role: "gm" | "player" | "spectator";
+}
+
+export function listWorldMembers(world: string): Promise<WorldMember[]> {
+  return getJson<WorldMember[]>(`/api/worlds/${world}/members`);
+}
+
 export async function createWorld(name: string): Promise<WorldEntry> {
   const res = await postJson("/api/worlds", { name });
   if (!res.ok) throw new Error(`/api/worlds → ${res.status}`);

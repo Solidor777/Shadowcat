@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::auth::role::ServerRole;
 use crate::auth::session::AuthUser;
-use crate::data::document::CapabilityGrants;
+use crate::data::document::WorldCapDefaults;
 use crate::data::membership::PermissionContext;
 use crate::data::permission::filter_command;
 use crate::data::repository::Repository;
@@ -137,7 +137,7 @@ async fn send_filtered<S>(
     sink: &mut S,
     repo: &dyn Repository,
     ctx: &PermissionContext,
-    world_defaults: &CapabilityGrants,
+    world_defaults: &WorldCapDefaults,
     msg: &ServerMsg,
 ) -> Result<(), ()>
 where
@@ -226,9 +226,8 @@ async fn handle_socket(
     ));
 
     // Ingress: parse client frames, forward intents to egress / publish.
-    // Per-connection sliding-window ping budget (abuse backstop; resets on reconnect).
-    const PING_PER_MIN: usize = 30;
-    let mut ping_times: Vec<i64> = Vec::new();
+    // Per-user ping budget (shared across this user's connections; survives reconnect).
+    let ping_rate = state.ws.ping_rate.clone();
     loop {
         tokio::select! {
             _ = &mut egress => break,
@@ -322,11 +321,8 @@ async fn handle_socket(
                         Ok(ClientMsg::ScenePing { scene, x, y }) => {
                             // Out-of-band relay to the world room, stamped with the sender.
                             // Membership is already gated (a non-member never reaches here);
-                            // coordinates are not validated (#6). Over-budget pings drop silently.
-                            let now = now_millis();
-                            ping_times.retain(|&t| t > now - 60_000);
-                            if ping_times.len() < PING_PER_MIN {
-                                ping_times.push(now);
+                            // coordinates are not validated. Over-budget pings drop silently.
+                            if ping_rate.check(user_id, now_millis(), 30) {
                                 room.broadcast_aux(ServerMsg::ScenePing {
                                     scene,
                                     x,
@@ -449,7 +445,8 @@ async fn egress_loop<S>(
     };
     // Project the world grants to only what this actor needs to self-gate; other
     // users' UUIDs and grants must not cross to the client.
-    let actor_grants = crate::data::permission::project_grants_for(&world_defaults, ctx.user_id);
+    let actor_grants =
+        crate::data::permission::project_grants_for(&world_defaults.all, ctx.user_id);
     if sink
         .send(text(&ServerMsg::Welcome {
             world: world_id,
@@ -722,7 +719,7 @@ async fn replay<S>(
     room: &Room,
     repo: &dyn Repository,
     ctx: &PermissionContext,
-    world_defaults: &CapabilityGrants,
+    world_defaults: &WorldCapDefaults,
     from_seq: i64,
 ) -> Result<i64, ()>
 where

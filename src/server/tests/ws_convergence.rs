@@ -23,9 +23,21 @@ struct Harness {
     cookie: String,
     world: Uuid,
     repo: Arc<SqliteRepository>,
+    state: AppState,
 }
 
 async fn spawn() -> Harness {
+    spawn_with_ws(shadowcat::ws::WsState::new()).await
+}
+
+/// Like `spawn`, but the room broadcast ring uses `capacity` — a tiny value lets
+/// a non-reading client overflow the ring deterministically and exercise the
+/// `Lagged` → resync path.
+async fn spawn_with_capacity(capacity: usize) -> Harness {
+    spawn_with_ws(shadowcat::ws::WsState::with_broadcast_capacity(capacity)).await
+}
+
+async fn spawn_with_ws(ws: shadowcat::ws::WsState) -> Harness {
     let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
     let hash = hash_password("pw").unwrap();
     // The seeded user owns the world (GM), so its intents are authorized and
@@ -41,10 +53,10 @@ async fn spawn() -> Harness {
         config: Arc::new(Config::default()),
         setup_token: None,
         initialized: Arc::new(AtomicBool::new(true)),
-        ws: shadowcat::ws::WsState::new(),
+        ws,
         upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
     };
-    let app = http::router(state).await;
+    let app = http::router(state.clone()).await;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
@@ -79,6 +91,7 @@ async fn spawn() -> Harness {
         cookie,
         world: world.id,
         repo,
+        state,
     }
 }
 
@@ -141,6 +154,20 @@ impl Harness {
             .into_iter()
             .map(|c| c.seq)
             .collect()
+    }
+
+    /// In-process read of the room's `lagged_drops` telemetry (no admin HTTP).
+    fn lagged_drops(&self) -> u64 {
+        self.state
+            .ws
+            .rooms
+            .get(self.world)
+            .map(|r| {
+                r.stats
+                    .lagged_drops
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            })
+            .unwrap_or(0)
     }
 }
 
@@ -325,23 +352,44 @@ async fn all_clients_converge_after_reconnect() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_reader_recovers_via_resync() {
-    let h = spawn().await;
+    // A ring of 8 guarantees the non-reading client overflows it deterministically
+    // (an OS TCP buffer can absorb 400 small frames, so the default 256 ring may
+    // never lag — the small ring is what forces the `Lagged` path under test).
+    let h = spawn_with_capacity(8).await;
     let mut slow = h.connect().await;
-    let _ = slow.next().await; // Welcome
+    let _ = slow.next().await; // Welcome — then we stop reading `slow`.
 
-    // Flood more events than the broadcast capacity (256) without reading,
-    // pressuring the slow connection toward a lag-driven resync.
+    // Flood far more events than the ring without reading `slow`. Large bodies
+    // (~8 KiB each) make the cumulative flood far exceed any OS TCP buffer, so the
+    // slow client's egress task blocks on a full socket and the 8-slot ring
+    // overflows — the deterministic trigger the byte volume (not the count) drives.
     let mut pubc = h.connect().await;
     let _ = pubc.next().await;
-    for n in 0..400 {
-        pubc.send(create_intent(h.world, n)).await.unwrap();
+    let blob = "x".repeat(8 * 1024);
+    for n in 0..400u64 {
+        let doc_id = Uuid::from_u128(1000 + n as u128);
+        let op = create_op(h.world, doc_id, serde_json::json!({ "blob": blob }));
+        pubc.send(intent_msg(n, serde_json::json!([op])))
+            .await
+            .unwrap();
     }
     // Give the server time to process the publishes.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    // Now read: whether delivery came live or via resync, the final delivered
-    // seq reaches the authoritative tail (400), strictly increasing, no dups.
+    // Now read: draining unblocks the egress task, which on its next `recv`
+    // observes the overflowed 8-slot ring as `Lagged` and resyncs. Convergence:
+    // the final delivered seq reaches the authoritative tail (400), strictly
+    // increasing, no dups — whether via live or resync delivery.
     let seqs = drain_until_seq(&mut slow, 400).await;
+
+    // The Lagged path fired deterministically (the regression guard the larger
+    // ring could not provide). Observed only after draining, since a blocked
+    // egress never reaches the `recv` that surfaces the lag.
+    assert!(
+        h.lagged_drops() > 0,
+        "the lag-driven resync path must fire deterministically"
+    );
+
     assert_eq!(*seqs.last().unwrap(), 400);
     let mut sorted = seqs.clone();
     sorted.sort();

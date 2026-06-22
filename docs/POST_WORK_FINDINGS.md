@@ -3,18 +3,16 @@
 Living record of issues surfaced during review/audit. NOT a to-do list — entries
 are observations awaiting triage, not committed work.
 
-- Title: `slow_reader_recovers_via_resync` does not guarantee the `Lagged` path
-  fires. Summary: the M4 convergence test (`src/server/tests/ws_convergence.rs`)
-  floods 400 small events to a non-reading client to pressure a broadcast
-  `Lagged` → resync, but the OS TCP buffer may absorb all 400 frames so the
-  server egress never lags. The test still asserts convergence (final seq = 400,
-  no dups/reordering), which holds via either live or resync delivery — so it is
-  a valid convergence test but NOT a reliable regression guard for the
-  lag-driven resync path specifically. Status: Needs triage — to assert the lag
-  path deterministically, check `gaps_detected`/`resyncs_*`/`lagged_drops` via
-  `/api/debug/rooms` (or shrink `BROADCAST_CAPACITY` under a test cfg). The
-  reconnect test (`all_clients_converge_after_reconnect`) does exercise the
-  resync replay path explicitly via `ResyncRequest`.
+- Title: offline-intent flush can precede the async `#onWelcome` body on reconnect.
+  Summary: `WsClient` fires `onResyncComplete` (→ `WorldSession.#flushOfflineQueue`)
+  synchronously on the caught-up Welcome branch / on `resync_end`, while
+  `#onWelcome` runs as an unawaited `void` async (it awaits a member fetch before
+  re-establishing scene subscriptions). So queued offline intents can transmit
+  before scene subs re-establish. Not a correctness defect: flushed intents reach
+  the server regardless, and scene-derived read state is eventually consistent via
+  the egress re-evaluation debounce; FIFO confirm-correlation is unaffected.
+  Status: Accepted (eventually-consistent ordering). If a stricter ordering is ever
+  needed, gate the flush on an "onWelcome settled" promise.
 
 - Title: capability model — `core:delete` is GM-only by default (behavior change
   from M5). Summary: the capability floor grants Owners `core:read` +
@@ -30,19 +28,6 @@ are observations awaiting triage, not committed work.
   restricted (restricting only the world-defaults endpoint's `validate_grants`
   would be inconsistent — per-document grants set at create / via PATCH
   `/permissions` bypass it). Status: Accepted (design note from Phase 1 review).
-
-- Title: capability model — `core:create` world authorization deferred.
-  Summary: Phase 1 does not gate document creation by a world-level
-  `core:create`; current behavior is M5's (any member who owns the new doc may
-  create it). The capability constant exists. Status: Needs triage — wire a
-  world-level create grant (GM always allowed) when create restriction is
-  required.
-
-- Title: capability model — world defaults are not doc_type-scoped. Summary:
-  `world_cap_defaults` stores one `CapabilityGrants` per world applied to all
-  doc types; the spec allows per-`doc_type` scoping (§7.2). Status: Needs triage
-  — extend the stored shape to {all, by_type} when type-specific defaults are
-  needed (additive, no migration of the per-world form).
 
 - Title: a saturated lagged WS connection is slow to auto-converge on the
   ubuntu-latest CI runner. Summary: `converges_with_publishing_during_resync`
@@ -88,31 +73,6 @@ are observations awaiting triage, not committed work.
   client just sees Create → (missing Update) → Delete. Harmless for end state;
   noted as a replay-fidelity limitation. Status: Accepted.
 
-- Title: by-id document routes leak existence to non-members (403 vs 404).
-  Summary: `GET/PATCH/DELETE /api/documents/{id}` load the doc, resolve its
-  world, then call `permission_context`, which returns `Forbidden`→403 for a
-  non-member — distinguishable from 404 for a nonexistent id. The in-world
-  unreadable case already collapses to 404. Low impact (document UUIDs are
-  unguessable). Status: Needs triage — map the non-member case on by-id routes
-  to `NotFound` for a uniform authz surface.
-
-- Title: `validate_system_size` ignores `embedded` children. Summary:
-  `src/server/src/data/validation.rs` measures only `doc.system`; embedded
-  copies are stored inline in the parent JSON, so a Create/Update with a large
-  `embedded` tree bypasses the 256 KiB opaque-body cap. Bounded in practice by
-  axum's default ~2 MB JSON limit and the WS frame cap, so not unbounded.
-  Status: Needs triage — validate total serialized size or recurse into embedded
-  `system` bodies when embedded documents carry untrusted bulk.
-
-- Title: embedded children's `GmOnly` property overrides are not redacted.
-  Summary: `filter_properties` strips only the parent document's
-  `property_overrides`; an embedded child carrying its own
-  `property_overrides: {"/system/x": "gm_only"}` is delivered to players
-  unredacted. Embedded per-property visibility appears out of M5 scope (the
-  filtering contract is per-document). Status: Needs triage — recurse redaction
-  into embedded children if embedded docs are meant to carry independent
-  visibility.
-
 - Title: no smaller "caption" text-size token in the M7d token set. Summary: the
   M8b-2 asset panel's tile filename (`Assets.svelte` `.name`) renders at inherited
   body size — `_primitives.scss`/`_semantic.scss` define `--space-*`, `--radius-*`,
@@ -133,10 +93,3 @@ are observations awaiting triage, not committed work.
   computed-`color` probe. (3) Background uses `--surface-base` (already correct). (4)
   Fog-state colors (dimmed/unexplored) deferred to M9 (no visible fog in identity mode).
   Status: Resolved for M8c (canvas chrome); caption size token → M12 (above).
-
-- Title: no protection against removing/demoting the last GM. Summary:
-  `remove_member`/`set_role` allow a world's only GM to be removed or demoted,
-  after which only a server admin can manage that world. Availability footgun,
-  not a security defect. Status: Needs triage — reject the operation when it
-  would leave a world with zero GMs, or document admin-recovery as the intended
-  path.

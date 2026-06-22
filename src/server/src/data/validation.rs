@@ -4,11 +4,19 @@ use crate::data::DataError;
 /// Maximum serialized size of a document's opaque `system` body.
 pub const MAX_SYSTEM_BYTES: usize = 256 * 1024;
 
-/// Reject documents whose opaque body exceeds the size cap.
+/// Reject a document — and every embedded descendant — whose opaque `system`
+/// body exceeds the size cap. Embedded children are stored inline in the parent
+/// JSON, so each body is bounded independently; the recursion mirrors `embedded`'s
+/// finite stored depth (a document cannot embed itself).
 pub fn validate_system_size(doc: &Document) -> Result<(), DataError> {
     let bytes = serde_json::to_vec(&doc.system)?.len();
     if bytes > MAX_SYSTEM_BYTES {
         return Err(DataError::TooLarge(bytes));
+    }
+    for children in doc.embedded.values() {
+        for child in children {
+            validate_system_size(child)?;
+        }
     }
     Ok(())
 }
@@ -58,6 +66,39 @@ mod tests {
         let big = "x".repeat(MAX_SYSTEM_BYTES + 1);
         let err = validate_system_size(&doc_with_system(serde_json::json!({ "blob": big })));
         assert!(matches!(err, Err(DataError::TooLarge(_))));
+    }
+
+    #[test]
+    fn oversized_embedded_child_is_rejected() {
+        let mut parent = doc_with_system(serde_json::json!({ "hp": 1 }));
+        let child =
+            doc_with_system(serde_json::json!({ "blob": "x".repeat(MAX_SYSTEM_BYTES + 1) }));
+        parent.embedded.insert("items".into(), vec![child]);
+        assert!(matches!(
+            validate_system_size(&parent),
+            Err(DataError::TooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn small_embedded_tree_passes() {
+        let mut parent = doc_with_system(serde_json::json!({ "hp": 1 }));
+        let child = doc_with_system(serde_json::json!({ "k": 1 }));
+        parent.embedded.insert("items".into(), vec![child]);
+        assert!(validate_system_size(&parent).is_ok());
+    }
+
+    #[test]
+    fn oversized_grandchild_is_rejected() {
+        let mut parent = doc_with_system(serde_json::json!({}));
+        let mut child = doc_with_system(serde_json::json!({}));
+        let gc = doc_with_system(serde_json::json!({ "blob": "x".repeat(MAX_SYSTEM_BYTES + 1) }));
+        child.embedded.insert("nested".into(), vec![gc]);
+        parent.embedded.insert("items".into(), vec![child]);
+        assert!(matches!(
+            validate_system_size(&parent),
+            Err(DataError::TooLarge(_))
+        ));
     }
 
     #[test]
