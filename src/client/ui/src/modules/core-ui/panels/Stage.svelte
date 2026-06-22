@@ -15,7 +15,7 @@
     createBackend?: (canvas: HTMLCanvasElement) => Promise<DisplayBackend>;
   } = $props();
 
-  const { store, assets, onAssetChanged } = getAppContext();
+  const { store, assets, onAssetChanged, subscribeScene } = getAppContext();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -45,7 +45,9 @@
         assets,
         backend,
         grid: { kind: "square", size: 100 },
-        gridColor: readColor("--border", 0x3a3a4a),
+        gridColor: readColor("--grid-line", 0x363645),
+        subscribeScene,
+        onDerivedApplied: () => { host.dataset.sceneDerived = "1"; },
       });
       // setViewport (resize + initial grid) then start (camera + reconcile +
       // store subscription). start's applyCamera redraws the grid once more with
