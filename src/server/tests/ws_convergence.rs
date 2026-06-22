@@ -27,17 +27,23 @@ struct Harness {
 }
 
 async fn spawn() -> Harness {
-    spawn_with_ws(shadowcat::ws::WsState::new()).await
+    spawn_with_ws(shadowcat::ws::WsState::new(), None).await
 }
 
-/// Like `spawn`, but the room broadcast ring uses `capacity` — a tiny value lets
-/// a non-reading client overflow the ring deterministically and exercise the
-/// `Lagged` → resync path.
+/// Like `spawn`, but the room broadcast ring uses `capacity` AND accepted sockets
+/// get a tiny send buffer. With a tiny send buffer (server) plus a tiny receive
+/// buffer (the `connect_slow` client), the total bufferable bytes are bounded
+/// regardless of the runner's OS defaults, so a non-reading client overflows the
+/// ring deterministically and exercises the `Lagged` → resync path.
 async fn spawn_with_capacity(capacity: usize) -> Harness {
-    spawn_with_ws(shadowcat::ws::WsState::with_broadcast_capacity(capacity)).await
+    spawn_with_ws(
+        shadowcat::ws::WsState::with_broadcast_capacity(capacity),
+        Some(16 * 1024),
+    )
+    .await
 }
 
-async fn spawn_with_ws(ws: shadowcat::ws::WsState) -> Harness {
+async fn spawn_with_ws(ws: shadowcat::ws::WsState, send_buf: Option<usize>) -> Harness {
     let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
     let hash = hash_password("pw").unwrap();
     // The seeded user owns the world (GM), so its intents are authorized and
@@ -58,7 +64,18 @@ async fn spawn_with_ws(ws: shadowcat::ws::WsState) -> Harness {
     };
     let app = http::router(state.clone()).await;
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // A small `SO_SNDBUF` on the listener is inherited by accepted sockets, so the
+    // server egress blocks after only a few KiB of unread data — the server half of
+    // the deterministic backpressure (the client half is `connect_slow`).
+    let listener = match send_buf {
+        Some(sz) => {
+            let sock = tokio::net::TcpSocket::new_v4().unwrap();
+            sock.set_send_buffer_size(sz as u32).unwrap();
+            sock.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            sock.listen(1024).unwrap()
+        }
+        None => tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(),
+    };
     let addr = listener.local_addr().unwrap().to_string();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -108,6 +125,26 @@ impl Harness {
         let mut req = url.into_client_request().unwrap();
         req.headers_mut().insert("cookie", cookie.parse().unwrap());
         let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        ws
+    }
+
+    /// Connect with a tiny receive buffer (autotuning disabled), so a client that
+    /// stops reading closes its TCP window after a few KiB — deterministically
+    /// blocking the server egress regardless of the runner's default loopback
+    /// buffer sizes, which on Linux can absorb megabytes and hide the lag.
+    async fn connect_slow(&self) -> Ws {
+        let addr: std::net::SocketAddr = self.addr.parse().unwrap();
+        let sock = tokio::net::TcpSocket::new_v4().unwrap();
+        sock.set_recv_buffer_size(16 * 1024).unwrap();
+        let tcp = sock.connect(addr).await.unwrap();
+        let url = format!("ws://{}/ws?world={}", self.addr, self.world);
+        let mut req = url.into_client_request().unwrap();
+        req.headers_mut()
+            .insert("cookie", self.cookie.parse().unwrap());
+        let (ws, _) =
+            tokio_tungstenite::client_async(req, tokio_tungstenite::MaybeTlsStream::Plain(tcp))
+                .await
+                .unwrap();
         ws
     }
 
@@ -352,22 +389,22 @@ async fn all_clients_converge_after_reconnect() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_reader_recovers_via_resync() {
-    // A ring of 8 plus a non-reading client whose egress blocks on a full socket
-    // forces the broadcast `Lagged` path deterministically, independent of runner
-    // speed: we wait until every event is applied (hence broadcast) while `slow`
-    // isn't reading, so its blocked egress provably overflows the 8-slot ring.
+    // A ring of 8 plus a slow client with a tiny receive buffer (see `connect_slow`)
+    // forces the broadcast `Lagged` path deterministically: the unread client's TCP
+    // window closes after a few KiB, blocking the server egress regardless of the
+    // runner's default buffer sizes, and we wait until every event is applied (hence
+    // broadcast) while that egress is blocked, so its receiver overflows the ring.
     let h = spawn_with_capacity(8).await;
-    let mut slow = h.connect().await;
+    let mut slow = h.connect_slow().await;
     let _ = slow.next().await; // Welcome — then we stop reading `slow`.
 
-    // Few but large frames: each ~64 KiB, so a couple fill the slow client's
-    // (unread, non-growing) receive window and block its egress task; the rest
-    // (>> the 8-slot ring) then overflow the broadcast ring. A small count keeps
-    // server-side apply fast even on a saturated CI runner (where flooding 400
-    // large frames would also trip the documented slow-convergence flake).
+    // Modest frames (~4 KiB): with both the server send buffer and the slow client's
+    // receive buffer pinned to ~16 KiB, only ~32 KiB total is bufferable, so a
+    // handful of frames block the egress and the rest (>> the 8-slot ring) overflow
+    // the broadcast ring — independent of the runner's OS buffer defaults.
     let mut pubc = h.connect().await;
     let _ = pubc.next().await;
-    let blob = "x".repeat(64 * 1024);
+    let blob = "x".repeat(4 * 1024);
     for n in 0..30u64 {
         let doc_id = Uuid::from_u128(1000 + n as u128);
         let op = create_op(h.world, doc_id, serde_json::json!({ "blob": blob }));
