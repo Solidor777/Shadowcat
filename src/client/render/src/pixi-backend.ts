@@ -1,6 +1,6 @@
 import { Application, Container, Graphics, Sprite, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend } from "./backend";
-import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec } from "./types";
 
 /** The real DisplayBackend over pixi.js v8. The only GL-touching module (kept out
  * of unit tests; covered by Playwright). Layer containers parent under one `world`
@@ -10,6 +10,8 @@ export class PixiBackend implements DisplayBackend {
   private readonly layers = new Map<string, Container>();
   private readonly grid = new Graphics();
   private readonly maskOverlay = new Graphics();
+  private readonly toolOverlay = new Graphics();
+  private readonly shapes = new Map<string, Graphics>();
   private readonly tokens = new Map<string, Sprite>();
   /** Last-loaded image URL per token, so a tweening token doesn't reload each frame. */
   private readonly tokenUrls = new Map<string, string>();
@@ -31,6 +33,7 @@ export class PixiBackend implements DisplayBackend {
       this.world.addChild(c);
       if (id === "grid") c.addChild(this.grid);
       if (id === "mask") c.addChild(this.maskOverlay);
+      if (id === "overlays") c.addChild(this.toolOverlay);
     }
     // Re-parent in z-order (addChild appends; order array is authoritative).
     for (const id of orderedIds) {
@@ -115,6 +118,34 @@ export class PixiBackend implements DisplayBackend {
     }
   }
 
+  setShape(id: string, spec: ShapeNodeSpec): void {
+    let g = this.shapes.get(id);
+    if (!g) {
+      g = new Graphics();
+      this.shapes.set(id, g);
+      this.layers.get(spec.layer)?.addChild(g);
+    }
+    g.clear();
+    paintShape(g, spec);
+  }
+
+  removeShape(id: string): void {
+    const g = this.shapes.get(id);
+    if (g) {
+      g.destroy();
+      this.shapes.delete(id);
+    }
+  }
+
+  drawOverlay(shapes: Omit<ShapeNodeSpec, "layer">[]): void {
+    this.toolOverlay.clear();
+    for (const s of shapes) paintShape(this.toolOverlay, s);
+  }
+
+  clearOverlay(): void {
+    this.toolOverlay.clear();
+  }
+
   startTicker(cb: (dtMs: number) => void): void {
     this.app.ticker.add((ticker) => cb(ticker.deltaMS));
   }
@@ -137,6 +168,18 @@ export class PixiBackend implements DisplayBackend {
     // Release GPU resources + remove the canvas; children/textures included.
     this.app.destroy({ removeView: true }, { children: true, texture: true });
   }
+}
+
+/** Append one shape (a polyline/polygon subpath + its fill/stroke) onto a Graphics.
+ * Does not clear, so multiple shapes can share one Graphics (the overlay). */
+function paintShape(g: Graphics, spec: Omit<ShapeNodeSpec, "layer">): void {
+  const p = spec.points;
+  if (p.length < 4) return; // need at least two points
+  g.moveTo(p[0], p[1]);
+  for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]);
+  if (spec.closed) g.closePath();
+  if (spec.fill) g.fill({ color: spec.fill.color, alpha: spec.fill.alpha });
+  if (spec.stroke) g.stroke({ width: spec.stroke.width, color: spec.stroke.color });
 }
 
 /** Construct a PixiBackend over a canvas (async: v8 Application.init is async). */

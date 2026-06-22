@@ -50,6 +50,17 @@ export interface TokenNodeSpec {
   url: string;
 }
 
+/** A drawn shape node: a polyline/polygon (flat scene-coord points) with optional fill
+ * and stroke, parented to `layer`. Drawings + templates reconcile to this; all shape
+ * tessellation (cone/circle/…) happens in `geometry.ts` before reaching the backend. */
+export interface ShapeNodeSpec {
+  layer: string;
+  points: number[];
+  closed: boolean;
+  stroke: { color: number; width: number } | null;
+  fill: { color: number; alpha: number } | null;
+}
+
 /** A canvas tool. The engine routes pointer events (in scene coords) to the active
  * tool first; `onPointerDown` returning true claims the gesture (else camera pans). */
 export interface SceneTool {

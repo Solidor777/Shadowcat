@@ -11,6 +11,22 @@ test("MockBackend records token upserts and removals", () => {
   expect(b.tokens.has("t1")).toBe(false);
 });
 
+test("MockBackend records shape upserts/removals and the ephemeral overlay", () => {
+  const b = new MockBackend();
+  const spec = { layer: "drawings", points: [0, 0, 10, 0], closed: false, stroke: { color: 0xff0000, width: 2 }, fill: null };
+  b.setShape("s1", spec);
+  expect(b.shapes.get("s1")).toEqual(spec);
+  b.setShape("s1", { ...spec, points: [0, 0, 20, 0] });
+  expect(b.shapes.get("s1")!.points).toEqual([0, 0, 20, 0]);
+  b.removeShape("s1");
+  expect(b.shapes.has("s1")).toBe(false);
+
+  b.drawOverlay([{ points: [0, 0, 5, 5], closed: false, stroke: { color: 0, width: 1 }, fill: null }]);
+  expect(b.overlay).toHaveLength(1);
+  b.clearOverlay();
+  expect(b.overlay).toHaveLength(0);
+});
+
 test("MockBackend captures the ticker callback", () => {
   const b = new MockBackend();
   let dt = 0;
