@@ -30,10 +30,12 @@ export interface SceneSubscription {
   unsubscribe(): void;
 }
 
-/** Injected scene-subscribe function (no transport dependency in this package). */
+/** Injected scene-subscribe function (no transport dependency in this package). `opts.asUser`
+ * (GM-only see-as-player) views the channel as that user; the server gates + resolves it. */
 export type SubscribeScene = (
   channel: string,
   onUpdate: (frame: { payload: unknown; computedAtSeq: number }) => void,
+  opts?: { asUser?: string },
 ) => SceneSubscription;
 
 export interface RenderEngineOpts {
@@ -93,6 +95,9 @@ export class RenderEngine implements SceneToolHost {
    * GM can preview a vision-less player's view. Only ever ADDS fog to the GM's own view (D-V3,
    * no server path) — it can never reveal more than the frame already carries. */
   private fogPreview = false;
+  /** GM see-as-player target (M9c-2): the user whose vision the `vision` subscription requests, or
+   * null for the GM's own view. The server gates + resolves it (a non-GM is rejected). */
+  private viewAsUser: string | null = null;
 
   constructor(private readonly opts: RenderEngineOpts) {
     this.grid = new Grid(opts.grid);
@@ -130,10 +135,30 @@ export class RenderEngine implements SceneToolHost {
         this.pingsActive = rings.length > 0;
       }
     });
-    if (this.opts.subscribeScene) {
-      // The real M9 vision channel: per-recipient visibility polygons (or mode:"all" for the GM).
-      this.sceneSub = this.opts.subscribeScene("vision", (f) => this.onSceneFrame(f));
-    }
+    this.subscribeVision();
+  }
+
+  /** (Re)establish the `vision` subscription for the current `viewAsUser` (per-recipient visibility
+   * polygons, or `mode:"all"` for the GM's own view). */
+  private subscribeVision(): void {
+    if (!this.opts.subscribeScene) return;
+    this.sceneSub?.unsubscribe();
+    this.sceneSub = this.opts.subscribeScene(
+      "vision",
+      (f) => this.onSceneFrame(f),
+      this.viewAsUser ? { asUser: this.viewAsUser } : undefined,
+    );
+  }
+
+  /** GM see-as-player (M9c-2): re-subscribe the vision channel viewing as `userId` (null = the GM's
+   * own view). Resets the mask watermark so the new view's first frame applies even at the same
+   * world seq — a view switch is a fresh stream, not a regression of the same one. */
+  setViewAsUser(userId: string | null): void {
+    if (userId === this.viewAsUser) return;
+    this.viewAsUser = userId;
+    this.lastAppliedSeq = -1;
+    this.pendingDerived = null;
+    this.subscribeVision();
   }
 
   private onSceneFrame(frame: { payload: unknown; computedAtSeq: number }): void {

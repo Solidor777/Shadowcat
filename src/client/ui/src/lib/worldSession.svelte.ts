@@ -119,9 +119,13 @@ export class WorldSession {
   /** Subscribe to a SceneDerived channel. Returns a synchronous handle; the
    * underlying WS subscription is (re)established on every Welcome so derived state
    * survives a reconnect. */
-  subscribeScene(channel: string, onUpdate: (f: SceneFrame) => void): SceneSubscription {
+  subscribeScene(
+    channel: string,
+    onUpdate: (f: SceneFrame) => void,
+    opts: { asUser?: string } = {},
+  ): SceneSubscription {
     const id = crypto.randomUUID();
-    const rec = { channel, onUpdate, handle: null as SceneSubscription | null, gen: 0 };
+    const rec = { channel, onUpdate, asUser: opts.asUser, handle: null as SceneSubscription | null, gen: 0 };
     this.#sceneSubs.set(id, rec);
     this.#establishScene(id, rec);
     return {
@@ -136,13 +140,13 @@ export class WorldSession {
 
   #establishScene(
     id: string,
-    rec: { channel: string; onUpdate: (f: SceneFrame) => void; handle: SceneSubscription | null; gen: number },
+    rec: { channel: string; onUpdate: (f: SceneFrame) => void; asUser?: string; handle: SceneSubscription | null; gen: number },
   ): void {
     const ws = this.#ws;
     if (!ws) return;
     const gen = ++rec.gen; // this attempt's generation
     void ws
-      .subscribeScene(rec.channel, rec.onUpdate)
+      .subscribeScene(rec.channel, rec.onUpdate, { asUser: rec.asUser })
       .then((h) => {
         // Keep the handle only if this record is still active AND this is still the
         // latest establish attempt; a superseded attempt (re-establish on a new
