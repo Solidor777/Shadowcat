@@ -134,7 +134,16 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
   deterministic loud-fail placeholder until then).
 - Excludes: drag-resize, pop-out / multi-window, multi-theme, user themes, module styling modes.
 
-### M8 · ECS + scene rendering
+### M8 · ECS + scene rendering ✅
+> **DONE** (merged to main, pushed). M8a (server scene foundation: parent_id + per-world
+> hecs read-model + SceneDerived egress) · M8b (raw asset upload/serve + panel) · M8c
+> (client render foundation: layers/camera/grid/reconciler + render-layer/compositor API +
+> identity vision-mask spike) · M8d (tokens + interaction): **M8d-1** token rendering +
+> tween/ticker; **M8d-2** scene lifecycle (GM auto-create) + canvas tool API + `scene-tools`
+> module + place/select/move (render-from-optimistic-view); **M8d-3a** drawing/template
+> entities + draw/template tools (shape backend node + pure geometry + preview overlay);
+> **M8d-3b** client-local measurement + pings (out-of-band `scene_ping` server broadcast +
+> transient rings). Every slice buddy-checked. Specs/plans under `superpowers/`.
 - hecs hydration/mutation boundary; ECS→WS dispatch.
 - Render-layer / filter abstraction spiked against the vision mask path first.
 - Scene load, grid (square / hex), camera pan/zoom; basic token placement; measurement / template / drawing tools; pings.
