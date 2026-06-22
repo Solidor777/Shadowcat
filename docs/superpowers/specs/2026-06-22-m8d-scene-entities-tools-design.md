@@ -63,7 +63,7 @@ shape (client-owned; server structural-only):
 ```jsonc
 // token.system
 {
-  "x": 0, "y": 0,          // scene-coordinate position (top-left or center — see §13)
+  "x": 0, "y": 0,          // scene-coordinate position of the token CENTER (confirmed §13)
   "w": 100, "h": 100,      // size in scene units
   "rotation": 0,           // degrees
   "visual": { "kind": "image", "asset": "<uuid>" }
@@ -209,19 +209,19 @@ Server → world:   Ping { scene: <id>, x, y, user: <id> }   (broadcast_aux, no 
   rail; a ping renders + fades. (Token placement is now authorable, so the M8c-1
   deferred **background-render e2e** rides here too — `docs/TODO.md`.)
 
-## 13. Decisions made autonomously — **confirm before implementation**
+## 13. Decisions — **CONFIRMED (user, 2026-06-22)**
 
 1. **Token `system` schema:** flat transform (`x,y,w,h,rotation`) + nested
-   `visual:{kind,asset}`. Position origin = **top-left** (vs center). *(Recommend
-   top-left for simplicity; center is friendlier for rotation — your call.)*
+   `visual:{kind,asset}`. **Position origin = CENTER** — `(x,y)` is the token's
+   center (aligns with `Grid.snap()` returning cell centers + center rotation pivot).
 2. **The canvas interaction/tool API** (`setActiveTool` + `SceneTool` in scene
-   coords; camera as the no-tool fallback) — a new public render-API surface.
-3. **`scene-tools` as the first `src/modules/*` package** now (realizing the M8.5
-   discipline early), and how `AppContext` exposes the engine tool API to it.
+   coords; camera as the no-tool fallback) — **approved as designed**.
+3. **`scene-tools` as the first `src/modules/*` package** now (contract-only; never
+   imports `core-ui`) — **approved**; realizes the M8.5 discipline early.
 4. **Ping = a new out-of-band server frame** (`broadcast_aux`, no seq), mirroring
-   `AssetChanged`.
-5. **Measurement is client-local only** (no broadcast) in M8d.
-6. **d-1 / d-2 split** (render vs interact).
+   `AssetChanged` — **approved**.
+5. **Measurement is client-local only** (no broadcast) in M8d — **approved**.
+6. **d-1 / d-2 split** (render vs interact) — **approved**.
 
 ## 14. Out of scope / deferred
 
