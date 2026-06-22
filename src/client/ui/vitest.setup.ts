@@ -1,0 +1,10 @@
+// jsdom does not implement ResizeObserver, which the Stage host observes the
+// canvas container with. A no-op stub lets component init complete under tests;
+// real resize behavior is covered by the Playwright suite (real browser).
+if (typeof globalThis.ResizeObserver === "undefined") {
+  globalThis.ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  } as unknown as typeof ResizeObserver;
+}
