@@ -42,3 +42,6 @@ CLAUDE.md
 graphify-out/
 test-results/
 playwright-report/
+
+# Binary runtime asset store (uploaded files land in assets/<uuid>/; icons stay tracked)
+/assets/*/
