@@ -6,8 +6,7 @@ use uuid::Uuid;
 use crate::auth::role::ServerRole;
 use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
 use crate::data::document::{
-    CapabilityRequirement, ContractDeclaration, Document, Scope, World, WorldCapDefaults,
-    WorldRole,
+    CapabilityRequirement, ContractDeclaration, Document, Scope, World, WorldCapDefaults, WorldRole,
 };
 use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
@@ -958,8 +957,13 @@ impl Repository for SqliteRepository {
                     // Authorize against the stored doc, scoped to this world, so
                     // a GM of one world cannot delete another world's document.
                     check_command_scope(&cur, world_id)?;
-                    if !resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults.grants_for(&cur.doc_type))
-                        .has(cap::DELETE)
+                    if !resolve_access_world(
+                        ctx.user_id,
+                        ctx.world_role,
+                        &cur,
+                        &world_defaults.grants_for(&cur.doc_type),
+                    )
+                    .has(cap::DELETE)
                     {
                         return Err(DataError::Forbidden);
                     }
@@ -969,8 +973,12 @@ impl Repository for SqliteRepository {
                         .await?
                         .ok_or_else(|| DataError::Conflict(format!("document {doc_id} missing")))?;
                     check_command_scope(&cur, world_id)?;
-                    let access =
-                        resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults.grants_for(&cur.doc_type));
+                    let access = resolve_access_world(
+                        ctx.user_id,
+                        ctx.world_role,
+                        &cur,
+                        &world_defaults.grants_for(&cur.doc_type),
+                    );
                     // Field-level OCC: every change's pre-image must equal the
                     // current value at its pointer (absent reads as Null).
                     let whole = serde_json::to_value(&cur)?;
@@ -1037,8 +1045,13 @@ impl Repository for SqliteRepository {
                             DataError::Conflict(format!("descendant {desc} missing"))
                         })?;
                         check_command_scope(&cur, world_id)?;
-                        if !resolve_access_world(ctx.user_id, ctx.world_role, &cur, &world_defaults.grants_for(&cur.doc_type))
-                            .has(cap::DELETE)
+                        if !resolve_access_world(
+                            ctx.user_id,
+                            ctx.world_role,
+                            &cur,
+                            &world_defaults.grants_for(&cur.doc_type),
+                        )
+                        .has(cap::DELETE)
                         {
                             return Err(DataError::Forbidden);
                         }
@@ -1409,7 +1422,10 @@ mod tests {
     #[tokio::test]
     async fn list_members_includes_usernames() {
         let r = repo().await;
-        let gm = r.create_user("alice", None, ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("alice", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         let members = r.list_members(w.id).await.unwrap();
         assert!(members.iter().any(|(_, name, _)| name == "alice"));
@@ -1418,7 +1434,10 @@ mod tests {
     #[tokio::test]
     async fn cannot_remove_sole_gm() {
         let r = repo().await;
-        let gm = r.create_user("gm", Some("h"), ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("gm", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         let err = r.remove_member(w.id, gm).await.unwrap_err();
         assert!(matches!(err, DataError::Conflict(_)));
@@ -1427,7 +1446,10 @@ mod tests {
     #[tokio::test]
     async fn cannot_demote_sole_gm() {
         let r = repo().await;
-        let gm = r.create_user("gm", Some("h"), ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("gm", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         let err = r.set_role(w.id, gm, WorldRole::Player).await.unwrap_err();
         assert!(matches!(err, DataError::Conflict(_)));
@@ -1436,8 +1458,14 @@ mod tests {
     #[tokio::test]
     async fn can_remove_gm_when_another_exists() {
         let r = repo().await;
-        let gm1 = r.create_user("gm1", Some("h"), ServerRole::User, 0).await.unwrap();
-        let gm2 = r.create_user("gm2", Some("h"), ServerRole::User, 0).await.unwrap();
+        let gm1 = r
+            .create_user("gm1", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let gm2 = r
+            .create_user("gm2", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
         let w = r.create_world_owned("W", gm1, 0).await.unwrap();
         r.add_member(w.id, gm2, WorldRole::Gm).await.unwrap();
         assert!(r.remove_member(w.id, gm1).await.is_ok());
@@ -2577,7 +2605,10 @@ mod tests {
         use crate::data::document::DocRole;
         use crate::data::membership::PermissionContext;
         let r = repo().await;
-        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         r.add_member(w.id, player, WorldRole::Player).await.unwrap();
@@ -2601,7 +2632,10 @@ mod tests {
         use crate::data::document::DocRole;
         use crate::data::membership::PermissionContext;
         let r = repo().await;
-        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         r.add_member(w.id, player, WorldRole::Player).await.unwrap();
@@ -2630,7 +2664,10 @@ mod tests {
         use crate::data::document::DocRole;
         use crate::data::membership::PermissionContext;
         let r = repo().await;
-        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         r.add_member(w.id, player, WorldRole::Player).await.unwrap();

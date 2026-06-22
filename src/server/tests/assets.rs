@@ -235,12 +235,16 @@ async fn replace_is_rate_limited_per_user() {
     let id = asset["id"].as_str().unwrap().to_string();
     // Op 2 (first replace) fits the 2/min budget.
     assert_eq!(
-        h.replace(&id, "m.png", "image/png", PNG_1X1.to_vec()).await.status(),
+        h.replace(&id, "m.png", "image/png", PNG_1X1.to_vec())
+            .await
+            .status(),
         200
     );
     // Op 3 exceeds it — replace participates in the per-user rate limit.
     assert_eq!(
-        h.replace(&id, "m.png", "image/png", PNG_1X1.to_vec()).await.status(),
+        h.replace(&id, "m.png", "image/png", PNG_1X1.to_vec())
+            .await
+            .status(),
         429
     );
 }
@@ -262,12 +266,16 @@ async fn rejected_replace_does_not_consume_rate_quota() {
     let id = asset["id"].as_str().unwrap().to_string();
     // Rejected (non-image) replace → 400; its rate slot is refunded.
     assert_eq!(
-        h.replace(&id, "x.png", "image/png", b"%PDF-1.7 nope".to_vec()).await.status(),
+        h.replace(&id, "x.png", "image/png", b"%PDF-1.7 nope".to_vec())
+            .await
+            .status(),
         400
     );
     // The good replace still fits (upload=1, bad refunded, good=2).
     assert_eq!(
-        h.replace(&id, "m.png", "image/png", PNG_1X1.to_vec()).await.status(),
+        h.replace(&id, "m.png", "image/png", PNG_1X1.to_vec())
+            .await
+            .status(),
         200
     );
 }

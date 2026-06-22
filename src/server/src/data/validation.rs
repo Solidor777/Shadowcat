@@ -71,7 +71,8 @@ mod tests {
     #[test]
     fn oversized_embedded_child_is_rejected() {
         let mut parent = doc_with_system(serde_json::json!({ "hp": 1 }));
-        let child = doc_with_system(serde_json::json!({ "blob": "x".repeat(MAX_SYSTEM_BYTES + 1) }));
+        let child =
+            doc_with_system(serde_json::json!({ "blob": "x".repeat(MAX_SYSTEM_BYTES + 1) }));
         parent.embedded.insert("items".into(), vec![child]);
         assert!(matches!(
             validate_system_size(&parent),

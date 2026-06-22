@@ -214,7 +214,9 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
         .map(|(k, v)| {
             (
                 k,
-                v.into_iter().map(|c| filter_properties(&c, access)).collect(),
+                v.into_iter()
+                    .map(|c| filter_properties(&c, access))
+                    .collect(),
             )
         })
         .collect();
@@ -562,7 +564,10 @@ mod tests {
 
     #[test]
     fn embedded_child_gm_only_is_stripped_for_non_gm() {
-        let mut child = doc(PermissionSet::default(), serde_json::json!({ "secret": 9, "shown": 2 }));
+        let mut child = doc(
+            PermissionSet::default(),
+            serde_json::json!({ "secret": 9, "shown": 2 }),
+        );
         child
             .permissions
             .property_overrides
@@ -579,7 +584,11 @@ mod tests {
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &parent);
         let view = filter_properties(&parent, &player);
         let child_view = &view.embedded.get("items").unwrap()[0];
-        assert_eq!(child_view.system.get("secret"), None, "child gm-only stripped");
+        assert_eq!(
+            child_view.system.get("secret"),
+            None,
+            "child gm-only stripped"
+        );
         assert_eq!(child_view.system["shown"], serde_json::json!(2));
 
         // The GM sees the embedded child's gm-only field.
@@ -605,7 +614,10 @@ mod tests {
             .unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
 
-        let mut child = doc(PermissionSet::default(), serde_json::json!({ "secret": 9, "shown": 2 }));
+        let mut child = doc(
+            PermissionSet::default(),
+            serde_json::json!({ "secret": 9, "shown": 2 }),
+        );
         child
             .permissions
             .property_overrides
@@ -625,7 +637,9 @@ mod tests {
             world_id: w.id,
             author: gm,
             ts: 0,
-            ops: vec![Operation::Create { doc: parent.clone() }],
+            ops: vec![Operation::Create {
+                doc: parent.clone(),
+            }],
         };
         let player = PermissionContext {
             user_id: Uuid::from_u128(77),

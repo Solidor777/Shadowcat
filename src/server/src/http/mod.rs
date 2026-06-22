@@ -607,8 +607,10 @@ pub(crate) mod tests {
             .assert_status(StatusCode::NO_CONTENT);
 
         // GM sees members with usernames.
-        let members: serde_json::Value =
-            gm.get(&format!("/api/worlds/{world_id}/members")).await.json();
+        let members: serde_json::Value = gm
+            .get(&format!("/api/worlds/{world_id}/members"))
+            .await
+            .json();
         let arr = members.as_array().unwrap();
         assert!(arr.iter().any(|m| m["username"] == "gm"));
         assert!(arr.iter().any(|m| m["username"] == "pl"));

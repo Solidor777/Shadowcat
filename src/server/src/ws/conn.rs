@@ -445,7 +445,8 @@ async fn egress_loop<S>(
     };
     // Project the world grants to only what this actor needs to self-gate; other
     // users' UUIDs and grants must not cross to the client.
-    let actor_grants = crate::data::permission::project_grants_for(&world_defaults.all, ctx.user_id);
+    let actor_grants =
+        crate::data::permission::project_grants_for(&world_defaults.all, ctx.user_id);
     if sink
         .send(text(&ServerMsg::Welcome {
             world: world_id,

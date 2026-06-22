@@ -538,13 +538,11 @@ fn validate_grants(defaults: &WorldCapDefaults) -> Result<(), AppError> {
         }
     }
     // World-level role_caps (all + every doc-type override).
-    let role_sets = defaults.role_caps.all.values().chain(
-        defaults
-            .role_caps
-            .by_type
-            .values()
-            .flat_map(|m| m.values()),
-    );
+    let role_sets = defaults
+        .role_caps
+        .all
+        .values()
+        .chain(defaults.role_caps.by_type.values().flat_map(|m| m.values()));
     for set in role_sets {
         for token in set {
             validate_capability(token)?;

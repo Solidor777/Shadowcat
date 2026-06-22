@@ -100,10 +100,16 @@ impl WorldCapDefaults {
         let mut g = self.all.clone();
         if let Some(t) = self.by_type.get(doc_type) {
             for (r, caps) in &t.by_role {
-                g.by_role.entry(*r).or_default().extend(caps.iter().cloned());
+                g.by_role
+                    .entry(*r)
+                    .or_default()
+                    .extend(caps.iter().cloned());
             }
             for (u, caps) in &t.by_user {
-                g.by_user.entry(*u).or_default().extend(caps.iter().cloned());
+                g.by_user
+                    .entry(*u)
+                    .or_default()
+                    .extend(caps.iter().cloned());
             }
         }
         g
