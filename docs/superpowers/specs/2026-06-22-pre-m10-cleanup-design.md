@@ -219,34 +219,61 @@ applies to every type; merge is union; client projection still drops other users
 
 ### #9 — `core:create` world authorization (additive; builds on #10)
 
-**Decision (user):** **GM-only create by default; widen via grant.** No
-compatibility concern (no users).
+**Decision (user).** Permission resolution is **two-axis**:
+1. **GM-configured defaults per world role** — a GM configures, per `WorldRole`,
+   what that role may do by default. This is the new structure; for this pass it
+   carries the **create** policy.
+2. **Per-document `DocRole` overrides** — a GM assigns a user `Observer` (read) or
+   `Owner` (read+write) on a **specific document** (any type) to widen beyond the
+   role default. This axis already exists (`resolve_access`, `permission.rs:127`)
+   and already implements the user's example: a Player has no access to a document
+   they don't own (default `DocRole::None` → empty floor) until the GM assigns a
+   `DocRole` on it. **No rework** — read/edit/delete stay on this axis.
+
+The gap this item closes is **create only**: a not-yet-created document has no
+`DocRole`, so create can't ride the per-document axis. Create authority therefore
+derives from the user's **`WorldRole`**, configurable per world (axis 1).
 
 **Problem.** Creation is not gated by `core:create` (`apply_intent` Create arm,
 `sqlite.rs:846`, checks `WRITE_FIELDS` + declared requirements, never `CREATE`).
 The `core:create` constant exists (`permission.rs:21`) but is dead.
 
-**Mechanism note.** At Create time there is **no document**, hence no `DocRole` to
-resolve against. `core:create` is therefore a **world-level** capability tied to the
-actor — it cannot use the per-doc `by_role` floor. It resolves from the world's
-capability defaults' **user-keyed** grants (doc-type-aware via #10's
-`by_type[doc_type].by_user` ∪ `all.by_user`).
+**Fix — new `role_caps` config (axis 1).** Add a world-level, GM-configurable map
+keyed by **`WorldRole`** → set of capabilities, doc-type-scopable (composes with
+#10):
 
-**Fix.** In the `apply_intent` Create arm, after the existing checks:
-- GM / server admin (`world_role == Gm`, i.e. `access.all`): always allowed.
-- Otherwise: allowed only if the world's merged defaults grant the actor
-  `core:create` for the new doc's `doc_type` (user-keyed). Else reject with
-  `DataError::Forbidden` → **403** (no target id exists, so the #1 existence-leak
+```
+role_caps: { all: BTreeMap<WorldRole, BTreeSet<String>>,
+             by_type: BTreeMap<String, BTreeMap<WorldRole, BTreeSet<String>>> }
+```
+
+- Stored alongside the world capability defaults (the `world_caps:{world_id}`
+  settings blob #10 restructures), set through the same GM setter. **GM excluded**
+  from the map — GM/admin always holds every capability.
+- This is distinct from the existing **`DocRole`/user**-keyed `CapabilityGrants`
+  (axis 2), which stays per-document. Two keys for two scopes: `WorldRole` =
+  role-in-world (world-level actions); `DocRole` = role-on-a-document (per-doc
+  actions). `WorldRole` keys never enter `doc.permissions` (would be meaningless
+  per-document).
+- **Default empty → only GM creates.** A GM widens by configuring, e.g.,
+  `Player: [core:create]` (optionally only under `by_type["token"]`).
+
+**Create gate.** In the `apply_intent` Create arm, after the existing checks:
+- GM / server admin (`world_role == Gm`): always allowed.
+- Otherwise: allowed iff the actor's `WorldRole` holds `core:create` in the merged
+  `role_caps` for the new doc's `doc_type` (`all[role]` ∪ `by_type[doc_type][role]`).
+  Else reject `DataError::Forbidden` → **403** (no target id, so #1's existence-leak
   concern does not apply — 403 is correct for a world-scoped capability denial).
 
-Role-based create-widening (e.g. "all players may create tokens") is **not** in
-scope — it would need a WorldRole-keyed world grant, a new structure. User-keyed
-widening satisfies "grant to widen" for now; the larger model can land with the
-capability-management milestone. Logged to `TODO.md`.
+Only `core:create` is consulted by `role_caps` in this pass — it is the sole
+world-level (non-document) action that exists. The structure is general, so future
+world-level verbs slot in without a schema change. (Per-document caps remain on
+axis 2; no blanket re-audit of read/write/delete is in scope.)
 
-**Tests.** Non-GM create rejected by default (403); non-GM create allowed after a
-user-keyed `core:create` world grant for that type; GM create always allowed;
-a grant for type A does not authorize creating type B.
+**Tests.** Non-GM create rejected by default (403); non-GM create allowed after the
+GM grants that **`WorldRole`** `core:create` (and only for the granted `doc_type`);
+GM create always allowed; per-document read/edit still resolves via `DocRole`
+(regression: Observer reads, Owner writes, unassigned Player denied).
 
 ---
 
@@ -343,7 +370,7 @@ with no orphaned pending entry; two offline intents flush in dispatch order.
 ## Documentation sync (final step, per project rules)
 
 On completion: remove the closed `Needs triage` entries from
-`POST_WORK_FINDINGS.md` and the closed deferrals from `TODO.md`; add the two new
-deferrals logged above (role-based create-widening; embedded-Update redaction if
-the buddy-check rules it out of this pass) to `TODO.md`; update the M8b rate-limit
-spec note. No `OPEN_BUGS.md` entries (empty).
+`POST_WORK_FINDINGS.md` and the closed deferrals from `TODO.md`; add any new
+deferral the buddy-check produces (e.g. embedded-`Update` redaction, #3, if ruled
+out of this pass) to `TODO.md`; update the M8b rate-limit spec note. No
+`OPEN_BUGS.md` entries (empty).
