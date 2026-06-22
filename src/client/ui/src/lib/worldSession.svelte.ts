@@ -20,6 +20,7 @@ import {
   type SceneSubscription,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
+import { SceneInteractionBridge } from "./sceneInteraction";
 
 export type ConnState = "connecting" | "open" | "closed";
 
@@ -37,6 +38,9 @@ export class WorldSession {
   readonly store = new DocumentStore();
   readonly contributions = new ContributionRegistry();
   readonly assets = new AssetResolver();
+  /** Canvas interaction bridge: the Stage attaches the engine; tool components reach
+   * it via AppContext. Stable across Stage remount (M8d §16). */
+  readonly sceneInteraction = new SceneInteractionBridge();
   #assetListeners = new Set<(msg: { uuid: string; op: "replaced" | "deleted" }) => void>();
   #sceneSubs = new Map<
     string,

@@ -1,6 +1,7 @@
 import { getContext, setContext } from "svelte";
 import type { ContributionRegistry, DocumentStore, AssetResolver, SceneFrame, SceneSubscription, WireOperation } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
+import type { SceneInteraction } from "./sceneInteraction";
 
 /**
  * Ambient app state contributed components read via Svelte context. Carries the
@@ -27,6 +28,9 @@ export interface AppContext {
   /** Predict + transmit document operations as one correlated optimistic intent
    * (the module write path). `ctx.client`/`store` reflect the prediction. */
   dispatchIntent(ops: WireOperation[]): void;
+  /** Canvas interaction seam: set the active tool, snap to grid, mark a dragged
+   * token. No-ops until the Stage attaches the render engine. */
+  scene: SceneInteraction;
   /** Leave the current world and return to world-select. */
   leaveWorld: () => void;
 }

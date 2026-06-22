@@ -1,6 +1,7 @@
 import type { AppContext } from "../appContext";
 import { __APP_CONTEXT_KEY__ } from "../appContext";
 import { DocumentStore, AssetResolver, ContributionRegistry } from "@shadowcat/core";
+import { SceneInteractionBridge } from "../sceneInteraction";
 
 /** Build a Map for @testing-library/svelte's `context` option holding a minimal
  * AppContext (overridable per field), seeded under the real private key. */
@@ -15,6 +16,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     onAssetChanged: over.onAssetChanged ?? (() => () => {}),
     subscribeScene: over.subscribeScene ?? (() => ({ unsubscribe() {} })),
     dispatchIntent: over.dispatchIntent ?? (() => {}),
+    scene: over.scene ?? new SceneInteractionBridge(),
     leaveWorld: over.leaveWorld ?? (() => {}),
   };
   return new Map([[__APP_CONTEXT_KEY__, ctx]]);

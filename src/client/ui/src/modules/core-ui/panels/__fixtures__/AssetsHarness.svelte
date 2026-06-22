@@ -1,6 +1,7 @@
 <script lang="ts">
   import { AssetResolver } from "@shadowcat/core";
   import { setAppContext } from "../../../../lib/appContext";
+  import { SceneInteractionBridge } from "../../../../lib/sceneInteraction";
   import { t } from "../../../../lib/i18n.svelte";
   import Assets from "../Assets.svelte";
 
@@ -18,6 +19,7 @@
     onAssetChanged,
     subscribeScene: () => ({ unsubscribe() {} }),
     dispatchIntent: () => {},
+    scene: new SceneInteractionBridge(),
     leaveWorld: () => {},
   });
 </script>
