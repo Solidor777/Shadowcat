@@ -1,4 +1,4 @@
-import type { LineSeg, CameraTransform } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput } from "./types";
 
 /** The narrow GL abstraction the render model drives. The real implementation is
  * `pixi-backend.ts` (Playwright-covered); `MockBackend` covers it in unit tests.
@@ -11,6 +11,9 @@ export interface DisplayBackend {
   setBackground(spec: { url: string } | null): void;
   /** Replace the grid-layer line set (scene coords) with the given color (0xRRGGBB). */
   drawGrid(lines: LineSeg[], color: number): void;
+  /** Apply the visibility mask (the mask slot). Empty `visible` = identity
+   * (full visibility → transparent overlay). */
+  setVisibility(input: VisibilityInput): void;
   /** Apply the camera transform to the world container. */
   setCameraTransform(t: CameraTransform): void;
   /** Resize the renderer/viewport to CSS pixels (HiDPI handled by the backend). */
