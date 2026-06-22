@@ -352,35 +352,44 @@ async fn all_clients_converge_after_reconnect() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_reader_recovers_via_resync() {
-    // A ring of 8 guarantees the non-reading client overflows it deterministically
-    // (an OS TCP buffer can absorb 400 small frames, so the default 256 ring may
-    // never lag — the small ring is what forces the `Lagged` path under test).
+    // A ring of 8 plus a non-reading client whose egress blocks on a full socket
+    // forces the broadcast `Lagged` path deterministically, independent of runner
+    // speed: we wait until every event is applied (hence broadcast) while `slow`
+    // isn't reading, so its blocked egress provably overflows the 8-slot ring.
     let h = spawn_with_capacity(8).await;
     let mut slow = h.connect().await;
     let _ = slow.next().await; // Welcome — then we stop reading `slow`.
 
-    // Flood far more events than the ring without reading `slow`. Large bodies
-    // (~8 KiB each) make the cumulative flood far exceed any OS TCP buffer, so the
-    // slow client's egress task blocks on a full socket and the 8-slot ring
-    // overflows — the deterministic trigger the byte volume (not the count) drives.
+    // Few but large frames: each ~64 KiB, so a couple fill the slow client's
+    // (unread, non-growing) receive window and block its egress task; the rest
+    // (>> the 8-slot ring) then overflow the broadcast ring. A small count keeps
+    // server-side apply fast even on a saturated CI runner (where flooding 400
+    // large frames would also trip the documented slow-convergence flake).
     let mut pubc = h.connect().await;
     let _ = pubc.next().await;
-    let blob = "x".repeat(8 * 1024);
-    for n in 0..400u64 {
+    let blob = "x".repeat(64 * 1024);
+    for n in 0..30u64 {
         let doc_id = Uuid::from_u128(1000 + n as u128);
         let op = create_op(h.world, doc_id, serde_json::json!({ "blob": blob }));
         pubc.send(intent_msg(n, serde_json::json!([op])))
             .await
             .unwrap();
     }
-    // Give the server time to process the publishes.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    // Now read: draining unblocks the egress task, which on its next `recv`
-    // observes the overflowed 8-slot ring as `Lagged` and resyncs. Convergence:
-    // the final delivered seq reaches the authoritative tail (400), strictly
-    // increasing, no dups — whether via live or resync delivery.
-    let seqs = drain_until_seq(&mut slow, 400).await;
+    // Wait until all 30 are durably applied (and thus broadcast) while `slow` is
+    // blocked, so its receiver provably lagged the 8-slot ring — independent of
+    // apply speed. Bounded so a genuine stall fails loudly rather than hanging.
+    let mut waited = 0;
+    while h.authoritative_seqs().await.len() < 30 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        waited += 1;
+        assert!(waited < 300, "server did not apply 30 intents within 30s");
+    }
+
+    // Draining unblocks the egress task, which on its next `recv` observes the
+    // overflowed ring as `Lagged` and resyncs. Convergence: the final delivered
+    // seq reaches the authoritative tail (30), strictly increasing, no dups.
+    let seqs = drain_until_seq(&mut slow, 30).await;
 
     // The Lagged path fired deterministically (the regression guard the larger
     // ring could not provide). Observed only after draining, since a blocked
@@ -390,12 +399,12 @@ async fn slow_reader_recovers_via_resync() {
         "the lag-driven resync path must fire deterministically"
     );
 
-    assert_eq!(*seqs.last().unwrap(), 400);
+    assert_eq!(*seqs.last().unwrap(), 30);
     let mut sorted = seqs.clone();
     sorted.sort();
     sorted.dedup();
     assert_eq!(seqs, sorted, "no duplicates or reordering after resync");
-    assert_eq!(*h.authoritative_seqs().await.last().unwrap(), 400);
+    assert_eq!(*h.authoritative_seqs().await.last().unwrap(), 30);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -432,7 +441,10 @@ async fn converges_with_publishing_during_resync() {
     // server has durably applied every published intent (the single-writer pool
     // may still be draining the ingress backlog on a slow runner).
     let _pubc = publisher.await.unwrap();
-    for _ in 0..300 {
+    // Wide apply-drain budget: on a saturated CI runner the single-writer ingress
+    // can take well over 30s to apply 300 queued intents (documented ubuntu-latest
+    // saturation). 600×100ms = 60s headroom before a genuine stall fails the test.
+    for _ in 0..600 {
         if h.authoritative_seqs().await.last().copied() == Some(300) {
             break;
         }
