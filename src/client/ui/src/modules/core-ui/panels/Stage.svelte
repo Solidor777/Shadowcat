@@ -59,7 +59,7 @@
         grid: { kind: "square", size: 100 },
         gridColor: readColor("--grid-line", 0x363645),
         subscribeScene,
-        onDerivedApplied: () => { host.dataset.sceneDerived = "1"; },
+        onDerivedApplied: (input) => { host.dataset.sceneDerived = "1"; host.dataset.visionMode = input.mode; },
       });
       const e = engine;
       // setViewport (resize + initial grid) then start (camera + reconcile +

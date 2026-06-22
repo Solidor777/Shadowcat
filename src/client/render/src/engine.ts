@@ -35,8 +35,9 @@ export interface RenderEngineOpts {
   gridColor?: number;
   /** Injected SceneDerived subscribe (from WorldSession via AppContext). */
   subscribeScene?: SubscribeScene;
-  /** Called when a derived frame is applied (host observability hook). */
-  onDerivedApplied?: () => void;
+  /** Called when a derived frame is applied (host observability hook); carries the applied
+   * visibility so the host can surface the fog mode. */
+  onDerivedApplied?: (input: VisibilityInput) => void;
 }
 
 /** Orchestrates the render model over a DisplayBackend: layers, camera, grid, and
@@ -141,7 +142,7 @@ export class RenderEngine implements SceneToolHost {
   private applyDerived(input: VisibilityInput, seq: number): void {
     this.lastAppliedSeq = seq;
     this.compositor.setVisibility(input);
-    this.opts.onDerivedApplied?.();
+    this.opts.onDerivedApplied?.(input);
   }
 
   /** Parse a `vision` payload into a VisibilityInput. `{mode:"all"}` (GM / no fog) →

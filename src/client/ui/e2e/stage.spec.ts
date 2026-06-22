@@ -140,7 +140,7 @@ test("draw a wall via the tool rail; the wall renders", async ({ page }) => {
   await expect(host).toHaveAttribute("data-wall-count", "1", { timeout: 15_000 });
 });
 
-test("the identity SceneDerived spike reaches the mask slot", async ({ page }) => {
+test("the vision SceneDerived channel reaches the mask slot (GM mode=all)", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("Username").fill("ops");
   await page.getByLabel("Password").fill("pw-boot");
@@ -148,9 +148,12 @@ test("the identity SceneDerived spike reaches the mask slot", async ({ page }) =
   await page.getByLabel("New world name").fill("Vision Spike World");
   await page.getByRole("button", { name: "Create world" }).click();
 
-  // Entering a world subscribes to the "identity" channel; the server pushes an
-  // initial frame, the engine applies it (watermark-gated) and sets the signal.
+  // Entering a world subscribes to the "vision" channel; the server pushes the initial
+  // frame, the engine applies it (watermark-gated) and records the fog mode. As the world
+  // owner (GM) the mode is "all" (no fog) — proving the vision channel reaches the mask slot
+  // end-to-end in real GL (the fog `setVisibility` path runs without error).
   const host = page.locator(".stage-host");
   await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
   await expect(host).toHaveAttribute("data-scene-derived", "1", { timeout: 30_000 });
+  await expect(host).toHaveAttribute("data-vision-mode", "all", { timeout: 30_000 });
 });
