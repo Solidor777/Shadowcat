@@ -31,3 +31,18 @@ test("stage canvas mounts, renders, and tears down on leave", async ({ page }) =
   await page.getByRole("button", { name: /leave world/i }).click();
   await expect(page.getByTestId("stage-canvas")).toHaveCount(0);
 });
+
+test("the identity SceneDerived spike reaches the mask slot", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Username").fill("ops");
+  await page.getByLabel("Password").fill("pw-boot");
+  await page.getByRole("button", { name: "Log in" }).click();
+  await page.getByLabel("New world name").fill("Vision Spike World");
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  // Entering a world subscribes to the "identity" channel; the server pushes an
+  // initial frame, the engine applies it (watermark-gated) and sets the signal.
+  const host = page.locator(".stage-host");
+  await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+  await expect(host).toHaveAttribute("data-scene-derived", "1", { timeout: 30_000 });
+});

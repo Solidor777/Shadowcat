@@ -1,5 +1,5 @@
 import type { DisplayBackend } from "./backend";
-import type { LineSeg, CameraTransform } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput } from "./types";
 
 /** A recording DisplayBackend for unit tests — never touches Pixi/GL. */
 export class MockBackend implements DisplayBackend {
@@ -8,7 +8,9 @@ export class MockBackend implements DisplayBackend {
   gridLineCount = 0;
   gridColor: number | null = null;
   camera: CameraTransform | null = null;
+  visibility: VisibilityInput | null = null;
   size: { width: number; height: number } | null = null;
+  filters: Array<{ layerId: string; filter: unknown }> = [];
   destroyed = false;
 
   ensureLayers(orderedIds: string[]): void {
@@ -23,6 +25,17 @@ export class MockBackend implements DisplayBackend {
   }
   setCameraTransform(t: CameraTransform): void {
     this.camera = t;
+  }
+  setVisibility(input: VisibilityInput): void {
+    this.visibility = input;
+  }
+  addLayerFilter(layerId: string, filter: unknown): () => void {
+    const entry = { layerId, filter };
+    this.filters.push(entry);
+    return () => {
+      const i = this.filters.indexOf(entry);
+      if (i >= 0) this.filters.splice(i, 1);
+    };
   }
   resize(width: number, height: number): void {
     this.size = { width, height };

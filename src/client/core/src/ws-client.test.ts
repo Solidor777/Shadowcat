@@ -362,4 +362,46 @@ describe("WsClient", () => {
     expect(calls).toBe(2);
     handle.unsubscribe();
   });
+
+  it("subscribeScene fires onUpdate on each scene_derived; unsubscribe stops dispatch", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      connect: (h) => { onMessage = h.onMessage; return Promise.resolve({ send: (d) => sent.push(d), close: () => {} }); },
+      handlers: noop,
+    });
+    await client.start();
+    const frames: Array<{ payload: unknown; computedAtSeq: number }> = [];
+    const p = client.subscribeScene("identity", (f) => frames.push(f));
+    const req = JSON.parse(sent.find((s) => JSON.parse(s).type === "scene_subscribe")!);
+    expect(req.channel).toBe("identity");
+    onMessage(JSON.stringify({ type: "scene_derived", request_id: req.request_id, channel: "identity", computed_at_seq: 3, payload: { entity_count: 0 } }));
+    const handle = await p;
+    expect(frames).toEqual([{ payload: { entity_count: 0 }, computedAtSeq: 3 }]);
+    onMessage(JSON.stringify({ type: "scene_derived", request_id: req.request_id, channel: "identity", computed_at_seq: 4, payload: { entity_count: 2 } }));
+    expect(frames).toHaveLength(2);
+    handle.unsubscribe();
+    expect(sent.some((s) => JSON.parse(s).type === "scene_unsubscribe")).toBe(true);
+    onMessage(JSON.stringify({ type: "scene_derived", request_id: req.request_id, channel: "identity", computed_at_seq: 5, payload: {} }));
+    expect(frames).toHaveLength(2); // no dispatch after unsubscribe
+  });
+
+  it("subscribeScene rejects on a scene_error frame", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      connect: (h) => { onMessage = h.onMessage; return Promise.resolve({ send: (d) => sent.push(d), close: () => {} }); },
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.subscribeScene("nope", () => {});
+    const req = JSON.parse(sent.find((s) => JSON.parse(s).type === "scene_subscribe")!);
+    onMessage(JSON.stringify({ type: "scene_error", request_id: req.request_id, message: "unknown channel" }));
+    await expect(p).rejects.toThrow(/unknown channel/);
+  });
+
+  it("subscribeScene rejects immediately with no live transport", async () => {
+    const client = new WsClient({ connect: () => Promise.resolve({ send: () => {}, close: () => {} }), handlers: noop });
+    await expect(client.subscribeScene("identity", () => {}, { timeoutMs: 60_000 })).rejects.toThrow(/not connected/i);
+  });
 });

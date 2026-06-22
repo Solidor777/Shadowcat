@@ -16,6 +16,7 @@
     t,
     assets: new AssetResolver(),
     onAssetChanged,
+    subscribeScene: () => ({ unsubscribe() {} }),
     leaveWorld: () => {},
   });
 </script>

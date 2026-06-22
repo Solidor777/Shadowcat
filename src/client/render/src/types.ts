@@ -25,3 +25,10 @@ export interface CameraTransform {
   y: number;
   scale: number;
 }
+
+/** Visibility for the mask slot (D-V1 polygons, scene coords). Empty `visible`
+ * ⇒ identity (everything visible → transparent overlay). `explored` is M9 (D-V2). */
+export interface VisibilityInput {
+  visible: Polygon[];
+  explored?: Polygon[];
+}

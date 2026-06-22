@@ -118,9 +118,21 @@ are observations awaiting triage, not committed work.
   body size — `_primitives.scss`/`_semantic.scss` define `--space-*`, `--radius-*`,
   `--font-sans`, and `--text-*` *colors* but no smaller font-*size* token (the plan's
   assumed `--text-sm` does not exist). Captions/secondary labels therefore can't be
-  visually de-emphasized by size via a token. Status: Needs triage — add a tier-2
-  `--text-sm` / `--text-caption` size token, then apply it to the asset tile name and
-  other secondary labels.
+  visually de-emphasized by size via a token. Status: **Deferred to M12** by the M8c-2
+  §10 re-audit — canvas chrome (the M8 audit's scope) renders no text, so a font-*size*
+  scale is out of scope here; it belongs with the text-dense default sheets/browsers in
+  M12 (the second token re-audit point per `PLAN.md` M7).
+
+- Title: M8c-2 §10 canvas-chrome token re-audit (outcome). Summary: re-audited the M7d
+  3-tier token set against the first rendered canvas chrome. (1) Added a semantic
+  `--grid-line` token (= `--slate-700`) so the canvas grid is decoupled from UI
+  `--border`. (2) Fixed a latent M8c-1 bug: `Stage.svelte`'s `readColor` used
+  `getComputedStyle().getPropertyValue("--token")`, which returns the unresolved
+  `var(...)` string for aliased custom properties — so the grid silently used its
+  fallback color and ignored the theme; it now resolves the real color via a
+  computed-`color` probe. (3) Background uses `--surface-base` (already correct). (4)
+  Fog-state colors (dimmed/unexplored) deferred to M9 (no visible fog in identity mode).
+  Status: Resolved for M8c (canvas chrome); caption size token → M12 (above).
 
 - Title: no protection against removing/demoting the last GM. Summary:
   `remove_member`/`set_role` allow a world's only GM to be removed or demoted,

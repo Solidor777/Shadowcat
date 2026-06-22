@@ -40,6 +40,8 @@ export type {
   WireWelcome,
   SearchPage,
   SubscriptionHandle,
+  SceneFrame,
+  SceneSubscription,
 } from "./ws-client";
 export { webSocketConnect } from "./transport";
 export type { Transport, TransportHandlers, Connect } from "./transport";

@@ -1,6 +1,6 @@
-import { Application, Container, Graphics, Sprite, Assets } from "pixi.js";
+import { Application, Container, Graphics, Sprite, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend } from "./backend";
-import type { LineSeg, CameraTransform } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput } from "./types";
 
 /** The real DisplayBackend over pixi.js v8. The only GL-touching module (kept out
  * of unit tests; covered by Playwright). Layer containers parent under one `world`
@@ -9,6 +9,7 @@ export class PixiBackend implements DisplayBackend {
   private readonly world = new Container();
   private readonly layers = new Map<string, Container>();
   private readonly grid = new Graphics();
+  private readonly maskOverlay = new Graphics();
   private background: Sprite | null = null;
   private backgroundUrl: string | null = null;
   /** Monotonic counter disambiguating concurrent background loads. */
@@ -26,6 +27,7 @@ export class PixiBackend implements DisplayBackend {
       this.layers.set(id, c);
       this.world.addChild(c);
       if (id === "grid") c.addChild(this.grid);
+      if (id === "mask") c.addChild(this.maskOverlay);
     }
     // Re-parent in z-order (addChild appends; order array is authoritative).
     for (const id of orderedIds) {
@@ -67,6 +69,25 @@ export class PixiBackend implements DisplayBackend {
   setCameraTransform(t: CameraTransform): void {
     this.world.position.set(t.x, t.y);
     this.world.scale.set(t.scale);
+  }
+
+  setVisibility(input: VisibilityInput): void {
+    // M8 identity: empty `visible` ⇒ full visibility ⇒ transparent overlay (clear).
+    // M9 draws fog occluding everything outside `visible` (+ explored), via an
+    // engine-owned shader + a viewport render target plugged into this same slot.
+    this.maskOverlay.clear();
+    if (input.visible.length > 0) {
+      // (M9) fog composition over the mask slot.
+    }
+  }
+
+  addLayerFilter(layerId: string, filter: unknown): () => void {
+    const c = this.layers.get(layerId);
+    if (!c) return () => {};
+    c.filters = [...(c.filters ?? []), filter as Filter];
+    return () => {
+      c.filters = (c.filters ?? []).filter((f) => f !== filter);
+    };
   }
 
   resize(width: number, height: number): void {

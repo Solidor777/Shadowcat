@@ -11,25 +11,27 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean } {
     setBackground() {},
     drawGrid() {},
     setCameraTransform() {},
+    setVisibility() {},
+    addLayerFilter() { return () => {}; },
     resize() {},
     destroy() { this.destroyed = true; },
   };
 }
 
-test("mounts a canvas container and tears the backend down on unmount", async () => {
+test("mounts a canvas, subscribes to the scene channel, and tears down on unmount", async () => {
   const backend = fakeBackend();
   const createBackend = vi.fn(async () => backend);
+  const subscribeScene = vi.fn(() => ({ unsubscribe: () => {} }));
   const { container, unmount } = render(Stage, {
     props: { createBackend },
-    context: setAppContextForTest(),
+    context: setAppContextForTest({ subscribeScene }),
   });
   // The host renders a canvas element synchronously.
   expect(container.querySelector("[data-testid='stage-canvas']")).not.toBeNull();
   // The $effect's async init runs after mount; wait for the backend factory.
   await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
-  // Unmount tears the engine/backend down. When unmount races the still-pending
-  // async init, the race-guard destroys the backend once init resumes — so the
-  // teardown completes asynchronously either way.
+  await vi.waitFor(() => expect(subscribeScene).toHaveBeenCalledWith("identity", expect.any(Function)));
+  // Unmount tears the engine/backend down (async when unmount races the init).
   unmount();
   await vi.waitFor(() => expect(backend.destroyed).toBe(true));
 });

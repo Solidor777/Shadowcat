@@ -18,6 +18,7 @@
     t,
     assets: session.assets,
     onAssetChanged: (cb) => session.onAssetChanged(cb),
+    subscribeScene: (c, cb) => session.subscribeScene(c, cb),
     leaveWorld,
   });
 </script>
