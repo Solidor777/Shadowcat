@@ -44,6 +44,9 @@ export class RenderEngine {
   private unsubscribe: (() => void) | null = null;
   private sceneSub: SceneSubscription | null = null;
   private pendingDerived: { input: VisibilityInput; seq: number } | null = null;
+  /** Highest computed_at_seq applied to the mask; guards against regressing to an
+   * older derived frame (latest-wins). */
+  private lastAppliedSeq = -1;
 
   constructor(private readonly opts: RenderEngineOpts) {
     this.grid = new Grid(opts.grid);
@@ -67,9 +70,14 @@ export class RenderEngine {
   }
 
   private onSceneFrame(frame: { payload: unknown; computedAtSeq: number }): void {
+    // Per-channel frames are monotonic in computed_at_seq and latest wins. Drop any
+    // frame already superseded by an applied or a pending one — never regress the
+    // mask to an older derived state (defends the M9 consumer against reordering).
+    if (frame.computedAtSeq <= this.lastAppliedSeq) return;
+    if (this.pendingDerived && frame.computedAtSeq <= this.pendingDerived.seq) return;
     const input = this.toVisibility(); // M9: parse frame.payload polygons
     if (this.opts.store.appliedSeq >= frame.computedAtSeq) {
-      this.applyDerived(input);
+      this.applyDerived(input, frame.computedAtSeq);
     } else {
       this.pendingDerived = { input, seq: frame.computedAtSeq }; // watermark: defer
     }
@@ -79,17 +87,18 @@ export class RenderEngine {
     const p = this.pendingDerived;
     if (p && this.opts.store.appliedSeq >= p.seq) {
       this.pendingDerived = null;
-      this.applyDerived(p.input);
+      this.applyDerived(p.input, p.seq);
     }
   }
 
-  private applyDerived(input: VisibilityInput): void {
+  private applyDerived(input: VisibilityInput, seq: number): void {
+    this.lastAppliedSeq = seq;
     this.compositor.setVisibility(input);
     this.opts.onDerivedApplied?.();
   }
 
-  /** M8 identity: full visibility regardless of payload. M9 takes the frame payload
-   * and parses polygon geometry into `visible`. */
+  /** M8 identity: full visibility regardless of payload. M9 will take the frame
+   * payload and parse polygon geometry into `visible`. */
   private toVisibility(): VisibilityInput {
     return { visible: [] };
   }
