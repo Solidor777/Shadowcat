@@ -44,6 +44,13 @@ export class RenderEngine {
     this.redrawGrid();
   }
 
+  /** Force a re-reconcile. Needed for out-of-band `AssetChanged` notices, which
+   * mutate the `AssetResolver` (cache-bust / placeholder) without a document
+   * mutation, so the `store.subscribe` reconcile never fires for them. */
+  reconcileNow(): void {
+    this.reconciler.reconcile();
+  }
+
   /** Push the camera transform to the backend and redraw the grid for the new view. */
   applyCamera(): void {
     this.opts.backend.setCameraTransform(this.camera.transform());
