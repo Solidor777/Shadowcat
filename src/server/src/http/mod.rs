@@ -588,6 +588,53 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn by_id_routes_hide_existence_from_non_members() {
+        let state = initialized_state().await;
+        seed_user(&state, "gm").await;
+        seed_user(&state, "st").await;
+        let gm = login_server(&state, "gm").await;
+        let st = login_server(&state, "st").await;
+
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "W" }))
+            .await
+            .json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+
+        let doc_id = Uuid::from_u128(321);
+        let doc = doc_json(
+            doc_id,
+            &world_id,
+            serde_json::json!({ "hp": 1 }),
+            gm_only_perms(),
+        );
+        gm.post(&format!("/api/worlds/{world_id}/documents"))
+            .json(&doc)
+            .await
+            .assert_status_ok();
+
+        // A non-member must not distinguish "exists but forbidden" (403) from
+        // "nonexistent" (404): every by-id document route returns 404.
+        st.get(&format!("/api/documents/{doc_id}"))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+        st.patch(&format!("/api/documents/{doc_id}"))
+            .json(&serde_json::json!({ "changes": [] }))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+        st.delete(&format!("/api/documents/{doc_id}"))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+
+        // World-scoped routes still return 403 to a non-member: the world id is
+        // supplied by the caller, so a membership denial leaks nothing.
+        st.get(&format!("/api/worlds/{world_id}/documents?type=actor"))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn conflicting_patch_returns_conflict() {
         let state = initialized_state().await;
         seed_user(&state, "gm").await;

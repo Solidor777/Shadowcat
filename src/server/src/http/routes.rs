@@ -414,6 +414,17 @@ pub async fn list_documents(
     Ok(Json(visible))
 }
 
+/// On by-id document routes a non-member's `Forbidden` is remapped to `NotFound`:
+/// a 403-vs-404 split would let a non-member confirm a document id exists.
+/// World-scoped routes keep `Forbidden` — the world id is supplied by the caller,
+/// so a membership denial there leaks nothing.
+fn by_id_not_found(e: crate::data::DataError) -> AppError {
+    match e {
+        crate::data::DataError::Forbidden => AppError::NotFound,
+        other => other.into(),
+    }
+}
+
 pub async fn get_document(
     user: AuthUser,
     State(state): State<AppState>,
@@ -428,7 +439,8 @@ pub async fn get_document(
     let ctx = state
         .repo
         .permission_context(world, user.id, user.role)
-        .await?;
+        .await
+        .map_err(by_id_not_found)?;
     let world_defaults = state.repo.world_cap_defaults(world).await?;
     let access = resolve_access_world(ctx.user_id, ctx.world_role, &doc, &world_defaults);
     if !access.has(cap::READ) {
@@ -454,6 +466,13 @@ pub async fn patch_document(
         .await?
         .ok_or(AppError::NotFound)?;
     let world = world_of(&doc)?;
+    // by-id route: a non-member is 404, not 403 (existence hiding). Members fall
+    // through to write_ops, which may still 403 on a capability denial.
+    state
+        .repo
+        .permission_context(world, user.id, user.role)
+        .await
+        .map_err(by_id_not_found)?;
     write_ops(
         &state,
         &user,
@@ -477,6 +496,12 @@ pub async fn delete_document(
         .await?
         .ok_or(AppError::NotFound)?;
     let world = world_of(&doc)?;
+    // by-id route: a non-member is 404, not 403 (existence hiding).
+    state
+        .repo
+        .permission_context(world, user.id, user.role)
+        .await
+        .map_err(by_id_not_found)?;
     write_ops(&state, &user, world, vec![Operation::Delete { doc }]).await
 }
 
