@@ -2,6 +2,7 @@
 //! never authoritative. Holds one hecs entity per scene-entity document so
 //! engine-owned systems (M9 vision, M10 pathfinding) can query spatial state.
 
+pub mod explored;
 pub mod vision;
 
 use std::collections::HashMap;
@@ -179,6 +180,26 @@ impl SceneEcs {
             let walls = self.sight_walls(scene);
             let bound = vision::bound_for(vp, &walls, VISION_BOUND_MARGIN);
             out.push((scene, vision::visibility_polygon(vp, &walls, bound)));
+        }
+        out
+    }
+
+    /// Each scene's grid cell size (`system.grid.size`), defaulting to 100 — the unit the M9c
+    /// explored-fog accumulation quantizes vision into. Read once per dispatch (cheap doc scan).
+    pub fn scene_grid_sizes(&self) -> std::collections::HashMap<Uuid, f64> {
+        let mut out = std::collections::HashMap::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type != "scene" {
+                continue;
+            }
+            let size = e
+                .doc
+                .system
+                .pointer("/grid/size")
+                .and_then(|v| v.as_f64())
+                .filter(|s| *s > 0.0)
+                .unwrap_or(100.0);
+            out.insert(e.doc.id, size);
         }
         out
     }

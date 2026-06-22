@@ -157,3 +157,29 @@ test("the vision SceneDerived channel reaches the mask slot (GM mode=all)", asyn
   await expect(host).toHaveAttribute("data-scene-derived", "1", { timeout: 30_000 });
   await expect(host).toHaveAttribute("data-vision-mode", "all", { timeout: 30_000 });
 });
+
+test("GM fog-preview toggle renders the player view (full fog) over see-all", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Username").fill("ops");
+  await page.getByLabel("Password").fill("pw-boot");
+  await page.getByRole("button", { name: "Log in" }).click();
+  await page.getByLabel("New world name").fill("Fog Toggle World");
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = page.locator(".stage-host");
+  await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+  // GM default: see-all (no fog).
+  await expect(host).toHaveAttribute("data-vision-mode", "all", { timeout: 30_000 });
+  await expect(host).toHaveAttribute("data-fog-preview", "false");
+
+  // Toggle on → the player view (full fog) renders in real GL without error; the effective fog
+  // mode the engine reports flips to masked.
+  await page.getByTestId("gm-fog-toggle").click();
+  await expect(host).toHaveAttribute("data-fog-preview", "true");
+  await expect(host).toHaveAttribute("data-vision-mode", "masked");
+
+  // Toggle off → see-all restored.
+  await page.getByTestId("gm-fog-toggle").click();
+  await expect(host).toHaveAttribute("data-fog-preview", "false");
+  await expect(host).toHaveAttribute("data-vision-mode", "all");
+});

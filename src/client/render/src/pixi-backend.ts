@@ -9,10 +9,16 @@ export class PixiBackend implements DisplayBackend {
   private readonly world = new Container();
   private readonly layers = new Map<string, Container>();
   private readonly grid = new Graphics();
-  private readonly maskOverlay = new Graphics();
-  /** Visible-region holes; used as an inverse mask on the fog so the fog shows everywhere
-   * EXCEPT inside these polygons (M9b two-state fog). */
-  private readonly fogHoles = new Graphics();
+  /** Three-state fog (M9c): two stacked black sheets in the `mask` layer. `fogDark` (near-opaque)
+   * shows only on UNEXPLORED area — inverse-masked by `exploredHoles` (explored ∪ visible).
+   * `fogDim` (semi-transparent) shows on unexplored + explored — inverse-masked by `visibleHoles`.
+   * Net: unexplored = both sheets (darkest), explored = dim only, visible = clear. */
+  private readonly fogDark = new Graphics();
+  private readonly fogDim = new Graphics();
+  /** Inverse-mask shapes (not rendered directly): explored∪visible cut from `fogDark`, visible
+   * cut from `fogDim`. */
+  private readonly exploredHoles = new Graphics();
+  private readonly visibleHoles = new Graphics();
   private readonly toolOverlay = new Graphics();
   private readonly measureGraphics = new Graphics();
   private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
@@ -39,8 +45,11 @@ export class PixiBackend implements DisplayBackend {
       this.world.addChild(c);
       if (id === "grid") c.addChild(this.grid);
       if (id === "mask") {
-        c.addChild(this.maskOverlay);
-        c.addChild(this.fogHoles); // the inverse-mask shape (not rendered directly)
+        // Dim sheet under the dark sheet; the hole shapes are masks, not drawn directly.
+        c.addChild(this.fogDim);
+        c.addChild(this.fogDark);
+        c.addChild(this.exploredHoles);
+        c.addChild(this.visibleHoles);
       }
       if (id === "overlays") {
         c.addChild(this.toolOverlay);
@@ -94,22 +103,36 @@ export class PixiBackend implements DisplayBackend {
   }
 
   setVisibility(input: VisibilityInput): void {
-    this.maskOverlay.clear();
-    this.fogHoles.clear();
+    this.fogDark.clear();
+    this.fogDim.clear();
+    this.exploredHoles.clear();
+    this.visibleHoles.clear();
     if (input.mode === "all") {
-      this.maskOverlay.mask = null; // no fog (GM / no occlusion)
+      this.fogDark.mask = null; // no fog (GM / no occlusion)
+      this.fogDim.mask = null;
       return;
     }
-    // Two-state fog: an opaque sheet over a large world region, with the `visible` polygons
-    // cut out via an inverse mask. Empty `visible` → no holes → full fog (see nothing).
-    // The fog lives in the camera-transformed `mask` layer, so it is scene-locked (the holes
-    // sit at scene positions and pan/zoom with the map). M9c adds the dimmed `explored` state.
+    // Three-state fog: two opaque sheets over a large world region, scene-locked in the camera-
+    // transformed `mask` layer (holes sit at scene positions and pan/zoom with the map).
+    // `fogDark` (near-opaque) is cut by `explored ∪ visible` → remains only on UNEXPLORED area.
+    // `fogDim` (semi-transparent) is cut by `visible` → remains on unexplored + explored, so
+    // explored shows dimmed and visible shows clear. Empty visible + empty explored → no holes →
+    // full dark fog (see nothing).
     const R = 1_000_000; // world units; the viewport shows only a portion, so this covers it
-    this.maskOverlay.rect(-R, -R, 2 * R, 2 * R).fill({ color: 0x000000, alpha: 0.72 });
-    for (const poly of input.visible) {
-      if (poly.points.length >= 6) this.fogHoles.poly(poly.points).fill({ color: 0xffffff });
+    this.fogDark.rect(-R, -R, 2 * R, 2 * R).fill({ color: 0x000000, alpha: 0.92 });
+    this.fogDim.rect(-R, -R, 2 * R, 2 * R).fill({ color: 0x000000, alpha: 0.5 });
+    for (const poly of input.explored) {
+      if (poly.points.length >= 6) this.exploredHoles.poly(poly.points).fill({ color: 0xffffff });
     }
-    this.maskOverlay.setMask({ mask: this.fogHoles, inverse: true });
+    for (const poly of input.visible) {
+      if (poly.points.length >= 6) {
+        // Visible is clear in BOTH sheets, so it is cut from explored-holes too (visible ⊆ explored).
+        this.exploredHoles.poly(poly.points).fill({ color: 0xffffff });
+        this.visibleHoles.poly(poly.points).fill({ color: 0xffffff });
+      }
+    }
+    this.fogDark.setMask({ mask: this.exploredHoles, inverse: true });
+    this.fogDim.setMask({ mask: this.visibleHoles, inverse: true });
   }
 
   setToken(id: string, spec: TokenNodeSpec): void {

@@ -132,12 +132,56 @@ impl Harness {
     }
 
     pub async fn connect(&self) -> Ws {
+        self.connect_as(&self.cookie).await
+    }
+
+    /// Connect a WS to this world using an arbitrary session `cookie` (e.g. a player's).
+    pub async fn connect_as(&self, cookie: &str) -> Ws {
         let url = format!("ws://{}/ws?world={}", self.addr, self.world);
         let mut req = url.into_client_request().unwrap();
-        req.headers_mut()
-            .insert("cookie", self.cookie.parse().unwrap());
+        req.headers_mut().insert("cookie", cookie.parse().unwrap());
         let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
         ws
+    }
+
+    /// Create a second user, add them to this world as a Player, log them in, and return
+    /// `(user_id, session-cookie)`. Exercises the per-player (non-GM) vision/fog path.
+    pub async fn add_player(&self, username: &str) -> (Uuid, String) {
+        let hash = hash_password("pw").unwrap();
+        let uid = self
+            .repo
+            .create_user(username, Some(&hash), ServerRole::User, 0)
+            .await
+            .unwrap();
+        self.repo
+            .add_member(
+                self.world,
+                uid,
+                shadowcat::data::document::WorldRole::Player,
+            )
+            .await
+            .unwrap();
+        let client = reqwest::Client::builder()
+            .cookie_store(true)
+            .build()
+            .unwrap();
+        let res = client
+            .post(format!("http://{}/api/login", self.addr))
+            .json(&serde_json::json!({ "username": username, "password": "pw" }))
+            .send()
+            .await
+            .unwrap();
+        let cookie = res
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        (uid, cookie)
     }
 }
 
@@ -170,6 +214,32 @@ pub fn create_doc_op(
             "schema_version": 1,
             "parent_id": parent.map(Uuid::from_u128),
             "system": {},
+            "created_at": 0,
+            "updated_at": 0,
+        }
+    })
+}
+
+/// A `create` op for a token owned by `owner` at scene position `(x, y)`. Used to drive a
+/// player's server-side vision (which selects tokens by `owner == user_id`).
+pub fn create_owned_token_op(
+    world: Uuid,
+    id: u128,
+    scene: u128,
+    owner: Uuid,
+    x: f64,
+    y: f64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "op": "create",
+        "doc": {
+            "id": Uuid::from_u128(id),
+            "scope": { "kind": "world", "world_id": world },
+            "doc_type": "token",
+            "schema_version": 1,
+            "owner": owner,
+            "parent_id": Uuid::from_u128(scene),
+            "system": { "x": x, "y": y, "w": 100, "h": 100 },
             "created_at": 0,
             "updated_at": 0,
         }

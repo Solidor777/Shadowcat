@@ -5,7 +5,7 @@ import type { VisibilityInput } from "./types";
  * VisibilityInput to the backend mask; M9 swaps an engine-owned fog shader + render
  * target behind this same surface with no API change. */
 export class Compositor {
-  private last: VisibilityInput = { mode: "all", visible: [] };
+  private last: VisibilityInput = { mode: "all", visible: [], explored: [] };
 
   constructor(private readonly backend: DisplayBackend) {}
 

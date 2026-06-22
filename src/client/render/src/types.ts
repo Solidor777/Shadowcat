@@ -26,13 +26,16 @@ export interface CameraTransform {
   scale: number;
 }
 
-/** Visibility for the mask slot (D-V1 polygons, scene coords). `mode:"all"` = no fog
- * (GM / no occlusion). `mode:"masked"` = fog covers everything OUTSIDE `visible`; an empty
- * `visible` therefore means full fog (see nothing), NOT "see everything". `explored` is M9c. */
+/** Visibility for the mask slot (scene coords). `mode:"all"` = no fog (GM / no occlusion).
+ * `mode:"masked"` = three-state fog: **unexplored** (outside both sets) = darkest, **explored**
+ * (in `explored`, not `visible`) = dimmed memory, **visible** = clear. Empty `visible` + empty
+ * `explored` ⇒ full dark fog (see nothing), NOT "see everything". `explored` is the M9c persistent
+ * memory layer (rect polygons rasterized from the server's per-(scene,player) explored cells);
+ * `visible ⊆ explored` semantically (a visible cell is also explored). */
 export interface VisibilityInput {
   mode: "all" | "masked";
   visible: Polygon[];
-  explored?: Polygon[];
+  explored: Polygon[];
 }
 
 /** A token's animatable transform (scene coords; `(x,y)` = center). */
