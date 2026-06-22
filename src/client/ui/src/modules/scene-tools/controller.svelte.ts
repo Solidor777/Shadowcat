@@ -39,7 +39,7 @@ export class ToolController {
 
   constructor(private readonly ctx: ToolContext) {
     this.#tools = {
-      select: makeSelectMoveTool(ctx, this),
+      select: makeSelectMoveTool(ctx),
       place: makePlaceTool(ctx, this),
     };
   }
@@ -89,7 +89,7 @@ const DRAG_THROTTLE_MS = 50;
  * setDraggingToken), and snapped position-update intents stream coalesced to the server
  * (and other clients), with the final position flushed on release. Picks nothing →
  * unhandled, so the camera pans. */
-export function makeSelectMoveTool(ctx: ToolContext, _controller: ToolController): SceneTool {
+export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
   const now = ctx.now ?? ((): number => Date.now());
   let draggingId: string | null = null;
   let offset: Point = { x: 0, y: 0 };

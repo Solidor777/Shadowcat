@@ -2,7 +2,7 @@ import { test, expect } from "vitest";
 import { DocumentStore, AssetResolver, buildTokenDoc, type WireOperation } from "@shadowcat/core";
 import type { SceneToolHost } from "@shadowcat/render";
 import { SceneInteractionBridge } from "../../lib/sceneInteraction";
-import { ToolController, makeSelectMoveTool, type ToolContext } from "./controller.svelte";
+import { makeSelectMoveTool, type ToolContext } from "./controller.svelte";
 
 const ev = {} as PointerEvent;
 
@@ -22,7 +22,7 @@ function setup() {
     scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs,
     assets: new AssetResolver(), world: "w1", now: () => t,
   };
-  const tool = makeSelectMoveTool(ctx, new ToolController(ctx));
+  const tool = makeSelectMoveTool(ctx);
   return { tool, sent, drags, setTime: (n: number) => { t = n; } };
 }
 
