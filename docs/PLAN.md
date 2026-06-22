@@ -170,7 +170,13 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > engine-owned two-state fog mask (inverse-masked white-fill union — no `geo` dep). GM → `mode:"all"`;
 > a player gets only their own polygons; a token-less player gets full fog. Two blind security
 > reviews reconciled: fail-closed garbled payload, cross-scene scoping, ±π seam (see the plan's
-> "Implementation deviations"). **M9c** (persistent explored fog + GM see-as-player toggle) remains.
+> "Implementation deviations"). **M9c-1 DONE** (merged + pushed): persistent per-(scene,player)
+> explored fog (`explored_fog` table + sparse cell set + dispatch-layer accumulation), a three-state
+> fog shader (unexplored = darkest / explored = dimmed / visible = clear), and a GM see-all/preview
+> toggle. Two blind security reviews (no Critical/Important; isolation + fail-closed + under-reveal
+> race verified) — cell-scan cap, cleanup TODO, player wire test folded in. **M9c-2** (GM
+> see-as-player — a flagged protocol fork: `SceneSubscribe{as_user}` + GM-only authorization) is the
+> only remaining M9 piece; spec'd in `superpowers/plans/2026-06-22-m9c-fog.md`.
 - Vector walls as ECS components; movement blocking.
 - Rust raycasting; per-player visibility polygons (`geo` union); PixiJS masks; persistent fog of war.
 - GM vision mode. Server-authoritative geometric vision only (exempt from the optimistic path by design).
