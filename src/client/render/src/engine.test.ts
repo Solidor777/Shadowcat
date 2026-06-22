@@ -368,6 +368,14 @@ test("setActiveTool discards an in-progress preview overlay (mid-gesture tool sw
   expect(backend.overlay).toHaveLength(0);
 });
 
+test("setActiveTool also clears a stranded measure overlay", () => {
+  const { backend, engine } = makeEngine();
+  engine.drawMeasure({ x: 0, y: 0 }, { x: 10, y: 0 }, "1");
+  expect(backend.measure).not.toBeNull();
+  engine.setActiveTool(null);
+  expect(backend.measure).toBeNull();
+});
+
 test("registerLayerFilter forwards to the backend and disposes", () => {
   const backend = new MockBackend();
   const engine = new RenderEngine({ store: new DocumentStore(), assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 } });

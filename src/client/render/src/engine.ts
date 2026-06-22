@@ -163,7 +163,10 @@ export class RenderEngine implements SceneToolHost {
     this.panning = false;
     this.activePointerId = null;
     this.tokens.setDragging(null);
-    this.clearOverlay(); // discard any in-progress tool preview (the old tool's up won't fire)
+    // Discard any in-progress tool ephemeral (preview shape + measure segment): the old
+    // tool's pointerup won't fire after a mid-gesture swap, so it can't self-clean.
+    this.clearOverlay();
+    this.clearMeasure();
   }
 
   snap(p: Point): Point {

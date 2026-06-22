@@ -165,6 +165,13 @@ server ingress arm (membership gate, rate-limit drop, `event_seq()==None`, the `
 scene_ping tag clash), the ts-rs sync, the `sendPing` connection guard, the PingView age/fade math +
 ticker teardown, and measurement being truly client-local (no intent, no broadcast).
 
+## Deviations (surfaced)
+- **Rate limit is per-connection, not per-user (Task 4).** Implemented as a local sliding
+  window in `handle_socket` rather than a per-user `PingRateLimiter` on `AppState`, avoiding
+  5-site `AppState` churn. A defensible merits choice for a transient cosmetic ping (membership-
+  gated, silent drop, best-effort relay); weaker only in that N sockets → N×30/min. Buddy-check
+  accepted; per-user upgrade logged to `docs/TODO.md`.
+
 ## Spec coverage self-check
 - §10 measurement (client-local, grid distance) → Tasks 1,2,3.
 - §11 pings (out-of-band server frame, transient rings, rate-limited) → Tasks 4,5,6,7,8.

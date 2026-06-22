@@ -19,6 +19,9 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 ## Client / intents
 - TODO: Replay (or visibly block) optimistic intents issued while the world socket is disconnected. `WorldSession.dispatchIntent` drops a dispatch when `WsClient` has no transport (logged), avoiding an orphaned pending entry that would mis-correlate the FIFO confirm of the next echo; a reconnect does not replay the dropped action. Add a replay-on-resync queue (or a "reconnecting" UI block) when offline editing matters.
 
+## Server / ws
+- TODO: Make the ping rate limit per-user (on `AppState`) instead of per-connection. `conn.rs`'s `ScenePing` limiter is a per-connection sliding window (30/min) that resets on reconnect, so a user with N concurrent sockets gets N×30/min — a weaker abuse backstop than the per-user `UploadRateLimiter`. Accepted as a defensible choice for a transient cosmetic ping (membership-gated, silent drop, best-effort relay); upgrade to a per-user `PingRateLimiter` on `AppState` if ping abuse becomes a concern. (Deviation from the M8d-3b plan Task 4, surfaced by the buddy check.)
+
 ## Client / render
 - TODO: Lerp token rotation along the shortest signed delta (`((b-a+540)%360)-180`) with a wrap-aware ε-settle, when M8d-2 adds rotation control. M8d-1's `TokenAnimator` lerps rotation as a raw scalar (350°→10° tweens the long way); cannot manifest until rotation is authorable. (Surfaced by the M8d-1 buddy check.)
 - TODO: Select the active scene deterministically once multiple scene documents can exist (M8d scene authoring). `SceneReconciler` renders `store.query("scene")[0]` (insertion-order); with >1 scene this picks an arbitrary background. Add explicit active-scene selection with M8d. (Surfaced by the M8c-1 buddy check.)
