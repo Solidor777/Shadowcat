@@ -35,6 +35,30 @@ test("uploading a file calls uploadAsset then reloads", async () => {
   await waitFor(() => expect(upload).toHaveBeenCalledWith("w1", file));
 });
 
+test("deleting an asset calls deleteAsset and removes the tile", async () => {
+  const asset = {
+    id: "a1",
+    world_id: "w1",
+    storage_key: "",
+    original_name: "map.png",
+    content_type: "image/png",
+    byte_size: 1,
+    created_by: "u",
+    created_at: 0,
+    version: 1,
+  };
+  // Mount reload returns the asset; the post-delete reload returns empty.
+  vi.spyOn(api, "listAssets")
+    .mockResolvedValueOnce([asset] as never)
+    .mockResolvedValueOnce([] as never);
+  const del = vi.spyOn(api, "deleteAsset").mockResolvedValue(undefined);
+  render(Harness);
+  await screen.findByTestId("asset-tile");
+  await fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(del).toHaveBeenCalledWith("a1"));
+  await waitFor(() => expect(screen.queryByTestId("asset-tile")).toBeNull());
+});
+
 test("an asset_changed notice triggers a reload", async () => {
   const list = vi.spyOn(api, "listAssets").mockResolvedValue([] as never);
   let fire: (m: { uuid: string; op: "replaced" | "deleted" }) => void = () => {};

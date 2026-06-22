@@ -56,6 +56,9 @@
     try {
       await deleteAsset(uuid);
       if (selectedId === uuid) selectedId = null;
+      // Flush immediately rather than waiting on the AssetChanged{deleted}
+      // broadcast round-trip (which also reloads, idempotently) — no stale tile.
+      await reload();
     } catch (err) {
       error = t("assets.error", { message: String(err) });
     }
