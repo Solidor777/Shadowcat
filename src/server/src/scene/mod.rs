@@ -184,6 +184,26 @@ impl SceneEcs {
         out
     }
 
+    /// Each scene's grid cell size (`system.grid.size`), defaulting to 100 — the unit the M9c
+    /// explored-fog accumulation quantizes vision into. Read once per dispatch (cheap doc scan).
+    pub fn scene_grid_sizes(&self) -> std::collections::HashMap<Uuid, f64> {
+        let mut out = std::collections::HashMap::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type != "scene" {
+                continue;
+            }
+            let size = e
+                .doc
+                .system
+                .pointer("/grid/size")
+                .and_then(|v| v.as_f64())
+                .filter(|s| *s > 0.0)
+                .unwrap_or(100.0);
+            out.insert(e.doc.id, size);
+        }
+        out
+    }
+
     /// The `blocksSight` wall segments of `scene`.
     fn sight_walls(&self, scene: Uuid) -> Vec<vision::Seg> {
         let mut out = Vec::new();

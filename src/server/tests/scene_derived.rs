@@ -41,6 +41,8 @@ async fn vision_channel_works_over_the_wire_for_gm() {
     let first = drain_until_type(&mut ws, "scene_derived").await;
     assert_eq!(first["channel"], "vision");
     assert_eq!(first["payload"]["mode"], "all");
+    // The GM has no fog → the dispatch-layer explored accumulation is a no-op (no `explored`).
+    assert!(first["payload"].get("explored").is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

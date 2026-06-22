@@ -352,6 +352,62 @@ async fn handle_socket(
     tracing::info!(world = %world_id, user = %user_id, "ws disconnected");
 }
 
+/// Accumulate + persist per-(scene,player) explored fog (M9c) from a `vision` **masked** payload,
+/// then inject the player's scene-tagged `explored` cell sets. No-op for a GM (`mode:"all"`) or any
+/// payload without masked polygons. Runs after the ECS read lock is dropped (it does async DB I/O);
+/// `grid` carries each scene's cell size, captured under that lock. Explored is emitted only for
+/// scenes the player currently has vision in (the payload's polygons) — a token-less player gets no
+/// explored (full fog), consistent with empty = see-nothing. The accumulation is monotone, so the
+/// DB write happens only when the explored set grows.
+async fn enrich_vision_explored(
+    payload: &mut serde_json::Value,
+    grid: &std::collections::HashMap<Uuid, f64>,
+    repo: &SqliteRepository,
+    world: Uuid,
+    user: Uuid,
+) {
+    if payload.get("mode").and_then(|m| m.as_str()) != Some("masked") {
+        return;
+    }
+    // Group the recipient's visibility polygons by scene (scene-local coords).
+    let polys = payload
+        .get("polygons")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut by_scene: std::collections::HashMap<Uuid, Vec<Vec<f64>>> =
+        std::collections::HashMap::new();
+    for poly in &polys {
+        let Some(scene) = poly
+            .get("scene")
+            .and_then(|s| s.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+        else {
+            continue;
+        };
+        let points: Vec<f64> = poly
+            .get("points")
+            .and_then(|p| p.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_f64()).collect())
+            .unwrap_or_default();
+        by_scene.entry(scene).or_default().push(points);
+    }
+    let mut explored_out: Vec<serde_json::Value> = Vec::with_capacity(by_scene.len());
+    for (scene, scene_polys) in by_scene {
+        let cell = grid.get(&scene).copied().unwrap_or(100.0);
+        let mut set = match repo.get_explored(scene, user).await {
+            Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob),
+            _ => crate::scene::explored::ExploredSet::new(),
+        };
+        if set.mark_polygons(&scene_polys, cell) > 0 {
+            let _ = repo.set_explored(world, scene, user, &set.to_bytes()).await;
+        }
+        let cells: Vec<i32> = set.iter().flat_map(|(i, j)| [i, j]).collect();
+        explored_out.push(serde_json::json!({ "scene": scene, "cell": cell, "cells": cells }));
+    }
+    payload["explored"] = serde_json::json!(explored_out);
+}
+
 async fn egress_loop<S>(
     mut sink: S,
     mut rx: tokio::sync::broadcast::Receiver<Arc<ServerMsg>>,
@@ -461,15 +517,19 @@ async fn egress_loop<S>(
                         if sink.send(text(&f)).await.is_err() { break; }
                     } else {
                         // Read the ECS and the seq it reflects under one borrow,
-                        // then drop it before awaiting the sink.
-                        let (payload, seq) = {
+                        // then drop it before awaiting the sink. Capture per-scene grid
+                        // sizes under the same lock for the post-lock explored accumulation.
+                        let (payload, seq, grid) = {
                             let ecs = room.scene().read().await;
                             // Watermark = the seq the ECS reflects, read under
                             // the same lock so it can never trail the payload.
-                            (crate::scene::compute_derived(&channel, &ecs, &ctx), ecs.committed_seq())
+                            (crate::scene::compute_derived(&channel, &ecs, &ctx), ecs.committed_seq(), ecs.scene_grid_sizes())
                         };
                         match payload {
-                            Some(p) => {
+                            Some(mut p) => {
+                                if channel == "vision" {
+                                    enrich_vision_explored(&mut p, &grid, repo.as_ref(), world_id, ctx.user_id).await;
+                                }
                                 let f = ServerMsg::SceneDerived {
                                     request_id,
                                     channel: channel.clone(),
@@ -575,7 +635,7 @@ async fn egress_loop<S>(
                 // Re-evaluate derived scene subscriptions against the current ECS
                 // with this actor's ctx; push only when a channel's payload
                 // changed. The read borrow is dropped before awaiting the sink.
-                let (seq, snapshot) = {
+                let (seq, snapshot, grid) = {
                     let ecs = room.scene().read().await;
                     let mut out = Vec::new();
                     for (id, s) in scene_subs.iter() {
@@ -585,10 +645,13 @@ async fn egress_loop<S>(
                             crate::scene::compute_derived(&s.channel, &ecs, &ctx),
                         ));
                     }
-                    (ecs.committed_seq(), out)
+                    (ecs.committed_seq(), out, ecs.scene_grid_sizes())
                 };
                 for (id, channel, payload) in snapshot {
-                    if let Some(p) = payload {
+                    if let Some(mut p) = payload {
+                        if channel == "vision" {
+                            enrich_vision_explored(&mut p, &grid, repo.as_ref(), world_id, ctx.user_id).await;
+                        }
                         if let Some(sub) = scene_subs.get_mut(&id) {
                             if sub.fingerprint.as_ref() != Some(&p) {
                                 sub.fingerprint = Some(p.clone());
@@ -651,4 +714,84 @@ where
     .await
     .map_err(|_| ())?;
     Ok(to_seq)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The M9c dispatch-layer accumulation: a masked vision payload grows + persists the player's
+    /// explored fog and gains a scene-tagged `explored` set; a revisit re-emits without growing; a
+    /// GM `mode:"all"` payload is untouched (no fog → no explored).
+    #[tokio::test]
+    async fn enrich_accumulates_persists_and_emits_explored() {
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let world = Uuid::from_u128(1);
+        let scene = Uuid::from_u128(10);
+        let user = Uuid::from_u128(20);
+        let grid = std::collections::HashMap::from([(scene, 100.0)]);
+
+        // A masked payload with a visibility polygon covering a 3×3 cell block in `scene`.
+        let mut payload = json!({
+            "mode": "masked",
+            "polygons": [{ "scene": scene, "points": [0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0] }]
+        });
+        enrich_vision_explored(&mut payload, &grid, &repo, world, user).await;
+
+        // The payload gained a scene-tagged explored cell set (9 cells × 2 coords).
+        let explored = payload["explored"].as_array().unwrap();
+        assert_eq!(explored.len(), 1);
+        assert_eq!(explored[0]["scene"], json!(scene));
+        assert_eq!(explored[0]["cell"], json!(100.0));
+        assert_eq!(explored[0]["cells"].as_array().unwrap().len(), 9 * 2);
+
+        // It persisted: a fresh read returns the same 9 cells.
+        let stored = crate::scene::explored::ExploredSet::from_bytes(
+            &repo.get_explored(scene, user).await.unwrap().unwrap(),
+        );
+        assert_eq!(stored.len(), 9);
+
+        // A revisit of the same area re-emits the same explored without growing the stored set.
+        let mut again = json!({
+            "mode": "masked",
+            "polygons": [{ "scene": scene, "points": [0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0] }]
+        });
+        enrich_vision_explored(&mut again, &grid, &repo, world, user).await;
+        assert_eq!(
+            again["explored"][0]["cells"].as_array().unwrap().len(),
+            9 * 2
+        );
+        assert_eq!(
+            crate::scene::explored::ExploredSet::from_bytes(
+                &repo.get_explored(scene, user).await.unwrap().unwrap()
+            )
+            .len(),
+            9,
+            "revisiting adds no cells"
+        );
+
+        // A GM payload (no fog) is left untouched — no explored memory.
+        let mut gm = json!({ "mode": "all" });
+        enrich_vision_explored(&mut gm, &grid, &repo, world, user).await;
+        assert_eq!(gm, json!({ "mode": "all" }));
+    }
+
+    /// A token-less player (masked + empty polygons) accumulates nothing and emits empty explored
+    /// → full fog. No per-scene secret memory is fabricated.
+    #[tokio::test]
+    async fn enrich_token_less_player_emits_no_explored() {
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let grid = std::collections::HashMap::new();
+        let mut payload = json!({ "mode": "masked", "polygons": [] });
+        enrich_vision_explored(
+            &mut payload,
+            &grid,
+            &repo,
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+        )
+        .await;
+        assert_eq!(payload["explored"].as_array().unwrap().len(), 0);
+    }
 }
