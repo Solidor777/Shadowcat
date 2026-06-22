@@ -113,6 +113,15 @@ are observations awaiting triage, not committed work.
   into embedded children if embedded docs are meant to carry independent
   visibility.
 
+- Title: no smaller "caption" text-size token in the M7d token set. Summary: the
+  M8b-2 asset panel's tile filename (`Assets.svelte` `.name`) renders at inherited
+  body size — `_primitives.scss`/`_semantic.scss` define `--space-*`, `--radius-*`,
+  `--font-sans`, and `--text-*` *colors* but no smaller font-*size* token (the plan's
+  assumed `--text-sm` does not exist). Captions/secondary labels therefore can't be
+  visually de-emphasized by size via a token. Status: Needs triage — add a tier-2
+  `--text-sm` / `--text-caption` size token, then apply it to the asset tile name and
+  other secondary labels.
+
 - Title: no protection against removing/demoting the last GM. Summary:
   `remove_member`/`set_role` allow a world's only GM to be removed or demoted,
   after which only a server admin can manage that world. Availability footgun,

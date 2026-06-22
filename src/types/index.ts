@@ -30,3 +30,7 @@ export type { ContractDeclaration } from "./generated/ContractDeclaration";
 // HTTP API DTOs
 export type { ServerConfig } from "./generated/ServerConfig";
 export type { WorldEntry } from "./generated/WorldEntry";
+
+// Assets
+export type { Asset } from "./generated/Asset";
+export type { AssetOp } from "./generated/AssetOp";

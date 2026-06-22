@@ -24,4 +24,11 @@ export const en: Messages = {
   "settings.logout": "Log out",
   "settings.language": "Language",
   "stage.placeholder": "Scene rendering arrives in M8.",
+  "assets.title": "Assets",
+  "assets.upload": "Upload image",
+  "assets.replace": "Replace",
+  "assets.delete": "Delete",
+  "assets.empty": "No assets yet.",
+  "assets.selected": "Selected: {id}",
+  "assets.error": "Asset operation failed: {message}",
 };

@@ -16,6 +16,8 @@
     world: session.world!,
     role: session.role!,
     t,
+    assets: session.assets,
+    onAssetChanged: (cb) => session.onAssetChanged(cb),
     leaveWorld,
   });
 </script>

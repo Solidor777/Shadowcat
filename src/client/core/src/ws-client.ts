@@ -36,6 +36,8 @@ export interface WsClientHandlers {
   /** A command that failed to apply (e.g. schema drift). Surfaced, never thrown
    * into the socket loop. */
   onError?(error: unknown): void;
+  /** An out-of-band asset mutation notice (replace/delete); carries no seq. */
+  onAssetChanged?(msg: { uuid: string; op: "replaced" | "deleted" }): void;
 }
 
 export interface WsClientOptions {
@@ -228,6 +230,9 @@ export class WsClient {
         if (handler) this.safeEmit(() => handler(msg.hits));
         break;
       }
+      case "asset_changed":
+        this.safeEmit(() => this.opts.handlers.onAssetChanged?.({ uuid: msg.uuid, op: msg.op }));
+        break;
     }
   }
 
