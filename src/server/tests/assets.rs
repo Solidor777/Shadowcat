@@ -33,3 +33,62 @@ async fn upload_over_cap_is_rejected() {
     let res = h.upload("big.png", "image/png", PNG_1X1.to_vec()).await;
     assert_eq!(res.status(), 413);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_returns_bytes_then_304_on_revalidation() {
+    let h = spawn().await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap();
+    let url = format!("http://{}/api/assets/{}", h.addr, id);
+
+    let res = h.client.get(&url).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["content-type"], "image/png");
+    let etag = res.headers()["etag"].to_str().unwrap().to_string();
+    assert_eq!(res.bytes().await.unwrap().as_ref(), PNG_1X1);
+
+    // Conditional GET with the matching ETag → 304.
+    let res2 = h
+        .client
+        .get(&url)
+        .header("if-none-match", &etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res2.status(), 304);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_denies_non_member() {
+    use shadowcat::data::asset::Asset;
+    let h = spawn().await;
+    // A world the seeded user is NOT a member of (create_world has no owner).
+    let other = h.repo.create_world("B", 0).await.unwrap();
+    let id = uuid::Uuid::from_u128(0xB0B);
+    h.repo
+        .insert_asset(&Asset {
+            id,
+            world_id: other.id,
+            storage_key: format!("{}/{}", other.id, id),
+            original_name: "x.png".into(),
+            content_type: "image/png".into(),
+            byte_size: 1,
+            created_by: h.user,
+            created_at: 0,
+            version: 1,
+        })
+        .await
+        .unwrap();
+    let res = h
+        .client
+        .get(format!("http://{}/api/assets/{}", h.addr, id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+}

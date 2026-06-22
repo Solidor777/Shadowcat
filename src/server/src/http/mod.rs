@@ -111,6 +111,7 @@ pub async fn router(state: AppState) -> Router {
             "/api/worlds/{world}/assets",
             post(assets::upload).layer(DefaultBodyLimit::disable()),
         )
+        .route("/api/assets/{uuid}", get(assets::serve))
         .fallback(embed::static_handler)
         .layer(sessions)
         .layer(

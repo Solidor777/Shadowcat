@@ -60,7 +60,10 @@ use crate::auth::session::AuthUser;
 use crate::data::asset::Asset;
 use crate::http::error::AppError;
 use crate::http::{routes::require_gm, AppState};
+use axum::body::Body;
 use axum::extract::{Multipart, Path, State};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use tokio::io::AsyncWriteExt;
 
@@ -181,6 +184,42 @@ pub async fn upload(
         return Err(e.into());
     }
     Ok(Json(asset))
+}
+
+/// `GET /api/assets/{uuid}` — read-gated by world membership; ETag-revalidated.
+pub async fn serve(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<uuid::Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let asset = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
+    // Read-gate: any member of the asset's world may read. permission_context
+    // returns Forbidden for non-members.
+    state
+        .repo
+        .permission_context(asset.world_id, user.id, user.role)
+        .await?;
+
+    let etag = format!("\"{}-{}\"", id, asset.version);
+    if headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) == Some(etag.as_str()) {
+        return Ok((StatusCode::NOT_MODIFIED).into_response());
+    }
+
+    let path = state.config.assets_path().join(&asset.storage_key);
+    let bytes = tokio::fs::read(&path).await.map_err(|e| {
+        tracing::error!(?e, %id, "asset file missing for existing record");
+        AppError::Internal
+    })?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, asset.content_type),
+            (header::CONTENT_DISPOSITION, "inline".to_string()),
+            (header::ETAG, etag),
+        ],
+        Body::from(bytes),
+    )
+        .into_response())
 }
 
 #[cfg(test)]
