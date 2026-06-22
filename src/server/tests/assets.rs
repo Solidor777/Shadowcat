@@ -1,5 +1,7 @@
 mod common;
 use common::{spawn, PNG_1X1};
+use futures_util::StreamExt;
+use shadowcat::data::repository::Repository;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn upload_persists_record_and_file() {
@@ -91,4 +93,53 @@ async fn serve_denies_non_member() {
         .await
         .unwrap();
     assert_eq!(res.status(), 403);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replace_swaps_bytes_bumps_version_and_broadcasts() {
+    use common::drain_until_type;
+    let h = spawn().await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap().to_string();
+
+    let mut ws = h.connect().await;
+    let _ = ws.next().await; // Welcome
+
+    let seq_before = h.repo.get_world(h.world).await.unwrap().unwrap().seq;
+    // Replace with a GIF — content_type changes, version bumps to 2.
+    let res = h
+        .client
+        .post(format!("http://{}/api/assets/{}/replace", h.addr, id))
+        .multipart(
+            reqwest::multipart::Form::new().part(
+                "file",
+                reqwest::multipart::Part::bytes(b"GIF89a\x01\x00\x01\x00\x00\x00\x00".to_vec())
+                    .file_name("m.gif")
+                    .mime_str("image/gif")
+                    .unwrap(),
+            ),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let updated: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(updated["version"], 2);
+    assert_eq!(updated["content_type"], "image/gif");
+
+    // Out-of-band: no world seq was consumed.
+    assert_eq!(
+        h.repo.get_world(h.world).await.unwrap().unwrap().seq,
+        seq_before
+    );
+
+    // The room broadcast an asset_changed{replaced}.
+    let frame = drain_until_type(&mut ws, "asset_changed").await;
+    assert_eq!(frame["uuid"], id);
+    assert_eq!(frame["op"], "replaced");
 }
