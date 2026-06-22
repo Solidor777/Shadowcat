@@ -164,9 +164,13 @@ Per M8 §6.3 D-V2/D-V3:
     `as_user` parameter; the server **rejects it for non-GMs** and, for a GM, computes the
     `vision` payload as that single player (server-resolved target context) and returns only
     their masks. Chosen over the original "no extra server path / GM receives all masks"
-    variant for least-privilege (only the actively-viewed player's secret state is sent),
-    performance (O(1 player) on demand vs O(all players) always), and an explicit, auditable
-    wire contract. The `as_user` authorization gate is the security-critical surface.
+    variant primarily for **performance** (O(1 player) on demand vs raycasting + serializing
+    O(all players × explored) on every GM scene dispatch, even when not viewing-as-anyone) and an
+    explicit, auditable wire contract. Threat model (user-clarified): a GM viewing player data is
+    NOT a concern; security is (1) players don't see what they shouldn't and (2) no cross-user data
+    extraction — so the `as_user` gate exists to ensure **only a GM** may view as another user
+    (server-resolved target context, never client-supplied), keeping a player from ever requesting
+    another player's masks. Security is otherwise neutral between the two variants.
 
 ## 8. Decomposition
 
