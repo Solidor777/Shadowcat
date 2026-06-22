@@ -59,7 +59,16 @@ are observations awaiting triage, not committed work.
   whether the lagged egress genuinely stalls (a latency bug in the egress
   select/replay loop under heavy backpressure) or it is purely CI-runner
   saturation; reproduce with a constrained-CPU local run before changing
-  `conn.rs`.
+  `conn.rs`. Update (M8b-1 push, 2026-06-22): a *second* manifestation observed —
+  the authoritative-seq assertion at `ws_convergence.rs:408`
+  (`h.authoritative_seqs().last() == Some(300)`) failed `Some(277)` on
+  ubuntu-latest after the test's 30s drain-wait budget (300×100ms), with the whole
+  test taking 45s; i.e. even the *server-side* single-writer ingress→apply of 300
+  queued intents didn't finish in 30s under runner saturation. Passed on
+  windows+macos in the same run and locally (4.5s); cleared on job re-run.
+  Unrelated to M8b-1 (the failing assertion is on DB ingress throughput, which
+  M8b-1 does not touch). If it recurs, widen the drain budget (e.g. 600×100ms) or
+  gate the count on a constrained-CPU repro before touching the ingress path.
 
 - Title: `filter_command` redacts replayed history against the *current*
   PermissionSet. Summary: `src/server/src/data/permission.rs` loads each
