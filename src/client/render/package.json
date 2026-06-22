@@ -1,0 +1,15 @@
+{
+  "name": "@shadowcat/render",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@shadowcat/core": "workspace:*",
+    "pixi.js": "^8.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  }
+}

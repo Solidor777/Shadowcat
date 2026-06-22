@@ -25,14 +25,15 @@ export interface AppContext {
   leaveWorld: () => void;
 }
 
-const KEY = Symbol("shadowcat.appContext");
+/** Context key; exported only so test fixtures can seed an AppContext. */
+export const __APP_CONTEXT_KEY__ = Symbol("shadowcat.appContext");
 
 export function setAppContext(ctx: AppContext): void {
-  setContext(KEY, ctx);
+  setContext(__APP_CONTEXT_KEY__, ctx);
 }
 
 export function getAppContext(): AppContext {
-  const ctx = getContext<AppContext | undefined>(KEY);
+  const ctx = getContext<AppContext | undefined>(__APP_CONTEXT_KEY__);
   if (!ctx) {
     throw new Error("AppContext is not set; render within a provider that calls setAppContext");
   }

@@ -1,7 +1,7 @@
 import type { Module } from "@shadowcat/core";
 import Settings from "./panels/Settings.svelte";
 import Assets from "./panels/Assets.svelte";
-import StagePlaceholder from "./panels/StagePlaceholder.svelte";
+import Stage from "./panels/Stage.svelte";
 import TopBar from "./panels/TopBar.svelte";
 import StatusBar from "./panels/StatusBar.svelte";
 
@@ -23,7 +23,7 @@ export const coreUi: Module = {
   },
   register(ctx) {
     ctx.contributions.contribute({ id: "core-ui:topbar", contract: "shadowcat.surface:topbar", component: TopBar });
-    ctx.contributions.contribute({ id: "core-ui:stage", contract: "shadowcat.surface:stage", component: StagePlaceholder });
+    ctx.contributions.contribute({ id: "core-ui:stage", contract: "shadowcat.surface:stage", component: Stage });
     ctx.contributions.contribute({ id: "core-ui:statusbar", contract: "shadowcat.surface:statusbar", component: StatusBar });
     ctx.contributions.contribute({ id: "core-ui:settings", contract: "shadowcat.surface:sidebar", order: 0, component: Settings });
     ctx.contributions.contribute({ id: "core-ui:assets", contract: "shadowcat.surface:sidebar", order: 1, component: Assets });

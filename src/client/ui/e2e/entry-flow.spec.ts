@@ -14,6 +14,6 @@ test("login → world-select → enter table (served by the binary)", async ({ p
   await page.getByLabel("New world name").fill("Smoke World");
   await page.getByRole("button", { name: "Create world" }).click();
 
-  // Entering a world reaches the table shell (the stage placeholder).
-  await expect(page.getByText("Scene rendering arrives in M8.")).toBeVisible();
+  // Entering a world mounts the Pixi stage canvas.
+  await expect(page.getByTestId("stage-canvas")).toBeVisible();
 });

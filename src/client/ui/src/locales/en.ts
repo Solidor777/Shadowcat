@@ -23,7 +23,6 @@ export const en: Messages = {
   "settings.leaveWorld": "Leave world",
   "settings.logout": "Log out",
   "settings.language": "Language",
-  "stage.placeholder": "Scene rendering arrives in M8.",
   "assets.title": "Assets",
   "assets.upload": "Upload image",
   "assets.replace": "Replace",
