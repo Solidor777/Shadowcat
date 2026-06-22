@@ -28,6 +28,22 @@ async fn identity_channel_pushes_on_scene_change() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn vision_channel_works_over_the_wire_for_gm() {
+    // The `vision` channel (unlike the debug `identity` one) is a real release-build channel.
+    // The seeded user owns the world (GM) → mode "all" (no fog). Per-recipient masking + the
+    // empty-fog path are covered by the `compute_derived` unit tests; the egress recompute-on-
+    // change trigger is the same path the identity test exercises.
+    let h = spawn().await;
+    let mut ws = h.connect().await;
+    let _ = ws.next().await; // Welcome
+
+    ws.send(scene_subscribe(3, "vision")).await.unwrap();
+    let first = drain_until_type(&mut ws, "scene_derived").await;
+    assert_eq!(first["channel"], "vision");
+    assert_eq!(first["payload"]["mode"], "all");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unknown_channel_errors() {
     let h = spawn().await;
     let mut ws = h.connect().await;
