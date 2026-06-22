@@ -8,7 +8,7 @@ function tokenDoc(id: string, x: number, y: number, asset: string): WireDocument
     id, scope: { kind: "world", world_id: "w1" }, doc_type: "token", schema_version: 1,
     source: null, owner: null,
     permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
-    embedded: {}, system: { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset } },
+    embedded: {}, parent_id: null, system: { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset } },
     created_at: 0, updated_at: 0,
   };
 }

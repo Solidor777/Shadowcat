@@ -33,6 +33,7 @@ function createOp(id: string): WireOperation {
         capabilities: { by_role: {}, by_user: {} },
       },
       embedded: {},
+      parent_id: null,
       system: {},
       created_at: 0,
       updated_at: 0,

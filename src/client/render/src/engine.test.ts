@@ -30,7 +30,7 @@ test("a store change triggers a re-reconcile", () => {
       id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene",
       schema_version: 1, source: null, owner: null,
       permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
-      embedded: {}, system: { background: "u1" }, created_at: 0, updated_at: 0,
+      embedded: {}, parent_id: null, system: { background: "u1" }, created_at: 0, updated_at: 0,
     } }],
   });
   expect(backend.background).not.toBeNull();
@@ -47,7 +47,7 @@ test("reconcileNow re-resolves the background after an asset rev bump", () => {
       id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene",
       schema_version: 1, source: null, owner: null,
       permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
-      embedded: {}, system: { background: "u1" }, created_at: 0, updated_at: 0,
+      embedded: {}, parent_id: null, system: { background: "u1" }, created_at: 0, updated_at: 0,
     } }],
   });
   engine.start();
@@ -73,7 +73,7 @@ test("destroy unsubscribes (no reconcile after destroy) and destroys the backend
       id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene",
       schema_version: 1, source: null, owner: null,
       permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
-      embedded: {}, system: { background: "u1" }, created_at: 0, updated_at: 0,
+      embedded: {}, parent_id: null, system: { background: "u1" }, created_at: 0, updated_at: 0,
     } }],
   });
   expect(backend.background).toBe(before); // unchanged: listener was removed
@@ -112,7 +112,7 @@ test("subscribeScene: a frame above the watermark defers until the store advance
     ops: [{ op: "create", doc: {
       id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1,
       source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
-      embedded: {}, system: {}, created_at: 0, updated_at: 0,
+      embedded: {}, parent_id: null, system: {}, created_at: 0, updated_at: 0,
     } }],
   });
   expect(backend.visibility).toEqual({ visible: [] });
@@ -147,7 +147,7 @@ test("a lower-seq derived frame never supersedes a higher-seq pending one (lates
     ops: [{ op: "create" as const, doc: {
       id: `d${seq}`, scope: { kind: "world" as const, world_id: "w1" }, doc_type: "scene", schema_version: 1,
       source: null, owner: null, permissions: { default: "observer" as const, users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
-      embedded: {}, system: {}, created_at: 0, updated_at: 0,
+      embedded: {}, parent_id: null, system: {}, created_at: 0, updated_at: 0,
     } }],
   });
   store.applyCommand(create(3)); // appliedSeq 3 < pending 5 → no flush
@@ -182,7 +182,7 @@ test("start renders existing token docs and re-reconciles on store change", () =
     ops: [{ op: "create", doc: {
       id: "t1", scope: { kind: "world", world_id: "w1" }, doc_type: "token", schema_version: 1,
       source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
-      embedded: {}, system: { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "i1" } }, created_at: 0, updated_at: 0,
+      embedded: {}, parent_id: null, system: { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "i1" } }, created_at: 0, updated_at: 0,
     } }],
   });
   engine.start();
@@ -199,7 +199,7 @@ test("reconcileNow re-resolves token images (AssetChanged path)", () => {
     ops: [{ op: "create", doc: {
       id: "t1", scope: { kind: "world", world_id: "w1" }, doc_type: "token", schema_version: 1,
       source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
-      embedded: {}, system: { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "i1" } }, created_at: 0, updated_at: 0,
+      embedded: {}, parent_id: null, system: { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "i1" } }, created_at: 0, updated_at: 0,
     } }],
   });
   engine.start();
