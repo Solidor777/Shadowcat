@@ -26,9 +26,11 @@ export interface CameraTransform {
   scale: number;
 }
 
-/** Visibility for the mask slot (D-V1 polygons, scene coords). Empty `visible`
- * ⇒ identity (everything visible → transparent overlay). `explored` is M9 (D-V2). */
+/** Visibility for the mask slot (D-V1 polygons, scene coords). `mode:"all"` = no fog
+ * (GM / no occlusion). `mode:"masked"` = fog covers everything OUTSIDE `visible`; an empty
+ * `visible` therefore means full fog (see nothing), NOT "see everything". `explored` is M9c. */
 export interface VisibilityInput {
+  mode: "all" | "masked";
   visible: Polygon[];
   explored?: Polygon[];
 }

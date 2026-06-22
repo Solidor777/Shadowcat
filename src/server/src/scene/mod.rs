@@ -2,6 +2,8 @@
 //! never authoritative. Holds one hecs entity per scene-entity document so
 //! engine-owned systems (M9 vision, M10 pathfinding) can query spatial state.
 
+pub mod vision;
+
 use std::collections::HashMap;
 
 use uuid::Uuid;
@@ -22,6 +24,10 @@ pub fn is_scene_entity(doc: &Document) -> bool {
 
 /// A resolved token move: `(scene id, committed start, post-image end)`.
 pub type TokenMove = (Uuid, (f64, f64), (f64, f64));
+
+/// Margin (scene units, ~one default grid cell) the vision bound box extends past the walls
+/// so rays always terminate on the box rather than escaping to infinity.
+const VISION_BOUND_MARGIN: f64 = 100.0;
 
 /// The per-world derived world. Writes are serialized by the caller
 /// (`Room::publish` under `publish_guard`); reads (derived recompute) take a
@@ -146,6 +152,67 @@ impl SceneEcs {
         Some((scene, (cx, cy), (nx, ny)))
     }
 
+    /// Per-player visibility polygons (M9b), each tagged with the scene it belongs to: one
+    /// star-shaped polygon per token the user owns, computed against that token's scene's
+    /// `blocksSight` walls. The server raycasts the FULL wall set (so a `gm_only` wall the player
+    /// never receives still occludes); the player only ever gets their own polygons (#4). The
+    /// scene tag lets the client cut fog holes only for the scene it is rendering — a token in
+    /// scene B must not punch a hole into scene A's fog (scene coordinates are scene-local).
+    /// Empty when the player controls no tokens.
+    pub fn player_vision_polygons(&self, user_id: Uuid) -> Vec<(Uuid, Vec<vision::P>)> {
+        // Collect owned-token viewpoints first (drops the query borrow before the wall queries).
+        let mut viewpoints: Vec<(Uuid, vision::P)> = Vec::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type != "token" || e.doc.owner != Some(user_id) {
+                continue;
+            }
+            if let (Some(x), Some(y), Some(scene)) = (
+                sys_f64(&e.doc, "/x"),
+                sys_f64(&e.doc, "/y"),
+                e.doc.parent_id,
+            ) {
+                viewpoints.push((scene, (x, y)));
+            }
+        }
+        let mut out = Vec::with_capacity(viewpoints.len());
+        for (scene, vp) in viewpoints {
+            let walls = self.sight_walls(scene);
+            let bound = vision::bound_for(vp, &walls, VISION_BOUND_MARGIN);
+            out.push((scene, vision::visibility_polygon(vp, &walls, bound)));
+        }
+        out
+    }
+
+    /// The `blocksSight` wall segments of `scene`.
+    fn sight_walls(&self, scene: Uuid) -> Vec<vision::Seg> {
+        let mut out = Vec::new();
+        for w in self.world.query::<&SceneEntity>().iter() {
+            if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
+                continue;
+            }
+            if w.doc
+                .system
+                .pointer("/blocksSight")
+                .and_then(|v| v.as_bool())
+                != Some(true)
+            {
+                continue;
+            }
+            if let (Some(x1), Some(y1), Some(x2), Some(y2)) = (
+                sys_f64(&w.doc, "/seg/x1"),
+                sys_f64(&w.doc, "/seg/y1"),
+                sys_f64(&w.doc, "/seg/x2"),
+                sys_f64(&w.doc, "/seg/y2"),
+            ) {
+                out.push(vision::Seg {
+                    a: (x1, y1),
+                    b: (x2, y2),
+                });
+            }
+        }
+        out
+    }
+
     /// Engine-owned movement collision (M9a, the second ARCHITECTURE #6 geometric
     /// exception). True if the move segment `a0→a1` crosses any `blocksMove` wall in `scene`.
     /// A no-op move (`a0 == a1`) never blocks.
@@ -226,18 +293,35 @@ impl Default for SceneEcs {
 /// recipient. Returns `None` for unknown channels (→ SceneError). `ctx` is
 /// accepted so M9 vision can derive per recipient; the identity payload is
 /// non-sensitive and global.
-// `ecs` is read only by the debug-gated channel arm; it is genuinely unused in
-// release until M9's vision channel consumes it.
-#[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub fn compute_derived(
     channel: &str,
     ecs: &SceneEcs,
-    _ctx: &PermissionContext,
+    ctx: &PermissionContext,
 ) -> Option<serde_json::Value> {
     match channel {
-        // Seam proof only; replaced when M9 vision lands. Absent in release.
+        // Debug seam proof (non-sensitive, global); absent in release.
         #[cfg(debug_assertions)]
         "identity" => Some(serde_json::json!({ "entity_count": ecs.entity_count() })),
+        // Per-player vision (M9b): the GM sees all; a player gets ONLY their own visibility
+        // polygons (#4 per-recipient). A token-less player gets empty polygons → full fog (the
+        // client masks everything outside `polygons`, so empty = see nothing, never see-all).
+        // Each polygon carries its `scene` so the client cuts fog holes only for the scene it
+        // renders — a token in another scene must not punch a hole into the active scene's fog.
+        "vision" => {
+            if ctx.world_role == crate::data::document::WorldRole::Gm {
+                Some(serde_json::json!({ "mode": "all" }))
+            } else {
+                let polygons: Vec<serde_json::Value> = ecs
+                    .player_vision_polygons(ctx.user_id)
+                    .into_iter()
+                    .map(|(scene, poly)| {
+                        let points: Vec<f64> = poly.into_iter().flat_map(|(x, y)| [x, y]).collect();
+                        serde_json::json!({ "scene": scene, "points": points })
+                    })
+                    .collect();
+                Some(serde_json::json!({ "mode": "masked", "polygons": polygons }))
+            }
+        }
         _ => None,
     }
 }
@@ -430,6 +514,55 @@ mod tests {
         assert_eq!(noop.1, noop.2);
         // A non-token id resolves to nothing.
         assert!(ecs.token_move(Uuid::from_u128(99), &[]).is_none());
+    }
+
+    #[test]
+    fn vision_channel_is_per_recipient() {
+        use crate::data::document::WorldRole;
+        let player = Uuid::from_u128(7);
+        let mut token = entity_doc(11, 10, "token", json!({ "x": 0, "y": 0 }));
+        token.owner = Some(player);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                token,
+                entity_doc(
+                    12,
+                    10,
+                    "wall",
+                    json!({ "seg": {"x1":10,"y1":-5,"x2":10,"y2":5}, "blocksSight": true }),
+                ),
+            ],
+            0,
+        );
+        let gm = PermissionContext {
+            user_id: Uuid::from_u128(1),
+            world_role: WorldRole::Gm,
+        };
+        let pl = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let other = PermissionContext {
+            user_id: Uuid::from_u128(9),
+            world_role: WorldRole::Player,
+        };
+
+        // GM sees all (no fog).
+        assert_eq!(compute_derived("vision", &ecs, &gm).unwrap()["mode"], "all");
+        // The token owner gets one non-empty visibility polygon, tagged with its scene so the
+        // client cuts holes only for the scene it renders (cross-scene leak guard).
+        let pv = compute_derived("vision", &ecs, &pl).unwrap();
+        assert_eq!(pv["mode"], "masked");
+        assert_eq!(pv["polygons"].as_array().unwrap().len(), 1);
+        assert_eq!(pv["polygons"][0]["scene"], json!(Uuid::from_u128(10)));
+        assert!(!pv["polygons"][0]["points"].as_array().unwrap().is_empty());
+        // A player who controls no token gets empty polygons → full fog (never see-all).
+        let ov = compute_derived("vision", &ecs, &other).unwrap();
+        assert_eq!(ov["mode"], "masked");
+        assert!(ov["polygons"].as_array().unwrap().is_empty());
+        // Unknown channel → None.
+        assert!(compute_derived("nope", &ecs, &gm).is_none());
     }
 
     #[test]

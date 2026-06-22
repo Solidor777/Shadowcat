@@ -10,6 +10,9 @@ export class PixiBackend implements DisplayBackend {
   private readonly layers = new Map<string, Container>();
   private readonly grid = new Graphics();
   private readonly maskOverlay = new Graphics();
+  /** Visible-region holes; used as an inverse mask on the fog so the fog shows everywhere
+   * EXCEPT inside these polygons (M9b two-state fog). */
+  private readonly fogHoles = new Graphics();
   private readonly toolOverlay = new Graphics();
   private readonly measureGraphics = new Graphics();
   private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
@@ -35,7 +38,10 @@ export class PixiBackend implements DisplayBackend {
       this.layers.set(id, c);
       this.world.addChild(c);
       if (id === "grid") c.addChild(this.grid);
-      if (id === "mask") c.addChild(this.maskOverlay);
+      if (id === "mask") {
+        c.addChild(this.maskOverlay);
+        c.addChild(this.fogHoles); // the inverse-mask shape (not rendered directly)
+      }
       if (id === "overlays") {
         c.addChild(this.toolOverlay);
         c.addChild(this.measureGraphics);
@@ -88,13 +94,22 @@ export class PixiBackend implements DisplayBackend {
   }
 
   setVisibility(input: VisibilityInput): void {
-    // M8 identity: empty `visible` ⇒ full visibility ⇒ transparent overlay (clear).
-    // M9 draws fog occluding everything outside `visible` (+ explored), via an
-    // engine-owned shader + a viewport render target plugged into this same slot.
     this.maskOverlay.clear();
-    if (input.visible.length > 0) {
-      // (M9) fog composition over the mask slot.
+    this.fogHoles.clear();
+    if (input.mode === "all") {
+      this.maskOverlay.mask = null; // no fog (GM / no occlusion)
+      return;
     }
+    // Two-state fog: an opaque sheet over a large world region, with the `visible` polygons
+    // cut out via an inverse mask. Empty `visible` → no holes → full fog (see nothing).
+    // The fog lives in the camera-transformed `mask` layer, so it is scene-locked (the holes
+    // sit at scene positions and pan/zoom with the map). M9c adds the dimmed `explored` state.
+    const R = 1_000_000; // world units; the viewport shows only a portion, so this covers it
+    this.maskOverlay.rect(-R, -R, 2 * R, 2 * R).fill({ color: 0x000000, alpha: 0.72 });
+    for (const poly of input.visible) {
+      if (poly.points.length >= 6) this.fogHoles.poly(poly.points).fill({ color: 0xffffff });
+    }
+    this.maskOverlay.setMask({ mask: this.fogHoles, inverse: true });
   }
 
   setToken(id: string, spec: TokenNodeSpec): void {

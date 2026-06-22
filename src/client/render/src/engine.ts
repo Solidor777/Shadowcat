@@ -35,8 +35,9 @@ export interface RenderEngineOpts {
   gridColor?: number;
   /** Injected SceneDerived subscribe (from WorldSession via AppContext). */
   subscribeScene?: SubscribeScene;
-  /** Called when a derived frame is applied (host observability hook). */
-  onDerivedApplied?: () => void;
+  /** Called when a derived frame is applied (host observability hook); carries the applied
+   * visibility so the host can surface the fog mode. */
+  onDerivedApplied?: (input: VisibilityInput) => void;
 }
 
 /** Orchestrates the render model over a DisplayBackend: layers, camera, grid, and
@@ -111,8 +112,8 @@ export class RenderEngine implements SceneToolHost {
       }
     });
     if (this.opts.subscribeScene) {
-      // M8a's debug channel; M9 swaps a real vision channel (polygon payload).
-      this.sceneSub = this.opts.subscribeScene("identity", (f) => this.onSceneFrame(f));
+      // The real M9 vision channel: per-recipient visibility polygons (or mode:"all" for the GM).
+      this.sceneSub = this.opts.subscribeScene("vision", (f) => this.onSceneFrame(f));
     }
   }
 
@@ -122,7 +123,7 @@ export class RenderEngine implements SceneToolHost {
     // mask to an older derived state (defends the M9 consumer against reordering).
     if (frame.computedAtSeq <= this.lastAppliedSeq) return;
     if (this.pendingDerived && frame.computedAtSeq <= this.pendingDerived.seq) return;
-    const input = this.toVisibility(); // M9: parse frame.payload polygons
+    const input = this.toVisibility(frame.payload);
     if (this.opts.store.appliedSeq >= frame.computedAtSeq) {
       this.applyDerived(input, frame.computedAtSeq);
     } else {
@@ -141,13 +142,35 @@ export class RenderEngine implements SceneToolHost {
   private applyDerived(input: VisibilityInput, seq: number): void {
     this.lastAppliedSeq = seq;
     this.compositor.setVisibility(input);
-    this.opts.onDerivedApplied?.();
+    this.opts.onDerivedApplied?.(input);
   }
 
-  /** M8 identity: full visibility regardless of payload. M9 will take the frame
-   * payload and parse polygon geometry into `visible`. */
-  private toVisibility(): VisibilityInput {
-    return { visible: [] };
+  /** Parse a `vision` payload into a VisibilityInput. Fail CLOSED: fog is the only client-side
+   * secrecy gate (the document layer still delivers non-`gm_only` token/wall positions to
+   * players), so ONLY an explicit `{mode:"all"}` clears it and ONLY an explicit `{mode:"masked"}`
+   * reveals the supplied polygons. Any other payload — missing, garbled, or unknown-mode
+   * (protocol skew) — yields full fog (`{mode:"masked", visible:[]}`), revealing nothing.
+   * `{mode:"masked", polygons:[{scene,points:[x,y,…]},…]}` → fog outside those polygons; empty ⇒
+   * full fog. Each polygon is filtered to the active scene so a polygon for a token in another
+   * scene cannot punch a hole into this scene's fog (scene coordinates are scene-local and reused
+   * across scenes). */
+  private toVisibility(payload: unknown): VisibilityInput {
+    const p = payload as
+      | { mode?: string; polygons?: { scene?: string; points?: number[] }[] }
+      | null
+      | undefined;
+    if (p?.mode === "all") return { mode: "all", visible: [] };
+    // Garbled/missing/unknown mode → full fog. Only a well-formed `masked` payload reveals.
+    if (p?.mode !== "masked") return { mode: "masked", visible: [] };
+    const activeScene = this.opts.store.query("scene")[0]?.id;
+    const polygons = Array.isArray(p.polygons) ? p.polygons : [];
+    const visible = polygons
+      .filter(
+        (g): g is { scene?: string; points: number[] } =>
+          !!g && g.scene === activeScene && Array.isArray(g.points) && g.points.length >= 6,
+      )
+      .map((g) => ({ points: g.points }));
+    return { mode: "masked", visible };
   }
 
   /** Module-facing shader-filter seam (0.x). Forwards to the backend; no engine

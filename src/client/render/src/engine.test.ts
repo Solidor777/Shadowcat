@@ -111,9 +111,67 @@ test("subscribeScene: an identity frame at/under the watermark applies immediate
     onDerivedApplied: () => { applied++; },
   });
   engine.start();
-  onUpdate({ payload: { entity_count: 0 }, computedAtSeq: 0 }); // appliedSeq 0 >= 0
-  expect(backend.visibility).toEqual({ visible: [] }); // identity
+  onUpdate({ payload: { mode: "all" }, computedAtSeq: 0 }); // appliedSeq 0 >= 0
+  expect(backend.visibility).toEqual({ mode: "all", visible: [] }); // GM no-fog
   expect(applied).toBe(1);
+});
+
+function sceneCmd(seq: number, id: string): { seq: number; world_id: string; author: string; ts: number; ops: { op: "create"; doc: import("@shadowcat/core").WireDocument }[] } {
+  return {
+    seq, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: {
+      id, scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1,
+      source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      embedded: {}, parent_id: null, system: {}, created_at: 0, updated_at: 0,
+    } }],
+  };
+}
+
+test("a masked vision frame parses the active scene's polygons into the VisibilityInput", () => {
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }] });
+});
+
+test("a polygon for another scene is filtered out (no cross-scene fog hole)", () => {
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1")); // active scene is s1
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  // A polygon tagged for scene s2 (a token the player owns elsewhere) must not cut s1's fog.
+  onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s2", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [] }); // full fog, no hole
+});
+
+test("a garbled/unknown-mode vision payload fails CLOSED to full fog (not see-all)", () => {
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  // Only an explicit mode:"all" may clear fog; an unknown/garbled mode must mask everything.
+  onUpdate({ payload: { mode: "wat", polygons: [{ scene: "s1", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [] });
+  // A null payload likewise → full fog, never see-all.
+  onUpdate({ payload: null, computedAtSeq: 2 });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [] });
 });
 
 test("subscribeScene: a frame above the watermark defers until the store advances", () => {
@@ -125,7 +183,7 @@ test("subscribeScene: a frame above the watermark defers until the store advance
     subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
   });
   engine.start();
-  onUpdate({ payload: {}, computedAtSeq: 5 }); // appliedSeq 0 < 5 → deferred
+  onUpdate({ payload: { mode: "all" }, computedAtSeq: 5 }); // appliedSeq 0 < 5 → deferred
   expect(backend.visibility).toBeNull();
   store.applyCommand({
     seq: 5, world_id: "w1", author: "a", ts: 0,
@@ -135,7 +193,7 @@ test("subscribeScene: a frame above the watermark defers until the store advance
       embedded: {}, parent_id: null, system: {}, created_at: 0, updated_at: 0,
     } }],
   });
-  expect(backend.visibility).toEqual({ visible: [] });
+  expect(backend.visibility).toEqual({ mode: "all", visible: [] });
 });
 
 test("destroy unsubscribes the scene subscription", () => {
@@ -160,8 +218,8 @@ test("a lower-seq derived frame never supersedes a higher-seq pending one (lates
     subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
   });
   engine.start();
-  onUpdate({ payload: {}, computedAtSeq: 5 }); // defer (appliedSeq 0 < 5)
-  onUpdate({ payload: {}, computedAtSeq: 3 }); // lower seq → ignored, does not replace seq 5
+  onUpdate({ payload: { mode: "all" }, computedAtSeq: 5 }); // defer (appliedSeq 0 < 5)
+  onUpdate({ payload: { mode: "all" }, computedAtSeq: 3 }); // lower seq → ignored, does not replace seq 5
   const create = (seq: number) => ({
     seq, world_id: "w1", author: "a", ts: 0,
     ops: [{ op: "create" as const, doc: {
@@ -173,7 +231,7 @@ test("a lower-seq derived frame never supersedes a higher-seq pending one (lates
   store.applyCommand(create(3)); // appliedSeq 3 < pending 5 → no flush
   expect(backend.visibility).toBeNull();
   store.applyCommand(create(5)); // appliedSeq 5 >= 5 → the seq-5 frame flushes
-  expect(backend.visibility).toEqual({ visible: [] });
+  expect(backend.visibility).toEqual({ mode: "all", visible: [] });
 });
 
 test("a frame at/below the last-applied seq is ignored (no regression)", () => {
