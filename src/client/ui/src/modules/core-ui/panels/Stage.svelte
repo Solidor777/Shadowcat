@@ -16,7 +16,7 @@
     createBackend?: (canvas: HTMLCanvasElement) => Promise<DisplayBackend>;
   } = $props();
 
-  const { documents, assets, onAssetChanged, subscribeScene, scene } = getAppContext();
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing } = getAppContext();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -43,6 +43,7 @@
     let observer: ResizeObserver | null = null;
     let offAsset: (() => void) | null = null;
     let offGrid: (() => void) | null = null;
+    let offPing: (() => void) | null = null;
     let detachScene: (() => void) | null = null;
     // Aborts all pointer/wheel listeners on teardown (and on any $effect re-run),
     // so a stale listener set can never call into a destroyed engine.
@@ -86,6 +87,11 @@
       };
       onDocs();
       offGrid = documents.subscribe(onDocs);
+      // Relayed pings (incl. our own echo) spawn a transient ring at scene coords.
+      offPing = onPing((m) => {
+        e.addPing(m.x, m.y);
+        host.dataset.lastPing = `${m.x},${m.y}`;
+      });
       // AssetChanged mutates the AssetResolver (cache-bust / placeholder) without a
       // document mutation, so the store-subscription reconcile never fires for it.
       // Re-reconcile explicitly so a replaced/deleted background re-resolves.
@@ -106,6 +112,7 @@
       disposed = true;
       detachScene?.();
       offGrid?.();
+      offPing?.();
       offAsset?.();
       controller.abort();
       observer?.disconnect();

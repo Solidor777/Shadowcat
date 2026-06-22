@@ -138,6 +138,28 @@ test("auto-creates a default scene on GM entry, exactly once across reconnect We
   expect(sceneCreates(sent)).toHaveLength(1);
 });
 
+test("sendPing transmits a scene_ping for the active scene; onPing fires on an inbound ping", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, actor_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: coreUiStub, logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame); // GM → auto-creates a scene (the ping's parent)
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+
+  session.sendPing(12, 34);
+  const ping = sent.find((m) => m.type === "scene_ping");
+  expect(ping).toBeTruthy();
+  expect(ping!.x).toBe(12);
+  expect(typeof ping!.scene).toBe("string");
+
+  const got: Array<{ user: string }> = [];
+  session.onPing((m) => got.push(m));
+  push({ type: "scene_ping", scene: "s1", x: 1, y: 2, user: "u9" });
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0].user).toBe("u9");
+});
+
 test("does not auto-create a scene for a non-GM actor", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);

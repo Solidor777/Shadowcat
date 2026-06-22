@@ -50,6 +50,10 @@ pub enum ClientMsg {
     SceneSubscribe { request_id: Uuid, channel: String },
     /// Cancel a derived subscription by request id.
     SceneUnsubscribe { request_id: Uuid },
+    /// A transient location ping at scene coords. Relayed out-of-band to the world
+    /// room with the sender stamped; never sequenced, logged, or a document (#3).
+    /// Coordinates are not validated (#6); rate-limited per connection.
+    ScenePing { scene: Uuid, x: f64, y: f64 },
 }
 
 /// Which tier served a resync.
@@ -170,6 +174,14 @@ pub enum ServerMsg {
     /// Out-of-band asset mutation notice. Carries no seq and is never buffered
     /// or resynced; holders re-resolve against the record's `version`.
     AssetChanged { uuid: Uuid, op: AssetOp },
+    /// A relayed location ping: the sender's transient marker at scene coords.
+    /// Out-of-band (no seq, never buffered/resynced), mirroring `AssetChanged`.
+    ScenePing {
+        scene: Uuid,
+        x: f64,
+        y: f64,
+        user: Uuid,
+    },
 }
 
 impl ServerMsg {
@@ -206,6 +218,31 @@ mod protocol_tests {
         let s = serde_json::to_string(&m).unwrap();
         assert!(s.contains("\"type\":\"asset_changed\""), "got {s}");
         assert!(s.contains("\"op\":\"replaced\""), "got {s}");
+    }
+
+    #[test]
+    fn scene_ping_round_trips_and_is_out_of_band() {
+        let c = ClientMsg::ScenePing {
+            scene: Uuid::from_u128(1),
+            x: 10.0,
+            y: 20.0,
+        };
+        let s = serde_json::to_string(&c).unwrap();
+        assert!(s.contains("\"type\":\"scene_ping\""), "got {s}");
+        let _back: ClientMsg = serde_json::from_str(&s).unwrap();
+
+        let sv = ServerMsg::ScenePing {
+            scene: Uuid::from_u128(1),
+            x: 10.0,
+            y: 20.0,
+            user: Uuid::from_u128(2),
+        };
+        // Out-of-band: never buffered/resynced.
+        assert_eq!(sv.event_seq(), None);
+        let j = serde_json::to_value(&sv).unwrap();
+        assert_eq!(j["type"], "scene_ping");
+        assert_eq!(j["x"], 10.0);
+        assert!(j.get("user").is_some());
     }
 
     #[test]

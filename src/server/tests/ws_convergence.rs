@@ -580,3 +580,47 @@ async fn gm_only_property_hidden_from_player() {
         "GM-only property must be stripped for the player"
     );
 }
+
+/// Drain frames until one of `type` arrives (skips welcome/resync/etc.).
+async fn recv_until(ws: &mut Ws, ty: &str) -> serde_json::Value {
+    loop {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended")
+            .expect("ws error");
+        if let Message::Text(t) = msg {
+            let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+            if v["type"] == ty {
+                return v;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn scene_ping_relays_out_of_band_to_world_members_with_sender_stamped() {
+    let h = spawn().await;
+    let cookie_b = h.add_member("b", WorldRole::Player).await;
+    let mut a = h.connect().await; // owner/GM
+    let mut b = h.connect_with(&cookie_b).await;
+    // Both must be joined (welcome received → subscribed) before the lossy broadcast.
+    recv_until(&mut a, "welcome").await;
+    recv_until(&mut b, "welcome").await;
+
+    a.send(Message::Text(
+        serde_json::json!({ "type": "scene_ping", "scene": h.world, "x": 12.0, "y": 34.0 })
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // The other member receives the relayed ping with the sender stamped.
+    let p = recv_until(&mut b, "scene_ping").await;
+    assert_eq!(p["x"], 12.0);
+    assert_eq!(p["y"], 34.0);
+    assert!(p["user"].is_string());
+
+    // It is out-of-band: it must not have created an authoritative event.
+    assert!(h.authoritative_seqs().await.is_empty());
+}

@@ -44,6 +44,7 @@ export class WorldSession {
    * it via AppContext. Stable across Stage remount (M8d §16). */
   readonly sceneInteraction = new SceneInteractionBridge();
   #assetListeners = new Set<(msg: { uuid: string; op: "replaced" | "deleted" }) => void>();
+  #pingListeners = new Set<(msg: { scene: string; x: number; y: number; user: string }) => void>();
   #sceneSubs = new Map<
     string,
     { channel: string; onUpdate: (f: SceneFrame) => void; handle: SceneSubscription | null; gen: number }
@@ -99,6 +100,20 @@ export class WorldSession {
   onAssetChanged(cb: (msg: { uuid: string; op: "replaced" | "deleted" }) => void): () => void {
     this.#assetListeners.add(cb);
     return () => this.#assetListeners.delete(cb);
+  }
+
+  /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe. */
+  onPing(cb: (msg: { scene: string; x: number; y: number; user: string }) => void): () => void {
+    this.#pingListeners.add(cb);
+    return () => this.#pingListeners.delete(cb);
+  }
+
+  /** Broadcast a transient location ping at scene coords on the active scene. No-op when
+   * disconnected or no scene exists; the server relays it back to all members (incl. us). */
+  sendPing(x: number, y: number): void {
+    const scene = this.#optimistic.query("scene")[0];
+    if (!scene) return;
+    this.#ws?.send({ type: "scene_ping", scene: scene.id, x, y });
   }
 
   /** Subscribe to a SceneDerived channel. Returns a synchronous handle; the
@@ -162,6 +177,9 @@ export class WorldSession {
           // Bump the resolver first so a notified panel re-resolves the new URL.
           this.assets.onAssetChanged(msg);
           for (const cb of this.#assetListeners) cb(msg);
+        },
+        onScenePing: (msg) => {
+          for (const cb of this.#pingListeners) cb(msg);
         },
       },
     });

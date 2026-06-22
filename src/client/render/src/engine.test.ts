@@ -230,6 +230,16 @@ test("reconcileNow re-resolves token images (AssetChanged path)", () => {
   expect(backend.tokens.get("t1")!.url).toBe(assets.url("i1"));
 });
 
+test("addPing renders an expanding ring driven by the ticker", () => {
+  const { backend, engine } = makeEngine();
+  engine.start();
+  engine.addPing(5, 5);
+  backend.tick!(100); // drive one frame
+  expect(backend.pings).toHaveLength(1);
+  expect(backend.pings[0]).toMatchObject({ x: 5, y: 5 });
+  expect(backend.pings[0].alpha).toBeLessThan(1); // fading
+});
+
 test("start registers the backend ticker", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
@@ -341,12 +351,29 @@ test("previewOverlay / clearOverlay forward to the backend", () => {
   expect(backend.overlay).toHaveLength(0);
 });
 
+test("gridDistance delegates to the grid; drawMeasure/clearMeasure forward", () => {
+  const { backend, engine } = makeEngine(); // square / 100
+  expect(engine.gridDistance({ x: 0, y: 0 }, { x: 250, y: 0 })).toBe(2);
+  engine.drawMeasure({ x: 0, y: 0 }, { x: 10, y: 0 }, "1");
+  expect(backend.measure).toEqual({ from: { x: 0, y: 0 }, to: { x: 10, y: 0 }, label: "1" });
+  engine.clearMeasure();
+  expect(backend.measure).toBeNull();
+});
+
 test("setActiveTool discards an in-progress preview overlay (mid-gesture tool swap)", () => {
   const { backend, engine } = makeEngine();
   engine.previewOverlay([{ points: [0, 0, 5, 5], closed: false, stroke: null, fill: null }]);
   expect(backend.overlay).toHaveLength(1);
   engine.setActiveTool(null);
   expect(backend.overlay).toHaveLength(0);
+});
+
+test("setActiveTool also clears a stranded measure overlay", () => {
+  const { backend, engine } = makeEngine();
+  engine.drawMeasure({ x: 0, y: 0 }, { x: 10, y: 0 }, "1");
+  expect(backend.measure).not.toBeNull();
+  engine.setActiveTool(null);
+  expect(backend.measure).toBeNull();
 });
 
 test("registerLayerFilter forwards to the backend and disposes", () => {

@@ -42,3 +42,17 @@ test("hex grid emits a non-empty line set over a viewport", () => {
   const lines = g.lines({ x: 0, y: 0, w: 400, h: 400 });
   expect(lines.length).toBeGreaterThan(0);
 });
+
+test("square distance is Chebyshev in whole cells", () => {
+  const g = new Grid({ kind: "square", size: 100 });
+  expect(g.distance({ x: 0, y: 0 }, { x: 250, y: 40 })).toBe(2); // cols 0→2, rows 0→0
+  expect(g.distance({ x: 0, y: 0 }, { x: 250, y: 250 })).toBe(2); // diagonal → max(2,2)
+  expect(g.distance({ x: 10, y: 10 }, { x: 10, y: 10 })).toBe(0);
+});
+
+test("hex distance is axial distance in whole cells", () => {
+  const g = new Grid({ kind: "hex", size: 10 });
+  const neighbor = { x: Math.sqrt(3) * 10, y: 0 }; // center of axial (1,0)
+  expect(g.distance({ x: 0, y: 0 }, neighbor)).toBe(1);
+  expect(g.distance({ x: 0, y: 0 }, { x: 0, y: 0 })).toBe(0);
+});

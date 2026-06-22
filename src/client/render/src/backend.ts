@@ -1,4 +1,4 @@
-import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
 
 /** The narrow GL abstraction the render model drives. The real implementation is
  * `pixi-backend.ts` (Playwright-covered); `MockBackend` covers it in unit tests.
@@ -32,6 +32,12 @@ export interface DisplayBackend {
   drawOverlay(shapes: Omit<ShapeNodeSpec, "layer">[]): void;
   /** Clear the ephemeral overlay. */
   clearOverlay(): void;
+  /** Draw the measurement overlay: a segment `from`→`to` + a centered distance label. */
+  drawMeasure(from: Point, to: Point, label: string): void;
+  /** Clear the measurement overlay. */
+  clearMeasure(): void;
+  /** Redraw the transient ping rings (expanding/fading outline circles). */
+  drawPings(rings: { x: number; y: number; radius: number; alpha: number }[]): void;
   /** Register the per-frame render ticker callback (drives tweens). */
   startTicker(cb: (dtMs: number) => void): void;
   /** Resize the renderer/viewport to CSS pixels (HiDPI handled by the backend). */

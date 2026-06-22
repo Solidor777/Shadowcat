@@ -27,6 +27,14 @@ test("MockBackend records shape upserts/removals and the ephemeral overlay", () 
   expect(b.overlay).toHaveLength(0);
 });
 
+test("MockBackend records the measurement overlay", () => {
+  const b = new MockBackend();
+  b.drawMeasure({ x: 0, y: 0 }, { x: 10, y: 0 }, "1");
+  expect(b.measure).toEqual({ from: { x: 0, y: 0 }, to: { x: 10, y: 0 }, label: "1" });
+  b.clearMeasure();
+  expect(b.measure).toBeNull();
+});
+
 test("MockBackend captures the ticker callback", () => {
   const b = new MockBackend();
   let dt = 0;

@@ -16,6 +16,7 @@ function makeController(): ToolController {
     documents: new DocumentStore(),
     assets: new AssetResolver(),
     world: "w1",
+    sendPing: () => {},
   });
 }
 

@@ -18,6 +18,8 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     subscribeScene: over.subscribeScene ?? (() => ({ unsubscribe() {} })),
     dispatchIntent: over.dispatchIntent ?? (() => {}),
     scene: over.scene ?? new SceneInteractionBridge(),
+    sendPing: over.sendPing ?? (() => {}),
+    onPing: over.onPing ?? (() => () => {}),
     leaveWorld: over.leaveWorld ?? (() => {}),
   };
   return new Map([[__APP_CONTEXT_KEY__, ctx]]);

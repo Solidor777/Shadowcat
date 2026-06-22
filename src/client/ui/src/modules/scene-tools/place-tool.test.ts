@@ -1,7 +1,7 @@
 import { test, expect } from "vitest";
 import { DocumentStore, AssetResolver, buildSceneDoc, type WireOperation } from "@shadowcat/core";
-import type { SceneToolHost } from "@shadowcat/render";
 import { SceneInteractionBridge } from "../../lib/sceneInteraction";
+import { fakeSceneHost } from "../../lib/__fixtures__/fakeSceneHost";
 import { ToolController, makePlaceTool, type ToolContext } from "./controller.svelte";
 
 const ev = {} as PointerEvent;
@@ -18,8 +18,7 @@ function docsWithScene(withScene: boolean): DocumentStore {
 /** A scene bridge whose snap shifts by +1 so the test proves snap is applied. */
 function snapBridge(): SceneInteractionBridge {
   const bridge = new SceneInteractionBridge();
-  const host: SceneToolHost = { setActiveTool: () => {}, snap: (p) => ({ x: p.x + 1, y: p.y + 1 }), setDraggingToken: () => {}, previewOverlay: () => {}, clearOverlay: () => {} };
-  bridge.attach(host);
+  bridge.attach(fakeSceneHost({ snap: (p) => ({ x: p.x + 1, y: p.y + 1 }) }));
   return bridge;
 }
 
@@ -31,6 +30,7 @@ function ctxWith(documents: DocumentStore): { ctx: ToolContext; sent: WireOperat
     documents,
     assets: new AssetResolver(),
     world: "w1",
+    sendPing: () => {},
   };
   return { ctx, sent };
 }

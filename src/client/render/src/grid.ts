@@ -31,6 +31,17 @@ export class Grid {
     return this.axialToPixel(q, r);
   }
 
+  /** Whole-cell distance between two scene points: square = Chebyshev (chessboard) of
+   * cell indices; hex = axial distance (`col`/`row` are axial q/r). */
+  distance(a: Point, b: Point): number {
+    const ca = this.cellOf(a);
+    const cb = this.cellOf(b);
+    const dCol = cb.col - ca.col;
+    const dRow = cb.row - ca.row;
+    if (this.spec.kind === "square") return Math.max(Math.abs(dCol), Math.abs(dRow));
+    return (Math.abs(dCol) + Math.abs(dRow) + Math.abs(dCol + dRow)) / 2;
+  }
+
   cellOf(p: Point): { col: number; row: number } {
     if (this.spec.kind === "square") {
       return {

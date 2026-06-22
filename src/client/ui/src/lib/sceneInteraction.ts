@@ -42,4 +42,20 @@ export class SceneInteractionBridge implements SceneInteraction {
   clearOverlay(): void {
     this.#host?.clearOverlay();
   }
+
+  gridDistance(a: Point, b: Point): number {
+    return this.#host ? this.#host.gridDistance(a, b) : 0;
+  }
+
+  drawMeasure(from: Point, to: Point, label: string): void {
+    this.#host?.drawMeasure(from, to, label);
+  }
+
+  clearMeasure(): void {
+    this.#host?.clearMeasure();
+  }
+
+  addPing(x: number, y: number): void {
+    this.#host?.addPing(x, y);
+  }
 }

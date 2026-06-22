@@ -1,5 +1,5 @@
 import type { DisplayBackend } from "./backend";
-import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
 
 /** A recording DisplayBackend for unit tests — never touches Pixi/GL. */
 export class MockBackend implements DisplayBackend {
@@ -14,6 +14,8 @@ export class MockBackend implements DisplayBackend {
   tokens = new Map<string, TokenNodeSpec>();
   shapes = new Map<string, ShapeNodeSpec>();
   overlay: Omit<ShapeNodeSpec, "layer">[] = [];
+  measure: { from: Point; to: Point; label: string } | null = null;
+  pings: { x: number; y: number; radius: number; alpha: number }[] = [];
   tick: ((dtMs: number) => void) | undefined;
   destroyed = false;
 
@@ -58,6 +60,15 @@ export class MockBackend implements DisplayBackend {
   }
   clearOverlay(): void {
     this.overlay = [];
+  }
+  drawMeasure(from: Point, to: Point, label: string): void {
+    this.measure = { from, to, label };
+  }
+  clearMeasure(): void {
+    this.measure = null;
+  }
+  drawPings(rings: { x: number; y: number; radius: number; alpha: number }[]): void {
+    this.pings = rings;
   }
   startTicker(cb: (dtMs: number) => void): void {
     this.tick = cb;

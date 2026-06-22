@@ -2,6 +2,7 @@ import { render, screen, fireEvent } from "@testing-library/svelte";
 import { test, expect } from "vitest";
 import type { SceneTool } from "@shadowcat/render";
 import { SceneInteractionBridge } from "../../lib/sceneInteraction";
+import { fakeSceneHost } from "../../lib/__fixtures__/fakeSceneHost";
 import { setAppContextForTest } from "../../lib/__fixtures__/appContextTest";
 import ToolRail from "./ToolRail.svelte";
 
@@ -9,7 +10,7 @@ import ToolRail from "./ToolRail.svelte";
 function captureScene(): { scene: SceneInteractionBridge; tools: (SceneTool | null)[] } {
   const tools: (SceneTool | null)[] = [];
   const scene = new SceneInteractionBridge();
-  scene.attach({ setActiveTool: (t) => tools.push(t), snap: (p) => p, setDraggingToken: () => {}, previewOverlay: () => {}, clearOverlay: () => {} });
+  scene.attach(fakeSceneHost({ setActiveTool: (t) => tools.push(t) }));
   return { scene, tools };
 }
 
@@ -46,6 +47,16 @@ test("the draw and template tools activate and reveal their controls", async () 
   await fireEvent.click(screen.getByTestId("tool-template"));
   expect(screen.getByTestId("template-mode")).toBeTruthy();
   expect(screen.queryByTestId("draw-mode")).toBeNull(); // switched away from draw
+});
+
+test("the measure and ping tools are available and activate", async () => {
+  const { scene, tools } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-measure"));
+  expect(tools.at(-1)).not.toBeNull();
+  await fireEvent.click(screen.getByTestId("tool-ping"));
+  expect(tools.at(-1)).not.toBeNull();
+  expect(screen.getByTestId("tool-ping").getAttribute("aria-pressed")).toBe("true");
 });
 
 test("a non-GM sees no tool buttons", () => {

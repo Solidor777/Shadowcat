@@ -35,6 +35,10 @@ export interface AppContext {
   /** Canvas interaction seam: set the active tool, snap to grid, mark a dragged
    * token. No-ops until the Stage attaches the render engine. */
   scene: SceneInteraction;
+  /** Broadcast a transient location ping at scene coords on the active scene. */
+  sendPing: (x: number, y: number) => void;
+  /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe. */
+  onPing: (cb: (msg: { scene: string; x: number; y: number; user: string }) => void) => () => void;
   /** Leave the current world and return to world-select. */
   leaveWorld: () => void;
 }

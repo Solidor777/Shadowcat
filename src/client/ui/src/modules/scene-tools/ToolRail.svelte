@@ -12,6 +12,7 @@
     documents: ctx.documents,
     assets: ctx.assets,
     world: ctx.world,
+    sendPing: ctx.sendPing,
   });
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).
@@ -22,6 +23,8 @@
     { id: "place", label: t("tools.place") },
     { id: "draw", label: t("tools.draw") },
     { id: "template", label: t("tools.template") },
+    { id: "measure", label: t("tools.measure") },
+    { id: "ping", label: t("tools.ping") },
   ];
   const drawModes: DrawMode[] = ["freehand", "rect", "ellipse", "line"];
   const templateModes: TemplateMode[] = ["circle", "cone", "rect", "line"];

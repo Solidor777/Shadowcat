@@ -221,6 +221,9 @@ async fn handle_socket(
     ));
 
     // Ingress: parse client frames, forward intents to egress / publish.
+    // Per-connection sliding-window ping budget (abuse backstop; resets on reconnect).
+    const PING_PER_MIN: usize = 30;
+    let mut ping_times: Vec<i64> = Vec::new();
     loop {
         tokio::select! {
             _ = &mut egress => break,
@@ -309,6 +312,22 @@ async fn handle_socket(
                                 .is_err()
                             {
                                 break;
+                            }
+                        }
+                        Ok(ClientMsg::ScenePing { scene, x, y }) => {
+                            // Out-of-band relay to the world room, stamped with the sender.
+                            // Membership is already gated (a non-member never reaches here);
+                            // coordinates are not validated (#6). Over-budget pings drop silently.
+                            let now = now_millis();
+                            ping_times.retain(|&t| t > now - 60_000);
+                            if ping_times.len() < PING_PER_MIN {
+                                ping_times.push(now);
+                                room.broadcast_aux(ServerMsg::ScenePing {
+                                    scene,
+                                    x,
+                                    y,
+                                    user: user_id,
+                                });
                             }
                         }
                         Err(_) => {
