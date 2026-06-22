@@ -156,8 +156,21 @@ Per M8 §6.3 D-V2/D-V3:
     consumes both modes identically (it rasterizes whatever explored mask it's given).
 - **GM vision mode (D-V3):** the GM is authoritative and receives everything (all
   walls, full scene); GM fog is a **client-side toggle** — "see all" (no mask) /
-  "see as player X" (apply that player's visible+explored masks the GM also receives).
-  No extra server path.
+  "see as player X".
+  - **M9c-1:** "see all" + a client-only full-fog preview. Client-only, no server path.
+  - **M9c-2 (revises this note; user-directed 2026-06-22, durable/secure/performant):**
+    "see as player X" is implemented as an **on-demand, GM-authorized** path, NOT by the
+    GM continuously receiving every player's masks. The GM sends `scene_subscribe` with an
+    `as_user` parameter; the server **rejects it for non-GMs** and, for a GM, computes the
+    `vision` payload as that single player (server-resolved target context) and returns only
+    their masks. Chosen over the original "no extra server path / GM receives all masks"
+    variant primarily for **performance** (O(1 player) on demand vs raycasting + serializing
+    O(all players × explored) on every GM scene dispatch, even when not viewing-as-anyone) and an
+    explicit, auditable wire contract. Threat model (user-clarified): a GM viewing player data is
+    NOT a concern; security is (1) players don't see what they shouldn't and (2) no cross-user data
+    extraction — so the `as_user` gate exists to ensure **only a GM** may view as another user
+    (server-resolved target context, never client-supplied), keeping a player from ever requesting
+    another player's masks. Security is otherwise neutral between the two variants.
 
 ## 8. Decomposition
 

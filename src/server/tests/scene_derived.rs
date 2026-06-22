@@ -101,6 +101,105 @@ fn json_uuid(n: u128) -> serde_json::Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gm_can_see_as_player_but_a_player_cannot_see_as_another() {
+    // M9c-2 see-as-player: a GM subscribing `vision` with `as_user = player` receives EXACTLY that
+    // player's masked view (their polygons + explored). A non-GM `as_user` is rejected — the
+    // player-to-player access boundary.
+    let h = spawn().await;
+    let (player, player_cookie) = h.add_player("seen").await;
+    let (_other, other_cookie) = h.add_player("snoop").await;
+
+    // The GM creates a scene + a token owned by `player`.
+    let mut gm = h.connect().await;
+    let _ = gm.next().await; // Welcome
+    gm.send(intent_msg(
+        1,
+        serde_json::json!([
+            create_doc_op(h.world, 10, None, "scene"),
+            create_owned_token_op(h.world, 11, 10, player, 0.0, 0.0),
+        ]),
+    ))
+    .await
+    .unwrap();
+    let _ = drain_until_event(&mut gm).await;
+
+    // The player connects + subscribes first, accumulating their own explored memory.
+    let mut pre = h.connect_as(&player_cookie).await;
+    let _ = pre.next().await; // Welcome
+    pre.send(scene_subscribe(6, "vision")).await.unwrap();
+    let _ = drain_until_type(&mut pre, "scene_derived").await; // persisted the player's explored
+    drop(pre);
+
+    // GM sees-as `player` → masked payload reflecting the player's view (their live polygons + the
+    // explored memory they accumulated), NOT the GM's own mode:"all".
+    gm.send(scene_subscribe_as(7, "vision", player))
+        .await
+        .unwrap();
+    let seen = drain_until_type(&mut gm, "scene_derived").await;
+    assert_eq!(seen["payload"]["mode"], "masked");
+    assert!(
+        !seen["payload"]["polygons"].as_array().unwrap().is_empty(),
+        "the GM sees the target player's live vision polygons"
+    );
+    assert!(
+        !seen["payload"]["explored"][0]["cells"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "the GM sees the target player's accumulated explored memory"
+    );
+
+    // A non-GM player attempting `as_user` (the other player) is REJECTED.
+    let mut snoop = h.connect_as(&other_cookie).await;
+    let _ = snoop.next().await; // Welcome
+    snoop
+        .send(scene_subscribe_as(8, "vision", player))
+        .await
+        .unwrap();
+    let err = drain_until_type(&mut snoop, "scene_error").await;
+    assert!(err["message"]
+        .as_str()
+        .unwrap()
+        .contains("not authorized to view as another user"));
+
+    // The same player subscribing normally (their own vision) still works.
+    let mut p = h.connect_as(&player_cookie).await;
+    let _ = p.next().await; // Welcome
+    p.send(scene_subscribe(9, "vision")).await.unwrap();
+    let own = drain_until_type(&mut p, "scene_derived").await;
+    assert_eq!(own["payload"]["mode"], "masked");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn see_as_a_non_member_is_rejected() {
+    // A GM may only see-as an actual member; a stranger UUID is rejected (not silently honored).
+    let h = spawn().await;
+    let mut gm = h.connect().await;
+    let _ = gm.next().await; // Welcome
+    gm.send(scene_subscribe_as(7, "vision", uuid::Uuid::from_u128(999)))
+        .await
+        .unwrap();
+    let err = drain_until_type(&mut gm, "scene_error").await;
+    assert!(err["message"].as_str().unwrap().contains("not a member"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn duplicate_scene_subscribe_id_is_rejected() {
+    // A reused request_id would silently orphan the prior scene sub (mirrors the search path guard).
+    let h = spawn().await;
+    let mut ws = h.connect().await;
+    let _ = ws.next().await; // Welcome
+    ws.send(scene_subscribe(5, "vision")).await.unwrap();
+    let _ = drain_until_type(&mut ws, "scene_derived").await; // the first registers
+    ws.send(scene_subscribe(5, "vision")).await.unwrap(); // same request_id
+    let err = drain_until_type(&mut ws, "scene_error").await;
+    assert!(err["message"]
+        .as_str()
+        .unwrap()
+        .contains("duplicate subscription id"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unknown_channel_errors() {
     let h = spawn().await;
     let mut ws = h.connect().await;

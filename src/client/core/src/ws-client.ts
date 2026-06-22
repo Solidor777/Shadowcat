@@ -388,7 +388,7 @@ export class WsClient {
   subscribeScene(
     channel: string,
     onUpdate: (frame: SceneFrame) => void,
-    opts: { timeoutMs?: number } = {},
+    opts: { timeoutMs?: number; asUser?: string } = {},
   ): Promise<SceneSubscription> {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
@@ -404,7 +404,8 @@ export class WsClient {
         reject(new Error("scene subscribe timeout"));
       }, timeoutMs);
       this.scenePending.set(request_id, { resolve, reject, timer });
-      this.send({ type: "scene_subscribe", request_id, channel });
+      // `as_user` (GM-only see-as-player) is omitted unless set; the server gates + resolves it.
+      this.send({ type: "scene_subscribe", request_id, channel, ...(opts.asUser ? { as_user: opts.asUser } : {}) });
     });
   }
 

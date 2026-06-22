@@ -20,15 +20,26 @@
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
-  /** Live engine handle for the GM fog-preview control (set after async init). */
+  /** Live engine handle for the GM vision control (set after async init). */
   let engineRef: RenderEngine | null = null;
-  /** GM-only client-side fog preview: render the player view (full fog) over the GM's see-all. */
-  let fogPreview = $state(false);
+  /** GM vision mode: "all" (no fog), "fog" (client-only full-fog preview), or "as:<userId>"
+   * (M9c-2 see-as-player: re-subscribe vision as that user — server-gated to GMs). */
+  let gmView = $state("all");
+  /** Candidate see-as targets: distinct token owners the GM sees (best-effort; usernames need a
+   * members source — labeled by short id for now). */
+  let playerOptions = $state<string[]>([]);
 
-  function toggleFogPreview(): void {
-    fogPreview = !fogPreview;
-    engineRef?.setFogPreview(fogPreview);
-    host.dataset.fogPreview = String(fogPreview);
+  function applyGmView(): void {
+    const v = gmView;
+    if (v.startsWith("as:")) {
+      engineRef?.setFogPreview(false);
+      engineRef?.setViewAsUser(v.slice(3));
+    } else {
+      // "all" or "fog": the GM's own subscription (no see-as); "fog" adds the full-fog preview.
+      engineRef?.setViewAsUser(null);
+      engineRef?.setFogPreview(v === "fog");
+    }
+    host.dataset.gmView = v;
   }
 
   /** Resolve a CSS custom property (which may be a `var()` alias) to a 0xRRGGBB
@@ -80,7 +91,7 @@
       // Tools reach this engine via the AppContext scene bridge.
       detachScene = scene.attach(e);
       engineRef = e;
-      if (fogPreview) e.setFogPreview(true); // survive an $effect re-run with preview on
+      if (gmView !== "all") applyGmView(); // survive an $effect re-run with a non-default view
       wirePointer(e, controller.signal);
       // Drive the grid from the active scene's system.grid (M8d §15), updating only on
       // a real change so a token drag does not rebuild the grid each frame; also expose
@@ -97,6 +108,13 @@
         host.dataset.tokenCount = String(documents.query("token").length);
         host.dataset.shapeCount = String(documents.query("drawing").length + documents.query("template").length);
         host.dataset.wallCount = String(documents.query("wall").length);
+        // See-as-player candidates: distinct token owners the GM sees (best-effort labels).
+        playerOptions = [...new Set(documents.query("token").map((t) => t.owner).filter((o): o is string => !!o))];
+        // If the selected see-as target's token left, fall back to "See all" (drops the stale sub).
+        if (gmView.startsWith("as:") && !playerOptions.includes(gmView.slice(3))) {
+          gmView = "all";
+          applyGmView();
+        }
       };
       onDocs();
       offGrid = documents.subscribe(onDocs);
@@ -113,7 +131,7 @@
         e.setViewport(host.clientWidth, host.clientHeight);
       });
       observer.observe(host);
-      host.dataset.fogPreview = String(fogPreview);
+      host.dataset.gmView = gmView;
       host.dataset.renderReady = "true";
     })().catch(() => {
       // Pixi init failed (e.g. no WebGL context). Mark the host so the failure is
@@ -164,15 +182,19 @@
 <div class="stage-host" bind:this={host}>
   <canvas bind:this={canvas} data-testid="stage-canvas"></canvas>
   {#if role === "gm"}
-    <button
-      class="fog-toggle"
-      class:active={fogPreview}
-      data-testid="gm-fog-toggle"
-      onclick={toggleFogPreview}
-      aria-pressed={fogPreview}
+    <select
+      class="gm-view"
+      data-testid="gm-view-select"
+      aria-label="GM vision mode"
+      bind:value={gmView}
+      onchange={applyGmView}
     >
-      {fogPreview ? "Show all" : "Preview fog"}
-    </button>
+      <option value="all">See all</option>
+      <option value="fog">Preview fog</option>
+      {#each playerOptions as owner (owner)}
+        <option value={`as:${owner}`}>See as {owner.slice(0, 8)}</option>
+      {/each}
+    </select>
   {/if}
 </div>
 
@@ -187,7 +209,7 @@
   canvas {
     display: block;
   }
-  .fog-toggle {
+  .gm-view {
     position: absolute;
     top: var(--space-2, 0.5rem);
     right: var(--space-2, 0.5rem);
@@ -199,8 +221,5 @@
     border-radius: var(--radius-sm, 0.25rem);
     cursor: pointer;
     min-height: 2.25rem; /* touch target (#10) */
-  }
-  .fog-toggle.active {
-    border-color: var(--accent, #2d6ee8);
   }
 </style>

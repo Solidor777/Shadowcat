@@ -27,8 +27,13 @@ export interface AppContext {
   /** Subscribe to asset replace/delete notices; returns an unsubscribe. */
   onAssetChanged(cb: (msg: { uuid: string; op: "replaced" | "deleted" }) => void): () => void;
   /** Subscribe to a SceneDerived channel; the session re-establishes it across
-   * reconnects. Returns a synchronous unsubscribe handle. */
-  subscribeScene(channel: string, onUpdate: (f: SceneFrame) => void): SceneSubscription;
+   * reconnects. Returns a synchronous unsubscribe handle. `opts.asUser` (GM-only see-as-player)
+   * views the channel as that user; the server rejects it for non-GMs. */
+  subscribeScene(
+    channel: string,
+    onUpdate: (f: SceneFrame) => void,
+    opts?: { asUser?: string },
+  ): SceneSubscription;
   /** Predict + transmit document operations as one correlated optimistic intent
    * (the module write path). `ctx.client`/`store` reflect the prediction. */
   dispatchIntent(ops: WireOperation[]): void;

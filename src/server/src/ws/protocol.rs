@@ -47,7 +47,16 @@ pub enum ClientMsg {
     Unsubscribe { request_id: Uuid },
     /// Subscribe to a derived scene channel (e.g. M9 "vision"). M8a recognizes
     /// only the debug "identity" channel; unknown channels yield SceneError.
-    SceneSubscribe { request_id: Uuid, channel: String },
+    /// `as_user` (M9c-2 see-as-player) is **GM-only**: it views the channel as that user; the
+    /// server rejects it for non-GMs and resolves the target's role server-side. Omitted/None =
+    /// the connection's own view.
+    SceneSubscribe {
+        request_id: Uuid,
+        channel: String,
+        #[serde(default)]
+        #[ts(optional)]
+        as_user: Option<Uuid>,
+    },
     /// Cancel a derived subscription by request id.
     SceneUnsubscribe { request_id: Uuid },
     /// A transient location ping at scene coords. Relayed out-of-band to the world
@@ -350,6 +359,7 @@ mod protocol_tests {
         let sub = ClientMsg::SceneSubscribe {
             request_id: Uuid::from_u128(1),
             channel: "identity".into(),
+            as_user: None,
         };
         let j = serde_json::to_value(&sub).unwrap();
         assert_eq!(j["type"], "scene_subscribe");

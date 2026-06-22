@@ -229,6 +229,36 @@ test("setFogPreview renders a GM no-fog frame as full fog and restores on toggle
   expect(modes).toEqual(["all", "masked", "all"]);
 });
 
+test("setViewAsUser re-subscribes vision with as_user and resets the watermark", () => {
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  const opts: ({ asUser?: string } | undefined)[] = [];
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  let unsubs = 0;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb, o) => { opts.push(o); onUpdate = cb; return { unsubscribe: () => { unsubs++; } }; },
+  });
+  engine.start();
+  expect(opts[0]).toBeUndefined(); // own view (no as_user)
+  onUpdate({ payload: { mode: "all" }, computedAtSeq: 1 });
+  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [] });
+
+  // View as a player → the old subscription is torn down and a new one carries as_user.
+  engine.setViewAsUser("u1");
+  expect(unsubs).toBe(1);
+  expect(opts[1]).toEqual({ asUser: "u1" });
+  // The new view's first frame applies even at the SAME seq (watermark reset — a view switch is a
+  // fresh stream, not a regression of the prior one).
+  onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [] });
+
+  // Back to "see all" (null) → re-subscribe without as_user.
+  engine.setViewAsUser(null);
+  expect(opts[2]).toBeUndefined();
+});
+
 test("subscribeScene: a frame above the watermark defers until the store advances", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();

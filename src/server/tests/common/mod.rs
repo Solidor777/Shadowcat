@@ -288,6 +288,19 @@ pub fn scene_subscribe(request_n: u64, channel: &str) -> Message {
     )
 }
 
+/// A `scene_subscribe` frame carrying `as_user` (M9c-2 see-as-player; GM-only, server-authorized).
+pub fn scene_subscribe_as(request_n: u64, channel: &str, as_user: Uuid) -> Message {
+    Message::Text(
+        serde_json::json!({
+            "type": "scene_subscribe",
+            "request_id": Uuid::from_u128(request_n as u128),
+            "channel": channel,
+            "as_user": as_user,
+        })
+        .to_string(),
+    )
+}
+
 /// Read frames until one of type `ty` arrives (5s budget), returning it.
 pub async fn drain_until_type(ws: &mut Ws, ty: &str) -> serde_json::Value {
     loop {
