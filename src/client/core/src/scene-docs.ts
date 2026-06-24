@@ -104,7 +104,9 @@ export function buildTokenFromActor(
   if (mode === "link") {
     return envelope(worldId, "token", sceneId, { ...base, actor_id: actor.id, overrides: {} }, id);
   }
-  const copy: WireDocument = { ...actor, id: crypto.randomUUID(), source: { id: actor.id, pack: null, version: 1 } };
+  // Deep-clone so the embedded copy is independent by value at construction (not just after
+  // the wire round-trip) — no aliasing of the source actor's system/permissions/embedded.
+  const copy: WireDocument = { ...structuredClone(actor), id: crypto.randomUUID(), source: { id: actor.id, pack: null, version: 1 } };
   const doc = envelope(worldId, "token", sceneId, base, id);
   doc.embedded = { actor: [copy] };
   return doc;

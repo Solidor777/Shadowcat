@@ -67,4 +67,5 @@ test("buildTokenFromActor instance mode embeds an independent copy with provenan
   expect(copy.id).not.toBe(actor.id);
   expect(copy.source).toEqual({ id: "act1", pack: null, version: 1 });
   expect(copy.system).toEqual(actorSys);
+  expect(copy.system).not.toBe(actor.system); // independent by value, not aliased
 });
