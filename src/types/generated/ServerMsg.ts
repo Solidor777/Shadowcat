@@ -13,7 +13,7 @@ import type { WsErrorCode } from "./WsErrorCode";
 /**
  * Server -> client frames.
  */
-export type ServerMsg = { "type": "welcome", world: string, current_seq: bigint, server_time: bigint, world_default_grants: CapabilityGrants, actor_role: WorldRole, capability_requirements: Array<CapabilityRequirement>, 
+export type ServerMsg = { "type": "welcome", world: string, current_seq: bigint, server_time: bigint, world_default_grants: CapabilityGrants, user_role: WorldRole, capability_requirements: Array<CapabilityRequirement>, 
 /**
  * The world's UI contract declarations, so the client can validate its
  * loaded module set against the world's declared topology.

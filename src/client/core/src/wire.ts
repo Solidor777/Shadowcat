@@ -144,7 +144,7 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     current_seq: int,
     server_time: int,
     world_default_grants: CapabilityGrantsSchema,
-    actor_role: WorldRoleSchema,
+    user_role: WorldRoleSchema,
     capability_requirements: z.array(CapabilityRequirementSchema),
     contract_declarations: z.array(ContractDeclarationSchema),
   }),

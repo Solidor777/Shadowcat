@@ -6,7 +6,7 @@ import type { SceneInteraction } from "./sceneInteraction";
 /**
  * Ambient app state contributed components read via Svelte context. Carries the
  * contribution registry the host renders plus the in-world session essentials
- * (document store, world id, actor role). M7d adds the i18n `t`.
+ * (document store, world id, user role). M7d adds the i18n `t`.
  */
 /** Translate function shape (framework-neutral; the Svelte adapter supplies a
  * reactive implementation). */

@@ -99,7 +99,7 @@ pub struct Access {
 }
 
 impl Access {
-    /// Whether the actor holds capability `c` (GM holds everything).
+    /// Whether the user holds capability `c` (GM holds everything).
     pub fn has(&self, c: &str) -> bool {
         self.all || self.caps.contains(c)
     }
@@ -122,7 +122,7 @@ fn role_floor(role: DocRole) -> BTreeSet<String> {
 }
 
 /// Resolve a user's effective capabilities on a document. A world GM (or server
-/// admin, which resolves to GM) holds every capability. Otherwise the actor's
+/// admin, which resolves to GM) holds every capability. Otherwise the user's
 /// `DocRole` (per-user, else the document default) seeds a built-in floor that
 /// the document's additive grants (`by_role`, `by_user`) widen.
 pub fn resolve_access(user: Uuid, world_role: WorldRole, doc: &Document) -> Access {
@@ -182,9 +182,9 @@ pub fn resolve_access_world(
     access
 }
 
-/// Project world-default grants down to what a single actor needs to replicate
+/// Project world-default grants down to what a single user needs to replicate
 /// access resolution client-side: the per-role tiers (world policy, no PII) plus
-/// **only** this actor's own per-user grants. Other users' UUIDs and grants are
+/// **only** this user's own per-user grants. Other users' UUIDs and grants are
 /// dropped — the full `by_user` map must never cross to a client.
 pub fn project_grants_for(grants: &CapabilityGrants, user: Uuid) -> CapabilityGrants {
     CapabilityGrants {
@@ -493,7 +493,7 @@ mod tests {
         let projected = project_grants_for(&grants, me);
         // Role tiers are world policy — preserved.
         assert_eq!(projected.by_role, grants.by_role);
-        // Only this actor's own per-user grant survives; the other user's UUID
+        // Only this user's own per-user grant survives; the other user's UUID
         // and grants are gone.
         assert!(projected.by_user.contains_key(&me));
         assert!(!projected.by_user.contains_key(&other));

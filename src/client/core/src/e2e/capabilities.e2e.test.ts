@@ -59,7 +59,7 @@ test("player is rejected writing a GM-gated path; Welcome carries projected caps
   for (let i = 0; i < 50 && welcome === null; i++) await sleep(100);
   expect(welcome).not.toBeNull();
   const w = welcome as unknown as WireWelcome;
-  expect(w.actor_role).toBe("player");
+  expect(w.user_role).toBe("player");
   expect(w.capability_requirements.some((r) => r.path_prefix === "/system/vision")).toBe(true);
   // Projection: the grant map must not leak other users' ids. by_user is keyed
   // by uuid; the only permissible key is the connecting player.

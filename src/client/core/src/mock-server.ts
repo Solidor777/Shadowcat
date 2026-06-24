@@ -55,7 +55,7 @@ export class MockServer {
         current_seq: this.seq,
         server_time: this.now(),
         world_default_grants: { by_role: {}, by_user: {} },
-        actor_role: "player",
+        user_role: "player",
         capability_requirements: [],
         contract_declarations: [],
       });
