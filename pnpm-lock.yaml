@@ -84,6 +84,9 @@ importers:
       '@shadowcat/module-entry':
         specifier: workspace:*
         version: link:../../modules/entry
+      '@shadowcat/module-factions':
+        specifier: workspace:*
+        version: link:../../modules/factions
       '@shadowcat/module-scene-tools':
         specifier: workspace:*
         version: link:../../modules/scene-tools
@@ -208,6 +211,28 @@ importers:
     dependencies:
       '@shadowcat/types':
         specifier: workspace:*
+        version: link:../../types
+      '@shadowcat/ui-kit':
+        specifier: workspace:*
+        version: link:../../client/ui-kit
+    devDependencies:
+      '@testing-library/svelte':
+        specifier: ^5.3.1
+        version: 5.3.1(svelte@5.56.3(@typescript-eslint/types@8.61.1))(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0))(vitest@4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)))
+      jsdom:
+        specifier: ^29.1.1
+        version: 29.1.1
+      sass:
+        specifier: ^1.101.0
+        version: 1.101.0
+
+  src/modules/factions:
+    dependencies:
+      '@shadowcat/core':
+        specifier: workspace:*
+        version: link:../../client/core
+      '@shadowcat/types':
+        specifier: workspace:^
         version: link:../../types
       '@shadowcat/ui-kit':
         specifier: workspace:*
