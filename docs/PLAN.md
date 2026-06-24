@@ -235,8 +235,19 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > token `/embedded/actor/0/system/conditions`); the GM-or-owner toggle is gated by a new advisory
 > `AppContext.canEdit(doc, path)` (mirrors the server Update-path check via the `canWritePath`
 > capability mirror; server stays authoritative). No mechanical effects (deferred to combat).
-> Buddy-checked. Plan: `superpowers/plans/2026-06-24-m10c-conditions.md`. **Next = M10d** (shapes
-> + footprint).
+> Buddy-checked. Plan: `superpowers/plans/2026-06-24-m10c-conditions.md`.
+>
+> **M10d DONE** (on branch `m10d-shapes-footprint`, pending buddy-check + merge --no-ff to LOCAL
+> main — push gate = full M10): **shapes + footprint** — `shape: "square" | "circle"` field in
+> `ActorSystem` + per-token override in `TokenOverrides` whitelist; `resolveTokenBox(token, store,
+> eff?) -> TokenBox {x,y,w,h,shape}` as the single chokepoint for scene-pixel footprint (actor-
+> backed: `EffectiveActor.size × grid cell`; raw/dangling: `token.system.w/h` + `"square"`;
+> fail-closed); `footprintRadius(eff) -> number` (grid-unit bounding-disc radius seam for M10e+
+> pathfinder); `TokenNodeSpec.shape` reconciler + ellipse border in `@shadowcat/render`; shape/
+> size-aware `topTokenAt` hit-test (point-in-ellipse vs point-in-rect) + selection ring in
+> `@shadowcat/module-scene-tools`; shape + size editing (create form + per-row GM inline editor)
+> in `@shadowcat/module-actors`. Plan: `superpowers/plans/2026-06-24-m10d-shapes-footprint.md`.
+> **Next = M10e** (Pathfinding — grid A*).
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
