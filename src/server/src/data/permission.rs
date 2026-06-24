@@ -275,6 +275,15 @@ fn collect_hidden(doc: &Document, access: &Access, prefix: &str, out: &mut Vec<S
     }
 }
 
+/// Whether a change path writes into any document's envelope `permissions` (top-level
+/// or embedded) — a `permissions` path segment. Triggers retroactive redaction so a
+/// just-hidden field is retracted from recipients who can no longer see it. A `system`
+/// field literally named `permissions` over-triggers, which is safe (it only re-nulls
+/// already-hidden fields).
+fn touches_permissions(path: &str) -> bool {
+    path.split('/').any(|seg| seg == "permissions")
+}
+
 /// The recipient's view of a broadcast command: ops on unreadable documents
 /// are dropped, GmOnly properties/changes stripped. seq/world/author/ts are
 /// preserved so the recipient's sequence guard never sees a false gap — a fully
@@ -344,10 +353,25 @@ pub async fn filter_command(
                     // overrides — not just the parent's. Matches filter_properties.
                     let mut hidden = Vec::new();
                     collect_hidden(&cur, &access, "", &mut hidden);
-                    changes
+                    let mut kept: Vec<FieldChange> = changes
                         .iter()
                         .filter_map(|ch| redact_change(ch, &hidden))
-                        .collect()
+                        .collect();
+                    // When the command writes any `permissions`, retract every field this
+                    // recipient cannot see so no stale value persists client-side. old:null
+                    // keeps the pre-image from carrying the real value; new:null clears it.
+                    // Idempotent (re-nulling an absent field is a no-op). Per-recipient: an
+                    // owner's OwnerOrGm fields are absent from `hidden` (can_see), so intact.
+                    if changes.iter().any(|c| touches_permissions(&c.path)) {
+                        for ptr in hidden {
+                            kept.push(FieldChange {
+                                path: ptr,
+                                old: serde_json::Value::Null,
+                                new: serde_json::Value::Null,
+                            });
+                        }
+                    }
+                    kept
                 };
                 out_ops.push(Operation::Update {
                     doc_id: *doc_id,
@@ -853,6 +877,97 @@ mod tests {
         } else {
             panic!("expected Update");
         }
+    }
+
+    #[tokio::test]
+    async fn permission_tightening_retracts_now_hidden_field_for_non_owner() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, FieldChange, Operation};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        // A real user — `owner_id` is a foreign key.
+        let owner = r
+            .create_user("owner", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+
+        // cur = post-apply doc: owner set, name present, /system/name now OwnerOrGm.
+        let mut d = doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "name": "Goblin Skirmisher", "displayName": "Goblin" }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        d.owner = Some(owner);
+        d.permissions
+            .property_overrides
+            .insert("/system/name".into(), Visibility::OwnerOrGm);
+        r.apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: d.clone() }], 1)
+            .await
+            .unwrap();
+
+        // The broadcast Update that tightened permissions (adds the name override).
+        let cmd = Command {
+            seq: 2,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id: d.id,
+                changes: vec![FieldChange {
+                    path: "/permissions/property_overrides".into(),
+                    old: serde_json::json!({}),
+                    new: serde_json::json!({ "/system/name": "owner_or_gm" }),
+                }],
+            }],
+        };
+
+        // Non-owner player: keeps the permission change PLUS a null retraction of /system/name.
+        let other = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let out = filter_command(&r, &cmd, &other, &WorldCapDefaults::default()).await;
+        let Operation::Update { changes, .. } = &out.ops[0] else {
+            panic!("expected Update");
+        };
+        let retract = changes
+            .iter()
+            .find(|c| c.path == "/system/name")
+            .expect("name retracted");
+        assert_eq!(retract.new, serde_json::Value::Null);
+        assert_eq!(retract.old, serde_json::Value::Null); // pre-image must not leak the real name
+
+        // Owner: keeps the name (OwnerOrGm is visible) — no /system/name retraction.
+        let owner_ctx = PermissionContext {
+            user_id: owner,
+            world_role: WorldRole::Player,
+        };
+        let out_owner = filter_command(&r, &cmd, &owner_ctx, &WorldCapDefaults::default()).await;
+        let Operation::Update { changes, .. } = &out_owner.ops[0] else {
+            panic!("expected Update");
+        };
+        assert!(!changes.iter().any(|c| c.path == "/system/name"));
+
+        // GM: sees everything; no synthesized retraction.
+        let out_gm = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
+        let Operation::Update { changes, .. } = &out_gm.ops[0] else {
+            panic!("expected Update");
+        };
+        assert!(!changes.iter().any(|c| c.path == "/system/name"));
     }
 
     #[tokio::test]
