@@ -83,9 +83,10 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
         if (!actor) return false;
         const mode = (actor.system as { prototype?: boolean })?.prototype ? "instance" : "link";
         ctx.dispatchIntent([{ op: "create", doc: buildTokenFromActor(ctx.world, scene.id, actor, mode, c, scene.size) }]);
-        // A unique (linked) actor places once: clear the selection so repeated clicks don't
-        // stamp duplicate live-views. Instanced actors stay selected for placing many.
-        if (mode === "link") ctx.actorSelection?.select(null);
+        // A unique (linked) actor places once by default: clear the selection so repeated
+        // clicks don't stamp duplicate live-views. The user can opt to keep it selected
+        // (keepAfterPlace). Instanced actors always stay selected for placing many.
+        if (mode === "link" && !ctx.actorSelection?.keepAfterPlace) ctx.actorSelection?.select(null);
         return true;
       }
       const asset = controller.selectedAsset;

@@ -115,3 +115,13 @@ test("place links the selected actor when prototype is false", () => {
   // A unique linked actor places once, then the selection clears.
   expect(ctx.actorSelection!.selectedId).toBeNull();
 });
+
+test("place keeps a linked actor selected when keepAfterPlace is set", () => {
+  const { ctx } = ctxWith(docsWithSceneAndActor("act3", false));
+  ctx.actorSelection = new ActorSelection();
+  ctx.actorSelection.select("act3");
+  ctx.actorSelection.setKeepAfterPlace(true);
+  const controller = new ToolController(ctx);
+  expect(makePlaceTool(ctx, controller).onPointerDown({ x: 0, y: 0 }, ev)).toBe(true);
+  expect(ctx.actorSelection.selectedId).toBe("act3");
+});

@@ -61,6 +61,14 @@
       </li>
     {/each}
   </ul>
+  <label class="keep">
+    <input
+      type="checkbox"
+      checked={ctx.actorSelection.keepAfterPlace}
+      onchange={(e) => ctx.actorSelection.setKeepAfterPlace(e.currentTarget.checked)}
+    />
+    {t("actors.keepAfterPlace")}
+  </label>
   <form onsubmit={(e) => { e.preventDefault(); create(); }}>
     <input placeholder={t("actors.name")} aria-label={t("actors.name")} bind:value={name} />
     <input placeholder={t("actors.displayName")} aria-label={t("actors.displayName")} bind:value={displayName} />

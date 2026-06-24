@@ -4,6 +4,7 @@
 // reference stays valid (the stable-ref rule).
 export class ActorSelection {
   #id = $state<string | null>(null);
+  #keepAfterPlace = $state(false);
 
   get selectedId(): string | null {
     return this.#id;
@@ -11,5 +12,15 @@ export class ActorSelection {
 
   select(id: string | null): void {
     this.#id = id;
+  }
+
+  /** User preference: when true, a linked (unique) actor stays selected after placing, so
+   * repeated clicks place more linked tokens. Instanced actors always stay selected. */
+  get keepAfterPlace(): boolean {
+    return this.#keepAfterPlace;
+  }
+
+  setKeepAfterPlace(value: boolean): void {
+    this.#keepAfterPlace = value;
   }
 }

@@ -34,6 +34,7 @@ export const en: Messages = {
   "actors.name": "Name",
   "actors.displayName": "Display name (shown to players when the name is hidden)",
   "actors.instanceOnDrop": "New independent copy on each placement",
+  "actors.keepAfterPlace": "Keep selected after placing",
   "actors.create": "Create actor",
   "tools.title": "Tools",
   "tools.select": "Select / Move",

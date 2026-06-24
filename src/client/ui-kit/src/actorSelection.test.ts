@@ -10,4 +10,11 @@ describe("ActorSelection", () => {
     sel.select(null);
     expect(sel.selectedId).toBeNull();
   });
+
+  it("exposes a keepAfterPlace preference, default off", () => {
+    const sel = new ActorSelection();
+    expect(sel.keepAfterPlace).toBe(false);
+    sel.setKeepAfterPlace(true);
+    expect(sel.keepAfterPlace).toBe(true);
+  });
 });
