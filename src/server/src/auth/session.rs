@@ -8,7 +8,7 @@ use tower_sessions::cookie::time::{Duration, OffsetDateTime};
 use tower_sessions::cookie::{Key, SameSite};
 use tower_sessions::service::SignedCookie;
 use tower_sessions::session::{Id, Record};
-use tower_sessions::session_store::{self, SessionStore};
+use tower_sessions::session_store::{self, ExpiredDeletion, SessionStore};
 use tower_sessions::{Expiry, Session, SessionManagerLayer};
 use uuid::Uuid;
 
@@ -109,6 +109,43 @@ impl SessionStore for SqlxSqliteStore {
             .map_err(|e| session_store::Error::Backend(e.to_string()))?;
         Ok(())
     }
+}
+
+#[async_trait]
+impl ExpiredDeletion for SqlxSqliteStore {
+    /// Delete rows past expiry. Mirrors `load`'s validity check (`expiry_date >
+    /// now`): a row is expired — and unloadable — once `expiry_date <= now`.
+    async fn delete_expired(&self) -> session_store::Result<()> {
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        sqlx::query("DELETE FROM tower_sessions WHERE expiry_date <= ?")
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| session_store::Error::Backend(e.to_string()))?;
+        Ok(())
+    }
+}
+
+/// Interval between session-table sweeps. Sessions expire on 7-day inactivity,
+/// so a daily sweep bounds table growth with ample margin.
+const SESSION_SWEEP_PERIOD: std::time::Duration = std::time::Duration::from_secs(60 * 60 * 24);
+
+/// Spawn a background task that periodically deletes expired session rows.
+/// Housekeeping, not correctness: expired rows are already unloadable
+/// (`load` filters `expiry_date > now`); the sweep bounds unbounded table growth.
+/// Sweeps once at startup, then every [`SESSION_SWEEP_PERIOD`]. A failed sweep
+/// is logged and retried next tick — it never aborts the server.
+pub fn spawn_session_sweep(repo: &SqliteRepository) {
+    let store = SqlxSqliteStore::new(repo.pool().clone());
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(SESSION_SWEEP_PERIOD);
+        loop {
+            interval.tick().await; // first tick completes immediately
+            if let Err(e) = store.delete_expired().await {
+                tracing::warn!(error = %e, "session sweep failed");
+            }
+        }
+    });
 }
 
 /// Identity persisted in the session store after login.
@@ -287,6 +324,39 @@ mod tests {
         let (server, _) = harness().await;
         server.post("/t/login-admin").await.assert_status_ok();
         server.get("/t/admin").await.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn delete_expired_removes_only_expired_rows() {
+        let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let store = SqlxSqliteStore::new(repo.pool().clone());
+        store.migrate().await.unwrap();
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+
+        // Boundary row (expiry == now) is non-loadable, so it must be swept too.
+        for (id, expiry) in [
+            ("expired", now - 100),
+            ("boundary", now),
+            ("live", now + 10_000),
+        ] {
+            sqlx::query("INSERT INTO tower_sessions (id, data, expiry_date) VALUES (?, '{}', ?)")
+                .bind(id)
+                .bind(expiry)
+                .execute(repo.pool())
+                .await
+                .unwrap();
+        }
+
+        store.delete_expired().await.unwrap();
+
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM tower_sessions ORDER BY id")
+                .fetch_all(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(remaining, vec!["live".to_string()]);
     }
 
     #[tokio::test]

@@ -30,6 +30,8 @@ async fn main() -> anyhow::Result<()> {
         upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
     };
 
+    shadowcat::auth::session::spawn_session_sweep(&state.repo);
+
     let app = http::router(state).await;
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
     tracing::info!(bind = %config.bind, "shadowcat listening");
