@@ -4,8 +4,13 @@
   import { getMe, listWorlds, type Me } from "./lib/api";
   import { loadSessionState, setLastWorld, flushOnUnload } from "./lib/sessionState.svelte";
   import { currentRoute, navigate } from "./lib/route.svelte";
-  import { coreUi } from "./modules/core-ui/index";
-  import { sceneTools } from "./modules/scene-tools/index";
+  import { coreUi } from "@shadowcat/module-core-ui";
+  import { topBar } from "@shadowcat/module-topbar";
+  import { statusBar } from "@shadowcat/module-statusbar";
+  import { stage } from "@shadowcat/module-stage";
+  import { settings } from "@shadowcat/module-settings";
+  import { assets } from "@shadowcat/module-assets";
+  import { sceneTools } from "@shadowcat/module-scene-tools";
   import { WorldSession } from "./lib/worldSession.svelte";
   import Table from "./lib/Table.svelte";
 
@@ -73,7 +78,7 @@
     const wsUrl =
       (location.protocol === "https:" ? "wss:" : "ws:") +
       "//" + location.host + "/ws?world=" + worldId;
-    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [coreUi, sceneTools] });
+    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [coreUi, topBar, statusBar, stage, settings, assets, sceneTools] });
     session = s;
     void s.enter(worldId);
     setLastWorld(worldId);
