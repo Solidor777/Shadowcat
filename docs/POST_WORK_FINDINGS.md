@@ -54,6 +54,19 @@ are observations awaiting triage, not committed work.
   Unrelated to M8b-1 (the failing assertion is on DB ingress throughput, which
   M8b-1 does not touch). If it recurs, widen the drain budget (e.g. 600×100ms) or
   gate the count on a constrained-CPU repro before touching the ingress path.
+  Update (2026-06-23) — **RESOLVED.** Recurred on ubuntu-latest even at the widened
+  600×100ms=60s budget (`Some(289)` vs `Some(300)`, 79s test): a 300-intent ingress
+  backlog genuinely cannot drain within budget on a saturated runner. Root cause is
+  the test's *volume*, not a correctness defect — forcing the slow client's resync
+  over a real socket was never deterministic (OS buffering absorbs a non-reading
+  client; same non-portability resolved for the `Lagged` test in commit 2acf9f7), so
+  the high count bought no coverage while loading the single-writer ingress past CI
+  capacity. Fix: `converges_with_publishing_during_resync` now uses a modest
+  `TOTAL=100` and asserts only its load-bearing invariants (no drop/reorder under
+  concurrent publishing + full fresh-client resync recovery); the deterministic
+  broadcast-`Lagged` → resync path is unit-tested against `egress_loop` with a
+  credit-gated sink (`ws::conn::tests::egress_lag_triggers_resync_and_converges`).
+  Full ws_convergence suite now ~2s locally.
 
 - Title: `filter_command` redacts replayed history against the *current*
   PermissionSet. Summary: `src/server/src/data/permission.rs` loads each
