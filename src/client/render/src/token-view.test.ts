@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
 import type { WireDocument, WireOperation } from "@shadowcat/core";
 
@@ -38,7 +38,7 @@ test("reconcile creates a token node at its center transform with the resolved u
   const backend = new MockBackend();
   store.applyCommand(cmd(1, [{ op: "create", doc: tokenDoc("t1", 100, 50, "img1") }]));
   new TokenView(store, assets, backend).reconcile();
-  expect(backend.tokens.get("t1")).toEqual({ x: 100, y: 50, w: 100, h: 100, rotation: 0, url: assets.url("img1") });
+  expect(backend.tokens.get("t1")).toEqual({ x: 100, y: 50, w: 100, h: 100, rotation: 0, url: assets.url("img1"), borderColor: null });
 });
 
 test("a moved token tweens via tick toward the new position", () => {
@@ -78,4 +78,34 @@ test("a deleted token doc removes its node", () => {
   store.applyCommand(cmd(2, [{ op: "delete", doc: tokenDoc("t1", 0, 0, "img1") }]));
   view.reconcile();
   expect(backend.tokens.has("t1")).toBe(false);
+});
+
+test("resolves the faction border color from the registry", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const registry = buildFactionRegistryDoc("w1", { f1: { name: "F1", color: "#ff0000", stance: "hostile" } }, "reg1");
+  const actor = buildActorDoc(
+    "w1",
+    { name: "G", displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: "f1", conditions: [], prototype: false },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: registry }, { op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, assets, backend).reconcile();
+  expect(backend.tokens.get("tok1")!.borderColor).toBe(0xff0000);
+});
+
+test("a token with no faction has a null border", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const actor = buildActorDoc(
+    "w1",
+    { name: "G", displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+    "act2",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok2");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, new AssetResolver(), backend).reconcile();
+  expect(backend.tokens.get("tok2")!.borderColor).toBeNull();
 });

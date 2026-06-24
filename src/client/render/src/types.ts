@@ -45,7 +45,7 @@ export interface TokenTransform {
   rotation: number;
 }
 
-/** A resolved token render node: transform + size + resolved image URL. */
+/** A resolved token render node: transform + size + resolved image URL + faction border. */
 export interface TokenNodeSpec {
   x: number;
   y: number;
@@ -53,6 +53,8 @@ export interface TokenNodeSpec {
   h: number;
   rotation: number;
   url: string;
+  /** Faction border color (0xRRGGBB), or null for no border. */
+  borderColor: number | null;
 }
 
 /** A drawn shape node: a polyline/polygon (flat scene-coord points) with optional fill

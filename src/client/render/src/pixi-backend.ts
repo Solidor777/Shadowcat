@@ -27,6 +27,8 @@ export class PixiBackend implements DisplayBackend {
   private readonly tokens = new Map<string, Sprite>();
   /** Last-loaded image URL per token, so a tweening token doesn't reload each frame. */
   private readonly tokenUrls = new Map<string, string>();
+  /** Faction border outline per token (absent when the token has no faction color). */
+  private readonly tokenBorders = new Map<string, Graphics>();
   private background: Sprite | null = null;
   private backgroundUrl: string | null = null;
   /** Monotonic counter disambiguating concurrent background loads. */
@@ -147,6 +149,26 @@ export class PixiBackend implements DisplayBackend {
     sprite.width = spec.w;
     sprite.height = spec.h;
     sprite.angle = spec.rotation;
+    // Faction outline: a stroked rect centered on the token, tracking its transform.
+    let border = this.tokenBorders.get(id);
+    if (spec.borderColor === null) {
+      if (border) {
+        border.destroy();
+        this.tokenBorders.delete(id);
+      }
+    } else {
+      if (!border) {
+        border = new Graphics();
+        this.tokenBorders.set(id, border);
+        this.layers.get("tokens")?.addChild(border);
+      }
+      const hw = spec.w / 2;
+      const hh = spec.h / 2;
+      border.clear();
+      border.rect(-hw, -hh, spec.w, spec.h).stroke({ width: 3, color: spec.borderColor });
+      border.position.set(spec.x, spec.y);
+      border.angle = spec.rotation; // degrees, like the sprite
+    }
     // Only (re)load on a URL change — a tweening token re-pushes ~60×/s with the same url.
     if (this.tokenUrls.get(id) !== spec.url) {
       this.tokenUrls.set(id, spec.url);
@@ -163,6 +185,11 @@ export class PixiBackend implements DisplayBackend {
       sprite.destroy();
       this.tokens.delete(id);
       this.tokenUrls.delete(id);
+    }
+    const border = this.tokenBorders.get(id);
+    if (border) {
+      border.destroy();
+      this.tokenBorders.delete(id);
     }
   }
 
