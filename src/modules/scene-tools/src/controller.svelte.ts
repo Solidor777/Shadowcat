@@ -3,8 +3,8 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildSceneEntityDoc, type ReadableDocuments, type AssetResolver, type WireOperation } from "@shadowcat/core";
-import type { SceneInteraction } from "@shadowcat/ui-kit";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, type ReadableDocuments, type AssetResolver, type WireOperation } from "@shadowcat/core";
+import type { SceneInteraction, ActorSelection } from "@shadowcat/ui-kit";
 import { topTokenAt } from "./hit-test";
 
 export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping" | "wall";
@@ -15,6 +15,8 @@ export type TemplateMode = "circle" | "cone" | "rect" | "line";
  * just-auto-created scene / just-placed token is visible to the tools immediately. */
 export interface ToolContext {
   scene: SceneInteraction;
+  /** The actor to stamp (the place tool); when set it takes precedence over selectedAsset. */
+  actorSelection?: ActorSelection;
   dispatchIntent: (ops: WireOperation[]) => void;
   documents: ReadableDocuments;
   assets: AssetResolver;
@@ -66,26 +68,33 @@ export class ToolController {
   }
 }
 
-/** Click stamps a token (the selected asset) at the snapped cell of the active scene.
- * No scene or no selected asset → unhandled (the camera pans instead). */
+/** Click stamps a token at the snapped cell of the active scene. A selected actor takes
+ * precedence (instanced if its `prototype` is set, else linked); otherwise the selected raw
+ * asset is stamped. No scene, or neither an actor nor an asset selected → unhandled (camera pans). */
 export function makePlaceTool(ctx: ToolContext, controller: ToolController): SceneTool {
   return {
     onPointerDown(p: Point): boolean {
       const scene = activeScene(ctx);
-      const asset = controller.selectedAsset;
-      if (!scene || !asset) return false;
+      if (!scene) return false;
       const c = ctx.scene.snap(p);
+      const actorId = ctx.actorSelection?.selectedId ?? null;
+      if (actorId) {
+        const actor = ctx.documents.get(actorId);
+        if (!actor) return false;
+        const mode = (actor.system as { prototype?: boolean })?.prototype ? "instance" : "link";
+        ctx.dispatchIntent([{ op: "create", doc: buildTokenFromActor(ctx.world, scene.id, actor, mode, c, scene.size) }]);
+        // A unique (linked) actor places once by default: clear the selection so repeated
+        // clicks don't stamp duplicate live-views. The user can opt to keep it selected
+        // (keepAfterPlace). Instanced actors always stay selected for placing many.
+        if (mode === "link" && !ctx.actorSelection?.keepAfterPlace) ctx.actorSelection?.select(null);
+        return true;
+      }
+      const asset = controller.selectedAsset;
+      if (!asset) return false;
       ctx.dispatchIntent([
         {
           op: "create",
-          doc: buildTokenDoc(ctx.world, scene.id, {
-            x: c.x,
-            y: c.y,
-            w: scene.size,
-            h: scene.size,
-            rotation: 0,
-            visual: { kind: "image", asset },
-          }),
+          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: scene.size, h: scene.size, rotation: 0, visual: { kind: "image", asset } }),
         },
       ]);
       return true;

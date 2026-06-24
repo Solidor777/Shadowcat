@@ -453,7 +453,7 @@ async fn egress_loop<S>(
             current_seq,
             server_time: now_millis(),
             world_default_grants: actor_grants,
-            actor_role: ctx.world_role,
+            user_role: ctx.world_role,
             capability_requirements: world_reqs,
             contract_declarations: world_contracts,
         }))

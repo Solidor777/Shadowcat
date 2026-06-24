@@ -20,7 +20,7 @@ import {
   type SceneSubscription,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
-import { SceneInteractionBridge } from "@shadowcat/ui-kit";
+import { SceneInteractionBridge, ActorSelection } from "@shadowcat/ui-kit";
 import { listWorldMembers } from "./api";
 import { SvelteMap } from "svelte/reactivity";
 
@@ -44,6 +44,8 @@ export class WorldSession {
   /** Canvas interaction bridge: the Stage attaches the engine; tool components reach
    * it via AppContext. Stable across Stage remount (M8d §16). */
   readonly sceneInteraction = new SceneInteractionBridge();
+  /** The actor the place tool stamps; set by module-actors, read by scene-tools. Stable. */
+  readonly actorSelection = new ActorSelection();
   #assetListeners = new Set<(msg: { uuid: string; op: "replaced" | "deleted" }) => void>();
   #pingListeners = new Set<(msg: { scene: string; x: number; y: number; user: string }) => void>();
   #sceneSubs = new Map<
@@ -228,7 +230,7 @@ export class WorldSession {
 
   async #onWelcome(w: WireWelcome): Promise<void> {
     try {
-      this.role = w.actor_role;
+      this.role = w.user_role;
       // Activate modules BEFORE any await below (a GM's member fetch) so the
       // layout module contributes Layout into the `root` surface the host renders
       // — the table chrome paints immediately on mount, never a blank frame during
@@ -243,7 +245,7 @@ export class WorldSession {
       // players). Best-effort: a failure leaves the picker on short-id fallback.
       // The members SvelteMap is mutated in place, so the see-as UI (already
       // rendered after activation) populates reactively when this resolves.
-      if (w.actor_role === "gm") {
+      if (w.user_role === "gm") {
         try {
           const list = await listWorldMembers(w.world);
           // Mutate in place (not reassign) so the AppContext-captured reference

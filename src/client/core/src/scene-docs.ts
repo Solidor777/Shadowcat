@@ -18,7 +18,37 @@ export interface TokenSystem {
   w: number;
   h: number;
   rotation: number;
-  visual: { kind: "image"; asset: string };
+  /** Set on raw (actorless) tokens; actor-backed tokens resolve their visual via the actor. */
+  visual?: { kind: "image"; asset: string };
+  /** Linked token: the shared actor's id (null/absent ⇒ instanced, see `embedded.actor`). */
+  actor_id?: string | null;
+  /** Linked-only per-token override whitelist (name/visual/size). */
+  overrides?: TokenOverrides;
+}
+
+/** An actor's appearance + defaults (M10a). Stats/sheet are M12; this is only what backs a
+ * token. The server is structural-only — this `system` shape is the client's interpretation. */
+export interface ActorVisual {
+  kind: "image";
+  asset: string;
+}
+export interface ActorSystem {
+  name: string;
+  displayName: string;
+  visual: ActorVisual;
+  size: { w: number; h: number };
+  shape: "square" | "circle";
+  faction: string | null;
+  conditions: string[];
+  /** Default place-mode: true ⇒ instance (independent copy) on drop; false ⇒ link (shared). */
+  prototype: boolean;
+}
+
+/** The per-token override whitelist for a linked token (M10a). */
+export interface TokenOverrides {
+  name?: string;
+  visual?: ActorVisual;
+  size?: { w: number; h: number };
 }
 
 /** Visible-to-all defaults; the server normalizes permissions per the creator's role. */
@@ -51,6 +81,35 @@ export function buildSceneDoc(worldId: string, system: Partial<SceneSystem> = {}
     background: system.background ?? null,
   };
   return envelope(worldId, "scene", null, full, id);
+}
+
+/** A top-level (world-scoped, parentless) actor document. */
+export function buildActorDoc(worldId: string, system: ActorSystem, id?: string): WireDocument {
+  return envelope(worldId, "actor", null, system, id);
+}
+
+/** Build a token from an actor. `link` references the shared actor; `instance` embeds an
+ * independent copy with `source` provenance (the deferred merge engine consumes it). Size/
+ * shape resolve from the actor (M10d); `w`/`h` seed the rendered cell size now. */
+export function buildTokenFromActor(
+  worldId: string,
+  sceneId: string,
+  actor: WireDocument,
+  mode: "link" | "instance",
+  pos: { x: number; y: number },
+  cellSize: number,
+  id?: string,
+): WireDocument {
+  const base: TokenSystem = { x: pos.x, y: pos.y, w: cellSize, h: cellSize, rotation: 0 };
+  if (mode === "link") {
+    return envelope(worldId, "token", sceneId, { ...base, actor_id: actor.id, overrides: {} }, id);
+  }
+  // Deep-clone so the embedded copy is independent by value at construction (not just after
+  // the wire round-trip) — no aliasing of the source actor's system/permissions/embedded.
+  const copy: WireDocument = { ...structuredClone(actor), id: crypto.randomUUID(), source: { id: actor.id, pack: null, version: 1 } };
+  const doc = envelope(worldId, "token", sceneId, base, id);
+  doc.embedded = { actor: [copy] };
+  return doc;
 }
 
 /** A token document parented to `sceneId`, carrying the given transform + visual. */

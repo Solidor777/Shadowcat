@@ -2,11 +2,12 @@ import { getContext, setContext } from "svelte";
 import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
+import type { ActorSelection } from "./actorSelection.svelte";
 
 /**
  * Ambient app state contributed components read via Svelte context. Carries the
  * contribution registry the host renders plus the in-world session essentials
- * (document store, world id, actor role). M7d adds the i18n `t`.
+ * (document store, world id, user role). M7d adds the i18n `t`.
  */
 /** Translate function shape (framework-neutral; the Svelte adapter supplies a
  * reactive implementation). */
@@ -42,6 +43,8 @@ export interface AppContext {
   /** Canvas interaction seam: set the active tool, snap to grid, mark a dragged
    * token. No-ops until the Stage attaches the render engine. */
   scene: SceneInteraction;
+  /** The actor the place tool stamps; set by module-actors, read by scene-tools. */
+  actorSelection: ActorSelection;
   /** Broadcast a transient location ping at scene coords on the active scene. */
   sendPing: (x: number, y: number) => void;
   /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe. */

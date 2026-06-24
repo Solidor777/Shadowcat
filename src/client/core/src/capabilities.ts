@@ -27,7 +27,7 @@ function roleFloor(role: string): string[] {
 }
 
 /**
- * Resolve an actor's effective (non-GM) capability set on a document, mirroring
+ * Resolve a user's effective (non-GM) capability set on a document, mirroring
  * the server's `resolve_access_world`: the DocRole floor widened by the
  * document's additive grants and the world-default grants. GM/admin holds
  * everything — callers pass `role === "gm"` to `canWritePath`, which
@@ -62,7 +62,7 @@ function pathsOverlap(a: string, b: string): boolean {
 }
 
 /**
- * Whether the actor may write `path` on a document, given its resolved caps and
+ * Whether the user may write `path` on a document, given its resolved caps and
  * the world's declarative requirements. Mirrors the server: the structural base
  * cap must be held, plus every declared cap for any requirement whose prefix
  * overlaps the path (ancestor or descendant). GM bypasses all checks. Advisory.

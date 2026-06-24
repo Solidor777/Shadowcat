@@ -8,6 +8,7 @@
   // svelte-ignore state_referenced_locally
   const controller = new ToolController({
     scene: ctx.scene,
+    actorSelection: ctx.actorSelection,
     dispatchIntent: ctx.dispatchIntent,
     documents: ctx.documents,
     assets: ctx.assets,

@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { DocumentStore, AssetResolver } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
 import type { WireDocument, WireOperation } from "@shadowcat/core";
 
@@ -52,6 +52,21 @@ test("a moved token tweens via tick toward the new position", () => {
   expect(backend.tokens.get("t1")!.x).toBeLessThan(100);
   view.tick(10_000); // settle
   expect(backend.tokens.get("t1")!.x).toBe(100);
+});
+
+test("renders a linked token using the actor's visual", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const actor = buildActorDoc(
+    "w1",
+    { name: "G", displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 10, y: 20 }, 100, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, assets, backend).reconcile();
+  expect(backend.tokens.get("tok1")!.url).toBe(assets.url("actorimg"));
 });
 
 test("a deleted token doc removes its node", () => {

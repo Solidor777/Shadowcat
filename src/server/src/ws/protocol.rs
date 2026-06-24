@@ -112,7 +112,7 @@ pub enum AssetOp {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
     /// Sent right after a successful join. Carries the world's default capability
-    /// grants, the connecting actor's world role, and the declarative capability
+    /// grants, the connecting user's world role, and the declarative capability
     /// requirements so the client can replicate access resolution for advisory
     /// UI gating (the server remains authoritative).
     Welcome {
@@ -120,7 +120,7 @@ pub enum ServerMsg {
         current_seq: i64,
         server_time: i64,
         world_default_grants: crate::data::document::CapabilityGrants,
-        actor_role: crate::data::document::WorldRole,
+        user_role: crate::data::document::WorldRole,
         capability_requirements: Vec<crate::data::document::CapabilityRequirement>,
         /// The world's UI contract declarations, so the client can validate its
         /// loaded module set against the world's declared topology.
@@ -385,13 +385,13 @@ mod protocol_tests {
             current_seq: 0,
             server_time: 0,
             world_default_grants: CapabilityGrants::default(),
-            actor_role: WorldRole::Player,
+            user_role: WorldRole::Player,
             capability_requirements: Vec::new(),
             contract_declarations: Vec::new(),
         };
         let json = serde_json::to_value(&w).unwrap();
         assert_eq!(json["type"], "welcome");
-        assert_eq!(json["actor_role"], "player");
+        assert_eq!(json["user_role"], "player");
         assert!(json.get("world_default_grants").is_some());
         assert!(json.get("capability_requirements").is_some());
         assert!(json.get("contract_declarations").is_some());

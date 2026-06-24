@@ -59,7 +59,7 @@ describe("wire drift guard — message discriminants", () => {
     type T = Extract<Ts.ServerMsg, { type: "welcome" }>;
     // i64 fields (current_seq/server_time) are intentionally number vs bigint;
     // guard only the capability fields, which carry no i64 scalar mismatch.
-    expectTypeOf<W["actor_role"]>().toEqualTypeOf<T["actor_role"]>();
+    expectTypeOf<W["user_role"]>().toEqualTypeOf<T["user_role"]>();
     expectTypeOf<W["capability_requirements"]>().toEqualTypeOf<
       T["capability_requirements"]
     >();
@@ -84,7 +84,7 @@ describe("parseServerMsg", () => {
         current_seq: 0,
         server_time: 1,
         world_default_grants: { by_role: {}, by_user: {} },
-        actor_role: "player",
+        user_role: "player",
         capability_requirements: [],
         contract_declarations: [],
       }),
@@ -100,14 +100,14 @@ describe("parseServerMsg", () => {
         current_seq: 0,
         server_time: 1,
         world_default_grants: { by_role: { owner: ["core:manage_embedded"] }, by_user: {} },
-        actor_role: "gm",
+        user_role: "gm",
         capability_requirements: [{ path_prefix: "/system/vision", caps: ["dnd5e:gm_vision"] }],
         contract_declarations: [],
       }),
     );
     expect(m?.type).toBe("welcome");
     if (m?.type === "welcome") {
-      expect(m.actor_role).toBe("gm");
+      expect(m.user_role).toBe("gm");
       expect(m.capability_requirements[0].path_prefix).toBe("/system/vision");
       expect(m.world_default_grants.by_role.owner).toEqual(["core:manage_embedded"]);
     }

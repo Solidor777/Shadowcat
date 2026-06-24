@@ -19,7 +19,7 @@ const welcomeFrame = {
   current_seq: 0,
   server_time: 0,
   world_default_grants: { by_role: {}, by_user: {} },
-  actor_role: "player",
+  user_role: "player",
   capability_requirements: [],
   contract_declarations: [],
 };
@@ -135,7 +135,7 @@ function pushConnect(sent: Array<Record<string, unknown>>): { connect: Connect; 
 test("auto-creates a default scene on GM entry, exactly once across reconnect Welcomes", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);
-  const gmFrame = { ...welcomeFrame, actor_role: "gm" };
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
   const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
   await session.enter("w1");
   push(gmFrame);
@@ -149,7 +149,7 @@ test("auto-creates a default scene on GM entry, exactly once across reconnect We
 test("sendPing transmits a scene_ping for the active scene; onPing fires on an inbound ping", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);
-  const gmFrame = { ...welcomeFrame, actor_role: "gm" };
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
   const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
   await session.enter("w1");
   push(gmFrame); // GM → auto-creates a scene (the ping's parent)
@@ -173,7 +173,7 @@ test("does not auto-create a scene for a non-GM actor", async () => {
   const { connect, push } = pushConnect(sent);
   const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
   await session.enter("w1");
-  push(welcomeFrame); // actor_role: "player"
+  push(welcomeFrame); // user_role: "player"
   await vi.waitFor(() => expect(session.role).toBe("player"));
   await new Promise((r) => setTimeout(r, 20));
   expect(sceneCreates(sent)).toHaveLength(0);
@@ -248,7 +248,7 @@ test("a GM Welcome populates members in place (stable reference) for see-as labe
   // AppContext captures this reference at mount; it must stay valid as members load.
   const captured = session.members;
   await session.enter("w1");
-  push({ ...welcomeFrame, actor_role: "gm" });
+  push({ ...welcomeFrame, user_role: "gm" });
   await vi.waitFor(() => expect(session.members.get("u9")).toBe("Zara"));
   // Mutated in place, never reassigned — the captured snapshot sees the update.
   expect(session.members).toBe(captured);
