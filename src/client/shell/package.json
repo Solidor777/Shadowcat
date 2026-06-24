@@ -13,6 +13,7 @@
     "@shadowcat/module-stage": "workspace:*",
     "@shadowcat/module-settings": "workspace:*",
     "@shadowcat/module-assets": "workspace:*",
+    "@shadowcat/module-actors": "workspace:*",
     "@shadowcat/module-scene-tools": "workspace:*",
     "@shadowcat/types": "workspace:^",
     "@shadowcat/ui-kit": "workspace:*"
