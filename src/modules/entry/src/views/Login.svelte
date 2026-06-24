@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { login } from "../api";
+  import { login } from "../entryApi";
   import { t } from "@shadowcat/ui-kit";
 
   let { onAuthed }: { onAuthed: () => void } = $props();

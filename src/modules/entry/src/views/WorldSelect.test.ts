@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 import { test, expect, vi, afterEach } from "vitest";
 import WorldSelect from "./WorldSelect.svelte";
-import * as api from "../api";
+import * as api from "../entryApi";
 
 afterEach(() => vi.restoreAllMocks());
 
