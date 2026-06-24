@@ -37,6 +37,9 @@ pub enum DocRole {
 pub enum Visibility {
     All,
     GmOnly,
+    /// Readable by the document's owner and the GM; redacted from everyone else.
+    /// The recipient's owner-status is `Access::is_owner` (see permission.rs).
+    OwnerOrGm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]

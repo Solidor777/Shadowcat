@@ -13,7 +13,7 @@ import { z } from "zod";
 const int = z.number().int();
 
 export const DocRoleSchema = z.enum(["owner", "observer", "none"]);
-export const VisibilitySchema = z.enum(["all", "gm_only"]);
+export const VisibilitySchema = z.enum(["all", "gm_only", "owner_or_gm"]);
 export const WorldRoleSchema = z.enum(["gm", "player", "spectator"]);
 export const RejectReasonSchema = z.enum(["forbidden", "conflict", "invalid"]);
 export const ResyncSourceSchema = z.enum(["buffer", "log"]);
