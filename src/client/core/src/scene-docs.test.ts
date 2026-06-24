@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, type TokenSystem, type ActorSystem } from "./scene-docs";
+import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, type TokenSystem, type ActorSystem, type Faction } from "./scene-docs";
 
 const actorSys: ActorSystem = {
   name: "Goblin",
@@ -76,4 +76,13 @@ test("setNameHidden sets and clears the OwnerOrGm override on /system/name", () 
   expect(d.permissions.property_overrides["/system/name"]).toBe("owner_or_gm");
   setNameHidden(d, false);
   expect(d.permissions.property_overrides["/system/name"]).toBeUndefined();
+});
+
+test("buildFactionRegistryDoc builds a world-scoped, parentless registry with an id-keyed map", () => {
+  const factions: Record<string, Faction> = { hostile: { name: "Hostile", color: "#f85149", stance: "hostile" } };
+  const d = buildFactionRegistryDoc("w1", factions, "reg1");
+  expect(d.doc_type).toBe("faction-registry");
+  expect(d.parent_id).toBeNull();
+  expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
+  expect((d.system as { factions: unknown }).factions).toEqual(factions);
 });

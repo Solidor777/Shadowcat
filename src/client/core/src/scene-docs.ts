@@ -129,6 +129,27 @@ export function buildTokenDoc(worldId: string, sceneId: string, system: TokenSys
   return envelope(worldId, "token", sceneId, system, id);
 }
 
+/** A faction's display + stance. `color` is "#rrggbb" (the token border color); `stance` is
+ * reserved for later combat/targeting/vision (present now to avoid a migration). */
+export type FactionStance = "friendly" | "neutral" | "hostile";
+export interface Faction {
+  name: string;
+  color: string;
+  stance: FactionStance;
+}
+
+/** The world's faction registry: a singleton config document (doc_type "faction-registry").
+ * `factions` is keyed by faction id — an actor's `faction` field references a key. A MAP, not
+ * an array, so adding a faction is a single-key Update (`set_pointer` cannot grow arrays). */
+export interface FactionRegistrySystem {
+  factions: Record<string, Faction>;
+}
+
+/** A top-level (world-scoped, parentless) faction-registry document. */
+export function buildFactionRegistryDoc(worldId: string, factions: Record<string, Faction>, id?: string): WireDocument {
+  return envelope(worldId, "faction-registry", null, { factions } satisfies FactionRegistrySystem, id);
+}
+
 /** A generic scene-entity document (drawing/template/…) parented to `sceneId`; the
  * `system` shape is the caller's (client-owned, server structural-only). */
 export function buildSceneEntityDoc(worldId: string, sceneId: string, docType: string, system: unknown, id?: string): WireDocument {
