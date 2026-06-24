@@ -2,7 +2,7 @@
   import { createSubscriber } from "svelte/reactivity";
   import type { Asset } from "@shadowcat/types";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildActorDoc, setNameHidden, actorDisplayName, listAssets, type ActorSystem, type WireDocument } from "@shadowcat/core";
+  import { buildActorDoc, setNameHidden, actorDisplayName, listAssets, type ActorSystem, type WireDocument, type FactionRegistrySystem, type Faction } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -20,7 +20,14 @@
   let assetId = $state<string | null>(null);
   let instanceOnDrop = $state(true);
   let hideName = $state(false);
+  let faction = $state<string | null>(null);
   let assetList = $state<Asset[]>([]);
+
+  const factionOptions = $derived.by((): [string, Faction][] => {
+    subscribe();
+    const reg = ctx.documents.query("faction-registry")[0]?.system as FactionRegistrySystem | undefined;
+    return Object.entries(reg?.factions ?? {});
+  });
 
   const isHidden = (a: WireDocument): boolean => a.permissions.property_overrides["/system/name"] === "owner_or_gm";
 
@@ -48,7 +55,7 @@
       visual: { kind: "image", asset: assetId },
       size: { w: 1, h: 1 },
       shape: "square",
-      faction: null,
+      faction,
       conditions: [],
       prototype: instanceOnDrop,
     };
@@ -59,6 +66,7 @@
     displayName = "";
     assetId = null;
     hideName = false;
+    faction = null;
   }
 </script>
 
@@ -76,6 +84,14 @@
           <button type="button" class="hide-toggle" onclick={() => toggleHidden(a)}>
             {isHidden(a) ? t("actors.nameShown") : t("actors.hideName")}
           </button>
+          <select
+            aria-label={t("actors.faction")}
+            value={(a.system as { faction?: string | null }).faction ?? ""}
+            onchange={(e) => ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/system/faction", old: (a.system as { faction?: string | null }).faction ?? null, new: e.currentTarget.value || null }] }])}
+          >
+            <option value="">—</option>
+            {#each factionOptions as [id, f] (id)}<option value={id}>{f.name}</option>{/each}
+          </select>
         {/if}
       </li>
     {/each}
@@ -93,6 +109,12 @@
     <input placeholder={t("actors.displayName")} aria-label={t("actors.displayName")} bind:value={displayName} />
     <label><input type="checkbox" bind:checked={instanceOnDrop} /> {t("actors.instanceOnDrop")}</label>
     <label><input type="checkbox" bind:checked={hideName} /> {t("actors.hideName")}</label>
+    <label>{t("actors.faction")}
+      <select bind:value={faction}>
+        <option value={null}>—</option>
+        {#each factionOptions as [id, f] (id)}<option value={id}>{f.name}</option>{/each}
+      </select>
+    </label>
     <div class="picker">
       {#each assetList as a (a.id)}
         <button type="button" class:selected={assetId === a.id} title={a.original_name} onclick={() => (assetId = a.id)}>

@@ -38,6 +38,7 @@ export const en: Messages = {
   "actors.create": "Create actor",
   "actors.hideName": "Hide name from players",
   "actors.nameShown": "Name shown",
+  "actors.faction": "Faction",
   "factions.title": "Factions",
   "factions.name": "Name",
   "factions.color": "Color",
