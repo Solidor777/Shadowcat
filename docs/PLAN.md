@@ -198,6 +198,18 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > world/scene deletion, `tower_sessions` sweep.
 
 ### M10 · Tokens
+> **In progress.** Cross-cutting spec `superpowers/specs/2026-06-24-m10-tokens-design.md`
+> (decisions locked), decomposed into 10 checkpoints **M10a–j** across 4 phases
+> (plan per checkpoint; `/clear` between). **M10a DONE** (merged --no-ff to LOCAL main,
+> NOT pushed — push gate = full M10): the game `Actor` doc + **linked** (`actor_id` +
+> name/visual/size override whitelist) vs **instanced** (embedded copy + `source`
+> provenance) tokens; the single `resolveTokenActor → EffectiveActor` read-through;
+> `TokenView` visual resolution; the `ActorSelection` seam + place-tool actor stamping
+> (link/instance per `prototype`, with a user-configurable keep-after-place toggle); the
+> swappable `@shadowcat/module-actors` create/list/pick package; and the user-side
+> `actor_role`→`user_role` rename (the game entity now owns the name "Actor").
+> Buddy-checked (1 agreed deep-clone fix + 2 one-sided minors resolved). Plan:
+> `superpowers/plans/2026-06-24-m10a-actor-model.md`. **Next = M10b** (factions + name privacy).
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
