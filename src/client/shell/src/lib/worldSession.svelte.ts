@@ -30,10 +30,9 @@ export interface WorldSessionOpts {
   selfId: string;
   /** Browser: webSocketConnect(wsUrl). Tests: a mock connect. */
   connect: Connect;
-  /** The first-party shell module providing region surfaces. */
-  coreUiModule: Module;
-  /** Additional feature modules activated after core-ui (e.g. scene-tools). */
-  featureModules?: Module[];
+  /** First-party default modules, in activation order (the layout/core-ui module
+   *  first so its region surfaces exist before panel modules activate). */
+  modules: Module[];
   /** Diagnostics sink; defaults to the leveled console logger. */
   logger?: Logger;
 }
@@ -245,10 +244,9 @@ export class WorldSession {
       }
       if (!this.#bootstrapped) {
         // Set before the await so a second Welcome (reconnect) cannot re-enter
-        // and double-add the module.
+        // and double-add the modules.
         this.#bootstrapped = true;
-        this.#modules.add(this.opts.coreUiModule);
-        for (const m of this.opts.featureModules ?? []) this.#modules.add(m);
+        for (const m of this.opts.modules) this.#modules.add(m);
         await this.#modules.activate();
       }
       reconcileTopology(this.#modules.declarations(), w.contract_declarations, this.#logger);

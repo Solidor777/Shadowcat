@@ -73,7 +73,7 @@
     const wsUrl =
       (location.protocol === "https:" ? "wss:" : "ws:") +
       "//" + location.host + "/ws?world=" + worldId;
-    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), coreUiModule: coreUi, featureModules: [sceneTools] });
+    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [coreUi, sceneTools] });
     session = s;
     void s.enter(worldId);
     setLastWorld(worldId);
