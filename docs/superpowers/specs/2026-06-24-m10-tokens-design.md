@@ -235,6 +235,32 @@ Waypoint placement (the move/measure tool gains waypoints), a path-preview overl
 correlated request; the move itself remains an optimistic document intent gated by the
 M9 server block.
 
+### 10.5 Engine-choice rationale (Polyanya vs A\*+funnel) — recorded
+
+The common anti-Polyanya argument (e.g. Recast/Detour A\* + funnel string-pulling) is
+driven by AAA action-game requirements **Shadowcat does not have**, so it does not
+override the choice here:
+
+- **Weighting refraction sub-optimality** — moot for the grid majority (grid A\* with
+  **exact** per-cell weights; Polyanya isn't in that path); only touches gridless+weighted
+  (rare), where "invisible in 99% of games" holds — doubly so for a *human-previewed*
+  measurement path, not an autonomous trajectory.
+- **Dynamic obstacles** — our walls change on *infrequent GM edits*, re-meshed at the M9
+  vision-recompute cadence; not per-frame destructibles.
+- **Crowd steering / local avoidance (RVO/DetourCrowd)** — N/A; tokens are human-placed and
+  may overlap (VTTs stack tokens).
+- **Hundreds-of-units-per-frame performance** — N/A; one path per human drag/waypoint,
+  server-side, occasionally.
+
+A\*+funnel is **not** better for this use case: same navmesh requirement (CDT-from-walls),
+same rebuild-on-edit story, **also** approximate under weighting (the unsolved Weighted
+Region Problem — both engines miss optimality in opposite ways), an irrelevant performance
+win, an unneeded crowd-steering feature — and **higher build cost** (hand-roll funnel +
+navmesh-A\*, or a C++ Recast binding that complicates the pure-Rust cross-platform build +
+the cargo-bloat budget) versus the ready, maintained `vleue/polyanya` crate. The one real
+(mild) caveat — navmesh rebuild on wall edits — is engine-independent and validated in the
+M10f plan.
+
 ## 11. Visual stack (M10h–j)
 
 `TokenNodeSpec.visual` generalizes from flat `{kind:"image", asset}` to a discriminated
