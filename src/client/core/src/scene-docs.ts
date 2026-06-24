@@ -22,7 +22,7 @@ export interface TokenSystem {
   visual?: { kind: "image"; asset: string };
   /** Linked token: the shared actor's id (null/absent ⇒ instanced, see `embedded.actor`). */
   actor_id?: string | null;
-  /** Linked-only per-token override whitelist (name/visual/size). */
+  /** Linked-only per-token override whitelist (see {@link TokenOverrides}). */
   overrides?: TokenOverrides;
 }
 

@@ -1,8 +1,8 @@
 import { describe, it, expect, test } from "vitest";
-import { DocumentStore } from "./store";
+import { DocumentStore, type ReadableDocuments } from "./store";
 import type { WireDocument } from "./wire";
-import { buildActorDoc, buildTokenDoc, buildTokenFromActor, buildConditionRegistryDoc, type ActorSystem, type TokenOverrides } from "./scene-docs";
-import { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget } from "./actor";
+import { buildActorDoc, buildSceneDoc, buildTokenDoc, buildTokenFromActor, buildConditionRegistryDoc, type ActorSystem, type TokenOverrides } from "./scene-docs";
+import { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, footprintRadius } from "./actor";
 
 const sys: ActorSystem = {
   name: "Goblin",
@@ -117,10 +117,6 @@ describe("actorDisplayName", () => {
     expect(actorDisplayName({}, "Mystery")).toBe("Mystery");
   });
 });
-
-import { resolveTokenBox, footprintRadius } from "./actor";
-import { buildSceneDoc } from "./scene-docs";
-import type { ReadableDocuments } from "./store";
 
 // Minimal read-only store over a fixed doc set.
 function fakeStore(docs: WireDocument[]): ReadableDocuments {
