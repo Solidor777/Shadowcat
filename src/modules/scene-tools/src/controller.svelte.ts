@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, type ReadableDocuments, type AssetResolver, type WireOperation } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, type ReadableDocuments, type AssetResolver, type WireOperation } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import { topTokenAt } from "./hit-test";
 
@@ -341,8 +341,10 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
     return { x: s?.x ?? 0, y: s?.y ?? 0 };
   };
   const sizeOf = (id: string): { w: number; h: number } => {
-    const s = ctx.documents.get(id)?.system as { w?: number; h?: number } | undefined;
-    return { w: s?.w ?? 100, h: s?.h ?? 100 };
+    const doc = ctx.documents.get(id);
+    if (!doc) return { w: 100, h: 100 };
+    const box = resolveTokenBox(doc, ctx.documents);
+    return { w: box.w || 100, h: box.h || 100 };
   };
 
   /** A closed rect ring per selected token into the tool overlay (cleared when empty). */
@@ -374,7 +376,7 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
 
   return {
     onPointerDown(p: Point, ev: PointerEvent): boolean {
-      const id = topTokenAt(ctx.documents.query("token"), p);
+      const id = topTokenAt(ctx.documents.query("token"), p, ctx.documents);
       if (!id) {
         sel?.clear();
         ctx.scene.clearOverlay();
