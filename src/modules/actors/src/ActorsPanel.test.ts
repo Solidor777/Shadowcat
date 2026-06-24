@@ -52,8 +52,8 @@ describe("ActorsPanel — shape + size", () => {
     const heightInput = screen.getByLabelText("actors.height");
 
     await fireEvent.change(shapeSelect, { target: { value: "circle" } });
-    await fireEvent.change(widthInput, { target: { value: "2" } });
-    await fireEvent.change(heightInput, { target: { value: "2" } });
+    await fireEvent.input(widthInput, { target: { value: "2" } });
+    await fireEvent.input(heightInput, { target: { value: "2" } });
 
     expect((shapeSelect as HTMLSelectElement).value).toBe("circle");
     expect((widthInput as HTMLInputElement).value).toBe("2");
@@ -175,7 +175,40 @@ describe("ActorsPanel — shape + size", () => {
     expect(ops[0]).toMatchObject({
       op: "update",
       doc_id: "act1",
-      changes: [{ path: "/system/size", new: { w: 3, h: 1 } }],
+      changes: [{ path: "/system/size", old: { w: 1, h: 1 }, new: { w: 3, h: 1 } }],
+    });
+  });
+
+  it("per-row GM height edit dispatches update to /system/size preserving width", async () => {
+    const dispatchIntent = vi.fn();
+    const actor = buildActorDoc(
+      "w1",
+      { name: "Troll", displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+      "act1",
+    );
+    const store = storeWith(actor);
+
+    render(ActorsPanel, {
+      context: setAppContextForTest({
+        role: "gm",
+        world: "w1",
+        documents: store,
+        dispatchIntent,
+      }),
+    });
+
+    // Scope to the list item so we get the per-row control, not the create-form control.
+    const listItem = screen.getByRole("listitem");
+    const rowHeightInput = within(listItem).getByLabelText("actors.height");
+
+    await fireEvent.change(rowHeightInput, { target: { value: "3" } });
+
+    expect(dispatchIntent).toHaveBeenCalledTimes(1);
+    const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
+    expect(ops[0]).toMatchObject({
+      op: "update",
+      doc_id: "act1",
+      changes: [{ path: "/system/size", old: { w: 2, h: 1 }, new: { w: 2, h: 3 } }],
     });
   });
 });
