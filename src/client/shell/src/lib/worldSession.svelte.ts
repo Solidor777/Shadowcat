@@ -11,11 +11,15 @@ import {
   reconcileTopology,
   buildSceneDoc,
   consoleLogger,
+  resolveCaps,
+  canWritePath,
   type Connect,
   type Logger,
   type Module,
   type WireWelcome,
   type WireOperation,
+  type WireDocument,
+  type WireCapabilityRequirement,
   type SceneFrame,
   type SceneSubscription,
 } from "@shadowcat/core";
@@ -62,6 +66,10 @@ export class WorldSession {
    * (mutated in place, never reassigned) so the reference captured into AppContext
    * at mount stays valid and consumers re-render when it populates on (re)connect. */
   readonly members = new SvelteMap<string, string>();
+  /** World-default capability grants + declarative requirements from the latest Welcome; inputs
+   * to the advisory `canEdit` gate. Re-set on every (re)connect. */
+  #worldGrants: WireWelcome["world_default_grants"] = { by_role: {}, by_user: {} };
+  #requirements: WireCapabilityRequirement[] = [];
 
   #ws: WsClient | null = null;
   #optimistic: OptimisticClient;
@@ -73,6 +81,20 @@ export class WorldSession {
    * (panels that want confirmed-only state read it). */
   get documents(): OptimisticClient {
     return this.#optimistic;
+  }
+
+  /** The current user's id (ownership checks). */
+  get selfId(): string {
+    return this.opts.selfId;
+  }
+
+  /** Advisory client-side mirror of the server's Update-path check, for showing/hiding write
+   * controls. GM bypasses; the server remains authoritative and rejects a bypass at apply_intent. */
+  canEdit(doc: WireDocument, path: string): boolean {
+    if (this.role === "gm") return true;
+    if (!this.role) return false;
+    const caps = resolveCaps(doc.permissions, this.opts.selfId, this.role, this.#worldGrants);
+    return canWritePath(path, caps, false, this.#requirements);
   }
   #modules: ModuleRegistry;
   #logger: Logger;
@@ -233,6 +255,8 @@ export class WorldSession {
   async #onWelcome(w: WireWelcome): Promise<void> {
     try {
       this.role = w.user_role;
+      this.#worldGrants = w.world_default_grants;
+      this.#requirements = w.capability_requirements;
       // Activate modules BEFORE any await below (a GM's member fetch) so the
       // layout module contributes Layout into the `root` surface the host renders
       // — the table chrome paints immediately on mount, never a blank frame during

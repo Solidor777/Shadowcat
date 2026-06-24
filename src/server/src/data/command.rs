@@ -259,6 +259,25 @@ mod tests {
     }
 
     #[test]
+    fn set_pointer_writes_into_an_indexed_embedded_actor_copy() {
+        // An instanced token toggles conditions on its embedded actor copy at
+        // `/embedded/actor/0/system/conditions`: array-index intermediate descent
+        // followed by an object-leaf insert. (M10c instanced-condition write path.)
+        let mut v =
+            serde_json::json!({ "embedded": { "actor": [ { "system": { "conditions": [] } } ] } });
+        set_pointer(
+            &mut v,
+            "/embedded/actor/0/system/conditions",
+            serde_json::json!(["dead"]),
+        )
+        .unwrap();
+        assert_eq!(
+            v["embedded"]["actor"][0]["system"]["conditions"],
+            serde_json::json!(["dead"])
+        );
+    }
+
+    #[test]
     fn set_pointer_rejects_descend_into_scalar() {
         let mut v = serde_json::json!({ "hp": 10 });
         let err = set_pointer(&mut v, "/hp/value", serde_json::json!(1));

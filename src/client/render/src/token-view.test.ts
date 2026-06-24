@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
 import type { WireDocument, WireOperation } from "@shadowcat/core";
 
@@ -38,7 +38,7 @@ test("reconcile creates a token node at its center transform with the resolved u
   const backend = new MockBackend();
   store.applyCommand(cmd(1, [{ op: "create", doc: tokenDoc("t1", 100, 50, "img1") }]));
   new TokenView(store, assets, backend).reconcile();
-  expect(backend.tokens.get("t1")).toEqual({ x: 100, y: 50, w: 100, h: 100, rotation: 0, url: assets.url("img1"), borderColor: null });
+  expect(backend.tokens.get("t1")).toEqual({ x: 100, y: 50, w: 100, h: 100, rotation: 0, url: assets.url("img1"), borderColor: null, badges: [] });
 });
 
 test("a moved token tweens via tick toward the new position", () => {
@@ -108,4 +108,33 @@ test("a token with no faction has a null border", () => {
   store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
   new TokenView(store, new AssetResolver(), backend).reconcile();
   expect(backend.tokens.get("tok2")!.borderColor).toBeNull();
+});
+
+test("resolves condition icon glyphs into token badges via the registry", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" }, prone: { name: "Prone", icon: "🛌" } }, "creg1");
+  const actor = buildActorDoc(
+    "w1",
+    { name: "G", displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: ["dead", "prone"], prototype: false },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: registry }, { op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, new AssetResolver(), backend).reconcile();
+  expect(backend.tokens.get("tok1")!.badges).toEqual(["💀", "🛌"]);
+});
+
+test("a token whose actor has no conditions has empty badges", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const actor = buildActorDoc(
+    "w1",
+    { name: "G", displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+    "act2",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok2");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, new AssetResolver(), backend).reconcile();
+  expect(backend.tokens.get("tok2")!.badges).toEqual([]);
 });
