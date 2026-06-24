@@ -67,7 +67,7 @@ importers:
         specifier: ^8.0.0
         version: 8.19.0
 
-  src/client/ui:
+  src/client/shell:
     dependencies:
       '@shadowcat/core':
         specifier: workspace:*

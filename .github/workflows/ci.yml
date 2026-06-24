@@ -24,7 +24,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build client bundle (embedded by the server)
-        run: pnpm --filter @shadowcat/ui build
+        run: pnpm --filter @shadowcat/shell build
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -82,7 +82,7 @@ jobs:
       - run: pnpm -r typecheck
       - run: pnpm -r test
       - run: pnpm lint
-      - run: pnpm --filter @shadowcat/ui build
+      - run: pnpm --filter @shadowcat/shell build
 
   # Cross-runtime end-to-end: the real @shadowcat/core client driven against the
   # real Rust test_server. Needs both toolchains, so it is its own single-OS job
@@ -102,7 +102,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # The shadowcat lib embeds dist/ (rust-embed requires the folder at compile
       # time), so the client must be built before any cargo build of the server.
-      - run: pnpm --filter @shadowcat/ui build
+      - run: pnpm --filter @shadowcat/shell build
       # Pre-build the server so the in-test spawn does not pay the compile cost.
       - run: cargo build -p shadowcat --bin test_server
       - run: pnpm --filter @shadowcat/core test:e2e
@@ -123,5 +123,5 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @shadowcat/ui exec playwright install --with-deps chromium
-      - run: pnpm --filter @shadowcat/ui e2e
+      - run: pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium
+      - run: pnpm --filter @shadowcat/shell e2e
