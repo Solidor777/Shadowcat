@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
 import type { WireDocument, WireOperation } from "@shadowcat/core";
 
@@ -38,7 +38,7 @@ test("reconcile creates a token node at its center transform with the resolved u
   const backend = new MockBackend();
   store.applyCommand(cmd(1, [{ op: "create", doc: tokenDoc("t1", 100, 50, "img1") }]));
   new TokenView(store, assets, backend).reconcile();
-  expect(backend.tokens.get("t1")).toEqual({ x: 100, y: 50, w: 100, h: 100, rotation: 0, url: assets.url("img1"), borderColor: null, badges: [] });
+  expect(backend.tokens.get("t1")).toEqual({ x: 100, y: 50, w: 100, h: 100, rotation: 0, url: assets.url("img1"), borderColor: null, badges: [], shape: "square" });
 });
 
 test("a moved token tweens via tick toward the new position", () => {
@@ -137,4 +137,34 @@ test("a token whose actor has no conditions has empty badges", () => {
   store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
   new TokenView(store, new AssetResolver(), backend).reconcile();
   expect(backend.tokens.get("tok2")!.badges).toEqual([]);
+});
+
+test("reconciles a linked 2x2 actor token to 2-cell pixel size + circle shape", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const scene = buildSceneDoc("w1", { grid: { kind: "square", size: 100 } }, "scene1");
+  const actor = buildActorDoc(
+    "w1",
+    { name: "Ogre", displayName: "Ogre", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 2 }, shape: "circle", faction: null, conditions: [], prototype: false },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, assets, backend).reconcile();
+  const spec = backend.tokens.get("tok1")!;
+  expect(spec.w).toBe(200);
+  expect(spec.h).toBe(200);
+  expect(spec.shape).toBe("circle");
+});
+
+test("raw token keeps its own size + defaults to square", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const token = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 80, h: 80, rotation: 0, visual: { kind: "image", asset: "a1" } }, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: token }]));
+  new TokenView(store, new AssetResolver(), backend).reconcile();
+  const spec = backend.tokens.get("tok1")!;
+  expect(spec.w).toBe(80);
+  expect(spec.shape).toBe("square");
 });

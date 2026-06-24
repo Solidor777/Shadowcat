@@ -170,7 +170,11 @@ export class PixiBackend implements DisplayBackend {
       const hw = spec.w / 2;
       const hh = spec.h / 2;
       border.clear();
-      border.rect(-hw, -hh, spec.w, spec.h).stroke({ width: 3, color: spec.borderColor });
+      if (spec.shape === "circle") {
+        border.ellipse(0, 0, hw, hh).stroke({ width: 3, color: spec.borderColor });
+      } else {
+        border.rect(-hw, -hh, spec.w, spec.h).stroke({ width: 3, color: spec.borderColor });
+      }
       border.position.set(spec.x, spec.y);
       border.angle = spec.rotation; // degrees, like the sprite
     }
