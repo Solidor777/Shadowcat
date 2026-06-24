@@ -45,7 +45,7 @@ export interface TokenTransform {
   rotation: number;
 }
 
-/** A resolved token render node: transform + size + resolved image URL + faction border. */
+/** A resolved token render node: transform + size + resolved image URL + faction border + footprint shape. */
 export interface TokenNodeSpec {
   x: number;
   y: number;

@@ -83,7 +83,7 @@ export class TokenView {
     }
     // Condition badges: resolve the actor's condition ids to registry icon glyphs.
     const badges = resolveConditions(doc, this.store).map((c) => c.icon);
-    const box = resolveTokenBox(doc, this.store);
+    const box = resolveTokenBox(doc, this.store, eff);
     return {
       x: box.x, y: box.y, w: box.w, h: box.h, rotation: s.rotation ?? 0,
       url: this.assets.url(visual.asset),

@@ -94,7 +94,10 @@ export function conditionTarget(token: WireDocument, store: ReadableDocuments): 
 /** A token's resolved footprint in scene pixels + its shape — the single read-through the
  * renderer, hit-test, and selection ring share so they cannot diverge for multi-cell/circle
  * tokens. Actor-backed: size = EffectiveActor.size (grid units) × the parent scene's grid cell;
- * raw/dangling tokens fall back to their own transform + square. `(x,y)` is the token center. */
+ * raw/dangling tokens fall back to their own transform + square. `(x,y)` is the token center.
+ * Pass a pre-resolved `eff` (from a prior `resolveTokenActor` call) to avoid a second
+ * resolution; omit (or pass `undefined`) to resolve internally. Pass `null` explicitly for a
+ * known actorless token to skip resolution and fall back to the raw system dimensions. */
 export interface TokenBox {
   x: number;
   y: number;
@@ -109,14 +112,14 @@ function sceneCellSize(token: WireDocument, store: ReadableDocuments): number {
   return (scene?.system as SceneSystem | undefined)?.grid?.size ?? 100;
 }
 
-export function resolveTokenBox(token: WireDocument, store: ReadableDocuments): TokenBox {
+export function resolveTokenBox(token: WireDocument, store: ReadableDocuments, eff?: EffectiveActor | null): TokenBox {
   const s = token.system as { x?: number; y?: number; w?: number; h?: number } | undefined;
   const x = s?.x ?? 0;
   const y = s?.y ?? 0;
-  const eff = resolveTokenActor(token, store);
-  if (eff) {
+  const actor = eff === undefined ? resolveTokenActor(token, store) : eff;
+  if (actor) {
     const cell = sceneCellSize(token, store);
-    return { x, y, w: eff.size.w * cell, h: eff.size.h * cell, shape: eff.shape };
+    return { x, y, w: actor.size.w * cell, h: actor.size.h * cell, shape: actor.shape };
   }
   return { x, y, w: s?.w ?? 0, h: s?.h ?? 0, shape: "square" };
 }

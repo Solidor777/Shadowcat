@@ -166,5 +166,6 @@ test("raw token keeps its own size + defaults to square", () => {
   new TokenView(store, new AssetResolver(), backend).reconcile();
   const spec = backend.tokens.get("tok1")!;
   expect(spec.w).toBe(80);
+  expect(spec.h).toBe(80);
   expect(spec.shape).toBe("square");
 });
