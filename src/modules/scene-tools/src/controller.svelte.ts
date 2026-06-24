@@ -340,22 +340,23 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
     const s = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
     return { x: s?.x ?? 0, y: s?.y ?? 0 };
   };
-  const sizeOf = (id: string): { w: number; h: number } => {
-    const doc = ctx.documents.get(id);
-    if (!doc) return { w: 100, h: 100 };
-    const box = resolveTokenBox(doc, ctx.documents);
-    return { w: box.w || 100, h: box.h || 100 };
-  };
 
-  /** A closed rect ring per selected token into the tool overlay (cleared when empty). */
+  /** A closed ring per selected token into the tool overlay (cleared when empty). Circle
+   * tokens receive an ellipse ring so the ring, hit-test, and faction border agree on shape. */
   const drawSelection = (): void => {
     if (!sel) return;
     const rings = [...sel.ids].map((id) => {
       const c = centerOf(id);
-      const { w, h } = sizeOf(id);
+      const doc = ctx.documents.get(id);
+      const box = doc ? resolveTokenBox(doc, ctx.documents) : null;
+      const w = (box?.w || 0) || 100;
+      const h = (box?.h || 0) || 100;
       const hw = w / 2;
       const hh = h / 2;
-      return { points: [c.x - hw, c.y - hh, c.x + hw, c.y - hh, c.x + hw, c.y + hh, c.x - hw, c.y + hh], closed: true, stroke: { color: 0xffd400, width: 2 }, fill: null };
+      const points = box?.shape === "circle"
+        ? ellipsePoints(c.x - hw, c.y - hh, c.x + hw, c.y + hh)
+        : [c.x - hw, c.y - hh, c.x + hw, c.y - hh, c.x + hw, c.y + hh, c.x - hw, c.y + hh];
+      return { points, closed: true, stroke: { color: 0xffd400, width: 2 }, fill: null };
     });
     if (rings.length === 0) ctx.scene.clearOverlay();
     else ctx.scene.previewOverlay(rings);

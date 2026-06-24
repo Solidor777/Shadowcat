@@ -150,6 +150,7 @@ test("resolveTokenBox reads shape from the actor and applies a per-token overrid
   const box = resolveTokenBox(token, fakeStore([scene, actor, token]));
   expect(box.shape).toBe("square");
   expect(box.w).toBe(400);
+  expect(box.h).toBe(400);
 });
 
 test("resolveTokenBox falls back to token.system w/h + square for a raw (actorless) token", () => {
