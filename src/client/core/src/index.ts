@@ -71,3 +71,5 @@ export type { AssetOp } from "./assets";
 export { listAssets, uploadAsset, replaceAsset, deleteAsset } from "./asset-rest";
 export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor } from "./scene-docs";
 export type { SceneSystem, TokenSystem, ActorSystem, ActorVisual, TokenOverrides } from "./scene-docs";
+export { resolveTokenActor } from "./actor";
+export type { EffectiveActor } from "./actor";
