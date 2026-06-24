@@ -1,0 +1,20 @@
+{
+  "name": "@shadowcat/module-entry",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@shadowcat/types": "workspace:*",
+    "@shadowcat/ui-kit": "workspace:*"
+  },
+  "devDependencies": {
+    "@testing-library/svelte": "^5.3.1",
+    "jsdom": "^29.1.1",
+    "sass": "^1.101.0"
+  },
+  "scripts": {
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run"
+  }
+}

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { WorldEntry } from "@shadowcat/types";
-  import { listWorlds, createWorld } from "../api";
+  import { listWorlds, createWorld } from "../entryApi";
   import { t } from "@shadowcat/ui-kit";
 
   let { onEnter }: { onEnter: (worldId: string) => void } = $props();

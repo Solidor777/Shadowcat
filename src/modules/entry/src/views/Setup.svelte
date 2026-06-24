@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setup } from "../api";
+  import { setup } from "../entryApi";
   import { t } from "@shadowcat/ui-kit";
 
   let { onDone }: { onDone: () => void } = $props();
