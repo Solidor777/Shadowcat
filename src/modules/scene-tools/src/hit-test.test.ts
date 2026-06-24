@@ -4,7 +4,7 @@ import { buildSceneDoc, buildActorDoc, buildTokenFromActor, buildTokenDoc } from
 import type { ReadableDocuments, WireDocument } from "@shadowcat/core";
 
 function fakeStore(docs: WireDocument[]): ReadableDocuments {
-  return { get: (id) => docs.find((d) => d.id === id), query: (type) => docs.filter((d) => d.doc_type === type), subscribe: () => () => {} } as ReadableDocuments;
+  return { get: (id) => docs.find((d) => d.id === id), query: (type) => docs.filter((d) => d.doc_type === type), subscribe: () => () => {}, appliedSeq: 0 } as ReadableDocuments;
 }
 const actorSys = (over = {}) => ({ name: "G", displayName: "G", visual: { kind: "image" as const, asset: "a1" }, size: { w: 1, h: 1 }, shape: "square" as const, faction: null, conditions: [], prototype: false, ...over });
 
