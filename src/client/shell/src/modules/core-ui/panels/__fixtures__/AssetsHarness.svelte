@@ -25,6 +25,7 @@
     sendPing: () => {},
     onPing: () => () => {},
     leaveWorld: () => {},
+    logout: async () => {},
   });
 </script>
 

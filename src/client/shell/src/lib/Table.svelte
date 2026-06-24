@@ -2,6 +2,8 @@
   import { setAppContext } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
   import Layout from "./Layout.svelte";
+  import { logout } from "./api";
+  import { navigate } from "./route.svelte";
   import type { WorldSession } from "./worldSession.svelte";
 
   let { session, leaveWorld }: { session: WorldSession; leaveWorld: () => void } =
@@ -26,6 +28,10 @@
     sendPing: (x, y) => session.sendPing(x, y),
     onPing: (cb) => session.onPing(cb),
     leaveWorld,
+    logout: async () => {
+      await logout();
+      navigate({ name: "login" });
+    },
   });
 </script>
 

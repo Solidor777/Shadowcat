@@ -48,6 +48,8 @@ export interface AppContext {
   onPing: (cb: (msg: { scene: string; x: number; y: number; user: string }) => void) => () => void;
   /** Leave the current world and return to world-select. */
   leaveWorld: () => void;
+  /** Log out of the server session and return to the pre-world (login) view. */
+  logout: () => Promise<void>;
 }
 
 /** Context key; exported only so test fixtures can seed an AppContext. */
