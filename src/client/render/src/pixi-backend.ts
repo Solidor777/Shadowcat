@@ -29,6 +29,8 @@ export class PixiBackend implements DisplayBackend {
   private readonly tokenUrls = new Map<string, string>();
   /** Faction border outline per token (absent when the token has no faction color). */
   private readonly tokenBorders = new Map<string, Graphics>();
+  /** Condition badge glyph nodes per token (upright; absent when the token has no conditions). */
+  private readonly tokenBadges = new Map<string, Text[]>();
   private background: Sprite | null = null;
   private backgroundUrl: string | null = null;
   /** Monotonic counter disambiguating concurrent background loads. */
@@ -169,6 +171,24 @@ export class PixiBackend implements DisplayBackend {
       border.position.set(spec.x, spec.y);
       border.angle = spec.rotation; // degrees, like the sprite
     }
+    // Condition badges: upright glyph chips along the token's top edge, tracking its position
+    // (not rotation — status markers stay upright). Rebuilt each push; cheap for a few glyphs.
+    const prevBadges = this.tokenBadges.get(id);
+    if (prevBadges) for (const b of prevBadges) b.destroy();
+    if (spec.badges.length === 0) {
+      this.tokenBadges.delete(id);
+    } else {
+      const size = Math.max(12, Math.min(spec.w, spec.h) * 0.28);
+      const nodes: Text[] = [];
+      spec.badges.forEach((glyph, i) => {
+        const txt = new Text({ text: glyph, style: { fontSize: size, fontFamily: "sans-serif" } });
+        txt.anchor.set(0.5);
+        txt.position.set(spec.x - spec.w / 2 + size / 2 + i * (size + 2), spec.y - spec.h / 2 + size / 2);
+        this.layers.get("tokens")?.addChild(txt);
+        nodes.push(txt);
+      });
+      this.tokenBadges.set(id, nodes);
+    }
     // Only (re)load on a URL change — a tweening token re-pushes ~60×/s with the same url.
     if (this.tokenUrls.get(id) !== spec.url) {
       this.tokenUrls.set(id, spec.url);
@@ -190,6 +210,11 @@ export class PixiBackend implements DisplayBackend {
     if (border) {
       border.destroy();
       this.tokenBorders.delete(id);
+    }
+    const badges = this.tokenBadges.get(id);
+    if (badges) {
+      for (const b of badges) b.destroy();
+      this.tokenBadges.delete(id);
     }
   }
 

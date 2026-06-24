@@ -55,6 +55,8 @@ export interface TokenNodeSpec {
   url: string;
   /** Faction border color (0xRRGGBB), or null for no border. */
   borderColor: number | null;
+  /** Condition marker glyphs (emoji), rendered as upright chips along the token's top edge. */
+  badges: string[];
 }
 
 /** A drawn shape node: a polyline/polygon (flat scene-coord points) with optional fill
