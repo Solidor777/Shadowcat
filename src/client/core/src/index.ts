@@ -69,5 +69,5 @@ export type {
 export { AssetResolver } from "./assets";
 export type { AssetOp } from "./assets";
 export { listAssets, uploadAsset, replaceAsset, deleteAsset } from "./asset-rest";
-export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc } from "./scene-docs";
-export type { SceneSystem, TokenSystem, ActorSystem, ActorVisual } from "./scene-docs";
+export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor } from "./scene-docs";
+export type { SceneSystem, TokenSystem, ActorSystem, ActorVisual, TokenOverrides } from "./scene-docs";
