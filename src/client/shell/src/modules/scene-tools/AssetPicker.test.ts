@@ -4,7 +4,7 @@ import { DocumentStore, AssetResolver } from "@shadowcat/core";
 import { SceneInteractionBridge } from "@shadowcat/ui-kit";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { ToolController } from "./controller.svelte";
-import * as api from "../../lib/api";
+import * as api from "@shadowcat/core";
 import AssetPicker from "./AssetPicker.svelte";
 
 beforeEach(() => vi.restoreAllMocks());
