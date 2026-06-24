@@ -82,3 +82,18 @@ source of truth. The ones agents break most:
 
 **Subsystem skills:** `documents-permissions`, `actors-tokens`, `scene-rendering`,
 `realtime-sync`, `client-shell`, `assets` (all `shadowcat-codebase-*`).
+
+## Maintaining this skill family
+
+This family is not fixed — **create a new `shadowcat-codebase-<subsystem>` skill whenever work
+opens a subsystem none of the existing skills covers** (e.g. a new milestone like effects,
+pathfinding, chat, or audio). Don't stretch an unrelated skill to fit.
+
+When adding one:
+1. Follow the fixed shape — Purpose / Key files & seams / Hard invariants / Gotchas / Pointers —
+   and keep it orientation+index: point INTO graphify, `docs/design/`, and memory; never duplicate
+   them. Cite each invariant's memory slug or design-doc section.
+2. Add it to the **Subsystem skills** list above, and add its path globs to the activation hook
+   (`.claude/hooks/codebase-skill-reminder.py` `SUBSYSTEMS` map).
+3. This creation step is part of the reviewed skill-update gate (see CLAUDE.md
+   `## Codebase Skills & Agents`): a new subsystem with no skill is itself a gate violation.
