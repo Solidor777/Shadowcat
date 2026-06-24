@@ -322,63 +322,97 @@ export function makeTemplateTool(ctx: ToolContext, controller: ToolController): 
  * Caps optimistic-pending churn during a drag without starving the remote view. */
 const DRAG_THROTTLE_MS = 50;
 
-/** Pick a token on pointerdown and drag it: the local sprite snaps to the pointer (via
- * setDraggingToken), and snapped position-update intents stream coalesced to the server
- * (and other clients), with the final position flushed on release. Picks nothing →
- * unhandled, so the camera pans. */
+/** Pick a token on pointerdown and drag the whole selection. Clicking an unselected token
+ * replaces the selection with just it; Shift toggles it in/out. Dragging moves every selected
+ * token by the same snapped delta, preserving relative offsets; intents stream coalesced with
+ * the final position flushed on release. Empty space clears the selection and yields the gesture
+ * to the camera. A ring overlay marks the selection. */
 export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
   const now = ctx.now ?? ((): number => Date.now());
+  const sel = ctx.tokenSelection;
   let draggingId: string | null = null;
-  let offset: Point = { x: 0, y: 0 };
+  let grabOrigin: Point = { x: 0, y: 0 };
+  let origins = new Map<string, Point>(); // selected id -> original center at grab time
   let moved = false;
   let lastSentAt = -Infinity;
 
-  /** Snapped token center for a pointer at scene point `p`, holding the grab offset. */
-  const targetFor = (p: Point): Point => ctx.scene.snap({ x: p.x - offset.x, y: p.y - offset.y });
+  const centerOf = (id: string): Point => {
+    const s = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
+    return { x: s?.x ?? 0, y: s?.y ?? 0 };
+  };
+  const sizeOf = (id: string): { w: number; h: number } => {
+    const s = ctx.documents.get(id)?.system as { w?: number; h?: number } | undefined;
+    return { w: s?.w ?? 100, h: s?.h ?? 100 };
+  };
 
-  const sendMove = (id: string, target: Point): void => {
-    const sys = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
-    ctx.dispatchIntent([
-      {
-        op: "update",
-        doc_id: id,
-        changes: [
-          { path: "/system/x", old: sys?.x ?? null, new: target.x },
-          { path: "/system/y", old: sys?.y ?? null, new: target.y },
-        ],
-      },
-    ]);
+  /** A closed rect ring per selected token into the tool overlay (cleared when empty). */
+  const drawSelection = (): void => {
+    if (!sel) return;
+    const rings = [...sel.ids].map((id) => {
+      const c = centerOf(id);
+      const { w, h } = sizeOf(id);
+      const hw = w / 2;
+      const hh = h / 2;
+      return { points: [c.x - hw, c.y - hh, c.x + hw, c.y - hh, c.x + hw, c.y + hh, c.x - hw, c.y + hh], closed: true, stroke: { color: 0xffd400, width: 2 }, fill: null };
+    });
+    if (rings.length === 0) ctx.scene.clearOverlay();
+    else ctx.scene.previewOverlay(rings);
+  };
+
+  const sendMoves = (delta: Point): void => {
+    const ops: WireOperation[] = [];
+    for (const [id, o] of origins) {
+      const target = ctx.scene.snap({ x: o.x + delta.x, y: o.y + delta.y });
+      const sys = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
+      ops.push({ op: "update", doc_id: id, changes: [
+        { path: "/system/x", old: sys?.x ?? null, new: target.x },
+        { path: "/system/y", old: sys?.y ?? null, new: target.y },
+      ] });
+    }
+    if (ops.length > 0) ctx.dispatchIntent(ops);
   };
 
   return {
-    onPointerDown(p: Point): boolean {
+    onPointerDown(p: Point, ev: PointerEvent): boolean {
       const id = topTokenAt(ctx.documents.query("token"), p);
-      if (!id) return false;
-      const sys = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
-      offset = { x: p.x - (sys?.x ?? p.x), y: p.y - (sys?.y ?? p.y) }; // grab point within the token
+      if (!id) {
+        sel?.clear();
+        ctx.scene.clearOverlay();
+        return false;
+      }
+      if (sel) {
+        if (ev.shiftKey) sel.toggle(id);
+        else if (!sel.has(id)) sel.set([id]);
+      }
       draggingId = id;
+      grabOrigin = { x: p.x, y: p.y };
+      origins = new Map([...(sel?.ids ?? [id])].map((sid) => [sid, centerOf(sid)]));
+      if (!origins.has(id)) origins.set(id, centerOf(id));
       moved = false;
       lastSentAt = -Infinity;
       ctx.scene.setDraggingToken(id);
+      drawSelection();
       return true;
     },
     onPointerMove(p: Point): void {
       if (!draggingId) return;
       moved = true;
+      const delta = { x: p.x - grabOrigin.x, y: p.y - grabOrigin.y };
       const t = now();
       if (t - lastSentAt >= DRAG_THROTTLE_MS) {
-        sendMove(draggingId, targetFor(p)); // leading-edge coalesced stream
+        sendMoves(delta); // leading-edge coalesced stream
         lastSentAt = t;
       }
+      drawSelection();
     },
     onPointerUp(p: Point): void {
       if (!draggingId) return;
-      // Send the authoritative release position (a pure click that never moved sends
-      // nothing). This captures a touch/pen lift-off delta the throttled stream missed.
-      if (moved) sendMove(draggingId, targetFor(p));
+      // Flush the authoritative release delta (a pure click that never moved sends nothing).
+      if (moved) sendMoves({ x: p.x - grabOrigin.x, y: p.y - grabOrigin.y });
       ctx.scene.setDraggingToken(null);
       draggingId = null;
       moved = false;
+      drawSelection();
     },
   };
 }

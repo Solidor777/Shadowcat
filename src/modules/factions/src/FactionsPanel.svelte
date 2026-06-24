@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildFactionRegistryDoc, type Faction, type FactionRegistrySystem, type WireDocument } from "@shadowcat/core";
+  import { buildFactionRegistryDoc, resolveTokenActor, type Faction, type FactionRegistrySystem, type WireDocument } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -54,6 +54,10 @@
     delete next[id];
     ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/system/factions", old: sys.factions, new: next }] }]);
   }
+  function selectTokens(factionId: string): void {
+    const ids = ctx.documents.query("token").filter((tok) => resolveTokenActor(tok, ctx.documents)?.faction === factionId).map((tok) => tok.id);
+    ctx.tokenSelection.set(ids);
+  }
 </script>
 
 <section class="factions">
@@ -71,6 +75,7 @@
             <option value="hostile">{t("factions.hostile")}</option>
           </select>
           <button type="button" onclick={() => remove(id)}>{t("factions.remove")}</button>
+          <button type="button" onclick={() => selectTokens(id)}>{t("factions.selectTokens")}</button>
         {:else}
           <span>{f.name}</span>
         {/if}
