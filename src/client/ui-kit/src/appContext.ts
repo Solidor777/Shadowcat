@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -23,6 +23,11 @@ export interface AppContext {
   documents: ReadableDocuments;
   world: string;
   role: WorldRole;
+  /** The current user's id (ownership checks). */
+  selfId: string;
+  /** Advisory client-side edit gate (mirrors the server's Update-path check) for showing/hiding
+   * write controls. The server remains authoritative. GM ⇒ always true. */
+  canEdit(doc: WireDocument, path: string): boolean;
   /** userId → username for the world's members (GM-only source; empty for players). */
   members: Map<string, string>;
   t: TFunc;

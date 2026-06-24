@@ -17,6 +17,8 @@
     documents: session.documents,
     world: session.world!,
     role: session.role!,
+    selfId: session.selfId,
+    canEdit: (doc, path) => session.canEdit(doc, path),
     members: session.members,
     t,
     assets: session.assets,

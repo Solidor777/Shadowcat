@@ -1,5 +1,5 @@
 import { test, expect, vi } from "vitest";
-import { ContributionRegistry, silentLogger, buildTokenDoc, type Connect } from "@shadowcat/core";
+import { ContributionRegistry, silentLogger, buildTokenDoc, buildActorDoc, type Connect, type WireDocument } from "@shadowcat/core";
 import { WorldSession } from "./worldSession.svelte";
 import { listWorldMembers } from "./api";
 
@@ -288,6 +288,38 @@ test("an intent dispatched while reconnecting is predicted, queued, and flushed 
   await vi.waitFor(() => expect(connectCount).toBe(2), { timeout: 2000 });
   handlers.onMessage(JSON.stringify(welcomeFrame));
   await vi.waitFor(() => expect(offSent()).toHaveLength(1));
+});
+
+function actorWith(perms: Partial<WireDocument["permissions"]>): WireDocument {
+  const d = buildActorDoc("w1", { name: "G", displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false }, "act1");
+  d.permissions = { ...d.permissions, ...perms };
+  return d;
+}
+
+test("canEdit: a non-GM owner may write /system/conditions; a non-owner may not; selfId is exposed", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // user_role: "player", empty grants/requirements
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  expect(session.selfId).toBe("u-self");
+  // DocRole "owner" floor grants core:write_fields → may write the /system subtree.
+  const owned = actorWith({ users: { "u-self": "owner" } });
+  expect(session.canEdit(owned, "/system/conditions")).toBe(true);
+  // Default observer (read-only) → no write_fields.
+  const other = actorWith({ default: "observer" });
+  expect(session.canEdit(other, "/system/conditions")).toBe(false);
+});
+
+test("canEdit: a GM bypasses the capability check", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(session.role).toBe("gm"));
+  const locked = actorWith({ default: "observer" });
+  expect(session.canEdit(locked, "/system/conditions")).toBe(true);
 });
 
 test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Welcome", async () => {
