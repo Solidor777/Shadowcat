@@ -67,7 +67,7 @@ importers:
         specifier: ^8.0.0
         version: 8.19.0
 
-  src/client/ui:
+  src/client/shell:
     dependencies:
       '@shadowcat/core':
         specifier: workspace:*
@@ -78,6 +78,9 @@ importers:
       '@shadowcat/types':
         specifier: workspace:^
         version: link:../../types
+      '@shadowcat/ui-kit':
+        specifier: workspace:*
+        version: link:../ui-kit
     devDependencies:
       '@playwright/test':
         specifier: ^1.61.0
@@ -91,6 +94,25 @@ importers:
       sass:
         specifier: ^1.101.0
         version: 1.101.0
+
+  src/client/ui-kit:
+    dependencies:
+      '@shadowcat/core':
+        specifier: workspace:*
+        version: link:../core
+      '@shadowcat/render':
+        specifier: workspace:*
+        version: link:../render
+      '@shadowcat/types':
+        specifier: workspace:*
+        version: link:../../types
+    devDependencies:
+      '@testing-library/svelte':
+        specifier: ^5.3.1
+        version: 5.3.1(svelte@5.56.3(@typescript-eslint/types@8.61.1))(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0))(vitest@4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)))
+      jsdom:
+        specifier: ^29.1.1
+        version: 29.1.1
 
   src/types: {}
 
