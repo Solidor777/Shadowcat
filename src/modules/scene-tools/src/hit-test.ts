@@ -1,23 +1,24 @@
-import type { WireDocument } from "@shadowcat/core";
+import type { WireDocument, ReadableDocuments } from "@shadowcat/core";
+import { resolveTokenBox } from "@shadowcat/core";
 import type { Point } from "@shadowcat/render";
 
-/** Token bounds the hit-test uses: an axis-aligned box centered on `(x,y)` (the token
- * center, M8d §4) with half-extents `w/2`,`h/2`. Rotation is ignored for picking in M8d. */
-interface TokenBox {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-/** The id of the topmost token whose box contains `p`, or null. "Topmost" is the last in
- * document order (render z-order), so overlapping tokens pick the one drawn on top. */
-export function topTokenAt(tokens: WireDocument[], p: Point): string | null {
+/** The id of the topmost token whose footprint contains `p`, or null. "Topmost" is the last in
+ * document order (render z-order). Footprint = the resolved box (M10d): a circle token uses
+ * ellipse containment, a square the AABB. Rotation is ignored for picking. */
+export function topTokenAt(tokens: WireDocument[], p: Point, store: ReadableDocuments): string | null {
   let hit: string | null = null;
   for (const t of tokens) {
-    const s = t.system as Partial<TokenBox> | undefined;
-    if (!s || s.x == null || s.y == null || s.w == null || s.h == null) continue;
-    if (Math.abs(p.x - s.x) <= s.w / 2 && Math.abs(p.y - s.y) <= s.h / 2) hit = t.id;
+    const box = resolveTokenBox(t, store);
+    if (box.w <= 0 || box.h <= 0) continue;
+    const dx = p.x - box.x;
+    const dy = p.y - box.y;
+    const hw = box.w / 2;
+    const hh = box.h / 2;
+    const inside =
+      box.shape === "circle"
+        ? (dx * dx) / (hw * hw) + (dy * dy) / (hh * hh) <= 1
+        : Math.abs(dx) <= hw && Math.abs(dy) <= hh;
+    if (inside) hit = t.id;
   }
   return hit;
 }

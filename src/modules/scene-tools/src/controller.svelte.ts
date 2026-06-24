@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, type ReadableDocuments, type AssetResolver, type WireOperation } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, type ReadableDocuments, type AssetResolver, type WireOperation } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import { topTokenAt } from "./hit-test";
 
@@ -340,20 +340,23 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
     const s = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
     return { x: s?.x ?? 0, y: s?.y ?? 0 };
   };
-  const sizeOf = (id: string): { w: number; h: number } => {
-    const s = ctx.documents.get(id)?.system as { w?: number; h?: number } | undefined;
-    return { w: s?.w ?? 100, h: s?.h ?? 100 };
-  };
 
-  /** A closed rect ring per selected token into the tool overlay (cleared when empty). */
+  /** A closed ring per selected token into the tool overlay (cleared when empty). Circle
+   * tokens receive an ellipse ring so the ring, hit-test, and faction border agree on shape. */
   const drawSelection = (): void => {
     if (!sel) return;
     const rings = [...sel.ids].map((id) => {
       const c = centerOf(id);
-      const { w, h } = sizeOf(id);
+      const doc = ctx.documents.get(id);
+      const box = doc ? resolveTokenBox(doc, ctx.documents) : null;
+      const w = (box?.w || 0) || 100;
+      const h = (box?.h || 0) || 100;
       const hw = w / 2;
       const hh = h / 2;
-      return { points: [c.x - hw, c.y - hh, c.x + hw, c.y - hh, c.x + hw, c.y + hh, c.x - hw, c.y + hh], closed: true, stroke: { color: 0xffd400, width: 2 }, fill: null };
+      const points = box?.shape === "circle"
+        ? ellipsePoints(c.x - hw, c.y - hh, c.x + hw, c.y + hh)
+        : [c.x - hw, c.y - hh, c.x + hw, c.y - hh, c.x + hw, c.y + hh, c.x - hw, c.y + hh];
+      return { points, closed: true, stroke: { color: 0xffd400, width: 2 }, fill: null };
     });
     if (rings.length === 0) ctx.scene.clearOverlay();
     else ctx.scene.previewOverlay(rings);
@@ -374,7 +377,7 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
 
   return {
     onPointerDown(p: Point, ev: PointerEvent): boolean {
-      const id = topTokenAt(ctx.documents.query("token"), p);
+      const id = topTokenAt(ctx.documents.query("token"), p, ctx.documents);
       if (!id) {
         sel?.clear();
         ctx.scene.clearOverlay();

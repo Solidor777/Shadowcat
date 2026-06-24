@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { DocumentStore, AssetResolver, buildTokenDoc, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildTokenDoc, buildActorDoc, buildSceneDoc, buildTokenFromActor, type WireOperation } from "@shadowcat/core";
 import { SceneInteractionBridge, TokenSelection } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { makeSelectMoveTool, type ToolContext } from "./controller.svelte";
@@ -109,4 +109,39 @@ test("a move past the throttle window sends again", () => {
   setTime(60);
   tool.onPointerMove({ x: 170, y: 100 }, ev); // 60 - 0 >= 50 → send 2
   expect(sent).toHaveLength(2);
+});
+
+test("circle-shaped token gets an ellipse selection ring (> 8 points), not a rect", () => {
+  // Build an actor with shape:"circle" + a scene with grid size 100 so resolveTokenBox
+  // returns shape:"circle", w:100, h:100. The selection ring must be an ellipsePoints
+  // path (many points) rather than the 8-number rect path.
+  const docs = new DocumentStore();
+  const scene = buildSceneDoc("w1", { grid: { kind: "square", size: 100 } }, "scene1");
+  const actor = buildActorDoc("w1", {
+    name: "Wraith", displayName: "Wraith",
+    visual: { kind: "image", asset: "a1" },
+    size: { w: 1, h: 1 }, shape: "circle",
+    faction: null, conditions: [], prototype: false,
+  }, "act1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 100, y: 100 }, 100, "tok1");
+  docs.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [
+    { op: "create", doc: scene },
+    { op: "create", doc: actor },
+    { op: "create", doc: token },
+  ]});
+
+  const overlays: Array<Array<{ points: number[] }>> = [];
+  const bridge = new SceneInteractionBridge();
+  bridge.attach(fakeSceneHost({ previewOverlay: (s) => overlays.push(s as Array<{ points: number[] }>) }));
+  const ctx: ToolContext = {
+    scene: bridge, dispatchIntent: () => {}, documents: docs,
+    assets: new AssetResolver(), world: "w1", sendPing: () => {}, now: () => 0,
+    tokenSelection: new TokenSelection(),
+  };
+  const tool = makeSelectMoveTool(ctx);
+  tool.onPointerDown({ x: 100, y: 100 }, noShift); // hits the circle token at its center
+  // The selection overlay must have been called with an ellipse ring (> 8 numbers).
+  expect(overlays.length).toBeGreaterThan(0);
+  const ring = overlays.at(-1)![0];
+  expect(ring.points.length).toBeGreaterThan(8);
 });

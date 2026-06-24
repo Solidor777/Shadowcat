@@ -3,9 +3,9 @@ import { MockBackend } from "./index";
 
 test("MockBackend records token upserts and removals", () => {
   const b = new MockBackend();
-  b.setToken("t1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, url: "/a", borderColor: null, badges: [] });
-  expect(b.tokens.get("t1")).toEqual({ x: 0, y: 0, w: 100, h: 100, rotation: 0, url: "/a", borderColor: null, badges: [] });
-  b.setToken("t1", { x: 10, y: 0, w: 100, h: 100, rotation: 0, url: "/a", borderColor: null, badges: [] });
+  b.setToken("t1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, url: "/a", borderColor: null, badges: [], shape: "square" });
+  expect(b.tokens.get("t1")).toEqual({ x: 0, y: 0, w: 100, h: 100, rotation: 0, url: "/a", borderColor: null, badges: [], shape: "square" });
+  b.setToken("t1", { x: 10, y: 0, w: 100, h: 100, rotation: 0, url: "/a", borderColor: null, badges: [], shape: "square" });
   expect(b.tokens.get("t1")!.x).toBe(10);
   b.removeToken("t1");
   expect(b.tokens.has("t1")).toBe(false);

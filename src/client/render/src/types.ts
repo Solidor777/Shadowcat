@@ -45,7 +45,7 @@ export interface TokenTransform {
   rotation: number;
 }
 
-/** A resolved token render node: transform + size + resolved image URL + faction border. */
+/** A resolved token render node: transform + size + resolved image URL + faction border + footprint shape. */
 export interface TokenNodeSpec {
   x: number;
   y: number;
@@ -57,6 +57,8 @@ export interface TokenNodeSpec {
   borderColor: number | null;
   /** Condition marker glyphs (emoji), rendered as upright chips along the token's top edge. */
   badges: string[];
+  /** Footprint shape: drives the border outline + hit-test (M10d). */
+  shape: "square" | "circle";
 }
 
 /** A drawn shape node: a polyline/polygon (flat scene-coord points) with optional fill

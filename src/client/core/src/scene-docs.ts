@@ -22,7 +22,7 @@ export interface TokenSystem {
   visual?: { kind: "image"; asset: string };
   /** Linked token: the shared actor's id (null/absent ⇒ instanced, see `embedded.actor`). */
   actor_id?: string | null;
-  /** Linked-only per-token override whitelist (name/visual/size). */
+  /** Linked-only per-token override whitelist (see {@link TokenOverrides}). */
   overrides?: TokenOverrides;
 }
 
@@ -44,11 +44,12 @@ export interface ActorSystem {
   prototype: boolean;
 }
 
-/** The per-token override whitelist for a linked token (M10a). */
+/** The per-token override whitelist for a linked token (M10a; shape added M10d). */
 export interface TokenOverrides {
   name?: string;
   visual?: ActorVisual;
   size?: { w: number; h: number };
+  shape?: "square" | "circle";
 }
 
 /** Visible-to-all defaults; the server normalizes permissions per the creator's role. */

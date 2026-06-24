@@ -1,8 +1,8 @@
-import { describe, it, expect } from "vitest";
-import { DocumentStore } from "./store";
+import { describe, it, expect, test } from "vitest";
+import { DocumentStore, type ReadableDocuments } from "./store";
 import type { WireDocument } from "./wire";
-import { buildActorDoc, buildTokenDoc, buildTokenFromActor, buildConditionRegistryDoc, type ActorSystem, type TokenOverrides } from "./scene-docs";
-import { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget } from "./actor";
+import { buildActorDoc, buildSceneDoc, buildTokenDoc, buildTokenFromActor, buildConditionRegistryDoc, type ActorSystem, type TokenOverrides } from "./scene-docs";
+import { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, footprintRadius } from "./actor";
 
 const sys: ActorSystem = {
   name: "Goblin",
@@ -116,4 +116,55 @@ describe("actorDisplayName", () => {
     expect(actorDisplayName({})).toBe("Unknown Creature");
     expect(actorDisplayName({}, "Mystery")).toBe("Mystery");
   });
+});
+
+// Minimal read-only store over a fixed doc set.
+function fakeStore(docs: WireDocument[]): ReadableDocuments {
+  return {
+    get: (id) => docs.find((d) => d.id === id),
+    query: (type) => docs.filter((d) => d.doc_type === type),
+    subscribe: () => () => {},
+    appliedSeq: 0,
+  } as ReadableDocuments;
+}
+
+const actorSys = (over: Partial<import("./scene-docs").ActorSystem> = {}) => ({
+  name: "Goblin", displayName: "Goblin", visual: { kind: "image" as const, asset: "a1" },
+  size: { w: 1, h: 1 }, shape: "square" as const, faction: null, conditions: [], prototype: false, ...over,
+});
+
+test("resolveTokenBox derives multi-cell pixel size from actor.size × scene grid cell", () => {
+  const scene = buildSceneDoc("w1", { grid: { kind: "square", size: 100 } }, "scene1");
+  const actor = buildActorDoc("w1", actorSys({ size: { w: 2, h: 3 } }), "act1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 50, y: 60 }, 100, "tok1");
+  const box = resolveTokenBox(token, fakeStore([scene, actor, token]));
+  expect(box).toEqual({ x: 50, y: 60, w: 200, h: 300, shape: "square" });
+});
+
+test("resolveTokenBox reads shape from the actor and applies a per-token override", () => {
+  const scene = buildSceneDoc("w1", { grid: { kind: "square", size: 100 } }, "scene1");
+  const actor = buildActorDoc("w1", actorSys({ shape: "circle" }), "act1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  expect(resolveTokenBox(token, fakeStore([scene, actor, token])).shape).toBe("circle");
+  (token.system as { overrides: import("./scene-docs").TokenOverrides }).overrides = { shape: "square", size: { w: 4, h: 4 } };
+  const box = resolveTokenBox(token, fakeStore([scene, actor, token]));
+  expect(box.shape).toBe("square");
+  expect(box.w).toBe(400);
+  expect(box.h).toBe(400);
+});
+
+test("resolveTokenBox falls back to token.system w/h + square for a raw (actorless) token", () => {
+  const token = buildTokenDoc("w1", "scene1", { x: 10, y: 20, w: 64, h: 64, rotation: 0, visual: { kind: "image", asset: "a1" } }, "tok1");
+  expect(resolveTokenBox(token, fakeStore([token]))).toEqual({ x: 10, y: 20, w: 64, h: 64, shape: "square" });
+});
+
+test("resolveTokenBox defaults the grid cell to 100 when the parent scene is absent", () => {
+  const actor = buildActorDoc("w1", actorSys({ size: { w: 1, h: 1 } }), "act1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  expect(resolveTokenBox(token, fakeStore([actor, token])).w).toBe(100);
+});
+
+test("footprintRadius: circle = max(w,h)/2, square = half-diagonal", () => {
+  expect(footprintRadius({ shape: "circle", size: { w: 2, h: 4 } })).toBe(2);
+  expect(footprintRadius({ shape: "square", size: { w: 2, h: 2 } })).toBeCloseTo(Math.SQRT2, 5);
 });

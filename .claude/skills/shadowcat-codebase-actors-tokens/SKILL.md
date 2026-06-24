@@ -24,6 +24,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   - `buildTokenFromActor(worldId, sceneId, actor, "link"|"instance", pos, size, id?)` — link mode
     sets `token.system.actor_id` + `overrides`; instance mode embeds an independent (deep-cloned)
     copy with `source` provenance.
+  - `TokenOverrides` whitelist includes `shape` (alongside `name`, `visual`, `size`) — a per-token
+    `"square" | "circle"` override applied on top of the actor's own shape field.
   - `setNameHidden(doc, hidden)` — sets/clears the `OwnerOrGm` override on `/system/name`.
   - `FactionStance = "friendly"|"neutral"|"hostile"`, `Faction { name, color, stance }`,
     `FactionRegistrySystem`, `buildFactionRegistryDoc(worldId, factions, id?)` (param
@@ -38,8 +40,16 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   store)` (effective condition ids → `{id,name,icon}` via the registry, fail-closed) +
   `conditionTarget(token, store) -> {doc, path, conditions}` (the write site: linked →
   `actor` doc `/system/conditions`; instanced → token `/embedded/actor/0/system/conditions`).
+  Shapes + footprint: `resolveTokenBox(token, store, eff?) -> TokenBox {x,y,w,h,shape}` — the
+  scene-pixel footprint read-through: actor-backed size = `EffectiveActor.size × parent-scene grid
+  cell` (default 100 px); raw/dangling token → `token.system.w/h` + `"square"`; fail-closed (never
+  throws); optional pre-resolved `eff` avoids a double `resolveTokenActor` call. `TokenBox` is
+  exported from `core/index.ts`. `footprintRadius(eff) -> number` — grid-unit bounding-disc radius
+  for the M10e+ pathfinder: circle = `max(w,h)/2`, square = half-diagonal (`√(w²+h²)/2`); both in
+  grid-cell units.
 - `src/modules/actors/{ActorsPanel.svelte,index.ts}` — create/list/pick actors; hide-name control;
-  faction assignment.
+  faction assignment; shape (`square`/`circle`) + size (fractional grid-cells) editing in the
+  create form and in the per-row GM inline editor.
 - `src/modules/factions/{FactionsPanel.svelte,index.ts}` — GM editor + idempotent seed of the
   faction registry; faction-colored token border + select-by-faction.
 - `src/modules/conditions/{ConditionsPanel.svelte,index.ts}` — GM editor + idempotent emoji seed
@@ -49,6 +59,10 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 
 ## Hard invariants
 
+- **Rendered token size, hit-test, and the selection ring all resolve through `resolveTokenBox`** —
+  never read `token.system.w/h` directly for an actor-backed token; doing so bypasses the
+  `EffectiveActor.size × grid-cell` scaling, breaks multi-cell tokens, and ignores the shape
+  override, causing the render size, click target, and selection ring to diverge.
 - **Instanced token's embedded actor copy needs `structuredClone`, not `{...}`** — a shallow copy
   aliases nested `system`/`permissions`/`embedded` with the source until the wire round-trip
   [[embedded-copy-needs-deep-clone]].

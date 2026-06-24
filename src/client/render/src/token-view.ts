@@ -1,4 +1,4 @@
-import { resolveTokenActor, resolveConditions } from "@shadowcat/core";
+import { resolveTokenActor, resolveConditions, resolveTokenBox } from "@shadowcat/core";
 import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistrySystem } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec } from "./types";
@@ -83,11 +83,13 @@ export class TokenView {
     }
     // Condition badges: resolve the actor's condition ids to registry icon glyphs.
     const badges = resolveConditions(doc, this.store).map((c) => c.icon);
+    const box = resolveTokenBox(doc, this.store, eff);
     return {
-      x: s.x, y: s.y, w: s.w, h: s.h, rotation: s.rotation ?? 0,
+      x: box.x, y: box.y, w: box.w, h: box.h, rotation: s.rotation ?? 0,
       url: this.assets.url(visual.asset),
       borderColor,
       badges,
+      shape: box.shape,
     };
   }
 }
