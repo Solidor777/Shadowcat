@@ -23,6 +23,9 @@ def main():
         d = json.loads(sys.stdin.read())
     except Exception:
         return  # fail open on any parse error
+    # SAFETY: routing keys purely on file_path; tool_name is intentionally not checked.
+    # Read-exclusion is enforced by the settings.json matcher (Edit|Write|MultiEdit) — that
+    # matcher scoping is load-bearing; widening it would fire reminders on reads.
     t = d.get("tool_input", d) or {}
     path = str(t.get("file_path") or "").replace(chr(92), "/").lower()
     session = str(d.get("session_id") or "nosession")

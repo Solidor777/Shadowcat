@@ -25,7 +25,8 @@ name from non-owners via the `OwnerOrGm` visibility tier.
     copy with `source` provenance.
   - `setNameHidden(doc, hidden)` — sets/clears the `OwnerOrGm` override on `/system/name`.
   - `FactionStance = "friendly"|"neutral"|"hostile"`, `Faction { name, color, stance }`,
-    `FactionRegistrySystem`, `buildFactionRegistryDoc(worldId, factionsById, id?)` — a
+    `FactionRegistrySystem`, `buildFactionRegistryDoc(worldId, factions, id?)` (param
+    `factions: Record<string, Faction>`) — a
     world-scoped, **parentless config-document** with an id-keyed faction map.
 - `src/client/core/src/actor.ts` — `resolveTokenActor(token, store) -> EffectiveActor | null`
   (the one read-through), `EffectiveActor`, `actorDisplayName(a, fallback)` (safe name with a

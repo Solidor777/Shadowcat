@@ -41,17 +41,17 @@ source of truth. The ones agents break most:
 
 - **Server-authoritative, permissions per-recipient.** Client sends intents; server validates,
   applies, broadcasts. Hidden fields are stripped **before** transmission, never sent-then-hidden
-  (ARCHITECTURE §2.4). See `shadowcat-codebase-documents-permissions`.
+  (ARCHITECTURE §2 invariant 4). See `shadowcat-codebase-documents-permissions`.
 - **Optimistic with rollback.** Documents are source of truth; ECS/runtime is derived & ephemeral.
 - **Cross-platform from day one (CI-verified).** `std::path` only (no hardcoded separators),
   `#[cfg]`-gate OS-specific code for every target, three-OS CI matrix, responsive/touch UI.
-  [CLAUDE.md Cross-Platform; ARCHITECTURE §2.10]
+  [CLAUDE.md Cross-Platform; ARCHITECTURE §2 invariant 10]
 - **`dist/` must be built before any `cargo` build of the server** — `rust-embed` validates
   `../../dist/` at COMPILE time. [[embed-dist-compile-ordering]]
 - **Capability/permission model** layered server/world/document roles. [[capability-permissions]]
 - **Server runs no third-party code**; authority over the `system` body is structural only
   (size/field-path/`deny_unknown_fields`), except engine-owned geometry (movement-collision,
-  vision) (ARCHITECTURE §2.6).
+  vision) (ARCHITECTURE §2 invariant 6).
 
 ## Gotchas
 

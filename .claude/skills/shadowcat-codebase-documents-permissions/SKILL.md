@@ -28,7 +28,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   - `redact_change(change, gm_only)` redacts field-level change events on the broadcast path.
 - `src/server/src/data/search.rs` — `index_content` (full) vs `index_content_public` (redacted):
   the index is **partitioned by visibility**, not redacted after the fact.
-- `src/server/src/data/{repository.rs,validation.rs}` — `Repository` trait (Postgres seam) +
+- `src/server/src/data/{repository.rs,validation.rs}` — `Repository` trait (storage seam; SQLite today, Postgres-capable later) +
   structural validation (size caps, field-path validity, `deny_unknown_fields`).
 - `src/client/core/src/wire.ts` — Zod mirror: `VisibilitySchema = z.enum(["all","gm_only",
   "owner_or_gm"])`, `property_overrides`. ts-rs generates the TS types from the Rust source.
@@ -61,7 +61,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 ## Pointers
 
 - Rationale: `docs/design/M2-data-foundation.md`; invariants in `docs/design/ARCHITECTURE.md`
-  §2.4 (per-recipient permissions) + §6 (data model).
+  §2 invariant 4 (per-recipient permissions) + §6 (data model).
 - Relationships: `graphify query "document permissions redaction filter_properties can_see"`,
   `graphify path "permission.rs" "search.rs"`.
 - Deferred merge model: [[document-inheritance-merge-model]].

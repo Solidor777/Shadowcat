@@ -42,7 +42,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   diverging path [[refactor-async-contribution-paint-timing]].
 - **In-game elements communicate ONLY through seams** (module contracts, `ContributionRegistry`,
   `<Surface>`, AppContext, render-layer API) — never import one another or the shell directly
-  (ARCHITECTURE §1, §2.7).
+  (ARCHITECTURE §1, §2 invariant 7).
 - **Entry views are plain-routed, not contributions; surfaces are in-world only.**
 
 ## Gotchas
@@ -56,7 +56,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 
 ## Pointers
 
-- Rationale: `docs/design/ARCHITECTURE.md` §1 (client UI packaging) + §2.7 (framework-neutral API);
+- Rationale: `docs/design/ARCHITECTURE.md` §1 (client UI packaging) + §2 invariant 7 (framework-neutral API);
   `docs/PLAN.md` (M7/M8.5 milestones).
 - Relationships:
   `graphify query "contribution registry surface appContext shell router i18n locale panel"`.

@@ -39,7 +39,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   hiding already-delivered data must hide-everything on a missing/garbled signal; container-local
   coords reused across containers must be tagged + filtered to the active container
   [[fog-is-the-secrecy-gate-fail-closed]].
-- **Vision is server-authoritative, no client prediction** (ARCHITECTURE §2.3); movement that
+- **Vision is server-authoritative, no client prediction** (ARCHITECTURE §2 invariant 3); movement that
   crosses a `blocksMove` wall is rejected server-side before the write — validate the **post-image**
   position, not just the pre-move one [[m9-progress]].
 - **Bound recursive walks over self-FK (parent_id) tables with a visited-set** [[m8a-execution-state]].

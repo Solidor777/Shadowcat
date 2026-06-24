@@ -22,7 +22,7 @@ optimistically and roll back on divergence.
   `broadcast_aux()` (out-of-band), `RoomRegistry`.
 - `src/server/src/ws/protocol.rs` — client/server message frames; `ServerMsg`, `event_seq()`.
 - `src/server/src/ws/conn.rs` — per-connection loop + egress; `ws/time.rs` — server time source +
-  client offset calibration (exists before its consumer, per ARCHITECTURE §2.2).
+  client offset calibration (exists before its consumer, per ARCHITECTURE §2 invariant 2).
 - `src/server/src/http/{routes.rs,mod.rs}` — HTTP routes (login, assets, embed).
 - `src/server/src/auth/session.rs` — `SqlxSqliteStore` (DB-backed sessions), `spawn_session_sweep`,
   `SessionUser`/`AuthUser`/`AdminUser`; `auth/{password,role}.rs`.
@@ -34,10 +34,10 @@ optimistically and roll back on divergence.
 
 ## Hard invariants
 
-- **Ordered, recoverable realtime** (ARCHITECTURE §2.2): every broadcast carries a per-world
+- **Ordered, recoverable realtime** (ARCHITECTURE §2 invariant 2): every broadcast carries a per-world
   monotonic seq from an atomic counter; clients gap-detect and resync from the `RingBuffer` or a
   full snapshot.
-- **Optimistic with rollback** (ARCHITECTURE §2.3): `OptimisticClient` applies locally tagged with
+- **Optimistic with rollback** (ARCHITECTURE §2 invariant 3): `OptimisticClient` applies locally tagged with
   an intent id; the server confirmation reconciles; divergence rolls back to `DocumentStore`.
   `appliedSeq` is identical across the two so the derived watermark holds
   [[render-from-optimistic-view]].
