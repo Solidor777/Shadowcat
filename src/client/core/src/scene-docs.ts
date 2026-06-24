@@ -21,6 +21,24 @@ export interface TokenSystem {
   visual: { kind: "image"; asset: string };
 }
 
+/** An actor's appearance + defaults (M10a). Stats/sheet are M12; this is only what backs a
+ * token. The server is structural-only — this `system` shape is the client's interpretation. */
+export interface ActorVisual {
+  kind: "image";
+  asset: string;
+}
+export interface ActorSystem {
+  name: string;
+  displayName: string;
+  visual: ActorVisual;
+  size: { w: number; h: number };
+  shape: "square" | "circle";
+  faction: string | null;
+  conditions: string[];
+  /** Default place-mode: true ⇒ instance (independent copy) on drop; false ⇒ link (shared). */
+  prototype: boolean;
+}
+
 /** Visible-to-all defaults; the server normalizes permissions per the creator's role. */
 function defaultPermissions(): WireDocument["permissions"] {
   return { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } };
@@ -51,6 +69,11 @@ export function buildSceneDoc(worldId: string, system: Partial<SceneSystem> = {}
     background: system.background ?? null,
   };
   return envelope(worldId, "scene", null, full, id);
+}
+
+/** A top-level (world-scoped, parentless) actor document. */
+export function buildActorDoc(worldId: string, system: ActorSystem, id?: string): WireDocument {
+  return envelope(worldId, "actor", null, system, id);
 }
 
 /** A token document parented to `sceneId`, carrying the given transform + visual. */

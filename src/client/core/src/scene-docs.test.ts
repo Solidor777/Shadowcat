@@ -1,5 +1,16 @@
 import { test, expect } from "vitest";
-import { buildSceneDoc, buildTokenDoc, type TokenSystem } from "./scene-docs";
+import { buildSceneDoc, buildTokenDoc, buildActorDoc, type TokenSystem, type ActorSystem } from "./scene-docs";
+
+const actorSys: ActorSystem = {
+  name: "Goblin",
+  displayName: "Goblin",
+  visual: { kind: "image", asset: "a1" },
+  size: { w: 1, h: 1 },
+  shape: "square",
+  faction: null,
+  conditions: [],
+  prototype: true,
+};
 
 test("buildSceneDoc makes a top-level world scene with a default square grid", () => {
   const doc = buildSceneDoc("w1");
@@ -26,4 +37,13 @@ test("buildTokenDoc parents to the scene and preserves the token system", () => 
   expect(doc.scope).toEqual({ kind: "world", world_id: "w1" });
   expect(doc.system).toEqual(sys);
   expect(doc.permissions.default).toBe("observer");
+});
+
+test("buildActorDoc makes a top-level, parentless actor document", () => {
+  const doc = buildActorDoc("w1", actorSys, "act1");
+  expect(doc.doc_type).toBe("actor");
+  expect(doc.parent_id).toBeNull();
+  expect(doc.scope).toEqual({ kind: "world", world_id: "w1" });
+  expect(doc.system).toEqual(actorSys);
+  expect(doc.id).toBe("act1");
 });
