@@ -36,6 +36,8 @@ export const en: Messages = {
   "actors.instanceOnDrop": "New independent copy on each placement",
   "actors.keepAfterPlace": "Keep selected after placing",
   "actors.create": "Create actor",
+  "actors.hideName": "Hide name from players",
+  "actors.nameShown": "Name shown",
   "tools.title": "Tools",
   "tools.select": "Select / Move",
   "tools.place": "Place token",
