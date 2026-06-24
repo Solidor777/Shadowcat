@@ -21,6 +21,9 @@
   let instanceOnDrop = $state(true);
   let hideName = $state(false);
   let faction = $state<string | null>(null);
+  let shape = $state<"square" | "circle">("square");
+  let sizeW = $state(1);
+  let sizeH = $state(1);
   let assetList = $state<Asset[]>([]);
 
   const factionOptions = $derived.by((): [string, Faction][] => {
@@ -53,8 +56,8 @@
       name,
       displayName: displayName || name,
       visual: { kind: "image", asset: assetId },
-      size: { w: 1, h: 1 },
-      shape: "square",
+      size: { w: sizeW, h: sizeH },
+      shape,
       faction,
       conditions: [],
       prototype: instanceOnDrop,
@@ -67,6 +70,9 @@
     assetId = null;
     hideName = false;
     faction = null;
+    shape = "square";
+    sizeW = 1;
+    sizeH = 1;
   }
 </script>
 
@@ -92,6 +98,19 @@
             <option value="">—</option>
             {#each factionOptions as [id, f] (id)}<option value={id}>{f.name}</option>{/each}
           </select>
+          <select
+            aria-label={t("actors.shape")}
+            value={(a.system as { shape?: string }).shape ?? "square"}
+            onchange={(e) => ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/system/shape", old: (a.system as { shape?: string }).shape ?? "square", new: e.currentTarget.value }] }])}
+          >
+            <option value="square">{t("actors.shapeSquare")}</option>
+            <option value="circle">{t("actors.shapeCircle")}</option>
+          </select>
+          <input
+            type="number" min="0.5" step="0.5" class="size-edit" aria-label={t("actors.width")}
+            value={(a.system as { size?: { w: number } }).size?.w ?? 1}
+            onchange={(e) => { const sz = (a.system as { size?: { w: number; h: number } }).size ?? { w: 1, h: 1 }; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/system/size", old: sz, new: { w: Number(e.currentTarget.value), h: sz.h } }] }]); }}
+          />
         {/if}
       </li>
     {/each}
@@ -114,6 +133,16 @@
         <option value={null}>—</option>
         {#each factionOptions as [id, f] (id)}<option value={id}>{f.name}</option>{/each}
       </select>
+    </label>
+    <label>{t("actors.shape")}
+      <select aria-label={t("actors.shape")} bind:value={shape}>
+        <option value="square">{t("actors.shapeSquare")}</option>
+        <option value="circle">{t("actors.shapeCircle")}</option>
+      </select>
+    </label>
+    <label>{t("actors.size")}
+      <input type="number" min="0.5" step="0.5" aria-label={t("actors.width")} bind:value={sizeW} />
+      <input type="number" min="0.5" step="0.5" aria-label={t("actors.height")} bind:value={sizeH} />
     </label>
     <div class="picker">
       {#each assetList as a (a.id)}
