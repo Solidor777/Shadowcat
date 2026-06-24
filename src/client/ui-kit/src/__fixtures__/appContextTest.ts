@@ -22,6 +22,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     sendPing: over.sendPing ?? (() => {}),
     onPing: over.onPing ?? (() => () => {}),
     leaveWorld: over.leaveWorld ?? (() => {}),
+    logout: over.logout ?? (async () => {}),
   };
   return new Map([[__APP_CONTEXT_KEY__, ctx]]);
 }

@@ -1,7 +1,7 @@
 import { render, screen, waitFor, fireEvent } from "@testing-library/svelte";
 import { test, expect, vi, beforeEach } from "vitest";
 import Harness from "./__fixtures__/AssetsHarness.svelte";
-import * as api from "../../../lib/api";
+import * as api from "@shadowcat/core";
 
 beforeEach(() => vi.restoreAllMocks());
 

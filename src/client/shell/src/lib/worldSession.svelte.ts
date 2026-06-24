@@ -30,10 +30,9 @@ export interface WorldSessionOpts {
   selfId: string;
   /** Browser: webSocketConnect(wsUrl). Tests: a mock connect. */
   connect: Connect;
-  /** The first-party shell module providing region surfaces. */
-  coreUiModule: Module;
-  /** Additional feature modules activated after core-ui (e.g. scene-tools). */
-  featureModules?: Module[];
+  /** First-party default modules, in activation order (the layout/core-ui module
+   *  first so its region surfaces exist before panel modules activate). */
+  modules: Module[];
   /** Diagnostics sink; defaults to the leveled console logger. */
   logger?: Logger;
 }
@@ -230,8 +229,20 @@ export class WorldSession {
   async #onWelcome(w: WireWelcome): Promise<void> {
     try {
       this.role = w.actor_role;
+      // Activate modules BEFORE any await below (a GM's member fetch) so the
+      // layout module contributes Layout into the `root` surface the host renders
+      // — the table chrome paints immediately on mount, never a blank frame during
+      // the GM member-fetch round-trip. `#bootstrapped` set before the await so a
+      // second Welcome (reconnect) cannot re-enter and double-add the modules.
+      if (!this.#bootstrapped) {
+        this.#bootstrapped = true;
+        for (const m of this.opts.modules) this.#modules.add(m);
+        await this.#modules.activate();
+      }
       // Fetch member usernames for see-as labels (GM only; the endpoint 403s
       // players). Best-effort: a failure leaves the picker on short-id fallback.
+      // The members SvelteMap is mutated in place, so the see-as UI (already
+      // rendered after activation) populates reactively when this resolves.
       if (w.actor_role === "gm") {
         try {
           const list = await listWorldMembers(w.world);
@@ -242,14 +253,6 @@ export class WorldSession {
         } catch (e) {
           this.#logger.warn("member list fetch failed", e);
         }
-      }
-      if (!this.#bootstrapped) {
-        // Set before the await so a second Welcome (reconnect) cannot re-enter
-        // and double-add the module.
-        this.#bootstrapped = true;
-        this.#modules.add(this.opts.coreUiModule);
-        for (const m of this.opts.featureModules ?? []) this.#modules.add(m);
-        await this.#modules.activate();
       }
       reconcileTopology(this.#modules.declarations(), w.contract_declarations, this.#logger);
       // Scene subscriptions are dropped by the WS on disconnect; re-establish each

@@ -68,5 +68,6 @@ export type {
 } from "./wire";
 export { AssetResolver } from "./assets";
 export type { AssetOp } from "./assets";
+export { listAssets, uploadAsset, replaceAsset, deleteAsset } from "./asset-rest";
 export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc } from "./scene-docs";
 export type { SceneSystem, TokenSystem } from "./scene-docs";

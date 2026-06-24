@@ -7,6 +7,13 @@
     "@shadowcat/core": "workspace:*",
     "@shadowcat/render": "workspace:*",
     "@shadowcat/module-entry": "workspace:*",
+    "@shadowcat/module-core-ui": "workspace:*",
+    "@shadowcat/module-topbar": "workspace:*",
+    "@shadowcat/module-statusbar": "workspace:*",
+    "@shadowcat/module-stage": "workspace:*",
+    "@shadowcat/module-settings": "workspace:*",
+    "@shadowcat/module-assets": "workspace:*",
+    "@shadowcat/module-scene-tools": "workspace:*",
     "@shadowcat/types": "workspace:^",
     "@shadowcat/ui-kit": "workspace:*"
   },

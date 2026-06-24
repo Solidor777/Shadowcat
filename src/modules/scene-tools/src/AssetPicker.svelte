@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Asset } from "@shadowcat/types";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { listAssets } from "../../lib/api";
+  import { listAssets } from "@shadowcat/core";
   import type { ToolController } from "./controller.svelte";
 
   let { controller }: { controller: ToolController } = $props();

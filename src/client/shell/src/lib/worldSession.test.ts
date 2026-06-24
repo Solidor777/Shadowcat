@@ -51,7 +51,7 @@ test("enter starts the socket, captures role from Welcome, activates core-ui", a
   const session = new WorldSession({
     selfId: "u1",
     connect: mockConnect(),
-    coreUiModule: coreUiStub,
+    modules: [coreUiStub],
     logger: silentLogger,
   });
 
@@ -70,7 +70,7 @@ test("a repeated Welcome (reconnect) does not re-add core-ui or throw", async ()
   const session = new WorldSession({
     selfId: "u1",
     connect: mockConnect(2),
-    coreUiModule: coreUiStub,
+    modules: [coreUiStub],
     logger: silentLogger,
   });
 
@@ -94,7 +94,7 @@ test("applies asset_changed to the resolver and notifies subscribers", async () 
   const session = new WorldSession({
     selfId: "u1",
     connect,
-    coreUiModule: coreUiStub,
+    modules: [coreUiStub],
     logger: silentLogger,
   });
   const got: Array<{ uuid: string; op: string }> = [];
@@ -136,7 +136,7 @@ test("auto-creates a default scene on GM entry, exactly once across reconnect We
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);
   const gmFrame = { ...welcomeFrame, actor_role: "gm" };
-  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: coreUiStub, logger: silentLogger });
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
   await session.enter("w1");
   push(gmFrame);
   await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
@@ -150,7 +150,7 @@ test("sendPing transmits a scene_ping for the active scene; onPing fires on an i
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);
   const gmFrame = { ...welcomeFrame, actor_role: "gm" };
-  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: coreUiStub, logger: silentLogger });
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
   await session.enter("w1");
   push(gmFrame); // GM → auto-creates a scene (the ping's parent)
   await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
@@ -171,7 +171,7 @@ test("sendPing transmits a scene_ping for the active scene; onPing fires on an i
 test("does not auto-create a scene for a non-GM actor", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);
-  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: coreUiStub, logger: silentLogger });
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
   await session.enter("w1");
   push(welcomeFrame); // actor_role: "player"
   await vi.waitFor(() => expect(session.role).toBe("player"));
@@ -199,7 +199,7 @@ test("dispatchIntent predicts via ctx.client and sends one correlated intent fra
     queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
     return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => handlers.onClose() });
   };
-  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: stub, logger: silentLogger });
+  const session = new WorldSession({ selfId: "u1", connect, modules: [stub], logger: silentLogger });
   await session.enter("w1");
   await vi.waitFor(() => expect(capturedClient).not.toBeNull());
 
@@ -224,7 +224,7 @@ test("dispatchIntent while disconnected drops the action (no orphaned prediction
   };
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);
-  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: stub, logger: silentLogger });
+  const session = new WorldSession({ selfId: "u1", connect, modules: [stub], logger: silentLogger });
   await session.enter("w1");
   push(welcomeFrame);
   await vi.waitFor(() => expect(capturedClient).not.toBeNull());
@@ -244,7 +244,7 @@ test("a GM Welcome populates members in place (stable reference) for see-as labe
   ]);
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);
-  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: coreUiStub, logger: silentLogger });
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
   // AppContext captures this reference at mount; it must stay valid as members load.
   const captured = session.members;
   await session.enter("w1");
@@ -269,7 +269,7 @@ test("an intent dispatched while reconnecting is predicted, queued, and flushed 
     handlers = h;
     return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => h.onClose() });
   };
-  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: stub, logger: silentLogger });
+  const session = new WorldSession({ selfId: "u1", connect, modules: [stub], logger: silentLogger });
   await session.enter("w1");
   handlers.onMessage(JSON.stringify(welcomeFrame));
   await vi.waitFor(() => expect(capturedClient).not.toBeNull());
@@ -298,7 +298,7 @@ test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Wel
     queueMicrotask(() => push(welcomeFrame));
     return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => handlers.onClose() });
   };
-  const session = new WorldSession({ selfId: "u1", connect, coreUiModule: coreUiStub, logger: silentLogger });
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
   await session.enter("w1");
   await vi.waitFor(() => expect(session.role).toBe("player"));
 
