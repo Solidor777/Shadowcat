@@ -33,7 +33,9 @@
           }
         }
       }
-      navigate({ name: me ? "worlds" : "login" }); // pre-world; <Entry> picks the step
+      // Seeds the URL hash only; <Entry> derives the actual pre-world step (setup/
+      // login/world-select) internally — every pre-world route renders <Entry>.
+      navigate({ name: me ? "worlds" : "login" });
     } catch {
       // A transient backend failure must not wedge the SPA on "Loading…".
       navigate({ name: "login" });
@@ -54,13 +56,16 @@
 
   // Entry authenticated the user; fetch identity + apply saved session state
   // (locale) before entry advances to world-select — the pre-split boot order.
-  async function onAuthenticated() {
+  // Returns whether identity is in hand: a failed fetch sends entry back to login
+  // (the old afterAuth `me ? "worlds" : "login"` recovery branch).
+  async function onAuthenticated(): Promise<boolean> {
     try {
       me = await getMe();
       await loadSessionState();
     } catch {
       me = null;
     }
+    return me !== null;
   }
 
   function enterWorld(worldId: string) {

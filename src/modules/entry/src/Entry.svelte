@@ -8,7 +8,9 @@
   // and we own the setup -> login -> world-select progression. Step is local state
   // (not the shell route), so a replacement entry package is a drop-in swap.
   let { onAuthenticated, onEnterWorld }: {
-    onAuthenticated: () => void | Promise<void>;
+    /** Resolves true once the shell has the authenticated identity, false if the
+     *  post-login identity fetch failed (entry then returns to login, not worlds). */
+    onAuthenticated: () => boolean | Promise<boolean>;
     onEnterWorld: (worldId: string) => void;
   } = $props();
 
@@ -33,9 +35,10 @@
 
   async function afterLogin() {
     // Let the shell fetch identity + apply saved session state (locale) before
-    // world-select renders, mirroring the pre-split boot order.
-    await onAuthenticated();
-    step = "worlds";
+    // world-select renders, mirroring the pre-split boot order. A failed identity
+    // fetch returns to login (the old afterAuth `me ? "worlds" : "login"` recovery),
+    // so a transient failure can't strand the user on a world-select they can't use.
+    step = (await onAuthenticated()) ? "worlds" : "login";
   }
 </script>
 
