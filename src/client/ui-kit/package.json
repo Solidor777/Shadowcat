@@ -1,0 +1,24 @@
+{
+  "name": "@shadowcat/ui-kit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./test": "./src/__fixtures__/index.ts"
+  },
+  "dependencies": {
+    "@shadowcat/core": "workspace:*",
+    "@shadowcat/render": "workspace:*",
+    "@shadowcat/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@testing-library/svelte": "^5.3.1",
+    "jsdom": "^29.1.1"
+  },
+  "scripts": {
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run"
+  }
+}

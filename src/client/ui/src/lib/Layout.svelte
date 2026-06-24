@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Surface from "./Surface.svelte";
+  import { Surface } from "@shadowcat/ui-kit";
 </script>
 
 <div class="layout">

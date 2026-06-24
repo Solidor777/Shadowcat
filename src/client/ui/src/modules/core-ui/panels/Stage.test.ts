@@ -3,7 +3,7 @@ import { render } from "@testing-library/svelte";
 import Stage from "./Stage.svelte";
 import type { DisplayBackend } from "@shadowcat/render";
 import type { ReadableDocuments } from "@shadowcat/core";
-import { setAppContextForTest } from "../../../lib/__fixtures__/appContextTest";
+import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 
 const OWNER = "11111111-2222-3333-4444-555555555555";
 

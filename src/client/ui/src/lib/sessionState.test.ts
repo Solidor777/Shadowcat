@@ -1,6 +1,6 @@
 import { test, expect, vi, afterEach, beforeEach } from "vitest";
 import * as api from "./api";
-import { i18n } from "./i18n.svelte";
+import { i18n } from "@shadowcat/ui-kit";
 import {
   loadSessionState,
   getSessionState,

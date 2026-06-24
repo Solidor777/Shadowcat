@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Asset } from "@shadowcat/types";
-  import { getAppContext } from "../../../lib/appContext";
+  import { getAppContext } from "@shadowcat/ui-kit";
   import { listAssets, uploadAsset, replaceAsset, deleteAsset } from "../../../lib/api";
 
   const { world, assets: resolver, onAssetChanged, t } = getAppContext();

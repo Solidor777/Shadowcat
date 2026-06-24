@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { getAppContext } from "../../../lib/appContext";
+  import { getAppContext } from "@shadowcat/ui-kit";
   import { logout } from "../../../lib/api";
   import { navigate } from "../../../lib/route.svelte";
-  import { i18n, locale } from "../../../lib/i18n.svelte";
+  import { i18n, locale } from "@shadowcat/ui-kit";
 
   const { role, t, leaveWorld } = getAppContext();
   async function doLogout() {

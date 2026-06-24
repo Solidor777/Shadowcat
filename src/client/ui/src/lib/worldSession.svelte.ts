@@ -20,7 +20,7 @@ import {
   type SceneSubscription,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
-import { SceneInteractionBridge } from "./sceneInteraction";
+import { SceneInteractionBridge } from "@shadowcat/ui-kit";
 import { listWorldMembers } from "./api";
 import { SvelteMap } from "svelte/reactivity";
 

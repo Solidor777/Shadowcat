@@ -1,6 +1,6 @@
 import { consoleLogger } from "@shadowcat/core";
 import { getUiState, putUiState, type UiState } from "./api";
-import { i18n } from "./i18n.svelte";
+import { i18n } from "@shadowcat/ui-kit";
 
 const logger = consoleLogger();
 let state: UiState = { global: { locale: "en", lastWorld: null }, worlds: {} };

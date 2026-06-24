@@ -1,8 +1,8 @@
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { test, expect, vi, beforeEach } from "vitest";
 import { DocumentStore, AssetResolver } from "@shadowcat/core";
-import { SceneInteractionBridge } from "../../lib/sceneInteraction";
-import { setAppContextForTest } from "../../lib/__fixtures__/appContextTest";
+import { SceneInteractionBridge } from "@shadowcat/ui-kit";
+import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { ToolController } from "./controller.svelte";
 import * as api from "../../lib/api";
 import AssetPicker from "./AssetPicker.svelte";

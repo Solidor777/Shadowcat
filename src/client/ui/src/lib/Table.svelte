@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { setAppContext } from "./appContext";
-  import { t } from "./i18n.svelte";
+  import { setAppContext } from "@shadowcat/ui-kit";
+  import { t } from "@shadowcat/ui-kit";
   import Layout from "./Layout.svelte";
   import type { WorldSession } from "./worldSession.svelte";
 

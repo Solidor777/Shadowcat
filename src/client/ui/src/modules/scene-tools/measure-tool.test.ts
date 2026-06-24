@@ -1,8 +1,8 @@
 import { test, expect } from "vitest";
 import { DocumentStore, AssetResolver, type WireOperation } from "@shadowcat/core";
 import type { Point } from "@shadowcat/render";
-import { SceneInteractionBridge } from "../../lib/sceneInteraction";
-import { fakeSceneHost } from "../../lib/__fixtures__/fakeSceneHost";
+import { SceneInteractionBridge } from "@shadowcat/ui-kit";
+import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { makeMeasureTool, type ToolContext } from "./controller.svelte";
 
 const ev = {} as PointerEvent;

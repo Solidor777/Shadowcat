@@ -1,6 +1,6 @@
 <script lang="ts">
   import { login } from "../api";
-  import { t } from "../i18n.svelte";
+  import { t } from "@shadowcat/ui-kit";
 
   let { onAuthed }: { onAuthed: () => void } = $props();
   let username = $state("");

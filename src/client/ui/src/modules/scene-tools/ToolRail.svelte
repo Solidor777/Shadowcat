@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getAppContext } from "../../lib/appContext";
+  import { getAppContext } from "@shadowcat/ui-kit";
   import { ToolController, type ToolId, type DrawMode, type TemplateMode } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
 

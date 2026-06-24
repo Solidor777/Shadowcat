@@ -1,8 +1,8 @@
 <script lang="ts">
   import { AssetResolver } from "@shadowcat/core";
-  import { setAppContext } from "../../../../lib/appContext";
-  import { SceneInteractionBridge } from "../../../../lib/sceneInteraction";
-  import { t } from "../../../../lib/i18n.svelte";
+  import { setAppContext } from "@shadowcat/ui-kit";
+  import { SceneInteractionBridge } from "@shadowcat/ui-kit";
+  import { t } from "@shadowcat/ui-kit";
   import Assets from "../Assets.svelte";
 
   let { onAssetChanged = () => () => {} }: {

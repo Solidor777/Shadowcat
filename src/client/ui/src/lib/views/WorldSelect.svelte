@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { WorldEntry } from "@shadowcat/types";
   import { listWorlds, createWorld } from "../api";
-  import { t } from "../i18n.svelte";
+  import { t } from "@shadowcat/ui-kit";
 
   let { onEnter }: { onEnter: (worldId: string) => void } = $props();
   let worlds = $state<WorldEntry[]>([]);

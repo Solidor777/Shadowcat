@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Asset } from "@shadowcat/types";
-  import { getAppContext } from "../../lib/appContext";
+  import { getAppContext } from "@shadowcat/ui-kit";
   import { listAssets } from "../../lib/api";
   import type { ToolController } from "./controller.svelte";
 

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { setup } from "../api";
-  import { t } from "../i18n.svelte";
+  import { t } from "@shadowcat/ui-kit";
 
   let { onDone }: { onDone: () => void } = $props();
   let username = $state("");

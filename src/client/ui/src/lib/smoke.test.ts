@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/svelte";
 import { test, expect } from "vitest";
-import Probe from "./__fixtures__/Probe.svelte";
+import { Probe } from "@shadowcat/ui-kit/test";
 
 test("the Svelte test harness renders a component", () => {
   render(Probe, { props: { label: "hello" } });

@@ -4,7 +4,7 @@
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
 import { buildTokenDoc, buildSceneEntityDoc, type ReadableDocuments, type AssetResolver, type WireOperation } from "@shadowcat/core";
-import type { SceneInteraction } from "../../lib/sceneInteraction";
+import type { SceneInteraction } from "@shadowcat/ui-kit";
 import { topTokenAt } from "./hit-test";
 
 export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping" | "wall";

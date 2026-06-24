@@ -1,9 +1,9 @@
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { test, expect } from "vitest";
 import type { SceneTool } from "@shadowcat/render";
-import { SceneInteractionBridge } from "../../lib/sceneInteraction";
-import { fakeSceneHost } from "../../lib/__fixtures__/fakeSceneHost";
-import { setAppContextForTest } from "../../lib/__fixtures__/appContextTest";
+import { SceneInteractionBridge } from "@shadowcat/ui-kit";
+import { fakeSceneHost } from "@shadowcat/ui-kit/test";
+import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import ToolRail from "./ToolRail.svelte";
 
 /** A bridge with an attached host that records every setActiveTool call. */

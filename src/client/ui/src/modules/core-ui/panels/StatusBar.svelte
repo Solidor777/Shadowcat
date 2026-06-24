@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getAppContext } from "../../../lib/appContext";
+  import { getAppContext } from "@shadowcat/ui-kit";
   const { role } = getAppContext();
 </script>
 
