@@ -38,7 +38,7 @@ mod tests {
     #[tokio::test]
     async fn serves_the_spa_index_and_assets() {
         if !dist_built() {
-            eprintln!("skipping: dist/ not built (run `pnpm --filter @shadowcat/ui build`)");
+            eprintln!("skipping: dist/ not built (run `pnpm --filter @shadowcat/shell build`)");
             return;
         }
         let server = axum_test::TestServer::new(router(initialized_state().await).await).unwrap();
