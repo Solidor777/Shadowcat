@@ -9,6 +9,7 @@
   const controller = new ToolController({
     scene: ctx.scene,
     actorSelection: ctx.actorSelection,
+    tokenSelection: ctx.tokenSelection,
     dispatchIntent: ctx.dispatchIntent,
     documents: ctx.documents,
     assets: ctx.assets,

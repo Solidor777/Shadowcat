@@ -112,9 +112,42 @@ export function buildTokenFromActor(
   return doc;
 }
 
+/** Set/clear the name-privacy override on an actor doc's permissions: hiding declares
+ * `/system/name` as the `owner_or_gm` tier (the server redacts it from non-owner players on
+ * egress, and retroactively retracts an already-delivered value when the override is added);
+ * clearing removes the declaration. Mutates in place + returns `doc`. */
+export function setNameHidden(doc: WireDocument, hidden: boolean): WireDocument {
+  const overrides = { ...doc.permissions.property_overrides };
+  if (hidden) overrides["/system/name"] = "owner_or_gm";
+  else delete overrides["/system/name"];
+  doc.permissions = { ...doc.permissions, property_overrides: overrides };
+  return doc;
+}
+
 /** A token document parented to `sceneId`, carrying the given transform + visual. */
 export function buildTokenDoc(worldId: string, sceneId: string, system: TokenSystem, id?: string): WireDocument {
   return envelope(worldId, "token", sceneId, system, id);
+}
+
+/** A faction's display + stance. `color` is "#rrggbb" (the token border color); `stance` is
+ * reserved for later combat/targeting/vision (present now to avoid a migration). */
+export type FactionStance = "friendly" | "neutral" | "hostile";
+export interface Faction {
+  name: string;
+  color: string;
+  stance: FactionStance;
+}
+
+/** The world's faction registry: a singleton config document (doc_type "faction-registry").
+ * `factions` is keyed by faction id — an actor's `faction` field references a key. A MAP, not
+ * an array, so adding a faction is a single-key Update (`set_pointer` cannot grow arrays). */
+export interface FactionRegistrySystem {
+  factions: Record<string, Faction>;
+}
+
+/** A top-level (world-scoped, parentless) faction-registry document. */
+export function buildFactionRegistryDoc(worldId: string, factions: Record<string, Faction>, id?: string): WireDocument {
+  return envelope(worldId, "faction-registry", null, { factions } satisfies FactionRegistrySystem, id);
 }
 
 /** A generic scene-entity document (drawing/template/…) parented to `sceneId`; the

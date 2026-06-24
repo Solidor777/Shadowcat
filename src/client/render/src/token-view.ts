@@ -1,7 +1,8 @@
 import { resolveTokenActor } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, WireDocument } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistrySystem } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec } from "./types";
+import { parseColor } from "./geometry";
 import { TokenAnimator } from "./token-animator";
 
 /** Engine-reserved token system fields (M8 §4.2; client-owned). `(x,y)` = center. */
@@ -73,9 +74,17 @@ export class TokenView {
     const eff = resolveTokenActor(doc, this.store);
     const visual = eff?.visual ?? s.visual;
     if (visual?.kind !== "image") return null;
+    // Faction border color resolves through the world faction registry; null = no border.
+    let borderColor: number | null = null;
+    if (eff?.faction) {
+      const reg = this.store.query("faction-registry")[0]?.system as FactionRegistrySystem | undefined;
+      const hex = reg?.factions?.[eff.faction]?.color;
+      if (hex) borderColor = parseColor(hex);
+    }
     return {
       x: s.x, y: s.y, w: s.w, h: s.h, rotation: s.rotation ?? 0,
       url: this.assets.url(visual.asset),
+      borderColor,
     };
   }
 }

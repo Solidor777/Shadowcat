@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, type TokenSystem, type ActorSystem } from "./scene-docs";
+import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, type TokenSystem, type ActorSystem, type Faction } from "./scene-docs";
 
 const actorSys: ActorSystem = {
   name: "Goblin",
@@ -68,4 +68,21 @@ test("buildTokenFromActor instance mode embeds an independent copy with provenan
   expect(copy.source).toEqual({ id: "act1", pack: null, version: 1 });
   expect(copy.system).toEqual(actorSys);
   expect(copy.system).not.toBe(actor.system); // independent by value, not aliased
+});
+
+test("setNameHidden sets and clears the OwnerOrGm override on /system/name", () => {
+  const d = buildActorDoc("w1", actorSys, "act1");
+  setNameHidden(d, true);
+  expect(d.permissions.property_overrides["/system/name"]).toBe("owner_or_gm");
+  setNameHidden(d, false);
+  expect(d.permissions.property_overrides["/system/name"]).toBeUndefined();
+});
+
+test("buildFactionRegistryDoc builds a world-scoped, parentless registry with an id-keyed map", () => {
+  const factions: Record<string, Faction> = { hostile: { name: "Hostile", color: "#f85149", stance: "hostile" } };
+  const d = buildFactionRegistryDoc("w1", factions, "reg1");
+  expect(d.doc_type).toBe("faction-registry");
+  expect(d.parent_id).toBeNull();
+  expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
+  expect((d.system as { factions: unknown }).factions).toEqual(factions);
 });

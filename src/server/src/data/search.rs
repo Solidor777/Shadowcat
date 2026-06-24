@@ -43,6 +43,7 @@ pub fn index_content_public(doc: &Document) -> String {
         caps: std::collections::BTreeSet::new(),
         all: false,
         see_gm_only: false,
+        is_owner: false,
     };
     index_content(&crate::data::permission::filter_properties(doc, &non_gm))
 }

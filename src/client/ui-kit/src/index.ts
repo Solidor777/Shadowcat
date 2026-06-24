@@ -8,3 +8,4 @@ export { t, locale, i18n } from "./i18n.svelte";
 export { SceneInteractionBridge } from "./sceneInteraction";
 export type { SceneInteraction } from "./sceneInteraction";
 export { ActorSelection } from "./actorSelection.svelte";
+export { TokenSelection } from "./tokenSelection.svelte";
