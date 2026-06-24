@@ -97,6 +97,8 @@ test("place stamps the selected actor as an instanced token (prototype actor)", 
     expect(op.doc.system).toMatchObject({ x: 141, y: 161, w: 100, h: 100 });
     expect(op.doc.embedded.actor[0].source).toEqual({ id: "act1", pack: null, version: 1 });
   }
+  // Instanced actors stay selected so the GM can place several.
+  expect(ctx.actorSelection!.selectedId).toBe("act1");
 });
 
 test("place links the selected actor when prototype is false", () => {
@@ -110,4 +112,6 @@ test("place links the selected actor when prototype is false", () => {
     expect((op.doc.system as { actor_id?: string }).actor_id).toBe("act2");
     expect(op.doc.embedded.actor).toBeUndefined();
   }
+  // A unique linked actor places once, then the selection clears.
+  expect(ctx.actorSelection!.selectedId).toBeNull();
 });

@@ -21,9 +21,12 @@
   let instanceOnDrop = $state(true);
   let assetList = $state<Asset[]>([]);
 
-  $effect(() => {
+  function refreshAssets(): void {
     void listAssets(ctx.world).then((a) => (assetList = a.filter((x) => x.content_type.startsWith("image/"))));
-    return ctx.onAssetChanged(() => void listAssets(ctx.world).then((a) => (assetList = a.filter((x) => x.content_type.startsWith("image/")))));
+  }
+  $effect(() => {
+    refreshAssets();
+    return ctx.onAssetChanged(refreshAssets);
   });
 
   function create(): void {
