@@ -1,3 +1,4 @@
+import { resolveTokenActor } from "@shadowcat/core";
 import type { ReadableDocuments, AssetResolver, WireDocument } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec } from "./types";
@@ -10,7 +11,7 @@ interface TokenSystem {
   w: number;
   h: number;
   rotation?: number;
-  visual: { kind: string; asset: string };
+  visual?: { kind: string; asset: string };
 }
 
 /** Renders `doc_type:"token"` docs as backend token nodes, tweening transforms via a
@@ -66,10 +67,15 @@ export class TokenView {
 
   private toSpec(doc: WireDocument): TokenNodeSpec | null {
     const s = doc.system as TokenSystem | undefined;
-    if (!s || s.visual?.kind !== "image") return null; // only image tokens render in M8d-1
+    if (!s) return null;
+    // Actor-backed tokens resolve their visual via the actor (+ overrides); raw tokens fall
+    // back to their own system.visual. Only image visuals render in M10a.
+    const eff = resolveTokenActor(doc, this.store);
+    const visual = eff?.visual ?? s.visual;
+    if (visual?.kind !== "image") return null;
     return {
       x: s.x, y: s.y, w: s.w, h: s.h, rotation: s.rotation ?? 0,
-      url: this.assets.url(s.visual.asset),
+      url: this.assets.url(visual.asset),
     };
   }
 }
