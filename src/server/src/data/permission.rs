@@ -90,18 +90,33 @@ pub fn declared_caps_for_document<'a>(
 
 /// A user's effective capabilities on a document. `all` is the GM/admin
 /// short-circuit (holds every capability); `caps` is the resolved set for a
-/// non-GM. `see_gm_only` continues to drive property-level read redaction.
+/// non-GM. `see_gm_only` drives `GmOnly` redaction; `is_owner` additionally
+/// admits the `OwnerOrGm` tier (a player still sees their own hidden PC's name)
+/// WITHOUT widening to `GmOnly`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Access {
     pub caps: BTreeSet<String>,
     pub all: bool,
     pub see_gm_only: bool,
+    pub is_owner: bool,
 }
 
 impl Access {
     /// Whether the user holds capability `c` (GM holds everything).
     pub fn has(&self, c: &str) -> bool {
         self.all || self.caps.contains(c)
+    }
+
+    /// Whether a property declared at visibility tier `v` is readable by this
+    /// recipient. `GmOnly` requires the GM short-circuit; `OwnerOrGm` also admits
+    /// the document owner. The single redaction predicate (`filter_properties`,
+    /// `collect_hidden`).
+    pub fn can_see(&self, v: Visibility) -> bool {
+        match v {
+            Visibility::All => true,
+            Visibility::GmOnly => self.see_gm_only,
+            Visibility::OwnerOrGm => self.see_gm_only || self.is_owner,
+        }
     }
 }
 
@@ -131,6 +146,7 @@ pub fn resolve_access(user: Uuid, world_role: WorldRole, doc: &Document) -> Acce
             caps: BTreeSet::new(),
             all: true,
             see_gm_only: true,
+            is_owner: true,
         };
     }
     let role = doc
@@ -150,6 +166,7 @@ pub fn resolve_access(user: Uuid, world_role: WorldRole, doc: &Document) -> Acce
         caps,
         all: false,
         see_gm_only: false,
+        is_owner: doc.owner == Some(user),
     }
 }
 
@@ -220,34 +237,40 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
             )
         })
         .collect();
-    let gm_only: Vec<String> = doc
+    let hidden: Vec<String> = doc
         .permissions
         .property_overrides
         .iter()
-        .filter(|(_, v)| **v == Visibility::GmOnly)
+        .filter(|(_, v)| !access.can_see(**v))
         .map(|(p, _)| p.clone())
         .collect();
     let mut whole = serde_json::to_value(&out).expect("document serializes");
-    for pointer in gm_only {
+    for pointer in hidden {
         strip_pointer(&mut whole, &pointer);
     }
     serde_json::from_value(whole).expect("filtered document deserializes")
 }
 
-/// Collect every `GmOnly` property pointer in `doc` and its embedded descendants,
-/// each expressed absolute to `doc` (call with `prefix = ""` for parent-absolute
-/// paths: a child at `embedded[key][i]` contributes `/embedded/<key>/<i>{pointer}`).
-/// Lets `Update`-delta redaction honor hidden fields at any embedded depth — the
-/// same coverage `filter_properties` gives whole-document egress.
-fn collect_gm_only(doc: &Document, prefix: &str, out: &mut Vec<String>) {
+/// Collect every property pointer in `doc` (and embedded descendants) that `access`
+/// may NOT see — `GmOnly` for any non-GM, `OwnerOrGm` for a non-owner non-GM — each
+/// expressed absolute to `doc` (call with `prefix = ""` for parent-absolute paths: a
+/// child at `embedded[key][i]` contributes `/embedded/<key>/<i>{pointer}`). Lets
+/// `Update`-delta redaction honor hidden fields at any embedded depth — the same
+/// coverage `filter_properties` gives whole-document egress.
+fn collect_hidden(doc: &Document, access: &Access, prefix: &str, out: &mut Vec<String>) {
     for (p, v) in &doc.permissions.property_overrides {
-        if *v == Visibility::GmOnly {
+        if !access.can_see(*v) {
             out.push(format!("{prefix}{p}"));
         }
     }
     for (key, children) in &doc.embedded {
         for (idx, child) in children.iter().enumerate() {
-            collect_gm_only(child, &format!("{prefix}/embedded/{key}/{idx}"), out);
+            collect_hidden(
+                child,
+                access,
+                &format!("{prefix}/embedded/{key}/{idx}"),
+                out,
+            );
         }
     }
 }
@@ -315,15 +338,15 @@ pub async fn filter_command(
                 let kept: Vec<FieldChange> = if access.see_gm_only {
                     changes.clone()
                 } else {
-                    // Collect GmOnly pointers across the parent AND its embedded
-                    // descendants (parent-absolute), so an Update into
+                    // Collect pointers this recipient cannot see across the parent AND
+                    // its embedded descendants (parent-absolute), so an Update into
                     // `/embedded/<child>/...` is redacted against the child's own
                     // overrides — not just the parent's. Matches filter_properties.
-                    let mut gm_only = Vec::new();
-                    collect_gm_only(&cur, "", &mut gm_only);
+                    let mut hidden = Vec::new();
+                    collect_hidden(&cur, &access, "", &mut hidden);
                     changes
                         .iter()
-                        .filter_map(|ch| redact_change(ch, &gm_only))
+                        .filter_map(|ch| redact_change(ch, &hidden))
                         .collect()
                 };
                 out_ops.push(Operation::Update {
@@ -422,6 +445,84 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    fn perms_with(overrides: &[(&str, Visibility)]) -> PermissionSet {
+        let mut p = PermissionSet::default();
+        for (ptr, v) in overrides {
+            p.property_overrides.insert((*ptr).into(), *v);
+        }
+        p
+    }
+
+    #[test]
+    fn owner_or_gm_visible_to_owner_and_gm_not_other_player() {
+        let owner = Uuid::from_u128(1);
+        let other = Uuid::from_u128(2);
+        let mut d = doc(
+            perms_with(&[("/system/name", Visibility::OwnerOrGm)]),
+            serde_json::json!({ "name": "Goblin Skirmisher", "displayName": "Goblin" }),
+        );
+        d.owner = Some(owner);
+
+        // Owner (non-GM) sees the real name.
+        let a_owner = resolve_access(owner, WorldRole::Player, &d);
+        assert_eq!(
+            filter_properties(&d, &a_owner).system["name"],
+            "Goblin Skirmisher"
+        );
+
+        // Another player does NOT (falls back to the non-secret displayName).
+        let a_other = resolve_access(other, WorldRole::Player, &d);
+        let v_other = filter_properties(&d, &a_other);
+        assert!(v_other.system.get("name").is_none());
+        assert_eq!(v_other.system["displayName"], "Goblin");
+
+        // GM sees it.
+        let a_gm = resolve_access(other, WorldRole::Gm, &d);
+        assert_eq!(
+            filter_properties(&d, &a_gm).system["name"],
+            "Goblin Skirmisher"
+        );
+    }
+
+    #[test]
+    fn owner_cannot_see_gm_only() {
+        let owner = Uuid::from_u128(1);
+        let mut d = doc(
+            perms_with(&[
+                ("/system/name", Visibility::OwnerOrGm),
+                ("/system/secret", Visibility::GmOnly),
+            ]),
+            serde_json::json!({ "name": "PC", "secret": "GM note" }),
+        );
+        d.owner = Some(owner);
+
+        let a_owner = resolve_access(owner, WorldRole::Player, &d);
+        let v = filter_properties(&d, &a_owner);
+        assert_eq!(v.system["name"], "PC"); // owner sees OwnerOrGm
+        assert!(v.system.get("secret").is_none()); // owner still denied GmOnly
+    }
+
+    #[test]
+    fn embedded_owner_or_gm_redacted_for_non_owner() {
+        let owner = Uuid::from_u128(1);
+        let other = Uuid::from_u128(2);
+        let child = doc(
+            perms_with(&[("/system/name", Visibility::OwnerOrGm)]),
+            serde_json::json!({ "name": "Hidden", "displayName": "Thing" }),
+        );
+        let mut parent = doc(PermissionSet::default(), serde_json::json!({}));
+        parent.owner = Some(owner);
+        parent.embedded.insert("actor".into(), vec![child]);
+
+        let a_other = resolve_access(other, WorldRole::Player, &parent);
+        let v = filter_properties(&parent, &a_other);
+        assert!(v.embedded["actor"][0].system.get("name").is_none());
+
+        let a_owner = resolve_access(owner, WorldRole::Player, &parent);
+        let vo = filter_properties(&parent, &a_owner);
+        assert_eq!(vo.embedded["actor"][0].system["name"], "Hidden");
     }
 
     #[test]
