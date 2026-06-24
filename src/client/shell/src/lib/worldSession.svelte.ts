@@ -20,7 +20,7 @@ import {
   type SceneSubscription,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
-import { SceneInteractionBridge, ActorSelection } from "@shadowcat/ui-kit";
+import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import { listWorldMembers } from "./api";
 import { SvelteMap } from "svelte/reactivity";
 
@@ -46,6 +46,8 @@ export class WorldSession {
   readonly sceneInteraction = new SceneInteractionBridge();
   /** The actor the place tool stamps; set by module-actors, read by scene-tools. Stable. */
   readonly actorSelection = new ActorSelection();
+  /** Selected token ids for group-select; set by the factions panel, read by the select tool. Stable. */
+  readonly tokenSelection = new TokenSelection();
   #assetListeners = new Set<(msg: { uuid: string; op: "replaced" | "deleted" }) => void>();
   #pingListeners = new Set<(msg: { scene: string; x: number; y: number; user: string }) => void>();
   #sceneSubs = new Map<

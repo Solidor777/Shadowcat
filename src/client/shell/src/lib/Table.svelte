@@ -25,6 +25,7 @@
     dispatchIntent: (ops) => session.dispatchIntent(ops),
     scene: session.sceneInteraction,
     actorSelection: session.actorSelection,
+    tokenSelection: session.tokenSelection,
     sendPing: (x, y) => session.sendPing(x, y),
     onPing: (cb) => session.onPing(cb),
     leaveWorld,

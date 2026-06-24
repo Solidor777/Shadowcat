@@ -3,6 +3,7 @@ import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResol
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
+import type { TokenSelection } from "./tokenSelection.svelte";
 
 /**
  * Ambient app state contributed components read via Svelte context. Carries the
@@ -45,6 +46,8 @@ export interface AppContext {
   scene: SceneInteraction;
   /** The actor the place tool stamps; set by module-actors, read by scene-tools. */
   actorSelection: ActorSelection;
+  /** Selected token ids for group-select; set by the factions panel, read by the select tool. */
+  tokenSelection: TokenSelection;
   /** Broadcast a transient location ping at scene coords on the active scene. */
   sendPing: (x: number, y: number) => void;
   /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe. */

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { AssetResolver } from "@shadowcat/core";
   import { setAppContext } from "@shadowcat/ui-kit";
-  import { SceneInteractionBridge, ActorSelection } from "@shadowcat/ui-kit";
+  import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
   import Assets from "../Assets.svelte";
 
@@ -23,6 +23,7 @@
     dispatchIntent: () => {},
     scene: new SceneInteractionBridge(),
     actorSelection: new ActorSelection(),
+    tokenSelection: new TokenSelection(),
     sendPing: () => {},
     onPing: () => () => {},
     leaveWorld: () => {},

@@ -4,7 +4,7 @@
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
 import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, type ReadableDocuments, type AssetResolver, type WireOperation } from "@shadowcat/core";
-import type { SceneInteraction, ActorSelection } from "@shadowcat/ui-kit";
+import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import { topTokenAt } from "./hit-test";
 
 export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping" | "wall";
@@ -17,6 +17,8 @@ export interface ToolContext {
   scene: SceneInteraction;
   /** The actor to stamp (the place tool); when set it takes precedence over selectedAsset. */
   actorSelection?: ActorSelection;
+  /** Selected token ids (group-select); the select tool reads + moves the whole set. */
+  tokenSelection?: TokenSelection;
   dispatchIntent: (ops: WireOperation[]) => void;
   documents: ReadableDocuments;
   assets: AssetResolver;

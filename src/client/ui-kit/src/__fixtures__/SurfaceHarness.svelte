@@ -3,6 +3,7 @@
   import { setAppContext } from "../appContext";
   import { SceneInteractionBridge } from "../sceneInteraction";
   import { ActorSelection } from "../actorSelection.svelte";
+  import { TokenSelection } from "../tokenSelection.svelte";
   import { t } from "../i18n.svelte";
   import Surface from "../Surface.svelte";
 
@@ -11,7 +12,7 @@
   // The registry is a fixed instance per render; capturing it once is intended.
   // store/world/role/t/assets are unused by <Surface> but required by the AppContext shape.
   // svelte-ignore state_referenced_locally
-  setAppContext({ contributions: registry, store: new DocumentStore(), documents: new DocumentStore(), world: "test", role: "gm", members: new Map(), t, assets: new AssetResolver(), onAssetChanged: () => () => {}, subscribeScene: () => ({ unsubscribe() {} }), dispatchIntent: () => {}, scene: new SceneInteractionBridge(), actorSelection: new ActorSelection(), sendPing: () => {}, onPing: () => () => {}, leaveWorld: () => {}, logout: async () => {} });
+  setAppContext({ contributions: registry, store: new DocumentStore(), documents: new DocumentStore(), world: "test", role: "gm", members: new Map(), t, assets: new AssetResolver(), onAssetChanged: () => () => {}, subscribeScene: () => ({ unsubscribe() {} }), dispatchIntent: () => {}, scene: new SceneInteractionBridge(), actorSelection: new ActorSelection(), tokenSelection: new TokenSelection(), sendPing: () => {}, onPing: () => () => {}, leaveWorld: () => {}, logout: async () => {} });
 </script>
 
 <Surface {contract} />
