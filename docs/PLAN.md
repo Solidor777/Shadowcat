@@ -223,8 +223,20 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > now-hidden field for non-authorized recipients when a GM tightens permissions (old:null —
 > no pre-image leak), the fail-closed `actorDisplayName` accessor, and the GM hide control.
 > Buddy-checked (two blind reviewers, converged: 1 Important embedded-coverage finding fixed).
-> Plan: `superpowers/plans/2026-06-24-m10b-factions-name-privacy.md`. **Next = M10c**
-> (conditions: registry config-doc + replaceable default-content module + overlay badges).
+> Plan: `superpowers/plans/2026-06-24-m10b-factions-name-privacy.md`.
+>
+> **M10c DONE** (merged --no-ff to LOCAL main, NOT pushed — push gate = full M10):
+> **conditions (markers only)** — a world-scoped singleton `condition-registry` config-document
+> (id→`{name,icon}` **map**, same single-key-Update shape as factions), a replaceable
+> `@shadowcat/module-conditions` that idempotently seeds a generic emoji set (GM) + the GM editor
+> + a token-selection-driven **toggle palette**; actor-data `conditions: string[]` resolved via
+> `resolveConditions` and rendered as upright emoji **badge** chips (`TokenNodeSpec.badges`);
+> `conditionTarget` resolves the write site (linked → actor `/system/conditions`; instanced →
+> token `/embedded/actor/0/system/conditions`); the GM-or-owner toggle is gated by a new advisory
+> `AppContext.canEdit(doc, path)` (mirrors the server Update-path check via the `canWritePath`
+> capability mirror; server stays authoritative). No mechanical effects (deferred to combat).
+> Buddy-checked. Plan: `superpowers/plans/2026-06-24-m10c-conditions.md`. **Next = M10d** (shapes
+> + footprint).
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 

@@ -15,6 +15,8 @@
     documents: undefined as never,
     world: "w1",
     role: "gm",
+    selfId: "u1",
+    canEdit: () => true,
     members: new Map(),
     t,
     assets: new AssetResolver(),
