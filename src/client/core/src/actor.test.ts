@@ -63,6 +63,15 @@ describe("resolveConditions", () => {
     expect(resolveConditions(token, storeWith(actor, registry))).toEqual([{ id: "dead", name: "Dead", icon: "💀" }]);
   });
 
+  it("is fail-closed when /system/conditions is absent (redacted or hand-built doc)", () => {
+    const actor = buildActorDoc("w1", sys, "act1");
+    delete (actor.system as { conditions?: string[] }).conditions; // simulate a stripped field
+    const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100);
+    expect(() => resolveConditions(token, storeWith(actor, registry))).not.toThrow();
+    expect(resolveConditions(token, storeWith(actor, registry))).toEqual([]);
+  });
+
   it("returns no conditions for a raw token or an empty registry", () => {
     const actor = buildActorDoc("w1", { ...sys, conditions: ["dead"] }, "act1");
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100);

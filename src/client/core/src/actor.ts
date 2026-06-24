@@ -24,7 +24,9 @@ function project(base: ActorSystem, overrides?: TokenOverrides): EffectiveActor 
     size: overrides?.size ?? base.size,
     shape: base.shape,
     faction: base.faction,
-    conditions: base.conditions,
+    // Fail-closed: a missing/redacted /system/conditions yields no conditions, never a throw in
+    // the downstream `for...of` (the single chokepoint protecting every EffectiveActor consumer).
+    conditions: base.conditions ?? [],
   };
 }
 

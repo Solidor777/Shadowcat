@@ -31,6 +31,9 @@ export class PixiBackend implements DisplayBackend {
   private readonly tokenBorders = new Map<string, Graphics>();
   /** Condition badge glyph nodes per token (upright; absent when the token has no conditions). */
   private readonly tokenBadges = new Map<string, Text[]>();
+  /** Last-rendered badge glyph set per token, so a tweening token (re-pushed ~60×/s with the same
+   * glyphs) repositions existing Text nodes instead of reallocating them each frame. */
+  private readonly tokenBadgeKeys = new Map<string, string>();
   private background: Sprite | null = null;
   private backgroundUrl: string | null = null;
   /** Monotonic counter disambiguating concurrent background loads. */
@@ -172,22 +175,34 @@ export class PixiBackend implements DisplayBackend {
       border.angle = spec.rotation; // degrees, like the sprite
     }
     // Condition badges: upright glyph chips along the token's top edge, tracking its position
-    // (not rotation — status markers stay upright). Rebuilt each push; cheap for a few glyphs.
-    const prevBadges = this.tokenBadges.get(id);
-    if (prevBadges) for (const b of prevBadges) b.destroy();
-    if (spec.badges.length === 0) {
-      this.tokenBadges.delete(id);
+    // (not rotation — status markers stay upright). Glyph nodes are rebuilt only when the glyph
+    // set changes; a transform-only re-push (tweening token, ~60×/s) just repositions them — the
+    // same alloc-avoidance the URL guard gives the sprite.
+    const size = Math.max(12, Math.min(spec.w, spec.h) * 0.28);
+    const place = (txt: Text, i: number): void => {
+      txt.position.set(spec.x - spec.w / 2 + size / 2 + i * (size + 2), spec.y - spec.h / 2 + size / 2);
+    };
+    const badgeKey = spec.badges.join("");
+    const existing = this.tokenBadges.get(id);
+    if (existing && this.tokenBadgeKeys.get(id) === badgeKey) {
+      existing.forEach(place); // glyphs unchanged: reposition only
     } else {
-      const size = Math.max(12, Math.min(spec.w, spec.h) * 0.28);
-      const nodes: Text[] = [];
-      spec.badges.forEach((glyph, i) => {
-        const txt = new Text({ text: glyph, style: { fontSize: size, fontFamily: "sans-serif" } });
-        txt.anchor.set(0.5);
-        txt.position.set(spec.x - spec.w / 2 + size / 2 + i * (size + 2), spec.y - spec.h / 2 + size / 2);
-        this.layers.get("tokens")?.addChild(txt);
-        nodes.push(txt);
-      });
-      this.tokenBadges.set(id, nodes);
+      if (existing) for (const b of existing) b.destroy();
+      if (spec.badges.length === 0) {
+        this.tokenBadges.delete(id);
+        this.tokenBadgeKeys.delete(id);
+      } else {
+        const nodes: Text[] = [];
+        spec.badges.forEach((glyph, i) => {
+          const txt = new Text({ text: glyph, style: { fontSize: size, fontFamily: "sans-serif" } });
+          txt.anchor.set(0.5);
+          place(txt, i);
+          this.layers.get("tokens")?.addChild(txt);
+          nodes.push(txt);
+        });
+        this.tokenBadges.set(id, nodes);
+        this.tokenBadgeKeys.set(id, badgeKey);
+      }
     }
     // Only (re)load on a URL change — a tweening token re-pushes ~60×/s with the same url.
     if (this.tokenUrls.get(id) !== spec.url) {
@@ -216,6 +231,7 @@ export class PixiBackend implements DisplayBackend {
       for (const b of badges) b.destroy();
       this.tokenBadges.delete(id);
     }
+    this.tokenBadgeKeys.delete(id);
   }
 
   setShape(id: string, spec: ShapeNodeSpec): void {
