@@ -1,14 +1,12 @@
 <script lang="ts">
   import { webSocketConnect } from "@shadowcat/core";
-  import { getConfig, getMe, listWorlds, type Me } from "./lib/api";
+  import { Entry } from "@shadowcat/module-entry";
+  import { getMe, listWorlds, type Me } from "./lib/api";
   import { loadSessionState, setLastWorld, flushOnUnload } from "./lib/sessionState.svelte";
   import { currentRoute, navigate } from "./lib/route.svelte";
   import { coreUi } from "./modules/core-ui/index";
   import { sceneTools } from "./modules/scene-tools/index";
   import { WorldSession } from "./lib/worldSession.svelte";
-  import Setup from "./lib/views/Setup.svelte";
-  import Login from "./lib/views/Login.svelte";
-  import WorldSelect from "./lib/views/WorldSelect.svelte";
   import Table from "./lib/Table.svelte";
 
   let me = $state<Me | null>(null);
@@ -17,36 +15,27 @@
 
   async function boot() {
     try {
-      const cfg = await getConfig();
-      if (!cfg.initialized) {
-        navigate({ name: "setup" });
-        return;
-      }
       me = await getMe();
-      if (!me) {
-        navigate({ name: "login" });
-        return;
-      }
-      const ui = await loadSessionState(); // applies the saved locale
-      const last = ui.global.lastWorld;
-      if (last) {
-        // A transient /api/worlds failure here should degrade to world-select, not
-        // demote an authenticated session all the way back to Login.
-        try {
-          const worlds = await listWorlds();
-          if (worlds.some((w) => w.id === last)) {
-            enterWorld(last); // reload returns you to your last world
-            return;
+      if (me) {
+        const ui = await loadSessionState(); // applies the saved locale
+        const last = ui.global.lastWorld;
+        if (last) {
+          // A transient /api/worlds failure here degrades to entry, not a hard error.
+          try {
+            const worlds = await listWorlds();
+            if (worlds.some((w) => w.id === last)) {
+              enterWorld(last); // reload returns you to your last world
+              return;
+            }
+            setLastWorld(null); // stale (deleted / revoked) — clear it
+          } catch {
+            // fall through to entry
           }
-          setLastWorld(null); // stale (deleted / revoked) — clear it
-        } catch {
-          // fall through to world-select
         }
       }
-      navigate({ name: "worlds" });
+      navigate({ name: me ? "worlds" : "login" }); // pre-world; <Entry> picks the step
     } catch {
-      // A transient backend failure must not wedge the SPA on "Loading…";
-      // fall through to Login (re-auth re-runs the checks).
+      // A transient backend failure must not wedge the SPA on "Loading…".
       navigate({ name: "login" });
     } finally {
       booted = true;
@@ -63,14 +52,15 @@
     });
   }
 
-  async function afterAuth() {
+  // Entry authenticated the user; fetch identity + apply saved session state
+  // (locale) before entry advances to world-select — the pre-split boot order.
+  async function onAuthenticated() {
     try {
       me = await getMe();
       await loadSessionState();
     } catch {
       me = null;
     }
-    navigate({ name: me ? "worlds" : "login" });
   }
 
   function enterWorld(worldId: string) {
@@ -97,14 +87,10 @@
 
 {#if !booted}
   <p class="connecting">Loading…</p>
-{:else if route.name === "setup"}
-  <Setup onDone={() => navigate({ name: "login" })} />
 {:else if route.name === "world" && session?.role && session?.world}
   <Table {session} {leaveWorld} />
 {:else if route.name === "world"}
   <p class="connecting">Connecting…</p>
-{:else if route.name === "worlds"}
-  <WorldSelect onEnter={enterWorld} />
 {:else}
-  <Login onAuthed={afterAuth} />
+  <Entry {onAuthenticated} onEnterWorld={enterWorld} />
 {/if}

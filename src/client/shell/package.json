@@ -6,6 +6,7 @@
   "dependencies": {
     "@shadowcat/core": "workspace:*",
     "@shadowcat/render": "workspace:*",
+    "@shadowcat/module-entry": "workspace:*",
     "@shadowcat/types": "workspace:^",
     "@shadowcat/ui-kit": "workspace:*"
   },

@@ -72,6 +72,9 @@ importers:
       '@shadowcat/core':
         specifier: workspace:*
         version: link:../core
+      '@shadowcat/module-entry':
+        specifier: workspace:*
+        version: link:../../modules/entry
       '@shadowcat/render':
         specifier: workspace:*
         version: link:../render

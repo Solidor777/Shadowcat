@@ -1,4 +1,4 @@
-import type { WorldEntry, ServerConfig, Asset } from "@shadowcat/types";
+import type { WorldEntry, Asset } from "@shadowcat/types";
 
 /** Local mirror of the server's MeResponse (not ts-rs-exported). */
 export interface Me {
@@ -21,10 +21,6 @@ async function postJson(url: string, body: unknown): Promise<Response> {
   });
 }
 
-export function getConfig(): Promise<ServerConfig> {
-  return getJson<ServerConfig>("/api/config");
-}
-
 export async function getMe(): Promise<Me | null> {
   const res = await fetch("/api/me", { headers: { accept: "application/json" } });
   if (res.status === 401) return null;
@@ -32,24 +28,8 @@ export async function getMe(): Promise<Me | null> {
   return (await res.json()) as Me;
 }
 
-export async function login(username: string, password: string): Promise<boolean> {
-  const res = await postJson("/api/login", { username, password });
-  return res.ok;
-}
-
 export async function logout(): Promise<void> {
   await postJson("/api/logout", {});
-}
-
-export async function setup(
-  username: string,
-  password: string,
-  token?: string,
-): Promise<{ ok: boolean; status: number }> {
-  const body: Record<string, string> = { username, password };
-  if (token) body.token = token;
-  const res = await postJson("/api/setup", body);
-  return { ok: res.ok, status: res.status };
 }
 
 export function listWorlds(): Promise<WorldEntry[]> {
@@ -65,12 +45,6 @@ export interface WorldMember {
 
 export function listWorldMembers(world: string): Promise<WorldMember[]> {
   return getJson<WorldMember[]>(`/api/worlds/${world}/members`);
-}
-
-export async function createWorld(name: string): Promise<WorldEntry> {
-  const res = await postJson("/api/worlds", { name });
-  if (!res.ok) throw new Error(`/api/worlds → ${res.status}`);
-  return (await res.json()) as WorldEntry;
 }
 
 /** Per-user UI session state. The server stores this opaquely (object + size cap);
