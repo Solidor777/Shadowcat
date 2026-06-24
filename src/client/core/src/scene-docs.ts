@@ -44,11 +44,12 @@ export interface ActorSystem {
   prototype: boolean;
 }
 
-/** The per-token override whitelist for a linked token (M10a). */
+/** The per-token override whitelist for a linked token (M10a; shape added M10d). */
 export interface TokenOverrides {
   name?: string;
   visual?: ActorVisual;
   size?: { w: number; h: number };
+  shape?: "square" | "circle";
 }
 
 /** Visible-to-all defaults; the server normalizes permissions per the creator's role. */
