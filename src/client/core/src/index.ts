@@ -71,5 +71,5 @@ export type { AssetOp } from "./assets";
 export { listAssets, uploadAsset, replaceAsset, deleteAsset } from "./asset-rest";
 export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc } from "./scene-docs";
 export type { SceneSystem, TokenSystem, ActorSystem, ActorVisual, TokenOverrides, Faction, FactionStance, FactionRegistrySystem, Condition, ConditionRegistrySystem } from "./scene-docs";
-export { resolveTokenActor, actorDisplayName } from "./actor";
-export type { EffectiveActor } from "./actor";
+export { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget } from "./actor";
+export type { EffectiveActor, ConditionTarget } from "./actor";

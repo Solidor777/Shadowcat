@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { DocumentStore } from "./store";
 import type { WireDocument } from "./wire";
-import { buildActorDoc, buildTokenDoc, buildTokenFromActor, type ActorSystem, type TokenOverrides } from "./scene-docs";
-import { resolveTokenActor, actorDisplayName } from "./actor";
+import { buildActorDoc, buildTokenDoc, buildTokenFromActor, buildConditionRegistryDoc, type ActorSystem, type TokenOverrides } from "./scene-docs";
+import { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget } from "./actor";
 
 const sys: ActorSystem = {
   name: "Goblin",
@@ -52,6 +52,51 @@ describe("resolveTokenActor", () => {
     expect(resolveTokenActor(linked, new DocumentStore())).toBeNull();
     const raw = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "z" } });
     expect(resolveTokenActor(raw, new DocumentStore())).toBeNull();
+  });
+});
+
+describe("resolveConditions", () => {
+  it("resolves effective condition ids through the world registry, dropping unknown ids", () => {
+    const actor = buildActorDoc("w1", { ...sys, conditions: ["dead", "ghost"] }, "act1");
+    const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100);
+    expect(resolveConditions(token, storeWith(actor, registry))).toEqual([{ id: "dead", name: "Dead", icon: "💀" }]);
+  });
+
+  it("returns no conditions for a raw token or an empty registry", () => {
+    const actor = buildActorDoc("w1", { ...sys, conditions: ["dead"] }, "act1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100);
+    expect(resolveConditions(token, storeWith(actor))).toEqual([]); // no registry → all dropped
+    const raw = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "z" } });
+    expect(resolveConditions(raw, new DocumentStore())).toEqual([]);
+  });
+});
+
+describe("conditionTarget", () => {
+  it("targets the shared actor doc + /system/conditions for a linked token", () => {
+    const actor = buildActorDoc("w1", { ...sys, conditions: ["dead"] }, "act1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100);
+    const tgt = conditionTarget(token, storeWith(actor))!;
+    expect(tgt.doc.id).toBe("act1");
+    expect(tgt.path).toBe("/system/conditions");
+    expect(tgt.conditions).toEqual(["dead"]);
+  });
+
+  it("targets the token doc + embedded copy path for an instanced token", () => {
+    const actor = buildActorDoc("w1", { ...sys, conditions: ["dead"] }, "act1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, 100);
+    const tgt = conditionTarget(token, new DocumentStore())!; // store-independent (embedded)
+    expect(tgt.doc.id).toBe(token.id);
+    expect(tgt.path).toBe("/embedded/actor/0/system/conditions");
+    expect(tgt.conditions).toEqual(["dead"]);
+  });
+
+  it("returns null for a raw token and a dangling linked token", () => {
+    const actor = buildActorDoc("w1", sys, "act1");
+    const linked = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100);
+    expect(conditionTarget(linked, new DocumentStore())).toBeNull(); // actor missing
+    const raw = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "z" } });
+    expect(conditionTarget(raw, new DocumentStore())).toBeNull();
   });
 });
 
