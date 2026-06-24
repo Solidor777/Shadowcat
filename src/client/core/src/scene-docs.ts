@@ -150,6 +150,24 @@ export function buildFactionRegistryDoc(worldId: string, factions: Record<string
   return envelope(worldId, "faction-registry", null, { factions } satisfies FactionRegistrySystem, id);
 }
 
+/** A status condition's display. `icon` is a short glyph (emoji) rendered as a token badge. */
+export interface Condition {
+  name: string;
+  icon: string;
+}
+
+/** The world's condition registry: a singleton config document (doc_type "condition-registry").
+ * `conditions` is keyed by condition id — an actor's `conditions` array holds keys. A MAP, not an
+ * array, so adding a condition is a single-key Update (`set_pointer` cannot grow arrays). */
+export interface ConditionRegistrySystem {
+  conditions: Record<string, Condition>;
+}
+
+/** A top-level (world-scoped, parentless) condition-registry document. */
+export function buildConditionRegistryDoc(worldId: string, conditions: Record<string, Condition>, id?: string): WireDocument {
+  return envelope(worldId, "condition-registry", null, { conditions } satisfies ConditionRegistrySystem, id);
+}
+
 /** A generic scene-entity document (drawing/template/…) parented to `sceneId`; the
  * `system` shape is the caller's (client-owned, server structural-only). */
 export function buildSceneEntityDoc(worldId: string, sceneId: string, docType: string, system: unknown, id?: string): WireDocument {

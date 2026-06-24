@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, type TokenSystem, type ActorSystem, type Faction } from "./scene-docs";
+import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, type TokenSystem, type ActorSystem, type Faction, type Condition } from "./scene-docs";
 
 const actorSys: ActorSystem = {
   name: "Goblin",
@@ -85,4 +85,14 @@ test("buildFactionRegistryDoc builds a world-scoped, parentless registry with an
   expect(d.parent_id).toBeNull();
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
   expect((d.system as { factions: unknown }).factions).toEqual(factions);
+});
+
+test("buildConditionRegistryDoc builds a world-scoped, parentless registry with an id-keyed map", () => {
+  const conditions: Record<string, Condition> = { dead: { name: "Dead", icon: "💀" } };
+  const d = buildConditionRegistryDoc("w1", conditions, "creg1");
+  expect(d.doc_type).toBe("condition-registry");
+  expect(d.parent_id).toBeNull();
+  expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
+  expect((d.system as { conditions: unknown }).conditions).toEqual(conditions);
+  expect(d.id).toBe("creg1");
 });
