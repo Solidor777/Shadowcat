@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { setAppContext } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
-  import Layout from "./Layout.svelte";
   import { logout } from "./api";
   import { navigate } from "./route.svelte";
   import type { WorldSession } from "./worldSession.svelte";
@@ -35,4 +34,4 @@
   });
 </script>
 
-<Layout />
+<Surface contract="shadowcat.surface:root" />

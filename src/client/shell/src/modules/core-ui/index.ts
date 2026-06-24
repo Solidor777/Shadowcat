@@ -1,4 +1,5 @@
 import type { Module } from "@shadowcat/core";
+import Layout from "./Layout.svelte";
 import Settings from "./panels/Settings.svelte";
 import Assets from "./panels/Assets.svelte";
 import Stage from "./panels/Stage.svelte";
@@ -14,6 +15,7 @@ export const coreUi: Module = {
     version: "0.1.0",
     dependencies: {},
     provides: [
+      { contract: "shadowcat.surface:root", cardinality: "singleton" },
       { contract: "shadowcat.surface:topbar", cardinality: "singleton" },
       { contract: "shadowcat.surface:stage", cardinality: "singleton" },
       { contract: "shadowcat.surface:statusbar", cardinality: "singleton" },
@@ -22,6 +24,7 @@ export const coreUi: Module = {
     ],
   },
   register(ctx) {
+    ctx.contributions.contribute({ id: "core-ui:root", contract: "shadowcat.surface:root", component: Layout });
     ctx.contributions.contribute({ id: "core-ui:topbar", contract: "shadowcat.surface:topbar", component: TopBar });
     ctx.contributions.contribute({ id: "core-ui:stage", contract: "shadowcat.surface:stage", component: Stage });
     ctx.contributions.contribute({ id: "core-ui:statusbar", contract: "shadowcat.surface:statusbar", component: StatusBar });
