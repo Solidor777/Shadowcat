@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { DocumentStore } from "./store";
 import type { WireDocument } from "./wire";
 import { buildActorDoc, buildTokenDoc, buildTokenFromActor, type ActorSystem, type TokenOverrides } from "./scene-docs";
-import { resolveTokenActor } from "./actor";
+import { resolveTokenActor, actorDisplayName } from "./actor";
 
 const sys: ActorSystem = {
   name: "Goblin",
@@ -52,5 +52,14 @@ describe("resolveTokenActor", () => {
     expect(resolveTokenActor(linked, new DocumentStore())).toBeNull();
     const raw = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "z" } });
     expect(resolveTokenActor(raw, new DocumentStore())).toBeNull();
+  });
+});
+
+describe("actorDisplayName", () => {
+  it("prefers the real name, then displayName, then a generic fallback", () => {
+    expect(actorDisplayName({ name: "Goblin Skirmisher", displayName: "Goblin" })).toBe("Goblin Skirmisher");
+    expect(actorDisplayName({ displayName: "Goblin" })).toBe("Goblin");
+    expect(actorDisplayName({})).toBe("Unknown Creature");
+    expect(actorDisplayName({}, "Mystery")).toBe("Mystery");
   });
 });

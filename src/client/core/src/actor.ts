@@ -28,6 +28,14 @@ function project(base: ActorSystem, overrides?: TokenOverrides): EffectiveActor 
   };
 }
 
+/** The name to show for an actor: the real name when present, else the non-secret
+ * displayName, else a generic fallback. For unauthorized recipients the server strips the
+ * real `name` (the OwnerOrGm tier), so it is absent here — fail-closed: a missing name yields
+ * the generic label, never a leak. The single display chokepoint every surface reads. */
+export function actorDisplayName(a: { name?: string; displayName?: string }, fallback = "Unknown Creature"): string {
+  return a.name || a.displayName || fallback;
+}
+
 export function resolveTokenActor(token: WireDocument, store: ReadableDocuments): EffectiveActor | null {
   const sys = token.system as { actor_id?: string | null; overrides?: TokenOverrides } | undefined;
   if (sys?.actor_id) {

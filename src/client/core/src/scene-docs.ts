@@ -112,6 +112,18 @@ export function buildTokenFromActor(
   return doc;
 }
 
+/** Set/clear the name-privacy override on an actor doc's permissions: hiding declares
+ * `/system/name` as the `owner_or_gm` tier (the server redacts it from non-owner players on
+ * egress, and retroactively retracts an already-delivered value when the override is added);
+ * clearing removes the declaration. Mutates in place + returns `doc`. */
+export function setNameHidden(doc: WireDocument, hidden: boolean): WireDocument {
+  const overrides = { ...doc.permissions.property_overrides };
+  if (hidden) overrides["/system/name"] = "owner_or_gm";
+  else delete overrides["/system/name"];
+  doc.permissions = { ...doc.permissions, property_overrides: overrides };
+  return doc;
+}
+
 /** A token document parented to `sceneId`, carrying the given transform + visual. */
 export function buildTokenDoc(worldId: string, sceneId: string, system: TokenSystem, id?: string): WireDocument {
   return envelope(worldId, "token", sceneId, system, id);
