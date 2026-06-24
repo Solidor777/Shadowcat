@@ -209,7 +209,22 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > swappable `@shadowcat/module-actors` create/list/pick package; and the user-side
 > `actor_role`→`user_role` rename (the game entity now owns the name "Actor").
 > Buddy-checked (1 agreed deep-clone fix + 2 one-sided minors resolved). Plan:
-> `superpowers/plans/2026-06-24-m10a-actor-model.md`. **Next = M10b** (factions + name privacy).
+> `superpowers/plans/2026-06-24-m10a-actor-model.md`.
+>
+> **M10b DONE** (merged --no-ff to LOCAL main, NOT pushed — push gate = full M10):
+> **factions** — a world-scoped singleton `faction-registry` config-document (an id→faction
+> **map**, so adds are single-key field-Updates; `set_pointer` cannot grow arrays), a
+> replaceable `@shadowcat/module-factions` that seeds 3 GM defaults idempotently + the GM
+> editor, faction-colored token borders (`TokenNodeSpec.borderColor`), and faction
+> **group-select** (a `TokenSelection` seam + multi-drag + select-all-of-faction); **name
+> privacy** — a new `OwnerOrGm` visibility tier (`Access::is_owner` + a single `can_see`
+> predicate, so an owner sees `OwnerOrGm` but never `GmOnly`) honored on every egress path
+> (whole-doc, update-delta, embedded, search, HTTP), **retroactive redaction** that nulls a
+> now-hidden field for non-authorized recipients when a GM tightens permissions (old:null —
+> no pre-image leak), the fail-closed `actorDisplayName` accessor, and the GM hide control.
+> Buddy-checked (two blind reviewers, converged: 1 Important embedded-coverage finding fixed).
+> Plan: `superpowers/plans/2026-06-24-m10b-factions-name-privacy.md`. **Next = M10c**
+> (conditions: registry config-doc + replaceable default-content module + overlay badges).
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
