@@ -20,7 +20,7 @@ import {
   type SceneSubscription,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
-import { SceneInteractionBridge } from "@shadowcat/ui-kit";
+import { SceneInteractionBridge, ActorSelection } from "@shadowcat/ui-kit";
 import { listWorldMembers } from "./api";
 import { SvelteMap } from "svelte/reactivity";
 
@@ -44,6 +44,8 @@ export class WorldSession {
   /** Canvas interaction bridge: the Stage attaches the engine; tool components reach
    * it via AppContext. Stable across Stage remount (M8d §16). */
   readonly sceneInteraction = new SceneInteractionBridge();
+  /** The actor the place tool stamps; set by module-actors, read by scene-tools. Stable. */
+  readonly actorSelection = new ActorSelection();
   #assetListeners = new Set<(msg: { uuid: string; op: "replaced" | "deleted" }) => void>();
   #pingListeners = new Set<(msg: { scene: string; x: number; y: number; user: string }) => void>();
   #sceneSubs = new Map<
