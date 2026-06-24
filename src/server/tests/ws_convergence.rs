@@ -23,27 +23,22 @@ struct Harness {
     cookie: String,
     world: Uuid,
     repo: Arc<SqliteRepository>,
-    state: AppState,
 }
 
 async fn spawn() -> Harness {
-    spawn_with_ws(shadowcat::ws::WsState::new(), None).await
+    spawn_with_ws(shadowcat::ws::WsState::new()).await
 }
 
-/// Like `spawn`, but the room broadcast ring uses `capacity` AND accepted sockets
-/// get a tiny send buffer. With a tiny send buffer (server) plus a tiny receive
-/// buffer (the `connect_slow` client), the total bufferable bytes are bounded
-/// regardless of the runner's OS defaults, so a non-reading client overflows the
-/// ring deterministically and exercises the `Lagged` → resync path.
+/// Like `spawn`, but the room broadcast ring uses a small `capacity`, so a client
+/// that pauses reading is likely to overflow it and exercise the `Lagged` → resync
+/// path end-to-end. The deterministic lag guard lives in the `egress_loop` unit
+/// test (`ws::conn::tests::egress_lag_triggers_resync_and_converges`); this test
+/// asserts only convergence, which holds whether or not the lag fires on a given OS.
 async fn spawn_with_capacity(capacity: usize) -> Harness {
-    spawn_with_ws(
-        shadowcat::ws::WsState::with_broadcast_capacity(capacity),
-        Some(16 * 1024),
-    )
-    .await
+    spawn_with_ws(shadowcat::ws::WsState::with_broadcast_capacity(capacity)).await
 }
 
-async fn spawn_with_ws(ws: shadowcat::ws::WsState, send_buf: Option<usize>) -> Harness {
+async fn spawn_with_ws(ws: shadowcat::ws::WsState) -> Harness {
     let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
     let hash = hash_password("pw").unwrap();
     // The seeded user owns the world (GM), so its intents are authorized and
@@ -62,20 +57,9 @@ async fn spawn_with_ws(ws: shadowcat::ws::WsState, send_buf: Option<usize>) -> H
         ws,
         upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
     };
-    let app = http::router(state.clone()).await;
+    let app = http::router(state).await;
 
-    // A small `SO_SNDBUF` on the listener is inherited by accepted sockets, so the
-    // server egress blocks after only a few KiB of unread data — the server half of
-    // the deterministic backpressure (the client half is `connect_slow`).
-    let listener = match send_buf {
-        Some(sz) => {
-            let sock = tokio::net::TcpSocket::new_v4().unwrap();
-            sock.set_send_buffer_size(sz as u32).unwrap();
-            sock.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-            sock.listen(1024).unwrap()
-        }
-        None => tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(),
-    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -108,7 +92,6 @@ async fn spawn_with_ws(ws: shadowcat::ws::WsState, send_buf: Option<usize>) -> H
         cookie,
         world: world.id,
         repo,
-        state,
     }
 }
 
@@ -125,26 +108,6 @@ impl Harness {
         let mut req = url.into_client_request().unwrap();
         req.headers_mut().insert("cookie", cookie.parse().unwrap());
         let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
-        ws
-    }
-
-    /// Connect with a tiny receive buffer (autotuning disabled), so a client that
-    /// stops reading closes its TCP window after a few KiB — deterministically
-    /// blocking the server egress regardless of the runner's default loopback
-    /// buffer sizes, which on Linux can absorb megabytes and hide the lag.
-    async fn connect_slow(&self) -> Ws {
-        let addr: std::net::SocketAddr = self.addr.parse().unwrap();
-        let sock = tokio::net::TcpSocket::new_v4().unwrap();
-        sock.set_recv_buffer_size(16 * 1024).unwrap();
-        let tcp = sock.connect(addr).await.unwrap();
-        let url = format!("ws://{}/ws?world={}", self.addr, self.world);
-        let mut req = url.into_client_request().unwrap();
-        req.headers_mut()
-            .insert("cookie", self.cookie.parse().unwrap());
-        let (ws, _) =
-            tokio_tungstenite::client_async(req, tokio_tungstenite::MaybeTlsStream::Plain(tcp))
-                .await
-                .unwrap();
         ws
     }
 
@@ -191,20 +154,6 @@ impl Harness {
             .into_iter()
             .map(|c| c.seq)
             .collect()
-    }
-
-    /// In-process read of the room's `lagged_drops` telemetry (no admin HTTP).
-    fn lagged_drops(&self) -> u64 {
-        self.state
-            .ws
-            .rooms
-            .get(self.world)
-            .map(|r| {
-                r.stats
-                    .lagged_drops
-                    .load(std::sync::atomic::Ordering::Relaxed)
-            })
-            .unwrap_or(0)
     }
 }
 
@@ -389,33 +338,30 @@ async fn all_clients_converge_after_reconnect() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_reader_recovers_via_resync() {
-    // A ring of 8 plus a slow client with a tiny receive buffer (see `connect_slow`)
-    // forces the broadcast `Lagged` path deterministically: the unread client's TCP
-    // window closes after a few KiB, blocking the server egress regardless of the
-    // runner's default buffer sizes, and we wait until every event is applied (hence
-    // broadcast) while that egress is blocked, so its receiver overflows the ring.
+    // End-to-end convergence over a real WS against a small (8-slot) broadcast ring:
+    // a client that pauses reading while a publisher floods events past the ring, then
+    // resumes, must still converge to the authoritative tail with no gaps or dups —
+    // whether it converges from live frames or via a `Lagged`-driven resync. The lag
+    // path itself is guaranteed deterministically (OS-independently) by the unit test
+    // `ws::conn::tests::egress_lag_triggers_resync_and_converges`, which drives
+    // `egress_loop` with a credit-gated sink; asserting the lag fired here would
+    // depend on the runner's TCP buffering, which is non-portable.
     let h = spawn_with_capacity(8).await;
-    let mut slow = h.connect_slow().await;
-    let _ = slow.next().await; // Welcome — then we stop reading `slow`.
+    let mut slow = h.connect().await;
+    let _ = slow.next().await; // Welcome — then we pause reading `slow`.
 
-    // Modest frames (~4 KiB): with both the server send buffer and the slow client's
-    // receive buffer pinned to ~16 KiB, only ~32 KiB total is bufferable, so a
-    // handful of frames block the egress and the rest (>> the 8-slot ring) overflow
-    // the broadcast ring — independent of the runner's OS buffer defaults.
     let mut pubc = h.connect().await;
     let _ = pubc.next().await;
-    let blob = "x".repeat(4 * 1024);
     for n in 0..30u64 {
         let doc_id = Uuid::from_u128(1000 + n as u128);
-        let op = create_op(h.world, doc_id, serde_json::json!({ "blob": blob }));
+        let op = create_op(h.world, doc_id, serde_json::json!({ "n": n }));
         pubc.send(intent_msg(n, serde_json::json!([op])))
             .await
             .unwrap();
     }
 
-    // Wait until all 30 are durably applied (and thus broadcast) while `slow` is
-    // blocked, so its receiver provably lagged the 8-slot ring — independent of
-    // apply speed. Bounded so a genuine stall fails loudly rather than hanging.
+    // Wait until all 30 are durably applied (and thus broadcast). Bounded so a genuine
+    // stall fails loudly rather than hanging.
     let mut waited = 0;
     while h.authoritative_seqs().await.len() < 30 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -423,19 +369,9 @@ async fn slow_reader_recovers_via_resync() {
         assert!(waited < 300, "server did not apply 30 intents within 30s");
     }
 
-    // Draining unblocks the egress task, which on its next `recv` observes the
-    // overflowed ring as `Lagged` and resyncs. Convergence: the final delivered
-    // seq reaches the authoritative tail (30), strictly increasing, no dups.
+    // Resume reading `slow`: the final delivered seq reaches the authoritative tail
+    // (30), strictly increasing, no dups — via live frames or a resync.
     let seqs = drain_until_seq(&mut slow, 30).await;
-
-    // The Lagged path fired deterministically (the regression guard the larger
-    // ring could not provide). Observed only after draining, since a blocked
-    // egress never reaches the `recv` that surfaces the lag.
-    assert!(
-        h.lagged_drops() > 0,
-        "the lag-driven resync path must fire deterministically"
-    );
-
     assert_eq!(*seqs.last().unwrap(), 30);
     let mut sorted = seqs.clone();
     sorted.sort();

@@ -755,6 +755,167 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Deterministic broadcast-`Lagged` → resync guard, driven directly against the
+    /// generic `egress_loop` with a credit-gated in-process sink — no real socket, so
+    /// it does not depend on any OS's TCP buffer sizing (the prior socket-backpressure
+    /// approach was non-portable: `SO_SNDBUF`/`SO_RCVBUF` are advisory and each OS
+    /// clamps/autotunes them differently). The sink starts with exactly one credit
+    /// (consumed by `Welcome`); with zero credits the egress drains at most one
+    /// broadcast event before parking on the gated send, so publishing
+    /// `30 >> capacity(8)` events overflows the broadcast ring deterministically.
+    /// Granting credits unblocks the egress, which then observes `Lagged`, replays
+    /// from the ring/log, and converges to the authoritative tail with no gaps/dups.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn egress_lag_triggers_resync_and_converges() {
+        use crate::data::command::Operation;
+        use crate::data::document::WorldRole;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+        use tokio::sync::Semaphore;
+
+        // A `Sink<Message>` whose readiness is gated by a semaphore credit; accepted
+        // frames are forwarded to an unbounded channel the test drains. Each send
+        // consumes one credit (the permit is `forget`-ten), so the test controls
+        // exactly how many frames the egress may emit, and thus when it stalls.
+        struct GatedSink {
+            out: mpsc::UnboundedSender<Message>,
+            credits: Arc<Semaphore>,
+            acquiring: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+        }
+        impl Sink<Message> for GatedSink {
+            type Error = ();
+            fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), ()>> {
+                let this = self.as_mut().get_mut();
+                if this.acquiring.is_none() {
+                    let sem = this.credits.clone();
+                    // The semaphore never closes in-test, so the acquire cannot fail.
+                    this.acquiring = Some(Box::pin(async move {
+                        sem.acquire_owned().await.unwrap().forget()
+                    }));
+                }
+                match this.acquiring.as_mut().unwrap().as_mut().poll(cx) {
+                    Poll::Ready(()) => {
+                        this.acquiring = None;
+                        Poll::Ready(Ok(()))
+                    }
+                    Poll::Pending => Poll::Pending,
+                }
+            }
+            fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), ()> {
+                let _ = self.get_mut().out.send(item);
+                Ok(())
+            }
+            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+                Poll::Ready(Ok(()))
+            }
+            fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        fn msg_text(m: &Message) -> &str {
+            match m {
+                Message::Text(t) => t.as_str(),
+                _ => "",
+            }
+        }
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let author = repo
+            .create_user("a", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", author, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: author,
+            world_role: WorldRole::Gm,
+        };
+
+        // Ring capacity 8: fewer than the 30 events published while the egress is gated.
+        let reg = crate::ws::room::RoomRegistry::with_capacity(8);
+        let room = reg
+            .get_or_create(repo.as_ref(), world.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let (rx, current_seq) = room.subscribe();
+
+        let credits = Arc::new(Semaphore::new(1)); // one credit: the `Welcome` send
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
+        // Held open so the egress never sees its ingress channel close mid-test.
+        let (etx, erx) = mpsc::channel::<Egress>(8);
+        let sink = GatedSink {
+            out: out_tx,
+            credits: credits.clone(),
+            acquiring: None,
+        };
+        let egress = tokio::spawn(egress_loop(
+            sink,
+            rx,
+            erx,
+            room.clone(),
+            repo.clone(),
+            ctx,
+            current_seq,
+        ));
+
+        // Drain the `Welcome` (consumes the sole credit); the egress now has zero
+        // credits, so it can pull at most one broadcast event before parking.
+        let welcome = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+            .await
+            .expect("egress did not emit Welcome")
+            .expect("egress sink closed before Welcome");
+        let wv: serde_json::Value = serde_json::from_str(msg_text(&welcome)).unwrap();
+        assert_eq!(wv["type"], "welcome");
+
+        // Publish 30 world docs. With the egress gated, far more than capacity(8)
+        // accumulate unread in the broadcast ring and overflow it.
+        for n in 0..30u128 {
+            let mut doc = crate::data::document::tests::world_scoped_doc(
+                world.id,
+                Uuid::from_u128(1000 + n),
+                "actor",
+            );
+            doc.owner = Some(author);
+            room.publish(repo.as_ref(), &ctx, vec![Operation::Create { doc }], 0)
+                .await
+                .unwrap();
+        }
+
+        // Release the gate; the egress completes its pending send, then observes
+        // `Lagged` on the next `recv` and resyncs from the ring/log.
+        credits.add_permits(10_000);
+
+        // Convergence: collected Event seqs reach the authoritative tail (30).
+        let mut seqs = vec![];
+        while seqs.last().copied() != Some(30) {
+            let m = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+                .await
+                .expect("egress stalled before converging")
+                .expect("egress sink closed before converging");
+            let v: serde_json::Value = serde_json::from_str(msg_text(&m)).unwrap();
+            if v["type"] == "event" {
+                seqs.push(v["command"]["seq"].as_i64().unwrap());
+            }
+        }
+
+        // The lag path fired deterministically (the regression guard a larger ring
+        // could not provide).
+        assert!(
+            room.stats.lagged_drops.load(Ordering::Relaxed) > 0,
+            "the lag-driven resync path must fire deterministically"
+        );
+        assert_eq!(*seqs.last().unwrap(), 30);
+        let mut sorted = seqs.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(seqs, sorted, "no duplicates or reordering after resync");
+
+        drop(etx);
+        let _ = egress.await;
+    }
+
     /// The M9c dispatch-layer accumulation: a masked vision payload grows + persists the player's
     /// explored fog and gains a scene-tagged `explored` set; a revisit re-emits without growing; a
     /// GM `mode:"all"` payload is untouched (no fog → no explored).
