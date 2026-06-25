@@ -5,6 +5,7 @@
 pub mod explored;
 pub mod lighting;
 pub mod movement;
+pub(crate) mod pathfinding;
 pub mod vision;
 
 use std::collections::{BTreeMap, HashMap};
@@ -451,6 +452,19 @@ impl SceneEcs {
             })
             .unwrap_or_default();
         crate::scene::lighting::sorted_bands(bands)
+    }
+
+    /// The world's pathfinding diagonal-cost rule. World-scoped (no per-scene override; the scene doc
+    /// overrides only vision/lighting/grid — parent §5.2). Reads `world-settings.pathfinding.diagonalRule`.
+    #[allow(dead_code)] // TODO: remove once the pathfinding handler calls this.
+    pub(crate) fn resolved_diagonal_rule(&self) -> pathfinding::DiagonalRule {
+        let s = self
+            .world_settings
+            .as_ref()
+            .and_then(|d| d.system.pointer("/pathfinding/diagonalRule"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("chebyshev");
+        pathfinding::parse_diagonal_rule(s)
     }
 
     /// Resolved vision-mode registry. Returns a `BTreeMap` for deterministic key order (mirrors
@@ -2341,6 +2355,39 @@ mod tests {
             let e = self.world.spawn((SceneEntity { doc: d },));
             self.index.insert(scene_id, e);
         }
+    }
+
+    #[test]
+    fn diagonal_rule_defaults_to_chebyshev_without_world_settings() {
+        let ecs = SceneEcs::new();
+        assert_eq!(
+            ecs.resolved_diagonal_rule(),
+            crate::scene::pathfinding::DiagonalRule::Chebyshev
+        );
+    }
+
+    #[test]
+    fn diagonal_rule_reads_world_settings_and_unknown_falls_back() {
+        use serde_json::json;
+        let mut ecs = SceneEcs::new();
+        ecs.set_world_settings_for_test(json!({
+            "scene": { "movementRestriction": "visible", "partialCellLeniency": true },
+            "pathfinding": { "diagonalRule": "alternating" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        assert_eq!(
+            ecs.resolved_diagonal_rule(),
+            crate::scene::pathfinding::DiagonalRule::Alternating
+        );
+
+        ecs.set_world_settings_for_test(json!({
+            "scene": {}, "pathfinding": { "diagonalRule": "bogus" }, "animation": {}
+        }));
+        assert_eq!(
+            ecs.resolved_diagonal_rule(),
+            crate::scene::pathfinding::DiagonalRule::Chebyshev,
+            "unknown rule fails to chebyshev (mirrors client default)"
+        );
     }
 
     #[test]
