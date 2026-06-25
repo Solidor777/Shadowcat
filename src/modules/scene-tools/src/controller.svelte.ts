@@ -326,7 +326,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     const finish = (): void => { committing = false; clearRoute(); };
     ctx.pathfind(scene.id, start, [...waypoints, [goal.x, goal.y]], fp).then(
       (result) => {
-        if (seq !== pendingSeq) { committing = false; return; } // aborted (e.g. tool swap)
+        // Stale: a newer commit (or onDeactivate) now owns committing + clearRoute.
+        // Touching either here would wipe the newer owner's suppression flag.
+        if (seq !== pendingSeq) return;
         if (result.path.length < 2) { finish(); return; }
         ctx.scene.animateAlongPath(tokenId, result.path);
         const runs = collinearRuns(result.path);
@@ -342,7 +344,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
         }
         finish();
       },
-      () => { committing = false; if (seq === pendingSeq) clearRoute(); },
+      // Stale reject: do nothing — the newer owner handles teardown.
+      // Current reject: finish() clears committing + route so the next gesture is clean.
+      () => { if (seq === pendingSeq) finish(); },
     );
   }
 

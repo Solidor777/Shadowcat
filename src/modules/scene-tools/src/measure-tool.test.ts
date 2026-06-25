@@ -493,3 +493,65 @@ test("route commit survives its own pointer-up: pathfind resolves after pointer-
   expect(xy(sent[0])).toEqual([200, 0]);
   expect(xy(sent[1])).toEqual([200, 200]);
 });
+
+test("stale commit resolve does not clear a newer commit's suppression flag", async () => {
+  // Invariant: only the still-current commit (seq === pendingSeq) may mutate `committing`.
+  // Commit A starts → onDeactivate aborts A → tool reactivated → commit B starts →
+  // A's stale promise resolves. The stale resolve must not touch `committing`, or it wipes
+  // B's pointer-up suppression and a trailing up bumps pendingSeq, silently bailing B.
+
+  // Two independently-controllable deferreds so A and B resolve in controlled order.
+  let resolveA!: (r: { path: [number, number][]; cost: number }) => void;
+  let resolveB!: (r: { path: [number, number][]; cost: number }) => void;
+  let callCount = 0;
+  const deferredPathfind: ToolContext["pathfind"] = (_scene, _start, _waypoints, _fp) =>
+    new Promise((res) => {
+      callCount === 0 ? (resolveA = res) : (resolveB = res);
+      callCount++;
+    });
+
+  const sent: WireOperation[][] = [];
+  const animated: Array<{ id: string; path: [number, number][] }> = [];
+
+  const { ctx, now, docs } = seedRouteCtx({
+    pathfind: deferredPathfind,
+    animateAlongPath: (id, path) => animated.push({ id, path }),
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+  });
+
+  let dispatchSeq = 2;
+  ctx.dispatchIntent = (ops) => {
+    sent.push(ops);
+    docs.applyCommand({ seq: dispatchSeq++, world_id: "w1", author: "a", ts: 0, ops });
+  };
+
+  const tool = makeMeasureTool(ctx);
+
+  // Start commit A via double-click, then abort it with onDeactivate.
+  tool.onPointerDown({ x: 100, y: 0 }, ev());
+  now.advance(100);
+  tool.onPointerDown({ x: 100, y: 0 }, ev()); // double-click → commit A in flight
+  tool.onDeactivate!(); // aborts A: committing=false, pendingSeq bumped
+
+  // Start commit B (tool reactivated on same instance, as ToolController reuses instances).
+  tool.onPointerDown({ x: 200, y: 0 }, ev()); // first click of new double-click
+  now.advance(100);
+  tool.onPointerDown({ x: 200, y: 0 }, ev()); // double-click → commit B in flight
+
+  // A resolves while B is in flight. A is stale (seq_A < pendingSeq).
+  // Must not touch committing — B's suppression flag must remain true.
+  resolveA({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1 });
+  await drain();
+
+  // A trailing pointer-up must be suppressed by B's still-intact committing flag.
+  // If the stale resolve wiped it, clearRoute fires here and bumps pendingSeq, bailing B.
+  tool.onPointerUp({ x: 200, y: 0 }, ev());
+
+  // B resolves: must find seq === pendingSeq and dispatch its move.
+  resolveB({ path: [[0, 0], [200, 0]] as [number, number][], cost: 2 });
+  await drain();
+
+  expect(animated.length).toBe(1); // B's animateAlongPath fired
+  expect(animated[0].id).toBe("tok1");
+  expect(sent.length).toBeGreaterThan(0); // B's move intent dispatched
+});
