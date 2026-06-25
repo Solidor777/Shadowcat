@@ -1,6 +1,7 @@
 import type { ReadableDocuments, AssetResolver } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon } from "./types";
+import type { EasingMode } from "./easing";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
@@ -106,6 +107,7 @@ export class RenderEngine implements SceneToolHost {
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend);
     this.tokens = new TokenView(opts.store, opts.assets, opts.backend);
+    this.tokens.setCellSize(opts.grid.size);
     this.drawings = new DrawingView(opts.store, opts.backend);
     this.templates = new TemplateView(opts.store, opts.backend);
     this.walls = new WallView(opts.store, opts.backend);
@@ -355,10 +357,26 @@ export class RenderEngine implements SceneToolHost {
     this.pings.add(x, y);
   }
 
-  /** Swap the active grid (from the active scene's `system.grid`) and redraw lines. */
+  /** Swap the active grid (from the active scene's `system.grid`) and redraw lines.
+   * Coupling: notifies the token animator so tween durations are recalculated in the
+   * new cell size (px/cell ratio changes when the grid changes). */
   setGrid(spec: GridSpec): void {
     this.grid = new Grid(spec);
+    this.tokens.setCellSize(spec.size);
     this.redrawGrid();
+  }
+
+  /** Push animation config (speed + easing) to the token animator. Separate from setGrid
+   * so world-settings animation changes can be applied without rebuilding the grid. */
+  setAnimation(cfg: { speedCellsPerSec: number; easing: EasingMode }): void {
+    this.tokens.setAnimationConfig(cfg);
+  }
+
+  /** Drive a smooth local walk of token `id` along scene-coord waypoints (SceneToolHost seam).
+   * Forwards to TokenView which anchors the walk at the live current position and
+   * ignores authoritative setTarget calls for each waypoint as the commit burst arrives. */
+  animateAlongPath(id: string, path: [number, number][]): void {
+    this.tokens.animateAlongPath(id, path);
   }
 
   dispatchPointerDown(screen: Point, ev: PointerEvent): void {

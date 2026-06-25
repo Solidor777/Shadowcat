@@ -122,4 +122,6 @@ export interface SceneToolHost {
   clearMeasure(): void;
   /** Spawn a transient ping ring at scene `(x,y)` (from a received/own ping). */
   addPing(x: number, y: number): void;
+  /** Drive a smooth local walk of a token along a route's scene-coord waypoints. */
+  animateAlongPath(id: string, path: [number, number][]): void;
 }

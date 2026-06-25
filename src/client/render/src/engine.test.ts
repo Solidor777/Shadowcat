@@ -631,6 +631,22 @@ test("lighting is applied eagerly on a deferred fog frame; fog flush does not re
   expect(backend.lighting!.cells[0]).toMatchObject({ i: 3, j: 4 });
 });
 
+function makeEngineWithToken(id: string, pos: { x: number; y: number }) {
+  const { store, backend, engine } = makeEngine();
+  store.applyCommand(tokenCmd(1, id, pos.x));
+  return { store, backend, engine };
+}
+
+test("animateAlongPath forwards to the token view (SceneToolHost seam)", () => {
+  const { engine, backend } = makeEngineWithToken("tok1", { x: 0, y: 0 }); // mirror existing engine test setup
+  engine.setGrid({ kind: "square", size: 100 });
+  engine.setAnimation({ speedCellsPerSec: 6, easing: "linear" });
+  engine.start();
+  engine.animateAlongPath("tok1", [[0, 0], [300, 0]]);
+  backend.runTicker(500); // advance the injected ticker by 500ms
+  expect(backend.lastTokenX("tok1")).toBeCloseTo(300, 0);
+});
+
 test("toLighting parses lit cells for the active scene and fails safe", () => {
   const { store, engine } = makeEngine();
   engine.start();

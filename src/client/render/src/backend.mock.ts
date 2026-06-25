@@ -84,4 +84,14 @@ export class MockBackend implements DisplayBackend {
   destroy(): void {
     this.destroyed = true;
   }
+
+  /** Test helper: drive the ticker by `ms` milliseconds in one shot. */
+  runTicker(ms: number): void {
+    this.tick!(ms);
+  }
+
+  /** Test helper: read the current rendered x of a token. */
+  lastTokenX(id: string): number {
+    return this.tokens.get(id)!.x;
+  }
 }
