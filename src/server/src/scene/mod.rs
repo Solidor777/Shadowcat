@@ -10,6 +10,49 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 
+use crate::scene::lighting::Band;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LightMode {
+    GlobalIllumination,
+    EnvironmentLight,
+}
+
+/// The resolved per-scene lighting/vision settings the mask needs (subset of the client
+/// `ResolvedSceneSettings`; movement/pathfinding/animation fields are resolved in later checkpoints).
+#[derive(Clone, Debug)]
+pub struct ResolvedScene {
+    pub los_restriction: bool,
+    pub fog: bool,
+    pub observer_vision: bool,
+    pub lighting_enabled: bool,
+    pub light_mode: LightMode,
+    pub env_color: u32,
+    pub env_intensity: f64,
+}
+
+/// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
+#[derive(Clone, Debug)]
+pub struct VisionMode {
+    pub illumination_floor: String,
+    pub default_range: f64,
+}
+
+/// Parse `#rrggbb` → packed `0xRRGGBB`; fail-closed to `0x000000` (untinted) on any malformed input.
+fn parse_hex_color(s: &str) -> u32 {
+    let h = s.trim_start_matches('#');
+    if h.len() == 6 {
+        u32::from_str_radix(h, 16).unwrap_or(0)
+    } else {
+        0
+    }
+}
+
+/// Read a bool from a `system` JSON pointer; `null`/absent/non-bool ⇒ `None` (⇒ inherit).
+fn opt_bool(v: &serde_json::Value, ptr: &str) -> Option<bool> {
+    v.pointer(ptr).and_then(|x| x.as_bool())
+}
+
 use crate::data::command::{set_pointer, Operation};
 use crate::data::document::Document;
 use crate::data::membership::PermissionContext;
@@ -230,6 +273,162 @@ impl SceneEcs {
                 }
             }
         }
+    }
+
+    /// Resolve a scene's effective lighting/vision settings: built-in defaults < world-settings doc
+    /// < per-scene override. Fail-closed and `null ⇒ inherit` (mirrors `resolveSceneSettings`).
+    pub fn resolve_scene(&self, scene: Uuid) -> ResolvedScene {
+        // World layer — structural guard: a partial world-settings doc falls back to built-ins.
+        let ws = self.world_settings.as_ref().map(|d| &d.system);
+        let ws_scene = ws.and_then(|s| {
+            if s.get("scene").is_some()
+                && s.get("pathfinding").is_some()
+                && s.get("animation").is_some()
+            {
+                s.pointer("/scene")
+            } else {
+                None
+            }
+        });
+        // Built-in defaults (mirror DEFAULT_WORLD_SETTINGS.scene).
+        let d_los = ws_scene
+            .and_then(|s| s.get("losRestriction"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let d_fog = ws_scene
+            .and_then(|s| s.get("fog"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let d_obs = ws_scene
+            .and_then(|s| s.get("observerVision"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let d_lit = ws_scene
+            .and_then(|s| s.get("lightingEnabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let d_mode = ws_scene
+            .and_then(|s| s.get("lightMode"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("environmentLight");
+        let d_env_color = ws_scene
+            .and_then(|s| s.pointer("/environment/color"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("#0a0e1a");
+        let d_env_int = ws_scene
+            .and_then(|s| s.pointer("/environment/intensity"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        // Scene override layer (per-scene `vision`/`lighting`; null/absent ⇒ inherit).
+        let scene_sys = self
+            .index
+            .get(&scene)
+            .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
+            .map(|c| c.doc.system.clone());
+        let s = scene_sys.as_ref();
+        let los = s
+            .and_then(|s| opt_bool(s, "/vision/losRestriction"))
+            .unwrap_or(d_los);
+        let fog = s.and_then(|s| opt_bool(s, "/vision/fog")).unwrap_or(d_fog);
+        let obs = s
+            .and_then(|s| opt_bool(s, "/vision/observerVision"))
+            .unwrap_or(d_obs);
+        let lit = s
+            .and_then(|s| opt_bool(s, "/lighting/enabled"))
+            .unwrap_or(d_lit);
+        let mode_str = s
+            .and_then(|s| s.pointer("/lighting/mode"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(d_mode);
+        let env_color = s
+            .and_then(|s| s.pointer("/lighting/environment/color"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(d_env_color);
+        let env_int = s
+            .and_then(|s| s.pointer("/lighting/environment/intensity"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(d_env_int);
+
+        ResolvedScene {
+            los_restriction: los,
+            fog,
+            observer_vision: obs,
+            lighting_enabled: lit,
+            light_mode: if mode_str == "globalIllumination" {
+                LightMode::GlobalIllumination
+            } else {
+                LightMode::EnvironmentLight
+            },
+            env_color: parse_hex_color(env_color),
+            env_intensity: env_int.clamp(0.0, 1.0),
+        }
+    }
+
+    /// Resolved gradation bands, brightest-first. Fail-closed to the built-in three-band default.
+    pub fn resolved_bands(&self) -> Vec<Band> {
+        let bands = self
+            .gradation
+            .as_ref()
+            .and_then(|d| d.system.pointer("/bands"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|b| {
+                        Some(Band {
+                            name: b.get("name")?.as_str()?.to_string(),
+                            min_illumination: b.get("minIllumination")?.as_f64()?,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        crate::scene::lighting::sorted_bands(bands)
+    }
+
+    /// Resolved vision-mode registry. Fail-closed to the built-in `normal`+`darkvision` seed.
+    pub fn resolved_vision_modes(&self) -> HashMap<String, VisionMode> {
+        let mut out = HashMap::new();
+        let parsed = self
+            .vision_modes
+            .as_ref()
+            .and_then(|d| d.system.pointer("/modes"))
+            .and_then(|v| v.as_object());
+        if let Some(modes) = parsed {
+            for (id, m) in modes {
+                if let (Some(floor), range) = (
+                    m.get("illuminationFloor").and_then(|v| v.as_str()),
+                    m.get("defaultRange")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0),
+                ) {
+                    out.insert(
+                        id.clone(),
+                        VisionMode {
+                            illumination_floor: floor.to_string(),
+                            default_range: range,
+                        },
+                    );
+                }
+            }
+        }
+        if out.is_empty() {
+            out.insert(
+                "normal".into(),
+                VisionMode {
+                    illumination_floor: "dim".into(),
+                    default_range: 0.0,
+                },
+            );
+            out.insert(
+                "darkvision".into(),
+                VisionMode {
+                    illumination_floor: "dark".into(),
+                    default_range: 12.0,
+                },
+            );
+        }
+        out
     }
 
     /// Count of hydrated scene entities (the M8a identity payload source).
@@ -702,6 +901,53 @@ mod tests {
         assert!(ov["polygons"].as_array().unwrap().is_empty());
         // Unknown channel → None.
         assert!(compute_derived("nope", &ecs, &gm).is_none());
+    }
+
+    #[test]
+    fn resolvers_layer_world_then_scene_and_fail_closed() {
+        use serde_json::json;
+        let scene_id = Uuid::from_u128(10);
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+
+        // No config docs → built-in defaults (lighting on, environmentLight, env intensity 0).
+        let r0 = ecs.resolve_scene(scene_id);
+        assert!(r0.lighting_enabled);
+        assert!(matches!(r0.light_mode, LightMode::EnvironmentLight));
+        assert_eq!(r0.env_intensity, 0.0);
+        assert_eq!(ecs.resolved_bands()[0].name, "bright"); // default gradation
+        assert_eq!(
+            ecs.resolved_vision_modes()["darkvision"].illumination_floor,
+            "dark"
+        );
+
+        // World default: lighting OFF, global illumination.
+        let mut ws = doc(100, None, "world-settings");
+        ws.system = json!({
+            "scene": { "lightingEnabled": false, "lightMode": "globalIllumination",
+                       "environment": { "color": "#0a0e1a", "intensity": 0.25 } },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        ecs.set_world_config(Some(ws), None, None);
+        let r1 = ecs.resolve_scene(scene_id);
+        assert!(!r1.lighting_enabled);
+        assert!(matches!(r1.light_mode, LightMode::GlobalIllumination));
+        assert_eq!(r1.env_color, 0x0A0E1A);
+        assert!((r1.env_intensity - 0.25).abs() < 1e-9);
+
+        // Per-scene override re-enables lighting (null/absent ⇒ inherit; a present value wins).
+        let mut scene = doc(10, None, "scene");
+        scene.system = json!({ "grid": { "kind": "square", "size": 100 },
+                               "lighting": { "enabled": true } });
+        ecs.apply_op(&Operation::Update {
+            doc_id: scene_id,
+            changes: vec![crate::data::command::FieldChange {
+                path: "/system".into(),
+                old: json!(null),
+                new: scene.system.clone(),
+            }],
+        });
+        assert!(ecs.resolve_scene(scene_id).lighting_enabled); // scene override beats world default
     }
 
     #[test]
