@@ -5,6 +5,7 @@
 pub mod explored;
 pub mod lighting;
 pub mod movement;
+pub(crate) mod move_exec;
 pub(crate) mod pathfinding;
 pub mod vision;
 
@@ -539,6 +540,24 @@ impl SceneEcs {
         self.index.len()
     }
 
+    /// The token's current committed position `(x, y)` in scene coordinates.
+    /// `None` if `token` is not a token entity or has no `(x, y)` in its `system`.
+    /// Coupling: `move_exec::execute_move` calls this to verify `path[0]` against the
+    /// authoritative ECS state; the room layer calls it for the same position check
+    /// before dispatching to the executor.
+    // Called by move_exec; allow dead_code until the room layer wires the call.
+    #[allow(dead_code)]
+    pub(crate) fn token_position(&self, token: Uuid) -> Option<(f64, f64)> {
+        let &e = self.index.get(&token)?;
+        let tok = self.world.get::<&SceneEntity>(e).ok()?;
+        if tok.doc.doc_type != "token" {
+            return None;
+        }
+        let cx = sys_f64(&tok.doc, "/x")?;
+        let cy = sys_f64(&tok.doc, "/y")?;
+        Some((cx, cy))
+    }
+
     /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,
     /// post_image_end)`. The end is the committed `system` with **all** changes applied in
     /// array order (last-write-wins) — exactly what `apply_intent` commits — so a wholesale
@@ -551,14 +570,20 @@ impl SceneEcs {
         changes: &[crate::data::command::FieldChange],
     ) -> Option<TokenMove> {
         let &e = self.index.get(&token_id)?;
-        let tok = self.world.get::<&SceneEntity>(e).ok()?;
-        if tok.doc.doc_type != "token" {
-            return None;
-        }
-        let scene = tok.doc.parent_id?;
-        let cx = sys_f64(&tok.doc, "/x")?;
-        let cy = sys_f64(&tok.doc, "/y")?;
-        let mut v = serde_json::to_value(&tok.doc).ok()?;
+        // Read scene + committed position in a scoped borrow so the reference is dropped
+        // before the post-image serde round-trip (avoids holding two borrows).
+        let (scene, cx, cy, doc_value) = {
+            let tok = self.world.get::<&SceneEntity>(e).ok()?;
+            if tok.doc.doc_type != "token" {
+                return None;
+            }
+            let scene = tok.doc.parent_id?;
+            let cx = sys_f64(&tok.doc, "/x")?;
+            let cy = sys_f64(&tok.doc, "/y")?;
+            let v = serde_json::to_value(&tok.doc).ok()?;
+            (scene, cx, cy, v)
+        };
+        let mut v = doc_value;
         for ch in changes {
             let _ = set_pointer(&mut v, &ch.path, ch.new.clone());
         }
