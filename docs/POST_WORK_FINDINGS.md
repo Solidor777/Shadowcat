@@ -106,3 +106,22 @@ are observations awaiting triage, not committed work.
   computed-`color` probe. (3) Background uses `--surface-base` (already correct). (4)
   Fog-state colors (dimmed/unexplored) deferred to M9 (no visible fog in identity mode).
   Status: Resolved for M8c (canvas chrome); caption size token → M12 (above).
+
+- Title: M10e-1 config-doc seed races resync (rare double-create). Summary: contribution
+  panels (`GameSettingsPanel`, like `FactionsPanel`/`ConditionsPanel`) seed world config-docs
+  from a reactive `$effect` that mounts during `#onWelcome` BEFORE the resync stream populates
+  the optimistic store (`ws-client.ts`: welcome → onWelcome+module-activate → resync_request →
+  event frames → resync_end). The `createSubscriber`+`subscribe()` reactivity + per-doc-type
+  `length === 0` guard make a duplicate seed rare, but a GM whose first effect run lands with an
+  empty store before resync can still create a duplicate `world-settings`/`light-gradation`/
+  `vision-modes`. This is the SAME project-accepted condition as the `worldSession` scene
+  auto-create (`worldSession.svelte.ts` "rare multi-GM ... double-create is accepted (M12
+  dedupes)"). Status: **Accepted / deferred to M12** (singleton-config dedup). Not a regression.
+
+- Title: M10e-1 world-defaults editor exposes a subset of `WorldSceneDefaults`. Summary: the
+  `game-settings` world-defaults panel authors movement-restriction, lighting-enabled, light-mode,
+  diagonal-rule, and animation only. `losRestriction`/`fog`/`observerVision`/`partialCellLeniency`
+  and the world-level `environment` are present in `DEFAULT_WORLD_SETTINGS` (resolve correctly) but
+  are authorable only as PER-SCENE overrides, not as world defaults. Matches the M10e-1 plan (Task
+  6 scope); flagged so the M10e-2+ consumer knows world-level toggles for those axes are not yet in
+  the UI. Status: Intentional V1 scope; revisit if world-level authoring of those axes is needed.

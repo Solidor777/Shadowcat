@@ -28,9 +28,13 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 - `src/client/ui-kit/src/{sceneInteraction,actorSelection,tokenSelection}.*` — AppContext seams.
 - `src/client/shell/src/` — `App.svelte`, `main.ts`, `lib/` (hash router, api client, session,
   WorldSession controller, default-module wiring).
-- `src/modules/{entry,core-ui,topbar,statusbar,settings}/` — entry = `@shadowcat/module-entry`
-  (login + world mgmt, behind `<Entry onEnterWorld>`); core-ui owns the layout grid + region
-  surfaces into the singleton `root`; the rest each contribute one element.
+- `src/modules/{entry,core-ui,topbar,statusbar,settings,game-settings}/` — entry =
+  `@shadowcat/module-entry` (login + world mgmt, behind `<Entry onEnterWorld>`); core-ui owns the
+  layout grid + region surfaces into the singleton `root`; the rest each contribute one sidebar
+  element. `game-settings` = `@shadowcat/module-game-settings` (GM-only): idempotently seeds +
+  edits the three vision/lighting config-docs (`world-settings`/`light-gradation`/`vision-modes`,
+  resolvers in `core/scene-docs.ts`) — world defaults, per-scene overrides (inherit = write `null`),
+  gradation bands, vision modes.
 
 ## Hard invariants
 
@@ -44,6 +48,11 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `<Surface>`, AppContext, render-layer API) — never import one another or the shell directly
   (ARCHITECTURE §1, §2 invariant 7).
 - **Entry views are plain-routed, not contributions; surfaces are in-world only.**
+- **A config-doc seed `$effect` must be reactive (`createSubscriber` + `subscribe()`)** — contribution
+  panels mount during `#onWelcome` BEFORE the resync stream populates the store, so a one-shot
+  non-reactive seed either fails-to-seed (role not yet set) or double-seeds (store still empty). Mirror
+  `FactionsPanel`/`ConditionsPanel`/`GameSettingsPanel`: GM-gate, `subscribe()` inside the effect,
+  per-doc-type `length === 0` guard, single `seeded` latch [[contribution-seed-reactive-before-resync]].
 
 ## Gotchas
 
