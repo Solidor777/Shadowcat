@@ -143,7 +143,12 @@ pub struct CellLight {
 /// MAX contributor (no over-brightening, spec §6); `tint` follows the dominant contributor.
 /// `lit_polys[k]` is `lights[k]`'s `blocksLight` visibility polygon — a light contributes only if the
 /// cell center lies inside it (an EMPTY polygon means "no occluder computed" → never occludes).
-/// `cell_size` is world units per cell (light radii are in cells, so distance is divided by it).
+/// `cell_size` is world units per cell (light radii are in cells, so distance is divided by it);
+/// CALLER PRECONDITION: `cell_size` must be positive — a non-positive value is a caller error; the
+/// upstream caller guards it (a release-build fallback avoids division-by-zero but the value is wrong).
+/// `env_intensity` must be finite; the document→settings resolver clamps it to `[0,1]`.
+/// Tie-break: ties (equal `level`) keep the earlier contributor — environment beats all lights at
+/// equal level, and a lower-index light beats a higher-index one.
 pub fn cell_illumination(
     center: P,
     env_intensity: f64,
@@ -152,6 +157,11 @@ pub fn cell_illumination(
     lit_polys: &[Vec<P>],
     cell_size: f64,
 ) -> CellLight {
+    debug_assert!(
+        cell_size > 0.0,
+        "INVARIANT: cell_size must be positive; light radii are in cells"
+    );
+    debug_assert!(env_intensity.is_finite(), "env_intensity must be finite");
     let mut best = CellLight {
         level: env_intensity.clamp(0.0, 1.0),
         tint: env_color,
@@ -332,5 +342,36 @@ mod tests {
             ..lamp()
         };
         assert_eq!(light_illumination(&i, 1.0), 0.0);
+    }
+
+    #[test]
+    fn missing_polygon_does_not_occlude_and_brighter_light_wins() {
+        let dim = Light {
+            intensity: 0.4,
+            bright_radius: 1.0,
+            dim_radius: 2.0,
+            ..lamp()
+        };
+        let bright = Light {
+            pos: (400.0, 0.0),
+            color: 0x00FF00,
+            intensity: 1.0,
+            bright_radius: 3.0,
+            dim_radius: 6.0,
+            ..lamp()
+        };
+        // Two lights, only ONE polygon provided → the second light has no entry in lit_polys
+        // (index past end) → fail-open: it still contributes. The cell sits at the bright light's
+        // center, so the brighter light wins the MAX compose and its tint is taken.
+        let c = cell_illumination(
+            (400.0, 0.0),
+            0.0,
+            0x000000,
+            &[dim, bright],
+            &[vec![]],
+            100.0,
+        );
+        assert_eq!(c.level, 1.0);
+        assert_eq!(c.tint, 0x00FF00);
     }
 }
