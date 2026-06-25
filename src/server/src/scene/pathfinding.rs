@@ -275,7 +275,12 @@ fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
     }
 }
 
-/// Admissible + consistent heuristic from `c` to `goal` under `rule`.
+/// Consistent (not merely admissible) heuristic from `c` to `goal` under `rule`. Consistency
+/// holds because Δh per king-move never exceeds that move's minimum step cost: orthogonal Δh ≤ 1 =
+/// orthogonal cost; diagonal Δh ≤ √2 ≤ each rule's diagonal cost (Chebyshev 1, Manhattan 2,
+/// Euclidean √2, Alternating 1); for Alternating the optimistic bound (Chebyshev = dmax) gives
+/// Δh ≤ 1, which is the cheapest diagonal cost. Consistency is load-bearing: it makes the first
+/// goal-pop optimal and makes the post-goal stale-pop skip safe (see `astar_leg`).
 fn heuristic(rule: DiagonalRule, c: Cell, goal: Cell) -> f64 {
     let di = (goal.0 - c.0).abs();
     let dj = (goal.1 - c.1).abs();
@@ -450,6 +455,11 @@ pub fn find(
 
     // Run each leg, threading end-parity into the next leg's start_parity so the route is priced as
     // one continuous move. Resetting parity per leg would underprice 5-10-5 at waypoint boundaries.
+    // BOUND: for Alternating, threading each leg's (tie-broken) min-cost-path end-parity into the
+    // next leg is per-leg-greedy and NOT guaranteed to minimize TOTAL multi-leg cost — a costlier
+    // end-parity on one leg could enable a cheaper next leg. This affects 5-10-5 cost display at
+    // waypoint boundaries only; the route remains valid, footprint-clear, mask-bounded, and
+    // gate-passable, and spec §4.2 requires only that parity carry (no reset), which it does.
     let mut cells: Vec<Cell> = Vec::new();
     let mut total = 0.0;
     let mut parity = 0u8;
