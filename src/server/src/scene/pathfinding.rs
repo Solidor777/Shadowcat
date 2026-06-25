@@ -232,9 +232,11 @@ pub(crate) const MAX_PATH_NODES: usize = 200_000;
 
 /// f64 ordering wrapper for the min-heap. Orders by `f` ascending (via reversed `total_cmp`),
 /// tie-broken by `(cell, parity)` so identical requests yield identical routes (determinism).
+/// `g` is payload for lazy-deletion stale-pop skip — it is NOT part of the ordering key.
 #[derive(PartialEq)]
 struct QNode {
     f: f64,
+    g: f64,
     cell: Cell,
     parity: u8,
 }
@@ -242,6 +244,7 @@ impl Eq for QNode {}
 impl Ord for QNode {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Min-heap: smaller f is "greater". Reverse the f comparison; tie-break ascending on key.
+        // `g` is intentionally excluded — it is payload, not an ordering key.
         other
             .f
             .total_cmp(&self.f)
@@ -304,6 +307,7 @@ pub(crate) fn astar_leg(
     g_score.insert((start, start_parity), 0.0);
     open.push(QNode {
         f: heuristic(grid.rule, start, goal),
+        g: 0.0,
         cell: start,
         parity: start_parity,
     });
@@ -320,9 +324,15 @@ pub(crate) fn astar_leg(
     ];
     let mut expansions = 0usize;
 
-    while let Some(QNode { cell, parity, .. }) = open.pop() {
-        let g = *g_score.get(&(cell, parity)).unwrap_or(&f64::INFINITY);
+    while let Some(QNode {
+        cell,
+        parity,
+        g: g_popped,
+        ..
+    }) = open.pop()
+    {
         if cell == goal {
+            // A stale goal pop is still optimal under a consistent heuristic — return g_popped.
             // Reconstruct start..=goal.
             let mut path = vec![cell];
             let mut node = (cell, parity);
@@ -331,12 +341,13 @@ pub(crate) fn astar_leg(
                 node = prev;
             }
             path.reverse();
-            return Ok((path, g, parity));
+            return Ok((path, g_popped, parity));
         }
-        // Stale-pop skip: a node re-entered with a better g stays in the heap under the old key.
-        // If the current g is worse than the best recorded, discard without burning an expansion slot.
-        // INVARIANT: place AFTER the goal check — a stale goal pop is still optimal (consistent h).
-        if g > *g_score.get(&(cell, parity)).unwrap_or(&f64::INFINITY) + 1e-12 {
+        // Lazy-deletion stale-pop skip: when a node is relaxed to a lower g, the old heap entry
+        // stays. Compare the popped g against the current best; skip without burning an expansion
+        // slot if stale. INVARIANT: placed AFTER the goal check (stale goal pops are still optimal).
+        let best = *g_score.get(&(cell, parity)).unwrap_or(&f64::INFINITY);
+        if g_popped > best + 1e-12 {
             continue;
         }
         expansions += 1;
@@ -349,13 +360,14 @@ pub(crate) fn astar_leg(
                 continue;
             }
             let (sc, next_parity) = step_cost(grid.rule, di, dj, parity);
-            let tentative = g + sc;
+            let tentative = g_popped + sc;
             let key = (next, next_parity);
             if tentative < *g_score.get(&key).unwrap_or(&f64::INFINITY) {
                 came_from.insert(key, (cell, parity));
                 g_score.insert(key, tentative);
                 open.push(QNode {
                     f: tentative + heuristic(grid.rule, next, goal),
+                    g: tentative,
                     cell: next,
                     parity: next_parity,
                 });
@@ -394,7 +406,8 @@ pub fn find(
     if waypoints.is_empty() || waypoints.len() > MAX_WAYPOINTS {
         return Err(PathFail::Invalid);
     }
-    if !footprint_radius.is_finite() || !(0.0..=MAX_FOOTPRINT_CELLS).contains(&footprint_radius) {
+    // `contains` rejects NaN and ±Inf (NaN comparisons return false; Inf > MAX_FOOTPRINT_CELLS).
+    if !(0.0..=MAX_FOOTPRINT_CELLS).contains(&footprint_radius) {
         return Err(PathFail::Invalid);
     }
     // INVARIANT: cell.is_finite() && cell > 0.0 makes the NaN-cell division path unreachable downstream.
@@ -486,6 +499,7 @@ mod find_tests {
 
     #[test]
     fn nonfinite_or_bad_footprint_is_invalid() {
+        // Non-finite start point.
         assert_eq!(
             find(
                 (f64::NAN, 0.0),
@@ -498,6 +512,7 @@ mod find_tests {
             ),
             Err(PathFail::Invalid)
         );
+        // Negative footprint_radius.
         assert_eq!(
             find(
                 (50.0, 50.0),
@@ -510,12 +525,52 @@ mod find_tests {
             ),
             Err(PathFail::Invalid)
         );
+        // Non-positive cell size.
         assert_eq!(
             find(
                 (50.0, 50.0),
                 &[(150.0, 50.0)],
                 0.1,
                 0.0,
+                DiagonalRule::Chebyshev,
+                &NO_WALLS,
+                None
+            ),
+            Err(PathFail::Invalid)
+        );
+        // NaN footprint_radius — contains() returns false for NaN comparisons.
+        assert_eq!(
+            find(
+                (50.0, 50.0),
+                &[(150.0, 50.0)],
+                f64::NAN,
+                100.0,
+                DiagonalRule::Chebyshev,
+                &NO_WALLS,
+                None
+            ),
+            Err(PathFail::Invalid)
+        );
+        // Infinite footprint_radius — exceeds MAX_FOOTPRINT_CELLS.
+        assert_eq!(
+            find(
+                (50.0, 50.0),
+                &[(150.0, 50.0)],
+                f64::INFINITY,
+                100.0,
+                DiagonalRule::Chebyshev,
+                &NO_WALLS,
+                None
+            ),
+            Err(PathFail::Invalid)
+        );
+        // footprint_radius exactly one above the cap.
+        assert_eq!(
+            find(
+                (50.0, 50.0),
+                &[(150.0, 50.0)],
+                MAX_FOOTPRINT_CELLS + 1.0,
+                100.0,
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None
