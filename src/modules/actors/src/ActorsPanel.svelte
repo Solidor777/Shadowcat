@@ -24,6 +24,7 @@
   let shape = $state<"square" | "circle">("square");
   let sizeW = $state(1);
   let sizeH = $state(1);
+  let darkvision = $state(0);
   let assetList = $state<Asset[]>([]);
 
   const factionOptions = $derived.by((): [string, Faction][] => {
@@ -61,6 +62,7 @@
       faction,
       conditions: [],
       prototype: instanceOnDrop,
+      ...(darkvision > 0 ? { vision: [{ mode: "darkvision" as const, range: darkvision }] } : {}),
     };
     const doc = buildActorDoc(ctx.world, system);
     if (hideName) setNameHidden(doc, true);
@@ -73,6 +75,7 @@
     shape = "square";
     sizeW = 1;
     sizeH = 1;
+    darkvision = 0;
   }
 </script>
 
@@ -118,6 +121,12 @@
             value={(a.system as { size?: { h: number } }).size?.h ?? 1}
             onchange={(e) => { const sz = (a.system as { size?: { w: number; h: number } }).size ?? { w: 1, h: 1 }; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/system/size", old: sz, new: { w: sz.w, h: Number(e.currentTarget.value) } }] }]); }}
           />
+          <!-- Per-row darkvision input dispatches an update to /system/vision; range=0 clears to empty array. -->
+          <input
+            type="number" min="0" step="1" class="size-edit" aria-label={t("actors.darkvision")}
+            value={(a.system as { vision?: Array<{ mode: string; range: number }> }).vision?.find((v) => v.mode === "darkvision")?.range ?? 0}
+            onchange={(e) => { const range = Number(e.currentTarget.value); ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/system/vision", old: null, new: range > 0 ? [{ mode: "darkvision", range }] : [] }] }]); }}
+          />
         {/if}
       </li>
     {/each}
@@ -150,6 +159,11 @@
     <label>{t("actors.size")}
       <input type="number" min="0.5" step="0.5" aria-label={t("actors.width")} bind:value={sizeW} />
       <input type="number" min="0.5" step="0.5" aria-label={t("actors.height")} bind:value={sizeH} />
+    </label>
+    <label>
+      {t("actors.darkvision")}
+      <!-- Uses value+onchange (not bind:value) so fireEvent.change updates state in tests. -->
+      <input type="number" min="0" step="1" aria-label="actors.darkvision" value={darkvision} onchange={(e) => (darkvision = Number(e.currentTarget.value))} oninput={(e) => (darkvision = Number(e.currentTarget.value))} />
     </label>
     <div class="picker">
       {#each assetList as a (a.id)}

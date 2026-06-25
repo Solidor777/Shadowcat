@@ -45,6 +45,7 @@ export const en: Messages = {
   "actors.size": "Size (cells)",
   "actors.width": "Width",
   "actors.height": "Height",
+  "actors.darkvision": "Darkvision range (cells)",
   "factions.title": "Factions",
   "factions.name": "Name",
   "factions.color": "Color",
