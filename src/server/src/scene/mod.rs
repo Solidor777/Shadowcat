@@ -6,10 +6,13 @@ pub mod explored;
 pub mod lighting;
 pub mod vision;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use uuid::Uuid;
 
+use crate::data::command::{set_pointer, Operation};
+use crate::data::document::Document;
+use crate::data::membership::PermissionContext;
 use crate::scene::lighting::Band;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,10 +55,6 @@ fn parse_hex_color(s: &str) -> u32 {
 fn opt_bool(v: &serde_json::Value, ptr: &str) -> Option<bool> {
     v.pointer(ptr).and_then(|x| x.as_bool())
 }
-
-use crate::data::command::{set_pointer, Operation};
-use crate::data::document::Document;
-use crate::data::membership::PermissionContext;
 
 /// A hydrated scene-entity document, one per hecs entity.
 pub struct SceneEntity {
@@ -280,10 +279,13 @@ impl SceneEcs {
     pub fn resolve_scene(&self, scene: Uuid) -> ResolvedScene {
         // World layer — structural guard: a partial world-settings doc falls back to built-ins.
         let ws = self.world_settings.as_ref().map(|d| &d.system);
+        // Structural guard: each required key must be a non-null object, mirroring the TS
+        // `ws?.scene && ws?.pathfinding && ws?.animation` check (falsy for null values).
+        // A partial or null-valued key falls back to built-in defaults rather than panicking.
         let ws_scene = ws.and_then(|s| {
-            if s.get("scene").is_some()
-                && s.get("pathfinding").is_some()
-                && s.get("animation").is_some()
+            if s.get("scene").and_then(|v| v.as_object()).is_some()
+                && s.get("pathfinding").and_then(|v| v.as_object()).is_some()
+                && s.get("animation").and_then(|v| v.as_object()).is_some()
             {
                 s.pointer("/scene")
             } else {
@@ -311,6 +313,8 @@ impl SceneEcs {
             .and_then(|s| s.get("lightMode"))
             .and_then(|v| v.as_str())
             .unwrap_or("environmentLight");
+        // A pointer on a `null` `environment` value returns `None`, so both sub-fields
+        // inherit the world default (same behaviour as an absent `environment` key).
         let d_env_color = ws_scene
             .and_then(|s| s.pointer("/environment/color"))
             .and_then(|v| v.as_str())
@@ -386,47 +390,54 @@ impl SceneEcs {
         crate::scene::lighting::sorted_bands(bands)
     }
 
-    /// Resolved vision-mode registry. Fail-closed to the built-in `normal`+`darkvision` seed.
-    pub fn resolved_vision_modes(&self) -> HashMap<String, VisionMode> {
-        let mut out = HashMap::new();
+    /// Resolved vision-mode registry. Returns a `BTreeMap` for deterministic key order (mirrors
+    /// the plan's Global Constraint on determinism; `.get(id)` works identically for callers).
+    /// Fail-closed to the built-in `normal`+`darkvision` seed ONLY when no doc/`modes` is present
+    /// (mirrors TS `sys?.modes ?? SEED`). A GM-authored modes doc with all-malformed entries is
+    /// returned as-is rather than silently re-granting built-in modes the GM may have removed.
+    pub fn resolved_vision_modes(&self) -> BTreeMap<String, VisionMode> {
+        let mut out = BTreeMap::new();
+        // Seed only on the None (absent) branch — a present doc's modes being all malformed
+        // must not silently replace a GM-authored registry with the built-in seed.
         let parsed = self
             .vision_modes
             .as_ref()
             .and_then(|d| d.system.pointer("/modes"))
             .and_then(|v| v.as_object());
-        if let Some(modes) = parsed {
-            for (id, m) in modes {
-                if let (Some(floor), range) = (
-                    m.get("illuminationFloor").and_then(|v| v.as_str()),
-                    m.get("defaultRange")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0),
-                ) {
-                    out.insert(
-                        id.clone(),
-                        VisionMode {
-                            illumination_floor: floor.to_string(),
-                            default_range: range,
-                        },
-                    );
+        match parsed {
+            Some(modes) => {
+                for (id, m) in modes {
+                    if let Some(floor) = m.get("illuminationFloor").and_then(|v| v.as_str()) {
+                        let range = m
+                            .get("defaultRange")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        out.insert(
+                            id.clone(),
+                            VisionMode {
+                                illumination_floor: floor.to_string(),
+                                default_range: range,
+                            },
+                        );
+                    }
                 }
             }
-        }
-        if out.is_empty() {
-            out.insert(
-                "normal".into(),
-                VisionMode {
-                    illumination_floor: "dim".into(),
-                    default_range: 0.0,
-                },
-            );
-            out.insert(
-                "darkvision".into(),
-                VisionMode {
-                    illumination_floor: "dark".into(),
-                    default_range: 12.0,
-                },
-            );
+            None => {
+                out.insert(
+                    "normal".into(),
+                    VisionMode {
+                        illumination_floor: "dim".into(),
+                        default_range: 0.0,
+                    },
+                );
+                out.insert(
+                    "darkvision".into(),
+                    VisionMode {
+                        illumination_floor: "dark".into(),
+                        default_range: 12.0,
+                    },
+                );
+            }
         }
         out
     }
@@ -948,6 +959,25 @@ mod tests {
             }],
         });
         assert!(ecs.resolve_scene(scene_id).lighting_enabled); // scene override beats world default
+    }
+
+    #[test]
+    fn vision_modes_doc_is_respected_not_reseeded() {
+        use serde_json::json;
+        let mut ecs = SceneEcs::new();
+        // A doc with ONLY a custom mode → returned as-is; normal/darkvision are NOT re-seeded.
+        let mut vm = doc(101, None, "vision-modes");
+        vm.system = json!({ "modes": { "blindsight": { "illuminationFloor": "dark", "defaultRange": 4 } } });
+        ecs.set_world_config(None, None, Some(vm));
+        let modes = ecs.resolved_vision_modes();
+        assert!(modes.contains_key("blindsight"));
+        assert!(
+            !modes.contains_key("normal"),
+            "an authored modes doc must not be re-seeded"
+        );
+        // No doc at all → built-in seed.
+        let empty = SceneEcs::new();
+        assert!(empty.resolved_vision_modes().contains_key("darkvision"));
     }
 
     #[test]
