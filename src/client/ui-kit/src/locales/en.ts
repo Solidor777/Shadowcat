@@ -74,4 +74,12 @@ export const en: Messages = {
   "tools.shape": "Shape",
   "tools.color": "Color",
   "gameSettings.title": "Game settings",
+  "gameSettings.movementRestriction": "Movement restriction",
+  "gameSettings.lightingEnabled": "Lighting enabled",
+  "gameSettings.lightMode": "Light mode",
+  "gameSettings.diagonalRule": "Diagonal rule",
+  "gameSettings.animSpeed": "Animation speed (cells/sec)",
+  "gameSettings.animEasing": "Animation easing",
+  "gameSettings.gradation": "Light gradation bands",
+  "gameSettings.visionModes": "Vision modes",
 };
