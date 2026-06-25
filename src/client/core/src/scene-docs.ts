@@ -310,3 +310,71 @@ export function buildConditionRegistryDoc(worldId: string, conditions: Record<st
 export function buildSceneEntityDoc(worldId: string, sceneId: string, docType: string, system: unknown, id?: string): WireDocument {
   return envelope(worldId, docType, sceneId, system, id);
 }
+
+// --- Light-gradation registry (M10e-1) ---
+
+/** A named illumination band. `minIllumination` is the minimum light level [0,1]
+ * a cell must reach to qualify; bands are sorted brightest-first at resolution time. */
+export interface GradationBand { name: string; minIllumination: number; }
+
+/** The `system` body of a "light-gradation" config document. */
+export interface LightGradationSystem { bands: GradationBand[]; }
+
+/** Built-in three-band gradation (bright → dim → dark).
+ * Stored unsorted; `resolveGradation` returns a sorted copy. */
+export const DEFAULT_GRADATION: LightGradationSystem = {
+  bands: [
+    { name: "bright", minIllumination: 0.67 },
+    { name: "dim", minIllumination: 0.34 },
+    { name: "dark", minIllumination: 0.0 },
+  ],
+};
+
+/** A top-level (world-scoped, parentless) light-gradation config document. */
+export function buildLightGradationDoc(worldId: string, system: LightGradationSystem = DEFAULT_GRADATION, id?: string): WireDocument {
+  return envelope(worldId, "light-gradation", null, system, id);
+}
+
+/** Returns bands sorted brightest-first (descending `minIllumination`) so a consumer
+ * can walk the array and pick the first band whose floor a cell's illumination meets.
+ * Fail-closed: absent or malformed doc falls back to DEFAULT_GRADATION; never throws. */
+export function resolveGradation(store: ReadableDocuments): GradationBand[] {
+  const sys = store.query("light-gradation")[0]?.system as LightGradationSystem | undefined;
+  const bands = sys?.bands ?? DEFAULT_GRADATION.bands;
+  return [...bands].sort((a, b) => b.minIllumination - a.minIllumination);
+}
+
+// --- Vision-modes registry (M10e-1) ---
+
+/** A named vision mode that tokens/actors may possess.
+ * `illuminationFloor`: the lowest gradation band name a token with this mode can see into.
+ * `defaultRange`: effective sight distance in cells (0 = unlimited for normal vision).
+ * `renderHint`: optional render-layer instruction (e.g. "desaturate" for darkvision). */
+export interface VisionMode {
+  id: string;
+  name: string;
+  illuminationFloor: string;
+  defaultRange: number;
+  renderHint?: string;
+}
+
+/** The `system` body of a "vision-modes" config document. */
+export interface VisionModesSystem { modes: Record<string, VisionMode>; }
+
+/** Built-in two-mode seed: normal sight + darkvision. */
+export const SEED_VISION_MODES: Record<string, VisionMode> = {
+  normal: { id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0 },
+  darkvision: { id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, renderHint: "desaturate" },
+};
+
+/** A top-level (world-scoped, parentless) vision-modes config document. */
+export function buildVisionModesDoc(worldId: string, system: VisionModesSystem = { modes: SEED_VISION_MODES }, id?: string): WireDocument {
+  return envelope(worldId, "vision-modes", null, system, id);
+}
+
+/** Returns the effective vision-mode map.
+ * Fail-closed: absent or malformed doc falls back to SEED_VISION_MODES; never throws. */
+export function resolveVisionModes(store: ReadableDocuments): Record<string, VisionMode> {
+  const sys = store.query("vision-modes")[0]?.system as VisionModesSystem | undefined;
+  return sys?.modes ?? SEED_VISION_MODES;
+}

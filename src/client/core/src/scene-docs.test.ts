@@ -4,6 +4,7 @@ import {
   buildWorldSettingsDoc, resolveSceneSettings, DEFAULT_WORLD_SETTINGS,
   type WireDocument,
 } from "./scene-docs";
+import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES } from "./scene-docs";
 import { DocumentStore } from "./store";
 
 function storeWith(...docs: WireDocument[]): DocumentStore {
@@ -166,4 +167,26 @@ test("buildConditionRegistryDoc builds a world-scoped, parentless registry with 
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
   expect((d.system as { conditions: unknown }).conditions).toEqual(conditions);
   expect(d.id).toBe("creg1");
+});
+
+describe("light-gradation registry", () => {
+  it("seeds bright/dim/dark sorted descending by minIllumination", () => {
+    const g = resolveGradation(storeWith(buildLightGradationDoc("w1")));
+    expect(g.map((b) => b.name)).toEqual(["bright", "dim", "dark"]);
+    expect(g[0].minIllumination).toBeGreaterThan(g[1].minIllumination);
+  });
+  it("falls back to DEFAULT_GRADATION when no doc present", () => {
+    expect(resolveGradation(storeWith())).toEqual([...DEFAULT_GRADATION.bands].sort((a, b) => b.minIllumination - a.minIllumination));
+  });
+});
+
+describe("vision-modes registry", () => {
+  it("seeds normal + darkvision with their floors", () => {
+    const m = resolveVisionModes(storeWith(buildVisionModesDoc("w1")));
+    expect(m.normal.illuminationFloor).toBe("dim");
+    expect(m.darkvision.illuminationFloor).toBe("dark");
+  });
+  it("falls back to SEED_VISION_MODES when no doc present", () => {
+    expect(resolveVisionModes(storeWith())).toEqual(SEED_VISION_MODES);
+  });
 });
