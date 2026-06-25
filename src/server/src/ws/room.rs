@@ -340,15 +340,25 @@ impl Room {
     /// pure path executor, atomically commits the token to its stop location, and enforces a
     /// per-token `moving` lock so a client cannot re-dispatch while the animation is in flight.
     ///
+    /// # Critical-section invariant (load-bearing)
+    ///
+    /// `publish_guard` is held across the ENTIRE validate→commit body: gate-input resolution,
+    /// `get_explored` await, the pure executor call, the moving-lock check/set, and
+    /// `commit_ops_locked`. This makes the gate decision, the moving-lock check/set, and the
+    /// position write one atomic critical section serialized with `publish` — mirrors `publish`'s
+    /// discipline exactly. Scene read locks remain scoped and are never held across the
+    /// `get_explored` await (no lock across await — the `publish_guard` Mutex is safe to hold
+    /// across awaits; the scene RwLock is not).
+    ///
     /// # Lock ordering (load-bearing — do NOT reorder)
     ///
-    /// 1. Take `self.scene.read()` to resolve restriction/cell/visible_cells/start.
-    /// 2. DROP the read guard before any await (no lock across await — mirrors `publish`).
-    /// 3. Await `repo.get_explored(...)` for Revealed union (only after the guard is dropped).
-    /// 4. Call the pure `move_exec::execute_move` (lock-free).
-    /// 5. Acquire `self.publish_guard` ONCE, call `commit_ops_locked` (non-reentrant Mutex —
-    ///    re-acquiring inside would deadlock). Single acquisition per logical write ensures
-    ///    broadcast order equals seq order.
+    /// 1. Acquire `self.publish_guard` (held for the full body below).
+    /// 2. Take `self.scene.read()` inside the guard to resolve restriction/cell/visible_cells/start.
+    /// 3. DROP the read guard before any await (no lock across await — mirrors `publish`).
+    /// 4. Await `repo.get_explored(...)` for Revealed union (only after the read guard is dropped).
+    /// 5. Call the pure `move_exec::execute_move` (lock-free).
+    /// 6. Call `commit_ops_locked` — non-reentrant Mutex, guard already held, MUST NOT re-acquire.
+    ///    Single acquisition per logical write ensures broadcast order equals seq order.
     ///
     /// # Revealed-union contract (spec §13)
     ///
@@ -374,12 +384,21 @@ impl Room {
     ) -> Result<MoveExecution, DataError> {
         use crate::scene::{move_exec, MovementRestriction};
 
+        // Trusted server clock captured before the guard so the moving-lock end epoch is
+        // consistent for both the check and the post-commit insert.
         let now = crate::ws::time::now_millis();
 
+        // --- Acquire publish_guard at the top — held for the full validate→commit body ---
+        // Mirrors `publish`: the guard serializes all gate decisions, the moving-lock
+        // check/set, and the commit against concurrent publishes and execute_move calls.
+        // Safe to hold across awaits (tokio Mutex); scene read locks remain scoped below.
+        let _guard = self.publish_guard.lock().await;
+
         // --- Moving-lock check (lazy expiry: absent or expired entries are allowed) ---
-        // Coupling: this lock is intentionally in-memory only. A server restart clears it,
-        // consistent with the fact that move state is derived (not durable). The lock prevents
-        // a client from queuing multiple moves before the first animation completes.
+        // Serialized by publish_guard: no concurrent execute_move for this room can race
+        // the check-and-set. Coupling: this lock is intentionally in-memory only. A server
+        // restart clears it, consistent with the fact that move state is derived (not durable).
+        // The lock prevents a client from queuing multiple moves before the first animation completes.
         {
             let moving = self.moving.lock().await;
             if let Some(&end) = moving.get(&token) {
@@ -429,7 +448,7 @@ impl Room {
             } else {
                 scene.visible_cells(ctx.user_id, scene_id, lenient)
             };
-        } // scene read guard dropped here — safe to await
+        } // scene read guard dropped here — safe to await (publish_guard still held)
 
         // --- Revealed union: fetch explored AFTER dropping the scene read guard ---
         // INVARIANT (spec §13): for Revealed the `visible` set passed to execute_move MUST be
@@ -452,8 +471,8 @@ impl Room {
 
         // --- Pure path executor + animation speed (single ECS read acquisition) ---
         // Re-acquire the read lock now that the explored await is complete. Hold it only for
-        // the synchronous executor call and the animation speed read, then drop before the
-        // publish_guard await (no lock-across-await on the write path).
+        // the synchronous executor call and the animation speed read, then drop before
+        // commit_ops_locked (no lock-across-await on the write path; publish_guard already held).
         // Maps MoveReject → DataError::Forbidden (all reject reasons indicate the request
         // is invalid: unknown token, too-long path, bad start, non-adjacent step).
         let outcome;
@@ -471,7 +490,7 @@ impl Room {
             )
             .map_err(|_| DataError::Forbidden)?;
             speed_cells_per_sec = scene.resolved_animation_speed();
-        } // read lock dropped — safe to await publish_guard
+        } // scene read lock dropped — commit_ops_locked awaits safely under publish_guard
 
         let distance: f64 = outcome
             .render_path
@@ -500,12 +519,13 @@ impl Room {
             });
         }
 
-        // --- Atomic commit under publish_guard (single acquisition — non-reentrant) ---
+        // --- Atomic commit (publish_guard already held — single acquisition, no re-entry) ---
         // PRECONDITION: commit_ops_locked requires the caller to hold publish_guard for its
-        // full duration. We acquire it ONCE here and pass straight through — no re-entry.
-        // The position ops mirror the field paths that `token_move` / `publish` write
-        // (/system/x and /system/y), keyed on the authoritative ECS-read old values so the
-        // optimistic-concurrency check in apply_intent passes.
+        // full duration. The guard was acquired at the top of this function and is still held
+        // here — no re-acquisition needed or allowed (tokio Mutex is non-reentrant; re-acquiring
+        // would deadlock). The position ops mirror the field paths that `token_move` / `publish`
+        // write (/system/x and /system/y), keyed on the authoritative ECS-read old values so the
+        // optimistic-concurrency check in apply_intent passes as defense-in-depth.
         let pos_ops = vec![Operation::Update {
             doc_id: token,
             changes: vec![
@@ -522,15 +542,14 @@ impl Room {
             ],
         }];
 
-        {
-            let _guard = self.publish_guard.lock().await;
-            self.commit_ops_locked(repo, ctx, pos_ops, ts).await?;
-        }
+        self.commit_ops_locked(repo, ctx, pos_ops, ts).await?;
 
-        // --- Update the moving lock after a successful commit ---
-        // Lazy-expiry insert: the entry is refreshed to now + duration_ms so concurrent
-        // requests for this token see a live lock. Expired entries from prior moves that
-        // were never cleaned up are simply overwritten here.
+        // --- Update the moving lock after a successful commit (still inside publish_guard) ---
+        // Serialized by publish_guard: the check above and this insert form one atomic
+        // check-and-set with no window for a concurrent execute_move to slip through.
+        // Uses server-owned `now` (captured at entry), never the caller-supplied `ts`
+        // (which is only used for the committed event timestamp and is not trusted for timing).
+        // Lazy-expiry insert: expired entries from prior moves are simply overwritten.
         {
             let mut moving = self.moving.lock().await;
             moving.insert(token, now + duration_ms as i64);
