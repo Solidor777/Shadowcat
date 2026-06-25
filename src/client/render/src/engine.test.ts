@@ -540,3 +540,34 @@ test("registerLayerFilter forwards to the backend and disposes", () => {
   dispose();
   expect(backend.filters).toEqual([]);
 });
+
+test("toLighting parses lit cells for the active scene and fails safe", () => {
+  const { store, engine } = makeEngine();
+  engine.start();
+  // Seed an active scene "s1" (mirror the scene-create command in the fog tests).
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: {
+      id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1,
+      source: null, owner: null,
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      embedded: {}, parent_id: null, system: { grid: { kind: "square", size: 100 } }, created_at: 0, updated_at: 0,
+    } }],
+  });
+  const li = engine.toLightingForTest({
+    mode: "masked", bands: [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }],
+    renderHints: ["desaturate"],
+    lit: [
+      { scene: "s1", cell: 100, cells: [0, 0, 2, 0, 0] },      // active: dark band, hint "desaturate"
+      { scene: "other", cell: 100, cells: [9, 9, 0, 0, -1] },  // other scene: dropped
+    ],
+  });
+  expect(li).not.toBeNull();
+  expect(li!.cell).toBe(100);
+  expect(li!.cells).toEqual([{ i: 0, j: 0, band: 2, tint: 0, hint: 0 }]);
+  expect(li!.hints).toEqual(["desaturate"]);
+  // GM / garbled → null (cosmetic, no overlay).
+  expect(engine.toLightingForTest({ mode: "all" })).toBeNull();
+  expect(engine.toLightingForTest({ mode: "masked", lit: "garbage" })).toBeNull();
+  expect(engine.toLightingForTest(null)).toBeNull();
+});
