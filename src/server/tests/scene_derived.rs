@@ -102,11 +102,17 @@ fn json_uuid(n: u128) -> serde_json::Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn vision_frame_includes_lit_mask_after_room_hydration() {
-    // Template: `vision_emits_persistent_explored_for_a_player_across_reconnect` (same
-    // harness/subscribe scaffolding). This test goes further: the GM authors a world-settings
-    // doc + an enabled bright light before the room is created, then the player subscribes.
-    // The `lit` mask in the first frame proves room hydration seeded the config-docs and that
-    // the mask computation flows end-to-end from `get_or_create` through `compute_derived`.
+    // Exercises the apply_op LIVE-UPDATE path: the GM connects first (creating the room via
+    // get_or_create), then publishes world-settings + scene + player token + bright light
+    // through a single intent — those ops flow through apply_op, which keeps the room's
+    // side-tables current. The player then subscribes and receives a SceneDerived frame.
+    //
+    // What this test proves: the lit mask flows end-to-end through the SceneDerived WS frame
+    // (apply_op → SceneEcs side-tables → compute_derived → wire payload). It does NOT prove
+    // get_or_create cold-start hydration — the room already exists when the GM publishes,
+    // so the config-docs arrive via apply_op, not via the DB query_documents path.
+    // Cold-start hydration (get_or_create reading from a pre-populated DB) is covered by
+    // the `get_or_create_hydrates_config_and_actors_from_db` unit test in ws/room.rs.
     let h = spawn().await;
     let (player, player_cookie) = h.add_player("litplayer").await;
 
@@ -193,10 +199,17 @@ async fn vision_frame_includes_lit_mask_after_room_hydration() {
         !lit.is_empty(),
         "lit mask is non-empty — at least one scene has lit cells"
     );
-    // cells is a flat array packed 4 ints/cell (i, j, band_index, tint); len >= 4 means >= 1 cell.
+    // cells is a flat integer array packed 4 ints/cell (i, j, band_index, tint);
+    // len >= 4 means >= 1 cell; len % 4 == 0 proves the packing invariant is intact.
+    let cells = lit[0]["cells"].as_array().unwrap();
     assert!(
-        lit[0]["cells"].as_array().unwrap().len() >= 4,
+        cells.len() >= 4,
         "at least one lit cell in the first scene entry"
+    );
+    assert_eq!(
+        cells.len() % 4,
+        0,
+        "cells is a flat array packed 4 ints/cell (i,j,band,tint)"
     );
 }
 

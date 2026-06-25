@@ -301,6 +301,16 @@ impl RoomRegistry {
         // M10e-2: hydrate the lighting-aware vision inputs that are NOT scene entities — the three
         // world config singletons + actors — so the mask computation is pure/synchronous under the
         // scene read-lock. Kept live thereafter by `apply_op`.
+        //
+        // Safety of the race window between these queries and the `entry()` insert below:
+        // a concurrent publish that lands AFTER any of these queries but BEFORE the entry insert
+        // is safe — `apply_op` keeps the side-tables current once the room is live, so the
+        // built-but-discarded `scene_ecs` from a racing first-joiner is harmless (the winner's
+        // `or_insert_with` closure reflects the DB state it queried; the loser's closure is
+        // simply never called). There is no window where the live room's side-tables are stale.
+        //
+        // TODO: batch these four query_documents calls into one WHERE doc_type IN (...) query
+        // to halve the DB round-trips on cold room creation.
         let world_settings = repo
             .query_documents(world_id, "world-settings")
             .await?
@@ -605,6 +615,99 @@ mod room_tests {
         room.publish(&repo, &gm, vec![mv(10, 10, 1, 1)], 0)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_or_create_hydrates_config_and_actors_from_db() {
+        use crate::data::document::DocRole;
+        use serde_json::json;
+        let (repo, world_id, gm) = repo_with_world().await;
+        let p = repo
+            .create_user("p", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world_id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let (scene_id, token_id, light_id, ws_id) = (
+            Uuid::from_u128(10),
+            Uuid::from_u128(11),
+            Uuid::from_u128(12),
+            Uuid::from_u128(13),
+        );
+
+        // First registry: publish (→ DB) world-settings + scene + player-owned token + an enabled
+        // light at the token cell. These writes go through apply_op on reg1's room, committing to
+        // the DB. The second registry never sees any of these live publishes.
+        let reg1 = RoomRegistry::new();
+        let room1 = reg1.get_or_create(&repo, world_id).await.unwrap().unwrap();
+
+        let mut ws = wdoc(world_id, ws_id, "world-settings");
+        ws.owner = Some(gm.user_id);
+        ws.system = json!({
+            "scene": { "losRestriction": true, "fog": true, "lightingEnabled": true,
+                       "lightMode": "environmentLight", "environment": {"color":"#0a0e1a","intensity":0.0},
+                       "observerVision": false, "movementRestriction": "visible", "partialCellLeniency": true },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" } });
+        room1
+            .publish(&repo, &gm, vec![Operation::Create { doc: ws }], 0)
+            .await
+            .unwrap();
+
+        let mut scene = wdoc(world_id, scene_id, "scene");
+        scene.owner = Some(gm.user_id);
+        scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+        room1
+            .publish(&repo, &gm, vec![Operation::Create { doc: scene }], 0)
+            .await
+            .unwrap();
+
+        let mut token = wdoc(world_id, token_id, "token");
+        token.parent_id = Some(scene_id);
+        token.owner = Some(p);
+        token.permissions.users.insert(p, DocRole::Owner);
+        token.system = json!({ "x": 50, "y": 50 });
+        room1
+            .publish(&repo, &gm, vec![Operation::Create { doc: token }], 0)
+            .await
+            .unwrap();
+
+        let mut light = wdoc(world_id, light_id, "light");
+        light.parent_id = Some(scene_id);
+        light.owner = Some(gm.user_id);
+        light.system = json!({
+            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+            "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+        });
+        room1
+            .publish(&repo, &gm, vec![Operation::Create { doc: light }], 0)
+            .await
+            .unwrap();
+
+        // A FRESH registry never saw the live publishes: a non-empty mask here proves
+        // get_or_create hydrated the config-docs + scene/token/light from the DB (NOT the
+        // apply_op live path). If the four query_documents hydration calls are removed from
+        // get_or_create, world_settings_doc() returns None and the player_lit_mask uses
+        // fail-closed defaults with env_intensity 0.0 + no world-settings structural guard,
+        // meaning resolve_scene has no world-settings layer — but the light is still a scene
+        // entity so it IS hydrated via from_documents. What the hydration calls specifically
+        // prove is that the world-settings doc is present on the cold-start room, confirming
+        // the config-doc queries ran. The mask non-emptiness proves the full chain end-to-end
+        // (world-settings resolved + scene entity light + player token all loaded from DB).
+        let reg2 = RoomRegistry::new();
+        let room2 = reg2.get_or_create(&repo, world_id).await.unwrap().unwrap();
+        let ecs = room2.scene().read().await;
+        assert!(
+            ecs.world_settings_doc().is_some(),
+            "world-settings hydrated from DB by get_or_create"
+        );
+        let mask = ecs.player_lit_mask(p);
+        assert!(
+            mask.iter().any(|s| !s.cells.is_empty()),
+            "player lit mask non-empty after cold-start hydration (config + token + light from DB)"
+        );
     }
 
     #[tokio::test]
