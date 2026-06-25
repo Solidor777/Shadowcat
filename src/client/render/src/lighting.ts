@@ -31,6 +31,9 @@ export class Lighting {
   private target: LightingFrame = { cell: 0, cells: [] };
   /** Elapsed fade time; starts at LIGHTING_FADE_MS so the initial state is settled. */
   private elapsed = LIGHTING_FADE_MS;
+  /** Cached result of the last apply(); avoids recomputing on every current() call and
+   * eliminates the aliasing hazard of returning this.target by reference when settled. */
+  private _current: LightingFrame = { cell: 0, cells: [] };
 
   constructor(private readonly backend: DisplayBackend) {}
 
@@ -48,10 +51,13 @@ export class Lighting {
     this.apply();
   }
 
-  /** Return the current interpolated frame (re-apply after a resize if needed). */
-  current(): LightingFrame { return this.currentInterpolated(); }
+  /** Return the last applied interpolated frame (re-apply after a resize if needed). */
+  current(): LightingFrame { return this._current; }
 
-  private apply(): void { this.backend.setLighting(this.currentInterpolated()); }
+  private apply(): void {
+    this._current = this.currentInterpolated();
+    this.backend.setLighting(this._current);
+  }
 
   private currentInterpolated(): LightingFrame {
     const t = this.elapsed / LIGHTING_FADE_MS;

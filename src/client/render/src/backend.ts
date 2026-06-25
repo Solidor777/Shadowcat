@@ -1,4 +1,5 @@
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
+import type { LightingFrame } from "./lighting";
 
 /** The narrow GL abstraction the render model drives. The real implementation is
  * `pixi-backend.ts` (Playwright-covered); `MockBackend` covers it in unit tests.
@@ -39,7 +40,7 @@ export interface DisplayBackend {
   /** Redraw the transient ping rings (expanding/fading outline circles). */
   drawPings(rings: { x: number; y: number; radius: number; alpha: number }[]): void;
   /** Paint the lighting overlay (the `lighting` layer): per-cell darkening + tint + desaturate hint. */
-  setLighting(frame: import("./lighting").LightingFrame): void;
+  setLighting(frame: LightingFrame): void;
   /** Register the per-frame render ticker callback (drives tweens). */
   startTicker(cb: (dtMs: number) => void): void;
   /** Resize the renderer/viewport to CSS pixels (HiDPI handled by the backend). */
