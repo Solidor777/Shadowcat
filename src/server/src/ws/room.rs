@@ -1360,4 +1360,131 @@ mod room_tests {
             .await;
         assert!(matches!(blocked, Err(crate::data::DataError::Forbidden)));
     }
+
+    // -----------------------------------------------------------------------
+    // M10e-5: gate-chaining invariant — route-commit around a wall
+    // -----------------------------------------------------------------------
+
+    /// Gate-chaining invariant: sequential serialized publishes each gate against the
+    /// prior COMMITTED position, so an L-route around a wall succeeds as two chained
+    /// per-run publishes even though the straight start→goal would be blocked.
+    ///
+    /// Geometry (world-unit coordinates, no grid needed):
+    ///   - Wall: horizontal segment (-5,5)→(5,5) — blocks the y=5 line for x ∈ [-5,5].
+    ///   - start   = (0,0)
+    ///   - goal    = (0,10)  — straight vertical: crosses wall at (0,5) → BLOCKED.
+    ///   - corner  = (8,0)   — L-run leg 1: horizontal at y=0, never reaches y=5 → CLEAR.
+    ///   - goal    = (8,10)  — L-run leg 2: vertical at x=8, wall ends at x=5 → CLEAR.
+    ///
+    /// This test also verifies that after leg 1 commits, `mv_to` reads the authoritative
+    /// ECS position (corner) as the pre-image for leg 2 — exercising the concrete chain.
+    #[tokio::test]
+    async fn route_commits_as_chained_runs_around_a_wall() {
+        use crate::data::document::DocRole;
+        use serde_json::json;
+
+        // movementRestriction="unrestricted" isolates the M9a wall gate from the M10e-4
+        // mask gate (no lighting → visible_cells would be empty under any restrictive mode).
+        let h = movement_scene("unrestricted", /*with_light=*/ false).await;
+
+        // Add a horizontal wall segment at y=5 spanning x ∈ [-5, 5].
+        // The token in `movement_scene` starts at (50,50); we don't use that token for this
+        // test — we build a fresh token at (0,0) in the same room/scene.
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let wall_id = Uuid::from_u128(0xDEAD_0001);
+        let token2_id = Uuid::from_u128(0xDEAD_0002);
+
+        let mut wall = wdoc(h.world_id, wall_id, "wall");
+        wall.parent_id = Some(h.scene_id);
+        wall.owner = Some(h.gm.user_id);
+        // Horizontal wall: y=5, x from -5 to 5. Blocks the straight (0,0)→(0,10) path.
+        wall.system = json!({ "seg": { "x1": -5, "y1": 5, "x2": 5, "y2": 5 }, "blocksMove": true });
+        h.room
+            .publish(&h.repo, &h.gm, vec![Operation::Create { doc: wall }], 0)
+            .await
+            .unwrap();
+
+        // Fresh player-owned token at (0,0).
+        let mut token2 = wdoc(h.world_id, token2_id, "token");
+        token2.parent_id = Some(h.scene_id);
+        token2.owner = Some(h.player.user_id);
+        token2
+            .permissions
+            .users
+            .insert(h.player.user_id, DocRole::Owner);
+        token2.system = json!({ "x": 0.0, "y": 0.0 });
+        h.room
+            .publish(&h.repo, &h.gm, vec![Operation::Create { doc: token2 }], 0)
+            .await
+            .unwrap();
+
+        // Helper: publish a move for token2 from (ox,oy) → (nx,ny) as the player.
+        // Uses explicit old values (not ECS read) so leg 2 can anchor to the committed corner.
+        let mv2 = |ox: f64, oy: f64, nx: f64, ny: f64| {
+            use crate::data::command::FieldChange;
+            Operation::Update {
+                doc_id: token2_id,
+                changes: vec![
+                    FieldChange {
+                        path: "/system/x".into(),
+                        old: json!(ox),
+                        new: json!(nx),
+                    },
+                    FieldChange {
+                        path: "/system/y".into(),
+                        old: json!(oy),
+                        new: json!(ny),
+                    },
+                ],
+            }
+        };
+
+        let seq0 = h.room.current_seq();
+
+        // 1. Straight (0,0)→(0,10) crosses the wall at (0,5): must be rejected.
+        //    Crossing geometry: move segment vertical x=0 [y=0..10]; wall horizontal y=5
+        //    [x=-5..5]; they intersect at (0,5). Orientation check: d1=orient(P3,P4,P1)
+        //    where P3=(-5,5), P4=(5,5), P1=(0,0) → (-5 sign differs from P2=(0,10)) → proper cross.
+        let blocked = h
+            .room
+            .publish(&h.repo, &h.player, vec![mv2(0.0, 0.0, 0.0, 10.0)], 0)
+            .await;
+        assert!(
+            matches!(blocked, Err(crate::data::DataError::Forbidden)),
+            "straight move across the wall must be Forbidden"
+        );
+        // Blocked moves consume no seq (invariant from M9a tests).
+        assert_eq!(
+            h.room.current_seq(),
+            seq0,
+            "blocked straight move must consume no seq"
+        );
+
+        // 2. Leg 1: (0,0)→(8,0) — horizontal move, y stays 0, never reaches y=5. Clear.
+        //    Wall x-span is [-5,5]; this move's x goes 0→8 but y=0 ≠ 5, so no intersection.
+        h.room
+            .publish(&h.repo, &h.player, vec![mv2(0.0, 0.0, 8.0, 0.0)], 0)
+            .await
+            .unwrap();
+        assert_eq!(h.room.current_seq(), seq0 + 1, "leg 1 must commit");
+
+        // 3. Leg 2: (8,0)→(8,10) — vertical move at x=8; wall ends at x=5, so x=8 is outside
+        //    the wall's x-range. The move does not intersect the wall. Clear.
+        //    Gate reads the COMMITTED position (8,0) as the pre-image — the chain invariant.
+        h.room
+            .publish(&h.repo, &h.player, vec![mv2(8.0, 0.0, 8.0, 10.0)], 0)
+            .await
+            .unwrap();
+        assert_eq!(h.room.current_seq(), seq0 + 2, "leg 2 must commit");
+
+        // Final committed position in the authoritative ECS is (8,10) = goal.
+        let scene = h.room.scene().read().await;
+        let committed = scene.token_move(token2_id, &[]).map(|(_, pos, _)| pos);
+        drop(scene);
+        assert_eq!(
+            committed,
+            Some((8.0, 10.0)),
+            "token must be committed at goal (8,10) after both legs"
+        );
+    }
 }
