@@ -5,6 +5,7 @@ import { Camera } from "./camera";
 import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
 import { LayerRegistry } from "./layers";
+import { Lighting } from "./lighting";
 import { SceneReconciler } from "./reconciler";
 import { TokenView } from "./token-view";
 import { DrawingView } from "./drawing-view";
@@ -61,6 +62,7 @@ export class RenderEngine implements SceneToolHost {
   readonly camera = new Camera();
   readonly compositor: Compositor;
   private readonly layers = new LayerRegistry();
+  private readonly lighting: Lighting;
   /** Reassignable: the active scene's grid drives snapping + lines (M8d §15). */
   private grid: Grid;
   private readonly reconciler: SceneReconciler;
@@ -85,7 +87,7 @@ export class RenderEngine implements SceneToolHost {
   /** The pointer that owns the in-flight gesture; events from other pointers
    * (multi-touch / pen+mouse) are ignored until it ends. Single-pointer by design. */
   private activePointerId: number | null = null;
-  private pendingDerived: { input: VisibilityInput; seq: number } | null = null;
+  private pendingDerived: { input: VisibilityInput; lighting: LightingInput | null; seq: number } | null = null;
   /** Highest computed_at_seq applied to the mask; guards against regressing to an
    * older derived frame (latest-wins). */
   private lastAppliedSeq = -1;
@@ -108,6 +110,7 @@ export class RenderEngine implements SceneToolHost {
     this.templates = new TemplateView(opts.store, opts.backend);
     this.walls = new WallView(opts.store, opts.backend);
     this.compositor = new Compositor(opts.backend);
+    this.lighting = new Lighting(opts.backend);
   }
 
   start(): void {
@@ -128,6 +131,7 @@ export class RenderEngine implements SceneToolHost {
     });
     this.opts.backend.startTicker((dt) => {
       this.tokens.tick(dt);
+      this.lighting.tick(dt);
       const rings = this.pings.tick(dt);
       // Redraw only while rings live (plus one final clear when they expire).
       if (rings.length > 0 || this.pingsActive) {
@@ -168,25 +172,35 @@ export class RenderEngine implements SceneToolHost {
     if (frame.computedAtSeq <= this.lastAppliedSeq) return;
     if (this.pendingDerived && frame.computedAtSeq <= this.pendingDerived.seq) return;
     const input = this.toVisibility(frame.payload);
+    const lighting = this.toLighting(frame.payload);
     if (this.opts.store.appliedSeq >= frame.computedAtSeq) {
-      this.applyDerived(input, frame.computedAtSeq);
+      this.applyDerived(input, lighting, frame.computedAtSeq);
     } else {
-      this.pendingDerived = { input, seq: frame.computedAtSeq }; // watermark: defer
+      // Lighting is cosmetic — no document-consistency watermark required for it.
+      // Apply the lighting update eagerly; defer only the visibility (fog secrecy gate).
+      this.lighting.setTarget(lighting);
+      this.pendingDerived = { input, lighting, seq: frame.computedAtSeq }; // watermark: defer visibility
     }
+  }
+
+  /** Test seam: drives onSceneFrame directly (onSceneFrame is private). */
+  onSceneFrameForTest(frame: { payload: unknown; computedAtSeq: number }): void {
+    this.onSceneFrame(frame);
   }
 
   private flushPendingDerived(): void {
     const p = this.pendingDerived;
     if (p && this.opts.store.appliedSeq >= p.seq) {
       this.pendingDerived = null;
-      this.applyDerived(p.input, p.seq);
+      this.applyDerived(p.input, p.lighting, p.seq);
     }
   }
 
-  private applyDerived(input: VisibilityInput, seq: number): void {
+  private applyDerived(input: VisibilityInput, lighting: LightingInput | null, seq: number): void {
     this.lastAppliedSeq = seq;
     this.lastInput = input;
     this.renderVisibility();
+    this.lighting.setTarget(lighting);
   }
 
   /** Apply the last derived visibility through the GM fog-preview override. */
@@ -253,7 +267,6 @@ export class RenderEngine implements SceneToolHost {
     return { mode: "masked", visible, explored };
   }
 
-  // Parse-only; not yet called from onSceneFrame — TODO: wire into onSceneFrame + Lighting layer once the engine-integration task lands.
   /** Parse the `vision` payload's lighting dimension into a LightingInput for the ACTIVE scene, or
    * null. Lighting is COSMETIC — fog (toVisibility) is the secrecy gate — so any non-masked,
    * missing, or malformed input yields null (no overlay), never an over/under-reveal. Mirrors

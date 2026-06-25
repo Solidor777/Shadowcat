@@ -541,6 +541,39 @@ test("registerLayerFilter forwards to the backend and disposes", () => {
   expect(backend.filters).toEqual([]);
 });
 
+test("the lighting layer is in the core z-order between templates and mask", () => {
+  const { backend, engine } = makeEngine();
+  engine.start();
+  const li = backend.layers.indexOf("lighting");
+  expect(li).toBeGreaterThan(backend.layers.indexOf("templates"));
+  expect(li).toBeLessThan(backend.layers.indexOf("mask"));
+});
+
+test("applying a derived frame drives the lighting overlay; GM clears it", () => {
+  const { store, backend, engine } = makeEngine();
+  engine.start();
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: {
+      id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1,
+      source: null, owner: null,
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      embedded: {}, parent_id: null, system: { grid: { kind: "square", size: 100 } }, created_at: 0, updated_at: 0,
+    } }],
+  });
+  engine.onSceneFrameForTest({ payload: {
+    mode: "masked", polygons: [], bands: [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }],
+    renderHints: ["desaturate"], lit: [{ scene: "s1", cell: 100, cells: [0, 0, 2, 0, 0] }],
+  }, computedAtSeq: 1 });
+  backend.tick?.(1000); // settle the fade
+  expect(backend.lighting!.cells.length).toBe(1);
+  expect(backend.lighting!.cells[0].desaturate).toBe(true);
+
+  engine.onSceneFrameForTest({ payload: { mode: "all" }, computedAtSeq: 2 });
+  backend.tick?.(1000);
+  expect(backend.lighting!.cells).toEqual([]); // GM → no overlay
+});
+
 test("toLighting parses lit cells for the active scene and fails safe", () => {
   const { store, engine } = makeEngine();
   engine.start();
