@@ -686,14 +686,16 @@ impl SceneEcs {
         out
     }
 
-    /// The token's effective vision modes as `(floor_min_illumination, range_cells)` pairs.
-    /// `range_cells == 0.0` ⇒ unlimited. Precedence (mirrors `resolveTokenActor` in actor.ts):
-    /// a LINKED token (`actor_id` present) resolves the shared actor and applies
+    /// The token's effective vision modes as `(floor_min_illumination, range_cells, render_hint)`
+    /// triples. `range_cells == 0.0` ⇒ unlimited. `render_hint` mirrors `VisionMode.render_hint`
+    /// (e.g. `Some("desaturate")` for darkvision). Precedence (mirrors `resolveTokenActor` in
+    /// actor.ts): a LINKED token (`actor_id` present) resolves the shared actor and applies
     /// `overrides.vision` as a wholesale replacement when present; a dangling link (actor absent)
     /// yields normal, ignoring overrides. An INSTANCED token (no `actor_id`) uses its
     /// `embedded.actor[0].system.vision` without overrides. An unknown mode id is dropped
-    /// (fail-closed: it contributes no vision floor). Always returns ≥1 pair (normal fallback).
-    pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64)> {
+    /// (fail-closed: it contributes no vision floor). Always returns ≥1 triple (normal fallback
+    /// with `render_hint: None`).
+    pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64, Option<String>)> {
         let modes = self.resolved_vision_modes();
         let bands = self.resolved_bands();
 
@@ -723,7 +725,7 @@ impl SceneEcs {
                 .filter(|v| v.is_array()),
         };
 
-        let mut out: Vec<(f64, f64)> = Vec::new();
+        let mut out: Vec<(f64, f64, Option<String>)> = Vec::new();
         if let Some(arr) = assignments.and_then(|v| v.as_array()) {
             for a in arr {
                 let Some(mode_id) = a.get("mode").and_then(|v| v.as_str()) else {
@@ -739,6 +741,7 @@ impl SceneEcs {
                 out.push((
                     crate::scene::lighting::floor_min(&bands, &vm.illumination_floor),
                     range,
+                    vm.render_hint.clone(),
                 ));
             }
         }
@@ -752,6 +755,7 @@ impl SceneEcs {
             out.push((
                 crate::scene::lighting::floor_min(&bands, &normal_floor),
                 0.0,
+                None,
             ));
         }
         out
@@ -787,7 +791,9 @@ impl SceneEcs {
         struct Src {
             scene: Uuid,
             vp: vision::P,
-            floors: Vec<(f64, f64)>,
+            // (floor_min_value, range_cells, render_hint): third element reserved for per-cell
+            // hint resolution; unused here to keep behavior unchanged.
+            floors: Vec<(f64, f64, Option<String>)>,
         }
         let mut sources: Vec<Src> = Vec::new();
         for e in self.world.query::<&SceneEntity>().iter() {
@@ -952,7 +958,7 @@ impl SceneEcs {
                         let dist_cells =
                             (((cx - src.vp.0).powi(2) + (cy - src.vp.1).powi(2)).sqrt()) / cell;
                         let mut floor = f64::INFINITY;
-                        for &(fmin, range) in &src.floors {
+                        for &(fmin, range, ref _hint) in &src.floors {
                             if range == 0.0 || dist_cells <= range {
                                 floor = floor.min(fmin);
                             }
@@ -1504,16 +1510,16 @@ mod tests {
         );
         let floors = ecs.token_vision_floors(&linked);
         assert_eq!(floors.len(), 1);
-        assert_eq!(floors[0], (0.0, 6.0)); // dark floor, 6-cell range
+        assert_eq!(floors[0], (0.0, 6.0, Some("desaturate".to_string()))); // dark floor, 6-cell range, darkvision hint
 
         // A per-token override REPLACES the actor's vision entirely.
         linked.system["overrides"] = json!({ "vision": [{ "mode": "normal", "range": 0 }] });
         let f2 = ecs.token_vision_floors(&linked);
-        assert_eq!(f2[0], (0.34, 0.0)); // dim floor, unlimited range
+        assert_eq!(f2[0], (0.34, 0.0, None)); // dim floor, unlimited range, normal hint
 
         // An actorless token → normal only.
         let raw = entity_doc(12, 10, "token", json!({ "x": 0, "y": 0 }));
-        assert_eq!(ecs.token_vision_floors(&raw), vec![(0.34, 0.0)]);
+        assert_eq!(ecs.token_vision_floors(&raw), vec![(0.34, 0.0, None)]);
 
         // An explicit EMPTY override REPLACES (no fall-through to the linked actor → normal).
         let mut linked_empty = entity_doc(
@@ -1523,7 +1529,10 @@ mod tests {
             json!({ "x": 0, "y": 0, "actor_id": Uuid::from_u128(200).to_string(),
                     "overrides": { "vision": [] } }),
         );
-        assert_eq!(ecs.token_vision_floors(&linked_empty), vec![(0.34, 0.0)]);
+        assert_eq!(
+            ecs.token_vision_floors(&linked_empty),
+            vec![(0.34, 0.0, None)]
+        );
 
         // A token with BOTH actor_id AND an embedded actor resolves the LINKED actor (matches the
         // client's actor_id-first resolveTokenActor), NOT the embedded copy.
@@ -1537,7 +1546,10 @@ mod tests {
             )],
         );
         // actor 200 grants darkvision range 6 → linked wins → (0.0, 6.0), not the embedded normal.
-        assert_eq!(ecs.token_vision_floors(&linked_empty), vec![(0.0, 6.0)]);
+        assert_eq!(
+            ecs.token_vision_floors(&linked_empty),
+            vec![(0.0, 6.0, Some("desaturate".to_string()))]
+        );
 
         // A DANGLING link (actor_id with no matching actor) + an overrides.vision is normal — the
         // client ignores overrides when the linked actor is absent.
@@ -1548,7 +1560,7 @@ mod tests {
             json!({ "x": 0, "y": 0, "actor_id": Uuid::from_u128(999).to_string(),
                     "overrides": { "vision": [{ "mode": "darkvision", "range": 9 }] } }),
         );
-        assert_eq!(ecs.token_vision_floors(&dangling), vec![(0.34, 0.0)]);
+        assert_eq!(ecs.token_vision_floors(&dangling), vec![(0.34, 0.0, None)]);
     }
 
     #[test]
@@ -1819,5 +1831,30 @@ mod tests {
         let m = ecs.resolved_vision_modes();
         assert_eq!(m["truesight"].render_hint.as_deref(), Some("outline"));
         assert_eq!(m["plain"].render_hint, None);
+    }
+
+    #[test]
+    fn token_vision_floors_include_render_hint() {
+        use serde_json::json;
+        // Instanced token with embedded actor granting normal + darkvision.
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 0, "y": 0 }));
+        tok.embedded.insert(
+            "actor".into(),
+            vec![{
+                let mut a = doc(99, None, "actor");
+                a.system = json!({ "vision": [
+                    { "mode": "normal", "range": 0 },
+                    { "mode": "darkvision", "range": 6 }
+                ]});
+                a
+            }],
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone()], 0);
+        let floors = ecs.token_vision_floors(&tok);
+        // darkvision entry carries the desaturate hint; normal carries none.
+        assert!(floors
+            .iter()
+            .any(|(_, _, h)| h.as_deref() == Some("desaturate")));
+        assert!(floors.iter().any(|(_, _, h)| h.is_none()));
     }
 }
