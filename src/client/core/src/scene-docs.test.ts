@@ -54,6 +54,22 @@ describe("resolveSceneSettings", () => {
     expect(ws.parent_id).toBeNull();
     expect((ws.system as { scene: unknown }).scene).toBeTruthy();
   });
+
+  it("fail-closed: partial world-settings wire doc (missing scene/pathfinding/animation) falls back to built-in defaults and does not throw", () => {
+    // Simulates a future partial wire payload where a set_pointer removed `scene`,
+    // leaving a non-null but structurally incomplete world-settings system object.
+    const scene = buildSceneDoc("w1", {}, "scene-partial");
+    const partialWs: WireDocument = {
+      ...buildWorldSettingsDoc("w1", DEFAULT_WORLD_SETTINGS, "ws-partial"),
+      system: {} as unknown, // missing scene, pathfinding, animation
+    };
+    const r = resolveSceneSettings(scene, storeWith(scene, partialWs));
+    // Must not throw and must return built-in defaults, not access undefined fields.
+    expect(r.movementRestriction).toBe("visible");
+    expect(r.diagonalRule).toBe("chebyshev");
+    expect(r.losRestriction).toBe(true);
+    expect(r.fog).toBe(true);
+  });
 });
 
 const actorSys: ActorSystem = {

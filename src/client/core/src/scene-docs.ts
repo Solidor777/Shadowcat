@@ -58,8 +58,20 @@ export interface WorldSettingsSystem {
   animation: { speedCellsPerSec: number; easing: EasingMode };
 }
 
-/** Built-in defaults — used when no world-settings doc exists or a field is absent. */
-export const DEFAULT_WORLD_SETTINGS: WorldSettingsSystem = {
+// Recursive freeze helper — makes DEFAULT_WORLD_SETTINGS immutable so shared refs
+// returned by resolveSceneSettings cannot be mutated by consumers in dev.
+function deepFreeze<T>(obj: T): T {
+  Object.freeze(obj);
+  for (const v of Object.values(obj as object)) {
+    if (v !== null && typeof v === "object" && !Object.isFrozen(v)) deepFreeze(v);
+  }
+  return obj;
+}
+
+/** Built-in defaults — used when no world-settings doc exists or a field is absent.
+ * Deep-frozen so shared refs in resolveSceneSettings output are immutable in dev;
+ * enumerable values are unchanged. */
+export const DEFAULT_WORLD_SETTINGS: WorldSettingsSystem = deepFreeze({
   scene: {
     losRestriction: true,
     fog: true,
@@ -72,7 +84,7 @@ export const DEFAULT_WORLD_SETTINGS: WorldSettingsSystem = {
   },
   pathfinding: { diagonalRule: "chebyshev" },
   animation: { speedCellsPerSec: 6, easing: "easeInOut" },
-};
+});
 
 // --- Resolved settings (M10e-1) ---
 
@@ -171,18 +183,25 @@ export function buildSceneDoc(worldId: string, system: Partial<SceneSystem> = {}
 
 /** A top-level (world-scoped, parentless) world-settings config document.
  * Seeds the FULL default object so that a world-settings doc is always complete;
- * single-field edits patch it in place via set_pointer. */
-export function buildWorldSettingsDoc(worldId: string, system: WorldSettingsSystem = DEFAULT_WORLD_SETTINGS, id?: string): WireDocument {
+ * single-field edits patch it in place via set_pointer.
+ * Default param is a fresh deep clone — the returned doc's `.system` must not alias
+ * DEFAULT_WORLD_SETTINGS (value-independence-at-construction invariant). */
+export function buildWorldSettingsDoc(worldId: string, system: WorldSettingsSystem = structuredClone(DEFAULT_WORLD_SETTINGS), id?: string): WireDocument {
   return envelope(worldId, "world-settings", null, system, id);
 }
 
 /** Resolve the effective settings for a scene by merging:
  *   built-in defaults → world-settings doc → scene-level overrides.
- * INVARIANT: fail-closed — absent or stale docs fall back to DEFAULT_WORLD_SETTINGS; never throws.
+ * INVARIANT: fail-closed — absent OR structurally incomplete docs fall back to
+ * DEFAULT_WORLD_SETTINGS; never throws. A partial wire payload (e.g. a set_pointer
+ * that removed a top-level key) is non-null but structurally incomplete, so the `??`
+ * guard alone is insufficient; we require all three top-level keys to be present.
  * Default gridDistance: 5 ft/cell (standard D&D 5e scale). */
 export function resolveSceneSettings(scene: WireDocument | undefined, store: ReadableDocuments): ResolvedSceneSettings {
   const ws = store.query("world-settings")[0]?.system as WorldSettingsSystem | undefined;
-  const d = ws ?? DEFAULT_WORLD_SETTINGS;
+  // Structural guard: a partial doc (missing scene/pathfinding/animation) falls back to
+  // built-in defaults rather than throwing at d.scene.* access below.
+  const d = (ws?.scene && ws?.pathfinding && ws?.animation) ? ws : DEFAULT_WORLD_SETTINGS;
   const sys = scene?.system as SceneSystem | undefined;
   const v = sys?.vision ?? {};
   const l = sys?.lighting ?? {};
