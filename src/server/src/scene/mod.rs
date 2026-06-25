@@ -104,7 +104,13 @@ impl SceneEcs {
     }
 
     /// Seed the actor table (room-hydration path). Keyed by actor doc id.
+    /// Relies on actor docs being world-scoped (parentless) — see the debug_assert below.
     pub fn set_actors(&mut self, actors: Vec<Document>) {
+        debug_assert!(
+            actors.iter().all(|d| d.parent_id.is_none()),
+            "INVARIANT: actor docs are world-scoped (parentless); a parented actor would also \
+             hydrate as a scene entity via is_scene_entity and be double-represented"
+        );
         self.actors = actors.into_iter().map(|d| (d.id, d)).collect();
     }
 
@@ -122,6 +128,8 @@ impl SceneEcs {
     }
 
     /// Mirror a config/actor field Update into the side tables (Value round-trip, structural-only).
+    /// Takes `&mut Option<Document>` (not `&mut self`) so the three call sites can borrow the
+    /// three distinct singleton fields independently without conflicting on `self`.
     fn apply_config_update(
         slot: &mut Option<Document>,
         doc_id: Uuid,
@@ -198,14 +206,10 @@ impl SceneEcs {
                     {
                         self.world_settings = None;
                     }
-                    "light-gradation"
-                        if self.gradation.as_ref().map(|d| d.id) == Some(doc.id) =>
-                    {
+                    "light-gradation" if self.gradation.as_ref().map(|d| d.id) == Some(doc.id) => {
                         self.gradation = None;
                     }
-                    "vision-modes"
-                        if self.vision_modes.as_ref().map(|d| d.id) == Some(doc.id) =>
-                    {
+                    "vision-modes" if self.vision_modes.as_ref().map(|d| d.id) == Some(doc.id) => {
                         self.vision_modes = None;
                     }
                     "actor" => {
@@ -728,12 +732,18 @@ mod tests {
         });
         assert!(ecs.vision_modes_doc().is_some());
 
-        // A field Update to the world-settings doc is mirrored.
+        // A second world-settings Create REPLACES the singleton (the current authoritative doc wins).
+        ecs.apply_op(&Operation::Create {
+            doc: doc(110, None, "world-settings"),
+        });
+        assert_eq!(ecs.world_settings_doc().unwrap().id, Uuid::from_u128(110));
+
+        // A field Update to the current world-settings singleton (id 110) is mirrored.
         ecs.apply_op(&Operation::Update {
-            doc_id: Uuid::from_u128(100),
+            doc_id: Uuid::from_u128(110),
             changes: vec![crate::data::command::FieldChange {
                 path: "/system/scene/lightingEnabled".into(),
-                old: json!(false),
+                old: json!(null),
                 new: json!(true),
             }],
         });
