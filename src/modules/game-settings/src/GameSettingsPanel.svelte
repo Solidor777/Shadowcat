@@ -3,6 +3,7 @@
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
     buildWorldSettingsDoc, buildLightGradationDoc, buildVisionModesDoc,
+    DEFAULT_WORLD_SETTINGS,
     type WorldSettingsSystem, type LightGradationSystem, type VisionModesSystem,
     type SceneSystem, type WireDocument,
   } from "@shadowcat/core";
@@ -185,8 +186,9 @@
 
   {#if ctx.role === "gm" && scene && ssys}
     <!-- Per-scene overrides: vision, lighting, and grid.distance.
-         Each control offers an explicit "inherit" (empty value / indeterminate) option so
-         an absent field stays absent in scene.system and inherits the world default.
+         Writing null to a field is equivalent to "inherit": resolveSceneSettings reads each
+         field via nullish-coalescing (v.field ?? d.scene.field), so null falls through to the
+         world default. set_pointer removal is deferred; null is the correct mechanism here.
          JSON-pointer paths written to the selected scene doc (not the world-settings doc).
          INVARIANT: setScene guards scene != null; this block only renders when scene is defined. -->
     <fieldset>
@@ -203,14 +205,15 @@
         </label>
       {/if}
 
-      <!-- Vision overrides -->
+      <!-- Vision overrides: selecting the inherit option writes null so the field is cleared
+           back to the world default (null ?? default → default in resolveSceneSettings). -->
       <label>
         {ctx.t("gameSettings.scene.movementRestriction")}
         <select aria-label="gameSettings.scene.movementRestriction"
           value={ssys.vision?.movementRestriction ?? ""}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            if (v) setScene("/system/vision/movementRestriction", v);
+            setScene("/system/vision/movementRestriction", v === "" ? null : v);
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           {#each MOVEMENT as m}<option value={m}>{m}</option>{/each}
@@ -223,7 +226,7 @@
           value={ssys.vision?.losRestriction === undefined ? "" : ssys.vision.losRestriction ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            if (v !== "") setScene("/system/vision/losRestriction", v === "true");
+            setScene("/system/vision/losRestriction", v === "" ? null : v === "true");
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           <option value="true">{ctx.t("gameSettings.enabled")}</option>
@@ -237,7 +240,7 @@
           value={ssys.vision?.fog === undefined ? "" : ssys.vision.fog ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            if (v !== "") setScene("/system/vision/fog", v === "true");
+            setScene("/system/vision/fog", v === "" ? null : v === "true");
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           <option value="true">{ctx.t("gameSettings.enabled")}</option>
@@ -251,7 +254,7 @@
           value={ssys.vision?.observerVision === undefined ? "" : ssys.vision.observerVision ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            if (v !== "") setScene("/system/vision/observerVision", v === "true");
+            setScene("/system/vision/observerVision", v === "" ? null : v === "true");
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           <option value="true">{ctx.t("gameSettings.enabled")}</option>
@@ -266,7 +269,7 @@
           value={ssys.lighting?.enabled === undefined ? "" : ssys.lighting.enabled ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            if (v !== "") setScene("/system/lighting/enabled", v === "true");
+            setScene("/system/lighting/enabled", v === "" ? null : v === "true");
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           <option value="true">{ctx.t("gameSettings.enabled")}</option>
@@ -280,40 +283,73 @@
           value={ssys.lighting?.mode ?? ""}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            if (v) setScene("/system/lighting/mode", v);
+            setScene("/system/lighting/mode", v === "" ? null : v);
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           {#each LIGHTMODE as m}<option value={m}>{m}</option>{/each}
         </select>
       </label>
 
+      <!-- Environment lighting override: a tri-state select gates the color+intensity inputs.
+           Selecting "inherit" writes null to /system/lighting/environment so the nullish-coalesce
+           in resolveSceneSettings falls back to the world default (null ?? d.scene.environment).
+           Selecting "override" seeds with DEFAULT_WORLD_SETTINGS.scene.environment so the initial
+           write has a meaningful value, not #000000/0. The object is cloned (not passed by ref)
+           because DEFAULT_WORLD_SETTINGS is deep-frozen. -->
       <label>
-        {ctx.t("gameSettings.scene.envColor")}
-        <input type="color" aria-label="gameSettings.scene.envColor"
-          value={ssys.lighting?.environment?.color ?? "#000000"}
+        {ctx.t("gameSettings.scene.environment")}
+        <select aria-label="gameSettings.scene.environment"
+          value={ssys.lighting?.environment != null ? "override" : ""}
           onchange={(e) => {
-            const env = ssys?.lighting?.environment;
-            setScene("/system/lighting/environment", {
-              color: (e.currentTarget as HTMLInputElement).value,
-              intensity: env?.intensity ?? 0,
-            });
-          }} />
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            if (v === "") {
+              setScene("/system/lighting/environment", null);
+            } else {
+              // Seed from the current override if present; fall back to the built-in default
+              // (cloned — DEFAULT_WORLD_SETTINGS is deep-frozen and must not be dispatched by ref).
+              setScene("/system/lighting/environment", ssys?.lighting?.environment != null
+                ? { ...ssys.lighting.environment }
+                : { ...DEFAULT_WORLD_SETTINGS.scene.environment });
+            }
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          <option value="override">{ctx.t("gameSettings.enabled")}</option>
+        </select>
       </label>
 
-      <label>
-        {ctx.t("gameSettings.scene.envIntensity")}
-        <input type="number" min="0" max="1" step="0.05" aria-label="gameSettings.scene.envIntensity"
-          value={ssys.lighting?.environment?.intensity ?? ""}
-          onchange={(e) => {
-            const env = ssys?.lighting?.environment;
-            setScene("/system/lighting/environment", {
-              color: env?.color ?? "#000000",
-              intensity: Number((e.currentTarget as HTMLInputElement).value),
-            });
-          }} />
-      </label>
+      {#if ssys.lighting?.environment != null}
+        <label>
+          {ctx.t("gameSettings.scene.envColor")}
+          <input type="color" aria-label="gameSettings.scene.envColor"
+            value={ssys.lighting.environment.color}
+            onchange={(e) => {
+              // Coupling: reads sibling intensity from the current override (always present in
+              // this branch) to avoid overwriting it with a stale value.
+              setScene("/system/lighting/environment", {
+                color: (e.currentTarget as HTMLInputElement).value,
+                intensity: ssys!.lighting!.environment!.intensity,
+              });
+            }} />
+        </label>
 
-      <!-- Grid distance override -->
+        <label>
+          {ctx.t("gameSettings.scene.envIntensity")}
+          <!-- Blank ("") intensity means "environment absent / inherit"; intensity 0 is a real value. -->
+          <input type="number" min="0" max="1" step="0.05" aria-label="gameSettings.scene.envIntensity"
+            value={ssys.lighting.environment.intensity}
+            onchange={(e) => {
+              // Coupling: reads sibling color from the current override (always present in
+              // this branch) to avoid overwriting it with a stale value.
+              setScene("/system/lighting/environment", {
+                color: ssys!.lighting!.environment!.color,
+                intensity: Number((e.currentTarget as HTMLInputElement).value),
+              });
+            }} />
+        </label>
+      {/if}
+
+      <!-- Grid distance override: un-edited sibling is read from the current override when
+           present, or falls back to the defaults that resolveSceneSettings uses (5 ft/cell). -->
       <label>
         {ctx.t("gameSettings.scene.distancePerCell")}
         <input type="number" min="0" step="0.5" aria-label="gameSettings.scene.distancePerCell"

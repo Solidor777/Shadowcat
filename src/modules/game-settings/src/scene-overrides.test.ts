@@ -35,4 +35,38 @@ describe("per-scene overrides", () => {
       { op: "update", doc_id: "scene1", changes: [{ path: "/system/grid/distance", old: null, new: { perCell: 1.5, unit: "ft" } }] },
     ]);
   });
+
+  it("selecting a boolean value on a tri-state select writes a real boolean (not string)", async () => {
+    // Verifies FIX A: boolean tri-state coercion — the fog select dispatches `new: true` (boolean),
+    // not "true" (string), when the user picks the enabled option.
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const sel = screen.getByLabelText("gameSettings.scene.fog") as HTMLSelectElement;
+    await fireEvent.change(sel, { target: { value: "true" } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/fog", old: null, new: true }] },
+    ]);
+  });
+
+  it("selecting inherit on a previously-set enum override dispatches null to clear it", async () => {
+    // Verifies FIX A: inherit is reversible — selecting the blank option writes null so the
+    // nullish-coalesce in resolveSceneSettings falls back to the world default.
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    // Pre-populate the scene with a movementRestriction override already set.
+    const scene = buildSceneDoc("w1", { vision: { movementRestriction: "unrestricted" } }, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const sel = screen.getByLabelText("gameSettings.scene.movementRestriction") as HTMLSelectElement;
+    // The control should reflect the current override ("unrestricted"); selecting "" clears it.
+    await fireEvent.change(sel, { target: { value: "" } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/movementRestriction", old: null, new: null }] },
+    ]);
+  });
 });

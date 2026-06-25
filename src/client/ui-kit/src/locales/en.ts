@@ -95,6 +95,7 @@ export const en: Messages = {
   "gameSettings.scene.observerVision": "Observer vision (override)",
   "gameSettings.scene.lightingEnabled": "Lighting enabled (override)",
   "gameSettings.scene.lightMode": "Light mode (override)",
+  "gameSettings.scene.environment": "Environment lighting (override)",
   "gameSettings.scene.envColor": "Environment light color (override)",
   "gameSettings.scene.envIntensity": "Environment light intensity (override)",
   "gameSettings.scene.distancePerCell": "Distance per cell (override)",
