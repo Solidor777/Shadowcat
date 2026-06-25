@@ -10,6 +10,7 @@
 #[derive(Clone, Debug, PartialEq)]
 pub struct Band {
     pub name: String,
+    /// INVARIANT: must be finite and in [0,1]; non-finite values are dropped by `sorted_bands`.
     pub min_illumination: f64,
 }
 
@@ -31,8 +32,10 @@ pub fn default_bands() -> Vec<Band> {
     ]
 }
 
-/// Bands sorted brightest-first (descending `min_illumination`). Fail-closed: empty input → defaults.
+/// Bands sorted brightest-first (descending `min_illumination`). Non-finite bands are dropped
+/// before sorting. Fail-closed: empty input (or all-non-finite) → defaults.
 pub fn sorted_bands(mut bands: Vec<Band>) -> Vec<Band> {
+    bands.retain(|b| b.min_illumination.is_finite());
     if bands.is_empty() {
         return default_bands();
     }
@@ -44,9 +47,14 @@ pub fn sorted_bands(mut bands: Vec<Band>) -> Vec<Band> {
     bands
 }
 
-/// Index (brightest=0) of the band a given illumination falls into. `bands` MUST be brightest-first.
+/// Index (brightest=0) of the band a given illumination falls into.
+/// `bands` MUST be non-empty and brightest-first (always true for `sorted_bands` output).
 /// Clamps to the darkest band if nothing matched (defensive; the darkest floor is normally 0.0).
 pub fn band_index(bands: &[Band], illumination: f64) -> usize {
+    debug_assert!(
+        !bands.is_empty(),
+        "INVARIANT: bands must be non-empty; call sorted_bands first"
+    );
     for (i, b) in bands.iter().enumerate() {
         if illumination >= b.min_illumination {
             return i;
@@ -85,5 +93,31 @@ mod tests {
         assert_eq!(floor_min(&bands, "nonsense"), 0.67);
         // Empty input → defaults (never panics).
         assert_eq!(sorted_bands(vec![])[0].name, "bright");
+    }
+
+    #[test]
+    fn fail_closed_on_degenerate_band_input() {
+        // floor_min on an empty slice → the fail-closed maximum (1.0): nothing satisfies >= 1.0
+        // except a fully-lit cell, so an unset gradation under-reveals.
+        assert_eq!(floor_min(&[], "dim"), 1.0);
+        // A non-finite band is dropped deterministically; an all-NaN input falls back to defaults.
+        let nan = Band {
+            name: "bad".into(),
+            min_illumination: f64::NAN,
+        };
+        assert_eq!(sorted_bands(vec![nan])[0].name, "bright");
+        // A finite band survives alongside a dropped NaN band.
+        let mixed = sorted_bands(vec![
+            Band {
+                name: "bad".into(),
+                min_illumination: f64::NAN,
+            },
+            Band {
+                name: "ok".into(),
+                min_illumination: 0.5,
+            },
+        ]);
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].name, "ok");
     }
 }
