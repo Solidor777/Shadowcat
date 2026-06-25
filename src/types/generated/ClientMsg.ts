@@ -4,4 +4,9 @@ import type { Operation } from "./Operation";
 /**
  * Client -> server frames.
  */
-export type ClientMsg = { "type": "hello", world: string, last_seq: bigint | null, } | { "type": "intent", intent_id: string, ops: Array<Operation>, } | { "type": "resync_request", from_seq: bigint, } | { "type": "time_ping", client_t0: bigint, } | { "type": "pong" } | { "type": "search", request_id: string, query: string, limit: number, cursor: string | null, subscribe: boolean, } | { "type": "unsubscribe", request_id: string, } | { "type": "scene_subscribe", request_id: string, channel: string, as_user?: string, } | { "type": "scene_unsubscribe", request_id: string, } | { "type": "scene_ping", scene: string, x: number, y: number, } | { "type": "pathfind", request_id: string, scene: string, start: [number, number], waypoints: Array<[number, number]>, footprint_radius: number, };
+export type ClientMsg = { "type": "hello", world: string, last_seq: bigint | null, } | { "type": "intent", intent_id: string, ops: Array<Operation>, } | { "type": "resync_request", from_seq: bigint, } | { "type": "time_ping", client_t0: bigint, } | { "type": "pong" } | { "type": "search", request_id: string, query: string, limit: number, cursor: string | null, subscribe: boolean, } | { "type": "unsubscribe", request_id: string, } | { "type": "scene_subscribe", request_id: string, channel: string, as_user?: string, } | { "type": "scene_unsubscribe", request_id: string, } | { "type": "scene_ping", scene: string, x: number, y: number, } | { "type": "pathfind", request_id: string, scene: string, start: [number, number], waypoints: Array<[number, number]>, footprint_radius: number, } | { "type": "move_request", request_id: string, scene: string, token_id: string, 
+/**
+ * Ordered cell-center scene points: start … goal (inclusive). Type is `[f64; 2]` not a
+ * tuple so the TS binding emits `[number, number][]` (array literal, not tuple object).
+ */
+path: Array<[number, number]>, };

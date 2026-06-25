@@ -331,6 +331,20 @@ async fn handle_socket(
                                 });
                             }
                         }
+                        Ok(ClientMsg::MoveRequest { request_id, .. }) => {
+                            // TODO: Implement server-authoritative move execution.
+                            // Replies to originator only; never broadcast.
+                            if etx
+                                .send(Egress::Frame(Arc::new(ServerMsg::MoveError {
+                                    request_id,
+                                    message: "not implemented".into(),
+                                })))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
                         Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius }) => {
                             // One-shot pathfinding: resolve GM status, fetch explored off the lock for
                             // non-GM Revealed, call SceneEcs::pathfind, reply to this connection only.

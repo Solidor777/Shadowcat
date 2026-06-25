@@ -73,6 +73,18 @@ pub enum ClientMsg {
         waypoints: Vec<(f64, f64)>,
         footprint_radius: f64,
     },
+    /// A server-authoritative move request: the client submits the previewed cell-center scene
+    /// points (start … goal) for a token it controls. The server validates, executes the move,
+    /// and replies with `MoveExecuted` (broadcast to the scene) or `MoveError` (originator only).
+    /// `path` carries the exact route preview so the server can reproduce the animation.
+    MoveRequest {
+        request_id: Uuid,
+        scene: Uuid,
+        token_id: Uuid,
+        /// Ordered cell-center scene points: start … goal (inclusive). Type is `[f64; 2]` not a
+        /// tuple so the TS binding emits `[number, number][]` (array literal, not tuple object).
+        path: Vec<[f64; 2]>,
+    },
 }
 
 /// Which tier served a resync.
@@ -210,6 +222,23 @@ pub enum ServerMsg {
     },
     /// The `Pathfind` with this `request_id` failed (unreachable / invalid request / search exceeded).
     PathError { request_id: Uuid, message: String },
+    /// Confirms a `MoveRequest` was accepted and executed. Broadcast to the scene room so all
+    /// observers can animate the token. `render_path` is the authoritative route (may differ from
+    /// the client's preview if the server recomputed it); `stop` is the final position.
+    /// `duration_ms` is the animation wall-clock budget derived from world animation settings.
+    MoveExecuted {
+        request_id: Uuid,
+        token_id: Uuid,
+        /// Final resting position (scene coords).
+        stop: [f64; 2],
+        /// Authoritative ordered cell-center scene points for client animation.
+        render_path: Vec<[f64; 2]>,
+        /// Wall-clock animation budget in milliseconds.
+        duration_ms: f64,
+    },
+    /// A `MoveRequest` was rejected (token already moving, caller not owner, malformed path, etc.).
+    /// Addressed to the originating connection only; never broadcast.
+    MoveError { request_id: Uuid, message: String },
 }
 
 impl ServerMsg {
@@ -425,6 +454,34 @@ mod protocol_tests {
         assert_eq!(j["type"], "scene_derived");
         assert_eq!(j["computed_at_seq"], 7);
         assert_eq!(j["payload"]["entity_count"], 3);
+    }
+
+    #[test]
+    fn move_request_and_executed_round_trip() {
+        let req = ClientMsg::MoveRequest {
+            request_id: Uuid::from_u128(1),
+            scene: Uuid::from_u128(2),
+            token_id: Uuid::from_u128(3),
+            path: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]],
+        };
+        let wire = serde_json::to_string(&req).unwrap();
+        let back: ClientMsg = serde_json::from_str(&wire).unwrap();
+        assert!(matches!(back, ClientMsg::MoveRequest { .. }));
+
+        let ok = ServerMsg::MoveExecuted {
+            request_id: Uuid::from_u128(1),
+            token_id: Uuid::from_u128(3),
+            stop: [100.0, 100.0],
+            render_path: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]],
+            duration_ms: 500.0,
+        };
+        let w2 = serde_json::to_string(&ok).unwrap();
+        assert!(w2.contains("move_executed"));
+        let err = ServerMsg::MoveError {
+            request_id: Uuid::from_u128(1),
+            message: "token is moving".into(),
+        };
+        assert!(serde_json::to_string(&err).unwrap().contains("move_error"));
     }
 
     #[test]
