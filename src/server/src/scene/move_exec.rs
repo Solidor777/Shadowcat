@@ -37,7 +37,7 @@ const EPS: f64 = 1e-6;
 // Constructed by execute_move; allow dead_code until the room layer wires the call.
 #[allow(dead_code)]
 pub(crate) struct MoveOutcome {
-    /// Scene coordinates of the stop cell center (last successfully stepped-to cell).
+    /// The path coordinate of the last successfully reached step (`path[stop_index]`).
     pub stop: (f64, f64),
     /// The legal prefix of the input path that was actually walked: `path[0..=stop_index]`.
     pub render_path: Vec<(f64, f64)>,
@@ -99,8 +99,12 @@ fn region_arrests(_ecs: &SceneEcs, _scene: Uuid, _cell_center: (f64, f64)) -> bo
 ///   committed position within `EPS`.
 /// - `restriction` — Movement restriction mode pre-resolved by the caller from
 ///   `resolve_scene`; `Unrestricted` means mask is skipped.
-/// - `visible` — Pre-computed visible cell set (caller resolves off the read lock,
-///   mirroring `publish`'s `visible_cache`). Ignored when `Unrestricted`.
+/// - `visible` — The resolved mask the gate decision uses (caller resolves off the
+///   read lock). Ignored when `Unrestricted`. For `Visible` this is `visible_cells(...)`;
+///   for `Revealed` the caller MUST pass `visible_cells(...) ∪ explored` — the same
+///   union `publish` tests with `visible.contains(c) || explored.contains(c)` — NOT
+///   the raw `visible_cache` alone (§13 parity contract: this executor and the
+///   `publish` gate must agree on every cell for every restriction mode).
 /// - `cell` — Grid cell size in scene units (positive finite).
 // Called by the room layer move-dispatch; allow dead_code until that caller lands.
 #[allow(dead_code)]
@@ -120,6 +124,7 @@ pub(crate) fn execute_move(
     if path.len() > MAX_MOVE_PATH {
         return Err(MoveReject::TooLong);
     }
+    // NaN is already caught by `is_finite()`; `<= 0.0` rejects non-positive finite values.
     if !cell.is_finite() || cell <= 0.0 {
         return Err(MoveReject::Degenerate);
     }
@@ -193,7 +198,8 @@ pub(crate) fn execute_move(
     }
 
     let render_path = path[0..=stop_index].to_vec();
-    let truncated = stop_index + 1 < path.len();
+    // Safe: path.len() >= 2 is already guarded above, so len() - 1 never underflows.
+    let truncated = stop_index < path.len() - 1;
     Ok(MoveOutcome {
         stop: path[stop_index],
         render_path,
@@ -245,7 +251,9 @@ mod tests {
 
     /// Visible set covering all (i,j) in [0,range) × [0,range).
     fn visible_grid(range: i32) -> BTreeSet<(i32, i32)> {
-        (0..range).flat_map(|i| (0..range).map(move |j| (i, j))).collect()
+        (0..range)
+            .flat_map(|i| (0..range).map(move |j| (i, j)))
+            .collect()
     }
 
     /// Scene with a token at (0,0) and a wall blocking the step (100,0)→(100,100).
@@ -339,6 +347,52 @@ mod tests {
         .unwrap();
         assert_eq!(out.stop, (100.0, 0.0));
         assert!(out.truncated);
+    }
+
+    /// Documents the `Revealed`-mode caller contract: the `visible` argument must be
+    /// `visible_cells(...) ∪ explored`. When the union includes an otherwise-unseen cell
+    /// the move proceeds through it; when the union omits the cell the move truncates there.
+    #[test]
+    fn revealed_mode_uses_caller_supplied_union_mask() {
+        let (ecs, scene, token) = clear_scene();
+        // Cell (1,1) is NOT in the raw visible set but IS in the explored union.
+        // The caller is responsible for supplying the union; the executor treats it as opaque.
+        let mut union_mask: BTreeSet<(i32, i32)> = BTreeSet::new();
+        union_mask.insert((0, 0));
+        union_mask.insert((1, 0));
+        union_mask.insert((1, 1)); // explored cell included by caller in the union
+
+        // With the union mask: all supercover cells are present → reaches goal.
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+            MovementRestriction::Revealed,
+            &union_mask,
+            100.0,
+        )
+        .unwrap();
+        assert_eq!(out.stop, (100.0, 100.0));
+        assert!(!out.truncated);
+
+        // Without cell (1,1) in the mask: move truncates at (100,0).
+        let mut raw_mask: BTreeSet<(i32, i32)> = BTreeSet::new();
+        raw_mask.insert((0, 0));
+        raw_mask.insert((1, 0));
+        // (1,1) absent — caller did NOT union in explored; step (100,0)→(100,100) blocked.
+        let out2 = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+            MovementRestriction::Revealed,
+            &raw_mask,
+            100.0,
+        )
+        .unwrap();
+        assert_eq!(out2.stop, (100.0, 0.0));
+        assert!(out2.truncated);
     }
 
     #[test]
