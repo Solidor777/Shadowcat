@@ -5,9 +5,10 @@
 //! Mirrors the client `light-gradation`/`light`/`vision-modes` shapes in scene-docs.ts; the server
 //! stays structural-only (callers parse documents and pass these plain structs).
 
-// TODO: point_in_poly is used by the illuminated-cell query (next checkpoint); suppress until then.
+use crate::scene::vision::P;
+// TODO: point_in_poly will be called by cell_illumination once the polygon-containment path is wired.
 #[allow(unused_imports)]
-use crate::scene::vision::{point_in_poly, P};
+use crate::scene::vision::point_in_poly;
 
 /// Photometric falloff curve across the dim band `(bright_radius, dim_radius]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,9 +38,17 @@ pub struct Light {
 
 /// Illumination this light contributes at distance `dist_cells` (in CELLS), BEFORE occlusion.
 /// Full `intensity` within `bright_radius`; tapers across `(bright_radius, dim_radius]` by the
-/// curve; 0 beyond `dim_radius`. Disabled / non-positive `dim_radius` ⇒ 0.
+/// curve; 0 beyond `dim_radius`. Disabled / non-finite / non-positive `dim_radius` ⇒ 0.
+///
+/// Returns a value in `[0, intensity]`. A caller composing multiple lights clamps the summed
+/// result to `[0, 1]` before band lookup. `intensity` must be finite (the document→`Light` parser
+/// clamps it to `[0, 1]`).
 pub fn light_illumination(light: &Light, dist_cells: f64) -> f64 {
-    if !light.enabled || light.dim_radius <= 0.0 || dist_cells > light.dim_radius {
+    if !light.enabled
+        || !light.dim_radius.is_finite()
+        || light.dim_radius <= 0.0
+        || dist_cells > light.dim_radius
+    {
         return 0.0;
     }
     if dist_cells <= light.bright_radius {
@@ -225,5 +234,19 @@ mod tests {
         ]);
         assert_eq!(mixed.len(), 1);
         assert_eq!(mixed[0].name, "ok");
+    }
+
+    #[test]
+    fn non_finite_dim_radius_contributes_nothing() {
+        let l = Light {
+            dim_radius: f64::NAN,
+            ..lamp()
+        };
+        assert_eq!(light_illumination(&l, 0.0), 0.0);
+        let i = Light {
+            dim_radius: f64::INFINITY,
+            ..lamp()
+        };
+        assert_eq!(light_illumination(&i, 1.0), 0.0);
     }
 }
