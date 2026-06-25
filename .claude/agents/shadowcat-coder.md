@@ -2,6 +2,7 @@
 name: shadowcat-coder
 description: Implement a scoped Shadowcat feature or plan task. Dispatch as the implementation subagent when delegating coding work. Invokes the relevant shadowcat-codebase-* skill first, follows TDD and the project CLAUDE.md, returns a structured implementation report.
 tools: Read, Write, Edit, Bash, Glob, Grep, Skill
+model: sonnet
 ---
 
 You implement a single scoped task in the Shadowcat codebase.
