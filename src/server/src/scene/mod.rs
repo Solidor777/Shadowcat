@@ -1064,6 +1064,210 @@ impl SceneEcs {
             .collect()
     }
 
+    /// The set of cells visible to `user` in `scene` for the movement gate. Reuses the exact
+    /// egress primitives (`lighting_inputs`, `source_los_poly`, `cell_visible`) so it agrees with
+    /// the secrecy mask (spec §13). `lenient` selects the rasterization rule: strict samples the
+    /// cell CENTER only (≡ `player_lit_mask`); lenient also samples the four corners, so a cell
+    /// whose vision polygon merely overlaps it counts — a superset, never extending past polygon
+    /// overlap. Empty ⇒ no in-scene vision source for this user (fail closed).
+    pub fn visible_cells(
+        &self,
+        user: Uuid,
+        scene: Uuid,
+        lenient: bool,
+    ) -> std::collections::BTreeSet<(i32, i32)> {
+        use std::collections::BTreeSet;
+        let mut out: BTreeSet<(i32, i32)> = BTreeSet::new();
+        let settings = self.resolve_scene(scene);
+        let cell = self
+            .scene_grid_sizes()
+            .get(&scene)
+            .copied()
+            .unwrap_or(100.0);
+        if cell <= 0.0 {
+            return out;
+        }
+
+        // Gather this user's vision sources in THIS scene (owner ∪ observer-tier when
+        // observerVision). Mirrors player_lit_mask's source gather, scene-filtered.
+        struct Src {
+            vp: vision::P,
+            floors: Vec<(f64, f64, Option<String>)>,
+        }
+        let mut sources: Vec<Src> = Vec::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type != "token" || e.doc.parent_id != Some(scene) {
+                continue;
+            }
+            let owns = e.doc.owner == Some(user);
+            let is_source = owns
+                || (settings.observer_vision && {
+                    let role = e
+                        .doc
+                        .permissions
+                        .users
+                        .get(&user)
+                        .copied()
+                        .unwrap_or(e.doc.permissions.default);
+                    role <= crate::data::document::DocRole::Observer
+                });
+            if !is_source {
+                continue;
+            }
+            if let (Some(x), Some(y)) = (sys_f64(&e.doc, "/x"), sys_f64(&e.doc, "/y")) {
+                sources.push(Src {
+                    vp: (x, y),
+                    floors: self.token_vision_floors(&e.doc),
+                });
+            }
+        }
+        if sources.is_empty() {
+            return out;
+        }
+
+        // Scene-shared lighting inputs (once), then per-source per-cell test.
+        let li = self.lighting_inputs(scene, &settings);
+        for src in &sources {
+            let poly = source_los_poly(src.vp, &li.sight_walls, settings.los_restriction);
+            if poly.len() < 3 {
+                continue;
+            }
+            let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+            for &(x, y) in &poly {
+                minx = minx.min(x);
+                miny = miny.min(y);
+                maxx = maxx.max(x);
+                maxy = maxy.max(y);
+            }
+            // Lenient samples corners, so a cell just outside the center-bbox can still qualify:
+            // expand the scan by one cell each side under leniency.
+            let pad = if lenient { 1 } else { 0 };
+            let i0 = (minx / cell).floor() as i32 - pad;
+            let i1 = (maxx / cell).floor() as i32 + pad;
+            let j0 = (miny / cell).floor() as i32 - pad;
+            let j1 = (maxy / cell).floor() as i32 + pad;
+            let w = i1 as i64 - i0 as i64 + 1;
+            let h = j1 as i64 - j0 as i64 + 1;
+            if w.saturating_mul(h) > crate::scene::explored::MAX_CELLS_PER_POLYGON {
+                tracing::warn!("visible_cells scan exceeds cap; skipping source");
+                continue;
+            }
+            for i in i0..=i1 {
+                for j in j0..=j1 {
+                    if out.contains(&(i, j)) {
+                        continue;
+                    }
+                    // Strict: center only. Lenient: center + 4 corners (first passing sample wins).
+                    let center = ((i as f64 + 0.5) * cell, (j as f64 + 0.5) * cell);
+                    let corners = [
+                        (i as f64 * cell, j as f64 * cell),
+                        ((i + 1) as f64 * cell, j as f64 * cell),
+                        (i as f64 * cell, (j + 1) as f64 * cell),
+                        ((i + 1) as f64 * cell, (j + 1) as f64 * cell),
+                    ];
+                    let samples: &[(f64, f64)] = if lenient {
+                        // SAFETY: reborrow as slice; corners is a local array in scope.
+                        // Cannot use a mixed slice literal because corner array and single-element
+                        // inline have incompatible sizes; build as two separate slices and chain.
+                        &corners
+                    } else {
+                        std::slice::from_ref(&center)
+                    };
+                    // For lenient, center must be checked first so the §13 strict cells are always
+                    // included; then fall through to corners only if center fails.
+                    let mut found = false;
+                    if lenient {
+                        // Check center first, then corners.
+                        if vision::point_in_poly(&poly, center) {
+                            let cl = if li.all_bright {
+                                crate::scene::lighting::CellLight {
+                                    level: 1.0,
+                                    tint: 0,
+                                }
+                            } else {
+                                crate::scene::lighting::cell_illumination(
+                                    center,
+                                    settings.env_intensity,
+                                    settings.env_color,
+                                    &li.lights,
+                                    &li.lit_polys,
+                                    cell,
+                                )
+                            };
+                            let dist_cells = (((center.0 - src.vp.0).powi(2)
+                                + (center.1 - src.vp.1).powi(2))
+                            .sqrt())
+                                / cell;
+                            if cell_visible(&src.floors, cl.level, dist_cells) {
+                                found = true;
+                            }
+                        }
+                        if !found {
+                            for &(sx, sy) in &corners {
+                                if !vision::point_in_poly(&poly, (sx, sy)) {
+                                    continue;
+                                }
+                                let cl = if li.all_bright {
+                                    crate::scene::lighting::CellLight {
+                                        level: 1.0,
+                                        tint: 0,
+                                    }
+                                } else {
+                                    crate::scene::lighting::cell_illumination(
+                                        (sx, sy),
+                                        settings.env_intensity,
+                                        settings.env_color,
+                                        &li.lights,
+                                        &li.lit_polys,
+                                        cell,
+                                    )
+                                };
+                                let dist_cells =
+                                    (((sx - src.vp.0).powi(2) + (sy - src.vp.1).powi(2)).sqrt())
+                                        / cell;
+                                if cell_visible(&src.floors, cl.level, dist_cells) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        // Strict: center only (mirrors player_lit_mask exactly).
+                        let _ = samples; // samples is &[center] but we use the named var directly.
+                        if vision::point_in_poly(&poly, center) {
+                            let cl = if li.all_bright {
+                                crate::scene::lighting::CellLight {
+                                    level: 1.0,
+                                    tint: 0,
+                                }
+                            } else {
+                                crate::scene::lighting::cell_illumination(
+                                    center,
+                                    settings.env_intensity,
+                                    settings.env_color,
+                                    &li.lights,
+                                    &li.lit_polys,
+                                    cell,
+                                )
+                            };
+                            let dist_cells = (((center.0 - src.vp.0).powi(2)
+                                + (center.1 - src.vp.1).powi(2))
+                            .sqrt())
+                                / cell;
+                            if cell_visible(&src.floors, cl.level, dist_cells) {
+                                found = true;
+                            }
+                        }
+                    }
+                    if found {
+                        out.insert((i, j));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Engine-owned movement collision (M9a, the second ARCHITECTURE #6 geometric
     /// exception). True if the move segment `a0→a1` crosses any `blocksMove` wall in `scene`.
     /// A no-op move (`a0 == a1`) never blocks.
@@ -2256,5 +2460,68 @@ mod tests {
         );
         // No in-range mode → not visible (fail closed).
         assert!(!cell_visible(&[], 1.0, 1.0));
+    }
+
+    /// Builds a SceneEcs with one scene (id 10), one player-owned token at (50, 50), and one
+    /// enabled white light at (50, 50) with bright=3 / dim=6 cells. The token has normal vision
+    /// (default), so cells within the lit radius are visible. Returns `(ecs, user, scene_id)`.
+    fn scene_with_lit_player_token() -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            }),
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
+        (ecs, user, scene_id)
+    }
+
+    #[test]
+    fn visible_cells_strict_equals_player_lit_mask_cells() {
+        // §13 parity: under strict (center-only) sampling, the movement gate mask must equal the
+        // egress secrecy mask for the scene. Both paths use the same cell_visible predicate and
+        // lighting_inputs, so any divergence is a sampling or illumination bug.
+        let (ecs, user, scene) = scene_with_lit_player_token();
+        let strict: std::collections::BTreeSet<(i32, i32)> = ecs.visible_cells(user, scene, false);
+        let egress: std::collections::BTreeSet<(i32, i32)> = ecs
+            .player_lit_mask(user)
+            .into_iter()
+            .filter(|s| s.scene == scene)
+            .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
+            .collect();
+        assert_eq!(
+            strict, egress,
+            "strict gate mask must equal the egress secrecy mask"
+        );
+        assert!(!strict.is_empty());
+    }
+
+    #[test]
+    fn visible_cells_lenient_is_a_superset_of_strict() {
+        let (ecs, user, scene) = scene_with_lit_player_token();
+        let strict = ecs.visible_cells(user, scene, false);
+        let lenient = ecs.visible_cells(user, scene, true);
+        assert!(
+            strict.iter().all(|c| lenient.contains(c)),
+            "lenient ⊇ strict"
+        );
+        assert!(lenient.len() >= strict.len());
+    }
+
+    #[test]
+    fn visible_cells_empty_when_user_has_no_source_in_scene() {
+        let (ecs, _user, scene) = scene_with_lit_player_token();
+        let stranger = Uuid::from_u128(999);
+        assert!(
+            ecs.visible_cells(stranger, scene, true).is_empty(),
+            "no sources → empty (fail closed)"
+        );
     }
 }
