@@ -16,7 +16,7 @@
 - **Clean-room geometry (ARCHITECTURE §7):** standard radial light falloff + threshold banding + the existing angular-sweep raycast; cite sources, consult no proprietary VTT/engine source.
 - **Cross-platform:** pure-Rust, no OS-specific paths; the server matrix (ubuntu/macos/windows) is the proof.
 - **Determinism:** all per-cell scans iterate in a fixed order (ascending `(i, j)`); no `HashMap` iteration leaks into wire output ordering.
-- **Local gate (run before each commit):** `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`, `cargo test -p shadowcat-server` (adjust the crate name to the workspace's server package).
+- **Local gate (run before each commit):** `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`, `cargo test -p shadowcat`. (NOTE: the server crate is named **`shadowcat`** — every `-p shadowcat-server` in this plan's task commands should read `-p shadowcat`; corrected during execution.)
 
 ## Decisions baked into this plan
 
@@ -838,7 +838,7 @@ git commit -m "feat(m10e-2): server scene-settings/gradation/vision-mode resolve
 
 **Interfaces:**
 - Consumes: `resolved_vision_modes`, `resolved_bands`, `lighting::floor_min`, the `actors` table.
-- Produces: `SceneEcs::token_vision_floors(&self, token: &Document) -> Vec<(f64, f64)>` — a list of `(floor_min_illumination, range_cells)` pairs for the token's effective vision modes (`range_cells == 0.0` ⇒ unlimited). Resolution precedence mirrors the client `EffectiveActor`: `overrides.vision` > `embedded.actor[0].system.vision` > `actor(actor_id).system.vision` > `[normal]`.
+- Produces: `SceneEcs::token_vision_floors(&self, token: &Document) -> Vec<(f64, f64)>` — a list of `(floor_min_illumination, range_cells)` pairs for the token's effective vision modes (`range_cells == 0.0` ⇒ unlimited). Resolution precedence mirrors the client `resolveTokenActor` (actor.ts): a **linked** token (`actor_id`) resolves the shared actor and `overrides.vision` REPLACES the actor's vision (a *dangling* link → normal, overrides ignored); an **instanced** token (no `actor_id`) uses `embedded.actor[0].system.vision` (overrides do NOT apply); else `[normal]`. I.e. linked(`actor_id`)-with-overrides is checked **before** embedded — NOT `overrides > embedded > actor_id` (that earlier ordering was an error corrected during execution).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1294,7 +1294,7 @@ git commit -m "feat(m10e-2): per-player lighting-aware visibility mask"
 
 **Interfaces:**
 - Consumes: `player_lit_mask`.
-- Produces: the masked `vision` payload gains `"lit"`: an array of `{ scene, cell, bands: [{name, min}], cells: [i, j, band, tint, ...] }`. `polygons` + the (post-lock) `explored` are unchanged. GM payload (`mode:"all"`) is unchanged.
+- Produces: the masked `vision` payload gains a top-level `"bands": [{name, min}]` (world-scoped resolved gradation, emitted once) and `"lit"`: an array of `{ scene, cell, cells: [i, j, band, tint, ...] }`. (`bands` is hoisted to the top level — NOT repeated per `lit` entry — corrected during execution to avoid per-scene wire duplication, while the M10e-3 client consumer is unwritten.) `polygons` + the (post-lock) `explored` are unchanged. GM payload (`mode:"all"`) is unchanged.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1488,3 +1488,15 @@ This checkpoint is **security-sensitive** (the lit mask is the forthcoming per-p
 - **Side-table coherence:** does `apply_op` keep the config/actor tables consistent across Create/Update/Delete, including a wholesale `/system` Update (mirroring the `token_move` post-image hazard)?
 
 Record the converged outcome (PASS / fixes-applied) in this section before merge.
+
+**Buddy-check outcome (2026-06-24, both reviewers on Opus):** CONVERGED PASS. Both the
+`shadowcat-spec-reviewer` and `shadowcat-code-reviewer` independently APPROVED the whole-branch
+implementation as fail-closed on every resolver/accessor/mask path, secrecy-safe (the `lit` egress
+carries only the recipient's in-LOS cells; GM unchanged), additive (`polygons`/`explored`
+unmodified, no M9 regression), deterministic (BTreeMap-ordered output; HashMaps point-lookup only),
+and faithful to the spec + client parity (`resolveSceneSettings`/`resolveGradation`/
+`resolveVisionModes`/`resolveTokenActor`). The only deviation is the constraint-forced flat-ambient
+environment light, logged to `docs/TODO.md`. The spec reviewer's CHANGES-REQUESTED was solely the
+remaining post-execution gates (skill-update, docs-sync, plan crate-name, this record) — all now
+completed before merge. Per-task review also caught and fixed: a Critical (`all_bright` left players
+blind), a `resolveTokenActor` precedence inversion, and a cell-span i64-overflow DoS.

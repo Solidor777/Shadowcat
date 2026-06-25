@@ -268,9 +268,19 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > `blocksLight` + `EffectiveActor.visionModes` + new `@shadowcat/module-game-settings` (GM seed +
 > world/scene/gradation/vision-mode editors, inherit = `null`) + actor darkvision authoring.
 > SDD-executed (9 tasks, per-task two-reviewer gate + whole-branch buddy-check CONVERGED PASS);
-> merged --no-ff to LOCAL main; full client gate green. No render/server-vision yet (those are
-> M10e-2/3). **Next = M10e-2** (server lighting-aware vision: per-(user,scene) grid visibility
-> mask — the secrecy gate). M10f (continuous pathfinding) + M10g (regions) resume after.
+> merged --no-ff to LOCAL main; full client gate green. **M10e-2 DONE** (server lighting-aware
+> vision, Rust): `scene/lighting.rs` (pure illumination — gradation bands, light falloff, per-cell
+> max-compose with `blocksLight` occlusion) + `SceneEcs` config-doc/actor side-tables + fail-closed
+> server resolvers (mirror scene-docs.ts + actor.ts `resolveTokenActor`) + `player_lit_mask` (the
+> per-(user,scene) `LOS ∩ (lit ∨ darkvision)` secrecy gate, fail-closed) + additive `lit` vision
+> payload (`{mode, polygons, bands, lit}`; GM stays `mode:"all"`) + room cold-start hydration.
+> SDD-executed (10 tasks, per-task two-reviewer gate + whole-branch buddy-check CONVERGED PASS; a
+> Critical caught — `all_bright` left players blind — plus a precedence inversion vs
+> `resolveTokenActor` and a cell-span overflow DoS, all fixed); merged --no-ff to LOCAL main; server
+> gate green. Deviation (logged in TODO): environment light is flat ambient, not edge-projected,
+> until scenes gain dimensions (placed-light occlusion IS implemented). **Next = M10e-3** (client
+> lighting render) / **M10e-4** (movement restriction). M10f (continuous pathfinding) + M10g
+> (regions) resume after.
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
