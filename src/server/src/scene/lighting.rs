@@ -5,6 +5,56 @@
 //! Mirrors the client `light-gradation`/`light`/`vision-modes` shapes in scene-docs.ts; the server
 //! stays structural-only (callers parse documents and pass these plain structs).
 
+// TODO: point_in_poly is used by the illuminated-cell query (next checkpoint); suppress until then.
+#[allow(unused_imports)]
+use crate::scene::vision::{point_in_poly, P};
+
+/// Photometric falloff curve across the dim band `(bright_radius, dim_radius]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Falloff {
+    /// Smooth linear taper from full intensity at the bright edge to 0 at the dim edge.
+    Linear,
+    /// Smooth quadratic taper (faster than linear).
+    Quadratic,
+    /// No gradient: a flat dim-band step (`0.5 × intensity`) — bright/dim radii feed the gradation
+    /// bands directly (spec §5.4). With the default gradation this lands a unit-intensity light's
+    /// dim band at 0.5 ∈ [dim 0.34, bright 0.67).
+    None,
+}
+
+/// A placed light's photometric inputs. Radii are in GRID CELLS; `color` is packed `0xRRGGBB`.
+/// Mirrors the client `LightSystem` (scene-docs.ts).
+#[derive(Clone, Debug)]
+pub struct Light {
+    pub pos: P,
+    pub color: u32,
+    pub intensity: f64,
+    pub bright_radius: f64,
+    pub dim_radius: f64,
+    pub falloff: Falloff,
+    pub enabled: bool,
+}
+
+/// Illumination this light contributes at distance `dist_cells` (in CELLS), BEFORE occlusion.
+/// Full `intensity` within `bright_radius`; tapers across `(bright_radius, dim_radius]` by the
+/// curve; 0 beyond `dim_radius`. Disabled / non-positive `dim_radius` ⇒ 0.
+pub fn light_illumination(light: &Light, dist_cells: f64) -> f64 {
+    if !light.enabled || light.dim_radius <= 0.0 || dist_cells > light.dim_radius {
+        return 0.0;
+    }
+    if dist_cells <= light.bright_radius {
+        return light.intensity;
+    }
+    let span = (light.dim_radius - light.bright_radius).max(1e-9);
+    let t = ((light.dim_radius - dist_cells) / span).clamp(0.0, 1.0); // 1 at bright edge → 0 at dim edge
+    let f = match light.falloff {
+        Falloff::None => 0.5,
+        Falloff::Linear => t,
+        Falloff::Quadratic => t * t,
+    };
+    light.intensity * f
+}
+
 /// A named illumination band. `min_illumination` is the minimum [0,1] light level a cell must reach
 /// to qualify for this band. Mirrors the client `GradationBand`.
 #[derive(Clone, Debug, PartialEq)]
@@ -77,6 +127,62 @@ pub fn floor_min(bands: &[Band], floor_name: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lamp() -> Light {
+        Light {
+            pos: (0.0, 0.0),
+            color: 0xFFEEAA,
+            intensity: 1.0,
+            bright_radius: 2.0,
+            dim_radius: 6.0,
+            falloff: Falloff::Linear,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn falloff_curves_and_radii() {
+        let l = lamp();
+        assert_eq!(light_illumination(&l, 0.0), 1.0); // center: full
+        assert_eq!(light_illumination(&l, 2.0), 1.0); // bright edge: full (continuous)
+        assert_eq!(light_illumination(&l, 7.0), 0.0); // beyond dim radius: dark
+                                                      // Linear: halfway across (bright=2 → dim=6), dist=4 → t=0.5 → 0.5
+        assert!((light_illumination(&l, 4.0) - 0.5).abs() < 1e-9);
+        // Quadratic falls off faster than linear at the same distance.
+        let q = Light {
+            falloff: Falloff::Quadratic,
+            ..lamp()
+        };
+        assert!(light_illumination(&q, 4.0) < light_illumination(&l, 4.0));
+        // None: flat dim-band step across (bright, dim].
+        let n = Light {
+            falloff: Falloff::None,
+            ..lamp()
+        };
+        assert!((light_illumination(&n, 4.0) - 0.5).abs() < 1e-9);
+        assert_eq!(light_illumination(&n, 1.0), 1.0); // still full inside bright
+                                                      // Disabled / zero dim radius contribute nothing.
+        assert_eq!(
+            light_illumination(
+                &Light {
+                    enabled: false,
+                    ..lamp()
+                },
+                0.0
+            ),
+            0.0
+        );
+        assert_eq!(
+            light_illumination(
+                &Light {
+                    dim_radius: 0.0,
+                    ..lamp()
+                },
+                0.0
+            ),
+            0.0
+        );
+    }
 
     #[test]
     fn band_lookup_and_floor_are_fail_closed() {
