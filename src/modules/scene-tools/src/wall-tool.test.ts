@@ -32,7 +32,7 @@ test("a wall drag previews then persists a wall doc with seg + both flags", () =
   if (op.op === "create") {
     expect(op.doc.doc_type).toBe("wall");
     expect(op.doc.parent_id).toBe("scene-1");
-    expect(op.doc.system).toMatchObject({ seg: { x1: 0, y1: 0, x2: 100, y2: 50 }, blocksSight: true, blocksMove: true });
+    expect(op.doc.system).toMatchObject({ seg: { x1: 0, y1: 0, x2: 100, y2: 50 }, blocksSight: true, blocksMove: true, blocksLight: true });
   }
 });
 

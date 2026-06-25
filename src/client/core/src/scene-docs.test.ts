@@ -4,7 +4,7 @@ import {
   buildWorldSettingsDoc, resolveSceneSettings, DEFAULT_WORLD_SETTINGS,
   type WireDocument,
 } from "./scene-docs";
-import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES } from "./scene-docs";
+import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc } from "./scene-docs";
 import { DocumentStore } from "./store";
 
 function storeWith(...docs: WireDocument[]): DocumentStore {
@@ -213,4 +213,11 @@ describe("vision-modes registry", () => {
     // Values must be preserved.
     expect(modes).toEqual(SEED_VISION_MODES);
   });
+});
+
+it("builds a light doc parented to its scene", () => {
+  const l = buildLightDoc("w1", "scene1", { x: 10, y: 20, color: "#ffd9a0", intensity: 1, brightRadius: 4, dimRadius: 8, enabled: true });
+  expect(l.doc_type).toBe("light");
+  expect(l.parent_id).toBe("scene1");
+  expect((l.system as { brightRadius: number }).brightRadius).toBe(4);
 });

@@ -393,3 +393,26 @@ export function resolveVisionModes(store: ReadableDocuments): Record<string, Vis
   const sys = store.query("vision-modes")[0]?.system as VisionModesSystem | undefined;
   return sys?.modes ?? SEED_VISION_MODES;
 }
+
+// --- Light source doc type (M10e-1) ---
+
+/** A placed light source: position, photometric properties, and an optional falloff curve.
+ * `brightRadius`/`dimRadius` are in grid cells. `falloff.curve` defaults to "linear" when
+ * absent. The server treats this system body as opaque; the render layer reads it for
+ * illumination computation. */
+export interface LightSystem {
+  x: number;
+  y: number;
+  color: string;
+  intensity: number;
+  brightRadius: number;
+  dimRadius: number;
+  falloff?: { curve: "linear" | "quadratic" | "none" };
+  enabled: boolean;
+}
+
+/** A light-source document parented to `sceneId`. The caller supplies the full `system`
+ * (no default constant — no aliasing concern). */
+export function buildLightDoc(worldId: string, sceneId: string, system: LightSystem, id?: string): WireDocument {
+  return envelope(worldId, "light", sceneId, system, id);
+}

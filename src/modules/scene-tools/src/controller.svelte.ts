@@ -145,6 +145,7 @@ export function makeWallTool(ctx: ToolContext): SceneTool {
               seg: { x1: anchor.x, y1: anchor.y, x2: b.x, y2: b.y },
               blocksSight: true,
               blocksMove: true,
+              blocksLight: true,
             }),
           },
         ]);
