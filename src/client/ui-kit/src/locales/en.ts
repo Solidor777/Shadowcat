@@ -73,4 +73,5 @@ export const en: Messages = {
   "tools.wall": "Wall",
   "tools.shape": "Shape",
   "tools.color": "Color",
+  "gameSettings.title": "Game settings",
 };

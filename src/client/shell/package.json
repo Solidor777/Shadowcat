@@ -16,6 +16,7 @@
     "@shadowcat/module-actors": "workspace:*",
     "@shadowcat/module-conditions": "workspace:*",
     "@shadowcat/module-factions": "workspace:*",
+    "@shadowcat/module-game-settings": "workspace:*",
     "@shadowcat/module-scene-tools": "workspace:*",
     "@shadowcat/types": "workspace:^",
     "@shadowcat/ui-kit": "workspace:*"
