@@ -1081,6 +1081,7 @@ pub fn compute_derived(
                 // tagged with its illumination band + tint. Carries the resolved gradation `bands`
                 // so the client maps band indices → treatment. Additive: `polygons`/`explored` are
                 // unchanged (the client consumes `lit` from M10e-3).
+                // TODO: thread the bands player_lit_mask already resolved to avoid this second resolve.
                 let bands_json: Vec<serde_json::Value> = ecs
                     .resolved_bands()
                     .into_iter()
@@ -1097,10 +1098,12 @@ pub fn compute_derived(
                                 [i as i64, j as i64, band as i64, tint as i64]
                             })
                             .collect();
-                        serde_json::json!({ "scene": s.scene, "cell": s.cell, "bands": bands_json, "cells": flat })
+                        serde_json::json!({ "scene": s.scene, "cell": s.cell, "cells": flat })
                     })
                     .collect();
-                Some(serde_json::json!({ "mode": "masked", "polygons": polygons, "lit": lit }))
+                Some(
+                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "lit": lit }),
+                )
             }
         }
         _ => None,
@@ -1380,10 +1383,20 @@ mod tests {
             .expect("lit present for masked payload");
         assert_eq!(lit.len(), 1);
         assert_eq!(lit[0]["scene"], json!(Uuid::from_u128(10)));
-        assert!(lit[0]["cells"].as_array().unwrap().len() >= 4); // ≥ one cell (4 ints/cell)
-        assert!(!lit[0]["bands"].as_array().unwrap().is_empty());
+        let cells = lit[0]["cells"].as_array().unwrap();
+        assert!(!cells.is_empty());
+        assert_eq!(
+            cells.len() % 4,
+            0,
+            "cells packed 4 ints/cell (i,j,band,tint)"
+        );
+        assert!(!pv["bands"].as_array().unwrap().is_empty()); // bands now top-level
+        assert!(
+            lit[0].get("bands").is_none(),
+            "bands hoisted to top level, not per-entry"
+        );
 
-        // GM payload is unchanged — no lit key.
+        // GM payload is unchanged — no lit key or bands key.
         let gm = PermissionContext {
             user_id: Uuid::from_u128(1),
             world_role: WorldRole::Gm,
@@ -1391,6 +1404,7 @@ mod tests {
         let gv = compute_derived("vision", &ecs, &gm).unwrap();
         assert_eq!(gv["mode"], "all");
         assert!(gv.get("lit").is_none());
+        assert!(gv.get("bands").is_none());
     }
 
     #[test]
