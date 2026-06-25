@@ -82,4 +82,6 @@ export const en: Messages = {
   "gameSettings.animEasing": "Animation easing",
   "gameSettings.gradation": "Light gradation bands",
   "gameSettings.visionModes": "Vision modes",
+  "gameSettings.illuminationFloor": "Illumination floor",
+  "gameSettings.visionModeRange": "Default range (cells)",
 };

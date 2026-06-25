@@ -140,7 +140,7 @@
         <div>
           <span>{mode.name}</span>
           <label>
-            {ctx.t("gameSettings.visionModes")}
+            {ctx.t("gameSettings.illuminationFloor")}
             <select
               aria-label="gameSettings.visionMode.{mode.id}"
               value={mode.illuminationFloor}
@@ -150,7 +150,7 @@
             </select>
           </label>
           <label>
-            {ctx.t("gameSettings.animSpeed")}
+            {ctx.t("gameSettings.visionModeRange")}
             <input
               type="number" min="0" step="1"
               aria-label="gameSettings.visionMode.{mode.id}.range"
