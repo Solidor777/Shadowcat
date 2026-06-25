@@ -16,7 +16,7 @@ pub type Cell = (i32, i32);
 /// the scene's wall/viewpoint extent, but a wall authored at an extreme coordinate with a tiny
 /// grid size could otherwise span billions of cells and stall the dispatch path. Exceeding the cap
 /// skips the polygon (marks no cells → under-reveal, the fail-safe direction).
-const MAX_CELLS_PER_POLYGON: i64 = 4_000_000;
+pub(crate) const MAX_CELLS_PER_POLYGON: i64 = 4_000_000;
 
 /// A sparse explored-cell set for one (scene, player).
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
@@ -73,7 +73,9 @@ impl ExploredSet {
             let i1 = (maxx / cell_size).floor() as i32;
             let j0 = (miny / cell_size).floor() as i32;
             let j1 = (maxy / cell_size).floor() as i32;
-            let span = (i1 as i64 - i0 as i64 + 1) * (j1 as i64 - j0 as i64 + 1);
+            let w = i1 as i64 - i0 as i64 + 1;
+            let h = j1 as i64 - j0 as i64 + 1;
+            let span = w.saturating_mul(h);
             if span > MAX_CELLS_PER_POLYGON {
                 tracing::warn!(span, "explored cell scan exceeds cap; skipping polygon");
                 continue;

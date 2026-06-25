@@ -15,10 +15,20 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 
 ## Key files & seams
 
-- `src/server/src/scene/mod.rs` — `SceneEcs` (derived read-model, hydrated from documents),
-  `compute_derived(...)` (builds derived frames), `player_vision_polygons(user_id)`.
+- `src/server/src/scene/mod.rs` — `SceneEcs` (derived read-model, hydrated from documents + the
+  M10e-2 config-doc/actor side-tables `world_settings`/`gradation`/`vision_modes`/`actors`, set via
+  `set_world_config`/`set_actors` and maintained by `apply_op`), `compute_derived(...)` (builds
+  derived frames; the `vision` masked payload is `{mode, polygons, bands, lit}`),
+  `player_vision_polygons(user_id)`, `player_lit_mask(user_id)` (the M10e-2 lighting-aware mask →
+  `LitScene` cells), and the fail-closed server resolvers `resolve_scene`/`resolved_bands`/
+  `resolved_vision_modes`/`token_vision_floors` (mirror scene-docs.ts + actor.ts `resolveTokenActor`
+  precedence) plus `scene_lights`/`light_walls` accessors.
 - `src/server/src/scene/vision.rs` — raycast `visibility_polygon(viewpoint, walls, bound)`,
-  `bound_for(...)`, `Seg`/`Rect`/`P`. Public-source computational geometry only (ARCHITECTURE §7).
+  `bound_for(...)`, `Seg`/`Rect`/`P`, `point_in_poly` (shared). Public-source computational geometry only (ARCHITECTURE §7).
+- `src/server/src/scene/lighting.rs` — pure illumination (M10e-2, no I/O — callers pass parsed
+  structs): gradation `Band`s (`sorted_bands`/`band_index`/`floor_min`), `Light` radial falloff
+  (`light_illumination`), `cell_illumination` (max-compose env + lights, `blocksLight` occlusion via
+  `point_in_poly`). Clean-room. Non-finite/empty inputs fail closed (under-reveal).
 - `src/server/src/scene/explored.rs` — `ExploredSet` fog memory: `mark_polygons(polys, cell_size)`,
   `to_bytes`/`from_bytes` (persistence), cell-based.
 - `src/client/render/src/` — engine-owned PixiJS layer: `backend.ts` + `pixi-backend.ts`
@@ -30,8 +40,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - `src/modules/scene-tools/` — `controller.svelte.ts`, `hit-test.ts`, tools (place/select/move/
   draw/template/measure/ping) dispatching intents. Wall tool writes a **three-flag** segment:
   `blocksSight` + `blocksMove` + `blocksLight`.
-- `src/client/core/src/scene-docs.ts` — **vision/lighting/movement data model (M10e-1, V1; no
-  render yet)**: world-scoped config-docs `world-settings`/`light-gradation`/`vision-modes`
+- `src/client/core/src/scene-docs.ts` — **vision/lighting/movement data model (M10e-1 client model;
+  the M10e-2 server mask now consumes these shapes; no client lighting render yet — M10e-3)**:
+  world-scoped config-docs `world-settings`/`light-gradation`/`vision-modes`
   (builders + deep-frozen defaults `DEFAULT_WORLD_SETTINGS`/`DEFAULT_GRADATION`/`SEED_VISION_MODES`;
   builders `structuredClone` the frozen default), per-scene `SceneSystem.vision?`/`lighting?`
   overrides + `grid.distance?`, the scene-parented `light` doc_type (`LightSystem` +
@@ -58,6 +69,14 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   **inherit** (resolver `??` chains treat null and undefined identically). The deep-frozen
   `DEFAULT_*`/`SEED_*` constants are immutable-by-design; builders `structuredClone` them so no
   frozen/shared reference reaches a doc.
+- **The server lit mask is the lighting-aware secrecy gate (M10e-2)**: `player_lit_mask(user)` =
+  `LOS ∩ (lit ∨ darkvision)`, union over the user's vision sources (owned tokens ∪ observer-tier
+  tokens when `observerVision`), emitted as per-recipient `lit` cells (`(i,j,band,tint)`). Fail-closed
+  (no source / dark scene ⇒ empty; cell scans bounded by `explored::MAX_CELLS_PER_POLYGON` with a
+  `saturating_mul` span guard). Egress is ADDITIVE — `polygons` + the post-lock `explored` are
+  unchanged, GM stays `mode:"all"`; the client consumes `lit` at M10e-3. **Constraint:** environment
+  light is a flat ambient (NOT edge-projected/occludable) until scenes gain dimensions — placed-light
+  `blocksLight` occlusion IS implemented (see `docs/TODO.md`).
 
 ## Gotchas
 

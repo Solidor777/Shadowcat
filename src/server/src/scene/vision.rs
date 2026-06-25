@@ -118,6 +118,27 @@ fn nearest_hit(origin: P, dir: P, segs: &[Seg]) -> Option<P> {
     best.map(|t| (origin.0 + t * dir.0, origin.1 + t * dir.1))
 }
 
+/// Even-odd ray-cast point-in-polygon. Source: standard CG (Shimrat 1962; de Berg et al.).
+/// `poly` is a ring of vertices; `< 3` vertices ⇒ no area ⇒ false.
+pub(crate) fn point_in_poly(poly: &[P], p: P) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    let (px, py) = p;
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = poly[i];
+        let (xj, yj) = poly[j];
+        if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
 /// The visibility polygon from `viewpoint`, occluded by `walls`, terminated by `bound`.
 /// Vertices are in ascending-angle order (a star-shaped polygon around the viewpoint).
 pub fn visibility_polygon(viewpoint: P, walls: &[Seg], bound: Rect) -> Vec<P> {
@@ -149,25 +170,6 @@ pub fn visibility_polygon(viewpoint: P, walls: &[Seg], bound: Rect) -> Vec<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Even-odd ray-cast point-in-polygon (test oracle).
-    fn point_in_poly(poly: &[P], p: P) -> bool {
-        let mut inside = false;
-        let n = poly.len();
-        if n < 3 {
-            return false;
-        }
-        let mut j = n - 1;
-        for i in 0..n {
-            let (xi, yi) = poly[i];
-            let (xj, yj) = poly[j];
-            if ((yi > p.1) != (yj > p.1)) && (p.0 < (xj - xi) * (p.1 - yi) / (yj - yi) + xi) {
-                inside = !inside;
-            }
-            j = i;
-        }
-        inside
-    }
 
     fn bound() -> Rect {
         Rect {

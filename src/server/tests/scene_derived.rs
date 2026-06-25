@@ -101,6 +101,119 @@ fn json_uuid(n: u128) -> serde_json::Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn vision_frame_includes_lit_mask_after_room_hydration() {
+    // Exercises the apply_op LIVE-UPDATE path: the GM connects first (creating the room via
+    // get_or_create), then publishes world-settings + scene + player token + bright light
+    // through a single intent — those ops flow through apply_op, which keeps the room's
+    // side-tables current. The player then subscribes and receives a SceneDerived frame.
+    //
+    // What this test proves: the lit mask flows end-to-end through the SceneDerived WS frame
+    // (apply_op → SceneEcs side-tables → compute_derived → wire payload). It does NOT prove
+    // get_or_create cold-start hydration — the room already exists when the GM publishes,
+    // so the config-docs arrive via apply_op, not via the DB query_documents path.
+    // Cold-start hydration (get_or_create reading from a pre-populated DB) is covered by
+    // the `get_or_create_hydrates_config_and_actors_from_db` unit test in ws/room.rs.
+    let h = spawn().await;
+    let (player, player_cookie) = h.add_player("litplayer").await;
+
+    // The GM publishes: world-settings (full structural guard so resolve_scene reads through),
+    // a scene, a player-owned token at (50,50) — cell (0,0) with the default 100-unit grid —
+    // and a bright light at (50,50) covering that cell.
+    let mut gm = h.connect().await;
+    let _ = gm.next().await; // Welcome
+
+    gm.send(intent_msg(
+        1,
+        serde_json::json!([
+            // world-settings: the structural guard requires scene+pathfinding+animation objects.
+            // lightingEnabled defaults to true and lightMode to "environmentLight"; with
+            // env_intensity 0.0 (default) + a bright point light the token's cell is lit.
+            {
+                "op": "create",
+                "doc": {
+                    "id": json_uuid(50),
+                    "scope": { "kind": "world", "world_id": h.world },
+                    "doc_type": "world-settings",
+                    "schema_version": 1,
+                    "system": {
+                        "scene": {
+                            "lightingEnabled": true,
+                            "lightMode": "environmentLight",
+                            "losRestriction": true,
+                            "fog": true,
+                            "observerVision": false,
+                            "environment": { "color": "#0a0e1a", "intensity": 0.0 }
+                        },
+                        "pathfinding": { "diagonalRule": "chebyshev" },
+                        "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+                    },
+                    "created_at": 0,
+                    "updated_at": 0,
+                }
+            },
+            create_doc_op(h.world, 10, None, "scene"),
+            create_owned_token_op(h.world, 11, 10, player, 50.0, 50.0),
+            // Bright light at the token's cell: brightRadius 3 covers cell (0,0) fully.
+            {
+                "op": "create",
+                "doc": {
+                    "id": json_uuid(20),
+                    "scope": { "kind": "world", "world_id": h.world },
+                    "doc_type": "light",
+                    "schema_version": 1,
+                    "parent_id": json_uuid(10),
+                    "system": {
+                        "x": 50.0, "y": 50.0,
+                        "color": "#ffffff",
+                        "intensity": 1.0,
+                        "brightRadius": 3.0,
+                        "dimRadius": 6.0,
+                        "enabled": true
+                    },
+                    "created_at": 0,
+                    "updated_at": 0,
+                }
+            },
+        ]),
+    ))
+    .await
+    .unwrap();
+    let _ = drain_until_event(&mut gm).await; // wait for the commit (ECS hydrated before the event)
+
+    // The player opens a `vision` scene subscription. The room was created when the GM
+    // connected; the config-docs were hydrated in `get_or_create` so the first frame
+    // already carries a non-empty lit mask.
+    let mut pws = h.connect_as(&player_cookie).await;
+    let _ = pws.next().await; // Welcome
+    pws.send(scene_subscribe(5, "vision")).await.unwrap();
+    let first = drain_until_type(&mut pws, "scene_derived").await;
+
+    assert_eq!(
+        first["payload"]["mode"], "masked",
+        "player gets the masked payload"
+    );
+    let lit = first["payload"]["lit"]
+        .as_array()
+        .expect("lit array present in masked payload");
+    assert!(
+        !lit.is_empty(),
+        "lit mask is non-empty — at least one scene has lit cells"
+    );
+    // cells is a flat integer array packed 4 ints/cell (i, j, band_index, tint);
+    // len >= 4 means >= 1 cell; len % 4 == 0 proves the packing invariant is intact.
+    let cells = lit[0]["cells"].as_array().unwrap();
+    assert!(
+        cells.len() >= 4,
+        "at least one lit cell in the first scene entry"
+    );
+    assert_eq!(
+        cells.len() % 4,
+        0,
+        "cells is a flat array packed 4 ints/cell (i,j,band,tint)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gm_can_see_as_player_but_a_player_cannot_see_as_another() {
     // M9c-2 see-as-player: a GM subscribing `vision` with `as_user = player` receives EXACTLY that
     // player's masked view (their polygons + explored). A non-GM `as_user` is rejected — the

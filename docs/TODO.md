@@ -3,8 +3,12 @@
 Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 
 ## Data layer
+- TODO: Batch the four `get_or_create` config/actor `query_documents` calls in `ws/room.rs` into one `WHERE doc_type IN (...)` query to halve DB round-trips on cold room creation.
 - TODO: Purge `explored_fog` rows on world/scene/user deletion. The M9c table denormalizes `world_id` for a world-scoped purge, but no deletion path consumes it yet (worlds aren't deletable; scene deletion goes through the `apply_intent` document cascade, which doesn't touch `explored_fog`). Orphaned rows are harmless (reads key on the exact never-reused `(scene_id, user_id)` UUIDs) but accumulate unboundedly over a server's lifetime. Wire a `DELETE FROM explored_fog WHERE world_id = ?` (and a per-scene purge into the scene-delete cascade) when world/scene deletion lands; index `world_id` then. (Surfaced by the M9c-1 buddy check.)
 - TODO: `command::set_pointer` is set-only — an Update that conceptually removes a key writes `null` (key stays present as null) rather than removing it. `null` ≠ absent. Resolve removal semantics when the merge engine lands.
+
+## Server / scene-vision
+- TODO: Implement edge-projected, `blocksLight`-occludable environment light once scenes gain dimensions. M10e-2's `player_lit_mask` treats environment light as a flat scene-wide ambient floor (inert by default, `env.intensity` = 0.0) because the scene model is dimensionless — there is no boundary to project edge light from, so a `blocksLight`-sealed interior is not darkened by the *ambient* term (placed-light occlusion IS implemented). Land with scene dimensions (M12). (Constraint-forced deviation from the M10e spec §6/§12.5.)
 
 ## Client / UI
 - TODO: Game-settings scene picker shows raw scene UUIDs; display a human-readable scene name/label once scene docs carry one.

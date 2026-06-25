@@ -19,7 +19,10 @@ optimistically and roll back on divergence.
 
 - `src/server/src/ws/room.rs` — `Room` (per-world), `RingBuffer` (time/size-bounded event buffer)
   + `range_from(from_seq)` for gap resync, `subscribe() -> (Receiver, seq)`, `current_seq()`,
-  `broadcast_aux()` (out-of-band), `RoomRegistry`.
+  `broadcast_aux()` (out-of-band), `RoomRegistry`. `get_or_create` cold-hydrates the scene ECS:
+  scene entities (`query_scene_entities`) **plus** the M10e-2 world config-docs
+  `world-settings`/`light-gradation`/`vision-modes` + actors (`query_documents`), seeded via
+  `SceneEcs::set_world_config`/`set_actors`; the live `apply_op` path keeps the side-tables current.
 - `src/server/src/ws/protocol.rs` — client/server message frames; `ServerMsg`, `event_seq()`.
 - `src/server/src/ws/conn.rs` — per-connection loop + egress; `ws/time.rs` — server time source +
   client offset calibration (exists before its consumer, per ARCHITECTURE §2 invariant 2).

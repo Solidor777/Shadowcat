@@ -3,6 +3,19 @@
 Living record of issues surfaced during review/audit. NOT a to-do list — entries
 are observations awaiting triage, not committed work.
 
+- Title: M10e-2 environment light is flat ambient, not edge-projected. Summary: the M10e spec
+  (§6/§12.5) specifies environment light as edge-projected + `blocksLight`-occludable, but the scene
+  model is dimensionless (dimensions deferred), so there is no boundary to project edge light from.
+  `player_lit_mask` implements environment as a flat scene-wide ambient floor; placed-light
+  `blocksLight` occlusion IS implemented. Inert by default (`env.intensity` = 0.0). Status: Accepted
+  (constraint-forced; logged to TODO.md `Server / scene-vision`, revisit with scene dimensions/M12).
+
+- Title: M10e-2 vision-mode entry missing `illuminationFloor` is silently dropped. Summary:
+  `resolved_vision_modes` skips a mode entry that lacks `illuminationFloor` (fail-closed; mirrors the
+  client `resolveVisionModes`, which also does no per-mode validation). A typo'd floor key silently
+  removes that mode from the resolved registry with no diagnostic. Status: Accepted (client parity;
+  add GM-facing validation/warning if authoring friction surfaces).
+
 - Title: offline-intent flush can precede the async `#onWelcome` body on reconnect.
   Summary: `WsClient` fires `onResyncComplete` (→ `WorldSession.#flushOfflineQueue`)
   synchronously on the caught-up Welcome branch / on `resync_end`, while
