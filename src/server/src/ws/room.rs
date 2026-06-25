@@ -297,7 +297,27 @@ impl RoomRegistry {
         // same definition as the live path (`is_scene_entity`), so the loader and
         // the predicate cannot drift. Stamp it with the world's current seq.
         let docs = repo.query_scene_entities(world_id).await?;
-        let scene_ecs = SceneEcs::from_documents(docs, world.seq);
+        let mut scene_ecs = SceneEcs::from_documents(docs, world.seq);
+        // M10e-2: hydrate the lighting-aware vision inputs that are NOT scene entities — the three
+        // world config singletons + actors — so the mask computation is pure/synchronous under the
+        // scene read-lock. Kept live thereafter by `apply_op`.
+        let world_settings = repo
+            .query_documents(world_id, "world-settings")
+            .await?
+            .into_iter()
+            .next();
+        let gradation = repo
+            .query_documents(world_id, "light-gradation")
+            .await?
+            .into_iter()
+            .next();
+        let vision_modes = repo
+            .query_documents(world_id, "vision-modes")
+            .await?
+            .into_iter()
+            .next();
+        scene_ecs.set_world_config(world_settings, gradation, vision_modes);
+        scene_ecs.set_actors(repo.query_documents(world_id, "actor").await?);
         let room = self
             .rooms
             .entry(world_id)
