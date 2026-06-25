@@ -120,8 +120,6 @@ fn nearest_hit(origin: P, dir: P, segs: &[Seg]) -> Option<P> {
 
 /// Even-odd ray-cast point-in-polygon. Source: standard CG (Shimrat 1962; de Berg et al.).
 /// `poly` is a ring of vertices; `< 3` vertices ⇒ no area ⇒ false.
-// TODO: Called by the illuminated-cell query (lighting module); suppress dead-code until then.
-#[allow(dead_code)]
 pub(crate) fn point_in_poly(poly: &[P], p: P) -> bool {
     let n = poly.len();
     if n < 3 {

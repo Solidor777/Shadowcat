@@ -5,10 +5,8 @@
 //! Mirrors the client `light-gradation`/`light`/`vision-modes` shapes in scene-docs.ts; the server
 //! stays structural-only (callers parse documents and pass these plain structs).
 
-use crate::scene::vision::P;
-// TODO: point_in_poly will be called by cell_illumination once the polygon-containment path is wired.
-#[allow(unused_imports)]
 use crate::scene::vision::point_in_poly;
+use crate::scene::vision::P;
 
 /// Photometric falloff curve across the dim band `(bright_radius, dim_radius]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -133,6 +131,51 @@ pub fn floor_min(bands: &[Band], floor_name: &str) -> f64 {
         .unwrap_or_else(|| bands.first().map(|b| b.min_illumination).unwrap_or(1.0))
 }
 
+/// A composed per-cell illumination result: a [0,1] `level` and a packed-RGB `tint` (the dominant
+/// contributor's color; `0x000000` when only an unset environment contributes).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CellLight {
+    pub level: f64,
+    pub tint: u32,
+}
+
+/// Compose illumination at a cell center from a flat environment ambient plus each light, taking the
+/// MAX contributor (no over-brightening, spec §6); `tint` follows the dominant contributor.
+/// `lit_polys[k]` is `lights[k]`'s `blocksLight` visibility polygon — a light contributes only if the
+/// cell center lies inside it (an EMPTY polygon means "no occluder computed" → never occludes).
+/// `cell_size` is world units per cell (light radii are in cells, so distance is divided by it).
+pub fn cell_illumination(
+    center: P,
+    env_intensity: f64,
+    env_color: u32,
+    lights: &[Light],
+    lit_polys: &[Vec<P>],
+    cell_size: f64,
+) -> CellLight {
+    let mut best = CellLight {
+        level: env_intensity.clamp(0.0, 1.0),
+        tint: env_color,
+    };
+    for (k, light) in lights.iter().enumerate() {
+        // Occlusion: a non-empty polygon that excludes the cell center kills this light's reach here.
+        if let Some(poly) = lit_polys.get(k) {
+            if !poly.is_empty() && !point_in_poly(poly, center) {
+                continue;
+            }
+        }
+        let d = ((center.0 - light.pos.0).powi(2) + (center.1 - light.pos.1).powi(2)).sqrt();
+        let dist_cells = if cell_size > 0.0 { d / cell_size } else { d };
+        let level = light_illumination(light, dist_cells);
+        if level > best.level {
+            best = CellLight {
+                level,
+                tint: light.color,
+            };
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,6 +277,47 @@ mod tests {
         ]);
         assert_eq!(mixed.len(), 1);
         assert_eq!(mixed[0].name, "ok");
+    }
+
+    #[test]
+    fn cell_illumination_takes_max_and_respects_occlusion() {
+        let l = lamp(); // at origin, bright 2 / dim 6 cells, intensity 1, linear
+                        // No env, cell at the light center, cell_size 100 (world units per cell) → full + light tint.
+        let c = cell_illumination(
+            (0.0, 0.0),
+            0.0,
+            0x000000,
+            std::slice::from_ref(&l),
+            &[vec![]],
+            100.0,
+        );
+        assert_eq!(c.level, 1.0);
+        assert_eq!(c.tint, 0xFFEEAA);
+        // Environment ambient alone when no light reaches: env wins, env tint.
+        let far = cell_illumination(
+            (10_000.0, 0.0),
+            0.3,
+            0x0A0E1A,
+            std::slice::from_ref(&l),
+            &[vec![]],
+            100.0,
+        );
+        assert_eq!(far.level, 0.3);
+        assert_eq!(far.tint, 0x0A0E1A);
+        // Max-compose: a brighter env beats a dim faraway light contribution.
+        let near = cell_illumination(
+            (400.0, 0.0),
+            0.6,
+            0x0A0E1A,
+            std::slice::from_ref(&l),
+            &[vec![]],
+            100.0,
+        ); // 4 cells → 0.5
+        assert_eq!(near.level, 0.6); // env 0.6 > light 0.5 (no over-brightening)
+                                     // Occlusion: a light whose polygon excludes the cell contributes nothing.
+        let occluded_poly = vec![(1000.0, 1000.0), (1001.0, 1000.0), (1001.0, 1001.0)]; // tiny, far away
+        let occ = cell_illumination((0.0, 0.0), 0.0, 0x000000, &[l], &[occluded_poly], 100.0);
+        assert_eq!(occ.level, 0.0); // cell center not inside the light's poly → dark
     }
 
     #[test]
