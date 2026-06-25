@@ -219,8 +219,6 @@ mod astar_tests {
 use std::collections::{BinaryHeap, HashMap};
 
 /// Why a path request fails. Mapped to a `PathError` message at the wire boundary.
-// TODO: remove allow once the `find` dispatcher calls this.
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 pub enum PathFail {
     Invalid,     // degenerate request (no destination, non-finite, out-of-range footprint)
@@ -230,13 +228,10 @@ pub enum PathFail {
 
 /// DoS backstop: total node expansions per leg. For non-GM the mask is the tighter bound; this caps
 /// a GM search whose window is large.
-// TODO: remove allow once the `find` dispatcher calls `astar_leg`.
-#[allow(dead_code)]
 pub(crate) const MAX_PATH_NODES: usize = 200_000;
 
 /// f64 ordering wrapper for the min-heap. Orders by `f` ascending (via reversed `total_cmp`),
 /// tie-broken by `(cell, parity)` so identical requests yield identical routes (determinism).
-#[allow(dead_code)]
 #[derive(PartialEq)]
 struct QNode {
     f: f64,
@@ -263,7 +258,6 @@ impl PartialOrd for QNode {
 /// Step cost and successor parity for moving by `(di, dj)` (each in -1..=1, not both 0) under `rule`
 /// from a node with diagonal-parity `parity`. Source: standard grid metrics; `Alternating` is the
 /// PF1e/3.5 5-10-5 rule (k-th diagonal costs 1 if k odd else 2).
-#[allow(dead_code)]
 fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
     let diagonal = di != 0 && dj != 0;
     if !diagonal {
@@ -281,7 +275,6 @@ fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
 }
 
 /// Admissible + consistent heuristic from `c` to `goal` under `rule`.
-#[allow(dead_code)]
 fn heuristic(rule: DiagonalRule, c: Cell, goal: Cell) -> f64 {
     let di = (goal.0 - c.0).abs();
     let dj = (goal.1 - c.1).abs();
@@ -296,8 +289,6 @@ fn heuristic(rule: DiagonalRule, c: Cell, goal: Cell) -> f64 {
 
 /// A* over one leg `start → goal`. Node = `(cell, parity)`; goal is any node with `cell == goal`.
 /// Returns the leg's cells (start..=goal), its cost, and the end parity (to thread into the next leg).
-// TODO: remove allow once the `find` dispatcher calls this.
-#[allow(dead_code)]
 pub(crate) fn astar_leg(
     grid: &PathGrid,
     start: Cell,
@@ -342,6 +333,12 @@ pub(crate) fn astar_leg(
             path.reverse();
             return Ok((path, g, parity));
         }
+        // Stale-pop skip: a node re-entered with a better g stays in the heap under the old key.
+        // If the current g is worse than the best recorded, discard without burning an expansion slot.
+        // INVARIANT: place AFTER the goal check — a stale goal pop is still optimal (consistent h).
+        if g > *g_score.get(&(cell, parity)).unwrap_or(&f64::INFINITY) + 1e-12 {
+            continue;
+        }
         expansions += 1;
         if expansions > MAX_PATH_NODES {
             return Err(PathFail::Exceeded);
@@ -366,6 +363,244 @@ pub(crate) fn astar_leg(
         }
     }
     Err(PathFail::Unreachable)
+}
+
+/// Max ordered waypoints (incl. goal) per request (DoS guard).
+pub(crate) const MAX_WAYPOINTS: usize = 32;
+/// Max footprint radius in cells (DoS guard on the per-cell footprint scan).
+pub(crate) const MAX_FOOTPRINT_CELLS: f64 = 64.0;
+/// Search-window margin (cells) added around the point/wall AABB so detours around walls stay reachable.
+const WINDOW_MARGIN: i32 = 8;
+
+fn to_cell(p: vision::P, cell: f64) -> Cell {
+    ((p.0 / cell).floor() as i32, (p.1 / cell).floor() as i32)
+}
+
+/// Plan a footprint-clear, mask-bounded route `start -> waypoints[0] -> ... -> waypoints[last]`.
+/// `waypoints` is the full ordered leg list whose last element is the goal (empty => `Invalid`).
+/// Returns cell-center scene points (incl. start and goal) and the total cost in cells.
+// TODO: remove allow once the ECS pathfind handler calls this.
+#[allow(dead_code)]
+pub fn find(
+    start: vision::P,
+    waypoints: &[vision::P],
+    footprint_radius: f64,
+    cell: f64,
+    rule: DiagonalRule,
+    walls: &[vision::Seg],
+    mask: Option<&BTreeSet<Cell>>,
+) -> Result<(Vec<vision::P>, f64), PathFail> {
+    // Validation (fail-closed): all degenerate inputs => Invalid.
+    if waypoints.is_empty() || waypoints.len() > MAX_WAYPOINTS {
+        return Err(PathFail::Invalid);
+    }
+    if !footprint_radius.is_finite() || !(0.0..=MAX_FOOTPRINT_CELLS).contains(&footprint_radius) {
+        return Err(PathFail::Invalid);
+    }
+    // INVARIANT: cell.is_finite() && cell > 0.0 makes the NaN-cell division path unreachable downstream.
+    if !cell.is_finite() || cell <= 0.0 {
+        return Err(PathFail::Invalid);
+    }
+    let finite = |p: &vision::P| p.0.is_finite() && p.1.is_finite();
+    if !finite(&start) || !waypoints.iter().all(finite) {
+        return Err(PathFail::Invalid);
+    }
+
+    // Search window: AABB of {start, waypoints, wall endpoints} in cells, expanded by WINDOW_MARGIN
+    // so detour paths around walls near the boundary remain reachable.
+    let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    let mut acc = |x: f64, y: f64| {
+        minx = minx.min(x);
+        miny = miny.min(y);
+        maxx = maxx.max(x);
+        maxy = maxy.max(y);
+    };
+    acc(start.0, start.1);
+    for p in waypoints {
+        acc(p.0, p.1);
+    }
+    for w in walls {
+        acc(w.a.0, w.a.1);
+        acc(w.b.0, w.b.1);
+    }
+    let window = (
+        (minx / cell).floor() as i32 - WINDOW_MARGIN,
+        (miny / cell).floor() as i32 - WINDOW_MARGIN,
+        (maxx / cell).floor() as i32 + WINDOW_MARGIN,
+        (maxy / cell).floor() as i32 + WINDOW_MARGIN,
+    );
+
+    let grid = PathGrid {
+        cell,
+        rule,
+        footprint_radius_cells: footprint_radius,
+        walls,
+        mask,
+        window,
+    };
+
+    // Run each leg, threading end-parity into the next leg's start_parity so the route is priced as
+    // one continuous move. Resetting parity per leg would underprice 5-10-5 at waypoint boundaries.
+    let mut cells: Vec<Cell> = Vec::new();
+    let mut total = 0.0;
+    let mut parity = 0u8;
+    let mut from = to_cell(start, cell);
+    for wp in waypoints {
+        let goal = to_cell(*wp, cell);
+        let (leg, cost, end_parity) = astar_leg(&grid, from, goal, parity)?;
+        total += cost;
+        parity = end_parity;
+        if cells.is_empty() {
+            cells.extend(leg);
+        } else {
+            // Skip the first cell of subsequent legs — it equals the last cell of the previous leg.
+            cells.extend(leg.into_iter().skip(1));
+        }
+        from = goal;
+    }
+
+    let path: Vec<vision::P> = cells.into_iter().map(|c| cell_center(c, cell)).collect();
+    Ok((path, total))
+}
+
+#[cfg(test)]
+mod find_tests {
+    use super::*;
+    use crate::scene::vision::Seg;
+
+    const NO_WALLS: [Seg; 0] = [];
+
+    #[test]
+    fn empty_waypoints_is_invalid() {
+        let r = find(
+            (50.0, 50.0),
+            &[],
+            0.1,
+            100.0,
+            DiagonalRule::Chebyshev,
+            &NO_WALLS,
+            None,
+        );
+        assert_eq!(r, Err(PathFail::Invalid));
+    }
+
+    #[test]
+    fn nonfinite_or_bad_footprint_is_invalid() {
+        assert_eq!(
+            find(
+                (f64::NAN, 0.0),
+                &[(150.0, 50.0)],
+                0.1,
+                100.0,
+                DiagonalRule::Chebyshev,
+                &NO_WALLS,
+                None
+            ),
+            Err(PathFail::Invalid)
+        );
+        assert_eq!(
+            find(
+                (50.0, 50.0),
+                &[(150.0, 50.0)],
+                -1.0,
+                100.0,
+                DiagonalRule::Chebyshev,
+                &NO_WALLS,
+                None
+            ),
+            Err(PathFail::Invalid)
+        );
+        assert_eq!(
+            find(
+                (50.0, 50.0),
+                &[(150.0, 50.0)],
+                0.1,
+                0.0,
+                DiagonalRule::Chebyshev,
+                &NO_WALLS,
+                None
+            ),
+            Err(PathFail::Invalid)
+        );
+    }
+
+    #[test]
+    fn straight_route_returns_cell_centers_and_cost() {
+        // (50,50)->(250,50): cells (0,0)->(2,0), 2 chebyshev steps. Points = centers of (0,0),(1,0),(2,0).
+        let (path, cost) = find(
+            (50.0, 50.0),
+            &[(250.0, 50.0)],
+            0.1,
+            100.0,
+            DiagonalRule::Chebyshev,
+            &NO_WALLS,
+            None,
+        )
+        .unwrap();
+        assert!((cost - 2.0).abs() < 1e-9);
+        assert_eq!(path.first(), Some(&(50.0, 50.0)));
+        assert_eq!(path.last(), Some(&(250.0, 50.0)));
+        assert_eq!(path.len(), 3);
+    }
+
+    #[test]
+    fn waypoint_legs_sum_cost_and_carry_alternating_parity() {
+        // Leg A: (0,0)->(1,1) one diagonal (alternating cost 1, end parity 1).
+        // Leg B: (1,1)->(2,2) one diagonal from parity 1 (cost 2). Total 3, not 1+1.
+        let start = (50.0, 50.0);
+        let wp = (150.0, 150.0);
+        let goal = (250.0, 250.0);
+        let (_p, cost) = find(
+            start,
+            &[wp, goal],
+            0.1,
+            100.0,
+            DiagonalRule::Alternating,
+            &NO_WALLS,
+            None,
+        )
+        .unwrap();
+        assert!(
+            (cost - 3.0).abs() < 1e-9,
+            "parity carries across the waypoint (1 + 2)"
+        );
+    }
+
+    #[test]
+    fn too_many_waypoints_is_invalid() {
+        let wps: Vec<vision::P> = (0..(MAX_WAYPOINTS + 1))
+            .map(|i| (i as f64 * 100.0 + 50.0, 50.0))
+            .collect();
+        assert_eq!(
+            find(
+                (50.0, 50.0),
+                &wps,
+                0.1,
+                100.0,
+                DiagonalRule::Chebyshev,
+                &NO_WALLS,
+                None
+            ),
+            Err(PathFail::Invalid)
+        );
+    }
+
+    #[test]
+    fn empty_mask_makes_a_nongm_route_unreachable() {
+        let mask = BTreeSet::new();
+        assert_eq!(
+            find(
+                (50.0, 50.0),
+                &[(250.0, 50.0)],
+                0.1,
+                100.0,
+                DiagonalRule::Chebyshev,
+                &NO_WALLS,
+                Some(&mask)
+            ),
+            Err(PathFail::Unreachable)
+        );
+    }
 }
 
 #[cfg(test)]
