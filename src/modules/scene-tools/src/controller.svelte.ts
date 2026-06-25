@@ -78,8 +78,12 @@ export class ToolController {
     };
   }
 
-  /** Toggle a tool: re-selecting the active one clears it (back to camera). */
+  /** Toggle a tool: re-selecting the active one clears it (back to camera).
+   * Fires `onDeactivate` on the outgoing tool (if any) so tools with live
+   * overlays can tear down before the new tool activates (mid-gesture-clear invariant). */
   toggle(id: ToolId): void {
+    // Deactivate the outgoing tool before updating `active` so it can still read state.
+    if (this.active) this.#tools[this.active].onDeactivate?.();
     this.active = this.active === id ? null : id;
     this.ctx.scene.setActiveTool(this.active ? this.#tools[this.active] : null);
   }
@@ -243,7 +247,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   }
 
   /** Issue a pathfind request for the current waypoints + provisional goal `p`.
-   * Ignores the response if a newer request has since been issued. */
+   * Ignores the response if a newer request has since been issued. The final element
+   * of `allWaypoints` IS the goal (server contract: goal = waypoints.last(), spec §3.2). */
   function requestRoute(scene: { id: string; perCell: number; unit: string }, start: [number, number], goal: Point): void {
     if (!ctx.pathfind) return;
     const seq = ++pendingSeq;
@@ -255,7 +260,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
         // Render the routed polyline via previewOverlay.
         const pts = result.path.flat();
         ctx.scene.previewOverlay([{ points: pts, closed: false, stroke: { color: ROUTE_COLOR, width: 3 }, fill: null }]);
-        // Budget label: cost × distance-per-cell unit.
+        // Budget label: rounds to whole distance units for display; the server-side cost
+        // stays exact (diagonal rules like alternating/euclidean yield fractional cells).
         const budget = Math.round(result.cost * scene.perCell);
         const startPt: Point = { x: start[0], y: start[1] };
         ctx.scene.drawMeasure(startPt, goal, `${budget} ${scene.unit}`);
@@ -319,6 +325,16 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
       if (!anchor) return;
       ctx.scene.clearMeasure();
       anchor = null;
+    },
+    onDeactivate(): void {
+      // Tool-swap teardown: clears the routed polyline overlay + budget label so a
+      // mid-gesture tool switch doesn't leave stale geometry on screen.
+      clearRoute();
+      // Also clear any in-progress plain-measure anchor.
+      if (anchor) {
+        ctx.scene.clearMeasure();
+        anchor = null;
+      }
     },
   };
 }
