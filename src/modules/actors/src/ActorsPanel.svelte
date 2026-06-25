@@ -125,7 +125,7 @@
           <input
             type="number" min="0" step="1" class="size-edit" aria-label={t("actors.darkvision")}
             value={(a.system as { vision?: Array<{ mode: string; range: number }> }).vision?.find((v) => v.mode === "darkvision")?.range ?? 0}
-            onchange={(e) => { const range = Number(e.currentTarget.value); ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/system/vision", old: null, new: range > 0 ? [{ mode: "darkvision", range }] : [] }] }]); }}
+            onchange={(e) => { const range = Number(e.currentTarget.value); const cur = (a.system as { vision?: { mode: string; range: number }[] }).vision ?? null; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/system/vision", old: cur, new: range > 0 ? [{ mode: "darkvision", range }] : [] }] }]); }}
           />
         {/if}
       </li>
@@ -162,8 +162,8 @@
     </label>
     <label>
       {t("actors.darkvision")}
-      <!-- Uses value+onchange (not bind:value) so fireEvent.change updates state in tests. -->
-      <input type="number" min="0" step="1" aria-label="actors.darkvision" value={darkvision} onchange={(e) => (darkvision = Number(e.currentTarget.value))} oninput={(e) => (darkvision = Number(e.currentTarget.value))} />
+      <!-- value + onchange (not bind:value): bind:value on a number input reacts only to input events; the explicit handlers update state on change too. -->
+      <input type="number" min="0" step="1" aria-label={t("actors.darkvision")} value={darkvision} onchange={(e) => (darkvision = Number(e.currentTarget.value))} oninput={(e) => (darkvision = Number(e.currentTarget.value))} />
     </label>
     <div class="picker">
       {#each assetList as a (a.id)}
