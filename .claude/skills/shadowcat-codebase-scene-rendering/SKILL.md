@@ -28,7 +28,16 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   render-layer API; the canvas host is not replaceable.
 - `src/modules/stage/Stage.svelte` — mounts the render engine over a `ReadableDocuments` view.
 - `src/modules/scene-tools/` — `controller.svelte.ts`, `hit-test.ts`, tools (place/select/move/
-  draw/template/measure/ping) dispatching intents.
+  draw/template/measure/ping) dispatching intents. Wall tool writes a **three-flag** segment:
+  `blocksSight` + `blocksMove` + `blocksLight`.
+- `src/client/core/src/scene-docs.ts` — **vision/lighting/movement data model (M10e-1, V1; no
+  render yet)**: world-scoped config-docs `world-settings`/`light-gradation`/`vision-modes`
+  (builders + deep-frozen defaults `DEFAULT_WORLD_SETTINGS`/`DEFAULT_GRADATION`/`SEED_VISION_MODES`;
+  builders `structuredClone` the frozen default), per-scene `SceneSystem.vision?`/`lighting?`
+  overrides + `grid.distance?`, the scene-parented `light` doc_type (`LightSystem` +
+  `buildLightDoc`), and the fail-closed resolvers `resolveSceneSettings`/`resolveGradation`/
+  `resolveVisionModes`. Authored by `src/modules/game-settings/` (see
+  `shadowcat-codebase-client-shell`).
 
 ## Hard invariants
 
@@ -43,6 +52,12 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   crosses a `blocksMove` wall is rejected server-side before the write — validate the **post-image**
   position, not just the pre-move one [[m9-progress]].
 - **Bound recursive walks over self-FK (parent_id) tables with a visited-set** [[m8a-execution-state]].
+- **Scene-settings resolvers are fail-closed and inheritance-layered**: `resolveSceneSettings`
+  resolves built-in default < `world-settings` doc < per-scene override, never throws (structural
+  guard tolerates a partial `world-settings` wire doc), and a per-scene override of `null` means
+  **inherit** (resolver `??` chains treat null and undefined identically). The deep-frozen
+  `DEFAULT_*`/`SEED_*` constants are immutable-by-design; builders `structuredClone` them so no
+  frozen/shared reference reaches a doc.
 
 ## Gotchas
 

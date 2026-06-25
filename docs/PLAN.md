@@ -262,9 +262,15 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > Scene axes (world-default + per-scene override): LOS-restriction, lighting-enabled (master),
 > light-mode (global-illumination | environment-light), fog, per-actor vision modes (darkvision);
 > environment light = edge-projected, occludable by a new `blocksLight` wall flag, color+intensity
-> for day/night (module-automatable). **M10e-1 plan written + committed** (`930a540`):
-> `superpowers/plans/2026-06-24-m10e-1-vision-lighting-data-model.md`. **Next = execute M10e-1**
-> via subagent-driven-development. M10f (continuous pathfinding) + M10g (regions) resume after.
+> for day/night (module-automatable). **M10e-1 DONE** (vision/lighting/movement **data model V1**,
+> client-only, zero Rust): config-docs `world-settings`/`light-gradation`/`vision-modes` +
+> resolvers + per-scene vision/lighting overrides (`grid.distance`) + `light` doc_type + wall
+> `blocksLight` + `EffectiveActor.visionModes` + new `@shadowcat/module-game-settings` (GM seed +
+> world/scene/gradation/vision-mode editors, inherit = `null`) + actor darkvision authoring.
+> SDD-executed (9 tasks, per-task two-reviewer gate + whole-branch buddy-check CONVERGED PASS);
+> merged --no-ff to LOCAL main; full client gate green. No render/server-vision yet (those are
+> M10e-2/3). **Next = M10e-2** (server lighting-aware vision: per-(user,scene) grid visibility
+> mask — the secrecy gate). M10f (continuous pathfinding) + M10g (regions) resume after.
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 

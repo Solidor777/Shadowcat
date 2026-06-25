@@ -26,6 +26,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
     copy with `source` provenance.
   - `TokenOverrides` whitelist includes `shape` (alongside `name`, `visual`, `size`) — a per-token
     `"square" | "circle"` override applied on top of the actor's own shape field.
+  - `VisionAssignment { mode, range }` (mode = a `vision-modes` registry id, range in grid cells);
+    `ActorSystem.vision?` + `TokenOverrides.vision?` carry `VisionAssignment[]` (M10e-1).
   - `setNameHidden(doc, hidden)` — sets/clears the `OwnerOrGm` override on `/system/name`.
   - `FactionStance = "friendly"|"neutral"|"hostile"`, `Faction { name, color, stance }`,
     `FactionRegistrySystem`, `buildFactionRegistryDoc(worldId, factions, id?)` (param
@@ -46,10 +48,12 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   throws); optional pre-resolved `eff` avoids a double `resolveTokenActor` call. `TokenBox` is
   exported from `core/index.ts`. `footprintRadius(eff) -> number` — grid-unit bounding-disc radius
   for the M10e+ pathfinder: circle = `max(w,h)/2`, square = half-diagonal (`√(w²+h²)/2`); both in
-  grid-cell units.
+  grid-cell units. `EffectiveActor.visionModes: VisionAssignment[]` — projected by `project()` as
+  `overrides?.vision ?? base.vision ?? []` (per-token override **replaces** actor base, not merged).
 - `src/modules/actors/{ActorsPanel.svelte,index.ts}` — create/list/pick actors; hide-name control;
   faction assignment; shape (`square`/`circle`) + size (fractional grid-cells) editing in the
-  create form and in the per-row GM inline editor.
+  create form and in the per-row GM inline editor; darkvision range authoring (create + per-row),
+  writing `system.vision: [{ mode: "darkvision", range }]` (omitted when range 0).
 - `src/modules/factions/{FactionsPanel.svelte,index.ts}` — GM editor + idempotent seed of the
   faction registry; faction-colored token border + select-by-faction.
 - `src/modules/conditions/{ConditionsPanel.svelte,index.ts}` — GM editor + idempotent emoji seed

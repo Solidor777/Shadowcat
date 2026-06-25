@@ -212,3 +212,40 @@ describe("ActorsPanel — shape + size", () => {
     });
   });
 });
+
+describe("ActorsPanel — darkvision authoring", () => {
+  it("create includes darkvision vision when a range is entered", async () => {
+    const dispatchIntent = vi.fn();
+    const { listAssets } = await import("@shadowcat/core");
+    vi.mocked(listAssets).mockResolvedValue([
+      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
+    ]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+    });
+    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
+    await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Drow" } });
+    await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
+    await fireEvent.change(screen.getByLabelText("actors.darkvision"), { target: { value: "12" } });
+    await fireEvent.click(screen.getByText("actors.create"));
+
+    const ops = dispatchIntent.mock.calls[0][0];
+    expect(ops[0].doc.system).toMatchObject({ vision: [{ mode: "darkvision", range: 12 }] });
+  });
+
+  it("create omits vision when darkvision range is 0", async () => {
+    const dispatchIntent = vi.fn();
+    const { listAssets } = await import("@shadowcat/core");
+    vi.mocked(listAssets).mockResolvedValue([
+      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
+    ]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+    });
+    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
+    await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Human" } });
+    await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
+    await fireEvent.click(screen.getByText("actors.create"));
+    expect(dispatchIntent.mock.calls[0][0][0].doc.system.vision).toBeUndefined();
+  });
+});
