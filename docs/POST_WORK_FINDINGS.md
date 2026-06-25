@@ -164,3 +164,21 @@ are observations awaiting triage, not committed work.
   low-alpha neutral gray wash; true desaturation needs a masked ColorMatrixFilter over the scene
   layers. The wire payload already carries the faithful per-cell renderHint, so the refinement is
   client-render-only (no server change). Status: Revisit.
+
+- Title: Route stricter than the authoritative gate (footprint vs center-based). Summary: M10e-6's
+  previewed route enforces full geometric footprint clearance (`cell_enterable` — the token's
+  bounding-disc must clear all `blocksMove` segments and ALL footprint cells must be in the
+  non-GM mask); the authoritative movement gate (M9/M10e-4) stays center-based (parent spec §14).
+  A wide token can therefore be dragged (gate allows the center path) along a path the router
+  refuses to preview through a narrow gap. This is the intended asymmetry: route ⊆ gate-allowed
+  keeps the preview from suggesting a move the router would reject, while never admitting a move the
+  gate would block. Not a bug. Status: Recorded; revisit when footprint-aware authoritative blocking
+  lands.
+
+- Title: Multi-leg alternating parity is per-leg-greedy (cost-display only). Summary: `find` threads
+  each leg's min-cost end-parity into the next leg's start; for the `alternating` (5-10-5) rule this
+  is not guaranteed globally cost-optimal across waypoints — a different parity threading could yield a
+  lower total cost across the full multi-leg route. This is a cost-DISPLAY inaccuracy at waypoint
+  boundaries only; the route itself remains valid (footprint-clear, mask-bounded, gate-passable). The
+  spec §4.2 requires parity carry across legs, not global optimality. Documented in-code. Status:
+  Recorded.

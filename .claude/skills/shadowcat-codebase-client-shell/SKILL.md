@@ -26,6 +26,9 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 - `src/client/ui-kit/src/i18n.svelte.ts` — `t(key, params)`, `locale()`, the `i18n` adapter over
   core `i18n.ts` `I18n`; catalogs in `ui-kit/src/locales/`.
 - `src/client/ui-kit/src/{sceneInteraction,actorSelection,tokenSelection}.*` — AppContext seams.
+- `AppContext.pathfind` (`src/client/ui-kit/src/appContext.ts`) — correlated-request seam: issues a
+  `Pathfind` frame via `WsClient.pathfind` and resolves with `PathResult` or rejects with
+  `PathError`; wired through `WorldSession` and consumed by `scene-tools` measure-tool route mode.
 - `src/client/shell/src/` — `App.svelte`, `main.ts`, `lib/` (hash router, api client, session,
   WorldSession controller, default-module wiring).
 - `src/modules/{entry,core-ui,topbar,statusbar,settings,game-settings}/` — entry =

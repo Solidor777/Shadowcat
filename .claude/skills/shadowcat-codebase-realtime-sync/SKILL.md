@@ -57,6 +57,10 @@ optimistically and roll back on divergence.
   transmission (see `shadowcat-codebase-documents-permissions`), never sent-then-hidden.
 - **Live search rides the broadcast** as top-N subscriptions over the same egress
   [[m6c-2-live-search]].
+- **One-shot correlated request pairs** (`Search`→`SearchResult`/`SearchError`;
+  `Pathfind`→`PathResult`/`PathError`) route replies to the requesting connection only (never
+  broadcast); correlated by `request_id` via the `pending` map in `WsClient`. See
+  `src/client/core/src/ws-client.ts` (`pathfind`) and `src/server/src/ws/protocol.rs`.
 
 ## Pointers
 
