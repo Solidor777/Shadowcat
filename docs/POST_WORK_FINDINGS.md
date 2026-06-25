@@ -16,14 +16,13 @@ are observations awaiting triage, not committed work.
   removes that mode from the resolved registry with no diagnostic. Status: Accepted (client parity;
   add GM-facing validation/warning if authoring friction surfaces).
 
-- Title: M10e-4 default scene (dark + `movementRestriction:"visible"`) freezes non-GM movement.
-  Summary: default `world-settings` is `lightingEnabled:true` + `environmentLight` + `environment.intensity:0.0`
-  (inert ambient) and `movementRestriction:"visible"`. Composed, a fresh scene with no placed lights
-  has an empty lit mask, so EVERY non-GM move's supercover fails the gate → no player can move until the
-  GM places a light, switches to `globalIllumination`, or sets `unrestricted`. This is the spec's
-  fail-closed intent (a player can't drag into unseen map), but it is a sharp out-of-box edge.
-  Status: Accepted (fail-closed by design). Soften only if authoring friction surfaces (candidate:
-  default `globalIllumination`, or a non-zero default ambient, or default `unrestricted`).
+- Title: M10e-4 dark scene under `movementRestriction:"visible"` freezes non-GM movement — INTENDED.
+  Summary: a fresh scene (default `lightingEnabled:true` + `environmentLight` + `environment.intensity:0.0`,
+  no placed lights) has an empty lit mask, so EVERY non-GM move's supercover fails the gate. This is the
+  DESIRED behavior (user-confirmed): a player who cannot see a cell must not be able to move into it.
+  A GM enables movement by lighting the scene (placed lights / `globalIllumination`) or setting
+  `revealed`/`unrestricted`. Status: Resolved — working as designed. Do NOT "fix" this by softening the
+  defaults; the freeze is the correct fail-closed outcome.
 
 - Title: M10e-4 lenient-mode near-corner move can be spuriously rejected.
   Summary: `supercover_cells` uses a magnitude-relative epsilon to detect exact lattice-corner

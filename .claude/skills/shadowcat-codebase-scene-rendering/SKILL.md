@@ -89,6 +89,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   Fail-closed on empty mask / `supercover_cells`→None / `get_explored` Err. `get_explored` is on the
   `Repository` trait; the per-`(user,scene)` mask + explored blob are memoized within one publish, and
   the `get_explored().await` runs only AFTER the `scene.read()` guard drops (no lock across await).
+  **By design: a dark scene under `Visible` freezes non-GM movement** — an empty lit mask rejects
+  every move; a player who cannot see a cell must not move into it. The GM enables movement by
+  lighting the scene or choosing `Revealed`/`Unrestricted`. Do NOT "fix" the freeze by softening the
+  defaults — it is the correct fail-closed outcome.
 - **Bound recursive walks over self-FK (parent_id) tables with a visited-set** [[m8a-execution-state]].
 - **Scene-settings resolvers are fail-closed and inheritance-layered**: `resolveSceneSettings`
   resolves built-in default < `world-settings` doc < per-scene override, never throws (structural
