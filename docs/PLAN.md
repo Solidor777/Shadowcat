@@ -278,9 +278,18 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > Critical caught — `all_bright` left players blind — plus a precedence inversion vs
 > `resolveTokenActor` and a cell-span overflow DoS, all fixed); merged --no-ff to LOCAL main; server
 > gate green. Deviation (logged in TODO): environment light is flat ambient, not edge-projected,
-> until scenes gain dimensions (placed-light occlusion IS implemented). **Next = M10e-3** (client
-> lighting render) / **M10e-4** (movement restriction). M10f (continuous pathfinding) + M10g
-> (regions) resume after.
+> until scenes gain dimensions (placed-light occlusion IS implemented). **M10e-3 DONE** (client
+> lighting render): faithful per-cell darkvision `renderHint` threaded through the server vision
+> frame (`VisionMode.render_hint`, `player_lit_mask` highest-floor-wins per-cell hint resolve); wire
+> `vision` payload extended to 5-int cells `[i,j,band,tint,hint_idx]` + top-level
+> `renderHints:[String]` table; client `Lighting` class (`src/client/render/src/lighting.ts`:
+> band→darkening alpha + tint + desaturate hint + day/night interpolation); engine-owned `lighting`
+> core layer (CORE_LAYERS index 7, between `templates` and `mask`); `PixiBackend.setLighting`
+> (per-cell darkening/tint + `BlurFilter` soft edges, gray-wash desaturate approximation). Lighting
+> is COSMETIC — fog stays the secrecy gate; hint never widens visibility. Two deferrals logged to
+> `POST_WORK_FINDINGS.md` (blur-not-gradients + desaturate overlay approximation).
+> Plan: `docs/superpowers/plans/2026-06-25-m10e-3-client-lighting-render.md`.
+> **Next = M10e-4** (movement restriction). M10f (continuous pathfinding) + M10g (regions) resume after.
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
