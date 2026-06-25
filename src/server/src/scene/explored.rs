@@ -73,7 +73,9 @@ impl ExploredSet {
             let i1 = (maxx / cell_size).floor() as i32;
             let j0 = (miny / cell_size).floor() as i32;
             let j1 = (maxy / cell_size).floor() as i32;
-            let span = (i1 as i64 - i0 as i64 + 1) * (j1 as i64 - j0 as i64 + 1);
+            let w = i1 as i64 - i0 as i64 + 1;
+            let h = j1 as i64 - j0 as i64 + 1;
+            let span = w.saturating_mul(h);
             if span > MAX_CELLS_PER_POLYGON {
                 tracing::warn!(span, "explored cell scan exceeds cap; skipping polygon");
                 continue;

@@ -79,6 +79,7 @@ pub fn is_scene_entity(doc: &Document) -> bool {
 pub type TokenMove = (Uuid, (f64, f64), (f64, f64));
 
 /// One scene's visible cells for a player: `cells` are `(i, j, band_index, tint 0xRRGGBB)`.
+#[derive(Debug)]
 pub struct LitScene {
     pub scene: Uuid,
     pub cell: f64,
@@ -751,6 +752,25 @@ impl SceneEcs {
     /// tokens : ∅). Fail-closed: a source-less player gets empty cells. GM is handled by the caller
     /// (mode:"all"); this is the masked path only.
     pub fn player_lit_mask(&self, user: Uuid) -> Vec<LitScene> {
+        // 0. Pre-resolve scene settings for every scene that has a token, so resolve_scene is
+        //    called exactly once per scene rather than once per token (Fix 3: memoize). Collect
+        //    scene ids in a first pass (drops the query borrow before the resolve calls).
+        let mut all_scene_ids: Vec<Uuid> = Vec::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type == "token" {
+                if let Some(sid) = e.doc.parent_id {
+                    all_scene_ids.push(sid);
+                }
+            }
+        }
+        all_scene_ids.sort();
+        all_scene_ids.dedup();
+        // Point-lookup only; never iterated into output so HashMap order doesn't affect determinism.
+        let scene_settings: HashMap<Uuid, ResolvedScene> = all_scene_ids
+            .iter()
+            .map(|&sid| (sid, self.resolve_scene(sid)))
+            .collect();
+
         // 1. Gather vision-source tokens per scene (owner ∪ observer-tier when observerVision on).
         //    Collect (scene, viewpoint, vision_floors) tuples; drop the query borrow before raycasts.
         struct Src {
@@ -767,17 +787,25 @@ impl SceneEcs {
                 continue;
             };
             let owns = e.doc.owner == Some(user);
-            let observes = {
-                let role = e
-                    .doc
-                    .permissions
-                    .users
-                    .get(&user)
-                    .copied()
-                    .unwrap_or(e.doc.permissions.default);
-                role <= crate::data::document::DocRole::Observer
+            // Short-circuit: an owned token is a source regardless of observer_vision.
+            let is_source = owns || {
+                let observer_vision = scene_settings
+                    .get(&scene)
+                    .map(|s| s.observer_vision)
+                    .unwrap_or(false);
+                if observer_vision {
+                    let role = e
+                        .doc
+                        .permissions
+                        .users
+                        .get(&user)
+                        .copied()
+                        .unwrap_or(e.doc.permissions.default);
+                    role <= crate::data::document::DocRole::Observer
+                } else {
+                    false
+                }
             };
-            let is_source = owns || (self.resolve_scene(scene).observer_vision && observes);
             if !is_source {
                 continue;
             }
@@ -808,7 +836,12 @@ impl SceneEcs {
         scenes.dedup();
 
         for scene in scenes {
-            let settings = self.resolve_scene(scene);
+            // Use the memoized settings; fall back to resolve (unreachable in practice since
+            // every source scene was resolved above, but keeps the code correct if the map misses).
+            let settings = match scene_settings.get(&scene) {
+                Some(s) => s,
+                None => continue,
+            };
             let cell = grid.get(&scene).copied().unwrap_or(100.0);
             if cell <= 0.0 {
                 continue;
@@ -868,7 +901,9 @@ impl SceneEcs {
                 let i1 = (maxx / cell).floor() as i32;
                 let j0 = (miny / cell).floor() as i32;
                 let j1 = (maxy / cell).floor() as i32;
-                let span = (i1 as i64 - i0 as i64 + 1) * (j1 as i64 - j0 as i64 + 1);
+                let w = i1 as i64 - i0 as i64 + 1;
+                let h = j1 as i64 - j0 as i64 + 1;
+                let span = w.saturating_mul(h);
                 if span > crate::scene::explored::MAX_CELLS_PER_POLYGON {
                     tracing::warn!(span, "lit mask cell scan exceeds cap; skipping source");
                     continue;
@@ -880,14 +915,28 @@ impl SceneEcs {
                         if !crate::scene::vision::point_in_poly(&poly, (cx, cy)) {
                             continue;
                         }
-                        let cl = crate::scene::lighting::cell_illumination(
-                            (cx, cy),
-                            settings.env_intensity,
-                            settings.env_color,
-                            &lights,
-                            &lit_polys,
-                            cell,
-                        );
+                        // Spec §3/§6: lighting OFF ⇒ all-bright untinted; globalIllumination ⇒
+                        // all-bright tinted by the environment. level=1.0 so every vision floor
+                        // (incl. normal "dim") passes — every LOS cell is visible.
+                        let cl = if all_bright {
+                            crate::scene::lighting::CellLight {
+                                level: 1.0,
+                                tint: if settings.lighting_enabled {
+                                    settings.env_color
+                                } else {
+                                    0
+                                },
+                            }
+                        } else {
+                            crate::scene::lighting::cell_illumination(
+                                (cx, cy),
+                                settings.env_intensity,
+                                settings.env_color,
+                                &lights,
+                                &lit_polys,
+                                cell,
+                            )
+                        };
                         // Darkvision lowers the floor within range; pick the lowest applicable floor.
                         let dist_cells =
                             (((cx - src.vp.0).powi(2) + (cy - src.vp.1).powi(2)).sqrt()) / cell;
@@ -1562,6 +1611,22 @@ mod tests {
                 .iter()
                 .any(|&(i, j, band, _)| i == 0 && j == 0 && band == 0),
             "the lit cell at (0,0) is visible at the bright band (cell_size 100)"
+        );
+
+        // all_bright: a scene with lighting disabled makes every LOS cell visible at the bright
+        // band even for a normal-vision token with NO lights present (spec §3/§6).
+        let mut bright_scene = doc(10, None, "scene");
+        bright_scene.system = json!({ "grid": { "kind": "square", "size": 100 },
+                                      "lighting": { "enabled": false } });
+        let mut ntok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        ntok.owner = Some(player);
+        let ab = SceneEcs::from_documents(vec![bright_scene, ntok], 0).player_lit_mask(player);
+        let s = ab.iter().find(|s| s.scene == scene).expect("scene present");
+        assert!(
+            s.cells
+                .iter()
+                .any(|&(i, j, band, _)| i == 0 && j == 0 && band == 0),
+            "lighting-disabled scene → LOS cell visible at the bright band"
         );
 
         // Darkvision token in the SAME dark scene (no light) sees within range despite darkness.
