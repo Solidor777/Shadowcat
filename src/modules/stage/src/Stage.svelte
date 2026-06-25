@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
+  import { resolveSceneSettings } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -98,9 +99,13 @@
       // the rendered token count as a test/observability signal (mirrors render-ready).
       let lastGridKey = "";
       const onDocs = (): void => {
-        const g = (documents.query("scene")[0]?.system as { grid?: { kind: "square" | "hex"; size: number } } | undefined)?.grid;
-        const spec = g ?? { kind: "square" as const, size: 100 };
-        const key = `${spec.kind}:${spec.size}`;
+        const scene = documents.query("scene")[0];
+        const g = (scene?.system as { grid?: { kind: "square" | "hex"; size: number } } | undefined)?.grid;
+        // Diagonal rule is world-scoped (world-settings.pathfinding.diagonalRule); resolved
+        // here so the ruler reflects the GM's active rule choice without requiring a page reload.
+        const diagonalRule = resolveSceneSettings(scene, documents).diagonalRule;
+        const spec = { ...(g ?? { kind: "square" as const, size: 100 }), diagonalRule };
+        const key = `${spec.kind}:${spec.size}:${diagonalRule}`;
         if (key !== lastGridKey) {
           lastGridKey = key;
           e.setGrid(spec);
