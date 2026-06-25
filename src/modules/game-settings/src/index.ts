@@ -3,7 +3,8 @@ import GameSettingsPanel from "./GameSettingsPanel.svelte";
 
 /** GM game configuration: scene vision/lighting defaults + per-scene overrides,
  * light gradation, vision modes, pathfinding + movement + animation settings.
- * Requires core-ui's sidebar; contributes after the user Settings panel. */
+ * Requires core-ui's sidebar; contributes a GM configuration panel to the sidebar
+ * after the actor/faction/condition panels (order 5). */
 export const gameSettings: Module = {
   manifest: {
     id: "game-settings",
@@ -13,6 +14,6 @@ export const gameSettings: Module = {
     provides: [],
   },
   register(ctx) {
-    ctx.contributions.contribute({ id: "game-settings:sidebar", contract: "shadowcat.surface:sidebar", order: 1, component: GameSettingsPanel });
+    ctx.contributions.contribute({ id: "game-settings:sidebar", contract: "shadowcat.surface:sidebar", order: 5, component: GameSettingsPanel });
   },
 };
