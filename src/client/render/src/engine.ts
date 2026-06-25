@@ -253,6 +253,7 @@ export class RenderEngine implements SceneToolHost {
     return { mode: "masked", visible, explored };
   }
 
+  // Parse-only; not yet called from onSceneFrame — TODO: wire into onSceneFrame + Lighting layer once the engine-integration task lands.
   /** Parse the `vision` payload's lighting dimension into a LightingInput for the ACTIVE scene, or
    * null. Lighting is COSMETIC — fog (toVisibility) is the secrecy gate — so any non-masked,
    * missing, or malformed input yields null (no overlay), never an over/under-reveal. Mirrors
@@ -281,8 +282,8 @@ export class RenderEngine implements SceneToolHost {
     }
     const bands = Array.isArray(p.bands)
       ? p.bands
-          .filter((b): b is { name: string; min: number } => !!b && typeof b.min === "number")
-          .map((b) => ({ name: String(b.name), min: b.min }))
+          .filter((b): b is { name: string; min: number } => !!b && typeof b.name === "string" && typeof b.min === "number")
+          .map((b) => ({ name: b.name, min: b.min }))
       : [];
     const hints = Array.isArray(p.renderHints) ? p.renderHints.map(String) : [];
     return { cell: group.cell, bands, hints, cells };

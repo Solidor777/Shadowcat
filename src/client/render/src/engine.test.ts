@@ -566,6 +566,7 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
   expect(li!.cell).toBe(100);
   expect(li!.cells).toEqual([{ i: 0, j: 0, band: 2, tint: 0, hint: 0 }]);
   expect(li!.hints).toEqual(["desaturate"]);
+  expect(li!.bands).toEqual([{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }]);
   // GM / garbled → null (cosmetic, no overlay).
   expect(engine.toLightingForTest({ mode: "all" })).toBeNull();
   expect(engine.toLightingForTest({ mode: "masked", lit: "garbage" })).toBeNull();
