@@ -4,6 +4,7 @@
 
 pub mod explored;
 pub mod lighting;
+pub mod movement;
 pub mod vision;
 
 use std::collections::{BTreeMap, HashMap};
