@@ -1157,7 +1157,9 @@ impl SceneEcs {
                     if out.contains(&(i, j)) {
                         continue;
                     }
-                    // Strict: center only. Lenient: center + 4 corners (first passing sample wins).
+                    // Strict: center only. Lenient: center first (so §13 strict cells are always
+                    // included), then corners if center fails — a cell whose polygon merely clips
+                    // a corner still qualifies under leniency.
                     let center = ((i as f64 + 0.5) * cell, (j as f64 + 0.5) * cell);
                     let corners = [
                         (i as f64 * cell, j as f64 * cell),
@@ -1165,24 +1167,21 @@ impl SceneEcs {
                         (i as f64 * cell, (j + 1) as f64 * cell),
                         ((i + 1) as f64 * cell, (j + 1) as f64 * cell),
                     ];
-                    let samples: &[(f64, f64)] = if lenient {
-                        // SAFETY: reborrow as slice; corners is a local array in scope.
-                        // Cannot use a mixed slice literal because corner array and single-element
-                        // inline have incompatible sizes; build as two separate slices and chain.
-                        &corners
-                    } else {
-                        std::slice::from_ref(&center)
-                    };
-                    // For lenient, center must be checked first so the §13 strict cells are always
-                    // included; then fall through to corners only if center fails.
                     let mut found = false;
                     if lenient {
                         // Check center first, then corners.
                         if vision::point_in_poly(&poly, center) {
+                            // Invariant (§13): mirror player_lit_mask's all_bright arm exactly.
+                            // cell_visible reads level only today, but tint must agree so the gate
+                            // mask can never fork from the egress mask.
                             let cl = if li.all_bright {
                                 crate::scene::lighting::CellLight {
                                     level: 1.0,
-                                    tint: 0,
+                                    tint: if settings.lighting_enabled {
+                                        settings.env_color
+                                    } else {
+                                        0
+                                    },
                                 }
                             } else {
                                 crate::scene::lighting::cell_illumination(
@@ -1207,10 +1206,17 @@ impl SceneEcs {
                                 if !vision::point_in_poly(&poly, (sx, sy)) {
                                     continue;
                                 }
+                                // Invariant (§13): mirror player_lit_mask's all_bright arm exactly.
+                                // cell_visible reads level only today, but tint must agree so the
+                                // gate mask can never fork from the egress mask.
                                 let cl = if li.all_bright {
                                     crate::scene::lighting::CellLight {
                                         level: 1.0,
-                                        tint: 0,
+                                        tint: if settings.lighting_enabled {
+                                            settings.env_color
+                                        } else {
+                                            0
+                                        },
                                     }
                                 } else {
                                     crate::scene::lighting::cell_illumination(
@@ -1233,12 +1239,18 @@ impl SceneEcs {
                         }
                     } else {
                         // Strict: center only (mirrors player_lit_mask exactly).
-                        let _ = samples; // samples is &[center] but we use the named var directly.
                         if vision::point_in_poly(&poly, center) {
+                            // Invariant (§13): mirror player_lit_mask's all_bright arm exactly.
+                            // cell_visible reads level only today, but tint must agree so the gate
+                            // mask can never fork from the egress mask.
                             let cl = if li.all_bright {
                                 crate::scene::lighting::CellLight {
                                     level: 1.0,
-                                    tint: 0,
+                                    tint: if settings.lighting_enabled {
+                                        settings.env_color
+                                    } else {
+                                        0
+                                    },
                                 }
                             } else {
                                 crate::scene::lighting::cell_illumination(
@@ -2483,6 +2495,33 @@ mod tests {
         (ecs, user, scene_id)
     }
 
+    /// Builds a SceneEcs whose light boundary crosses through cell (1,1), guaranteeing a
+    /// lenient-only cell. Cell (1,1) has center at (150, 150), distance ≈ 141.4 from the light
+    /// at (50, 50) — just beyond `dimRadius = 140` (1.4 cells × 100 units/cell), so
+    /// `cell_illumination` returns 0 for the center and strict rejects it. Corner (100, 100) is
+    /// at distance ≈ 70.7 < 140 → illuminated → lenient admits it. No sight walls + los_restriction
+    /// defaults false → the bound-box polygon covers all cells, so the LOS test never rejects a
+    /// corner. Returns `(ecs, user, scene_id)`.
+    fn scene_with_boundary_crossing_light() -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        // dimRadius = 1.4 cells (140 scene units): center of (1,1) at distance ≈141.4 > 140 (strict miss);
+        // corner (100,100) at distance ≈70.7 < 140 (lenient hit).
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 0.5, "dimRadius": 1.4, "enabled": true
+            }),
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
+        (ecs, user, scene_id)
+    }
+
     #[test]
     fn visible_cells_strict_equals_player_lit_mask_cells() {
         // §13 parity: under strict (center-only) sampling, the movement gate mask must equal the
@@ -2505,14 +2544,29 @@ mod tests {
 
     #[test]
     fn visible_cells_lenient_is_a_superset_of_strict() {
-        let (ecs, user, scene) = scene_with_lit_player_token();
+        // Uses scene_with_boundary_crossing_light: the light boundary (dimRadius 1.4 cells =
+        // 140 scene units) cuts through cell (1,1). Center (150,150) is ~141.4 units away →
+        // outside dim radius → strict rejects it. Corner (100,100) is ~70.7 units away → inside
+        // dim radius → lenient admits it. This guarantees at least one lenient-only cell, so the
+        // corner-sampling path is live and proven, not vacuously skipped.
+        let (ecs, user, scene) = scene_with_boundary_crossing_light();
         let strict = ecs.visible_cells(user, scene, false);
         let lenient = ecs.visible_cells(user, scene, true);
+        // Subset invariant: every strict cell is also in lenient.
         assert!(
             strict.iter().all(|c| lenient.contains(c)),
             "lenient ⊇ strict"
         );
-        assert!(lenient.len() >= strict.len());
+        // Strict superset: lenient must contain at least one cell strict does not.
+        assert!(
+            lenient.len() > strict.len(),
+            "lenient must admit at least one corner-only cell not in strict"
+        );
+        // Non-empty difference set: the corner path is proven live.
+        assert!(
+            lenient.difference(&strict).next().is_some(),
+            "difference(lenient, strict) must be non-empty"
+        );
     }
 
     #[test]
