@@ -41,11 +41,20 @@ pub struct VisionMode {
     pub default_range: f64,
 }
 
-/// Parse `#rrggbb` → packed `0xRRGGBB`; fail-closed to `0x000000` (untinted) on any malformed input.
+/// Parse `#rrggbb` or CSS 3-digit `#rgb` → packed `0xRRGGBB`; fail-closed to `0x000000`
+/// (untinted) on any malformed input. CSS shorthand: each nibble is doubled (`#abc` → `#aabbcc`).
 fn parse_hex_color(s: &str) -> u32 {
     let h = s.trim_start_matches('#');
-    if h.len() == 6 {
-        u32::from_str_radix(h, 16).unwrap_or(0)
+    // Shorthand only applies when the input had a leading '#' (bare 3-char strings without '#'
+    // are not valid CSS color syntax and must fall through to fail-closed 0).
+    let full = if h.len() == 3 && s.starts_with('#') {
+        // CSS 3-digit shorthand: each nibble doubled (#abc → #aabbcc).
+        h.chars().flat_map(|c| [c, c]).collect::<String>()
+    } else {
+        h.to_string()
+    };
+    if full.len() == 6 {
+        u32::from_str_radix(&full, 16).unwrap_or(0)
     } else {
         0
     }
@@ -647,14 +656,17 @@ impl SceneEcs {
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.0),
                 falloff,
-                enabled: true,
+                enabled: true, // INVARIANT: only enabled lights reach this push (disabled filtered above).
             });
         }
         // Deterministic order (entity-query order is unspecified): sort by id-stable position.
-        out.sort_by(|a, b| {
+        // Uses total_cmp for a genuine total order — partial_cmp on f64 is a partial order
+        // (NaN breaks trichotomy and makes sort_by non-deterministic under NaN inputs).
+        out.sort_unstable_by(|a, b| {
             a.pos
-                .partial_cmp(&b.pos)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .0
+                .total_cmp(&b.pos.0)
+                .then(a.pos.1.total_cmp(&b.pos.1))
         });
         out
     }
@@ -1265,6 +1277,70 @@ mod tests {
         assert_eq!(lights[0].bright_radius, 2.0);
         let walls = ecs.light_walls(scene);
         assert_eq!(walls.len(), 1); // only the blocksLight:true wall
+
+        // Cross-scene isolation: a second scene (id 20) with its own enabled light and a
+        // blocksLight:true wall must NOT appear in scene 10's results.
+        let scene2 = Uuid::from_u128(20);
+        let ecs2 = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                entity_doc(
+                    20,
+                    10,
+                    "light",
+                    json!({
+                        "x": 50.0, "y": 50.0, "color": "#ffeeaa", "intensity": 1.0,
+                        "brightRadius": 2.0, "dimRadius": 6.0, "enabled": true
+                    }),
+                ),
+                entity_doc(
+                    22,
+                    10,
+                    "wall",
+                    json!({ "seg": {"x1":0,"y1":0,"x2":10,"y2":0}, "blocksLight": true }),
+                ),
+                doc(30, None, "scene"), // scene id 20 (doc id 30 → Uuid 30; parent is None)
+                entity_doc(
+                    31,
+                    30,
+                    "light",
+                    json!({
+                        "x": 10.0, "y": 10.0, "color": "#ffffff", "intensity": 0.8,
+                        "brightRadius": 3.0, "dimRadius": 8.0, "enabled": true
+                    }),
+                ),
+                entity_doc(
+                    32,
+                    30,
+                    "wall",
+                    json!({ "seg": {"x1":5,"y1":0,"x2":15,"y2":0}, "blocksLight": true }),
+                ),
+            ],
+            0,
+        );
+        // Scene 10 still yields exactly its own 1 light and 1 wall.
+        assert_eq!(ecs2.scene_lights(scene).len(), 1);
+        assert_eq!(ecs2.light_walls(scene).len(), 1);
+        // The second scene (id 30 via Uuid) has its own light and wall.
+        let scene3 = Uuid::from_u128(30);
+        assert_eq!(ecs2.scene_lights(scene3).len(), 1);
+        assert_eq!(ecs2.light_walls(scene3).len(), 1);
+        // Cross-check: scene 10's light is NOT scene2's light and vice-versa.
+        assert_ne!(
+            ecs2.scene_lights(scene)[0].pos,
+            ecs2.scene_lights(scene3)[0].pos
+        );
+        // The unused scene2 uuid (20) is not a scene doc → yields empty (no children parented to 20).
+        assert_eq!(ecs2.scene_lights(scene2).len(), 0);
+    }
+
+    #[test]
+    fn parse_hex_color_handles_6_and_3_digit() {
+        assert_eq!(parse_hex_color("#0a0e1a"), 0x0A0E1A);
+        assert_eq!(parse_hex_color("#fff"), 0xFFFFFF); // shorthand expands
+        assert_eq!(parse_hex_color("#abc"), 0xAABBCC);
+        assert_eq!(parse_hex_color("bad"), 0); // malformed → fail-closed black
+        assert_eq!(parse_hex_color("#12345"), 0); // wrong length → 0
     }
 
     #[test]
