@@ -1077,7 +1077,30 @@ pub fn compute_derived(
                         serde_json::json!({ "scene": scene, "points": points })
                     })
                     .collect();
-                Some(serde_json::json!({ "mode": "masked", "polygons": polygons }))
+                // M10e-2: the secrecy-safe lighting-aware mask — only currently-visible cells, each
+                // tagged with its illumination band + tint. Carries the resolved gradation `bands`
+                // so the client maps band indices → treatment. Additive: `polygons`/`explored` are
+                // unchanged (the client consumes `lit` from M10e-3).
+                let bands_json: Vec<serde_json::Value> = ecs
+                    .resolved_bands()
+                    .into_iter()
+                    .map(|b| serde_json::json!({ "name": b.name, "min": b.min_illumination }))
+                    .collect();
+                let lit: Vec<serde_json::Value> = ecs
+                    .player_lit_mask(ctx.user_id)
+                    .into_iter()
+                    .map(|s| {
+                        let flat: Vec<i64> = s
+                            .cells
+                            .into_iter()
+                            .flat_map(|(i, j, band, tint)| {
+                                [i as i64, j as i64, band as i64, tint as i64]
+                            })
+                            .collect();
+                        serde_json::json!({ "scene": s.scene, "cell": s.cell, "bands": bands_json, "cells": flat })
+                    })
+                    .collect();
+                Some(serde_json::json!({ "mode": "masked", "polygons": polygons, "lit": lit }))
             }
         }
         _ => None,
@@ -1327,6 +1350,47 @@ mod tests {
         assert!(ov["polygons"].as_array().unwrap().is_empty());
         // Unknown channel → None.
         assert!(compute_derived("nope", &ecs, &gm).is_none());
+    }
+
+    #[test]
+    fn vision_payload_carries_lit_mask_for_players_not_gm() {
+        use crate::data::document::WorldRole;
+        use serde_json::json;
+        let player = Uuid::from_u128(7);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(player);
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+            "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }),
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
+
+        let pl = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let pv = compute_derived("vision", &ecs, &pl).unwrap();
+        assert_eq!(pv["mode"], "masked");
+        let lit = pv["lit"]
+            .as_array()
+            .expect("lit present for masked payload");
+        assert_eq!(lit.len(), 1);
+        assert_eq!(lit[0]["scene"], json!(Uuid::from_u128(10)));
+        assert!(lit[0]["cells"].as_array().unwrap().len() >= 4); // ≥ one cell (4 ints/cell)
+        assert!(!lit[0]["bands"].as_array().unwrap().is_empty());
+
+        // GM payload is unchanged — no lit key.
+        let gm = PermissionContext {
+            user_id: Uuid::from_u128(1),
+            world_role: WorldRole::Gm,
+        };
+        let gv = compute_derived("vision", &ecs, &gm).unwrap();
+        assert_eq!(gv["mode"], "all");
+        assert!(gv.get("lit").is_none());
     }
 
     #[test]
