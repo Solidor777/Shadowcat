@@ -244,11 +244,25 @@ impl Room {
                 }
             } // scene read guard dropped here — safe to await
 
+            // Memoize the explored blob per scene: a batch of Revealed moves in the same
+            // scene (e.g. multi-waypoint) must not issue N DB round-trips. Pattern mirrors
+            // visible_cache above. Fail closed: error or missing blob → empty set (visible-only).
+            let mut explored_cache: std::collections::HashMap<
+                uuid::Uuid,
+                crate::scene::explored::ExploredSet,
+            > = std::collections::HashMap::new();
             for (scene_id, move_cells, visible) in revealed_pending {
-                // Fail closed on error or missing blob: treat as visible-only (empty explored).
-                let explored = match repo.get_explored(scene_id, ctx.user_id).await {
-                    Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob),
-                    _ => crate::scene::explored::ExploredSet::new(),
+                let explored = match explored_cache.entry(scene_id) {
+                    std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        let set = match repo.get_explored(scene_id, ctx.user_id).await {
+                            Ok(Some(blob)) => {
+                                crate::scene::explored::ExploredSet::from_bytes(&blob)
+                            }
+                            _ => crate::scene::explored::ExploredSet::new(),
+                        };
+                        e.insert(set)
+                    }
                 };
                 if !move_cells
                     .iter()
@@ -925,12 +939,18 @@ mod room_tests {
             }
         }
 
-        /// Move to (50, 145): the center of this point is outside the bright circle
-        /// (brightRadius=1.0 cell, boundary at y=100 world units from origin) but
-        /// the cell's bottom edge corner (0, 100) is inside, qualifying under lenient
-        /// corner sampling but not under strict center-only sampling.
+        /// Move to the center of the diagonal-neighbor cell (1,1) at world coords (150,150).
+        ///
+        /// Geometry (grid size=100, light at (50,50), brightRadius=1.4 cells = 140 world units):
+        ///   - Cell (1,1) CENTER at (150,150): dist = sqrt(100²+100²) ≈ 141.4 wu = 1.414 cells
+        ///     → clearly OUTSIDE the 1.4-cell boundary (strict center-only sampling rejects).
+        ///   - Cell (1,1) near CORNER at (100,100): dist = sqrt(50²+50²) ≈ 70.7 wu = 0.707 cells
+        ///     → clearly INSIDE the boundary (lenient corner sampling admits).
+        ///
+        /// Margins: center is ~1% beyond the boundary (not on it); corner is ~50% inside.
+        /// Neither sample touches the polygon edge, so the split is raycaster-stable.
         async fn mv_to_partial_cell(&self) -> Operation {
-            self.mv_to(50.0, 145.0).await
+            self.mv_to(150.0, 150.0).await
         }
     }
 
@@ -1124,11 +1144,16 @@ mod room_tests {
         }
     }
 
-    /// Scene for partial-cell leniency pair-test. Light at (50,50) with brightRadius=1.0:
-    /// bright boundary = 100 world units. Cell (0,1) center=(50,150) is outside the
-    /// boundary, but its bottom edge (y=100) is exactly on the boundary — the corner
-    /// at (0,100) is inside the light polygon, qualifying under lenient corner-sampling
-    /// but not under strict center-only sampling.
+    /// Scene for partial-cell leniency pair-test. Light at (50,50) with brightRadius=1.4
+    /// cells (140 world units, grid size=100). The diagonal-neighbor cell (1,1) at world
+    /// coords (150,150) has:
+    ///   - CENTER at dist ≈ 141.4 wu (1.414 cells) → just outside the 1.4-cell boundary;
+    ///     strict center-only sampling rejects the cell.
+    ///   - Near CORNER at (100,100) at dist ≈ 70.7 wu (0.707 cells) → well inside the
+    ///     boundary; lenient corner-sampling admits the cell.
+    ///
+    /// Neither sample point is on the polygon edge, so the classification is raycaster-stable
+    /// with comfortable margin (~1% outside for center, ~50% inside for corner).
     async fn movement_scene_partial_cell(lenient: bool) -> MovementHandle {
         use crate::data::document::DocRole;
         use serde_json::json;
@@ -1190,14 +1215,15 @@ mod room_tests {
             .await
             .unwrap();
 
-        // brightRadius=1.0: bright boundary at 100 world units. Cell (0,1) center at (50,150)
-        // is outside; its corner at (0,100) is on/inside the polygon boundary.
+        // brightRadius=1.4 cells = 140 wu. Cell (1,1) center at (150,150) is ~141.4 wu
+        // away — just outside the boundary (strict rejects). Its near corner at (100,100)
+        // is ~70.7 wu away — well inside (lenient admits). Neither point is on the edge.
         let mut light = wdoc(world_id, light_id, "light");
         light.parent_id = Some(scene_id);
         light.owner = Some(gm.user_id);
         light.system = json!({
             "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true
+            "brightRadius": 1.4, "dimRadius": 1.4, "enabled": true
         });
         room.publish(&repo, &gm, vec![Operation::Create { doc: light }], 0)
             .await
@@ -1309,9 +1335,11 @@ mod room_tests {
 
     #[tokio::test]
     async fn movement_restriction_lenient_allows_partial_cell() {
-        // partialCellLeniency=true: a move to a cell whose center is outside the
-        // light polygon but whose corner is inside is allowed (lenient corner sampling).
-        // Constraint: strict center-only sampling rejects the same move.
+        // partialCellLeniency=true: a move to diagonal-neighbor cell (1,1) whose CENTER
+        // is ~1.414 cells from the light (outside the 1.4-cell boundary) but whose near
+        // CORNER is ~0.707 cells away (well inside) is allowed by lenient corner sampling.
+        // The same move is rejected by strict center-only sampling. Geometry is stable:
+        // neither sample point lies on the polygon boundary (see movement_scene_partial_cell).
         let lenient = movement_scene_partial_cell(/*lenient=*/ true).await;
         let op = lenient.mv_to_partial_cell().await;
         lenient
