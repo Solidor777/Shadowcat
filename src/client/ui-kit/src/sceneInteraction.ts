@@ -58,4 +58,8 @@ export class SceneInteractionBridge implements SceneInteraction {
   addPing(x: number, y: number): void {
     this.#host?.addPing(x, y);
   }
+
+  animateAlongPath(id: string, path: [number, number][]): void {
+    this.#host?.animateAlongPath(id, path);
+  }
 }

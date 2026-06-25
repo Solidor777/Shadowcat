@@ -79,3 +79,12 @@ test("a stale detach does not clear a newer host", () => {
   bridge.setDraggingToken("x");
   expect(b.drags).toEqual(["x"]); // b still attached
 });
+
+test("animateAlongPath forwards to the host (no-op when detached)", () => {
+  const bridge = new SceneInteractionBridge();
+  expect(() => bridge.animateAlongPath("t1", [[0, 0], [1, 1]])).not.toThrow(); // detached: no-op
+  const calls: Array<{ id: string; path: [number, number][] }> = [];
+  bridge.attach(fakeSceneHost({ animateAlongPath: (id, path) => calls.push({ id, path }) }));
+  bridge.animateAlongPath("t1", [[0, 0], [1, 1]]);
+  expect(calls).toEqual([{ id: "t1", path: [[0, 0], [1, 1]] }]);
+});
