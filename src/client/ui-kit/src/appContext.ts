@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -55,6 +55,15 @@ export interface AppContext {
   tokenSelection: TokenSelection;
   /** Broadcast a transient location ping at scene coords on the active scene. */
   sendPing: (x: number, y: number) => void;
+  /** Request a grid A* path from `start` through `waypoints` on `scene`. Resolves
+   * with the computed path + cost, rejects on unreachable or timeout. Thin
+   * transport mirror — no client-side path logic. */
+  pathfind: (
+    scene: string,
+    start: [number, number],
+    waypoints: [number, number][],
+    footprintRadius: number,
+  ) => Promise<PathResult>;
   /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe. */
   onPing: (cb: (msg: { scene: string; x: number; y: number; user: string }) => void) => () => void;
   /** Leave the current world and return to world-select. */

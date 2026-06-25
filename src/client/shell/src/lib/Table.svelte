@@ -29,6 +29,7 @@
     actorSelection: session.actorSelection,
     tokenSelection: session.tokenSelection,
     sendPing: (x, y) => session.sendPing(x, y),
+    pathfind: (s, st, wp, fr) => session.pathfind(s, st, wp, fr),
     onPing: (cb) => session.onPing(cb),
     leaveWorld,
     logout: async () => {

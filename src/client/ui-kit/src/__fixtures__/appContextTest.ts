@@ -26,6 +26,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     actorSelection: over.actorSelection ?? new ActorSelection(),
     tokenSelection: over.tokenSelection ?? new TokenSelection(),
     sendPing: over.sendPing ?? (() => {}),
+    pathfind: over.pathfind ?? (() => Promise.reject(new Error("not connected"))),
     onPing: over.onPing ?? (() => () => {}),
     leaveWorld: over.leaveWorld ?? (() => {}),
     logout: over.logout ?? (async () => {}),

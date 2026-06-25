@@ -141,6 +141,26 @@ describe("parseServerMsg", () => {
     }
   });
 
+  it("parses path_result and path_error server frames", () => {
+    const ok = parseServerMsg(
+      JSON.stringify({
+        type: "path_result",
+        request_id: "00000000-0000-0000-0000-000000000001",
+        path: [[50, 50], [150, 50]],
+        cost: 2,
+      }),
+    );
+    expect(ok?.type).toBe("path_result");
+    const err = parseServerMsg(
+      JSON.stringify({
+        type: "path_error",
+        request_id: "00000000-0000-0000-0000-000000000001",
+        message: "unreachable",
+      }),
+    );
+    expect(err?.type).toBe("path_error");
+  });
+
   it("returns null on malformed or unknown frames", () => {
     expect(parseServerMsg("{not json")).toBeNull();
     expect(parseServerMsg(JSON.stringify({ type: "nope" }))).toBeNull();

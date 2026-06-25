@@ -27,6 +27,7 @@
     actorSelection: new ActorSelection(),
     tokenSelection: new TokenSelection(),
     sendPing: () => {},
+    pathfind: () => Promise.reject(new Error("not connected")),
     onPing: () => () => {},
     leaveWorld: () => {},
     logout: async () => {},

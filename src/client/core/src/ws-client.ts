@@ -18,6 +18,12 @@ export interface SearchPage {
   nextCursor?: string;
 }
 
+/** A resolved pathfind result (WsClient.pathfind). */
+export interface PathResult {
+  path: [number, number][];
+  cost: number;
+}
+
 /** Handle to an active live search subscription (Core.subscribeSearch). */
 export interface SubscriptionHandle {
   unsubscribe(): void;
@@ -77,11 +83,11 @@ export class WsClient {
    * reconnects so resync resumes from where application left off. */
   private nextExpected = 1;
   private serverOffsetMs = 0;
-  /** In-flight correlated requests (search), keyed by request_id. */
+  /** In-flight correlated requests (search, pathfind), keyed by request_id. */
   private pending = new Map<
     string,
     {
-      resolve: (page: SearchPage) => void;
+      resolve: (result: SearchPage | PathResult) => void;
       reject: (e: Error) => void;
       timer: ReturnType<typeof setTimeout>;
     }
@@ -258,7 +264,7 @@ export class WsClient {
         if (p) {
           clearTimeout(p.timer);
           this.pending.delete(msg.request_id);
-          p.resolve({ hits: msg.hits, nextCursor: msg.next_cursor ?? undefined });
+          (p.resolve as (r: SearchPage) => void)({ hits: msg.hits, nextCursor: msg.next_cursor ?? undefined });
         }
         break;
       }
@@ -271,6 +277,24 @@ export class WsClient {
         }
         // A live subscription that errors server-side is dropped.
         this.subscriptions.delete(msg.request_id);
+        break;
+      }
+      case "path_result": {
+        const p = this.pending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.pending.delete(msg.request_id);
+          (p.resolve as (r: PathResult) => void)({ path: msg.path, cost: msg.cost });
+        }
+        break;
+      }
+      case "path_error": {
+        const p = this.pending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.pending.delete(msg.request_id);
+          p.reject(new Error(msg.message));
+        }
         break;
       }
       case "search_update": {
@@ -335,7 +359,7 @@ export class WsClient {
         this.pending.delete(request_id);
         reject(new Error("search request timeout"));
       }, timeoutMs);
-      this.pending.set(request_id, { resolve, reject, timer });
+      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult) => void, reject, timer });
       this.send({
         type: "search",
         request_id,
@@ -373,7 +397,7 @@ export class WsClient {
       }, timeoutMs);
       this.pending.set(request_id, {
         resolve: (page) => {
-          this.safeEmit(() => onUpdate(page.hits));
+          this.safeEmit(() => onUpdate((page as SearchPage).hits));
           resolve({
             unsubscribe: () => {
               this.subscriptions.delete(request_id);
@@ -421,6 +445,35 @@ export class WsClient {
       this.scenePending.set(request_id, { resolve, reject, timer });
       // `as_user` (GM-only see-as-player) is omitted unless set; the server gates + resolves it.
       this.send({ type: "scene_subscribe", request_id, channel, ...(opts.asUser ? { as_user: opts.asUser } : {}) });
+    });
+  }
+
+  /**
+   * Issue a correlated pathfind request and resolve with the computed path when
+   * the matching `path_result` reply arrives. Rejects on a `path_error` frame or
+   * after `timeoutMs`. The wire field is `footprint_radius`; the method param is
+   * `footprintRadius` (camelCase per project convention).
+   */
+  pathfind(
+    scene: string,
+    start: [number, number],
+    waypoints: [number, number][],
+    footprintRadius: number,
+    opts: { timeoutMs?: number } = {},
+  ): Promise<PathResult> {
+    const request_id = crypto.randomUUID();
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+    return new Promise<PathResult>((resolve, reject) => {
+      if (!this.transport) {
+        reject(new Error("not connected"));
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.pending.delete(request_id);
+        reject(new Error("pathfind request timeout"));
+      }, timeoutMs);
+      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult) => void, reject, timer });
+      this.send({ type: "pathfind", request_id, scene, start, waypoints, footprint_radius: footprintRadius });
     });
   }
 
