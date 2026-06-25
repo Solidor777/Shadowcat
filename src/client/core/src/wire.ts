@@ -216,6 +216,17 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     y: z.number(),
     user: z.string(),
   }),
+  z.object({
+    type: z.literal("path_result"),
+    request_id: z.string(),
+    path: z.array(z.tuple([z.number(), z.number()])),
+    cost: z.number(),
+  }),
+  z.object({
+    type: z.literal("path_error"),
+    request_id: z.string(),
+    message: z.string(),
+  }),
 ]);
 
 export type WireScope = z.infer<typeof ScopeSchema>;
@@ -242,7 +253,15 @@ export type ClientMsg =
   | { type: "unsubscribe"; request_id: string }
   | { type: "scene_subscribe"; request_id: string; channel: string }
   | { type: "scene_unsubscribe"; request_id: string }
-  | { type: "scene_ping"; scene: string; x: number; y: number };
+  | { type: "scene_ping"; scene: string; x: number; y: number }
+  | {
+      type: "pathfind";
+      request_id: string;
+      scene: string;
+      start: [number, number];
+      waypoints: [number, number][];
+      footprint_radius: number;
+    };
 
 /** Parse + validate an inbound text frame; `null` on malformed/unknown input. */
 export function parseServerMsg(text: string): ServerMsg | null {

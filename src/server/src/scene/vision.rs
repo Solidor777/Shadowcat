@@ -167,6 +167,26 @@ pub fn visibility_polygon(viewpoint: P, walls: &[Seg], bound: Rect) -> Vec<P> {
     poly
 }
 
+/// Euclidean distance from point `p` to segment `a→b`, clamping the projection to the segment.
+/// Source: standard point-to-segment projection (clean-room). Used by the pathfinder footprint
+/// clearance: a footprint disc of radius R is wall-clear iff this distance ≥ R for every wall.
+// TODO: remove once the grid pathfinder A* body is live and calls cell_enterable.
+#[allow(dead_code)]
+pub(crate) fn point_segment_distance(p: P, a: P, b: P) -> f64 {
+    let (px, py) = p;
+    let (ax, ay) = a;
+    let (bx, by) = b;
+    let (dx, dy) = (bx - ax, by - ay);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 <= f64::EPSILON {
+        0.0 // degenerate segment: distance to point `a`
+    } else {
+        (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
+    };
+    let (fx, fy) = (ax + t * dx, ay + t * dy);
+    ((px - fx).powi(2) + (py - fy).powi(2)).sqrt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +306,19 @@ mod tests {
         }];
         let b = bound_for((10.0, 10.0), &walls, 5.0);
         assert!(b.minx <= -5.0 && b.maxx >= 45.0 && b.maxy >= 15.0);
+    }
+
+    #[test]
+    fn point_segment_distance_endpoints_midpoint_and_perpendicular() {
+        let a = (0.0, 0.0);
+        let b = (10.0, 0.0);
+        // Perpendicular foot inside the segment.
+        assert!((point_segment_distance((5.0, 3.0), a, b) - 3.0).abs() < 1e-9);
+        // Beyond an endpoint clamps to that endpoint.
+        assert!((point_segment_distance((-4.0, 0.0), a, b) - 4.0).abs() < 1e-9);
+        // On the segment → 0.
+        assert!(point_segment_distance((7.0, 0.0), a, b) < 1e-9);
+        // Degenerate segment (a == b) → distance to the point.
+        assert!((point_segment_distance((3.0, 4.0), (0.0, 0.0), (0.0, 0.0)) - 5.0).abs() < 1e-9);
     }
 }

@@ -39,6 +39,7 @@ export type {
   WsClientHandlers,
   WireWelcome,
   SearchPage,
+  PathResult,
   SubscriptionHandle,
   SceneFrame,
   SceneSubscription,

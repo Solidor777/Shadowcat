@@ -301,8 +301,32 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > `Repository` trait. SDD-executed (5 tasks, per-task two-reviewer gate + whole-branch buddy-check
 > CONVERGED PASS, zero Critical/Important); merged --no-ff to LOCAL main; full server suite green.
 > Plan: `docs/superpowers/plans/2026-06-25-m10e-4-movement-restriction.md`.
-> **Next = M10e-6** (grid A* pathfinder; consumes the same mask); **M10e-5** (movement animation)
-> anytime. M10f (continuous pathfinding) + M10g (regions) resume after.
+> **M10e-6 DONE** (grid A* pathfinder): server-authoritative pure grid A* in
+> `scene/pathfinding.rs` (`DiagonalRule` + `resolved_diagonal_rule` world-only resolver;
+> `PathGrid`; `cell_enterable` — full geometric footprint-disc clearance vs `blocksMove` walls
+> + ALL footprint cells in the non-GM mask + center-step; `astar_leg` — king-moves, 4 diagonal
+> rules, 5-10-5 parity tracked in the `(cell,parity)` node and carried across waypoint legs,
+> admissible+consistent heuristics, stale-pop skip, `MAX_PATH_NODES`/`MAX_WAYPOINTS`/
+> `MAX_FOOTPRINT_CELLS` fail-closed bounds; `find` — validation, search window AABB+8-cell
+> margin, parity carry across legs, cost sum, cell-center output). `SceneEcs::pathfind` reuses
+> the SAME `visible_cells` mask as the M10e-4 movement gate (spec §13 — never fork the per-cell
+> visibility decision; route ⊆ gate-allowed by construction); unions `explored`
+> (`ExploredSet::iter`) for `revealed`; GM unconstrained; empty non-GM mask ⇒ Unreachable
+> (fail-closed). New `move_walls(scene)` accessor (the `blocksMove` segments). `Pathfind`/
+> `PathResult`/`PathError` one-shot wire frames (to the requesting connection only; `get_explored`
+> fetched off the scene read lock — no lock across await). Client: `WsClient.pathfind` +
+> `AppContext.pathfind` correlated-request seam (via `WorldSession` + `Table.svelte`); measure-tool
+> route mode with path-preview overlay + movement-budget readout; ruler `Grid.distance()` gains
+> the `alternating` (5-10-5) rule wired from `resolveSceneSettings(...).diagonalRule` into the
+> `Stage GridSpec`. `cost_field` accepted but inert (uniform weight=1; activates in M10g). SDD-
+> executed (11 tasks, per-task two-reviewer gate + whole-branch buddy-check CONVERGED PASS, zero
+> Critical/Important); merged --no-ff to LOCAL main.
+> Plan: `docs/superpowers/plans/2026-06-25-m10e-6-grid-pathfinder.md`.
+> Spec: `docs/superpowers/specs/2026-06-25-m10e-6-grid-pathfinder-design.md`.
+>
+> **M10e status: e-1 + e-2 + e-3 + e-4 + e-6 DONE; e-5 (movement animation) is the only M10e
+> remainder (anytime). Next = M10e-5, then M10f (continuous/Polyanya pathfinding) + M10g
+> (weighted/impassable regions).**
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 

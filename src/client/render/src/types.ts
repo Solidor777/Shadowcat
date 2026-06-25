@@ -73,11 +73,16 @@ export interface ShapeNodeSpec {
 }
 
 /** A canvas tool. The engine routes pointer events (in scene coords) to the active
- * tool first; `onPointerDown` returning true claims the gesture (else camera pans). */
+ * tool first; `onPointerDown` returning true claims the gesture (else camera pans).
+ * `onDeactivate` is called by `ToolController.toggle` whenever this tool is swapped
+ * away (including toggling it off); tools that hold overlay state must clear it here
+ * to satisfy the mid-gesture-clear invariant. */
 export interface SceneTool {
   onPointerDown(p: Point, ev: PointerEvent): boolean;
   onPointerMove(p: Point, ev: PointerEvent): void;
   onPointerUp(p: Point, ev: PointerEvent): void;
+  /** Optional teardown called on tool swap/deactivation. Clear any live overlays here. */
+  onDeactivate?(): void;
 }
 
 /** One visible cell's lighting: grid coords + gradation band index + packed tint + hint ref.

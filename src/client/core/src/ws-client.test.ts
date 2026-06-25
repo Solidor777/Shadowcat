@@ -405,4 +405,41 @@ describe("WsClient", () => {
     const client = new WsClient({ connect: () => Promise.resolve({ send: () => {}, close: () => {} }), handlers: noop });
     await expect(client.subscribeScene("identity", () => {}, { timeoutMs: 60_000 })).rejects.toThrow(/not connected/i);
   });
+
+  it("pathfind resolves on path_result and rejects on path_error", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+
+    const p = client.pathfind("scene-1", [50, 50], [[250, 50]], 0.5);
+    const sentFrame = JSON.parse(sent.find((s) => JSON.parse(s).type === "pathfind")!);
+    expect(sentFrame.type).toBe("pathfind");
+    onMessage(
+      JSON.stringify({
+        type: "path_result",
+        request_id: sentFrame.request_id,
+        path: [[50, 50], [250, 50]],
+        cost: 2,
+      }),
+    );
+    await expect(p).resolves.toEqual({ path: [[50, 50], [250, 50]], cost: 2 });
+
+    const p2 = client.pathfind("scene-1", [50, 50], [[9999, 9999]], 0.5);
+    const sentFrame2 = JSON.parse(sent.find((s, i) => i > sent.indexOf(JSON.stringify(sentFrame)) && JSON.parse(s).type === "pathfind")!);
+    onMessage(
+      JSON.stringify({
+        type: "path_error",
+        request_id: sentFrame2.request_id,
+        message: "unreachable",
+      }),
+    );
+    await expect(p2).rejects.toThrow("unreachable");
+  });
 });

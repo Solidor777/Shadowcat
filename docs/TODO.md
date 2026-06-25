@@ -7,9 +7,18 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - TODO: Purge `explored_fog` rows on world/scene/user deletion. The M9c table denormalizes `world_id` for a world-scoped purge, but no deletion path consumes it yet (worlds aren't deletable; scene deletion goes through the `apply_intent` document cascade, which doesn't touch `explored_fog`). Orphaned rows are harmless (reads key on the exact never-reused `(scene_id, user_id)` UUIDs) but accumulate unboundedly over a server's lifetime. Wire a `DELETE FROM explored_fog WHERE world_id = ?` (and a per-scene purge into the scene-delete cascade) when world/scene deletion lands; index `world_id` then. (Surfaced by the M9c-1 buddy check.)
 - TODO: `command::set_pointer` is set-only — an Update that conceptually removes a key writes `null` (key stays present as null) rather than removing it. `null` ≠ absent. Resolve removal semantics when the merge engine lands.
 
+## Server / pathfinding
+- TODO: `cost_field` ships inert (uniform weight 1) in M10e-6; wire per-cell weights from the `region` doc_type in M10g (weighted/impassable regions).
+- TODO: Buddy-check Minor (B2): the A* search window = AABB{start∪waypoints∪wall-endpoints}+8-cell margin; a legitimate route whose detour must bulge >8 cells beyond that AABB is reported Unreachable (fail-closed). Inert until a real map hits it; add a `tracing::debug!` at window-edge leg failures for future tuning if needed.
+- TODO: Hex-grid pathfinding (M10e-6 is square-grid-only; the ruler's hex distance is untouched by the `alternating` rule addition).
+
 ## Server / scene-vision
 - TODO: Implement edge-projected, `blocksLight`-occludable environment light once scenes gain dimensions. M10e-2's `player_lit_mask` treats environment light as a flat scene-wide ambient floor (inert by default, `env.intensity` = 0.0) because the scene model is dimensionless — there is no boundary to project edge light from, so a `blocksLight`-sealed interior is not darkened by the *ambient* term (placed-light occlusion IS implemented). Land with scene dimensions (M12). (Constraint-forced deviation from the M10e spec §6/§12.5.)
 - TODO: Cache the per-`(user, scene)` visibility mask for the M10e-4 movement gate. The gate recomputes `visible_cells` on demand per move (human-paced; acceptable per spec §8). If profiling shows it hot — e.g. under M10e-6 multi-waypoint preview/commit — reuse the last egress-computed `player_lit_mask` for `(user, scene)` instead of recomputing. Inert until measured.
+
+## Client / scene-tools
+- TODO: Route preview re-requests on waypoint change with a fixed debounce/seq-guard; if profiling shows chattiness on fast drags, switch to leading-edge + max-staleness (`debounce-leading-edge-not-trailing-rearm`). Inert until measured.
+- TODO: M10e-6 optional cleanups (non-blocking polish, none security/correctness): `point_segment_distance` degenerate-segment threshold uses `f64::EPSILON` vs a geometry-scale ~1e-10 (inert at scene scale); `pathfinding.rs` module `use` decls sit mid-file vs top-of-file idiom; `grid.test.ts` could add an explicit `dmin=2 → 3` alternating assert; `Stage.svelte` inner `scene` var shadows the outer AppContext `scene` (rename to `activeSceneDoc`); `ws-client.test.ts` re-serializes a parsed object (fragile); the `pending` map union (`SearchPage|PathResult`) could use a `PendingResult` alias before it grows.
 
 ## Client / UI
 - TODO: Game-settings scene picker shows raw scene UUIDs; display a human-readable scene name/label once scene docs carry one.

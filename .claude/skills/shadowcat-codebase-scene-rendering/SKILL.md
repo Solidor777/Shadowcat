@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-scene-rendering
-description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, lighting, the server visibility/lit mask, movement restriction (the Room::publish move gate, supercover, visible_cells), or scene-tools (place/select/move/draw/template/measure/ping). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, lighting, the server visibility/lit mask, movement restriction (the Room::publish move gate, supercover, visible_cells), the grid A* pathfinder (scene/pathfinding.rs, SceneEcs::pathfind, Pathfind/PathResult frames, diagonal rules), or scene-tools (place/select/move/draw/template/measure/ping). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Scene & Rendering
@@ -42,6 +42,28 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `point_in_poly`). Clean-room. Non-finite/empty inputs fail closed (under-reveal).
 - `src/server/src/scene/explored.rs` — `ExploredSet` fog memory: `mark_polygons(polys, cell_size)`,
   `to_bytes`/`from_bytes` (persistence), cell-based.
+- `src/server/src/scene/pathfinding.rs` — pure, headless grid A* (no I/O; clean-room):
+  `DiagonalRule` (`chebyshev`|`manhattan`|`euclidean`|`alternating`) + `resolved_diagonal_rule`
+  (world-only — no per-scene override; mirrors `resolveSceneSettings` precedence); `PathGrid` (wall-
+  segment lookup built from `move_walls`); `cell_enterable(cell, grid, footprint_radius, user_mask)`
+  — full geometric footprint-disc clearance: the token's bounding disc must clear ALL `blocksMove`
+  segments (checked via `point_segment_distance`) **and** ALL footprint cells must be in the non-GM
+  mask **and** the cell center must pass the mask test; `astar_leg` — king-move A*, 4 diagonal
+  rules, 5-10-5 parity tracked in the `(cell, parity)` node and carried across waypoint legs (cost
+  1,2,1,2…, never reset per leg), admissible+consistent heuristics per rule, stale-pop skip,
+  `MAX_PATH_NODES`/`MAX_WAYPOINTS`/`MAX_FOOTPRINT_CELLS` fail-closed bounds; `find` — validates
+  request, computes search window (AABB{start∪waypoints∪wall-endpoints}+8-cell margin), threads
+  end-parity of each leg into the next, sums cost, returns ordered cell-center scene coords.
+  `SceneEcs::pathfind` — reuses the SAME `visible_cells` mask as the M10e-4 movement gate (**§13
+  invariant: never fork the per-cell visibility decision** — the route cannot thread the unknown nor
+  leak hidden geometry); unions `explored` (`ExploredSet::iter`) for `revealed`; GM unconstrained
+  (no mask); empty non-GM mask ⇒ `PathError::Unreachable` (fail-closed). New `move_walls(scene)`
+  accessor returns the `blocksMove` segment list (mirrors the M9 `blocks_move` filter). Wire
+  frames `Pathfind`/`PathResult`/`PathError` — one-shot to the requesting connection only (never
+  broadcast); `get_explored` fetched off the scene read lock (no lock across await).
+  Client: `ToolContext.pathfind?` seam + `SceneTool.onDeactivate?()` hook in scene-tools (clears
+  route overlay on tool swap); ruler `Grid.distance()` gains the `alternating` (5-10-5) rule wired
+  from `resolveSceneSettings(...).diagonalRule` into the Stage `GridSpec`.
 - `src/client/render/src/` — engine-owned PixiJS layer: `backend.ts` + `pixi-backend.ts`
   (renderer host), `engine.ts`, `reconciler.ts` (doc→scene reconcile), `compositor.ts`,
   `layers.ts` (CORE_LAYERS z-order; index 7 = `lighting`, between `templates` (6) and `mask` (8)),
@@ -114,12 +136,23 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   environment light is a flat ambient (NOT edge-projected/occludable) until scenes gain dimensions —
   placed-light `blocksLight` occlusion IS implemented (see `docs/TODO.md`).
 
+- **The pathfinder route is footprint-STRICTER than the center-based authoritative gate, but shares
+  the SAME mask (never weaker).** `cell_enterable` enforces full geometric footprint-disc clearance;
+  the M9/M10e-4 authoritative gate stays center-based (parent spec §14). A wide token can be dragged
+  (gate allows the center path) along a corridor the router refuses (footprint doesn't fit). This
+  asymmetry is intentional: route ⊆ gate-allowed keeps the preview from suggesting a move the router
+  would reject. The route never threads cells the gate would block (`visible_cells` mask is shared —
+  spec §13). Never make the pathfinder mask test weaker than the gate mask.
+
 ## Gotchas
 
 - **Scene auto-creates on GM entry** (scene system schema `{grid, background}`); Stage reads the
   grid [[scene-lifecycle-gap]].
 - **Clear tool overlays/previews on a mid-gesture tool swap** (draw preview, measure overlay) or
   stale geometry persists.
+- **`resolved_diagonal_rule` is world-only** — there is intentionally no per-scene `diagonalRule`
+  override in the pathfinder; the same rule applies across all scenes in a world. Matches the client
+  `resolveSceneSettings` precedence (the setting lives in `world-settings`, not per-scene).
 
 ## Pointers
 

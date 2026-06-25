@@ -331,6 +331,18 @@ async fn handle_socket(
                                 });
                             }
                         }
+                        Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius }) => {
+                            // One-shot pathfinding: resolve GM status, fetch explored off the lock for
+                            // non-GM Revealed, call SceneEcs::pathfind, reply to this connection only.
+                            // INVARIANT (one-shot-to-requester): reply goes to etx only, never broadcast.
+                            let frame = handle_pathfind(
+                                request_id, scene, start, waypoints, footprint_radius,
+                                &ctx, &room, repo.as_ref(),
+                            ).await;
+                            if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
+                                break;
+                            }
+                        }
                         Err(_) => {
                             let _ = etx
                                 .send(Egress::Frame(Arc::new(ServerMsg::Error {
@@ -351,6 +363,71 @@ async fn handle_socket(
     room.stats.connections.fetch_sub(1, Ordering::AcqRel);
     state.ws.rooms.reap_if_empty(world_id);
     tracing::info!(world = %world_id, user = %user_id, "ws disconnected");
+}
+
+/// Resolve and execute a one-shot grid pathfind request.
+///
+/// INVARIANT (no-lock-across-await): the scene read guard is taken twice — once to read
+/// `movement_restriction` (then dropped), and once to call `pathfind` (then dropped again) —
+/// so `get_explored` can be awaited between them without holding the lock.
+/// INVARIANT (one-shot-to-requester): the reply is placed directly on `etx`; it is never
+/// broadcast to the room.
+#[allow(clippy::too_many_arguments)]
+async fn handle_pathfind(
+    request_id: Uuid,
+    scene: Uuid,
+    start: (f64, f64),
+    waypoints: Vec<(f64, f64)>,
+    footprint_radius: f64,
+    ctx: &crate::data::membership::PermissionContext,
+    room: &crate::ws::room::Room,
+    repo: &dyn crate::data::repository::Repository,
+) -> ServerMsg {
+    let is_gm = ctx.world_role == crate::data::document::WorldRole::Gm;
+    // Step 1: check movement_restriction under a short read guard, then drop it.
+    let need_explored = !is_gm && {
+        let s = room.scene().read().await;
+        matches!(
+            s.resolve_scene(scene).movement_restriction,
+            crate::scene::MovementRestriction::Revealed
+        )
+    };
+    // Step 2: fetch explored (if needed) after the lock is dropped.
+    let explored = if need_explored {
+        match repo.get_explored(scene, ctx.user_id).await {
+            Ok(Some(blob)) => Some(crate::scene::explored::ExploredSet::from_bytes(&blob)),
+            // Fail closed: Revealed degrades to visible-only on any error/miss.
+            _ => None,
+        }
+    } else {
+        None
+    };
+    // Step 3: take a fresh read guard to call pathfind.
+    let s = room.scene().read().await;
+    match s.pathfind(
+        ctx.user_id,
+        scene,
+        start,
+        &waypoints,
+        footprint_radius,
+        is_gm,
+        explored.as_ref(),
+    ) {
+        Ok((path, cost)) => ServerMsg::PathResult {
+            request_id,
+            path,
+            cost,
+        },
+        Err(e) => ServerMsg::PathError {
+            request_id,
+            message: match e {
+                crate::scene::pathfinding::PathFail::Invalid => "invalid request",
+                crate::scene::pathfinding::PathFail::Unreachable => "unreachable",
+                crate::scene::pathfinding::PathFail::Exceeded => "search exceeded",
+            }
+            .to_string(),
+        },
+    }
 }
 
 /// Inject the player's scene-tagged `explored` cell sets into a `vision` **masked** payload, and —
@@ -1011,6 +1088,145 @@ mod tests {
             .len(),
             1,
             "see-as did not grow the target's persisted memory"
+        );
+    }
+
+    /// `handle_pathfind` replies to the requesting connection only (one-shot).
+    /// GM gets PathResult (no mask). Non-GM in a dark scene (movementRestriction="visible",
+    /// env_intensity=0, no placed lights) gets PathError "unreachable" — empty mask blocks all cells.
+    #[tokio::test]
+    async fn pathfind_handler_gm_ok_nongm_dark_unreachable() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::{DocRole, WorldRole};
+        use crate::data::membership::PermissionContext;
+        use crate::ws::room::RoomRegistry;
+        use serde_json::json;
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let author = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", author, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: author,
+            world_role: WorldRole::Gm,
+        };
+
+        let p = repo
+            .create_user("player", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world.id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg
+            .get_or_create(repo.as_ref(), world.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+
+        let (scene_id, token_id, ws_id) = (
+            Uuid::from_u128(0xA001),
+            Uuid::from_u128(0xA002),
+            Uuid::from_u128(0xA003),
+        );
+
+        // World-settings: visible restriction, totally dark (env_intensity=0, no placed lights).
+        // A non-GM's visible_cells mask is therefore empty; all non-GM moves are blocked.
+        let mut ws = wdoc(world.id, ws_id, "world-settings");
+        ws.owner = Some(author);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#000000", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: ws }],
+            0,
+        )
+        .await
+        .unwrap();
+
+        // Scene with a 100-unit grid.
+        let mut scene = wdoc(world.id, scene_id, "scene");
+        scene.owner = Some(author);
+        scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: scene }],
+            0,
+        )
+        .await
+        .unwrap();
+
+        // Player-owned token at (50,50) = cell (0,0). The player sees nothing (dark scene).
+        let mut token = wdoc(world.id, token_id, "token");
+        token.parent_id = Some(scene_id);
+        token.owner = Some(p);
+        token.permissions.users.insert(p, DocRole::Owner);
+        token.system = json!({ "x": 50.0, "y": 50.0 });
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: token }],
+            0,
+        )
+        .await
+        .unwrap();
+
+        let rid = Uuid::from_u128(0xF001);
+
+        // GM: unconstrained (no mask) → PathResult for any reachable goal.
+        let gm_result = handle_pathfind(
+            rid,
+            scene_id,
+            (50.0, 50.0),
+            vec![(250.0, 50.0)],
+            0.1,
+            &gm_ctx,
+            &room,
+            repo.as_ref(),
+        )
+        .await;
+        assert!(
+            matches!(gm_result, ServerMsg::PathResult { .. }),
+            "GM should get PathResult; got {gm_result:?}"
+        );
+
+        // Non-GM in a dark scene: mask is empty → every cell is out-of-mask → PathError "unreachable".
+        // This is the documented fail-closed behaviour: dark scene + visible restriction freezes movement.
+        let player_result = handle_pathfind(
+            rid,
+            scene_id,
+            (50.0, 50.0),
+            vec![(250.0, 50.0)],
+            0.1,
+            &player,
+            &room,
+            repo.as_ref(),
+        )
+        .await;
+        assert!(
+            matches!(player_result, ServerMsg::PathError { ref message, .. } if message == "unreachable"),
+            "non-GM in dark scene should be unreachable; got {player_result:?}"
         );
     }
 

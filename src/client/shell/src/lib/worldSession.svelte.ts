@@ -22,6 +22,7 @@ import {
   type WireCapabilityRequirement,
   type SceneFrame,
   type SceneSubscription,
+  type PathResult,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
@@ -172,6 +173,18 @@ export class WorldSession {
     const scene = this.#optimistic.query("scene")[0];
     if (!scene) return;
     this.#ws?.send({ type: "scene_ping", scene: scene.id, x, y });
+  }
+
+  /** Request a grid A* path on the server. Thin delegate to `WsClient.pathfind`;
+   * rejects immediately when there is no live transport. */
+  pathfind(
+    scene: string,
+    start: [number, number],
+    waypoints: [number, number][],
+    footprintRadius: number,
+  ): Promise<PathResult> {
+    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    return this.#ws.pathfind(scene, start, waypoints, footprintRadius);
   }
 
   /** Subscribe to a SceneDerived channel. Returns a synchronous handle; the

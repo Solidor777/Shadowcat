@@ -15,6 +15,7 @@
     assets: ctx.assets,
     world: ctx.world,
     sendPing: ctx.sendPing,
+    pathfind: ctx.pathfind,
   });
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).
