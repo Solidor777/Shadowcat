@@ -3,7 +3,8 @@
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
     buildWorldSettingsDoc, buildLightGradationDoc, buildVisionModesDoc,
-    type WorldSettingsSystem, type LightGradationSystem, type VisionModesSystem, type WireDocument,
+    type WorldSettingsSystem, type LightGradationSystem, type VisionModesSystem,
+    type SceneSystem, type WireDocument,
   } from "@shadowcat/core";
 
   const ctx = getAppContext();
@@ -60,6 +61,25 @@
   const EASING = ["easeInOut", "linear"] as const;
   // Gradation band illumination floors as strings for the select control.
   const ILLUMINATION_FLOORS = ["bright", "dim", "dark"] as const;
+
+  // Per-scene overrides: scene list + selection + resolved system body.
+  // subscribe() is called inside each $derived.by so they re-resolve when the doc store
+  // updates after the resync stream lands (same reactive pattern as ws/lgDoc/vmDoc above).
+  const scenes = $derived.by((): WireDocument[] => {
+    subscribe();
+    return ctx.documents.query("scene");
+  });
+  let selectedSceneId = $state<string | null>(null);
+  const scene = $derived.by((): WireDocument | undefined =>
+    scenes.find((s) => s.id === (selectedSceneId ?? scenes[0]?.id)));
+  const ssys = $derived.by((): SceneSystem | undefined => scene?.system as SceneSystem | undefined);
+
+  // Single-field JSON-pointer update against the SELECTED scene doc.
+  // INVARIANT: scene must be defined; callers guard with the {#if} block.
+  function setScene(path: string, value: unknown): void {
+    if (!scene) return;
+    ctx.dispatchIntent([{ op: "update", doc_id: scene.id, changes: [{ path, old: null, new: value }] }]);
+  }
 </script>
 
 <section aria-label={ctx.t("gameSettings.title")}>
@@ -160,6 +180,159 @@
           </label>
         </div>
       {/each}
+    </fieldset>
+  {/if}
+
+  {#if ctx.role === "gm" && scene && ssys}
+    <!-- Per-scene overrides: vision, lighting, and grid.distance.
+         Each control offers an explicit "inherit" (empty value / indeterminate) option so
+         an absent field stays absent in scene.system and inherits the world default.
+         JSON-pointer paths written to the selected scene doc (not the world-settings doc).
+         INVARIANT: setScene guards scene != null; this block only renders when scene is defined. -->
+    <fieldset>
+      <legend>{ctx.t("gameSettings.scene.title")}</legend>
+
+      {#if scenes.length > 1}
+        <!-- Scene picker — only shown when >1 scene exists in this world. -->
+        <label>
+          {ctx.t("gameSettings.scene.pick")}
+          <select aria-label="gameSettings.scene.pick" value={scene.id}
+            onchange={(e) => (selectedSceneId = (e.currentTarget as HTMLSelectElement).value)}>
+            {#each scenes as s}<option value={s.id}>{s.id}</option>{/each}
+          </select>
+        </label>
+      {/if}
+
+      <!-- Vision overrides -->
+      <label>
+        {ctx.t("gameSettings.scene.movementRestriction")}
+        <select aria-label="gameSettings.scene.movementRestriction"
+          value={ssys.vision?.movementRestriction ?? ""}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            if (v) setScene("/system/vision/movementRestriction", v);
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          {#each MOVEMENT as m}<option value={m}>{m}</option>{/each}
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.losRestriction")}
+        <select aria-label="gameSettings.scene.losRestriction"
+          value={ssys.vision?.losRestriction === undefined ? "" : ssys.vision.losRestriction ? "true" : "false"}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            if (v !== "") setScene("/system/vision/losRestriction", v === "true");
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          <option value="true">{ctx.t("gameSettings.enabled")}</option>
+          <option value="false">{ctx.t("gameSettings.disabled")}</option>
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.fog")}
+        <select aria-label="gameSettings.scene.fog"
+          value={ssys.vision?.fog === undefined ? "" : ssys.vision.fog ? "true" : "false"}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            if (v !== "") setScene("/system/vision/fog", v === "true");
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          <option value="true">{ctx.t("gameSettings.enabled")}</option>
+          <option value="false">{ctx.t("gameSettings.disabled")}</option>
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.observerVision")}
+        <select aria-label="gameSettings.scene.observerVision"
+          value={ssys.vision?.observerVision === undefined ? "" : ssys.vision.observerVision ? "true" : "false"}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            if (v !== "") setScene("/system/vision/observerVision", v === "true");
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          <option value="true">{ctx.t("gameSettings.enabled")}</option>
+          <option value="false">{ctx.t("gameSettings.disabled")}</option>
+        </select>
+      </label>
+
+      <!-- Lighting overrides -->
+      <label>
+        {ctx.t("gameSettings.scene.lightingEnabled")}
+        <select aria-label="gameSettings.scene.lightingEnabled"
+          value={ssys.lighting?.enabled === undefined ? "" : ssys.lighting.enabled ? "true" : "false"}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            if (v !== "") setScene("/system/lighting/enabled", v === "true");
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          <option value="true">{ctx.t("gameSettings.enabled")}</option>
+          <option value="false">{ctx.t("gameSettings.disabled")}</option>
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.lightMode")}
+        <select aria-label="gameSettings.scene.lightMode"
+          value={ssys.lighting?.mode ?? ""}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            if (v) setScene("/system/lighting/mode", v);
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          {#each LIGHTMODE as m}<option value={m}>{m}</option>{/each}
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.envColor")}
+        <input type="color" aria-label="gameSettings.scene.envColor"
+          value={ssys.lighting?.environment?.color ?? "#000000"}
+          onchange={(e) => {
+            const env = ssys?.lighting?.environment;
+            setScene("/system/lighting/environment", {
+              color: (e.currentTarget as HTMLInputElement).value,
+              intensity: env?.intensity ?? 0,
+            });
+          }} />
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.envIntensity")}
+        <input type="number" min="0" max="1" step="0.05" aria-label="gameSettings.scene.envIntensity"
+          value={ssys.lighting?.environment?.intensity ?? ""}
+          onchange={(e) => {
+            const env = ssys?.lighting?.environment;
+            setScene("/system/lighting/environment", {
+              color: env?.color ?? "#000000",
+              intensity: Number((e.currentTarget as HTMLInputElement).value),
+            });
+          }} />
+      </label>
+
+      <!-- Grid distance override -->
+      <label>
+        {ctx.t("gameSettings.scene.distancePerCell")}
+        <input type="number" min="0" step="0.5" aria-label="gameSettings.scene.distancePerCell"
+          value={ssys.grid?.distance?.perCell ?? ""}
+          onchange={(e) => setScene("/system/grid/distance", {
+            perCell: Number((e.currentTarget as HTMLInputElement).value),
+            unit: ssys?.grid?.distance?.unit ?? "ft",
+          })} />
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.distanceUnit")}
+        <input type="text" aria-label="gameSettings.scene.distanceUnit"
+          value={ssys.grid?.distance?.unit ?? ""}
+          onchange={(e) => setScene("/system/grid/distance", {
+            perCell: ssys?.grid?.distance?.perCell ?? 5,
+            unit: (e.currentTarget as HTMLInputElement).value,
+          })} />
+      </label>
     </fieldset>
   {/if}
 </section>
