@@ -465,7 +465,6 @@ impl SceneEcs {
     /// overrides only vision/lighting/grid — parent §5.2). Reads `world-settings.pathfinding.diagonalRule`.
     /// Uses `validated_world_settings_system` so a structurally incomplete doc falls back to `Chebyshev`,
     /// consistent with `resolve_scene`'s handling of the same partial-doc case.
-    #[allow(dead_code)] // TODO: remove once the pathfinding handler calls this.
     pub(crate) fn resolved_diagonal_rule(&self) -> pathfinding::DiagonalRule {
         let s = self
             .validated_world_settings_system()
@@ -683,7 +682,6 @@ impl SceneEcs {
     /// (doc_type "wall", parent = scene, `system.blocksMove == true`, endpoints at
     /// `system.seg.{x1,y1,x2,y2}`). INVARIANT: same filter as `blocks_move` — any divergence
     /// would allow the pathfinder to route through walls the movement gate would then reject.
-    #[allow(dead_code)] // TODO: remove once the grid pathfinder calls this
     pub(crate) fn move_walls(&self, scene: Uuid) -> Vec<vision::Seg> {
         let mut out = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
@@ -711,6 +709,68 @@ impl SceneEcs {
             }
         }
         out
+    }
+
+    /// Plan a route for `user`'s token in `scene` (M10e-6). Reuses the M10e-4 `visible_cells`
+    /// mask so the preview agrees with the movement gate (spec §13). `is_gm`/`unrestricted` ⇒
+    /// no mask; `visible` ⇒ `visible_cells`; `revealed` ⇒ `visible_cells ∪ explored`. `explored`
+    /// is the caller's pre-fetched `ExploredSet` (only consulted under `revealed`; the handler
+    /// fetches it off the lock). An empty non-GM mask ⇒ `find` returns Unreachable (fail-closed —
+    /// the dark-scene freeze that mirrors the movement gate, by design).
+    ///
+    /// Coupling (spec §13): `visible_cells` is the ONE canonical mask shared between this method
+    /// and the M10e-4 movement gate in `Room::publish`. Do NOT fork the per-cell decision here.
+    // Eight args mirrors the flat ECS-assembly signature; the handler that calls this already
+    // holds all inputs separately (user, scene, start, waypoints, footprint, is_gm, explored)
+    // so a wrapper struct would only obscure the coupling to the movement gate.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pathfind(
+        &self,
+        user: Uuid,
+        scene: Uuid,
+        start: (f64, f64),
+        waypoints: &[(f64, f64)],
+        footprint_radius: f64,
+        is_gm: bool,
+        explored: Option<&crate::scene::explored::ExploredSet>,
+    ) -> Result<(Vec<(f64, f64)>, f64), pathfinding::PathFail> {
+        let cell = self
+            .scene_grid_sizes()
+            .get(&scene)
+            .copied()
+            .unwrap_or(100.0);
+        let rule = self.resolved_diagonal_rule();
+        let walls = self.move_walls(scene);
+
+        // Build the per-(user,scene) mask (None ⇒ unconstrained).
+        let mask: Option<std::collections::BTreeSet<pathfinding::Cell>> = if is_gm {
+            None
+        } else {
+            let settings = self.resolve_scene(scene);
+            match settings.movement_restriction {
+                MovementRestriction::Unrestricted => None,
+                MovementRestriction::Visible => {
+                    Some(self.visible_cells(user, scene, settings.partial_cell_leniency))
+                }
+                MovementRestriction::Revealed => {
+                    let mut m = self.visible_cells(user, scene, settings.partial_cell_leniency);
+                    if let Some(ex) = explored {
+                        m.extend(ex.iter());
+                    }
+                    Some(m)
+                }
+            }
+        };
+
+        pathfinding::find(
+            start,
+            waypoints,
+            footprint_radius,
+            cell,
+            rule,
+            &walls,
+            mask.as_ref(),
+        )
     }
 
     /// The enabled `light` docs parented to `scene`, parsed into `lighting::Light`. Disabled lights
@@ -2838,5 +2898,96 @@ mod tests {
         assert_eq!(walls.len(), 1, "only the blocksMove wall is returned");
         let w = walls[0];
         assert_eq!((w.a, w.b), ((100.0, 0.0), (100.0, 200.0)));
+    }
+
+    /// Builds a SceneEcs with one scene (id 10), one player-owned token at (50, 50), and
+    /// world-settings that set `movementRestriction = "revealed"` with no placed lights (env
+    /// intensity = 0). The visible mask is therefore empty; only explored memory can admit cells.
+    /// Returns `(ecs, user, scene_id)`.
+    fn scene_revealed_player_token() -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+        // Dark scene + revealed restriction: visible cells = ∅, so only explored memory admits moves.
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#000000", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "revealed",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        (ecs, user, scene_id)
+    }
+
+    #[test]
+    fn pathfind_gm_unconstrained_routes_without_a_mask() {
+        // GM (is_gm=true): no mask; an open scene routes start→goal at chebyshev cost.
+        let (ecs, _user, scene) = scene_with_lit_player_token();
+        let r = ecs.pathfind(
+            Uuid::from_u128(1),
+            scene,
+            (50.0, 50.0),
+            &[(250.0, 50.0)],
+            0.1,
+            true,
+            None,
+        );
+        let (path, cost) = r.expect("GM route");
+        assert!((cost - 2.0).abs() < 1e-9);
+        assert_eq!(path.last(), Some(&(250.0, 50.0)));
+    }
+
+    #[test]
+    fn pathfind_nongm_visible_is_bounded_by_the_mask() {
+        // Non-GM under movementRestriction "visible": a goal outside the lit mask is Unreachable.
+        let (ecs, user, scene) = scene_with_lit_player_token();
+        let lenient = ecs.resolve_scene(scene).partial_cell_leniency;
+        let mask = ecs.visible_cells(user, scene, lenient);
+        assert!(!mask.is_empty(), "the lit token has a non-empty mask");
+        // A far goal well outside the lit radius → Unreachable.
+        let far = ecs.pathfind(
+            user,
+            scene,
+            (50.0, 50.0),
+            &[(5000.0, 5000.0)],
+            0.1,
+            false,
+            None,
+        );
+        assert_eq!(far, Err(crate::scene::pathfinding::PathFail::Unreachable));
+    }
+
+    #[test]
+    fn pathfind_revealed_unions_explored_memory() {
+        // movementRestriction "revealed": an explored corridor covering start..goal makes an otherwise-unlit
+        // goal routable.
+        let (ecs, user, scene) = scene_revealed_player_token();
+        let cell = 100.0;
+        let mut explored = crate::scene::explored::ExploredSet::new();
+        // Mark cells (0,0)..(3,0) as explored (a straight corridor).
+        explored.mark_polygons(
+            &[vec![0.0, 0.0, 4.0 * cell, 0.0, 4.0 * cell, cell, 0.0, cell]],
+            cell,
+        );
+        let r = ecs.pathfind(
+            user,
+            scene,
+            (50.0, 50.0),
+            &[(350.0, 50.0)],
+            0.1,
+            false,
+            Some(&explored),
+        );
+        assert!(
+            r.is_ok(),
+            "explored corridor makes the goal routable under revealed"
+        );
     }
 }

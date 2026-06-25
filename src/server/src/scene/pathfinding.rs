@@ -18,8 +18,6 @@ pub enum DiagonalRule {
 
 /// Parse the diagonal-rule string; unknown/missing ⇒ `Chebyshev` (mirrors the client
 /// `DEFAULT_WORLD_SETTINGS.pathfinding.diagonalRule` in `scene-docs.ts`).
-// TODO: remove allow once the ECS pathfind handler calls this.
-#[allow(dead_code)]
 pub fn parse_diagonal_rule(s: &str) -> DiagonalRule {
     match s {
         "manhattan" => DiagonalRule::Manhattan,
@@ -391,8 +389,6 @@ fn to_cell(p: vision::P, cell: f64) -> Cell {
 /// Plan a footprint-clear, mask-bounded route `start -> waypoints[0] -> ... -> waypoints[last]`.
 /// `waypoints` is the full ordered leg list whose last element is the goal (empty => `Invalid`).
 /// Returns cell-center scene points (incl. start and goal) and the total cost in cells.
-// TODO: remove allow once the ECS pathfind handler calls this.
-#[allow(dead_code)]
 pub fn find(
     start: vision::P,
     waypoints: &[vision::P],
