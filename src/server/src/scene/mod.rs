@@ -558,6 +558,107 @@ impl SceneEcs {
         out
     }
 
+    /// The `blocksLight` wall segments of `scene` (the light-occlusion geometry for lighting mask).
+    // TODO: wire into the lighting mask compute path (the caller in this module will clear the lint).
+    #[allow(dead_code)]
+    pub(crate) fn light_walls(&self, scene: Uuid) -> Vec<vision::Seg> {
+        let mut out = Vec::new();
+        for w in self.world.query::<&SceneEntity>().iter() {
+            if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
+                continue;
+            }
+            if w.doc
+                .system
+                .pointer("/blocksLight")
+                .and_then(|v| v.as_bool())
+                != Some(true)
+            {
+                continue;
+            }
+            if let (Some(x1), Some(y1), Some(x2), Some(y2)) = (
+                sys_f64(&w.doc, "/seg/x1"),
+                sys_f64(&w.doc, "/seg/y1"),
+                sys_f64(&w.doc, "/seg/x2"),
+                sys_f64(&w.doc, "/seg/y2"),
+            ) {
+                out.push(vision::Seg {
+                    a: (x1, y1),
+                    b: (x2, y2),
+                });
+            }
+        }
+        out
+    }
+
+    /// The enabled `light` docs parented to `scene`, parsed into `lighting::Light`. Disabled lights
+    /// are dropped here (they contribute nothing). `falloff` defaults to Linear; missing radii → 0.
+    // TODO: wire into the lighting mask compute path (the caller in this module will clear the lint).
+    #[allow(dead_code)]
+    pub(crate) fn scene_lights(&self, scene: Uuid) -> Vec<crate::scene::lighting::Light> {
+        use crate::scene::lighting::{Falloff, Light};
+        let mut out = Vec::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type != "light" || e.doc.parent_id != Some(scene) {
+                continue;
+            }
+            if e.doc.system.pointer("/enabled").and_then(|v| v.as_bool()) != Some(true) {
+                continue;
+            }
+            let (Some(x), Some(y)) = (sys_f64(&e.doc, "/x"), sys_f64(&e.doc, "/y")) else {
+                continue;
+            };
+            let color = e
+                .doc
+                .system
+                .pointer("/color")
+                .and_then(|v| v.as_str())
+                .map(parse_hex_color)
+                .unwrap_or(0xFFFFFF);
+            let falloff = match e
+                .doc
+                .system
+                .pointer("/falloff/curve")
+                .and_then(|v| v.as_str())
+            {
+                Some("quadratic") => Falloff::Quadratic,
+                Some("none") => Falloff::None,
+                _ => Falloff::Linear,
+            };
+            out.push(Light {
+                pos: (x, y),
+                color,
+                intensity: e
+                    .doc
+                    .system
+                    .pointer("/intensity")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1.0)
+                    .clamp(0.0, 1.0),
+                bright_radius: e
+                    .doc
+                    .system
+                    .pointer("/brightRadius")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                dim_radius: e
+                    .doc
+                    .system
+                    .pointer("/dimRadius")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                falloff,
+                enabled: true,
+            });
+        }
+        // Deterministic order (entity-query order is unspecified): sort by id-stable position.
+        out.sort_by(|a, b| {
+            a.pos
+                .partial_cmp(&b.pos)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        out
+    }
+
     /// The token's effective vision modes as `(floor_min_illumination, range_cells)` pairs.
     /// `range_cells == 0.0` ⇒ unlimited. Precedence (mirrors `resolveTokenActor` in actor.ts):
     /// a LINKED token (`actor_id` present) resolves the shared actor and applies
@@ -1118,6 +1219,52 @@ mod tests {
                     "overrides": { "vision": [{ "mode": "darkvision", "range": 9 }] } }),
         );
         assert_eq!(ecs.token_vision_floors(&dangling), vec![(0.34, 0.0)]);
+    }
+
+    #[test]
+    fn light_and_blockslight_wall_accessors_filter_by_scene() {
+        use serde_json::json;
+        let scene = Uuid::from_u128(10);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                entity_doc(
+                    20,
+                    10,
+                    "light",
+                    json!({
+                        "x": 50.0, "y": 50.0, "color": "#ffeeaa", "intensity": 1.0,
+                        "brightRadius": 2.0, "dimRadius": 6.0, "enabled": true
+                    }),
+                ),
+                entity_doc(
+                    21,
+                    10,
+                    "light",
+                    json!({ "x": 0.0, "y": 0.0, "color": "#fff",
+                    "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 2.0, "enabled": false }),
+                ),
+                entity_doc(
+                    22,
+                    10,
+                    "wall",
+                    json!({ "seg": {"x1":0,"y1":0,"x2":10,"y2":0}, "blocksLight": true }),
+                ),
+                entity_doc(
+                    23,
+                    10,
+                    "wall",
+                    json!({ "seg": {"x1":0,"y1":5,"x2":10,"y2":5}, "blocksLight": false }),
+                ),
+            ],
+            0,
+        );
+        let lights = ecs.scene_lights(scene);
+        assert_eq!(lights.len(), 1); // the disabled light is excluded
+        assert_eq!(lights[0].color, 0xFFEEAA);
+        assert_eq!(lights[0].bright_radius, 2.0);
+        let walls = ecs.light_walls(scene);
+        assert_eq!(walls.len(), 1); // only the blocksLight:true wall
     }
 
     #[test]
