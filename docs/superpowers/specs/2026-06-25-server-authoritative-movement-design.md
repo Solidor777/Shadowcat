@@ -78,28 +78,27 @@ pathfinder preview →  proposed cell-path }       by step vs walls+vision+     
 
 ## 4. Render-path delivery & continuous client vision
 
-This section describes the **target** (reached at M2). The delivery model is staged across
-the decomposition (§7): **M1 server-clips** the render-path per observer (no leak); **M2**
-moves to full broadcast + continuous client vision for the cases server-clipping cannot
-reach.
+This section describes the **target** (reached at M2). Delivery is staged across the
+decomposition (§7): **M1 delivers the render-path only to the mover**; **M2** adds
+observer-side delivery (per-observer clipping, then continuous client vision).
 
-- **Client animation (M1+):** each client animates the token along its received
-  `render_path` over `duration_ms` using the retained M10e-5 animation engine
-  (`animateAlongPath`). The authoritative `setTarget(stop)` coincides with the path's final
-  vertex, so it does not interrupt the walk.
-- **M1 — server-side per-observer clipping (no leak).** At execution the server evaluates,
-  per recipient, which steps of the path that observer can see (LOS against `blocksSight` for
-  the observer's **current** vision) and sends only the visible steps as **timing-tagged
-  visible sub-segments** (each carrying its time offset within the total move). The client
-  draws the token only during its visible sub-segments, so a **static observer** sees the
-  correct **timed occlusion gap** behind a wall and reappearance. No hidden cells leave the
-  server. M1 does *not* cover an observer whose vision changes during the animation.
-- **M2 — full broadcast + continuous render-time vision (the full boulder behavior).** The
-  full `render_path` is broadcast to **all players in the scene** (user-chosen); each client,
-  per frame, recomputes each token's sightline from its **animated** position (shared
-  deterministic LOS over the wall geometry the client already holds) and draws every
-  animating token only where the observer can currently see it. This adds, with no server
-  round-trips, the cases M1 cannot:
+- **Client animation:** a client animates the token along its received `render_path` over
+  `duration_ms` using the retained M10e-5 animation engine (`animateAlongPath`). The
+  authoritative `setTarget(stop)` coincides with the path's final vertex, so it does not
+  interrupt the walk.
+- **M1 — mover-only render-path (no leak, no per-recipient machinery).** The executed
+  `render_path` is returned to **the moving player only** (one-shot, like the `Pathfind`
+  reply). Because the mover's route is vision-gated (within the mover's own vision by
+  construction), no clipping is needed — the mover sees their whole walk. **Observers** see
+  only the **atomic position update** (the token tweens straight to the stop location via the
+  existing animator). No hidden cells leave the server.
+- **M2 — observer render-path delivery (per-observer clip → continuous).** First, deliver the
+  render-path to observers **server-clipped per recipient** (LOS against `blocksSight` for
+  the observer's current vision) as **timing-tagged visible sub-segments**, so a **static
+  observer** sees the correct **timed occlusion gap** behind a wall (no leak). Then move to
+  **full `render_path` broadcast** to all scene players + **per-frame** shared deterministic
+  LOS recompute from each token's **animated** position, adding the cases server-clipping
+  cannot reach:
   - **observer moved first:** the whole move is visible (the observer's new sightline covers
     it);
   - **concurrent animations:** an observer who finishes its own move mid-animation picks the
@@ -131,8 +130,8 @@ remain M10g**; until then the hook has no registered arresting regions (no behav
 
 | # | Checkpoint | Deliverable |
 |---|---|---|
-| **M1** | Server-authoritative move execution | `MoveRequest`/`MoveExecuted` frames; exact-path step validation (walls + vision mask incl. diagonal flankers); atomic stop-location write via the document-command path; `moving` lock + server rejection of moves for a moving token; reload/resync resolves at stop location; render-path **server-clipped per observer** to their current vision as **timing-tagged visible sub-segments** (correct occlusion gaps for a static observer; no leak). Client: request-only commit (rework the measure-tool route-commit) + animate the render-path via the kept animation engine. |
-| **M2** | Continuous client-side vision during animation | Move to **full `render_path` broadcast** to all scene players + shared deterministic LOS recompute **per animation frame**; render-time clipping of all animating tokens to the observer's live (animated) vision. Adds the cases M1 cannot: observer-moved-first and concurrent pick-up (M1 already covers the static-observer gap). |
+| **M1** | Server-authoritative move execution | `MoveRequest`/`MoveExecuted` frames; exact-path step validation (walls + vision mask incl. diagonal flankers); atomic stop-location write via the document-command path; `moving` lock + server rejection of moves for a moving token; reload/resync resolves at stop location; render-path returned **to the mover only** (one-shot; mover animates their walk). Observers see the atomic position (straight tween) until M2. Client: request-only commit (rework the measure-tool route-commit) + animate the render-path via the kept animation engine. |
+| **M2** | Observer render-path + continuous client vision | Deliver the render-path to observers — first **server-clipped per recipient** as timing-tagged visible sub-segments (static-observer occlusion gaps, no leak), then **full broadcast** + per-frame shared deterministic LOS recompute from each token's animated position (observer-moved-first + concurrent pick-up). |
 | **M3** | Vision-gated pathfinder + region-arrest hook | Make the preview pathfinder vision-gated and deterministic-equal to server validation (closes buddy-check P1 at the root — router mask predicate ≥ gate supercover predicate, incl. diagonal flankers / sub-0.5 footprints); add the per-step region-arrest hook in the executor. Region system itself = M10g. |
 
 **Dependency order:** M1 → M2 → M3. M1 is independently shippable (basic static-vision
