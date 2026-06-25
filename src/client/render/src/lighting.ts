@@ -51,7 +51,7 @@ export class Lighting {
     this.apply();
   }
 
-  /** Return the last applied interpolated frame (re-apply after a resize if needed). */
+  /** Return the last applied/interpolated frame (the value most recently painted by apply()). */
   current(): LightingFrame { return this._current; }
 
   private apply(): void {

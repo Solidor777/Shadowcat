@@ -90,7 +90,6 @@ test("tint: alpha lerps; color held when one side is untinted, channel-blended w
   expect(cellA.tint).toBe(0xFF0000);
 
   // Sub-case B: 0xFF0000 → 0x0000FF; mid-fade R between 0–255, B between 0–255.
-  const l2 = new Lighting(new MockBackend());
   const b2 = new MockBackend();
   const lb = new Lighting(b2);
   lb.setTarget({ cell: 100, bands, hints: [], cells: [{ i: 0, j: 0, band: 0, tint: 0xFF0000, hint: -1 }] });
@@ -104,5 +103,4 @@ test("tint: alpha lerps; color held when one side is untinted, channel-blended w
   expect(r).toBeLessThan(255); // lerped toward 0
   expect(blue).toBeGreaterThan(0);
   expect(blue).toBeLessThan(255); // lerped toward 255
-  void l2; // unused (only b2/lb used in sub-case B)
 });

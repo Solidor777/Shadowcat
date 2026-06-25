@@ -59,6 +59,8 @@ export class PixiBackend implements DisplayBackend {
         c.addChild(this.lightingGraphics);
         // BlurFilter softens cell-boundary stepping artifacts between gradation bands.
         // POST_WORK: replace with radial gradient fills when PixiJS gradient API stabilises.
+        // NOTE: filter is attached directly (not via addLayerFilter); future filter swaps on
+        // the "lighting" layer must account for this pre-existing BlurFilter in c.filters.
         c.filters = [new BlurFilter({ strength: 8 })];
       }
       if (id === "mask") {
@@ -301,14 +303,15 @@ export class PixiBackend implements DisplayBackend {
 
   setLighting(frame: LightingFrame): void {
     this.lightingGraphics.clear();
-    const s = frame.cell;
+    // empty cells = no lighting overlay (all-clear)
+    const cellSize = frame.cell;
     for (const c of frame.cells) {
-      const x = c.i * s, y = c.j * s;
-      if (c.alpha > 0) this.lightingGraphics.rect(x, y, s, s).fill({ color: 0x000000, alpha: c.alpha });
-      if (c.tintAlpha > 0) this.lightingGraphics.rect(x, y, s, s).fill({ color: c.tint, alpha: c.tintAlpha });
+      const x = c.i * cellSize, y = c.j * cellSize;
+      if (c.alpha > 0) this.lightingGraphics.rect(x, y, cellSize, cellSize).fill({ color: 0x000000, alpha: c.alpha });
+      if (c.tintAlpha > 0) this.lightingGraphics.rect(x, y, cellSize, cellSize).fill({ color: c.tint, alpha: c.tintAlpha });
       // V1 desaturate approximation: a low-alpha neutral wash mutes color in darkvision-only cells.
       // POST_WORK: replace with a masked ColorMatrixFilter over the scene layers for true desaturation.
-      if (c.desaturate) this.lightingGraphics.rect(x, y, s, s).fill({ color: 0x808080, alpha: 0.18 });
+      if (c.desaturate) this.lightingGraphics.rect(x, y, cellSize, cellSize).fill({ color: 0x808080, alpha: 0.18 });
     }
   }
 

@@ -791,8 +791,8 @@ impl SceneEcs {
         struct Src {
             scene: Uuid,
             vp: vision::P,
-            // (floor_min_value, range_cells, render_hint): third element reserved for per-cell
-            // hint resolution; unused here to keep behavior unchanged.
+            // (floor_min_value, range_cells, render_hint): render_hint drives per-cell
+            // darkvision hint resolution in the cell-accumulation loop (admit_hint).
             floors: Vec<(f64, f64, Option<String>)>,
         }
         let mut sources: Vec<Src> = Vec::new();
@@ -1472,6 +1472,7 @@ mod tests {
         assert_eq!(gv["mode"], "all");
         assert!(gv.get("lit").is_none());
         assert!(gv.get("bands").is_none());
+        assert!(gv.get("renderHints").is_none());
     }
 
     #[test]
@@ -1499,6 +1500,10 @@ mod tests {
         assert!(hints.iter().any(|h| h == "desaturate"));
         let cells = pv["lit"][0]["cells"].as_array().unwrap();
         let hint_idx = cells[4].as_i64().unwrap(); // 5th int of the first cell
+        assert!(
+            hint_idx >= 0,
+            "first cell must have a resolved hint, not -1"
+        );
         assert_eq!(pv["renderHints"][hint_idx as usize], json!("desaturate"));
     }
 
@@ -1593,7 +1598,7 @@ mod tests {
         // A per-token override REPLACES the actor's vision entirely.
         linked.system["overrides"] = json!({ "vision": [{ "mode": "normal", "range": 0 }] });
         let f2 = ecs.token_vision_floors(&linked);
-        assert_eq!(f2[0], (0.34, 0.0, None)); // dim floor, unlimited range, normal hint
+        assert_eq!(f2[0], (0.34, 0.0, None)); // dim floor, unlimited range, no hint (normal mode has render_hint: None)
 
         // An actorless token → normal only.
         let raw = entity_doc(12, 10, "token", json!({ "x": 0, "y": 0 }));
@@ -1848,6 +1853,10 @@ mod tests {
         let mask = ecs.player_lit_mask(player);
         assert_eq!(mask.len(), 1);
         assert!(
+            !mask[0].cells.is_empty(),
+            "darkvision must see at least one cell in range"
+        );
+        assert!(
             mask[0]
                 .cells
                 .iter()
@@ -1980,5 +1989,51 @@ mod tests {
             .iter()
             .any(|(_, _, h)| h.as_deref() == Some("desaturate")));
         assert!(floors.iter().any(|(_, _, h)| h.is_none()));
+    }
+
+    #[test]
+    fn lit_mask_suppresses_hint_when_normal_floor_wins_in_bright_cell() {
+        use serde_json::json;
+        // Combined-token suppression (buddy-check A1): an owned token whose embedded actor has
+        // BOTH normal (floor=dim 0.34) AND darkvision (floor=dark 0.0).  Standing in a brightly-lit
+        // cell (light placed at the token), normal's floor (0.34) is higher than darkvision's (0.0),
+        // so normal is the highest-admitting mode → its hint (None) wins → lit cells carry no hint.
+        let player = Uuid::from_u128(42);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(player);
+        tok.embedded.insert(
+            "actor".into(),
+            vec![{
+                let mut a = doc(99, None, "actor");
+                a.system = json!({ "vision": [
+                    { "mode": "normal",     "range": 0 },
+                    { "mode": "darkvision", "range": 6 }
+                ]});
+                a
+            }],
+        );
+        // A bright light at the token location illuminates the cell at (0,0) above dim threshold.
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            }),
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
+        let mask = ecs.player_lit_mask(player);
+        let lit_cells: Vec<_> = mask.iter().flat_map(|s| s.cells.iter()).collect();
+        assert!(
+            !lit_cells.is_empty(),
+            "token with normal+darkvision under bright light must see at least one cell"
+        );
+        // Every lit cell must carry None: normal's floor (0.34) > darkvision's floor (0.0),
+        // so normal is the highest-admitting mode and its None hint suppresses desaturate.
+        assert!(
+            lit_cells.iter().all(|(_, _, _, _, h)| h.is_none()),
+            "normal-floor wins in bright cell: desaturate hint must be suppressed (None)"
+        );
     }
 }
