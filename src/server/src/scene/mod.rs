@@ -657,6 +657,40 @@ impl SceneEcs {
         out
     }
 
+    /// The scene's `blocksMove` wall segments. Mirrors the wall filter in `blocks_move`
+    /// (doc_type "wall", parent = scene, `system.blocksMove == true`, endpoints at
+    /// `system.seg.{x1,y1,x2,y2}`). INVARIANT: same filter as `blocks_move` — any divergence
+    /// would allow the pathfinder to route through walls the movement gate would then reject.
+    #[allow(dead_code)] // TODO: remove once the grid pathfinder calls this
+    pub(crate) fn move_walls(&self, scene: Uuid) -> Vec<vision::Seg> {
+        let mut out = Vec::new();
+        for w in self.world.query::<&SceneEntity>().iter() {
+            if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
+                continue;
+            }
+            if w.doc
+                .system
+                .pointer("/blocksMove")
+                .and_then(|v| v.as_bool())
+                != Some(true)
+            {
+                continue;
+            }
+            if let (Some(x1), Some(y1), Some(x2), Some(y2)) = (
+                sys_f64(&w.doc, "/seg/x1"),
+                sys_f64(&w.doc, "/seg/y1"),
+                sys_f64(&w.doc, "/seg/x2"),
+                sys_f64(&w.doc, "/seg/y2"),
+            ) {
+                out.push(vision::Seg {
+                    a: (x1, y1),
+                    b: (x2, y2),
+                });
+            }
+        }
+        out
+    }
+
     /// The enabled `light` docs parented to `scene`, parsed into `lighting::Light`. Disabled lights
     /// are dropped here (they contribute nothing). `falloff` defaults to Linear; missing radii → 0.
     pub(crate) fn scene_lights(&self, scene: Uuid) -> Vec<crate::scene::lighting::Light> {
@@ -1352,7 +1386,12 @@ fn on_segment(a: (f64, f64), b: (f64, f64), p: (f64, f64)) -> bool {
 /// T-junction)? Source: standard orientation/cross-product segment-intersection test
 /// (CLRS "Determining whether two segments intersect"). A move that merely touches a wall
 /// counts as blocked (conservative — a token cannot end on or graze a wall).
-fn segments_cross(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), p4: (f64, f64)) -> bool {
+pub(crate) fn segments_cross(
+    p1: (f64, f64),
+    p2: (f64, f64),
+    p3: (f64, f64),
+    p4: (f64, f64),
+) -> bool {
     let d1 = orient(p3, p4, p1);
     let d2 = orient(p3, p4, p2);
     let d3 = orient(p1, p2, p3);
@@ -2684,5 +2723,34 @@ mod tests {
             ecs.visible_cells(stranger, scene, true).is_empty(),
             "no sources → empty (fail closed)"
         );
+    }
+
+    /// Build an ECS with one `blocksMove` wall and one non-blocking wall in the same scene.
+    /// The blocking wall runs from (100,0) to (100,200); the non-blocking wall runs elsewhere.
+    fn scene_with_two_walls_one_blocking() -> (SceneEcs, Uuid) {
+        let scene = Uuid::from_u128(10);
+        let blocking =
+            json!({ "seg": {"x1": 100, "y1": 0, "x2": 100, "y2": 200}, "blocksMove": true });
+        let non_blocking =
+            json!({ "seg": {"x1": 0, "y1": 0, "x2": 50, "y2": 50}, "blocksMove": false });
+        let ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                entity_doc(11, 10, "wall", blocking),
+                entity_doc(12, 10, "wall", non_blocking),
+            ],
+            0,
+        );
+        (ecs, scene)
+    }
+
+    #[test]
+    fn move_walls_returns_only_blocks_move_segments_for_the_scene() {
+        // A scene with one blocksMove wall and one non-blocksMove wall yields exactly the blocking segment.
+        let (ecs, scene) = scene_with_two_walls_one_blocking();
+        let walls = ecs.move_walls(scene);
+        assert_eq!(walls.len(), 1, "only the blocksMove wall is returned");
+        let w = walls[0];
+        assert_eq!((w.a, w.b), ((100.0, 0.0), (100.0, 200.0)));
     }
 }
