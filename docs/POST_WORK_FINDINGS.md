@@ -16,6 +16,24 @@ are observations awaiting triage, not committed work.
   removes that mode from the resolved registry with no diagnostic. Status: Accepted (client parity;
   add GM-facing validation/warning if authoring friction surfaces).
 
+- Title: M10e-4 default scene (dark + `movementRestriction:"visible"`) freezes non-GM movement.
+  Summary: default `world-settings` is `lightingEnabled:true` + `environmentLight` + `environment.intensity:0.0`
+  (inert ambient) and `movementRestriction:"visible"`. Composed, a fresh scene with no placed lights
+  has an empty lit mask, so EVERY non-GM move's supercover fails the gate → no player can move until the
+  GM places a light, switches to `globalIllumination`, or sets `unrestricted`. This is the spec's
+  fail-closed intent (a player can't drag into unseen map), but it is a sharp out-of-box edge.
+  Status: Accepted (fail-closed by design). Soften only if authoring friction surfaces (candidate:
+  default `globalIllumination`, or a non-zero default ambient, or default `unrestricted`).
+
+- Title: M10e-4 lenient-mode near-corner move can be spuriously rejected.
+  Summary: `supercover_cells` uses a magnitude-relative epsilon to detect exact lattice-corner
+  crossings and emit BOTH flanking cells (no thin-line slip). It can OVER-fire on a near-corner the
+  true segment doesn't exactly cross, emitting an extra flanking cell; if that cell is dark, a legal
+  player move whose path merely grazes a corner is rejected. The direction is fail-safe (over-include
+  ⇒ reject a fine move, never admit a forbidden one — security is preserved), but it is a rare
+  player-visible false-reject. Status: Accepted (security-safe). Revisit only if reports surface;
+  a future tightening to the exact crossed-cell set would remove it.
+
 - Title: offline-intent flush can precede the async `#onWelcome` body on reconnect.
   Summary: `WsClient` fires `onResyncComplete` (→ `WorldSession.#flushOfflineQueue`)
   synchronously on the caught-up Welcome branch / on `resync_end`, while
