@@ -802,6 +802,37 @@ impl SceneEcs {
         out
     }
 
+    /// Scene-shared lighting/wall inputs for the visibility mask. Computed once per scene per
+    /// dispatch and reused for every vision source via `lighting_inputs`. `all_bright`
+    /// short-circuits light raycasts under lighting-off or globalIllumination (spec §3/§6).
+    pub(crate) fn lighting_inputs(&self, scene: Uuid, settings: &ResolvedScene) -> LightingInputs {
+        let all_bright = !settings.lighting_enabled
+            || matches!(settings.light_mode, LightMode::GlobalIllumination);
+        let lights = if all_bright {
+            Vec::new()
+        } else {
+            self.scene_lights(scene)
+        };
+        let light_walls = if all_bright {
+            Vec::new()
+        } else {
+            self.light_walls(scene)
+        };
+        let lit_polys: Vec<Vec<vision::P>> = lights
+            .iter()
+            .map(|l| {
+                let b = vision::bound_for(l.pos, &light_walls, VISION_BOUND_MARGIN);
+                vision::visibility_polygon(l.pos, &light_walls, b)
+            })
+            .collect();
+        LightingInputs {
+            all_bright,
+            lights,
+            lit_polys,
+            sight_walls: self.sight_walls(scene),
+        }
+    }
+
     /// The per-player lighting-aware visibility mask: per scene, the cells the user can currently
     /// see = LOS-cells ∩ (illumination ≥ vision floor ∨ darkvision-in-range), each tagged with its
     /// illumination band + tint. Vision sources = owned tokens ∪ (observerVision ? Observer-tier
@@ -905,45 +936,16 @@ impl SceneEcs {
             if cell <= 0.0 {
                 continue;
             }
-            let sight_walls = self.sight_walls(scene);
             // Lighting inputs: under globalIllumination or lighting-off, every LOS cell is bright;
             // else compute per-cell from lights (occluded by blocksLight) + environment.
-            let all_bright = !settings.lighting_enabled
-                || matches!(settings.light_mode, LightMode::GlobalIllumination);
-            let lights = if all_bright {
-                Vec::new()
-            } else {
-                self.scene_lights(scene)
-            };
-            let light_walls = if all_bright {
-                Vec::new()
-            } else {
-                self.light_walls(scene)
-            };
-            let lit_polys: Vec<Vec<vision::P>> = lights
-                .iter()
-                .map(|l| {
-                    let b = vision::bound_for(l.pos, &light_walls, VISION_BOUND_MARGIN);
-                    vision::visibility_polygon(l.pos, &light_walls, b)
-                })
-                .collect();
+            let li = self.lighting_inputs(scene, settings);
 
             let entry = per_scene
                 .entry(scene)
                 .or_insert_with(|| (cell, BTreeMap::new()));
             for src in sources.iter().filter(|s| s.scene == scene) {
                 // LOS polygon for this source (or, LOS off, the whole bound box as a polygon).
-                let b = vision::bound_for(src.vp, &sight_walls, VISION_BOUND_MARGIN);
-                let poly = if settings.los_restriction {
-                    vision::visibility_polygon(src.vp, &sight_walls, b)
-                } else {
-                    vec![
-                        (b.minx, b.miny),
-                        (b.maxx, b.miny),
-                        (b.maxx, b.maxy),
-                        (b.minx, b.maxy),
-                    ]
-                };
+                let poly = source_los_poly(src.vp, &li.sight_walls, settings.los_restriction);
                 if poly.len() < 3 {
                     continue;
                 }
@@ -977,7 +979,7 @@ impl SceneEcs {
                         // Spec §3/§6: lighting OFF ⇒ all-bright untinted; globalIllumination ⇒
                         // all-bright tinted by the environment. level=1.0 so every vision floor
                         // (incl. normal "dim") passes — every LOS cell is visible.
-                        let cl = if all_bright {
+                        let cl = if li.all_bright {
                             crate::scene::lighting::CellLight {
                                 level: 1.0,
                                 tint: if settings.lighting_enabled {
@@ -991,15 +993,16 @@ impl SceneEcs {
                                 (cx, cy),
                                 settings.env_intensity,
                                 settings.env_color,
-                                &lights,
-                                &lit_polys,
+                                &li.lights,
+                                &li.lit_polys,
                                 cell,
                             )
                         };
                         let dist_cells =
                             (((cx - src.vp.0).powi(2) + (cy - src.vp.1).powi(2)).sqrt()) / cell;
                         // Lowest applicable floor decides visibility; highest applicable floor decides the hint.
-                        let mut visible_floor = f64::INFINITY; // min admitting floor → does the cell show at all
+                        // `cell_visible` computes the same min-floor-over-in-range-modes decision
+                        // and is reused verbatim by the movement gate (spec §13 anti-drift).
                         let mut admit_floor = f64::NEG_INFINITY; // max admitting floor → which mode's hint wins
                         let mut admit_hint: Option<String> = None;
                         for (fmin, range, hint) in &src.floors {
@@ -1007,7 +1010,6 @@ impl SceneEcs {
                             if !in_range {
                                 continue;
                             }
-                            visible_floor = visible_floor.min(*fmin);
                             if cl.level >= *fmin {
                                 // Highest admitting floor wins; on a tie, None (a normal-equivalent perception) wins.
                                 let take = *fmin > admit_floor
@@ -1020,7 +1022,7 @@ impl SceneEcs {
                                 }
                             }
                         }
-                        if visible_floor.is_finite() && cl.level >= visible_floor {
+                        if cell_visible(&src.floors, cl.level, dist_cells) {
                             let band = crate::scene::lighting::band_index(&bands, cl.level);
                             let slot = entry.1.entry((i, j)).or_insert((
                                 cl.level,
@@ -1094,6 +1096,52 @@ impl SceneEcs {
             }
         }
         false
+    }
+}
+
+/// Scene-shared lighting/wall inputs for the visibility mask. Computed once per scene per
+/// dispatch and reused for every vision source. `all_bright` short-circuits light raycasts
+/// under lighting-off or globalIllumination (spec §3/§6).
+pub(crate) struct LightingInputs {
+    pub(crate) all_bright: bool,
+    pub(crate) lights: Vec<lighting::Light>,
+    pub(crate) lit_polys: Vec<Vec<vision::P>>,
+    pub(crate) sight_walls: Vec<vision::Seg>,
+}
+
+/// Per-cell visibility decision shared by `player_lit_mask` (egress/secrecy gate) and
+/// `visible_cells` (movement gate). INVARIANT: identical for both so the move gate never
+/// forbids a shipped-visible cell nor permits an unshipped one (spec §13). A cell is visible iff
+/// some in-range vision mode's illumination floor is met. `floors`: `(floor_min, range_cells,
+/// hint)`; `range == 0.0` ⇒ unbounded. Returns false when no mode is in range (fail closed).
+fn cell_visible(floors: &[(f64, f64, Option<String>)], cl_level: f64, dist_cells: f64) -> bool {
+    let mut min_floor = f64::INFINITY;
+    for (fmin, range, _hint) in floors {
+        if *range == 0.0 || dist_cells <= *range {
+            min_floor = min_floor.min(*fmin);
+        }
+    }
+    min_floor.is_finite() && cl_level >= min_floor
+}
+
+/// The LOS polygon for one vision source: the raycast visibility polygon when `los_restriction`
+/// is on, else the whole bound box as a rectangle (whole-scene visible). Source: M9 raycast
+/// (`vision::visibility_polygon`).
+fn source_los_poly(
+    vp: vision::P,
+    sight_walls: &[vision::Seg],
+    los_restriction: bool,
+) -> Vec<vision::P> {
+    let b = vision::bound_for(vp, sight_walls, VISION_BOUND_MARGIN);
+    if los_restriction {
+        vision::visibility_polygon(vp, sight_walls, b)
+    } else {
+        vec![
+            (b.minx, b.miny),
+            (b.maxx, b.miny),
+            (b.maxx, b.maxy),
+            (b.minx, b.maxy),
+        ]
     }
 }
 
@@ -2187,5 +2235,26 @@ mod tests {
             lit_cells.iter().all(|(_, _, _, _, h)| h.is_none()),
             "normal-floor wins in bright cell: desaturate hint must be suppressed (None)"
         );
+    }
+
+    #[test]
+    fn cell_visible_predicate_honors_floor_and_range() {
+        // floors: (floor_min_value, range_cells, render_hint). A normal mode (floor "dim" ~0.34),
+        // range 0 = unbounded. Lit level 1.0 ≥ 0.34 → visible; 0.1 < 0.34 → not.
+        let normal = vec![(0.34_f64, 0.0_f64, None)];
+        assert!(cell_visible(&normal, 1.0, 5.0));
+        assert!(!cell_visible(&normal, 0.1, 5.0));
+        // Darkvision floor 0.0 within range 6 admits an unlit cell; beyond range it does not.
+        let dark = vec![(0.0_f64, 6.0_f64, Some("desaturate".into()))];
+        assert!(
+            cell_visible(&dark, 0.0, 3.0),
+            "unlit but within darkvision range"
+        );
+        assert!(
+            !cell_visible(&dark, 0.0, 9.0),
+            "beyond darkvision range, unlit → not visible"
+        );
+        // No in-range mode → not visible (fail closed).
+        assert!(!cell_visible(&[], 1.0, 1.0));
     }
 }
