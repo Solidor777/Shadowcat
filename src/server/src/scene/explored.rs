@@ -16,7 +16,7 @@ pub type Cell = (i32, i32);
 /// the scene's wall/viewpoint extent, but a wall authored at an extreme coordinate with a tiny
 /// grid size could otherwise span billions of cells and stall the dispatch path. Exceeding the cap
 /// skips the polygon (marks no cells → under-reveal, the fail-safe direction).
-const MAX_CELLS_PER_POLYGON: i64 = 4_000_000;
+pub(crate) const MAX_CELLS_PER_POLYGON: i64 = 4_000_000;
 
 /// A sparse explored-cell set for one (scene, player).
 #[derive(Default, Clone, Debug, PartialEq, Eq)]

@@ -78,6 +78,13 @@ pub fn is_scene_entity(doc: &Document) -> bool {
 /// A resolved token move: `(scene id, committed start, post-image end)`.
 pub type TokenMove = (Uuid, (f64, f64), (f64, f64));
 
+/// One scene's visible cells for a player: `cells` are `(i, j, band_index, tint 0xRRGGBB)`.
+pub struct LitScene {
+    pub scene: Uuid,
+    pub cell: f64,
+    pub cells: Vec<(i32, i32, usize, u32)>,
+}
+
 /// Margin (scene units, ~one default grid cell) the vision bound box extends past the walls
 /// so rays always terminate on the box rather than escaping to infinity.
 const VISION_BOUND_MARGIN: f64 = 100.0;
@@ -568,8 +575,6 @@ impl SceneEcs {
     }
 
     /// The `blocksLight` wall segments of `scene` (the light-occlusion geometry for lighting mask).
-    // TODO: wire into the lighting mask compute path (the caller in this module will clear the lint).
-    #[allow(dead_code)]
     pub(crate) fn light_walls(&self, scene: Uuid) -> Vec<vision::Seg> {
         let mut out = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
@@ -601,8 +606,6 @@ impl SceneEcs {
 
     /// The enabled `light` docs parented to `scene`, parsed into `lighting::Light`. Disabled lights
     /// are dropped here (they contribute nothing). `falloff` defaults to Linear; missing radii → 0.
-    // TODO: wire into the lighting mask compute path (the caller in this module will clear the lint).
-    #[allow(dead_code)]
     pub(crate) fn scene_lights(&self, scene: Uuid) -> Vec<crate::scene::lighting::Light> {
         use crate::scene::lighting::{Falloff, Light};
         let mut out = Vec::new();
@@ -740,6 +743,183 @@ impl SceneEcs {
             ));
         }
         out
+    }
+
+    /// The per-player lighting-aware visibility mask: per scene, the cells the user can currently
+    /// see = LOS-cells ∩ (illumination ≥ vision floor ∨ darkvision-in-range), each tagged with its
+    /// illumination band + tint. Vision sources = owned tokens ∪ (observerVision ? Observer-tier
+    /// tokens : ∅). Fail-closed: a source-less player gets empty cells. GM is handled by the caller
+    /// (mode:"all"); this is the masked path only.
+    pub fn player_lit_mask(&self, user: Uuid) -> Vec<LitScene> {
+        // 1. Gather vision-source tokens per scene (owner ∪ observer-tier when observerVision on).
+        //    Collect (scene, viewpoint, vision_floors) tuples; drop the query borrow before raycasts.
+        struct Src {
+            scene: Uuid,
+            vp: vision::P,
+            floors: Vec<(f64, f64)>,
+        }
+        let mut sources: Vec<Src> = Vec::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type != "token" {
+                continue;
+            }
+            let Some(scene) = e.doc.parent_id else {
+                continue;
+            };
+            let owns = e.doc.owner == Some(user);
+            let observes = {
+                let role = e
+                    .doc
+                    .permissions
+                    .users
+                    .get(&user)
+                    .copied()
+                    .unwrap_or(e.doc.permissions.default);
+                role <= crate::data::document::DocRole::Observer
+            };
+            let is_source = owns || (self.resolve_scene(scene).observer_vision && observes);
+            if !is_source {
+                continue;
+            }
+            if let (Some(x), Some(y)) = (sys_f64(&e.doc, "/x"), sys_f64(&e.doc, "/y")) {
+                sources.push(Src {
+                    scene,
+                    vp: (x, y),
+                    floors: self.token_vision_floors(&e.doc),
+                });
+            }
+        }
+        if sources.is_empty() {
+            return Vec::new();
+        }
+
+        // 2. Per scene, accumulate visible cells across that scene's sources.
+        let grid = self.scene_grid_sizes();
+        let bands = self.resolved_bands();
+        use std::collections::BTreeMap;
+        // (i, j) -> (best_level, band_index, tint): best illumination seen from any source.
+        type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32)>;
+        // scene -> (cell_size, per-cell best)
+        let mut per_scene: BTreeMap<Uuid, (f64, CellEntry)> = BTreeMap::new();
+
+        // Distinct scenes among the sources.
+        let mut scenes: Vec<Uuid> = sources.iter().map(|s| s.scene).collect();
+        scenes.sort();
+        scenes.dedup();
+
+        for scene in scenes {
+            let settings = self.resolve_scene(scene);
+            let cell = grid.get(&scene).copied().unwrap_or(100.0);
+            if cell <= 0.0 {
+                continue;
+            }
+            let sight_walls = self.sight_walls(scene);
+            // Lighting inputs: under globalIllumination or lighting-off, every LOS cell is bright;
+            // else compute per-cell from lights (occluded by blocksLight) + environment.
+            let all_bright = !settings.lighting_enabled
+                || matches!(settings.light_mode, LightMode::GlobalIllumination);
+            let lights = if all_bright {
+                Vec::new()
+            } else {
+                self.scene_lights(scene)
+            };
+            let light_walls = if all_bright {
+                Vec::new()
+            } else {
+                self.light_walls(scene)
+            };
+            let lit_polys: Vec<Vec<vision::P>> = lights
+                .iter()
+                .map(|l| {
+                    let b = vision::bound_for(l.pos, &light_walls, VISION_BOUND_MARGIN);
+                    vision::visibility_polygon(l.pos, &light_walls, b)
+                })
+                .collect();
+
+            let entry = per_scene
+                .entry(scene)
+                .or_insert_with(|| (cell, BTreeMap::new()));
+            for src in sources.iter().filter(|s| s.scene == scene) {
+                // LOS polygon for this source (or, LOS off, the whole bound box as a polygon).
+                let b = vision::bound_for(src.vp, &sight_walls, VISION_BOUND_MARGIN);
+                let poly = if settings.los_restriction {
+                    vision::visibility_polygon(src.vp, &sight_walls, b)
+                } else {
+                    vec![
+                        (b.minx, b.miny),
+                        (b.maxx, b.miny),
+                        (b.maxx, b.maxy),
+                        (b.minx, b.maxy),
+                    ]
+                };
+                if poly.len() < 3 {
+                    continue;
+                }
+                // Bbox → candidate cells (mirror explored's bounded scan).
+                let (mut minx, mut miny, mut maxx, mut maxy) =
+                    (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+                for &(x, y) in &poly {
+                    minx = minx.min(x);
+                    miny = miny.min(y);
+                    maxx = maxx.max(x);
+                    maxy = maxy.max(y);
+                }
+                let i0 = (minx / cell).floor() as i32;
+                let i1 = (maxx / cell).floor() as i32;
+                let j0 = (miny / cell).floor() as i32;
+                let j1 = (maxy / cell).floor() as i32;
+                let span = (i1 as i64 - i0 as i64 + 1) * (j1 as i64 - j0 as i64 + 1);
+                if span > crate::scene::explored::MAX_CELLS_PER_POLYGON {
+                    tracing::warn!(span, "lit mask cell scan exceeds cap; skipping source");
+                    continue;
+                }
+                for i in i0..=i1 {
+                    for j in j0..=j1 {
+                        let cx = (i as f64 + 0.5) * cell;
+                        let cy = (j as f64 + 0.5) * cell;
+                        if !crate::scene::vision::point_in_poly(&poly, (cx, cy)) {
+                            continue;
+                        }
+                        let cl = crate::scene::lighting::cell_illumination(
+                            (cx, cy),
+                            settings.env_intensity,
+                            settings.env_color,
+                            &lights,
+                            &lit_polys,
+                            cell,
+                        );
+                        // Darkvision lowers the floor within range; pick the lowest applicable floor.
+                        let dist_cells =
+                            (((cx - src.vp.0).powi(2) + (cy - src.vp.1).powi(2)).sqrt()) / cell;
+                        let mut floor = f64::INFINITY;
+                        for &(fmin, range) in &src.floors {
+                            if range == 0.0 || dist_cells <= range {
+                                floor = floor.min(fmin);
+                            }
+                        }
+                        if floor.is_finite() && cl.level >= floor {
+                            let band = crate::scene::lighting::band_index(&bands, cl.level);
+                            let slot = entry.1.entry((i, j)).or_insert((cl.level, band, cl.tint));
+                            if cl.level > slot.0 {
+                                *slot = (cl.level, band, cl.tint); // brightest source wins the band/tint
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        per_scene
+            .into_iter()
+            .map(|(scene, (cell, cells))| LitScene {
+                scene,
+                cell,
+                cells: cells
+                    .into_iter()
+                    .map(|((i, j), (_lvl, band, tint))| (i, j, band, tint))
+                    .collect(),
+            })
+            .collect()
     }
 
     /// Engine-owned movement collision (M9a, the second ARCHITECTURE #6 geometric
@@ -1341,6 +1521,68 @@ mod tests {
         assert_eq!(parse_hex_color("#abc"), 0xAABBCC);
         assert_eq!(parse_hex_color("bad"), 0); // malformed → fail-closed black
         assert_eq!(parse_hex_color("#12345"), 0); // wrong length → 0
+    }
+
+    #[test]
+    fn lit_mask_gates_los_by_illumination_and_darkvision() {
+        use serde_json::json;
+        let player = Uuid::from_u128(7);
+        let scene = Uuid::from_u128(10);
+
+        // A normal-vision token at origin in a walled-open scene. lightingEnabled defaults true,
+        // environmentLight, env intensity 0 → with NO lights the scene is dark → normal vision sees
+        // nothing (fail-closed): the lit mask is empty.
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(player);
+        let dark = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone()], 0);
+        assert!(
+            dark.player_lit_mask(player)
+                .iter()
+                .all(|s| s.cells.is_empty()),
+            "dark scene + normal vision → empty lit mask"
+        );
+
+        // Add a bright light covering the token's cell → that cell becomes visible at the bright band.
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+            "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }),
+        );
+        let lit = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone(), light], 0);
+        let mask = lit.player_lit_mask(player);
+        let s = mask
+            .iter()
+            .find(|s| s.scene == scene)
+            .expect("scene present");
+        assert!(
+            s.cells
+                .iter()
+                .any(|&(i, j, band, _)| i == 0 && j == 0 && band == 0),
+            "the lit cell at (0,0) is visible at the bright band (cell_size 100)"
+        );
+
+        // Darkvision token in the SAME dark scene (no light) sees within range despite darkness.
+        // Uses an embedded actor (instanced token path) because overrides.vision only applies to
+        // linked tokens with a resolved actor_id; an instanced token reads embedded.actor[0].system.vision.
+        let mut dv = entity_doc(12, 10, "token", json!({ "x": 50, "y": 50 }));
+        dv.embedded.insert(
+            "actor".into(),
+            vec![entity_doc_top(
+                900,
+                "actor",
+                json!({ "vision": [{ "mode": "darkvision", "range": 6 }] }),
+            )],
+        );
+        dv.owner = Some(player);
+        let dvmask =
+            SceneEcs::from_documents(vec![doc(10, None, "scene"), dv], 0).player_lit_mask(player);
+        assert!(
+            dvmask.iter().any(|s| !s.cells.is_empty()),
+            "darkvision sees in the dark within range"
+        );
     }
 
     #[test]
