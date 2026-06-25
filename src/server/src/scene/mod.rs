@@ -81,12 +81,12 @@ pub fn is_scene_entity(doc: &Document) -> bool {
 /// A resolved token move: `(scene id, committed start, post-image end)`.
 pub type TokenMove = (Uuid, (f64, f64), (f64, f64));
 
-/// One scene's visible cells for a player: `cells` are `(i, j, band_index, tint 0xRRGGBB)`.
+/// One scene's visible cells for a player: `cells` are `(i, j, band_index, tint 0xRRGGBB, render_hint)`.
 #[derive(Debug)]
 pub struct LitScene {
     pub scene: Uuid,
     pub cell: f64,
-    pub cells: Vec<(i32, i32, usize, u32)>,
+    pub cells: Vec<(i32, i32, usize, u32, Option<String>)>,
 }
 
 /// Margin (scene units, ~one default grid cell) the vision bound box extends past the walls
@@ -842,8 +842,9 @@ impl SceneEcs {
         let grid = self.scene_grid_sizes();
         let bands = self.resolved_bands();
         use std::collections::BTreeMap;
-        // (i, j) -> (best_level, band_index, tint): best illumination seen from any source.
-        type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32)>;
+        // (i, j) -> (best_level, band_index, tint, hint_floor, hint). hint_floor seeds NEG_INFINITY so the
+        // first admitting mode always sets it; brightness (level/band/tint) and hint reduce independently.
+        type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32, f64, Option<String>)>;
         // scene -> (cell_size, per-cell best)
         let mut per_scene: BTreeMap<Uuid, (f64, CellEntry)> = BTreeMap::new();
 
@@ -954,20 +955,52 @@ impl SceneEcs {
                                 cell,
                             )
                         };
-                        // Darkvision lowers the floor within range; pick the lowest applicable floor.
                         let dist_cells =
                             (((cx - src.vp.0).powi(2) + (cy - src.vp.1).powi(2)).sqrt()) / cell;
-                        let mut floor = f64::INFINITY;
-                        for &(fmin, range, ref _hint) in &src.floors {
-                            if range == 0.0 || dist_cells <= range {
-                                floor = floor.min(fmin);
+                        // Lowest applicable floor decides visibility; highest applicable floor decides the hint.
+                        let mut visible_floor = f64::INFINITY; // min admitting floor → does the cell show at all
+                        let mut admit_floor = f64::NEG_INFINITY; // max admitting floor → which mode's hint wins
+                        let mut admit_hint: Option<String> = None;
+                        for (fmin, range, hint) in &src.floors {
+                            let in_range = *range == 0.0 || dist_cells <= *range;
+                            if !in_range {
+                                continue;
+                            }
+                            visible_floor = visible_floor.min(*fmin);
+                            if cl.level >= *fmin {
+                                // Highest admitting floor wins; on a tie, None (a normal-equivalent perception) wins.
+                                let take = *fmin > admit_floor
+                                    || (*fmin == admit_floor
+                                        && admit_hint.is_some()
+                                        && hint.is_none());
+                                if take {
+                                    admit_floor = *fmin;
+                                    admit_hint = hint.clone();
+                                }
                             }
                         }
-                        if floor.is_finite() && cl.level >= floor {
+                        if visible_floor.is_finite() && cl.level >= visible_floor {
                             let band = crate::scene::lighting::band_index(&bands, cl.level);
-                            let slot = entry.1.entry((i, j)).or_insert((cl.level, band, cl.tint));
+                            let slot = entry.1.entry((i, j)).or_insert((
+                                cl.level,
+                                band,
+                                cl.tint,
+                                admit_floor,
+                                admit_hint.clone(),
+                            ));
                             if cl.level > slot.0 {
-                                *slot = (cl.level, band, cl.tint); // brightest source wins the band/tint
+                                slot.0 = cl.level;
+                                slot.1 = band;
+                                slot.2 = cl.tint; // brightest source wins band/tint
+                            }
+                            // Hint reduces across sources by the same highest-floor/None-wins rule.
+                            if admit_floor > slot.3
+                                || (admit_floor == slot.3
+                                    && slot.4.is_some()
+                                    && admit_hint.is_none())
+                            {
+                                slot.3 = admit_floor;
+                                slot.4 = admit_hint;
                             }
                         }
                     }
@@ -982,7 +1015,7 @@ impl SceneEcs {
                 cell,
                 cells: cells
                     .into_iter()
-                    .map(|((i, j), (_lvl, band, tint))| (i, j, band, tint))
+                    .map(|((i, j), (_lvl, band, tint, _hf, hint))| (i, j, band, tint, hint))
                     .collect(),
             })
             .collect()
@@ -1111,7 +1144,7 @@ pub fn compute_derived(
                         let flat: Vec<i64> = s
                             .cells
                             .into_iter()
-                            .flat_map(|(i, j, band, tint)| {
+                            .flat_map(|(i, j, band, tint, _hint)| {
                                 [i as i64, j as i64, band as i64, tint as i64]
                             })
                             .collect();
@@ -1710,7 +1743,7 @@ mod tests {
         assert!(
             s.cells
                 .iter()
-                .any(|&(i, j, band, _)| i == 0 && j == 0 && band == 0),
+                .any(|&(i, j, band, _, _)| i == 0 && j == 0 && band == 0),
             "the lit cell at (0,0) is visible at the bright band (cell_size 100)"
         );
 
@@ -1726,7 +1759,7 @@ mod tests {
         assert!(
             s.cells
                 .iter()
-                .any(|&(i, j, band, _)| i == 0 && j == 0 && band == 0),
+                .any(|&(i, j, band, _, _)| i == 0 && j == 0 && band == 0),
             "lighting-disabled scene → LOS cell visible at the bright band"
         );
 
@@ -1748,6 +1781,52 @@ mod tests {
         assert!(
             dvmask.iter().any(|s| !s.cells.is_empty()),
             "darkvision sees in the dark within range"
+        );
+    }
+
+    #[test]
+    fn lit_mask_tags_darkvision_only_cells_with_hint() {
+        use serde_json::json;
+        let player = Uuid::from_u128(7);
+        // Dark scene (no lights, environmentLight, lighting on) → only darkvision admits cells.
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(player);
+        tok.embedded.insert(
+            "actor".into(),
+            vec![{
+                let mut a = doc(99, None, "actor");
+                a.system = json!({ "vision": [{ "mode": "darkvision", "range": 6 }] });
+                a
+            }],
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+        let mask = ecs.player_lit_mask(player);
+        assert_eq!(mask.len(), 1);
+        assert!(
+            mask[0]
+                .cells
+                .iter()
+                .all(|(_, _, _, _, h)| h.as_deref() == Some("desaturate")),
+            "dark cells perceived only via darkvision carry the desaturate hint"
+        );
+
+        // Bright cell under a light, seen by normal vision → no hint (normal floor suppresses it).
+        let player2 = Uuid::from_u128(8);
+        let mut tok2 = entity_doc(12, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok2.owner = Some(player2); // no embedded vision → normal fallback
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+            "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }),
+        );
+        let lit = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok2, light], 0);
+        let mask2 = lit.player_lit_mask(player2);
+        assert!(
+            mask2[0].cells.iter().any(|(_, _, _, _, h)| h.is_none()),
+            "a normally-lit cell seen by normal vision carries no hint"
         );
     }
 
