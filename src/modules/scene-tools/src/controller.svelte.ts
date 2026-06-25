@@ -221,6 +221,12 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // Track the in-flight pathfind so we can ignore stale responses that arrive
   // after a newer request has been issued (last-write-wins coalescing).
   let pendingSeq = 0;
+  // When a commit is in flight, suppress pointer-down/move/up so a trailing
+  // pointer-up cannot bump pendingSeq and invalidate the commit's seq guard.
+  // Also prevents a stray down from starting a second commit concurrently.
+  // Constraint: committing is set before seq is captured and cleared in finish()
+  // (resolve) or the reject handler, or in onDeactivate (abort path).
+  let committing = false;
 
   // Monotonic clock (injected in tests; defaults to Date.now).
   const now = ctx.now ?? ((): number => Date.now());
@@ -298,7 +304,12 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
 
   /** Commit a route from the selected token's center to `goal`: smooth local walk +
    * one position intent per collinear run (separate publishes so each gates against the
-   * prior committed cell — a single straight start→goal op would be Forbidden around walls). */
+   * prior committed cell — a single straight start→goal op would be Forbidden around walls).
+   *
+   * Invariant: `committing` is set TRUE before `seq` is captured, and cleared ONLY by
+   * `finish()` on resolve or by the reject handler. This ensures pointer-up (which calls
+   * clearRoute in non-committing paths) cannot bump `pendingSeq` between commit start and
+   * the async resolve — keeping `seq === pendingSeq` true so the commit proceeds. */
   function commitRoute(goal: Point): void {
     if (!ctx.pathfind || !ctx.tokenSelection || ctx.tokenSelection.ids.size !== 1) return;
     const scene = activeScene(ctx);
@@ -306,11 +317,17 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     if (!scene || !start) return;
     const tokenId = [...ctx.tokenSelection.ids][0];
     const fp = resolveFootprint();
+    // Set committing BEFORE capturing seq so the pointer-up guard (committing check) is
+    // already in place before the async call starts. onPointerUp/Move check committing
+    // and return early, so they cannot bump pendingSeq while this commit is in flight.
+    committing = true;
     const seq = ++pendingSeq;
+    // Teardown shared by the success path (resolves cleanly) and the reject path (no route).
+    const finish = (): void => { committing = false; clearRoute(); };
     ctx.pathfind(scene.id, start, [...waypoints, [goal.x, goal.y]], fp).then(
       (result) => {
-        if (seq !== pendingSeq) return;
-        if (result.path.length < 2) { clearRoute(); return; }
+        if (seq !== pendingSeq) { committing = false; return; } // aborted (e.g. tool swap)
+        if (result.path.length < 2) { finish(); return; }
         ctx.scene.animateAlongPath(tokenId, result.path);
         const runs = collinearRuns(result.path);
         for (let i = 1; i < runs.length; i++) {
@@ -323,15 +340,18 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
             { path: "/system/y", old: sys?.y ?? null, new: ny },
           ] }]);
         }
-        clearRoute();
+        finish();
       },
-      () => { if (seq === pendingSeq) clearRoute(); },
+      () => { committing = false; if (seq === pendingSeq) clearRoute(); },
     );
   }
 
   return {
     onPointerDown(p: Point): boolean {
       if (inRouteMode()) {
+        // A commit is in flight: ignore further input until it settles. Prevents a
+        // stray pointer-down from starting a second commit or bumping pendingSeq.
+        if (committing) return true;
         const scene = activeScene(ctx);
         if (scene) {
           const snapped = ctx.scene.snap(p);
@@ -359,6 +379,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     },
     onPointerMove(p: Point): void {
       if (inRouteMode()) {
+        // Suppress preview requests during a commit: a new pathfind call would bump
+        // pendingSeq and invalidate the in-flight commit's seq guard.
+        if (committing) return;
         const scene = activeScene(ctx);
         const start = tokenCenter();
         if (scene && start) {
@@ -373,6 +396,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     },
     onPointerUp(_p: Point): void {
       if (inRouteMode()) {
+        // When a commit is in flight, the commit owns its own teardown via finish().
+        // Do NOT call clearRoute() here — that would bump pendingSeq and abort the commit.
+        if (committing) return;
         // Release: clear overlays (mid-gesture-clear invariant). The actual move is
         // handled by the select-move tool / M10e-4 server gate — not here.
         clearRoute();
@@ -384,8 +410,10 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
       anchor = null;
     },
     onDeactivate(): void {
-      // Tool-swap teardown: clears the routed polyline overlay + budget label so a
-      // mid-gesture tool switch doesn't leave stale geometry on screen.
+      // Tool-swap teardown: abort any in-flight commit and clear all overlays.
+      // Setting committing=false before clearRoute lets clearRoute bump pendingSeq,
+      // which causes any in-flight commit's seq guard to fail (seq !== pendingSeq).
+      committing = false;
       clearRoute();
       // Also clear any in-progress plain-measure anchor.
       if (anchor) {

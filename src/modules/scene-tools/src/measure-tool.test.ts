@@ -288,14 +288,18 @@ function makeFakeNow(initial = 0): FakeNow {
 /**
  * Build a ToolContext wired for route-commit tests: a scene + token seeded in the store,
  * a single token selected, injected pathfind/dispatchIntent/animateAlongPath stubs, and
- * a controllable clock. Returns the ctx and the clock so tests can advance time.
+ * a controllable clock. Returns the ctx, the clock, and the backing store.
+ *
+ * Default dispatchIntent: applies each intent's ops into `docs` synchronously so the
+ * next `ctx.documents.get(id)?.system` reflects the update. This makes the per-run
+ * `old` re-read verifiable: each run reads the post-apply value of the prior run as `old`.
  */
 function seedRouteCtx(over: {
   pathfind: ToolContext["pathfind"];
   dispatchIntent?: (ops: WireOperation[]) => void;
   animateAlongPath?: (id: string, path: [number, number][]) => void;
   tokenAt: { id: string; x: number; y: number };
-}): { ctx: ToolContext; now: FakeNow } {
+}): { ctx: ToolContext; now: FakeNow; docs: DocumentStore } {
   const docs = new DocumentStore();
   docs.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
@@ -314,6 +318,9 @@ function seedRouteCtx(over: {
     ],
   });
 
+  // Sequence counter for the store-advancing default dispatchIntent.
+  let seq = 2;
+
   const now = makeFakeNow();
 
   const animateSpy = over.animateAlongPath ?? (() => {});
@@ -330,9 +337,17 @@ function seedRouteCtx(over: {
   const sel = new TokenSelection();
   sel.set([over.tokenAt.id]);
 
+  // Default dispatchIntent applies each batch's ops into `docs` via applyCommand so
+  // subsequent ctx.documents.get() calls see the updated system values. This verifies
+  // the per-run `old` re-read: if the store is NOT advanced, all `old` values would be
+  // the seed (0,0) and a regression hoisting `sys` out of the loop would still pass.
+  const defaultDispatch = (ops: WireOperation[]): void => {
+    docs.applyCommand({ seq: seq++, world_id: "w1", author: "a", ts: 0, ops });
+  };
+
   const ctx: ToolContext = {
     scene: bridge,
-    dispatchIntent: over.dispatchIntent ?? (() => {}),
+    dispatchIntent: over.dispatchIntent ?? defaultDispatch,
     documents: docs,
     assets: new AssetResolver(),
     world: "w1",
@@ -342,7 +357,7 @@ function seedRouteCtx(over: {
     now,
   };
 
-  return { ctx, now };
+  return { ctx, now, docs };
 }
 
 test("double-click in route mode commits: animates the path and dispatches one intent per collinear run", async () => {
@@ -353,12 +368,21 @@ test("double-click in route mode commits: animates the path and dispatches one i
     path: [[0, 0], [100, 0], [200, 0], [200, 100], [200, 200]] as [number, number][],
     cost: 4,
   });
-  const { ctx, now } = seedRouteCtx({
+  const { ctx, now, docs } = seedRouteCtx({
     pathfind,
-    dispatchIntent: (ops) => sent.push(ops),
     animateAlongPath: (id, path) => animated.push({ id, path }),
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
+  // Wrap the default store-advancing dispatch to also record ops for assertion.
+  // Sequence counter mirrors seedRouteCtx's internal counter (starts at 2, but
+  // seedRouteCtx already holds the seq reference, so we use a separate dispatch that
+  // first records then applies).
+  let dispatchSeq = 2;
+  ctx.dispatchIntent = (ops) => {
+    sent.push(ops);
+    // Apply optimistically: advances ctx.documents so the next run's `old` re-read is correct.
+    docs.applyCommand({ seq: dispatchSeq++, world_id: "w1", author: "a", ts: 0, ops });
+  };
   const tool = makeMeasureTool(ctx);
   tool.onPointerDown({ x: 200, y: 200 }, ev()); // first click → records time
   now.advance(100);
@@ -369,24 +393,103 @@ test("double-click in route mode commits: animates the path and dispatches one i
   // Two collinear runs → two SEPARATE dispatchIntent calls (chaining through the gate).
   expect(sent.length).toBe(2);
   expect(sent[0][0]).toMatchObject({ op: "update", doc_id: "tok1" });
-  // First run goal = the corner (200,0); second = (200,200).
+
+  // Helper: extract new x/y from a dispatchIntent batch.
+  const xy = (ops: WireOperation[]) => {
+    const ch = (ops[0] as { changes: { path: string; new: unknown }[] }).changes;
+    return [ch.find((c) => c.path === "/system/x")!.new, ch.find((c) => c.path === "/system/y")!.new];
+  };
+  // Helper: extract old x value from a dispatchIntent batch.
+  const oldX = (ops: WireOperation[]) => {
+    const ch = (ops[0] as { changes: { path: string; old: unknown }[] }).changes;
+    return ch.find((c) => c.path === "/system/x")!.old;
+  };
+
+  // First run goal = the corner (200,0); second = final goal (200,200).
+  expect(xy(sent[0])).toEqual([200, 0]);
+  expect(xy(sent[1])).toEqual([200, 200]);
+  // Old-chaining: the second run's `old` x must equal the first run's `new` x (200),
+  // proving the synchronous store re-read works — a regression hoisting `sys` out of
+  // the loop would read 0 here (the seed value) instead of 200.
+  expect(oldX(sent[1])).toBe(200);
+});
+
+test("a single click in route mode does NOT commit", async () => {
+  const sent: WireOperation[][] = [];
+  const animated: Array<{ id: string; path: [number, number][] }> = [];
+  const { ctx } = seedRouteCtx({
+    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1 }),
+    animateAlongPath: (id, path) => animated.push({ id, path }),
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+  });
+  ctx.dispatchIntent = (o) => sent.push(o);
+  const tool = makeMeasureTool(ctx);
+  tool.onPointerDown({ x: 100, y: 0 }, ev());
+  await drain();
+  expect(sent.length).toBe(0);
+  expect(animated.length).toBe(0); // animateAlongPath must not fire on a single click
+});
+
+test("route commit survives its own pointer-up: pathfind resolves after pointer-up and still fires", async () => {
+  // REGRESSION: the Critical bug. In production, onPointerDown(double) is immediately
+  // followed by onPointerUp on release. The old code called clearRoute() in onPointerUp,
+  // which bumped pendingSeq, so the in-flight commit's seq guard (seq !== pendingSeq)
+  // fired and the token never moved. This test models the REAL event ordering.
+  //
+  // The deferred pathfind resolves ONLY after both pointer-ups, catching any code that
+  // allows onPointerUp to invalidate an in-flight commit.
+
+  // A manually-resolved deferred so the pathfind resolves only after the pointer-ups.
+  let resolvePathfind!: (r: { path: [number, number][]; cost: number }) => void;
+  const deferredPathfind: ToolContext["pathfind"] = (_scene, _start, _waypoints, _fp) =>
+    new Promise((res) => { resolvePathfind = res; });
+
+  const sent: WireOperation[][] = [];
+  const animated: Array<{ id: string; path: [number, number][] }> = [];
+
+  const { ctx, now, docs } = seedRouteCtx({
+    pathfind: deferredPathfind,
+    animateAlongPath: (id, path) => animated.push({ id, path }),
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+  });
+
+  let dispatchSeq = 2;
+  ctx.dispatchIntent = (ops) => {
+    sent.push(ops);
+    docs.applyCommand({ seq: dispatchSeq++, world_id: "w1", author: "a", ts: 0, ops });
+  };
+
+  const tool = makeMeasureTool(ctx);
+
+  // First pointer-down at the goal — starts the double-click window.
+  tool.onPointerDown({ x: 200, y: 200 }, ev());
+  tool.onPointerUp({ x: 200, y: 200 }, ev()); // trailing up (real engine always sends up)
+
+  // Advance time within DOUBLE_CLICK_MS, then second pointer-down → commit fires.
+  now.advance(100);
+  tool.onPointerDown({ x: 200, y: 200 }, ev()); // second down → commitRoute called
+  tool.onPointerUp({ x: 200, y: 200 }, ev()); // trailing up on the double-click release
+
+  // Pathfind has NOT resolved yet. The commit must be in flight (committing=true),
+  // so both pointer-ups must have been suppressed and pendingSeq must NOT have been bumped.
+
+  // Now resolve the deferred pathfind with a two-run L-route.
+  resolvePathfind({
+    path: [[0, 0], [200, 0], [200, 200]] as [number, number][],
+    cost: 4,
+  });
+  await drain(); // let the .then handler run
+
+  // The commit must have survived the pointer-ups.
+  expect(animated.length).toBe(1); // animateAlongPath was called
+  expect(animated[0].id).toBe("tok1");
+  // Two collinear runs → two dispatches.
+  expect(sent.length).toBe(2);
+  expect(sent[0][0]).toMatchObject({ op: "update", doc_id: "tok1" });
   const xy = (ops: WireOperation[]) => {
     const ch = (ops[0] as { changes: { path: string; new: unknown }[] }).changes;
     return [ch.find((c) => c.path === "/system/x")!.new, ch.find((c) => c.path === "/system/y")!.new];
   };
   expect(xy(sent[0])).toEqual([200, 0]);
   expect(xy(sent[1])).toEqual([200, 200]);
-});
-
-test("a single click in route mode does NOT commit", async () => {
-  const sent: WireOperation[][] = [];
-  const { ctx } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1 }),
-    dispatchIntent: (o) => sent.push(o),
-    tokenAt: { id: "tok1", x: 0, y: 0 },
-  });
-  const tool = makeMeasureTool(ctx);
-  tool.onPointerDown({ x: 100, y: 0 }, ev());
-  await drain();
-  expect(sent.length).toBe(0);
 });
