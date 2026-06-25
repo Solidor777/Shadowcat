@@ -237,8 +237,8 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > capability mirror; server stays authoritative). No mechanical effects (deferred to combat).
 > Buddy-checked. Plan: `superpowers/plans/2026-06-24-m10c-conditions.md`.
 >
-> **M10d DONE** (on branch `m10d-shapes-footprint`, pending buddy-check + merge --no-ff to LOCAL
-> main — push gate = full M10): **shapes + footprint** — `shape: "square" | "circle"` field in
+> **M10d DONE** (merged --no-ff to LOCAL main `77a47ba`, NOT pushed — push gate = full M10):
+> **shapes + footprint** — `shape: "square" | "circle"` field in
 > `ActorSystem` + per-token override in `TokenOverrides` whitelist; `resolveTokenBox(token, store,
 > eff?) -> TokenBox {x,y,w,h,shape}` as the single chokepoint for scene-pixel footprint (actor-
 > backed: `EffectiveActor.size × grid cell`; raw/dangling: `token.system.w/h` + `"square"`;
@@ -247,7 +247,24 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > size-aware `topTokenAt` hit-test (point-in-ellipse vs point-in-rect) + selection ring in
 > `@shadowcat/module-scene-tools`; shape + size editing (create form + per-row GM inline editor)
 > in `@shadowcat/module-actors`. Plan: `superpowers/plans/2026-06-24-m10d-shapes-footprint.md`.
-> **Next = M10e** (Pathfinding — grid A*).
+>
+> **M10e EXPANDED (design done):** what was a single "Pathfinding — grid A*" checkpoint grew,
+> on user direction, into a **vision/lighting/movement** foundation, because the user's
+> requested **movement restriction** (a player may only move a token into areas they can
+> **see** / have **revealed** / **unrestricted**; GM unrestricted — to stop accidental map
+> reveals) redefines "what a player can see" from pure line-of-sight to **LOS ∩ (lit ∨
+> darkvision)**. New cross-cutting spec `superpowers/specs/2026-06-24-m10e-vision-lighting-
+> movement-design.md` (approved) decomposes M10e into **6 sub-checkpoints**: **M10e-1** vision/
+> lighting data model + config · **M10e-2** server lighting-aware vision (per-(user,scene) grid
+> visibility mask; the secrecy gate) · **M10e-3** client lighting render · **M10e-4** movement
+> restriction at the M9 `Room::publish` gate · **M10e-5** movement animation (speed + easing) ·
+> **M10e-6** grid A* pathfinder (consumes the mask). Order e-1→e-2→{e-3,e-4}→e-6; e-5 anytime.
+> Scene axes (world-default + per-scene override): LOS-restriction, lighting-enabled (master),
+> light-mode (global-illumination | environment-light), fog, per-actor vision modes (darkvision);
+> environment light = edge-projected, occludable by a new `blocksLight` wall flag, color+intensity
+> for day/night (module-automatable). **M10e-1 plan written + committed** (`930a540`):
+> `superpowers/plans/2026-06-24-m10e-1-vision-lighting-data-model.md`. **Next = execute M10e-1**
+> via subagent-driven-development. M10f (continuous pathfinding) + M10g (regions) resume after.
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
