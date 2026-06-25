@@ -556,6 +556,72 @@ impl SceneEcs {
         out
     }
 
+    /// The token's effective vision modes as `(floor_min_illumination, range_cells)` pairs.
+    /// `range_cells == 0.0` ⇒ unlimited. Precedence (mirrors the client EffectiveActor.visionModes):
+    /// per-token `overrides.vision` REPLACES; else the instanced `embedded.actor[0].system.vision`;
+    /// else the linked `actor(actor_id).system.vision`; else `[normal]`. An unknown mode id is
+    /// dropped (fail-closed: it contributes no vision floor). Always returns ≥1 pair (normal fallback).
+    pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64)> {
+        let modes = self.resolved_vision_modes();
+        let bands = self.resolved_bands();
+
+        // Locate the raw `[{mode, range}]` array by precedence.
+        let assignments: Option<&serde_json::Value> = token
+            .system
+            .pointer("/overrides/vision")
+            .filter(|v| v.is_array())
+            .or_else(|| {
+                token
+                    .embedded
+                    .get("actor")
+                    .and_then(|v| v.first()) // &Document
+                    .and_then(|a| a.system.pointer("/vision"))
+                    .filter(|v| v.is_array())
+            })
+            .or_else(|| {
+                token
+                    .system
+                    .pointer("/actor_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .and_then(|id| self.actors.get(&id))
+                    .and_then(|a| a.system.pointer("/vision"))
+                    .filter(|v| v.is_array())
+            });
+
+        let mut out: Vec<(f64, f64)> = Vec::new();
+        if let Some(arr) = assignments.and_then(|v| v.as_array()) {
+            for a in arr {
+                let Some(mode_id) = a.get("mode").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let Some(vm) = modes.get(mode_id) else {
+                    continue;
+                }; // unknown mode → drop (fail-closed)
+                let range = a
+                    .get("range")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(vm.default_range);
+                out.push((
+                    crate::scene::lighting::floor_min(&bands, &vm.illumination_floor),
+                    range,
+                ));
+            }
+        }
+        if out.is_empty() {
+            // Normal vision: dim floor, unlimited range.
+            let normal_floor = modes
+                .get("normal")
+                .map(|m| m.illumination_floor.clone())
+                .unwrap_or_else(|| "dim".into());
+            out.push((
+                crate::scene::lighting::floor_min(&bands, &normal_floor),
+                0.0,
+            ));
+        }
+        out
+    }
+
     /// Engine-owned movement collision (M9a, the second ARCHITECTURE #6 geometric
     /// exception). True if the move segment `a0→a1` crosses any `blocksMove` wall in `scene`.
     /// A no-op move (`a0 == a1`) never blocks.
@@ -978,6 +1044,38 @@ mod tests {
         // No doc at all → built-in seed.
         let empty = SceneEcs::new();
         assert!(empty.resolved_vision_modes().contains_key("darkvision"));
+    }
+
+    #[test]
+    fn token_vision_floors_resolve_through_actor_join() {
+        use serde_json::json;
+        let mut ecs = SceneEcs::new();
+        // An actor granting darkvision range 6.
+        ecs.set_actors(vec![entity_doc_top(
+            200,
+            "actor",
+            json!({ "vision": [{ "mode": "darkvision", "range": 6 }] }),
+        )]);
+
+        // Linked token referencing the actor → darkvision floor (dark=0.0), range 6.
+        let mut linked = entity_doc(
+            11,
+            10,
+            "token",
+            json!({ "x": 0, "y": 0, "actor_id": Uuid::from_u128(200).to_string() }),
+        );
+        let floors = ecs.token_vision_floors(&linked);
+        assert_eq!(floors.len(), 1);
+        assert_eq!(floors[0], (0.0, 6.0)); // dark floor, 6-cell range
+
+        // A per-token override REPLACES the actor's vision entirely.
+        linked.system["overrides"] = json!({ "vision": [{ "mode": "normal", "range": 0 }] });
+        let f2 = ecs.token_vision_floors(&linked);
+        assert_eq!(f2[0], (0.34, 0.0)); // dim floor, unlimited range
+
+        // An actorless token → normal only.
+        let raw = entity_doc(12, 10, "token", json!({ "x": 0, "y": 0 }));
+        assert_eq!(ecs.token_vision_floors(&raw), vec![(0.34, 0.0)]);
     }
 
     #[test]
