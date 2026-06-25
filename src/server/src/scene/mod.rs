@@ -21,8 +21,28 @@ pub enum LightMode {
     EnvironmentLight,
 }
 
-/// The resolved per-scene lighting/vision settings the mask needs (subset of the client
-/// `ResolvedSceneSettings`; movement/pathfinding/animation fields are resolved in later checkpoints).
+/// Per-scene movement gate mode. Mirrors `MovementRestriction` in `scene-docs.ts`.
+/// `Visible` = move cells must be currently visible; `Revealed` = visible ∪ explored memory;
+/// `Unrestricted` = walls only (the M9a gate alone).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MovementRestriction {
+    Visible,
+    Revealed,
+    Unrestricted,
+}
+
+/// Parse a movement-restriction string; any unknown/missing value fails closed to `Visible`
+/// (the most restrictive non-frozen mode — never silently widens to `Unrestricted`).
+fn parse_movement_restriction(s: &str) -> MovementRestriction {
+    match s {
+        "revealed" => MovementRestriction::Revealed,
+        "unrestricted" => MovementRestriction::Unrestricted,
+        _ => MovementRestriction::Visible,
+    }
+}
+
+/// The resolved per-scene lighting/vision/movement settings (subset of the client
+/// `ResolvedSceneSettings`; pathfinding/animation fields are resolved in later checkpoints).
 #[derive(Clone, Debug)]
 pub struct ResolvedScene {
     pub los_restriction: bool,
@@ -32,6 +52,8 @@ pub struct ResolvedScene {
     pub light_mode: LightMode,
     pub env_color: u32,
     pub env_intensity: f64,
+    pub movement_restriction: MovementRestriction,
+    pub partial_cell_leniency: bool,
 }
 
 /// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
@@ -345,6 +367,16 @@ impl SceneEcs {
             .and_then(|s| s.pointer("/environment/intensity"))
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
+        // movementRestriction: scene `vision.movementRestriction` ?? world ?? "visible".
+        let d_move = ws_scene
+            .and_then(|s| s.get("movementRestriction"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("visible");
+        // partialCellLeniency: world-only (no per-scene override; mirrors `d.scene.partialCellLeniency`).
+        let d_lenient = ws_scene
+            .and_then(|s| s.get("partialCellLeniency"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         // Scene override layer (per-scene `vision`/`lighting`; null/absent ⇒ inherit).
         let scene_sys = self
@@ -375,6 +407,12 @@ impl SceneEcs {
             .and_then(|s| s.pointer("/lighting/environment/intensity"))
             .and_then(|v| v.as_f64())
             .unwrap_or(d_env_int);
+        // Scene may override movementRestriction (string); null/absent ⇒ inherit world. Mirrors
+        // `v.movementRestriction ?? d.scene.movementRestriction`. partialCellLeniency has no scene override.
+        let move_str = s
+            .and_then(|s| s.pointer("/vision/movementRestriction"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(d_move);
 
         ResolvedScene {
             los_restriction: los,
@@ -388,6 +426,8 @@ impl SceneEcs {
             },
             env_color: parse_hex_color(env_color),
             env_intensity: env_int.clamp(0.0, 1.0),
+            movement_restriction: parse_movement_restriction(move_str),
+            partial_cell_leniency: d_lenient,
         }
     }
 
@@ -1989,6 +2029,117 @@ mod tests {
             .iter()
             .any(|(_, _, h)| h.as_deref() == Some("desaturate")));
         assert!(floors.iter().any(|(_, _, h)| h.is_none()));
+    }
+
+    // --- Test helpers for movement-restriction resolution tests ---
+
+    /// Set `world_settings` to a doc whose `system` is `json_system` (test-only).
+    /// Mirrors how `room.rs` builds a world-settings config doc.
+    #[cfg(test)]
+    impl SceneEcs {
+        pub(crate) fn set_world_settings_for_test(&mut self, json_system: serde_json::Value) {
+            let mut d = crate::data::document::tests::world_scoped_doc(
+                Uuid::from_u128(9),
+                Uuid::from_u128(100),
+                "world-settings",
+            );
+            d.system = json_system;
+            self.world_settings = Some(d);
+        }
+
+        pub(crate) fn insert_scene_for_test(
+            &mut self,
+            scene_id: Uuid,
+            json_system: serde_json::Value,
+        ) {
+            let mut d = crate::data::document::tests::world_scoped_doc(
+                Uuid::from_u128(9),
+                scene_id,
+                "scene",
+            );
+            d.system = json_system;
+            // Remove stale entity if re-inserting.
+            if let Some(old_e) = self.index.remove(&scene_id) {
+                let _ = self.world.despawn(old_e);
+            }
+            let e = self.world.spawn((SceneEntity { doc: d },));
+            self.index.insert(scene_id, e);
+        }
+    }
+
+    #[test]
+    fn resolve_scene_movement_restriction_defaults_to_visible_and_lenient() {
+        // No world-settings doc, no scene override → built-in defaults.
+        let ecs = SceneEcs::new();
+        let r = ecs.resolve_scene(Uuid::from_u128(1));
+        assert_eq!(r.movement_restriction, MovementRestriction::Visible);
+        assert!(r.partial_cell_leniency);
+    }
+
+    #[test]
+    fn resolve_scene_movement_restriction_world_override_and_leniency_off() {
+        use serde_json::json;
+        let mut ecs = SceneEcs::new();
+        // A complete world-settings system (scene+pathfinding+animation) so the structural guard passes.
+        ecs.set_world_settings_for_test(json!({
+            "scene": { "losRestriction": true, "fog": true, "lightingEnabled": true,
+                       "lightMode": "environmentLight", "environment": {"color":"#0a0e1a","intensity":0.0},
+                       "observerVision": false, "movementRestriction": "revealed", "partialCellLeniency": false },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        let r = ecs.resolve_scene(Uuid::from_u128(1));
+        assert_eq!(r.movement_restriction, MovementRestriction::Revealed);
+        assert!(
+            !r.partial_cell_leniency,
+            "partialCellLeniency is world-only and was set false"
+        );
+    }
+
+    #[test]
+    fn resolve_scene_movement_restriction_scene_override_beats_world() {
+        use serde_json::json;
+        let mut ecs = SceneEcs::new();
+        let scene_id = Uuid::from_u128(7);
+        ecs.set_world_settings_for_test(json!({
+            "scene": { "movementRestriction": "visible", "partialCellLeniency": true },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        // Scene overrides vision.movementRestriction to "unrestricted".
+        ecs.insert_scene_for_test(
+            scene_id,
+            json!({
+                "grid": { "kind": "square", "size": 100 },
+                "vision": { "movementRestriction": "unrestricted" }
+            }),
+        );
+        let r = ecs.resolve_scene(scene_id);
+        assert_eq!(r.movement_restriction, MovementRestriction::Unrestricted);
+        // partialCellLeniency has NO scene override → still the world default (true here).
+        assert!(r.partial_cell_leniency);
+    }
+
+    #[test]
+    fn resolve_scene_movement_restriction_null_override_inherits_world() {
+        use serde_json::json;
+        let mut ecs = SceneEcs::new();
+        let scene_id = Uuid::from_u128(8);
+        ecs.set_world_settings_for_test(json!({
+            "scene": { "movementRestriction": "revealed", "partialCellLeniency": true },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        // null clears the override → inherit world "revealed" (mirrors `?? d.scene.movementRestriction`).
+        ecs.insert_scene_for_test(
+            scene_id,
+            json!({
+                "grid": { "kind": "square", "size": 100 },
+                "vision": { "movementRestriction": null }
+            }),
+        );
+        let r = ecs.resolve_scene(scene_id);
+        assert_eq!(r.movement_restriction, MovementRestriction::Revealed);
     }
 
     #[test]
