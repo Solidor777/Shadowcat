@@ -4,6 +4,7 @@ import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec } from "./types";
 import { parseColor } from "./geometry";
 import { TokenAnimator } from "./token-animator";
+import type { EasingMode } from "./easing";
 
 /** Engine-reserved token system fields (M8 §4.2; client-owned). `(x,y)` = center. */
 interface TokenSystem {
@@ -24,6 +25,11 @@ export class TokenView {
    * remote tokens still tween. Set by the move tool via the engine. */
   private dragging: string | null = null;
 
+  // Animation config fields; kept in sync with the animator via pushAnimConfig().
+  private cellSize = 100;
+  private animSpeed = 6;
+  private animEasing: EasingMode = "easeInOut";
+
   constructor(
     private readonly store: ReadableDocuments,
     private readonly assets: AssetResolver,
@@ -32,6 +38,35 @@ export class TokenView {
 
   setDragging(id: string | null): void {
     this.dragging = id;
+  }
+
+  /** Update the pixel-per-cell value used to compute tween durations. */
+  setCellSize(px: number): void {
+    this.cellSize = px;
+    this.pushAnimConfig();
+  }
+
+  /** Update the speed + easing used to compute tween durations. */
+  setAnimationConfig(cfg: { speedCellsPerSec: number; easing: EasingMode }): void {
+    this.animSpeed = cfg.speedCellsPerSec;
+    this.animEasing = cfg.easing;
+    this.pushAnimConfig();
+  }
+
+  /** Merge the stored speed/easing/cellSize into a single AnimationConfig and forward it to the
+   * animator. Coupling: both setCellSize and setAnimationConfig must call this so the animator's
+   * config is always the product of the latest values of all three fields. */
+  private pushAnimConfig(): void {
+    this.animator.setConfig({ speedCellsPerSec: this.animSpeed, easing: this.animEasing, cellSize: this.cellSize });
+  }
+
+  /** Drive a smooth local walk along a route's scene-coord waypoints. Rotation is held (a route
+   * move does not rotate the token). The prompt authoritative commit catches up via reconcile()'s
+   * setTarget, which the animator recognizes as expected progress. */
+  animateAlongPath(id: string, path: [number, number][]): void {
+    const rotation = this.specs.get(id)?.rotation ?? 0;
+    this.animator.animateAlongPath(id, path, rotation);
+    this.push(id);
   }
 
   reconcile(): void {
