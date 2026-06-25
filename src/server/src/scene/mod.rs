@@ -43,6 +43,13 @@ pub struct SceneEcs {
     /// the derived `computed_at_seq` watermark can never be below the state it
     /// describes (#2).
     committed_seq: i64,
+    /// World config-docs (singletons) + actors, hydrated for the lighting-aware vision mask
+    /// (M10e-2). Held outside the hecs `world` because they are NOT scene entities
+    /// (`is_scene_entity` excludes them); they are maintained by `apply_op` and the room setters.
+    world_settings: Option<Document>,
+    gradation: Option<Document>,
+    vision_modes: Option<Document>,
+    actors: HashMap<Uuid, Document>,
 }
 
 impl SceneEcs {
@@ -51,6 +58,10 @@ impl SceneEcs {
             world: hecs::World::new(),
             index: HashMap::new(),
             committed_seq: 0,
+            world_settings: None,
+            gradation: None,
+            vision_modes: None,
+            actors: HashMap::new(),
         }
     }
 
@@ -77,6 +88,57 @@ impl SceneEcs {
     /// The seq the ECS currently reflects — emitted as `computed_at_seq`.
     pub fn committed_seq(&self) -> i64 {
         self.committed_seq
+    }
+
+    /// Seed the world config-docs (room-hydration path). Each is the singleton of its doc_type, or
+    /// `None` when the world has not authored one (resolvers then fall back to built-in defaults).
+    pub fn set_world_config(
+        &mut self,
+        world_settings: Option<Document>,
+        gradation: Option<Document>,
+        vision_modes: Option<Document>,
+    ) {
+        self.world_settings = world_settings;
+        self.gradation = gradation;
+        self.vision_modes = vision_modes;
+    }
+
+    /// Seed the actor table (room-hydration path). Keyed by actor doc id.
+    pub fn set_actors(&mut self, actors: Vec<Document>) {
+        self.actors = actors.into_iter().map(|d| (d.id, d)).collect();
+    }
+
+    pub fn actor(&self, id: &Uuid) -> Option<&Document> {
+        self.actors.get(id)
+    }
+    pub fn world_settings_doc(&self) -> Option<&Document> {
+        self.world_settings.as_ref()
+    }
+    pub fn vision_modes_doc(&self) -> Option<&Document> {
+        self.vision_modes.as_ref()
+    }
+    pub fn gradation_doc(&self) -> Option<&Document> {
+        self.gradation.as_ref()
+    }
+
+    /// Mirror a config/actor field Update into the side tables (Value round-trip, structural-only).
+    fn apply_config_update(
+        slot: &mut Option<Document>,
+        doc_id: Uuid,
+        changes: &[crate::data::command::FieldChange],
+    ) {
+        if let Some(d) = slot {
+            if d.id == doc_id {
+                if let Ok(mut v) = serde_json::to_value(&*d) {
+                    for ch in changes {
+                        let _ = set_pointer(&mut v, &ch.path, ch.new.clone());
+                    }
+                    if let Ok(updated) = serde_json::from_value::<Document>(v) {
+                        *d = updated;
+                    }
+                }
+            }
+        }
     }
 
     /// Reflect one already-committed authoritative op into the derived world.
@@ -111,13 +173,58 @@ impl SceneEcs {
                         }
                     }
                 }
+                // Config singletons + actors (not in the hecs index).
+                Self::apply_config_update(&mut self.world_settings, *doc_id, changes);
+                Self::apply_config_update(&mut self.gradation, *doc_id, changes);
+                Self::apply_config_update(&mut self.vision_modes, *doc_id, changes);
+                if let Some(a) = self.actors.get_mut(doc_id) {
+                    if let Ok(mut v) = serde_json::to_value(&*a) {
+                        for ch in changes {
+                            let _ = set_pointer(&mut v, &ch.path, ch.new.clone());
+                        }
+                        if let Ok(updated) = serde_json::from_value::<Document>(v) {
+                            *a = updated;
+                        }
+                    }
+                }
             }
             Operation::Delete { doc } => {
                 if let Some(e) = self.index.remove(&doc.id) {
                     let _ = self.world.despawn(e);
                 }
+                match doc.doc_type.as_str() {
+                    "world-settings"
+                        if self.world_settings.as_ref().map(|d| d.id) == Some(doc.id) =>
+                    {
+                        self.world_settings = None;
+                    }
+                    "light-gradation"
+                        if self.gradation.as_ref().map(|d| d.id) == Some(doc.id) =>
+                    {
+                        self.gradation = None;
+                    }
+                    "vision-modes"
+                        if self.vision_modes.as_ref().map(|d| d.id) == Some(doc.id) =>
+                    {
+                        self.vision_modes = None;
+                    }
+                    "actor" => {
+                        self.actors.remove(&doc.id);
+                    }
+                    _ => {}
+                }
             }
-            Operation::Create { .. } => {} // non-scene document: ignored
+            Operation::Create { doc } => {
+                match doc.doc_type.as_str() {
+                    "world-settings" => self.world_settings = Some(doc.clone()),
+                    "light-gradation" => self.gradation = Some(doc.clone()),
+                    "vision-modes" => self.vision_modes = Some(doc.clone()),
+                    "actor" => {
+                        self.actors.insert(doc.id, doc.clone());
+                    }
+                    _ => {} // other non-scene document: ignored
+                }
+            }
         }
     }
 
@@ -408,6 +515,12 @@ mod tests {
         d
     }
 
+    fn entity_doc_top(id: u128, ty: &str, system: serde_json::Value) -> Document {
+        let mut d = doc(id, None, ty);
+        d.system = system;
+        d
+    }
+
     #[test]
     fn segments_cross_truth_table() {
         assert!(segments_cross(
@@ -596,5 +709,46 @@ mod tests {
         assert_eq!(ecs.committed_seq(), 3);
         ecs.set_committed_seq(7);
         assert_eq!(ecs.committed_seq(), 7);
+    }
+
+    #[test]
+    fn config_and_actor_side_tables_track_ops() {
+        use serde_json::json;
+        let mut ecs = SceneEcs::new();
+        // Seed via setters (the room-hydration path).
+        let mut ws = doc(100, None, "world-settings");
+        ws.system = json!({ "scene": { "lightingEnabled": false } });
+        ecs.set_world_config(Some(ws), None, None);
+        ecs.set_actors(vec![entity_doc_top(200, "actor", json!({ "vision": [] }))]);
+        assert!(ecs.actor(&Uuid::from_u128(200)).is_some());
+
+        // A live Create of a vision-modes doc lands in the side table.
+        ecs.apply_op(&Operation::Create {
+            doc: doc(101, None, "vision-modes"),
+        });
+        assert!(ecs.vision_modes_doc().is_some());
+
+        // A field Update to the world-settings doc is mirrored.
+        ecs.apply_op(&Operation::Update {
+            doc_id: Uuid::from_u128(100),
+            changes: vec![crate::data::command::FieldChange {
+                path: "/system/scene/lightingEnabled".into(),
+                old: json!(false),
+                new: json!(true),
+            }],
+        });
+        assert_eq!(
+            ecs.world_settings_doc()
+                .unwrap()
+                .system
+                .pointer("/scene/lightingEnabled"),
+            Some(&json!(true))
+        );
+
+        // A Delete of the actor removes it.
+        ecs.apply_op(&Operation::Delete {
+            doc: doc(200, None, "actor"),
+        });
+        assert!(ecs.actor(&Uuid::from_u128(200)).is_none());
     }
 }
