@@ -170,7 +170,8 @@ pub fn visibility_polygon(viewpoint: P, walls: &[Seg], bound: Rect) -> Vec<P> {
 /// Euclidean distance from point `p` to segment `a→b`, clamping the projection to the segment.
 /// Source: standard point-to-segment projection (clean-room). Used by the pathfinder footprint
 /// clearance: a footprint disc of radius R is wall-clear iff this distance ≥ R for every wall.
-#[allow(dead_code)] // TODO: remove once the grid pathfinder calls this
+// TODO: remove once the grid pathfinder A* body is live and calls cell_enterable.
+#[allow(dead_code)]
 pub(crate) fn point_segment_distance(p: P, a: P, b: P) -> f64 {
     let (px, py) = p;
     let (ax, ay) = a;
