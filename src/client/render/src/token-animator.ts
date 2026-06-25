@@ -60,9 +60,17 @@ export class TokenAnimator {
     }
     const active = this.anim.get(id);
     if (active?.pathDriven) {
-      // Expected optimistic progress: a target matching a path vertex at-or-ahead of the
-      // current segment is the authoritative store catching up to where we already walk —
-      // keep the smooth walk. Anything else (foreign mover / backward rollback) interrupts.
+      // Ignore-scan rationale: scan ALL vertices at segIndex or ahead (not just the immediate next).
+      // The route-commit dispatcher issues each run-endpoint as a synchronous burst of separate
+      // `dispatchIntent` calls; the optimistic store notifies the engine subscription synchronously
+      // per call, so the animator receives `setTarget(V1), setTarget(V2), …, setTarget(goal)` ALL
+      // while `segIndex` is still 0 (no tick runs between them). Narrowing to immediate-next would
+      // interrupt on V2. Scanning all ahead-vertices swallows every burst endpoint cleanly.
+      //
+      // Edge-case: a foreign or rollback authoritative position that coincidentally equals an
+      // ahead route-vertex is also swallowed. This is acceptable because routes are constructed
+      // ⊆ the gate-allowed mask (spec §13/§14), so rollbacks should not occur; and if one does
+      // the engine self-heals on the next store update that issues the real final position.
       for (let i = active.segIndex; i < active.poly.length; i++) {
         const v = active.poly[i];
         if (Math.abs(v[0] - t.x) < EPSILON && Math.abs(v[1] - t.y) < EPSILON) {
@@ -105,8 +113,17 @@ export class TokenAnimator {
       total += len;
     }
     const last = poly[poly.length - 1];
-    if (total < EPSILON || this.cfg.cellSize <= 0 || this.cfg.speedCellsPerSec <= 0) {
-      this.cur.set(id, { x: last[0], y: last[1], rotation: finalRot }); // degenerate → snap
+    // Non-finite total (NaN/Infinity from NaN/Infinity coordinates) is treated as degenerate:
+    // NaN total makes `total < EPSILON` false, `tRaw >= 1` never true → the token is pinned to
+    // NaN and re-reports `moved` every tick forever. The !isFinite guard catches this case and
+    // snaps to the last vertex instead. Mirrors the fail-closed convention in movement.rs /
+    // lighting.rs / vision.rs (non-finite inputs → under-reveal / snap, never freeze or NaN output).
+    // If the last vertex itself is non-finite, fall back to leaving `cur` unchanged.
+    if (!Number.isFinite(total) || total < EPSILON || this.cfg.cellSize <= 0 || this.cfg.speedCellsPerSec <= 0) {
+      if (Number.isFinite(last[0]) && Number.isFinite(last[1])) {
+        this.cur.set(id, { x: last[0], y: last[1], rotation: finalRot }); // degenerate → snap
+      }
+      // else: last vertex is non-finite; leave cur unchanged (keeps last valid rendered position).
       this.anim.delete(id);
       return;
     }
