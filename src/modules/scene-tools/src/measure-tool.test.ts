@@ -5,12 +5,15 @@ import { SceneInteractionBridge, TokenSelection } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { makeMeasureTool, ToolController, type ToolContext } from "./controller.svelte";
 
-const ev = {} as PointerEvent;
+/** Stub PointerEvent for tests that need to pass an event object. */
+function ev(): PointerEvent { return {} as PointerEvent; }
 
 /** Drain the microtask queue so async pathfind stubs resolve. */
 function flush(): Promise<void> {
   return new Promise((r) => setTimeout(r, 0));
 }
+/** Alias used by commit-gesture tests (matches brief naming). */
+const drain = flush;
 
 function setup() {
   const measures: Array<{ from: Point; to: Point; label: string }> = [];
@@ -28,10 +31,10 @@ function setup() {
 
 test("measuring draws the distance label and persists nothing", () => {
   const { tool, measures, sent, clears } = setup();
-  expect(tool.onPointerDown({ x: 0, y: 0 }, ev)).toBe(true);
-  tool.onPointerMove({ x: 300, y: 0 }, ev);
+  expect(tool.onPointerDown({ x: 0, y: 0 }, ev())).toBe(true);
+  tool.onPointerMove({ x: 300, y: 0 }, ev());
   expect(measures.at(-1)).toEqual({ from: { x: 0, y: 0 }, to: { x: 300, y: 0 }, label: "3" });
-  tool.onPointerUp({ x: 300, y: 0 }, ev);
+  tool.onPointerUp({ x: 300, y: 0 }, ev());
   expect(clears()).toBe(1);
   expect(sent).toHaveLength(0); // client-local: no document, no broadcast
 });
@@ -99,8 +102,8 @@ test("measure tool routes via pathfind for the selected token and previews the p
   });
   const { tool, overlays, measures } = setupRoute({ pathfind });
 
-  tool.onPointerDown({ x: 50, y: 50 }, ev);
-  tool.onPointerMove({ x: 150, y: 50 }, ev);
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 150, y: 50 }, ev());
   await flush(); // allow the async pathfind to resolve
 
   expect(overlays.length).toBeGreaterThan(0); // a routed polyline was previewed
@@ -117,9 +120,9 @@ test("measure tool falls back to plain anchor-point measure when no token is sel
   // Build the route context but override tokenIds to empty — no selection.
   const { tool, overlays } = setupRoute({ pathfind, tokenIds: [] });
 
-  tool.onPointerDown({ x: 0, y: 0 }, ev);
-  tool.onPointerMove({ x: 100, y: 0 }, ev);
-  tool.onPointerUp({ x: 100, y: 0 }, ev);
+  tool.onPointerDown({ x: 0, y: 0 }, ev());
+  tool.onPointerMove({ x: 100, y: 0 }, ev());
+  tool.onPointerUp({ x: 100, y: 0 }, ev());
 
   expect(pathfinderCalled).toHaveLength(0); // fallback: plain measure, no pathfind
   expect(overlays).toHaveLength(0);         // no overlay in plain-measure mode
@@ -132,10 +135,10 @@ test("measure tool clears overlay and measure label on pointer up (mid-gesture-c
   });
   const { tool, overlayClears, measureClears } = setupRoute({ pathfind });
 
-  tool.onPointerDown({ x: 50, y: 50 }, ev);
-  tool.onPointerMove({ x: 150, y: 50 }, ev);
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 150, y: 50 }, ev());
   await flush();
-  tool.onPointerUp({ x: 150, y: 50 }, ev);
+  tool.onPointerUp({ x: 150, y: 50 }, ev());
 
   expect(overlayClears()).toBeGreaterThan(0);   // overlay cleared on release
   expect(measureClears()).toBeGreaterThan(0);   // measure label cleared on release
@@ -165,10 +168,10 @@ test("measure tool with no pathfind function falls back to plain measure", () =>
   };
   const tool = makeMeasureTool(ctx);
 
-  tool.onPointerDown({ x: 0, y: 0 }, ev);
-  tool.onPointerMove({ x: 200, y: 0 }, ev);
+  tool.onPointerDown({ x: 0, y: 0 }, ev());
+  tool.onPointerMove({ x: 200, y: 0 }, ev());
   expect(measures.at(-1)?.label).toBe("4"); // plain gridDistance label
-  tool.onPointerUp({ x: 200, y: 0 }, ev);
+  tool.onPointerUp({ x: 200, y: 0 }, ev());
   expect(cleared).toBe(1);
 });
 
@@ -180,8 +183,8 @@ test("measure tool onDeactivate clears route overlay on tool swap (mid-gesture-c
     pathfind: async () => ({ path: [[50, 50], [150, 50]] as [number, number][], cost: 2 }),
   });
 
-  tool.onPointerDown({ x: 50, y: 50 }, ev);
-  tool.onPointerMove({ x: 150, y: 50 }, ev);
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 150, y: 50 }, ev());
   await flush();
 
   const before = overlayClears() + measureClears();
@@ -253,9 +256,9 @@ test("measure tool accumulates multiple waypoints and passes them to pathfind in
   const tool = makeMeasureTool(ctx);
 
   // Click waypoint 1 at (100,50), waypoint 2 at (150,50), then hover to goal (200,50).
-  tool.onPointerDown({ x: 100, y: 50 }, ev); // wp1 pushed
-  tool.onPointerDown({ x: 150, y: 50 }, ev); // wp2 pushed
-  tool.onPointerMove({ x: 200, y: 50 }, ev); // triggers pathfind([100,50],[150,50],[200,50])
+  tool.onPointerDown({ x: 100, y: 50 }, ev()); // wp1 pushed
+  tool.onPointerDown({ x: 150, y: 50 }, ev()); // wp2 pushed
+  tool.onPointerMove({ x: 200, y: 50 }, ev()); // triggers pathfind([100,50],[150,50],[200,50])
   await flush();
 
   expect(calls).toHaveLength(1);
@@ -263,4 +266,127 @@ test("measure tool accumulates multiple waypoints and passes them to pathfind in
   expect(calls[0].start).toEqual([50, 50]);
   // waypoints must be [wp1, wp2, goal] in order.
   expect(calls[0].waypoints).toEqual([[100, 50], [150, 50], [200, 50]]);
+});
+
+// --- Route-commit (double-click) tests ---
+
+/** Controllable clock injected into ctx.now for double-click timing tests. */
+interface FakeNow {
+  /** Returns the current fake timestamp. */
+  (): number;
+  /** Advance the fake clock by `ms` milliseconds. */
+  advance(ms: number): void;
+}
+
+function makeFakeNow(initial = 0): FakeNow {
+  let t = initial;
+  const fn = (): number => t;
+  fn.advance = (ms: number): void => { t += ms; };
+  return fn;
+}
+
+/**
+ * Build a ToolContext wired for route-commit tests: a scene + token seeded in the store,
+ * a single token selected, injected pathfind/dispatchIntent/animateAlongPath stubs, and
+ * a controllable clock. Returns the ctx and the clock so tests can advance time.
+ */
+function seedRouteCtx(over: {
+  pathfind: ToolContext["pathfind"];
+  dispatchIntent?: (ops: WireOperation[]) => void;
+  animateAlongPath?: (id: string, path: [number, number][]) => void;
+  tokenAt: { id: string; x: number; y: number };
+}): { ctx: ToolContext; now: FakeNow } {
+  const docs = new DocumentStore();
+  docs.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: { perCell: 5, unit: "ft" } } }, "s1"),
+      },
+      {
+        op: "create",
+        doc: buildTokenDoc("w1", "s1", {
+          x: over.tokenAt.x, y: over.tokenAt.y, w: 100, h: 100, rotation: 0,
+          visual: { kind: "image", asset: "a" },
+        }, over.tokenAt.id),
+      },
+    ],
+  });
+
+  const now = makeFakeNow();
+
+  const animateSpy = over.animateAlongPath ?? (() => {});
+  const bridge = new SceneInteractionBridge();
+  bridge.attach(fakeSceneHost({
+    snap: (p: Point) => p,
+    previewOverlay: () => {},
+    clearOverlay: () => {},
+    drawMeasure: () => {},
+    clearMeasure: () => {},
+    animateAlongPath: animateSpy,
+  }));
+
+  const sel = new TokenSelection();
+  sel.set([over.tokenAt.id]);
+
+  const ctx: ToolContext = {
+    scene: bridge,
+    dispatchIntent: over.dispatchIntent ?? (() => {}),
+    documents: docs,
+    assets: new AssetResolver(),
+    world: "w1",
+    sendPing: () => {},
+    tokenSelection: sel,
+    pathfind: over.pathfind,
+    now,
+  };
+
+  return { ctx, now };
+}
+
+test("double-click in route mode commits: animates the path and dispatches one intent per collinear run", async () => {
+  const sent: WireOperation[][] = [];
+  const animated: Array<{ id: string; path: [number, number][] }> = [];
+  // L-route 0,0 → 200,0 → 200,200 (per-cell points); collinearRuns → 2 runs.
+  const pathfind: ToolContext["pathfind"] = async () => ({
+    path: [[0, 0], [100, 0], [200, 0], [200, 100], [200, 200]] as [number, number][],
+    cost: 4,
+  });
+  const { ctx, now } = seedRouteCtx({
+    pathfind,
+    dispatchIntent: (ops) => sent.push(ops),
+    animateAlongPath: (id, path) => animated.push({ id, path }),
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+  });
+  const tool = makeMeasureTool(ctx);
+  tool.onPointerDown({ x: 200, y: 200 }, ev()); // first click → records time
+  now.advance(100);
+  tool.onPointerDown({ x: 200, y: 200 }, ev()); // double-click → commit
+  await drain(); // resolve the pathfind promise
+
+  expect(animated).toEqual([{ id: "tok1", path: [[0, 0], [100, 0], [200, 0], [200, 100], [200, 200]] }]);
+  // Two collinear runs → two SEPARATE dispatchIntent calls (chaining through the gate).
+  expect(sent.length).toBe(2);
+  expect(sent[0][0]).toMatchObject({ op: "update", doc_id: "tok1" });
+  // First run goal = the corner (200,0); second = (200,200).
+  const xy = (ops: WireOperation[]) => {
+    const ch = (ops[0] as { changes: { path: string; new: unknown }[] }).changes;
+    return [ch.find((c) => c.path === "/system/x")!.new, ch.find((c) => c.path === "/system/y")!.new];
+  };
+  expect(xy(sent[0])).toEqual([200, 0]);
+  expect(xy(sent[1])).toEqual([200, 200]);
+});
+
+test("a single click in route mode does NOT commit", async () => {
+  const sent: WireOperation[][] = [];
+  const { ctx } = seedRouteCtx({
+    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1 }),
+    dispatchIntent: (o) => sent.push(o),
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+  });
+  const tool = makeMeasureTool(ctx);
+  tool.onPointerDown({ x: 100, y: 0 }, ev());
+  await drain();
+  expect(sent.length).toBe(0);
 });

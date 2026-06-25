@@ -4,6 +4,7 @@
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
 import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult } from "@shadowcat/core";
+import { collinearRuns } from "./path-runs";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import { topTokenAt } from "./hit-test";
 
@@ -51,6 +52,11 @@ function activeScene(ctx: ToolContext): { id: string; size: number; perCell: num
 
 /** Route color for the A* preview polyline (blue-teal, distinct from walls and selection). */
 const ROUTE_COLOR = 0x3399ff;
+/** Maximum milliseconds between two pointer-downs to count as a double-click. */
+const DOUBLE_CLICK_MS = 350;
+/** Maximum scene-coord distance between two pointer-downs to count as a double-click
+ * (generous: post-snap, a double-click lands on the same cell center). */
+const COMMIT_RADIUS = 12;
 
 /** Owns the active-tool + selected-asset UI state and routes activation to the engine
  * via the scene bridge. */
@@ -216,6 +222,12 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // after a newer request has been issued (last-write-wins coalescing).
   let pendingSeq = 0;
 
+  // Monotonic clock (injected in tests; defaults to Date.now).
+  const now = ctx.now ?? ((): number => Date.now());
+  // Double-click detection state: timestamp and snapped position of the last pointer-down.
+  let lastDownAt = -Infinity;
+  let lastDownPt: Point = { x: 0, y: 0 };
+
   /** True when the measure tool should operate in route mode (see above). */
   function inRouteMode(): boolean {
     return (
@@ -284,14 +296,59 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     waypoints = [];
   }
 
+  /** Commit a route from the selected token's center to `goal`: smooth local walk +
+   * one position intent per collinear run (separate publishes so each gates against the
+   * prior committed cell — a single straight start→goal op would be Forbidden around walls). */
+  function commitRoute(goal: Point): void {
+    if (!ctx.pathfind || !ctx.tokenSelection || ctx.tokenSelection.ids.size !== 1) return;
+    const scene = activeScene(ctx);
+    const start = tokenCenter();
+    if (!scene || !start) return;
+    const tokenId = [...ctx.tokenSelection.ids][0];
+    const fp = resolveFootprint();
+    const seq = ++pendingSeq;
+    ctx.pathfind(scene.id, start, [...waypoints, [goal.x, goal.y]], fp).then(
+      (result) => {
+        if (seq !== pendingSeq) return;
+        if (result.path.length < 2) { clearRoute(); return; }
+        ctx.scene.animateAlongPath(tokenId, result.path);
+        const runs = collinearRuns(result.path);
+        for (let i = 1; i < runs.length; i++) {
+          const [nx, ny] = runs[i];
+          // Re-read sys after each dispatchIntent: the optimistic store advances
+          // synchronously, giving each op the correct `old` for the server gate chain.
+          const sys = ctx.documents.get(tokenId)?.system as { x?: number; y?: number } | undefined;
+          ctx.dispatchIntent([{ op: "update", doc_id: tokenId, changes: [
+            { path: "/system/x", old: sys?.x ?? null, new: nx },
+            { path: "/system/y", old: sys?.y ?? null, new: ny },
+          ] }]);
+        }
+        clearRoute();
+      },
+      () => { if (seq === pendingSeq) clearRoute(); },
+    );
+  }
+
   return {
     onPointerDown(p: Point): boolean {
       if (inRouteMode()) {
         const scene = activeScene(ctx);
         if (scene) {
-          // Snap the click and push it as a waypoint; the start pin is always the
-          // selected token's live center (not an accumulated waypoint).
           const snapped = ctx.scene.snap(p);
+          const t = now();
+          const isDouble =
+            t - lastDownAt < DOUBLE_CLICK_MS &&
+            Math.hypot(snapped.x - lastDownPt.x, snapped.y - lastDownPt.y) < COMMIT_RADIUS;
+          if (isDouble) {
+            // Consume the gesture so the next down starts fresh.
+            lastDownAt = -Infinity;
+            commitRoute(snapped);
+            return true;
+          }
+          // Record this down as a potential first half of a double-click, then push
+          // the waypoint for the existing preview behavior.
+          lastDownAt = t;
+          lastDownPt = snapped;
           waypoints.push([snapped.x, snapped.y]);
           return true;
         }
