@@ -63,6 +63,16 @@ pub enum ClientMsg {
     /// room with the sender stamped; never sequenced, logged, or a document (#3).
     /// Coordinates are not validated (#6); rate-limited per connection.
     ScenePing { scene: Uuid, x: f64, y: f64 },
+    /// A one-shot grid pathfinding request, correlated by `request_id`. `start`/`waypoints` are
+    /// scene coords; `waypoints`' LAST element is the goal. `footprint_radius` is in grid units
+    /// (cells; the client's `footprintRadius`). The route is mask-bounded for non-GM requesters.
+    Pathfind {
+        request_id: Uuid,
+        scene: Uuid,
+        start: (f64, f64),
+        waypoints: Vec<(f64, f64)>,
+        footprint_radius: f64,
+    },
 }
 
 /// Which tier served a resync.
@@ -191,6 +201,15 @@ pub enum ServerMsg {
         y: f64,
         user: Uuid,
     },
+    /// The route for the `Pathfind` with this `request_id`: ordered cell-center scene points
+    /// (incl. start + goal) and the total cost in cells (client multiplies `grid.distance.perCell`).
+    PathResult {
+        request_id: Uuid,
+        path: Vec<(f64, f64)>,
+        cost: f64,
+    },
+    /// The `Pathfind` with this `request_id` failed (unreachable / invalid request / search exceeded).
+    PathError { request_id: Uuid, message: String },
 }
 
 impl ServerMsg {
@@ -352,6 +371,37 @@ mod protocol_tests {
         assert!(serde_json::to_string(&upd)
             .unwrap()
             .contains("\"type\":\"search_update\""));
+    }
+
+    #[test]
+    fn pathfind_frames_round_trip() {
+        let req = ClientMsg::Pathfind {
+            request_id: Uuid::from_u128(1),
+            scene: Uuid::from_u128(2),
+            start: (50.0, 50.0),
+            waypoints: vec![(150.0, 50.0), (250.0, 50.0)],
+            footprint_radius: 0.5,
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"type\":\"pathfind\""), "got {s}");
+        let back: ClientMsg = serde_json::from_str(&s).unwrap();
+        assert!(matches!(back, ClientMsg::Pathfind { .. }));
+
+        let ok = ServerMsg::PathResult {
+            request_id: Uuid::from_u128(1),
+            path: vec![(50.0, 50.0)],
+            cost: 2.0,
+        };
+        assert!(serde_json::to_string(&ok)
+            .unwrap()
+            .contains("\"type\":\"path_result\""));
+        let err = ServerMsg::PathError {
+            request_id: Uuid::from_u128(1),
+            message: "unreachable".into(),
+        };
+        assert!(serde_json::to_string(&err)
+            .unwrap()
+            .contains("\"type\":\"path_error\""));
     }
 
     #[test]
