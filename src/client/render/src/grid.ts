@@ -2,10 +2,18 @@ import type { Point, LineSeg } from "./types";
 
 export type GridKind = "square" | "hex";
 
+/** Cost rule for diagonal movement on square grids. Mirrors `DiagonalRule` in
+ * `scene-docs.ts` and the server's `pathfinding.rs` `DiagonalRule` enum — the
+ * distance metric must match the server's A* cost exactly. */
+export type DiagonalRule = "chebyshev" | "manhattan" | "euclidean" | "alternating";
+
 export interface GridSpec {
   /** "square": `size` = edge length. "hex": `size` = outer radius. */
   kind: GridKind;
   size: number;
+  /** Square grids only. Diagonal cost rule for `distance()`. Defaults to `"chebyshev"`.
+   * Source: the world-settings `pathfinding.diagonalRule` resolved via `resolveSceneSettings`. */
+  diagonalRule?: DiagonalRule;
 }
 
 interface SceneRect {
@@ -31,15 +39,35 @@ export class Grid {
     return this.axialToPixel(q, r);
   }
 
-  /** Whole-cell distance between two scene points: square = Chebyshev (chessboard) of
-   * cell indices; hex = axial distance (`col`/`row` are axial q/r). */
+  /** Whole-cell distance between two scene points.
+   * Hex: axial distance (`col`/`row` are axial q/r).
+   * Square: selected by `spec.diagonalRule` (default `"chebyshev"`):
+   *   - chebyshev  — max(dCol, dRow) (chessboard / 1-per-diagonal).
+   *   - manhattan  — dCol + dRow (no diagonal shortcuts).
+   *   - euclidean  — (dmax−dmin) + √2·dmin (true Euclidean cell distance).
+   *   - alternating — (dmax−dmin) + dmin + floor(dmin/2) (5-10-5: diagonals cost 1,2,1,2…).
+   * All four mirror the server's per-rule costs in `scene/pathfinding.rs`. */
   distance(a: Point, b: Point): number {
     const ca = this.cellOf(a);
     const cb = this.cellOf(b);
-    const dCol = cb.col - ca.col;
-    const dRow = cb.row - ca.row;
-    if (this.spec.kind === "square") return Math.max(Math.abs(dCol), Math.abs(dRow));
-    return (Math.abs(dCol) + Math.abs(dRow) + Math.abs(dCol + dRow)) / 2;
+    const dCol = Math.abs(cb.col - ca.col);
+    const dRow = Math.abs(cb.row - ca.row);
+    if (this.spec.kind !== "square") {
+      // Hex axial distance needs signed deltas for the cube-coordinate formula.
+      const sCol = cb.col - ca.col;
+      const sRow = cb.row - ca.row;
+      return (Math.abs(sCol) + Math.abs(sRow) + Math.abs(sCol + sRow)) / 2;
+    }
+    const dmax = Math.max(dCol, dRow);
+    const dmin = Math.min(dCol, dRow);
+    switch (this.spec.diagonalRule ?? "chebyshev") {
+      case "manhattan":   return dCol + dRow;
+      case "euclidean":   return (dmax - dmin) + Math.SQRT2 * dmin;
+      // Diagonals alternate cost 1, 2, 1, 2 … (5-10-5 rule). dmin diagonals cost
+      // dmin + floor(dmin/2); the remainder (dmax−dmin) are orthogonal at cost 1 each.
+      case "alternating": return (dmax - dmin) + dmin + Math.floor(dmin / 2);
+      default:            return dmax; // chebyshev
+    }
   }
 
   cellOf(p: Point): { col: number; row: number } {

@@ -1,5 +1,10 @@
 import { test, expect } from "vitest";
-import { Grid } from "./index";
+import { Grid, type GridSpec } from "./index";
+
+/** Convenience factory so tests can pass a partial spec without repeating defaults. */
+function makeGrid(spec: GridSpec): Grid {
+  return new Grid(spec);
+}
 
 test("square grid snaps to cell centers", () => {
   const g = new Grid({ kind: "square", size: 100 });
@@ -55,4 +60,17 @@ test("hex distance is axial distance in whole cells", () => {
   const neighbor = { x: Math.sqrt(3) * 10, y: 0 }; // center of axial (1,0)
   expect(g.distance({ x: 0, y: 0 }, neighbor)).toBe(1);
   expect(g.distance({ x: 0, y: 0 }, { x: 0, y: 0 })).toBe(0);
+});
+
+test("alternating (5-10-5) costs diagonals 1,2,1,2 for square grids", () => {
+  const g = makeGrid({ kind: "square", size: 100, diagonalRule: "alternating" });
+  // 3 diagonal steps from origin: 1 + 2 + 1 = 4.
+  expect(g.distance({ x: 50, y: 50 }, { x: 350, y: 350 })).toBe(4);
+  // 1 diagonal + 1 orthogonal: diagonal(1) + orth(1) = 2.
+  expect(g.distance({ x: 50, y: 50 }, { x: 250, y: 150 })).toBe(2);
+});
+
+test("chebyshev remains 1-per-diagonal (default)", () => {
+  const g = makeGrid({ kind: "square", size: 100, diagonalRule: "chebyshev" });
+  expect(g.distance({ x: 50, y: 50 }, { x: 350, y: 350 })).toBe(3);
 });
