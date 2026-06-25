@@ -87,7 +87,7 @@ export class RenderEngine implements SceneToolHost {
   /** The pointer that owns the in-flight gesture; events from other pointers
    * (multi-touch / pen+mouse) are ignored until it ends. Single-pointer by design. */
   private activePointerId: number | null = null;
-  private pendingDerived: { input: VisibilityInput; lighting: LightingInput | null; seq: number } | null = null;
+  private pendingDerived: { input: VisibilityInput; seq: number } | null = null;
   /** Highest computed_at_seq applied to the mask; guards against regressing to an
    * older derived frame (latest-wins). */
   private lastAppliedSeq = -1;
@@ -172,35 +172,29 @@ export class RenderEngine implements SceneToolHost {
     if (frame.computedAtSeq <= this.lastAppliedSeq) return;
     if (this.pendingDerived && frame.computedAtSeq <= this.pendingDerived.seq) return;
     const input = this.toVisibility(frame.payload);
-    const lighting = this.toLighting(frame.payload);
+    // Lighting is cosmetic — applied eagerly here (monotonic order already honored by the
+    // guards above), NOT held behind the appliedSeq watermark that fog uses for document
+    // consistency. Exactly one setTarget call per non-dropped frame.
+    this.lighting.setTarget(this.toLighting(frame.payload));
     if (this.opts.store.appliedSeq >= frame.computedAtSeq) {
-      this.applyDerived(input, lighting, frame.computedAtSeq);
+      this.applyDerived(input, frame.computedAtSeq);
     } else {
-      // Lighting is cosmetic — no document-consistency watermark required for it.
-      // Apply the lighting update eagerly; defer only the visibility (fog secrecy gate).
-      this.lighting.setTarget(lighting);
-      this.pendingDerived = { input, lighting, seq: frame.computedAtSeq }; // watermark: defer visibility
+      this.pendingDerived = { input, seq: frame.computedAtSeq }; // watermark: defer visibility (fog secrecy gate)
     }
-  }
-
-  /** Test seam: drives onSceneFrame directly (onSceneFrame is private). */
-  onSceneFrameForTest(frame: { payload: unknown; computedAtSeq: number }): void {
-    this.onSceneFrame(frame);
   }
 
   private flushPendingDerived(): void {
     const p = this.pendingDerived;
     if (p && this.opts.store.appliedSeq >= p.seq) {
       this.pendingDerived = null;
-      this.applyDerived(p.input, p.lighting, p.seq);
+      this.applyDerived(p.input, p.seq);
     }
   }
 
-  private applyDerived(input: VisibilityInput, lighting: LightingInput | null, seq: number): void {
+  private applyDerived(input: VisibilityInput, seq: number): void {
     this.lastAppliedSeq = seq;
     this.lastInput = input;
     this.renderVisibility();
-    this.lighting.setTarget(lighting);
   }
 
   /** Apply the last derived visibility through the GM fog-preview override. */

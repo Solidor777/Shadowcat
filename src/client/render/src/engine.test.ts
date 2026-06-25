@@ -550,7 +550,13 @@ test("the lighting layer is in the core z-order between templates and mask", () 
 });
 
 test("applying a derived frame drives the lighting overlay; GM clears it", () => {
-  const { store, backend, engine } = makeEngine();
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
   engine.start();
   store.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
@@ -561,7 +567,7 @@ test("applying a derived frame drives the lighting overlay; GM clears it", () =>
       embedded: {}, parent_id: null, system: { grid: { kind: "square", size: 100 } }, created_at: 0, updated_at: 0,
     } }],
   });
-  engine.onSceneFrameForTest({ payload: {
+  onUpdate({ payload: {
     mode: "masked", polygons: [], bands: [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }],
     renderHints: ["desaturate"], lit: [{ scene: "s1", cell: 100, cells: [0, 0, 2, 0, 0] }],
   }, computedAtSeq: 1 });
@@ -569,9 +575,60 @@ test("applying a derived frame drives the lighting overlay; GM clears it", () =>
   expect(backend.lighting!.cells.length).toBe(1);
   expect(backend.lighting!.cells[0].desaturate).toBe(true);
 
-  engine.onSceneFrameForTest({ payload: { mode: "all" }, computedAtSeq: 2 });
+  onUpdate({ payload: { mode: "all" }, computedAtSeq: 2 });
   backend.tick?.(1000);
   expect(backend.lighting!.cells).toEqual([]); // GM → no overlay
+});
+
+test("lighting is applied eagerly on a deferred fog frame; fog flush does not restart the fade", () => {
+  // Guards the eager-once design: lighting (cosmetic) must not wait behind the fog watermark.
+  // When fog is deferred (computedAtSeq > store.appliedSeq), lighting must already be applied.
+  // When the store advances and fog flushes, lighting must NOT receive a second setTarget call
+  // (which would reset prev+elapsed and cause a visible stutter).
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: {
+      id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1,
+      source: null, owner: null,
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      embedded: {}, parent_id: null, system: { grid: { kind: "square", size: 100 } }, created_at: 0, updated_at: 0,
+    } }],
+  });
+  // Send a masked frame at seq=5 (store is at seq=1 → fog deferred, computedAtSeq 5 > 1).
+  onUpdate({ payload: {
+    mode: "masked", polygons: [], bands: [{ name: "bright", min: 0.67 }],
+    renderHints: [],
+    lit: [{ scene: "s1", cell: 100, cells: [3, 4, 0, 0, 0] }],
+  }, computedAtSeq: 5 });
+  // Lighting must already be applied (eager), even though fog is deferred.
+  backend.tick?.(1000); // settle the lighting fade
+  expect(backend.lighting!.cells.length).toBe(1); // lighting overlay present
+  expect(backend.lighting!.cells[0]).toMatchObject({ i: 3, j: 4 });
+  // Fog is still deferred — visibility not yet applied.
+  expect(backend.visibility).toBeNull();
+  // Advance the store past seq=5 so the fog flushes.
+  store.applyCommand({
+    seq: 5, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: {
+      id: "d5", scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1,
+      source: null, owner: null,
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      embedded: {}, parent_id: null, system: {}, created_at: 0, updated_at: 0,
+    } }],
+  });
+  // Fog is now flushed.
+  expect(backend.visibility).not.toBeNull();
+  // Lighting cells must be unchanged: flush must NOT have called setTarget again (no fade restart).
+  expect(backend.lighting!.cells.length).toBe(1);
+  expect(backend.lighting!.cells[0]).toMatchObject({ i: 3, j: 4 });
 });
 
 test("toLighting parses lit cells for the active scene and fails safe", () => {
