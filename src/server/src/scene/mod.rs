@@ -35,10 +35,13 @@ pub struct ResolvedScene {
 }
 
 /// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
+/// `render_hint` mirrors `SEED_VISION_MODES` in `scene-docs.ts` (e.g. `"desaturate"` for
+/// darkvision); absent in seed → `None`, absent in an authored doc entry → `None`.
 #[derive(Clone, Debug)]
 pub struct VisionMode {
     pub illumination_floor: String,
     pub default_range: f64,
+    pub render_hint: Option<String>,
 }
 
 /// Parse `#rrggbb` or CSS 3-digit `#rgb` → packed `0xRRGGBB`; fail-closed to `0x000000`
@@ -436,17 +439,24 @@ impl SceneEcs {
                             VisionMode {
                                 illumination_floor: floor.to_string(),
                                 default_range: range,
+                                render_hint: m
+                                    .get("renderHint")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string),
                             },
                         );
                     }
                 }
             }
             None => {
+                // Mirrors `SEED_VISION_MODES` in scene-docs.ts: normal has no hint;
+                // darkvision desaturates (faithful-darkvision render, M10e-3).
                 out.insert(
                     "normal".into(),
                     VisionMode {
                         illumination_floor: "dim".into(),
                         default_range: 0.0,
+                        render_hint: None,
                     },
                 );
                 out.insert(
@@ -454,6 +464,7 @@ impl SceneEcs {
                     VisionMode {
                         illumination_floor: "dark".into(),
                         default_range: 12.0,
+                        render_hint: Some("desaturate".into()),
                     },
                 );
             }
@@ -1784,5 +1795,29 @@ mod tests {
             doc: doc(200, None, "actor"),
         });
         assert!(ecs.actor(&Uuid::from_u128(200)).is_none());
+    }
+
+    #[test]
+    fn vision_modes_carry_render_hint() {
+        use serde_json::json;
+        // Absent doc → built-in seed mirrors scene-docs.ts: darkvision desaturates, normal does not.
+        let seeded = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        let m = seeded.resolved_vision_modes();
+        assert_eq!(m["normal"].render_hint, None);
+        assert_eq!(m["darkvision"].render_hint.as_deref(), Some("desaturate"));
+
+        // Present doc → renderHint parsed; absent field → None.
+        let mut vm = entity_doc(30, 10, "vision-modes", json!({}));
+        vm.doc_type = "vision-modes".into();
+        vm.parent_id = None;
+        vm.system = json!({ "modes": {
+            "truesight": { "illuminationFloor": "dark", "defaultRange": 8, "renderHint": "outline" },
+            "plain":     { "illuminationFloor": "dim",  "defaultRange": 0 }
+        }});
+        let mut ecs = SceneEcs::new();
+        ecs.set_world_config(None, None, Some(vm));
+        let m = ecs.resolved_vision_modes();
+        assert_eq!(m["truesight"].render_hint.as_deref(), Some("outline"));
+        assert_eq!(m["plain"].render_hint, None);
     }
 }
