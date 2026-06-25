@@ -8,7 +8,8 @@
 /// Grid diagonal-cost rule (from `world-settings.pathfinding.diagonalRule`). All four are the same
 /// king-move graph; they differ only in diagonal cost + the admissible heuristic. `Alternating`
 /// (PF1e/3.5 "5-10-5") costs diagonals 1,2,1,2… and so requires a parity bit in the search node.
-#[allow(dead_code)] // TODO: remove once the A* body consumes this enum.
+// TODO: remove once the A* body consumes this enum.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiagonalRule {
     Chebyshev,
@@ -19,7 +20,8 @@ pub enum DiagonalRule {
 
 /// Parse the diagonal-rule string; unknown/missing ⇒ `Chebyshev` (mirrors the client
 /// `DEFAULT_WORLD_SETTINGS.pathfinding.diagonalRule` in `scene-docs.ts`).
-#[allow(dead_code)] // TODO: remove once the A* body calls this.
+// TODO: remove once the A* body calls this.
+#[allow(dead_code)]
 pub fn parse_diagonal_rule(s: &str) -> DiagonalRule {
     match s {
         "manhattan" => DiagonalRule::Manhattan,

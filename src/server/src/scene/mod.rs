@@ -320,24 +320,31 @@ impl SceneEcs {
         }
     }
 
+    /// The validated world-settings `system` body, or `None` when the doc is absent or structurally
+    /// incomplete. Mirrors the TS `ws?.scene && ws?.pathfinding && ws?.animation` guard in
+    /// `resolveSceneSettings` — all three top-level keys must be non-null objects; a partial doc
+    /// falls back to built-in defaults rather than partially resolving. Used by all resolvers that
+    /// read from world-settings so partial-doc handling is consistent.
+    fn validated_world_settings_system(&self) -> Option<&serde_json::Value> {
+        let s = self.world_settings.as_ref().map(|d| &d.system)?;
+        if s.get("scene").and_then(|v| v.as_object()).is_some()
+            && s.get("pathfinding").and_then(|v| v.as_object()).is_some()
+            && s.get("animation").and_then(|v| v.as_object()).is_some()
+        {
+            Some(s)
+        } else {
+            None
+        }
+    }
+
     /// Resolve a scene's effective lighting/vision settings: built-in defaults < world-settings doc
     /// < per-scene override. Fail-closed and `null ⇒ inherit` (mirrors `resolveSceneSettings`).
     pub fn resolve_scene(&self, scene: Uuid) -> ResolvedScene {
-        // World layer — structural guard: a partial world-settings doc falls back to built-ins.
-        let ws = self.world_settings.as_ref().map(|d| &d.system);
-        // Structural guard: each required key must be a non-null object, mirroring the TS
-        // `ws?.scene && ws?.pathfinding && ws?.animation` check (falsy for null values).
-        // A partial or null-valued key falls back to built-in defaults rather than panicking.
-        let ws_scene = ws.and_then(|s| {
-            if s.get("scene").and_then(|v| v.as_object()).is_some()
-                && s.get("pathfinding").and_then(|v| v.as_object()).is_some()
-                && s.get("animation").and_then(|v| v.as_object()).is_some()
-            {
-                s.pointer("/scene")
-            } else {
-                None
-            }
-        });
+        // World layer — structural guard via validated_world_settings_system: a partial doc falls
+        // back to built-ins (mirrors TS `ws?.scene && ws?.pathfinding && ws?.animation` check).
+        let ws_scene = self
+            .validated_world_settings_system()
+            .and_then(|s| s.pointer("/scene"));
         // Built-in defaults (mirror DEFAULT_WORLD_SETTINGS.scene).
         let d_los = ws_scene
             .and_then(|s| s.get("losRestriction"))
@@ -456,12 +463,13 @@ impl SceneEcs {
 
     /// The world's pathfinding diagonal-cost rule. World-scoped (no per-scene override; the scene doc
     /// overrides only vision/lighting/grid — parent §5.2). Reads `world-settings.pathfinding.diagonalRule`.
+    /// Uses `validated_world_settings_system` so a structurally incomplete doc falls back to `Chebyshev`,
+    /// consistent with `resolve_scene`'s handling of the same partial-doc case.
     #[allow(dead_code)] // TODO: remove once the pathfinding handler calls this.
     pub(crate) fn resolved_diagonal_rule(&self) -> pathfinding::DiagonalRule {
         let s = self
-            .world_settings
-            .as_ref()
-            .and_then(|d| d.system.pointer("/pathfinding/diagonalRule"))
+            .validated_world_settings_system()
+            .and_then(|sys| sys.pointer("/pathfinding/diagonalRule"))
             .and_then(|v| v.as_str())
             .unwrap_or("chebyshev");
         pathfinding::parse_diagonal_rule(s)
@@ -2363,6 +2371,37 @@ mod tests {
         assert_eq!(
             ecs.resolved_diagonal_rule(),
             crate::scene::pathfinding::DiagonalRule::Chebyshev
+        );
+    }
+
+    #[test]
+    fn diagonal_rule_falls_back_when_structural_keys_absent() {
+        // A world-settings doc with `pathfinding.diagonalRule:"alternating"` but missing `scene`
+        // or `animation` must resolve to `Chebyshev` — the structural guard (same as resolve_scene)
+        // must reject a partial doc rather than partially resolving.
+        use serde_json::json;
+        let mut ecs = SceneEcs::new();
+
+        // Missing `scene` key entirely.
+        ecs.set_world_settings_for_test(json!({
+            "pathfinding": { "diagonalRule": "alternating" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        assert_eq!(
+            ecs.resolved_diagonal_rule(),
+            crate::scene::pathfinding::DiagonalRule::Chebyshev,
+            "missing scene key must fall back to Chebyshev"
+        );
+
+        // Missing `animation` key entirely.
+        ecs.set_world_settings_for_test(json!({
+            "scene": { "movementRestriction": "visible" },
+            "pathfinding": { "diagonalRule": "alternating" }
+        }));
+        assert_eq!(
+            ecs.resolved_diagonal_rule(),
+            crate::scene::pathfinding::DiagonalRule::Chebyshev,
+            "missing animation key must fall back to Chebyshev"
         );
     }
 
