@@ -289,6 +289,9 @@ export class PixiBackend implements DisplayBackend {
     }
   }
 
+  // TODO: Paint per-cell darkening + tint quads into the lighting layer.
+  setLighting(_frame: import("./lighting").LightingFrame): void { void _frame; }
+
   startTicker(cb: (dtMs: number) => void): void {
     this.app.ticker.add((ticker) => cb(ticker.deltaMS));
   }

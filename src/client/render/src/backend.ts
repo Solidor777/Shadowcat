@@ -38,6 +38,8 @@ export interface DisplayBackend {
   clearMeasure(): void;
   /** Redraw the transient ping rings (expanding/fading outline circles). */
   drawPings(rings: { x: number; y: number; radius: number; alpha: number }[]): void;
+  /** Paint the lighting overlay (the `lighting` layer): per-cell darkening + tint + desaturate hint. */
+  setLighting(frame: import("./lighting").LightingFrame): void;
   /** Register the per-frame render ticker callback (drives tweens). */
   startTicker(cb: (dtMs: number) => void): void;
   /** Resize the renderer/viewport to CSS pixels (HiDPI handled by the backend). */

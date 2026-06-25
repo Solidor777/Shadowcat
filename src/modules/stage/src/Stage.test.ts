@@ -36,6 +36,7 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean } {
     drawMeasure() {},
     clearMeasure() {},
     drawPings() {},
+    setLighting() {},
     startTicker() {},
     resize() {},
     destroy() { this.destroyed = true; },
