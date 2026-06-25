@@ -1393,12 +1393,20 @@ mod room_tests {
         let (mut rx, current) = room.subscribe();
         assert_eq!(current, 0);
 
+        // Build a real create op — mirrors publish_hydrates_scene_ecs exactly so this
+        // test exercises the ECS apply_op write path and commits a real document row,
+        // not just the seq-bump + broadcast path.
+        let mut scene =
+            crate::data::document::tests::world_scoped_doc(world_id, Uuid::from_u128(20), "scene");
+        scene.owner = Some(ctx.user_id);
+        let op = Operation::Create { doc: scene };
+
         // Acquire the guard here, mirroring the single-acquisition discipline: the caller
         // (publish or execute_move) holds the guard, then calls commit_ops_locked.
         // Invariant: commit_ops_locked MUST NOT re-acquire publish_guard (deadlock).
         let _guard = room.publish_guard.lock().await;
         let cmd = room
-            .commit_ops_locked(&repo, &ctx, vec![], 10)
+            .commit_ops_locked(&repo, &ctx, vec![op], 10)
             .await
             .unwrap();
         drop(_guard);
@@ -1410,6 +1418,16 @@ mod room_tests {
             &*rx.recv().await.unwrap(),
             ServerMsg::Event { .. }
         ));
+        // Verify the create op landed: cmd carries the committed op and the ECS reflects it.
+        assert!(
+            !cmd.ops.is_empty(),
+            "committed command must carry the create op"
+        );
+        assert_eq!(
+            room.scene().read().await.entity_count(),
+            1,
+            "ECS must reflect the committed scene entity"
+        );
     }
 
     // -----------------------------------------------------------------------
