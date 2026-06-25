@@ -69,7 +69,7 @@ export type {
 export { AssetResolver } from "./assets";
 export type { AssetOp } from "./assets";
 export { listAssets, uploadAsset, replaceAsset, deleteAsset } from "./asset-rest";
-export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc } from "./scene-docs";
-export type { SceneSystem, TokenSystem, ActorSystem, ActorVisual, TokenOverrides, Faction, FactionStance, FactionRegistrySystem, Condition, ConditionRegistrySystem } from "./scene-docs";
+export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildWorldSettingsDoc, DEFAULT_WORLD_SETTINGS, resolveSceneSettings } from "./scene-docs";
+export type { SceneSystem, TokenSystem, ActorSystem, ActorVisual, TokenOverrides, Faction, FactionStance, FactionRegistrySystem, Condition, ConditionRegistrySystem, MovementRestriction, LightMode, DiagonalRule, EasingMode, EnvironmentLight, GridDistance, SceneVisionOverrides, SceneLightingOverrides, WorldSceneDefaults, WorldSettingsSystem, ResolvedSceneSettings } from "./scene-docs";
 export { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, footprintRadius } from "./actor";
 export type { EffectiveActor, ConditionTarget, TokenBox } from "./actor";

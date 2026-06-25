@@ -2,12 +2,93 @@
 // stays structural-only (#6); these shapes are the client's interpretation of the
 // opaque `system` body. Shared by WorldSession (scene auto-create) and the
 // scene-tools module (token create) so the wire shape has one source of truth.
+export type { WireDocument } from "./wire";
 import type { WireDocument } from "./wire";
+import type { ReadableDocuments } from "./store";
 
-/** A scene's engine-owned config (M8d §15). Dimensions deferred (canvas pans freely). */
+// --- Vision / lighting / movement types (M10e-1) ---
+
+export type MovementRestriction = "visible" | "revealed" | "unrestricted";
+export type LightMode = "globalIllumination" | "environmentLight";
+export type DiagonalRule = "chebyshev" | "alternating" | "euclidean" | "manhattan";
+export type EasingMode = "easeInOut" | "linear";
+export interface EnvironmentLight { color: string; intensity: number; }
+/** Distance-per-cell scale for a scene grid. `unit` is a display label (e.g. "ft", "m"). */
+export interface GridDistance { perCell: number; unit: string; }
+
+/** Per-scene overrides for vision behaviour; absent fields fall back to world defaults. */
+export interface SceneVisionOverrides {
+  losRestriction?: boolean;
+  fog?: boolean;
+  observerVision?: boolean;
+  movementRestriction?: MovementRestriction;
+}
+/** Per-scene overrides for lighting; absent fields fall back to world defaults. */
+export interface SceneLightingOverrides {
+  enabled?: boolean;
+  mode?: LightMode;
+  environment?: EnvironmentLight;
+}
+
+/** A scene's engine-owned config (M8d §15, extended M10e-1). Dimensions deferred (canvas pans freely). */
 export interface SceneSystem {
-  grid: { kind: "square" | "hex"; size: number };
+  grid: { kind: "square" | "hex"; size: number; distance?: GridDistance };
   background: string | null;
+  vision?: SceneVisionOverrides;
+  lighting?: SceneLightingOverrides;
+}
+
+// --- World-settings doc types (M10e-1) ---
+
+/** The full set of world-level scene defaults that individual scenes may override. */
+export interface WorldSceneDefaults {
+  losRestriction: boolean;
+  fog: boolean;
+  lightingEnabled: boolean;
+  lightMode: LightMode;
+  environment: EnvironmentLight;
+  observerVision: boolean;
+  movementRestriction: MovementRestriction;
+  partialCellLeniency: boolean;
+}
+/** The `system` body of a "world-settings" config document. */
+export interface WorldSettingsSystem {
+  scene: WorldSceneDefaults;
+  pathfinding: { diagonalRule: DiagonalRule };
+  animation: { speedCellsPerSec: number; easing: EasingMode };
+}
+
+/** Built-in defaults — used when no world-settings doc exists or a field is absent. */
+export const DEFAULT_WORLD_SETTINGS: WorldSettingsSystem = {
+  scene: {
+    losRestriction: true,
+    fog: true,
+    lightingEnabled: true,
+    lightMode: "environmentLight",
+    environment: { color: "#0a0e1a", intensity: 0.0 },
+    observerVision: false,
+    movementRestriction: "visible",
+    partialCellLeniency: true,
+  },
+  pathfinding: { diagonalRule: "chebyshev" },
+  animation: { speedCellsPerSec: 6, easing: "easeInOut" },
+};
+
+// --- Resolved settings (M10e-1) ---
+
+/** The fully resolved per-scene settings after merging built-ins → world defaults → scene overrides. */
+export interface ResolvedSceneSettings {
+  losRestriction: boolean;
+  fog: boolean;
+  observerVision: boolean;
+  movementRestriction: MovementRestriction;
+  lightingEnabled: boolean;
+  lightMode: LightMode;
+  environment: EnvironmentLight;
+  partialCellLeniency: boolean;
+  diagonalRule: DiagonalRule;
+  animation: { speedCellsPerSec: number; easing: EasingMode };
+  gridDistance: GridDistance;
 }
 
 /** A token's transform + visual (M8d §4). `(x,y)` is the token CENTER. `visual` is the
@@ -75,13 +156,49 @@ function envelope(worldId: string, docType: string, parentId: string | null, sys
   };
 }
 
-/** A top-level scene document with a default square/100 grid and no background. */
+/** A top-level scene document with a default square/100 grid and no background.
+ * Optional `vision`/`lighting` overrides and `grid.distance` are included only when provided;
+ * absent keys fall back to world-settings defaults at resolution time. */
 export function buildSceneDoc(worldId: string, system: Partial<SceneSystem> = {}, id?: string): WireDocument {
   const full: SceneSystem = {
     grid: system.grid ?? { kind: "square", size: 100 },
     background: system.background ?? null,
+    ...(system.vision ? { vision: system.vision } : {}),
+    ...(system.lighting ? { lighting: system.lighting } : {}),
   };
   return envelope(worldId, "scene", null, full, id);
+}
+
+/** A top-level (world-scoped, parentless) world-settings config document.
+ * Seeds the FULL default object so that a world-settings doc is always complete;
+ * single-field edits patch it in place via set_pointer. */
+export function buildWorldSettingsDoc(worldId: string, system: WorldSettingsSystem = DEFAULT_WORLD_SETTINGS, id?: string): WireDocument {
+  return envelope(worldId, "world-settings", null, system, id);
+}
+
+/** Resolve the effective settings for a scene by merging:
+ *   built-in defaults → world-settings doc → scene-level overrides.
+ * INVARIANT: fail-closed — absent or stale docs fall back to DEFAULT_WORLD_SETTINGS; never throws.
+ * Default gridDistance: 5 ft/cell (standard D&D 5e scale). */
+export function resolveSceneSettings(scene: WireDocument | undefined, store: ReadableDocuments): ResolvedSceneSettings {
+  const ws = store.query("world-settings")[0]?.system as WorldSettingsSystem | undefined;
+  const d = ws ?? DEFAULT_WORLD_SETTINGS;
+  const sys = scene?.system as SceneSystem | undefined;
+  const v = sys?.vision ?? {};
+  const l = sys?.lighting ?? {};
+  return {
+    losRestriction: v.losRestriction ?? d.scene.losRestriction,
+    fog: v.fog ?? d.scene.fog,
+    observerVision: v.observerVision ?? d.scene.observerVision,
+    movementRestriction: v.movementRestriction ?? d.scene.movementRestriction,
+    lightingEnabled: l.enabled ?? d.scene.lightingEnabled,
+    lightMode: l.mode ?? d.scene.lightMode,
+    environment: l.environment ?? d.scene.environment,
+    partialCellLeniency: d.scene.partialCellLeniency,
+    diagonalRule: d.pathfinding.diagonalRule,
+    animation: d.animation,
+    gridDistance: sys?.grid?.distance ?? { perCell: 5, unit: "ft" },
+  };
 }
 
 /** A top-level (world-scoped, parentless) actor document. */

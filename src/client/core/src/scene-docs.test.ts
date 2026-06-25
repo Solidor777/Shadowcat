@@ -1,5 +1,60 @@
-import { test, expect } from "vitest";
+import { test, expect, describe, it } from "vitest";
 import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, type TokenSystem, type ActorSystem, type Faction, type Condition } from "./scene-docs";
+import {
+  buildWorldSettingsDoc, resolveSceneSettings, DEFAULT_WORLD_SETTINGS,
+  type WireDocument,
+} from "./scene-docs";
+import { DocumentStore } from "./store";
+
+function storeWith(...docs: WireDocument[]): DocumentStore {
+  const s = new DocumentStore();
+  s.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: docs.map((doc) => ({ op: "create", doc })) });
+  return s;
+}
+
+describe("resolveSceneSettings", () => {
+  it("falls back to built-in defaults when no world-settings doc and no scene overrides", () => {
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    const r = resolveSceneSettings(scene, storeWith(scene));
+    expect(r.losRestriction).toBe(DEFAULT_WORLD_SETTINGS.scene.losRestriction);
+    expect(r.movementRestriction).toBe("visible");
+    expect(r.diagonalRule).toBe("chebyshev");
+    expect(r.gridDistance).toEqual({ perCell: 5, unit: "ft" });
+  });
+
+  it("uses world-settings defaults over built-ins", () => {
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    const ws = buildWorldSettingsDoc("w1", {
+      ...DEFAULT_WORLD_SETTINGS,
+      scene: { ...DEFAULT_WORLD_SETTINGS.scene, movementRestriction: "unrestricted" },
+      pathfinding: { diagonalRule: "alternating" },
+    }, "ws1");
+    const r = resolveSceneSettings(scene, storeWith(scene, ws));
+    expect(r.movementRestriction).toBe("unrestricted");
+    expect(r.diagonalRule).toBe("alternating");
+  });
+
+  it("scene overrides win over world defaults", () => {
+    const scene = buildSceneDoc("w1", {
+      vision: { movementRestriction: "revealed", losRestriction: false },
+      lighting: { enabled: false },
+      grid: { kind: "square", size: 100, distance: { perCell: 1.5, unit: "m" } },
+    }, "scene1");
+    const ws = buildWorldSettingsDoc("w1", DEFAULT_WORLD_SETTINGS, "ws1");
+    const r = resolveSceneSettings(scene, storeWith(scene, ws));
+    expect(r.movementRestriction).toBe("revealed");
+    expect(r.losRestriction).toBe(false);
+    expect(r.lightingEnabled).toBe(false);
+    expect(r.gridDistance).toEqual({ perCell: 1.5, unit: "m" });
+  });
+
+  it("builds a world-settings doc with world scope and null parent", () => {
+    const ws = buildWorldSettingsDoc("w1");
+    expect(ws.doc_type).toBe("world-settings");
+    expect(ws.parent_id).toBeNull();
+    expect((ws.system as { scene: unknown }).scene).toBeTruthy();
+  });
+});
 
 const actorSys: ActorSystem = {
   name: "Goblin",
