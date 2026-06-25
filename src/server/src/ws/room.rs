@@ -276,10 +276,30 @@ impl Room {
                 }
             }
         }
+        return self.commit_ops_locked(repo, ctx, ops, ts).await;
+    }
+
+    /// Gate-free authoritative write tail: apply_intent → ECS-hydrate → ring/seq →
+    /// broadcast Event → stats. No move gate runs here; `publish` runs the gate and
+    /// delegates here; the server-authoritative move executor calls here directly.
+    ///
+    /// PRECONDITION (load-bearing): caller MUST hold `self.publish_guard` for the full
+    /// duration of this call. tokio Mutex is not reentrant — re-acquiring inside would
+    /// deadlock. Single-acquisition per logical write ensures broadcast order equals seq order.
+    ///
+    /// Implicit coupling: every caller acquires `publish_guard` once, optionally runs a gate,
+    /// then calls this method — no callers may skip the guard or hold it across unrelated awaits.
+    pub(crate) async fn commit_ops_locked(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        ops: Vec<Operation>,
+        ts: i64,
+    ) -> Result<Command, DataError> {
         let cmd = repo.apply_intent(ctx, self.world_id, ops, ts).await?;
         // Hydrate the derived ECS from the committed command while still holding
-        // publish_guard, so the ECS is consistent with cmd.seq before the Event
-        // (and any derived recompute keyed to that seq) is observable.
+        // publish_guard (enforced by the caller), so the ECS is consistent with cmd.seq
+        // before the Event (and any derived recompute keyed to that seq) is observable.
         {
             let mut scene = self.scene.write().await;
             for op in &cmd.ops {
@@ -1359,6 +1379,37 @@ mod room_tests {
             .publish(&strict.repo, &strict.player, vec![op], 0)
             .await;
         assert!(matches!(blocked, Err(crate::data::DataError::Forbidden)));
+    }
+
+    // -----------------------------------------------------------------------
+    // M1: commit_ops_locked direct test — gate-free authoritative write path
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn commit_ops_writes_and_broadcasts_without_gating() {
+        let (repo, world_id, ctx) = repo_with_world().await;
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+        let (mut rx, current) = room.subscribe();
+        assert_eq!(current, 0);
+
+        // Acquire the guard here, mirroring the single-acquisition discipline: the caller
+        // (publish or execute_move) holds the guard, then calls commit_ops_locked.
+        // Invariant: commit_ops_locked MUST NOT re-acquire publish_guard (deadlock).
+        let _guard = room.publish_guard.lock().await;
+        let cmd = room
+            .commit_ops_locked(&repo, &ctx, vec![], 10)
+            .await
+            .unwrap();
+        drop(_guard);
+
+        assert_eq!(cmd.seq, 1);
+        assert_eq!(room.current_seq(), cmd.seq);
+        assert_eq!(room.stats.events_published.load(Ordering::Relaxed), 1);
+        assert!(matches!(
+            &*rx.recv().await.unwrap(),
+            ServerMsg::Event { .. }
+        ));
     }
 
     // -----------------------------------------------------------------------
