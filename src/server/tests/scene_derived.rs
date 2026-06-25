@@ -199,17 +199,21 @@ async fn vision_frame_includes_lit_mask_after_room_hydration() {
         !lit.is_empty(),
         "lit mask is non-empty — at least one scene has lit cells"
     );
-    // cells is a flat integer array packed 4 ints/cell (i, j, band_index, tint);
-    // len >= 4 means >= 1 cell; len % 4 == 0 proves the packing invariant is intact.
+    // cells is a flat integer array packed 5 ints/cell (i, j, band_index, tint, hint_idx);
+    // len >= 5 means >= 1 cell; len % 5 == 0 proves the packing invariant is intact.
     let cells = lit[0]["cells"].as_array().unwrap();
     assert!(
-        cells.len() >= 4,
+        cells.len() >= 5,
         "at least one lit cell in the first scene entry"
     );
     assert_eq!(
-        cells.len() % 4,
+        cells.len() % 5,
         0,
-        "cells is a flat array packed 4 ints/cell (i,j,band,tint)"
+        "cells is a flat array packed 5 ints/cell (i,j,band,tint,hint_idx)"
+    );
+    assert!(
+        first["payload"]["renderHints"].is_array(),
+        "renderHints table present at top level of masked payload"
     );
 }
 

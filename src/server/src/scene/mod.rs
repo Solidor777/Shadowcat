@@ -1131,28 +1131,41 @@ pub fn compute_derived(
                 // tagged with its illumination band + tint. Carries the resolved gradation `bands`
                 // so the client maps band indices → treatment. Additive: `polygons`/`explored` are
                 // unchanged (the client consumes `lit` from M10e-3).
+                // M10e-3: `renderHints` is a deterministic string table (first-seen order over the
+                // BTreeMap-ordered mask); each cell emits 5 ints: [i,j,band,tint,hint_idx] where
+                // hint_idx is the index into `renderHints`, or -1 for None.
                 // TODO: thread the bands player_lit_mask already resolved to avoid this second resolve.
                 let bands_json: Vec<serde_json::Value> = ecs
                     .resolved_bands()
                     .into_iter()
                     .map(|b| serde_json::json!({ "name": b.name, "min": b.min_illumination }))
                     .collect();
-                let lit: Vec<serde_json::Value> = ecs
-                    .player_lit_mask(ctx.user_id)
-                    .into_iter()
-                    .map(|s| {
-                        let flat: Vec<i64> = s
-                            .cells
-                            .into_iter()
-                            .flat_map(|(i, j, band, tint, _hint)| {
-                                [i as i64, j as i64, band as i64, tint as i64]
-                            })
-                            .collect();
-                        serde_json::json!({ "scene": s.scene, "cell": s.cell, "cells": flat })
-                    })
-                    .collect();
+                // Build the hint table and 5-int cell packing in a plain loop to avoid a
+                // mutable borrow of `hints` inside a closure/flat_map borrow conflict.
+                let mask = ecs.player_lit_mask(ctx.user_id);
+                let mut hints: Vec<String> = Vec::new();
+                let mut lit: Vec<serde_json::Value> = Vec::new();
+                for s in mask {
+                    let mut flat: Vec<i64> = Vec::new();
+                    for (i, j, band, tint, hint) in s.cells {
+                        let hi: i64 = match hint {
+                            None => -1,
+                            Some(ref h) => match hints.iter().position(|x| x == h) {
+                                Some(idx) => idx as i64,
+                                None => {
+                                    hints.push(h.clone());
+                                    (hints.len() - 1) as i64
+                                }
+                            },
+                        };
+                        flat.extend_from_slice(&[i as i64, j as i64, band as i64, tint as i64, hi]);
+                    }
+                    lit.push(
+                        serde_json::json!({ "scene": s.scene, "cell": s.cell, "cells": flat }),
+                    );
+                }
                 Some(
-                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "lit": lit }),
+                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "renderHints": hints, "lit": lit }),
                 )
             }
         }
@@ -1436,11 +1449,15 @@ mod tests {
         let cells = lit[0]["cells"].as_array().unwrap();
         assert!(!cells.is_empty());
         assert_eq!(
-            cells.len() % 4,
+            cells.len() % 5,
             0,
-            "cells packed 4 ints/cell (i,j,band,tint)"
+            "cells packed 5 ints/cell (i,j,band,tint,hint_idx)"
         );
         assert!(!pv["bands"].as_array().unwrap().is_empty()); // bands now top-level
+        assert!(
+            pv["renderHints"].is_array(),
+            "renderHints table present at top level"
+        );
         assert!(
             lit[0].get("bands").is_none(),
             "bands hoisted to top level, not per-entry"
@@ -1455,6 +1472,34 @@ mod tests {
         assert_eq!(gv["mode"], "all");
         assert!(gv.get("lit").is_none());
         assert!(gv.get("bands").is_none());
+    }
+
+    #[test]
+    fn vision_payload_resolves_render_hint_index() {
+        use crate::data::document::WorldRole;
+        use serde_json::json;
+        let player = Uuid::from_u128(7);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(player);
+        tok.embedded.insert(
+            "actor".into(),
+            vec![{
+                let mut a = doc(99, None, "actor");
+                a.system = json!({ "vision": [{ "mode": "darkvision", "range": 6 }] });
+                a
+            }],
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+        let pl = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let pv = compute_derived("vision", &ecs, &pl).unwrap();
+        let hints = pv["renderHints"].as_array().unwrap();
+        assert!(hints.iter().any(|h| h == "desaturate"));
+        let cells = pv["lit"][0]["cells"].as_array().unwrap();
+        let hint_idx = cells[4].as_i64().unwrap(); // 5th int of the first cell
+        assert_eq!(pv["renderHints"][hint_idx as usize], json!("desaturate"));
     }
 
     #[test]
