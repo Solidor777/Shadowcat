@@ -80,6 +80,21 @@ export interface SceneTool {
   onPointerUp(p: Point, ev: PointerEvent): void;
 }
 
+/** One visible cell's lighting: grid coords + gradation band index + packed tint + hint ref.
+ * `hint` is an index into `LightingInput.hints`; -1 = no hint. */
+export interface LitCell { i: number; j: number; band: number; tint: number; hint: number }
+
+/** Parsed lighting for the active scene (engine-internal, pre-resolution). `null` ⇒ no overlay
+ * (GM `mode:"all"`, or garbled/missing data — lighting is cosmetic, fog is the secrecy gate).
+ * Fail-safe: null means no tint overlay, which is always safe because the server already decided
+ * which cells are visible (`toVisibility` is the secrecy gate, not this). */
+export interface LightingInput {
+  cell: number;                           // active scene cell size (px)
+  bands: { name: string; min: number }[]; // brightest-first gradation bands
+  hints: string[];                        // renderHints lookup table
+  cells: LitCell[];                       // active-scene visible cells
+}
+
 /** The engine surface tools drive (via the AppContext `scene` bridge). The
  * RenderEngine implements this; a detached bridge no-ops. */
 export interface SceneToolHost {

@@ -138,3 +138,12 @@ are observations awaiting triage, not committed work.
   are authorable only as PER-SCENE overrides, not as world defaults. Matches the M10e-1 plan (Task
   6 scope); flagged so the M10e-2+ consumer knows world-level toggles for those axes are not yet in
   the UI. Status: Intentional V1 scope; revisit if world-level authoring of those axes is needed.
+
+- Title: M10e-3 lighting soft edges via blur, not gradients. Summary: the lighting layer softens
+  band/edge boundaries with a single Pixi BlurFilter; per-cell radial gradients (crisper falloff)
+  were deferred. Status: Revisit (cosmetic; client-render-only).
+
+- Title: M10e-3 darkvision render is an overlay approximation. Summary: darkvision-only cells get a
+  low-alpha neutral gray wash; true desaturation needs a masked ColorMatrixFilter over the scene
+  layers. The wire payload already carries the faithful per-cell renderHint, so the refinement is
+  client-render-only (no server change). Status: Revisit.

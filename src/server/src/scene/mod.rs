@@ -35,10 +35,13 @@ pub struct ResolvedScene {
 }
 
 /// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
+/// `render_hint` mirrors `SEED_VISION_MODES` in `scene-docs.ts` (e.g. `"desaturate"` for
+/// darkvision); absent in seed → `None`, absent in an authored doc entry → `None`.
 #[derive(Clone, Debug)]
 pub struct VisionMode {
     pub illumination_floor: String,
     pub default_range: f64,
+    pub render_hint: Option<String>,
 }
 
 /// Parse `#rrggbb` or CSS 3-digit `#rgb` → packed `0xRRGGBB`; fail-closed to `0x000000`
@@ -78,12 +81,12 @@ pub fn is_scene_entity(doc: &Document) -> bool {
 /// A resolved token move: `(scene id, committed start, post-image end)`.
 pub type TokenMove = (Uuid, (f64, f64), (f64, f64));
 
-/// One scene's visible cells for a player: `cells` are `(i, j, band_index, tint 0xRRGGBB)`.
+/// One scene's visible cells for a player: `cells` are `(i, j, band_index, tint 0xRRGGBB, render_hint)`.
 #[derive(Debug)]
 pub struct LitScene {
     pub scene: Uuid,
     pub cell: f64,
-    pub cells: Vec<(i32, i32, usize, u32)>,
+    pub cells: Vec<(i32, i32, usize, u32, Option<String>)>,
 }
 
 /// Margin (scene units, ~one default grid cell) the vision bound box extends past the walls
@@ -436,17 +439,24 @@ impl SceneEcs {
                             VisionMode {
                                 illumination_floor: floor.to_string(),
                                 default_range: range,
+                                render_hint: m
+                                    .get("renderHint")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string),
                             },
                         );
                     }
                 }
             }
             None => {
+                // Mirrors `SEED_VISION_MODES` in scene-docs.ts: normal has no hint;
+                // darkvision desaturates (faithful-darkvision render, M10e-3).
                 out.insert(
                     "normal".into(),
                     VisionMode {
                         illumination_floor: "dim".into(),
                         default_range: 0.0,
+                        render_hint: None,
                     },
                 );
                 out.insert(
@@ -454,6 +464,7 @@ impl SceneEcs {
                     VisionMode {
                         illumination_floor: "dark".into(),
                         default_range: 12.0,
+                        render_hint: Some("desaturate".into()),
                     },
                 );
             }
@@ -675,14 +686,16 @@ impl SceneEcs {
         out
     }
 
-    /// The token's effective vision modes as `(floor_min_illumination, range_cells)` pairs.
-    /// `range_cells == 0.0` ⇒ unlimited. Precedence (mirrors `resolveTokenActor` in actor.ts):
-    /// a LINKED token (`actor_id` present) resolves the shared actor and applies
+    /// The token's effective vision modes as `(floor_min_illumination, range_cells, render_hint)`
+    /// triples. `range_cells == 0.0` ⇒ unlimited. `render_hint` mirrors `VisionMode.render_hint`
+    /// (e.g. `Some("desaturate")` for darkvision). Precedence (mirrors `resolveTokenActor` in
+    /// actor.ts): a LINKED token (`actor_id` present) resolves the shared actor and applies
     /// `overrides.vision` as a wholesale replacement when present; a dangling link (actor absent)
     /// yields normal, ignoring overrides. An INSTANCED token (no `actor_id`) uses its
     /// `embedded.actor[0].system.vision` without overrides. An unknown mode id is dropped
-    /// (fail-closed: it contributes no vision floor). Always returns ≥1 pair (normal fallback).
-    pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64)> {
+    /// (fail-closed: it contributes no vision floor). Always returns ≥1 triple (normal fallback
+    /// with `render_hint: None`).
+    pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64, Option<String>)> {
         let modes = self.resolved_vision_modes();
         let bands = self.resolved_bands();
 
@@ -712,7 +725,7 @@ impl SceneEcs {
                 .filter(|v| v.is_array()),
         };
 
-        let mut out: Vec<(f64, f64)> = Vec::new();
+        let mut out: Vec<(f64, f64, Option<String>)> = Vec::new();
         if let Some(arr) = assignments.and_then(|v| v.as_array()) {
             for a in arr {
                 let Some(mode_id) = a.get("mode").and_then(|v| v.as_str()) else {
@@ -728,6 +741,7 @@ impl SceneEcs {
                 out.push((
                     crate::scene::lighting::floor_min(&bands, &vm.illumination_floor),
                     range,
+                    vm.render_hint.clone(),
                 ));
             }
         }
@@ -741,6 +755,7 @@ impl SceneEcs {
             out.push((
                 crate::scene::lighting::floor_min(&bands, &normal_floor),
                 0.0,
+                None,
             ));
         }
         out
@@ -776,7 +791,9 @@ impl SceneEcs {
         struct Src {
             scene: Uuid,
             vp: vision::P,
-            floors: Vec<(f64, f64)>,
+            // (floor_min_value, range_cells, render_hint): render_hint drives per-cell
+            // darkvision hint resolution in the cell-accumulation loop (admit_hint).
+            floors: Vec<(f64, f64, Option<String>)>,
         }
         let mut sources: Vec<Src> = Vec::new();
         for e in self.world.query::<&SceneEntity>().iter() {
@@ -825,8 +842,9 @@ impl SceneEcs {
         let grid = self.scene_grid_sizes();
         let bands = self.resolved_bands();
         use std::collections::BTreeMap;
-        // (i, j) -> (best_level, band_index, tint): best illumination seen from any source.
-        type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32)>;
+        // (i, j) -> (best_level, band_index, tint, hint_floor, hint). hint_floor seeds NEG_INFINITY so the
+        // first admitting mode always sets it; brightness (level/band/tint) and hint reduce independently.
+        type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32, f64, Option<String>)>;
         // scene -> (cell_size, per-cell best)
         let mut per_scene: BTreeMap<Uuid, (f64, CellEntry)> = BTreeMap::new();
 
@@ -937,20 +955,52 @@ impl SceneEcs {
                                 cell,
                             )
                         };
-                        // Darkvision lowers the floor within range; pick the lowest applicable floor.
                         let dist_cells =
                             (((cx - src.vp.0).powi(2) + (cy - src.vp.1).powi(2)).sqrt()) / cell;
-                        let mut floor = f64::INFINITY;
-                        for &(fmin, range) in &src.floors {
-                            if range == 0.0 || dist_cells <= range {
-                                floor = floor.min(fmin);
+                        // Lowest applicable floor decides visibility; highest applicable floor decides the hint.
+                        let mut visible_floor = f64::INFINITY; // min admitting floor → does the cell show at all
+                        let mut admit_floor = f64::NEG_INFINITY; // max admitting floor → which mode's hint wins
+                        let mut admit_hint: Option<String> = None;
+                        for (fmin, range, hint) in &src.floors {
+                            let in_range = *range == 0.0 || dist_cells <= *range;
+                            if !in_range {
+                                continue;
+                            }
+                            visible_floor = visible_floor.min(*fmin);
+                            if cl.level >= *fmin {
+                                // Highest admitting floor wins; on a tie, None (a normal-equivalent perception) wins.
+                                let take = *fmin > admit_floor
+                                    || (*fmin == admit_floor
+                                        && admit_hint.is_some()
+                                        && hint.is_none());
+                                if take {
+                                    admit_floor = *fmin;
+                                    admit_hint = hint.clone();
+                                }
                             }
                         }
-                        if floor.is_finite() && cl.level >= floor {
+                        if visible_floor.is_finite() && cl.level >= visible_floor {
                             let band = crate::scene::lighting::band_index(&bands, cl.level);
-                            let slot = entry.1.entry((i, j)).or_insert((cl.level, band, cl.tint));
+                            let slot = entry.1.entry((i, j)).or_insert((
+                                cl.level,
+                                band,
+                                cl.tint,
+                                admit_floor,
+                                admit_hint.clone(),
+                            ));
                             if cl.level > slot.0 {
-                                *slot = (cl.level, band, cl.tint); // brightest source wins the band/tint
+                                slot.0 = cl.level;
+                                slot.1 = band;
+                                slot.2 = cl.tint; // brightest source wins band/tint
+                            }
+                            // Hint reduces across sources by the same highest-floor/None-wins rule.
+                            if admit_floor > slot.3
+                                || (admit_floor == slot.3
+                                    && slot.4.is_some()
+                                    && admit_hint.is_none())
+                            {
+                                slot.3 = admit_floor;
+                                slot.4 = admit_hint;
                             }
                         }
                     }
@@ -965,7 +1015,7 @@ impl SceneEcs {
                 cell,
                 cells: cells
                     .into_iter()
-                    .map(|((i, j), (_lvl, band, tint))| (i, j, band, tint))
+                    .map(|((i, j), (_lvl, band, tint, _hf, hint))| (i, j, band, tint, hint))
                     .collect(),
             })
             .collect()
@@ -1081,28 +1131,41 @@ pub fn compute_derived(
                 // tagged with its illumination band + tint. Carries the resolved gradation `bands`
                 // so the client maps band indices → treatment. Additive: `polygons`/`explored` are
                 // unchanged (the client consumes `lit` from M10e-3).
+                // M10e-3: `renderHints` is a deterministic string table (first-seen order over the
+                // BTreeMap-ordered mask); each cell emits 5 ints: [i,j,band,tint,hint_idx] where
+                // hint_idx is the index into `renderHints`, or -1 for None.
                 // TODO: thread the bands player_lit_mask already resolved to avoid this second resolve.
                 let bands_json: Vec<serde_json::Value> = ecs
                     .resolved_bands()
                     .into_iter()
                     .map(|b| serde_json::json!({ "name": b.name, "min": b.min_illumination }))
                     .collect();
-                let lit: Vec<serde_json::Value> = ecs
-                    .player_lit_mask(ctx.user_id)
-                    .into_iter()
-                    .map(|s| {
-                        let flat: Vec<i64> = s
-                            .cells
-                            .into_iter()
-                            .flat_map(|(i, j, band, tint)| {
-                                [i as i64, j as i64, band as i64, tint as i64]
-                            })
-                            .collect();
-                        serde_json::json!({ "scene": s.scene, "cell": s.cell, "cells": flat })
-                    })
-                    .collect();
+                // Build the hint table and 5-int cell packing in a plain loop to avoid a
+                // mutable borrow of `hints` inside a closure/flat_map borrow conflict.
+                let mask = ecs.player_lit_mask(ctx.user_id);
+                let mut hints: Vec<String> = Vec::new();
+                let mut lit: Vec<serde_json::Value> = Vec::new();
+                for s in mask {
+                    let mut flat: Vec<i64> = Vec::new();
+                    for (i, j, band, tint, hint) in s.cells {
+                        let hi: i64 = match hint {
+                            None => -1,
+                            Some(ref h) => match hints.iter().position(|x| x == h) {
+                                Some(idx) => idx as i64,
+                                None => {
+                                    hints.push(h.clone());
+                                    (hints.len() - 1) as i64
+                                }
+                            },
+                        };
+                        flat.extend_from_slice(&[i as i64, j as i64, band as i64, tint as i64, hi]);
+                    }
+                    lit.push(
+                        serde_json::json!({ "scene": s.scene, "cell": s.cell, "cells": flat }),
+                    );
+                }
                 Some(
-                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "lit": lit }),
+                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "renderHints": hints, "lit": lit }),
                 )
             }
         }
@@ -1386,11 +1449,15 @@ mod tests {
         let cells = lit[0]["cells"].as_array().unwrap();
         assert!(!cells.is_empty());
         assert_eq!(
-            cells.len() % 4,
+            cells.len() % 5,
             0,
-            "cells packed 4 ints/cell (i,j,band,tint)"
+            "cells packed 5 ints/cell (i,j,band,tint,hint_idx)"
         );
         assert!(!pv["bands"].as_array().unwrap().is_empty()); // bands now top-level
+        assert!(
+            pv["renderHints"].is_array(),
+            "renderHints table present at top level"
+        );
         assert!(
             lit[0].get("bands").is_none(),
             "bands hoisted to top level, not per-entry"
@@ -1405,6 +1472,39 @@ mod tests {
         assert_eq!(gv["mode"], "all");
         assert!(gv.get("lit").is_none());
         assert!(gv.get("bands").is_none());
+        assert!(gv.get("renderHints").is_none());
+    }
+
+    #[test]
+    fn vision_payload_resolves_render_hint_index() {
+        use crate::data::document::WorldRole;
+        use serde_json::json;
+        let player = Uuid::from_u128(7);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(player);
+        tok.embedded.insert(
+            "actor".into(),
+            vec![{
+                let mut a = doc(99, None, "actor");
+                a.system = json!({ "vision": [{ "mode": "darkvision", "range": 6 }] });
+                a
+            }],
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+        let pl = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let pv = compute_derived("vision", &ecs, &pl).unwrap();
+        let hints = pv["renderHints"].as_array().unwrap();
+        assert!(hints.iter().any(|h| h == "desaturate"));
+        let cells = pv["lit"][0]["cells"].as_array().unwrap();
+        let hint_idx = cells[4].as_i64().unwrap(); // 5th int of the first cell
+        assert!(
+            hint_idx >= 0,
+            "first cell must have a resolved hint, not -1"
+        );
+        assert_eq!(pv["renderHints"][hint_idx as usize], json!("desaturate"));
     }
 
     #[test]
@@ -1493,16 +1593,16 @@ mod tests {
         );
         let floors = ecs.token_vision_floors(&linked);
         assert_eq!(floors.len(), 1);
-        assert_eq!(floors[0], (0.0, 6.0)); // dark floor, 6-cell range
+        assert_eq!(floors[0], (0.0, 6.0, Some("desaturate".to_string()))); // dark floor, 6-cell range, darkvision hint
 
         // A per-token override REPLACES the actor's vision entirely.
         linked.system["overrides"] = json!({ "vision": [{ "mode": "normal", "range": 0 }] });
         let f2 = ecs.token_vision_floors(&linked);
-        assert_eq!(f2[0], (0.34, 0.0)); // dim floor, unlimited range
+        assert_eq!(f2[0], (0.34, 0.0, None)); // dim floor, unlimited range, no hint (normal mode has render_hint: None)
 
         // An actorless token → normal only.
         let raw = entity_doc(12, 10, "token", json!({ "x": 0, "y": 0 }));
-        assert_eq!(ecs.token_vision_floors(&raw), vec![(0.34, 0.0)]);
+        assert_eq!(ecs.token_vision_floors(&raw), vec![(0.34, 0.0, None)]);
 
         // An explicit EMPTY override REPLACES (no fall-through to the linked actor → normal).
         let mut linked_empty = entity_doc(
@@ -1512,7 +1612,10 @@ mod tests {
             json!({ "x": 0, "y": 0, "actor_id": Uuid::from_u128(200).to_string(),
                     "overrides": { "vision": [] } }),
         );
-        assert_eq!(ecs.token_vision_floors(&linked_empty), vec![(0.34, 0.0)]);
+        assert_eq!(
+            ecs.token_vision_floors(&linked_empty),
+            vec![(0.34, 0.0, None)]
+        );
 
         // A token with BOTH actor_id AND an embedded actor resolves the LINKED actor (matches the
         // client's actor_id-first resolveTokenActor), NOT the embedded copy.
@@ -1526,7 +1629,10 @@ mod tests {
             )],
         );
         // actor 200 grants darkvision range 6 → linked wins → (0.0, 6.0), not the embedded normal.
-        assert_eq!(ecs.token_vision_floors(&linked_empty), vec![(0.0, 6.0)]);
+        assert_eq!(
+            ecs.token_vision_floors(&linked_empty),
+            vec![(0.0, 6.0, Some("desaturate".to_string()))]
+        );
 
         // A DANGLING link (actor_id with no matching actor) + an overrides.vision is normal — the
         // client ignores overrides when the linked actor is absent.
@@ -1537,7 +1643,7 @@ mod tests {
             json!({ "x": 0, "y": 0, "actor_id": Uuid::from_u128(999).to_string(),
                     "overrides": { "vision": [{ "mode": "darkvision", "range": 9 }] } }),
         );
-        assert_eq!(ecs.token_vision_floors(&dangling), vec![(0.34, 0.0)]);
+        assert_eq!(ecs.token_vision_floors(&dangling), vec![(0.34, 0.0, None)]);
     }
 
     #[test]
@@ -1687,7 +1793,7 @@ mod tests {
         assert!(
             s.cells
                 .iter()
-                .any(|&(i, j, band, _)| i == 0 && j == 0 && band == 0),
+                .any(|&(i, j, band, _, _)| i == 0 && j == 0 && band == 0),
             "the lit cell at (0,0) is visible at the bright band (cell_size 100)"
         );
 
@@ -1703,7 +1809,7 @@ mod tests {
         assert!(
             s.cells
                 .iter()
-                .any(|&(i, j, band, _)| i == 0 && j == 0 && band == 0),
+                .any(|&(i, j, band, _, _)| i == 0 && j == 0 && band == 0),
             "lighting-disabled scene → LOS cell visible at the bright band"
         );
 
@@ -1725,6 +1831,56 @@ mod tests {
         assert!(
             dvmask.iter().any(|s| !s.cells.is_empty()),
             "darkvision sees in the dark within range"
+        );
+    }
+
+    #[test]
+    fn lit_mask_tags_darkvision_only_cells_with_hint() {
+        use serde_json::json;
+        let player = Uuid::from_u128(7);
+        // Dark scene (no lights, environmentLight, lighting on) → only darkvision admits cells.
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(player);
+        tok.embedded.insert(
+            "actor".into(),
+            vec![{
+                let mut a = doc(99, None, "actor");
+                a.system = json!({ "vision": [{ "mode": "darkvision", "range": 6 }] });
+                a
+            }],
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+        let mask = ecs.player_lit_mask(player);
+        assert_eq!(mask.len(), 1);
+        assert!(
+            !mask[0].cells.is_empty(),
+            "darkvision must see at least one cell in range"
+        );
+        assert!(
+            mask[0]
+                .cells
+                .iter()
+                .all(|(_, _, _, _, h)| h.as_deref() == Some("desaturate")),
+            "dark cells perceived only via darkvision carry the desaturate hint"
+        );
+
+        // Bright cell under a light, seen by normal vision → no hint (normal floor suppresses it).
+        let player2 = Uuid::from_u128(8);
+        let mut tok2 = entity_doc(12, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok2.owner = Some(player2); // no embedded vision → normal fallback
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+            "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }),
+        );
+        let lit = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok2, light], 0);
+        let mask2 = lit.player_lit_mask(player2);
+        assert!(
+            mask2[0].cells.iter().any(|(_, _, _, _, h)| h.is_none()),
+            "a normally-lit cell seen by normal vision carries no hint"
         );
     }
 
@@ -1784,5 +1940,100 @@ mod tests {
             doc: doc(200, None, "actor"),
         });
         assert!(ecs.actor(&Uuid::from_u128(200)).is_none());
+    }
+
+    #[test]
+    fn vision_modes_carry_render_hint() {
+        use serde_json::json;
+        // Absent doc → built-in seed mirrors scene-docs.ts: darkvision desaturates, normal does not.
+        let seeded = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        let m = seeded.resolved_vision_modes();
+        assert_eq!(m["normal"].render_hint, None);
+        assert_eq!(m["darkvision"].render_hint.as_deref(), Some("desaturate"));
+
+        // Present doc → renderHint parsed; absent field → None.
+        let mut vm = entity_doc(30, 10, "vision-modes", json!({}));
+        vm.doc_type = "vision-modes".into();
+        vm.parent_id = None;
+        vm.system = json!({ "modes": {
+            "truesight": { "illuminationFloor": "dark", "defaultRange": 8, "renderHint": "outline" },
+            "plain":     { "illuminationFloor": "dim",  "defaultRange": 0 }
+        }});
+        let mut ecs = SceneEcs::new();
+        ecs.set_world_config(None, None, Some(vm));
+        let m = ecs.resolved_vision_modes();
+        assert_eq!(m["truesight"].render_hint.as_deref(), Some("outline"));
+        assert_eq!(m["plain"].render_hint, None);
+    }
+
+    #[test]
+    fn token_vision_floors_include_render_hint() {
+        use serde_json::json;
+        // Instanced token with embedded actor granting normal + darkvision.
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 0, "y": 0 }));
+        tok.embedded.insert(
+            "actor".into(),
+            vec![{
+                let mut a = doc(99, None, "actor");
+                a.system = json!({ "vision": [
+                    { "mode": "normal", "range": 0 },
+                    { "mode": "darkvision", "range": 6 }
+                ]});
+                a
+            }],
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone()], 0);
+        let floors = ecs.token_vision_floors(&tok);
+        // darkvision entry carries the desaturate hint; normal carries none.
+        assert!(floors
+            .iter()
+            .any(|(_, _, h)| h.as_deref() == Some("desaturate")));
+        assert!(floors.iter().any(|(_, _, h)| h.is_none()));
+    }
+
+    #[test]
+    fn lit_mask_suppresses_hint_when_normal_floor_wins_in_bright_cell() {
+        use serde_json::json;
+        // Combined-token suppression (buddy-check A1): an owned token whose embedded actor has
+        // BOTH normal (floor=dim 0.34) AND darkvision (floor=dark 0.0).  Standing in a brightly-lit
+        // cell (light placed at the token), normal's floor (0.34) is higher than darkvision's (0.0),
+        // so normal is the highest-admitting mode → its hint (None) wins → lit cells carry no hint.
+        let player = Uuid::from_u128(42);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(player);
+        tok.embedded.insert(
+            "actor".into(),
+            vec![{
+                let mut a = doc(99, None, "actor");
+                a.system = json!({ "vision": [
+                    { "mode": "normal",     "range": 0 },
+                    { "mode": "darkvision", "range": 6 }
+                ]});
+                a
+            }],
+        );
+        // A bright light at the token location illuminates the cell at (0,0) above dim threshold.
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            }),
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
+        let mask = ecs.player_lit_mask(player);
+        let lit_cells: Vec<_> = mask.iter().flat_map(|s| s.cells.iter()).collect();
+        assert!(
+            !lit_cells.is_empty(),
+            "token with normal+darkvision under bright light must see at least one cell"
+        );
+        // Every lit cell must carry None: normal's floor (0.34) > darkvision's floor (0.0),
+        // so normal is the highest-admitting mode and its None hint suppresses desaturate.
+        assert!(
+            lit_cells.iter().all(|(_, _, _, _, h)| h.is_none()),
+            "normal-floor wins in bright cell: desaturate hint must be suppressed (None)"
+        );
     }
 }

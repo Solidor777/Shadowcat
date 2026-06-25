@@ -33,9 +33,15 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `to_bytes`/`from_bytes` (persistence), cell-based.
 - `src/client/render/src/` — engine-owned PixiJS layer: `backend.ts` + `pixi-backend.ts`
   (renderer host), `engine.ts`, `reconciler.ts` (doc→scene reconcile), `compositor.ts`,
-  `layers.ts`, `camera.ts`, `grid.ts`, `token-view.ts` + `token-animator.ts` (tween),
+  `layers.ts` (CORE_LAYERS z-order; index 7 = `lighting`, between `templates` (6) and `mask` (8)),
+  `camera.ts`, `grid.ts`, `token-view.ts` + `token-animator.ts` (tween),
   `wall-view.ts`, `drawing-view.ts`, `template-view.ts`, `ping-view.ts`. Modules draw through the
   render-layer API; the canvas host is not replaceable.
+- `src/client/render/src/lighting.ts` — `Lighting` class (M10e-3, GL-free, unit-tested):
+  resolves gradation band→darkening alpha + tint color, applies `renderHint` (e.g. `"darkvision"`
+  → gray-wash desaturation overlay), and interpolates day/night fades. Called by `PixiBackend`
+  `setLighting` which renders per-cell darkening/tint sprites + a `BlurFilter` for soft band edges.
+  Plan: `docs/superpowers/plans/2026-06-25-m10e-3-client-lighting-render.md`.
 - `src/modules/stage/Stage.svelte` — mounts the render engine over a `ReadableDocuments` view.
 - `src/modules/scene-tools/` — `controller.svelte.ts`, `hit-test.ts`, tools (place/select/move/
   draw/template/measure/ping) dispatching intents. Wall tool writes a **three-flag** segment:
@@ -71,12 +77,17 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   frozen/shared reference reaches a doc.
 - **The server lit mask is the lighting-aware secrecy gate (M10e-2)**: `player_lit_mask(user)` =
   `LOS ∩ (lit ∨ darkvision)`, union over the user's vision sources (owned tokens ∪ observer-tier
-  tokens when `observerVision`), emitted as per-recipient `lit` cells (`(i,j,band,tint)`). Fail-closed
-  (no source / dark scene ⇒ empty; cell scans bounded by `explored::MAX_CELLS_PER_POLYGON` with a
-  `saturating_mul` span guard). Egress is ADDITIVE — `polygons` + the post-lock `explored` are
-  unchanged, GM stays `mode:"all"`; the client consumes `lit` at M10e-3. **Constraint:** environment
-  light is a flat ambient (NOT edge-projected/occludable) until scenes gain dimensions — placed-light
-  `blocksLight` occlusion IS implemented (see `docs/TODO.md`).
+  tokens when `observerVision`), emitted as per-recipient `lit` cells. Wire format (M10e-3 update):
+  5-int `[i,j,band,tint,hint_idx]` (was 4-int `(i,j,band,tint)`) + a top-level `renderHints:[String]`
+  table (index into the hint name, e.g. `"darkvision"`); `VisionMode` carries `render_hint`;
+  `player_lit_mask` resolves a per-cell hint via the highest-floor admitting vision mode (`None` wins
+  ties). Fail-closed (no source / dark scene ⇒ empty; cell scans bounded by
+  `explored::MAX_CELLS_PER_POLYGON` with a `saturating_mul` span guard). Egress is ADDITIVE —
+  `polygons` + the post-lock `explored` are unchanged, GM stays `mode:"all"`. **Client lighting
+  render is COSMETIC — fog stays the secrecy gate**; the per-cell `hint_idx` refines the visual
+  (darkening + tint + desaturate) but never widens visibility or the secrecy mask. **Constraint:**
+  environment light is a flat ambient (NOT edge-projected/occludable) until scenes gain dimensions —
+  placed-light `blocksLight` occlusion IS implemented (see `docs/TODO.md`).
 
 ## Gotchas
 

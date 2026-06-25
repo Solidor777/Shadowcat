@@ -1,10 +1,11 @@
 import type { ReadableDocuments, AssetResolver } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { VisibilityInput, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon } from "./types";
+import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon } from "./types";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
 import { LayerRegistry } from "./layers";
+import { Lighting } from "./lighting";
 import { SceneReconciler } from "./reconciler";
 import { TokenView } from "./token-view";
 import { DrawingView } from "./drawing-view";
@@ -61,6 +62,7 @@ export class RenderEngine implements SceneToolHost {
   readonly camera = new Camera();
   readonly compositor: Compositor;
   private readonly layers = new LayerRegistry();
+  private readonly lighting: Lighting;
   /** Reassignable: the active scene's grid drives snapping + lines (M8d §15). */
   private grid: Grid;
   private readonly reconciler: SceneReconciler;
@@ -108,6 +110,7 @@ export class RenderEngine implements SceneToolHost {
     this.templates = new TemplateView(opts.store, opts.backend);
     this.walls = new WallView(opts.store, opts.backend);
     this.compositor = new Compositor(opts.backend);
+    this.lighting = new Lighting(opts.backend);
   }
 
   start(): void {
@@ -128,6 +131,7 @@ export class RenderEngine implements SceneToolHost {
     });
     this.opts.backend.startTicker((dt) => {
       this.tokens.tick(dt);
+      this.lighting.tick(dt);
       const rings = this.pings.tick(dt);
       // Redraw only while rings live (plus one final clear when they expire).
       if (rings.length > 0 || this.pingsActive) {
@@ -168,10 +172,14 @@ export class RenderEngine implements SceneToolHost {
     if (frame.computedAtSeq <= this.lastAppliedSeq) return;
     if (this.pendingDerived && frame.computedAtSeq <= this.pendingDerived.seq) return;
     const input = this.toVisibility(frame.payload);
+    // Lighting is cosmetic — applied eagerly here (monotonic order already honored by the
+    // guards above), NOT held behind the appliedSeq watermark that fog uses for document
+    // consistency. Exactly one setTarget call per non-dropped frame.
+    this.lighting.setTarget(this.toLighting(frame.payload));
     if (this.opts.store.appliedSeq >= frame.computedAtSeq) {
       this.applyDerived(input, frame.computedAtSeq);
     } else {
-      this.pendingDerived = { input, seq: frame.computedAtSeq }; // watermark: defer
+      this.pendingDerived = { input, seq: frame.computedAtSeq }; // watermark: defer visibility (fog secrecy gate)
     }
   }
 
@@ -252,6 +260,44 @@ export class RenderEngine implements SceneToolHost {
       .flatMap((g) => cellsToRects(g.cells, g.cell));
     return { mode: "masked", visible, explored };
   }
+
+  /** Parse the `vision` payload's lighting dimension into a LightingInput for the ACTIVE scene, or
+   * null. Lighting is COSMETIC — fog (toVisibility) is the secrecy gate — so any non-masked,
+   * missing, or malformed input yields null (no overlay), never an over/under-reveal. Mirrors
+   * toVisibility's active-scene filter so a lit set for a token in another scene cannot tint
+   * this scene. */
+  private toLighting(payload: unknown): LightingInput | null {
+    const p = payload as {
+      mode?: string;
+      bands?: { name?: string; min?: number }[];
+      renderHints?: string[];
+      lit?: { scene?: string; cell?: number; cells?: number[] }[];
+    } | null | undefined;
+    if (p?.mode !== "masked" || !Array.isArray(p.lit)) return null;
+    const activeScene = this.opts.store.query("scene")[0]?.id;
+    const group = p.lit.find(
+      (g): g is { scene?: string; cell: number; cells: number[] } =>
+        !!g && g.scene === activeScene && typeof g.cell === "number" && g.cell > 0 && Array.isArray(g.cells),
+    );
+    if (!group) return null;
+    const cells: LitCell[] = [];
+    for (let k = 0; k + 4 < group.cells.length; k += 5) {
+      cells.push({
+        i: group.cells[k], j: group.cells[k + 1], band: group.cells[k + 2],
+        tint: group.cells[k + 3], hint: group.cells[k + 4],
+      });
+    }
+    const bands = Array.isArray(p.bands)
+      ? p.bands
+          .filter((b): b is { name: string; min: number } => !!b && typeof b.name === "string" && typeof b.min === "number")
+          .map((b) => ({ name: b.name, min: b.min }))
+      : [];
+    const hints = Array.isArray(p.renderHints) ? p.renderHints.map(String) : [];
+    return { cell: group.cell, bands, hints, cells };
+  }
+
+  /** Test seam: exposes toLighting for unit tests (cosmetic parse has no secrecy implication). */
+  toLightingForTest(p: unknown): LightingInput | null { return this.toLighting(p); }
 
   /** Module-facing shader-filter seam (0.x). Forwards to the backend; no engine
    * consumer in M8 — the first consumers are token fx / Phase-3 VFX. */

@@ -2,11 +2,11 @@
  * fractional `order`; core ids are reserved. Index = the core order key. */
 export type CoreLayerId =
   | "background" | "grid" | "tiles" | "drawings" | "walls"
-  | "tokens" | "templates" | "mask" | "overlays";
+  | "tokens" | "templates" | "lighting" | "mask" | "overlays";
 
 export const CORE_LAYERS: readonly CoreLayerId[] = [
   "background", "grid", "tiles", "drawings", "walls",
-  "tokens", "templates", "mask", "overlays",
+  "tokens", "templates", "lighting", "mask", "overlays",
 ] as const;
 
 interface ModuleLayer {

@@ -1,5 +1,6 @@
-import { Application, Container, Graphics, Sprite, Text, Assets, type Filter } from "pixi.js";
+import { Application, BlurFilter, Container, Graphics, Sprite, Text, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend } from "./backend";
+import type { LightingFrame } from "./lighting";
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
 
 /** The real DisplayBackend over pixi.js v8. The only GL-touching module (kept out
@@ -23,6 +24,9 @@ export class PixiBackend implements DisplayBackend {
   private readonly measureGraphics = new Graphics();
   private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
   private readonly pingGraphics = new Graphics();
+  /** Per-cell darkening + tint quads for the lighting layer (M10e-3). Parented under the
+   * `lighting` container, which carries a BlurFilter to soften band/edge boundaries. */
+  private readonly lightingGraphics = new Graphics();
   private readonly shapes = new Map<string, Graphics>();
   private readonly tokens = new Map<string, Sprite>();
   /** Last-loaded image URL per token, so a tweening token doesn't reload each frame. */
@@ -51,6 +55,14 @@ export class PixiBackend implements DisplayBackend {
       this.layers.set(id, c);
       this.world.addChild(c);
       if (id === "grid") c.addChild(this.grid);
+      if (id === "lighting") {
+        c.addChild(this.lightingGraphics);
+        // BlurFilter softens cell-boundary stepping artifacts between gradation bands.
+        // POST_WORK: replace with radial gradient fills when PixiJS gradient API stabilises.
+        // NOTE: filter is attached directly (not via addLayerFilter); future filter swaps on
+        // the "lighting" layer must account for this pre-existing BlurFilter in c.filters.
+        c.filters = [new BlurFilter({ strength: 8 })];
+      }
       if (id === "mask") {
         // Dim sheet under the dark sheet; the hole shapes are masks, not drawn directly.
         c.addChild(this.fogDim);
@@ -286,6 +298,20 @@ export class PixiBackend implements DisplayBackend {
     this.pingGraphics.clear();
     for (const r of rings) {
       this.pingGraphics.circle(r.x, r.y, r.radius).stroke({ width: 3, color: 0xffd400, alpha: r.alpha });
+    }
+  }
+
+  setLighting(frame: LightingFrame): void {
+    this.lightingGraphics.clear();
+    // empty cells = no lighting overlay (all-clear)
+    const cellSize = frame.cell;
+    for (const c of frame.cells) {
+      const x = c.i * cellSize, y = c.j * cellSize;
+      if (c.alpha > 0) this.lightingGraphics.rect(x, y, cellSize, cellSize).fill({ color: 0x000000, alpha: c.alpha });
+      if (c.tintAlpha > 0) this.lightingGraphics.rect(x, y, cellSize, cellSize).fill({ color: c.tint, alpha: c.tintAlpha });
+      // V1 desaturate approximation: a low-alpha neutral wash mutes color in darkvision-only cells.
+      // POST_WORK: replace with a masked ColorMatrixFilter over the scene layers for true desaturation.
+      if (c.desaturate) this.lightingGraphics.rect(x, y, cellSize, cellSize).fill({ color: 0x808080, alpha: 0.18 });
     }
   }
 
