@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, type ReadableDocuments, type AssetResolver, type WireOperation } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import { topTokenAt } from "./hit-test";
 
@@ -27,15 +27,30 @@ export interface ToolContext {
   sendPing: (x: number, y: number) => void;
   /** Monotonic clock for drag-intent coalescing; defaults to Date.now (injected in tests). */
   now?: () => number;
+  /** Grid A* pathfind seam (from AppContext). When present and a single token is
+   * selected, the measure tool routes through it instead of the plain gridDistance
+   * mode. When absent (older host or not connected), the tool falls back gracefully. */
+  pathfind?: (
+    scene: string,
+    start: [number, number],
+    waypoints: [number, number][],
+    footprintRadius: number,
+  ) => Promise<PathResult>;
 }
 
-/** The active scene (single scene in M8d §15) + its grid cell size (default 100). */
-function activeScene(ctx: ToolContext): { id: string; size: number } | null {
+/** The active scene (single scene in M8d §15) + its grid cell size (default 100) and
+ * distance scale (default 5 ft/cell, matching `resolveSceneSettings` defaults). */
+function activeScene(ctx: ToolContext): { id: string; size: number; perCell: number; unit: string } | null {
   const scene = ctx.documents.query("scene")[0];
   if (!scene) return null;
-  const size = (scene.system as { grid?: { size?: number } } | undefined)?.grid?.size ?? 100;
-  return { id: scene.id, size };
+  const grid = (scene.system as { grid?: { size?: number; distance?: { perCell: number; unit: string } } } | undefined)?.grid;
+  const size = grid?.size ?? 100;
+  const { perCell, unit } = grid?.distance ?? { perCell: 5, unit: "ft" };
+  return { id: scene.id, size, perCell, unit };
 }
+
+/** Route color for the A* preview polyline (blue-teal, distinct from walls and selection). */
+const ROUTE_COLOR = 0x3399ff;
 
 /** Owns the active-tool + selected-asset UI state and routes activation to the engine
  * via the scene bridge. */
@@ -171,19 +186,136 @@ export function makePingTool(ctx: ToolContext): SceneTool {
 }
 
 /** Drag to measure: a client-local segment + whole-cell distance label. Never persists a
- * document or broadcasts (#3) — purely an overlay on the dragging client. */
+ * document or broadcasts — purely an overlay on the dragging client.
+ *
+ * Route mode activates when ALL of:
+ *   1. `ctx.tokenSelection` has exactly ONE token id, AND
+ *   2. `ctx.pathfind` is defined (i.e. the host provides the seam), AND
+ *   3. There is an active scene.
+ * In route mode each `onPointerMove` issues an A* pathfind request from the selected
+ * token's center through any accumulated waypoints to the provisional goal; on resolve
+ * `previewOverlay` renders the routed polyline and `drawMeasure` shows the movement
+ * budget (cost × perCell + unit). `onPointerDown` snaps a waypoint onto the list.
+ * `onPointerUp` / tool deactivation clears all overlays (mid-gesture-clear invariant).
+ *
+ * With 0 or >1 tokens selected, or no `ctx.pathfind`: falls back to the original
+ * anchor→point gridDistance measure so plain measurement is always available. */
 export function makeMeasureTool(ctx: ToolContext): SceneTool {
+  // Plain-measure state.
   let anchor: Point | null = null;
+
+  // Route-mode state.
+  // `waypoints` accumulates user-clicked intermediate goals (snapped); the start
+  // is always derived live from the selected token's position.
+  let waypoints: [number, number][] = [];
+  // Track the in-flight pathfind so we can ignore stale responses that arrive
+  // after a newer request has been issued (last-write-wins coalescing).
+  let pendingSeq = 0;
+
+  /** True when the measure tool should operate in route mode (see above). */
+  function inRouteMode(): boolean {
+    return (
+      ctx.pathfind !== undefined &&
+      ctx.tokenSelection !== undefined &&
+      ctx.tokenSelection.ids.size === 1
+    );
+  }
+
+  /** Center of the single selected token, or null if unavailable. */
+  function tokenCenter(): [number, number] | null {
+    const sel = ctx.tokenSelection;
+    if (!sel || sel.ids.size !== 1) return null;
+    const [id] = [...sel.ids];
+    const sys = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
+    return [sys?.x ?? 0, sys?.y ?? 0];
+  }
+
+  /** Footprint radius of the single selected token (for pathfind clearance). Falls
+   * back to 0.4 grid units (sub-cell) when the actor cannot be resolved. */
+  function resolveFootprint(): number {
+    const sel = ctx.tokenSelection;
+    if (!sel || sel.ids.size !== 1) return 0.4;
+    const [id] = [...sel.ids];
+    const tokenDoc = ctx.documents.get(id);
+    if (!tokenDoc) return 0.4;
+    const eff = resolveTokenActor(tokenDoc, ctx.documents);
+    return eff ? footprintRadius(eff) : 0.4;
+  }
+
+  /** Issue a pathfind request for the current waypoints + provisional goal `p`.
+   * Ignores the response if a newer request has since been issued. */
+  function requestRoute(scene: { id: string; perCell: number; unit: string }, start: [number, number], goal: Point): void {
+    if (!ctx.pathfind) return;
+    const seq = ++pendingSeq;
+    const fp = resolveFootprint();
+    const allWaypoints: [number, number][] = [...waypoints, [goal.x, goal.y]];
+    ctx.pathfind(scene.id, start, allWaypoints, fp).then(
+      (result) => {
+        if (seq !== pendingSeq) return; // superseded by a newer move
+        // Render the routed polyline via previewOverlay.
+        const pts = result.path.flat();
+        ctx.scene.previewOverlay([{ points: pts, closed: false, stroke: { color: ROUTE_COLOR, width: 3 }, fill: null }]);
+        // Budget label: cost × distance-per-cell unit.
+        const budget = Math.round(result.cost * scene.perCell);
+        const startPt: Point = { x: start[0], y: start[1] };
+        ctx.scene.drawMeasure(startPt, goal, `${budget} ${scene.unit}`);
+      },
+      () => {
+        if (seq !== pendingSeq) return;
+        // No route available: clear the overlay and show a "no route" label.
+        ctx.scene.clearOverlay();
+        const startPt: Point = { x: start[0], y: start[1] };
+        ctx.scene.drawMeasure(startPt, goal, "—");
+      },
+    );
+  }
+
+  /** Clear all route-mode overlays and reset waypoints (mid-gesture-clear invariant). */
+  function clearRoute(): void {
+    pendingSeq++; // invalidate any in-flight request
+    ctx.scene.clearOverlay();
+    ctx.scene.clearMeasure();
+    waypoints = [];
+  }
+
   return {
     onPointerDown(p: Point): boolean {
+      if (inRouteMode()) {
+        const scene = activeScene(ctx);
+        if (scene) {
+          // Snap the click and push it as a waypoint; the start pin is always the
+          // selected token's live center (not an accumulated waypoint).
+          const snapped = ctx.scene.snap(p);
+          waypoints.push([snapped.x, snapped.y]);
+          return true;
+        }
+      }
+      // Fallback: plain anchor-point measure.
       anchor = p;
-      return true; // measuring works anywhere; claim the gesture
+      return true;
     },
     onPointerMove(p: Point): void {
+      if (inRouteMode()) {
+        const scene = activeScene(ctx);
+        const start = tokenCenter();
+        if (scene && start) {
+          const goal = ctx.scene.snap(p);
+          requestRoute(scene, start, goal);
+        }
+        return;
+      }
+      // Fallback: plain gridDistance measure.
       if (!anchor) return;
       ctx.scene.drawMeasure(anchor, p, String(ctx.scene.gridDistance(anchor, p)));
     },
-    onPointerUp(): void {
+    onPointerUp(_p: Point): void {
+      if (inRouteMode()) {
+        // Release: clear overlays (mid-gesture-clear invariant). The actual move is
+        // handled by the select-move tool / M10e-4 server gate — not here.
+        clearRoute();
+        return;
+      }
+      // Fallback: plain measure cleanup.
       if (!anchor) return;
       ctx.scene.clearMeasure();
       anchor = null;
