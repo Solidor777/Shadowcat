@@ -4,7 +4,7 @@
 // their embedded copy. Returns null for a raw (actorless) or dangling-link token.
 import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { ActorSystem, ActorVisual, TokenOverrides, ConditionRegistrySystem, SceneSystem } from "./scene-docs";
+import type { ActorSystem, ActorVisual, TokenOverrides, ConditionRegistrySystem, SceneSystem, VisionAssignment } from "./scene-docs";
 
 export interface EffectiveActor {
   name: string;
@@ -14,6 +14,9 @@ export interface EffectiveActor {
   shape: "square" | "circle";
   faction: string | null;
   conditions: string[];
+  /** Effective vision modes for this actor/token. Per-token override replaces actor base entirely;
+   * defaults to [] when neither specifies vision. */
+  visionModes: VisionAssignment[];
 }
 
 function project(base: ActorSystem, overrides?: TokenOverrides): EffectiveActor {
@@ -27,6 +30,8 @@ function project(base: ActorSystem, overrides?: TokenOverrides): EffectiveActor 
     // Fail-closed: a missing/redacted /system/conditions yields no conditions, never a throw in
     // the downstream `for...of` (the single chokepoint protecting every EffectiveActor consumer).
     conditions: base.conditions ?? [],
+    // Override replaces actor base entirely (not merged); [] when neither present (fail-closed).
+    visionModes: overrides?.vision ?? base.vision ?? [],
   };
 }
 

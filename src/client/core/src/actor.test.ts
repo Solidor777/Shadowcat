@@ -168,3 +168,25 @@ test("footprintRadius: circle = max(w,h)/2, square = half-diagonal", () => {
   expect(footprintRadius({ shape: "circle", size: { w: 2, h: 4 } })).toBe(2);
   expect(footprintRadius({ shape: "square", size: { w: 2, h: 2 } })).toBeCloseTo(Math.SQRT2, 5);
 });
+
+it("resolves actor vision modes onto the effective actor", () => {
+  const withVision = { ...sys, vision: [{ mode: "darkvision", range: 12 }] };
+  const actor = buildActorDoc("w1", withVision, "act1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100);
+  const eff = resolveTokenActor(token, storeWith(actor));
+  expect(eff?.visionModes).toEqual([{ mode: "darkvision", range: 12 }]);
+});
+
+it("defaults visionModes to [] when actor has none", () => {
+  const actor = buildActorDoc("w1", sys, "act1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100);
+  expect(resolveTokenActor(token, storeWith(actor))?.visionModes).toEqual([]);
+});
+
+it("per-token override replaces actor vision modes", () => {
+  const withVision = { ...sys, vision: [{ mode: "darkvision", range: 12 }] };
+  const actor = buildActorDoc("w1", withVision, "act1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100);
+  (token.system as { overrides?: { vision?: { mode: string; range: number }[] } }).overrides = { vision: [{ mode: "darkvision", range: 6 }] };
+  expect(resolveTokenActor(token, storeWith(actor))?.visionModes).toEqual([{ mode: "darkvision", range: 6 }]);
+});

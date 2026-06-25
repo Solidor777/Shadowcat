@@ -125,6 +125,11 @@ export interface ActorVisual {
   kind: "image";
   asset: string;
 }
+
+/** A per-actor or per-token vision assignment: which mode (by id) + effective range in grid cells.
+ * References a VisionMode in the world's vision-modes registry by id. */
+export interface VisionAssignment { mode: string; range: number; }
+
 export interface ActorSystem {
   name: string;
   displayName: string;
@@ -135,6 +140,8 @@ export interface ActorSystem {
   conditions: string[];
   /** Default place-mode: true ⇒ instance (independent copy) on drop; false ⇒ link (shared). */
   prototype: boolean;
+  /** Vision modes granted to this actor; each references a VisionMode id + range in grid cells. */
+  vision?: VisionAssignment[];
 }
 
 /** The per-token override whitelist for a linked token (M10a; shape added M10d). */
@@ -143,6 +150,8 @@ export interface TokenOverrides {
   visual?: ActorVisual;
   size?: { w: number; h: number };
   shape?: "square" | "circle";
+  /** Per-token vision override: replaces the actor's vision[] entirely when present. */
+  vision?: VisionAssignment[];
 }
 
 /** Visible-to-all defaults; the server normalizes permissions per the creator's role. */
