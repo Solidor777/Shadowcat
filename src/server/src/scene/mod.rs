@@ -91,6 +91,8 @@ pub struct SceneEcs {
     world_settings: Option<Document>,
     gradation: Option<Document>,
     vision_modes: Option<Document>,
+    /// Point-lookup table keyed by actor doc id. Used only for `actors.get(id)` joins; must
+    /// not be iterated for ordered or wire output (HashMap iteration order is non-deterministic).
     actors: HashMap<Uuid, Document>,
 }
 
@@ -557,37 +559,41 @@ impl SceneEcs {
     }
 
     /// The token's effective vision modes as `(floor_min_illumination, range_cells)` pairs.
-    /// `range_cells == 0.0` ⇒ unlimited. Precedence (mirrors the client EffectiveActor.visionModes):
-    /// per-token `overrides.vision` REPLACES; else the instanced `embedded.actor[0].system.vision`;
-    /// else the linked `actor(actor_id).system.vision`; else `[normal]`. An unknown mode id is
-    /// dropped (fail-closed: it contributes no vision floor). Always returns ≥1 pair (normal fallback).
+    /// `range_cells == 0.0` ⇒ unlimited. Precedence (mirrors `resolveTokenActor` in actor.ts):
+    /// a LINKED token (`actor_id` present) resolves the shared actor and applies
+    /// `overrides.vision` as a wholesale replacement when present; a dangling link (actor absent)
+    /// yields normal, ignoring overrides. An INSTANCED token (no `actor_id`) uses its
+    /// `embedded.actor[0].system.vision` without overrides. An unknown mode id is dropped
+    /// (fail-closed: it contributes no vision floor). Always returns ≥1 pair (normal fallback).
     pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64)> {
         let modes = self.resolved_vision_modes();
         let bands = self.resolved_bands();
 
-        // Locate the raw `[{mode, range}]` array by precedence.
-        let assignments: Option<&serde_json::Value> = token
+        // Mirror actor.ts resolveTokenActor: a LINKED token (actor_id) resolves the shared actor and
+        // applies the per-token override whitelist (overrides.vision REPLACES the actor's vision); a
+        // dangling link (actor absent) yields normal, ignoring overrides. An INSTANCED token (no
+        // actor_id) uses its embedded copy's vision; overrides do not apply to instanced tokens.
+        let assignments: Option<&serde_json::Value> = match token
             .system
-            .pointer("/overrides/vision")
-            .filter(|v| v.is_array())
-            .or_else(|| {
-                token
-                    .embedded
-                    .get("actor")
-                    .and_then(|v| v.first()) // &Document
-                    .and_then(|a| a.system.pointer("/vision"))
-                    .filter(|v| v.is_array())
-            })
-            .or_else(|| {
-                token
+            .pointer("/actor_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+        {
+            Some(id) => match self.actors.get(&id) {
+                Some(actor) => token
                     .system
-                    .pointer("/actor_id")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| Uuid::parse_str(s).ok())
-                    .and_then(|id| self.actors.get(&id))
-                    .and_then(|a| a.system.pointer("/vision"))
+                    .pointer("/overrides/vision")
                     .filter(|v| v.is_array())
-            });
+                    .or_else(|| actor.system.pointer("/vision").filter(|v| v.is_array())),
+                None => None, // dangling link → normal (overrides ignored, per resolveTokenActor)
+            },
+            None => token
+                .embedded
+                .get("actor")
+                .and_then(|v| v.first())
+                .and_then(|a| a.system.pointer("/vision"))
+                .filter(|v| v.is_array()),
+        };
 
         let mut out: Vec<(f64, f64)> = Vec::new();
         if let Some(arr) = assignments.and_then(|v| v.as_array()) {
@@ -609,7 +615,8 @@ impl SceneEcs {
             }
         }
         if out.is_empty() {
-            // Normal vision: dim floor, unlimited range.
+            // Fallback: no vision assignments resolved → dim floor, unlimited range (mirrors
+            // built-in "normal"; used even if a GM removed it from the registry).
             let normal_floor = modes
                 .get("normal")
                 .map(|m| m.illumination_floor.clone())
@@ -1076,6 +1083,41 @@ mod tests {
         // An actorless token → normal only.
         let raw = entity_doc(12, 10, "token", json!({ "x": 0, "y": 0 }));
         assert_eq!(ecs.token_vision_floors(&raw), vec![(0.34, 0.0)]);
+
+        // An explicit EMPTY override REPLACES (no fall-through to the linked actor → normal).
+        let mut linked_empty = entity_doc(
+            13,
+            10,
+            "token",
+            json!({ "x": 0, "y": 0, "actor_id": Uuid::from_u128(200).to_string(),
+                    "overrides": { "vision": [] } }),
+        );
+        assert_eq!(ecs.token_vision_floors(&linked_empty), vec![(0.34, 0.0)]);
+
+        // A token with BOTH actor_id AND an embedded actor resolves the LINKED actor (matches the
+        // client's actor_id-first resolveTokenActor), NOT the embedded copy.
+        linked_empty.system["overrides"] = json!({}); // no vision override
+        linked_empty.embedded.insert(
+            "actor".into(),
+            vec![entity_doc_top(
+                201,
+                "actor",
+                json!({ "vision": [{ "mode": "normal", "range": 0 }] }),
+            )],
+        );
+        // actor 200 grants darkvision range 6 → linked wins → (0.0, 6.0), not the embedded normal.
+        assert_eq!(ecs.token_vision_floors(&linked_empty), vec![(0.0, 6.0)]);
+
+        // A DANGLING link (actor_id with no matching actor) + an overrides.vision is normal — the
+        // client ignores overrides when the linked actor is absent.
+        let dangling = entity_doc(
+            14,
+            10,
+            "token",
+            json!({ "x": 0, "y": 0, "actor_id": Uuid::from_u128(999).to_string(),
+                    "overrides": { "vision": [{ "mode": "darkvision", "range": 9 }] } }),
+        );
+        assert_eq!(ecs.token_vision_floors(&dangling), vec![(0.34, 0.0)]);
     }
 
     #[test]
