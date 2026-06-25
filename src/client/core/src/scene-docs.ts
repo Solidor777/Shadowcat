@@ -321,17 +321,20 @@ export interface GradationBand { name: string; minIllumination: number; }
 export interface LightGradationSystem { bands: GradationBand[]; }
 
 /** Built-in three-band gradation (bright → dim → dark).
- * Stored unsorted; `resolveGradation` returns a sorted copy. */
-export const DEFAULT_GRADATION: LightGradationSystem = {
+ * Stored unsorted; `resolveGradation` returns a sorted copy.
+ * Deep-frozen so shared refs returned by resolveGradation cannot be mutated by consumers. */
+export const DEFAULT_GRADATION: LightGradationSystem = deepFreeze({
   bands: [
     { name: "bright", minIllumination: 0.67 },
     { name: "dim", minIllumination: 0.34 },
     { name: "dark", minIllumination: 0.0 },
   ],
-};
+});
 
-/** A top-level (world-scoped, parentless) light-gradation config document. */
-export function buildLightGradationDoc(worldId: string, system: LightGradationSystem = DEFAULT_GRADATION, id?: string): WireDocument {
+/** A top-level (world-scoped, parentless) light-gradation config document.
+ * Default param is a fresh deep clone — the returned doc's `.system` must not alias
+ * DEFAULT_GRADATION (value-independence-at-construction invariant). */
+export function buildLightGradationDoc(worldId: string, system: LightGradationSystem = structuredClone(DEFAULT_GRADATION), id?: string): WireDocument {
   return envelope(worldId, "light-gradation", null, system, id);
 }
 
@@ -361,14 +364,17 @@ export interface VisionMode {
 /** The `system` body of a "vision-modes" config document. */
 export interface VisionModesSystem { modes: Record<string, VisionMode>; }
 
-/** Built-in two-mode seed: normal sight + darkvision. */
-export const SEED_VISION_MODES: Record<string, VisionMode> = {
+/** Built-in two-mode seed: normal sight + darkvision.
+ * Deep-frozen so shared refs returned by resolveVisionModes cannot be mutated by consumers. */
+export const SEED_VISION_MODES: Record<string, VisionMode> = deepFreeze({
   normal: { id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0 },
   darkvision: { id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, renderHint: "desaturate" },
-};
+});
 
-/** A top-level (world-scoped, parentless) vision-modes config document. */
-export function buildVisionModesDoc(worldId: string, system: VisionModesSystem = { modes: SEED_VISION_MODES }, id?: string): WireDocument {
+/** A top-level (world-scoped, parentless) vision-modes config document.
+ * Default param is a fresh deep clone — the returned doc's `.system.modes` must not alias
+ * SEED_VISION_MODES (value-independence-at-construction invariant). */
+export function buildVisionModesDoc(worldId: string, system: VisionModesSystem = { modes: structuredClone(SEED_VISION_MODES) }, id?: string): WireDocument {
   return envelope(worldId, "vision-modes", null, system, id);
 }
 

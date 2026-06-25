@@ -178,6 +178,18 @@ describe("light-gradation registry", () => {
   it("falls back to DEFAULT_GRADATION when no doc present", () => {
     expect(resolveGradation(storeWith())).toEqual([...DEFAULT_GRADATION.bands].sort((a, b) => b.minIllumination - a.minIllumination));
   });
+  it("DEFAULT_GRADATION is frozen (immutable shared constant)", () => {
+    expect(Object.isFrozen(DEFAULT_GRADATION)).toBe(true);
+    expect(Object.isFrozen(DEFAULT_GRADATION.bands)).toBe(true);
+  });
+  it("buildLightGradationDoc system is value-independent of DEFAULT_GRADATION", () => {
+    const doc = buildLightGradationDoc("w1");
+    // Must not alias the constant — a fresh clone so set_pointer edits do not mutate the seed.
+    expect(doc.system).not.toBe(DEFAULT_GRADATION);
+    expect((doc.system as { bands: unknown }).bands).not.toBe(DEFAULT_GRADATION.bands);
+    // Values must be preserved.
+    expect(doc.system).toEqual(DEFAULT_GRADATION);
+  });
 });
 
 describe("vision-modes registry", () => {
@@ -188,5 +200,17 @@ describe("vision-modes registry", () => {
   });
   it("falls back to SEED_VISION_MODES when no doc present", () => {
     expect(resolveVisionModes(storeWith())).toEqual(SEED_VISION_MODES);
+  });
+  it("SEED_VISION_MODES is frozen (immutable shared constant)", () => {
+    expect(Object.isFrozen(SEED_VISION_MODES)).toBe(true);
+    expect(Object.isFrozen(SEED_VISION_MODES.normal)).toBe(true);
+  });
+  it("buildVisionModesDoc system.modes is value-independent of SEED_VISION_MODES", () => {
+    const doc = buildVisionModesDoc("w1");
+    const modes = (doc.system as { modes: Record<string, unknown> }).modes;
+    // Must not alias the constant — a fresh clone so set_pointer edits do not mutate the seed.
+    expect(modes).not.toBe(SEED_VISION_MODES);
+    // Values must be preserved.
+    expect(modes).toEqual(SEED_VISION_MODES);
   });
 });
