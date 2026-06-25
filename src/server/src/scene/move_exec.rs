@@ -24,8 +24,6 @@ use crate::scene::{movement::supercover_cells, MovementRestriction, SceneEcs};
 
 /// DoS guard: a path longer than this is rejected outright (never truncated).
 /// Sized to a generous multi-waypoint route; far below a coordinate-overflow risk.
-// Referenced by the room layer (move-dispatch caller); allow dead_code until wired.
-#[allow(dead_code)]
 pub(crate) const MAX_MOVE_PATH: usize = 256;
 
 /// Epsilon for path[0]-vs-committed-position comparison (scene units).
@@ -34,20 +32,21 @@ pub(crate) const MAX_MOVE_PATH: usize = 256;
 const EPS: f64 = 1e-6;
 
 /// The legal outcome of an `execute_move` call.
-// Constructed by execute_move; allow dead_code until the room layer wires the call.
-#[allow(dead_code)]
 pub(crate) struct MoveOutcome {
     /// The path coordinate of the last successfully reached step (`path[stop_index]`).
     pub stop: (f64, f64),
     /// The legal prefix of the input path that was actually walked: `path[0..=stop_index]`.
     pub render_path: Vec<(f64, f64)>,
     /// `true` when the move stopped before `path.last()` (wall, mask, or region-arrest).
+    // The room layer derives truncation from `stop != path.last()`; the field is
+    // read by move_exec unit tests (see tests module). Suppress the dead_code lint
+    // so the structural information remains available without cluttering call sites.
+    #[allow(dead_code)]
     pub truncated: bool,
 }
 
 /// Reason an `execute_move` call was rejected before any walking.
 #[derive(Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum MoveReject {
     /// `token` is not a token entity in the ECS (unknown id or wrong doc_type).
     NotAToken,
@@ -65,8 +64,6 @@ pub(crate) enum MoveReject {
 ///
 /// Coupling: the region system updates this function body only; the call site in
 /// `execute_move` (step 3 of the walk loop) is the stable hook entry point.
-// Body is a stub; allow dead_code on the function itself until region system lands.
-#[allow(dead_code)]
 fn region_arrests(_ecs: &SceneEcs, _scene: Uuid, _cell_center: (f64, f64)) -> bool {
     false
 }
@@ -106,8 +103,6 @@ fn region_arrests(_ecs: &SceneEcs, _scene: Uuid, _cell_center: (f64, f64)) -> bo
 ///   the raw `visible_cache` alone (§13 parity contract: this executor and the
 ///   `publish` gate must agree on every cell for every restriction mode).
 /// - `cell` — Grid cell size in scene units (positive finite).
-// Called by the room layer move-dispatch; allow dead_code until that caller lands.
-#[allow(dead_code)]
 pub(crate) fn execute_move(
     ecs: &SceneEcs,
     scene: Uuid,

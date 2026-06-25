@@ -1,6 +1,6 @@
 //! Per-world rooms, ring buffer, registry, and telemetry counters.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -10,12 +10,23 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::data::command::{Command, Operation};
+use crate::data::command::{Command, FieldChange, Operation};
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::DataError;
 use crate::scene::SceneEcs;
 use crate::ws::protocol::{ResyncSource, ServerMsg};
+
+/// The room-facing result of a server-authoritative token move: the stop cell, the legal
+/// prefix of the path that was walked (render animation input), and the animation duration.
+pub struct MoveExecution {
+    /// The last successfully reached path coordinate (the committed position after the move).
+    pub stop: (f64, f64),
+    /// The legal prefix of the requested path including `start` through `stop`.
+    pub render_path: Vec<(f64, f64)>,
+    /// Animation duration in milliseconds (distance / cell / speed * 1000). Zero when stop == start.
+    pub duration_ms: f64,
+}
 
 const MAX_EVENTS: usize = 1024;
 const MAX_AGE_MS: i64 = 5 * 60 * 1000;
@@ -111,6 +122,10 @@ pub struct Room {
     current_seq: AtomicI64,
     scene: RwLock<SceneEcs>,
     pub stats: RoomStats,
+    /// Per-token moving lock: token → move-end epoch-ms. An entry is expired when
+    /// `now_millis() >= end`; expired/absent entries are treated as available (lazy expiry,
+    /// no timer). Updated by `execute_move` after a successful commit.
+    moving: Mutex<HashMap<Uuid, i64>>,
 }
 
 impl Room {
@@ -124,6 +139,7 @@ impl Room {
             current_seq: AtomicI64::new(seed_seq),
             scene: RwLock::new(scene),
             stats: RoomStats::default(),
+            moving: Mutex::new(HashMap::new()),
         }
     }
 
@@ -318,6 +334,213 @@ impl Room {
         let _ = self.tx.send(msg); // Err only when there are no receivers
         self.stats.events_published.fetch_add(1, Ordering::Relaxed);
         Ok(cmd)
+    }
+
+    /// Server-authoritative token move: resolves gate inputs off the ECS read lock, calls the
+    /// pure path executor, atomically commits the token to its stop location, and enforces a
+    /// per-token `moving` lock so a client cannot re-dispatch while the animation is in flight.
+    ///
+    /// # Lock ordering (load-bearing — do NOT reorder)
+    ///
+    /// 1. Take `self.scene.read()` to resolve restriction/cell/visible_cells/start.
+    /// 2. DROP the read guard before any await (no lock across await — mirrors `publish`).
+    /// 3. Await `repo.get_explored(...)` for Revealed union (only after the guard is dropped).
+    /// 4. Call the pure `move_exec::execute_move` (lock-free).
+    /// 5. Acquire `self.publish_guard` ONCE, call `commit_ops_locked` (non-reentrant Mutex —
+    ///    re-acquiring inside would deadlock). Single acquisition per logical write ensures
+    ///    broadcast order equals seq order.
+    ///
+    /// # Revealed-union contract (spec §13)
+    ///
+    /// For `MovementRestriction::Revealed` the `visible` set passed to the executor MUST be
+    /// `visible_cells(user, scene, lenient) ∪ explored` — the same union `publish` tests with
+    /// `visible.contains(c) || explored.contains(c)`. Passing `visible_cells` alone would over-
+    /// restrict, disagreeing with the `publish` gate and breaking Revealed-mode movement.
+    ///
+    /// # Moving lock
+    ///
+    /// `moving` maps token → move-end epoch-ms. An absent or expired entry (now >= end) allows
+    /// the move. After a successful commit the entry is updated to `now + duration_ms`. Lazy
+    /// expiry — no cleanup timer; a fresh server reload has no in-memory lock, consistent with
+    /// the atomic-state invariant (the lock is a liveness hint, not durable state).
+    pub async fn execute_move(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        scene_id: Uuid,
+        token: Uuid,
+        path: Vec<(f64, f64)>,
+        ts: i64,
+    ) -> Result<MoveExecution, DataError> {
+        use crate::scene::{move_exec, MovementRestriction};
+
+        let now = crate::ws::time::now_millis();
+
+        // --- Moving-lock check (lazy expiry: absent or expired entries are allowed) ---
+        // Coupling: this lock is intentionally in-memory only. A server restart clears it,
+        // consistent with the fact that move state is derived (not durable). The lock prevents
+        // a client from queuing multiple moves before the first animation completes.
+        {
+            let moving = self.moving.lock().await;
+            if let Some(&end) = moving.get(&token) {
+                if now < end {
+                    return Err(DataError::Forbidden);
+                }
+            }
+        }
+
+        // --- Resolve gate inputs under the ECS read lock ---
+        // All three inputs (restriction, cell, visible) are resolved while holding the read
+        // lock and DROPPED before any await (no lock-across-await; mirrors `publish`).
+        let restriction;
+        let cell;
+        let start;
+        let visible_cells;
+        let is_revealed;
+        {
+            let scene = self.scene.read().await;
+
+            // Verify the token exists and get its committed position.
+            start = scene.token_position(token).ok_or(DataError::Forbidden)?;
+
+            let settings = scene.resolve_scene(scene_id);
+            cell = scene
+                .scene_grid_sizes()
+                .get(&scene_id)
+                .copied()
+                .unwrap_or(100.0);
+
+            // GMs use Unrestricted (mirrors `publish`'s GM gate-skip).
+            restriction = if ctx.world_role == crate::data::document::WorldRole::Gm {
+                MovementRestriction::Unrestricted
+            } else {
+                settings.movement_restriction
+            };
+
+            let lenient = settings.partial_cell_leniency;
+            is_revealed = matches!(restriction, MovementRestriction::Revealed);
+
+            // Pre-compute the visible set off the read lock. For Revealed, this is only the
+            // `visible_cells` half; the explored half is fetched after the guard is dropped
+            // (explored fetch is async — holding the read lock across it would violate the
+            // no-lock-across-await rule).
+            visible_cells = if matches!(restriction, MovementRestriction::Unrestricted) {
+                std::collections::BTreeSet::new()
+            } else {
+                scene.visible_cells(ctx.user_id, scene_id, lenient)
+            };
+        } // scene read guard dropped here — safe to await
+
+        // --- Revealed union: fetch explored AFTER dropping the scene read guard ---
+        // INVARIANT (spec §13): for Revealed the `visible` set passed to execute_move MUST be
+        // visible_cells ∪ explored. Fail-closed: error or missing blob → empty explored set
+        // (falls back to visible-only, which is stricter but safe).
+        let visible = if is_revealed {
+            let mut union = visible_cells;
+            let explored = match repo.get_explored(scene_id, ctx.user_id).await {
+                Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob),
+                _ => crate::scene::explored::ExploredSet::new(),
+            };
+            // Union: insert every explored cell into the visible set.
+            for (ci, cj) in explored.iter() {
+                union.insert((ci, cj));
+            }
+            union
+        } else {
+            visible_cells
+        };
+
+        // --- Pure path executor + animation speed (single ECS read acquisition) ---
+        // Re-acquire the read lock now that the explored await is complete. Hold it only for
+        // the synchronous executor call and the animation speed read, then drop before the
+        // publish_guard await (no lock-across-await on the write path).
+        // Maps MoveReject → DataError::Forbidden (all reject reasons indicate the request
+        // is invalid: unknown token, too-long path, bad start, non-adjacent step).
+        let outcome;
+        let speed_cells_per_sec;
+        {
+            let scene = self.scene.read().await;
+            outcome = move_exec::execute_move(
+                &scene,
+                scene_id,
+                token,
+                &path,
+                restriction,
+                &visible,
+                cell,
+            )
+            .map_err(|_| DataError::Forbidden)?;
+            speed_cells_per_sec = scene.resolved_animation_speed();
+        } // read lock dropped — safe to await publish_guard
+
+        let distance: f64 = outcome
+            .render_path
+            .windows(2)
+            .map(|w| {
+                let dx = w[1].0 - w[0].0;
+                let dy = w[1].1 - w[0].1;
+                (dx * dx + dy * dy).sqrt()
+            })
+            .sum();
+
+        let duration_ms = if distance < 1e-9 {
+            0.0
+        } else {
+            (distance / cell) / speed_cells_per_sec * 1000.0
+        };
+
+        // Zero-progress move (stop == start): return immediately without writing.
+        // Invariant: render_path always contains at least `start` (path.len() >= 2 was
+        // validated by execute_move), so this only fires when the very first step was blocked.
+        if (outcome.stop.0 - start.0).abs() < 1e-9 && (outcome.stop.1 - start.1).abs() < 1e-9 {
+            return Ok(MoveExecution {
+                stop: start,
+                render_path: vec![start],
+                duration_ms: 0.0,
+            });
+        }
+
+        // --- Atomic commit under publish_guard (single acquisition — non-reentrant) ---
+        // PRECONDITION: commit_ops_locked requires the caller to hold publish_guard for its
+        // full duration. We acquire it ONCE here and pass straight through — no re-entry.
+        // The position ops mirror the field paths that `token_move` / `publish` write
+        // (/system/x and /system/y), keyed on the authoritative ECS-read old values so the
+        // optimistic-concurrency check in apply_intent passes.
+        let pos_ops = vec![Operation::Update {
+            doc_id: token,
+            changes: vec![
+                FieldChange {
+                    path: "/system/x".into(),
+                    old: serde_json::json!(start.0),
+                    new: serde_json::json!(outcome.stop.0),
+                },
+                FieldChange {
+                    path: "/system/y".into(),
+                    old: serde_json::json!(start.1),
+                    new: serde_json::json!(outcome.stop.1),
+                },
+            ],
+        }];
+
+        {
+            let _guard = self.publish_guard.lock().await;
+            self.commit_ops_locked(repo, ctx, pos_ops, ts).await?;
+        }
+
+        // --- Update the moving lock after a successful commit ---
+        // Lazy-expiry insert: the entry is refreshed to now + duration_ms so concurrent
+        // requests for this token see a live lock. Expired entries from prior moves that
+        // were never cleaned up are simply overwritten here.
+        {
+            let mut moving = self.moving.lock().await;
+            moving.insert(token, now + duration_ms as i64);
+        }
+
+        Ok(MoveExecution {
+            stop: outcome.stop,
+            render_path: outcome.render_path,
+            duration_ms,
+        })
     }
 
     /// Resolve a resync range: hot ring tier when fully resident, else the cold
@@ -932,6 +1155,26 @@ mod room_tests {
         world_id: Uuid,
         scene_id: Uuid,
         token_id: Uuid,
+        /// Committed start position of the primary token (scene-unit coords).
+        start: (f64, f64),
+        /// A lit cell reachable from `start` without crossing any wall.
+        lit_goal: (f64, f64),
+        /// An adjacent (king-step) cell reachable from `start` (unrestricted/visible scenes).
+        adj: (f64, f64),
+        /// A cell adjacent to `adj`, used as the second leg in moving-lock tests.
+        adj2: (f64, f64),
+    }
+
+    impl MovementHandle {
+        /// Read the committed position of `token` from the authoritative ECS.
+        async fn committed_pos(&self, token: Uuid) -> (f64, f64) {
+            self.room
+                .scene()
+                .read()
+                .await
+                .token_position(token)
+                .expect("token not found in ECS")
+        }
     }
 
     impl MovementHandle {
@@ -1066,6 +1309,15 @@ mod room_tests {
             world_id,
             scene_id,
             token_id,
+            // Token starts at (50,50) — center of cell (0,0) with grid size 100.
+            start: (50.0, 50.0),
+            // Cell (0,0) is illuminated by the light at (50,50); (0,0) center=(50,50) → lit.
+            // For unrestricted/no-light scenes this field is still a reachable adjacent cell.
+            lit_goal: (50.0, 150.0),
+            // Adjacent cell: one king-step from (50,50).
+            adj: (150.0, 50.0),
+            // Two king-steps from start: used as the second leg in moving-lock tests.
+            adj2: (250.0, 50.0),
         }
     }
 
@@ -1165,6 +1417,10 @@ mod room_tests {
             world_id,
             scene_id,
             token_id,
+            start: (50.0, 50.0),
+            lit_goal: (50.0, 150.0),
+            adj: (150.0, 50.0),
+            adj2: (250.0, 50.0),
         }
     }
 
@@ -1261,6 +1517,10 @@ mod room_tests {
             world_id,
             scene_id,
             token_id,
+            start: (50.0, 50.0),
+            lit_goal: (50.0, 150.0),
+            adj: (150.0, 50.0),
+            adj2: (250.0, 50.0),
         }
     }
 
@@ -1555,5 +1815,260 @@ mod room_tests {
             Some((8.0, 10.0)),
             "token must be committed at goal (8,10) after both legs"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Room::execute_move — server-authoritative atomic move + moving lock
+    // -----------------------------------------------------------------------
+
+    /// Scene with token at (50,50), a wall that blocks the step from `corner` to
+    /// `beyond_wall`, and movementRestriction="unrestricted" so only the wall gate fires.
+    ///
+    /// Geometry (grid size=100):
+    ///   - start       = (50,50)  — token committed position (center of cell 0,0)
+    ///   - corner      = (150,50) — one king-step right; clear (no wall on this path)
+    ///   - beyond_wall = (150,150) — one king-step down from corner; a horizontal wall
+    ///     at y=100 (x ∈ [100,200]) blocks the step corner→beyond_wall.
+    ///
+    /// Wall: x1=100,y1=100,x2=200,y2=100. Step (150,50)→(150,150): vertical at x=150
+    /// crosses y=100 — blocked.
+    async fn movement_scene_with_wall() -> MovementHandle {
+        use crate::data::document::DocRole;
+        use serde_json::json;
+
+        let (repo, world_id, gm) = repo_with_world().await;
+        let p = repo
+            .create_user("player_wall", None, crate::auth::role::ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world_id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let (scene_id, token_id, ws_id, wall_id) = (
+            Uuid::from_u128(0xFA11_0001),
+            Uuid::from_u128(0xFA11_0002),
+            Uuid::from_u128(0xFA11_0003),
+            Uuid::from_u128(0xFA11_0004),
+        );
+
+        // Unrestricted: only the wall gate applies, no lighting or mask required.
+        let mut ws = wdoc(world_id, ws_id, "world-settings");
+        ws.owner = Some(gm.user_id);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": false, "fog": false,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        room.publish(&repo, &gm, vec![Operation::Create { doc: ws }], 0)
+            .await
+            .unwrap();
+
+        let mut scene = wdoc(world_id, scene_id, "scene");
+        scene.owner = Some(gm.user_id);
+        scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+        room.publish(&repo, &gm, vec![Operation::Create { doc: scene }], 0)
+            .await
+            .unwrap();
+
+        let mut token = wdoc(world_id, token_id, "token");
+        token.parent_id = Some(scene_id);
+        token.owner = Some(p);
+        token.permissions.users.insert(p, DocRole::Owner);
+        token.system = json!({ "x": 50.0, "y": 50.0 });
+        room.publish(&repo, &gm, vec![Operation::Create { doc: token }], 0)
+            .await
+            .unwrap();
+
+        // Horizontal wall at y=100, x ∈ [100,200]. Blocks vertical step (150,50)→(150,150).
+        let mut wall = wdoc(world_id, wall_id, "wall");
+        wall.parent_id = Some(scene_id);
+        wall.owner = Some(gm.user_id);
+        wall.system =
+            json!({ "seg": { "x1": 100, "y1": 100, "x2": 200, "y2": 100 }, "blocksMove": true });
+        room.publish(&repo, &gm, vec![Operation::Create { doc: wall }], 0)
+            .await
+            .unwrap();
+
+        MovementHandle {
+            room,
+            repo,
+            gm,
+            player,
+            world_id,
+            scene_id,
+            token_id,
+            start: (50.0, 50.0),
+            // clear one-step right; used as `lit_goal` and `adj` (corner)
+            lit_goal: (150.0, 50.0),
+            adj: (150.0, 50.0),
+            // wall blocks the step adj→adj2 (beyond wall)
+            adj2: (150.0, 150.0),
+        }
+    }
+
+    /// Current epoch milliseconds for test timestamps.
+    fn now_millis() -> i64 {
+        crate::ws::time::now_millis()
+    }
+
+    #[tokio::test]
+    async fn execute_move_commits_stop_and_returns_render_path() {
+        // "visible" restriction with a light: start (50,50) and the adjacent cell (50,150)
+        // are both within the bright radius (1.5 cells), so the player move is allowed.
+        // The committed ECS position must equal the returned stop.
+        let h = movement_scene("visible", /*with_light=*/ true).await;
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                vec![h.start, h.lit_goal],
+                now_millis(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.render_path.last().copied(), Some(res.stop));
+        // Committed ECS position must equal stop (atomic write invariant).
+        assert_eq!(h.committed_pos(h.token_id).await, res.stop);
+    }
+
+    #[tokio::test]
+    async fn execute_move_rejects_a_moving_token() {
+        // First execute_move succeeds and stamps the moving lock (end epoch in the future).
+        // An immediate second call on the same token must be Forbidden while the lock is held.
+        let h = movement_scene("unrestricted", false).await;
+        let _ = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                vec![h.start, h.adj],
+                now_millis(),
+            )
+            .await
+            .unwrap();
+        // Immediately request again — moving lock end is still in the future.
+        let again = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                vec![h.adj, h.adj2],
+                now_millis(),
+            )
+            .await;
+        assert!(
+            matches!(again, Err(DataError::Forbidden)),
+            "second execute_move on a moving token must be Forbidden"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_move_truncates_at_a_wall_atomically() {
+        // Path: start → corner → beyond_wall. Wall blocks the second step; executor
+        // truncates at corner and commits atomically at that stop.
+        let h = movement_scene_with_wall().await;
+        let corner = h.adj;
+        let beyond_wall = h.adj2;
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                vec![h.start, corner, beyond_wall],
+                now_millis(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.stop, corner,
+            "executor must stop at the last clear cell"
+        );
+        assert_eq!(
+            h.committed_pos(h.token_id).await,
+            corner,
+            "committed position must equal the truncation stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_move_revealed_union_allows_explored_cell() {
+        // Guards the Revealed-union contract: visible_cells ∪ explored must be passed to
+        // the pure executor, not visible_cells alone. A cell that is explored-but-not-
+        // currently-visible must be reachable under Revealed restriction.
+        //
+        // "revealed" scene, light at (50,50) radius 1.5 cells. Target (550,550) = cell (5,5)
+        // is outside the light radius (not in visible_cells). The explored set is seeded to
+        // cover cells (0,0)–(5,5) so visible ∪ explored includes the entire path.
+        let h = movement_scene("revealed", /*with_light=*/ true).await;
+        let cell = 100.0_f64;
+
+        let mut seed = crate::scene::explored::ExploredSet::new();
+        seed.mark_polygons(
+            &[vec![
+                0.0,
+                0.0,
+                6.0 * cell,
+                0.0,
+                6.0 * cell,
+                6.0 * cell,
+                0.0,
+                6.0 * cell,
+            ]],
+            cell,
+        );
+        h.repo
+            .set_explored(h.world_id, h.scene_id, h.player.user_id, &seed.to_bytes())
+            .await
+            .unwrap();
+
+        // Diagonal king-steps from (50,50) to (550,550) — 5 steps, all in the explored zone.
+        let path: Vec<(f64, f64)> = (0..=5)
+            .map(|i| (50.0 + i as f64 * 100.0, 50.0 + i as f64 * 100.0))
+            .collect();
+
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                path.clone(),
+                now_millis(),
+            )
+            .await
+            .unwrap();
+
+        // If the union was correctly applied the token reaches the explored-but-dark goal.
+        assert_eq!(
+            res.stop,
+            *path.last().unwrap(),
+            "revealed union must allow move into explored-but-not-visible cell"
+        );
+        assert_eq!(h.committed_pos(h.token_id).await, res.stop);
     }
 }

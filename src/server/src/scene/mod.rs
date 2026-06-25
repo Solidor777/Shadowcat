@@ -4,8 +4,8 @@
 
 pub mod explored;
 pub mod lighting;
-pub mod movement;
 pub(crate) mod move_exec;
+pub mod movement;
 pub(crate) mod pathfinding;
 pub mod vision;
 
@@ -475,6 +475,19 @@ impl SceneEcs {
         pathfinding::parse_diagonal_rule(s)
     }
 
+    /// Resolved animation token speed in cells/second. World-scoped (no per-scene override;
+    /// mirrors `resolved_diagonal_rule`'s structural guard). Reads
+    /// `world-settings.animation.speedCellsPerSec`; falls back to 6 when the doc is absent or
+    /// structurally incomplete. The floor of 0.001 prevents a zero/negative config from causing
+    /// a division-by-zero in the duration formula.
+    pub(crate) fn resolved_animation_speed(&self) -> f64 {
+        self.validated_world_settings_system()
+            .and_then(|s| s.pointer("/animation/speedCellsPerSec"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(6.0)
+            .max(0.001)
+    }
+
     /// Resolved vision-mode registry. Returns a `BTreeMap` for deterministic key order (mirrors
     /// the plan's Global Constraint on determinism; `.get(id)` works identically for callers).
     /// Fail-closed to the built-in `normal`+`darkvision` seed ONLY when no doc/`modes` is present
@@ -543,10 +556,8 @@ impl SceneEcs {
     /// The token's current committed position `(x, y)` in scene coordinates.
     /// `None` if `token` is not a token entity or has no `(x, y)` in its `system`.
     /// Coupling: `move_exec::execute_move` calls this to verify `path[0]` against the
-    /// authoritative ECS state; the room layer calls it for the same position check
-    /// before dispatching to the executor.
-    // Called by move_exec; allow dead_code until the room layer wires the call.
-    #[allow(dead_code)]
+    /// authoritative ECS state; `Room::execute_move` calls it to read the committed start
+    /// position before dispatching to the executor.
     pub(crate) fn token_position(&self, token: Uuid) -> Option<(f64, f64)> {
         let &e = self.index.get(&token)?;
         let tok = self.world.get::<&SceneEntity>(e).ok()?;
