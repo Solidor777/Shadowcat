@@ -223,7 +223,7 @@
       <label>
         {ctx.t("gameSettings.scene.losRestriction")}
         <select aria-label="gameSettings.scene.losRestriction"
-          value={ssys.vision?.losRestriction === undefined ? "" : ssys.vision.losRestriction ? "true" : "false"}
+          value={ssys.vision?.losRestriction == null ? "" : ssys.vision.losRestriction ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
             setScene("/system/vision/losRestriction", v === "" ? null : v === "true");
@@ -237,7 +237,7 @@
       <label>
         {ctx.t("gameSettings.scene.fog")}
         <select aria-label="gameSettings.scene.fog"
-          value={ssys.vision?.fog === undefined ? "" : ssys.vision.fog ? "true" : "false"}
+          value={ssys.vision?.fog == null ? "" : ssys.vision.fog ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
             setScene("/system/vision/fog", v === "" ? null : v === "true");
@@ -251,7 +251,7 @@
       <label>
         {ctx.t("gameSettings.scene.observerVision")}
         <select aria-label="gameSettings.scene.observerVision"
-          value={ssys.vision?.observerVision === undefined ? "" : ssys.vision.observerVision ? "true" : "false"}
+          value={ssys.vision?.observerVision == null ? "" : ssys.vision.observerVision ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
             setScene("/system/vision/observerVision", v === "" ? null : v === "true");
@@ -266,7 +266,7 @@
       <label>
         {ctx.t("gameSettings.scene.lightingEnabled")}
         <select aria-label="gameSettings.scene.lightingEnabled"
-          value={ssys.lighting?.enabled === undefined ? "" : ssys.lighting.enabled ? "true" : "false"}
+          value={ssys.lighting?.enabled == null ? "" : ssys.lighting.enabled ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
             setScene("/system/lighting/enabled", v === "" ? null : v === "true");

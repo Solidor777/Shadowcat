@@ -16,18 +16,21 @@ export interface EnvironmentLight { color: string; intensity: number; }
 /** Distance-per-cell scale for a scene grid. `unit` is a display label (e.g. "ft", "m"). */
 export interface GridDistance { perCell: number; unit: string; }
 
-/** Per-scene overrides for vision behaviour; absent fields fall back to world defaults. */
+/** Per-scene overrides for vision behaviour; absent fields fall back to world defaults.
+ * Null is a valid wire value: the UI writes null to clear an override; resolveSceneSettings
+ * uses ?? so null and undefined both fall through to the world default. */
 export interface SceneVisionOverrides {
-  losRestriction?: boolean;
-  fog?: boolean;
-  observerVision?: boolean;
-  movementRestriction?: MovementRestriction;
+  losRestriction?: boolean | null;
+  fog?: boolean | null;
+  observerVision?: boolean | null;
+  movementRestriction?: MovementRestriction | null;
 }
-/** Per-scene overrides for lighting; absent fields fall back to world defaults. */
+/** Per-scene overrides for lighting; absent fields fall back to world defaults.
+ * Null is a valid wire value for the same reason as SceneVisionOverrides. */
 export interface SceneLightingOverrides {
-  enabled?: boolean;
-  mode?: LightMode;
-  environment?: EnvironmentLight;
+  enabled?: boolean | null;
+  mode?: LightMode | null;
+  environment?: EnvironmentLight | null;
 }
 
 /** A scene's engine-owned config (M8d §15, extended M10e-1). Dimensions deferred (canvas pans freely). */

@@ -36,9 +36,9 @@ describe("per-scene overrides", () => {
     ]);
   });
 
-  it("selecting a boolean value on a tri-state select writes a real boolean (not string)", async () => {
-    // Verifies FIX A: boolean tri-state coercion — the fog select dispatches `new: true` (boolean),
-    // not "true" (string), when the user picks the enabled option.
+  it("selecting a boolean value on a boolean tri-state select writes a real boolean (not string)", async () => {
+    // Round-trip assertion: the fog select dispatches boolean true (not string "true") when
+    // the user picks the enabled option on a scene with no prior fog override.
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     const scene = buildSceneDoc("w1", {}, "scene1");
@@ -52,8 +52,27 @@ describe("per-scene overrides", () => {
     ]);
   });
 
+  it("selecting inherit on a boolean override that was null dispatches null (not coercing null to false)", async () => {
+    // Exercises the FIX 1 null-as-inherit path: a pre-existing fog=null override must render the
+    // inherit option as selected ("" value), and selecting it again must dispatch null (not boolean
+    // false, which the old === undefined test would have produced for a null wire value).
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    // Pre-populate scene with fog explicitly set to true; selecting inherit clears it with null.
+    const scene = buildSceneDoc("w1", { vision: { fog: true } }, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const sel = screen.getByLabelText("gameSettings.scene.fog") as HTMLSelectElement;
+    // The control must reflect the current override value ("true"); switching to inherit writes null.
+    await fireEvent.change(sel, { target: { value: "" } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/fog", old: null, new: null }] },
+    ]);
+  });
+
   it("selecting inherit on a previously-set enum override dispatches null to clear it", async () => {
-    // Verifies FIX A: inherit is reversible — selecting the blank option writes null so the
+    // Enum (non-boolean) inherit path: selecting the blank option writes null so the
     // nullish-coalesce in resolveSceneSettings falls back to the world default.
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
@@ -62,7 +81,7 @@ describe("per-scene overrides", () => {
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
 
     const sel = screen.getByLabelText("gameSettings.scene.movementRestriction") as HTMLSelectElement;
-    // The control should reflect the current override ("unrestricted"); selecting "" clears it.
+    // The control reflects the current override ("unrestricted"); selecting "" clears it to null.
     await fireEvent.change(sel, { target: { value: "" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
