@@ -289,7 +289,20 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > is COSMETIC — fog stays the secrecy gate; hint never widens visibility. Two deferrals logged to
 > `POST_WORK_FINDINGS.md` (blur-not-gradients + desaturate overlay approximation).
 > Plan: `docs/superpowers/plans/2026-06-25-m10e-3-client-lighting-render.md`.
-> **Next = M10e-4** (movement restriction). M10f (continuous pathfinding) + M10g (regions) resume after.
+> **M10e-4 DONE** (movement restriction): server-authoritative gate at the M9 `Room::publish`
+> chokepoint. A non-GM token move whose supercover cells aren't all inside the user's visibility
+> mask is rejected (`DataError::Forbidden`, before the write, no seq) — `visible` (current mask) /
+> `revealed` (mask ∪ `get_explored`) / `unrestricted` (walls only); GM exempt; entire-move
+> (supercover) not just endpoint; `partialCellLeniency` selects strict(center) vs lenient(corner)
+> rasterization. New `scene/movement.rs` `supercover_cells` (DoS-capped, fail-closed); `visible_cells`
+> gate mask reuses the egress `player_lit_mask` primitives (`cell_visible`/`lighting_inputs`/
+> `source_los_poly`/`point_qualifies`) so the gate mask **equals** the egress secrecy mask (spec §13,
+> parity-tested across env/global-illumination/darkvision/LOS+wall); `get_explored` lifted to the
+> `Repository` trait. SDD-executed (5 tasks, per-task two-reviewer gate + whole-branch buddy-check
+> CONVERGED PASS, zero Critical/Important); merged --no-ff to LOCAL main; full server suite green.
+> Plan: `docs/superpowers/plans/2026-06-25-m10e-4-movement-restriction.md`.
+> **Next = M10e-6** (grid A* pathfinder; consumes the same mask); **M10e-5** (movement animation)
+> anytime. M10f (continuous pathfinding) + M10g (regions) resume after.
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 

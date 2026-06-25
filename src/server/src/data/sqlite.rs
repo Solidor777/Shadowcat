@@ -1407,6 +1407,12 @@ impl Repository for SqliteRepository {
 
         Ok(SearchPage { hits, next_cursor })
     }
+
+    async fn get_explored(&self, scene: Uuid, user: Uuid) -> Result<Option<Vec<u8>>, DataError> {
+        // Delegate to the concrete method on SqliteRepository (same query, exposed
+        // on the trait so Room::publish can call it through &dyn Repository).
+        SqliteRepository::get_explored(self, scene, user).await
+    }
 }
 
 /// Settings key holding a world's default capability grants (JSON).

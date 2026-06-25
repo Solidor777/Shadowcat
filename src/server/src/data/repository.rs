@@ -84,4 +84,9 @@ pub trait Repository: Send + Sync {
         limit: u32,
         cursor: Option<i64>,
     ) -> Result<crate::data::search::SearchPage, DataError>;
+
+    /// The player's serialized explored-cell blob for a scene, or `None` when unexplored.
+    /// Per-(scene, user) secret memory — never broadcast; used by the M10e-4 movement gate
+    /// (`Revealed` mode) to union the explored set with the live visibility mask.
+    async fn get_explored(&self, scene: Uuid, user: Uuid) -> Result<Option<Vec<u8>>, DataError>;
 }

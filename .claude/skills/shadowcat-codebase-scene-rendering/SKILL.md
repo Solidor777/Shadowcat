@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-scene-rendering
-description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, or scene-tools (place/select/move/draw/template/measure/ping). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, lighting, the server visibility/lit mask, movement restriction (the Room::publish move gate, supercover, visible_cells), or scene-tools (place/select/move/draw/template/measure/ping). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Scene & Rendering
@@ -22,7 +22,18 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `player_vision_polygons(user_id)`, `player_lit_mask(user_id)` (the M10e-2 lighting-aware mask →
   `LitScene` cells), and the fail-closed server resolvers `resolve_scene`/`resolved_bands`/
   `resolved_vision_modes`/`token_vision_floors` (mirror scene-docs.ts + actor.ts `resolveTokenActor`
-  precedence) plus `scene_lights`/`light_walls` accessors.
+  precedence) plus `scene_lights`/`light_walls` accessors. **Movement gate (M10e-4):**
+  `visible_cells(user, scene, lenient)` is the move-gate mask — under strict (center) sampling it
+  EQUALS `player_lit_mask`'s cells (spec §13) because both share `cell_visible` / `lighting_inputs` /
+  `source_los_poly` / `point_qualifies`; `lenient` adds the 4 corners (a superset, never a
+  zero-overlap cell). `resolve_scene` also yields `movement_restriction`
+  (`MovementRestriction::{Visible,Revealed,Unrestricted}`, scene-overridable, fail-closed to `Visible`)
+  + `partial_cell_leniency` (world-only).
+- `src/server/src/scene/movement.rs` — pure `supercover_cells(a0, a1, cell) -> Option<BTreeSet<(i32,i32)>>`
+  (M10e-4): every cell the move segment crosses (supercover, not a thin line — an exact corner crossing
+  emits BOTH flanking cells so a diagonal can't thread an unseen cell). `None` ⇒ caller fails closed
+  (`cell<=0.0` / non-finite endpoint / span > `MAX_MOVE_CELLS`). Clean-room (Amanatides–Woo extension);
+  relative-epsilon corner test (over-include is the safe direction).
 - `src/server/src/scene/vision.rs` — raycast `visibility_polygon(viewpoint, walls, bound)`,
   `bound_for(...)`, `Seg`/`Rect`/`P`, `point_in_poly` (shared). Public-source computational geometry only (ARCHITECTURE §7).
 - `src/server/src/scene/lighting.rs` — pure illumination (M10e-2, no I/O — callers pass parsed
@@ -68,6 +79,16 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - **Vision is server-authoritative, no client prediction** (ARCHITECTURE §2 invariant 3); movement that
   crosses a `blocksMove` wall is rejected server-side before the write — validate the **post-image**
   position, not just the pre-move one [[m9-progress]].
+- **Movement restriction is server-authoritative at the same gate (M10e-4).** In `Room::publish`'s
+  non-GM block, AFTER the M9a `blocks_move` wall check, a move is rejected (`DataError::Forbidden`,
+  before `apply_intent` — no seq consumed; client rolls back) unless the **entire** move's supercover
+  cells lie in the user's mask: `Visible` ⇒ `visible_cells`; `Revealed` ⇒ `visible_cells ∪
+  get_explored` (explored is center-sampled by construction — the union only ever ENLARGES, so the
+  asymmetry is fail-safe); `Unrestricted` ⇒ walls only. GM exempt. **The gate mask is the SAME mask as
+  egress** (`visible_cells` strict ≡ `player_lit_mask`) — never fork the per-cell decision (spec §13).
+  Fail-closed on empty mask / `supercover_cells`→None / `get_explored` Err. `get_explored` is on the
+  `Repository` trait; the per-`(user,scene)` mask + explored blob are memoized within one publish, and
+  the `get_explored().await` runs only AFTER the `scene.read()` guard drops (no lock across await).
 - **Bound recursive walks over self-FK (parent_id) tables with a visited-set** [[m8a-execution-state]].
 - **Scene-settings resolvers are fail-closed and inheritance-layered**: `resolveSceneSettings`
   resolves built-in default < `world-settings` doc < per-scene override, never throws (structural

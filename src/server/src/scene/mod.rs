@@ -4,6 +4,7 @@
 
 pub mod explored;
 pub mod lighting;
+pub mod movement;
 pub mod vision;
 
 use std::collections::{BTreeMap, HashMap};
@@ -21,8 +22,28 @@ pub enum LightMode {
     EnvironmentLight,
 }
 
-/// The resolved per-scene lighting/vision settings the mask needs (subset of the client
-/// `ResolvedSceneSettings`; movement/pathfinding/animation fields are resolved in later checkpoints).
+/// Per-scene movement gate mode. Mirrors `MovementRestriction` in `scene-docs.ts`.
+/// `Visible` = move cells must be currently visible; `Revealed` = visible ∪ explored memory;
+/// `Unrestricted` = walls only (the M9a gate alone).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MovementRestriction {
+    Visible,
+    Revealed,
+    Unrestricted,
+}
+
+/// Parse a movement-restriction string; any unknown/missing value fails closed to `Visible`
+/// (the most restrictive non-frozen mode — never silently widens to `Unrestricted`).
+fn parse_movement_restriction(s: &str) -> MovementRestriction {
+    match s {
+        "revealed" => MovementRestriction::Revealed,
+        "unrestricted" => MovementRestriction::Unrestricted,
+        _ => MovementRestriction::Visible,
+    }
+}
+
+/// The resolved per-scene lighting/vision/movement settings (subset of the client
+/// `ResolvedSceneSettings`; pathfinding/animation fields are resolved in later checkpoints).
 #[derive(Clone, Debug)]
 pub struct ResolvedScene {
     pub los_restriction: bool,
@@ -32,6 +53,8 @@ pub struct ResolvedScene {
     pub light_mode: LightMode,
     pub env_color: u32,
     pub env_intensity: f64,
+    pub movement_restriction: MovementRestriction,
+    pub partial_cell_leniency: bool,
 }
 
 /// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
@@ -345,6 +368,16 @@ impl SceneEcs {
             .and_then(|s| s.pointer("/environment/intensity"))
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
+        // movementRestriction: scene `vision.movementRestriction` ?? world ?? "visible".
+        let d_move = ws_scene
+            .and_then(|s| s.get("movementRestriction"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("visible");
+        // partialCellLeniency: world-only (no per-scene override; mirrors `d.scene.partialCellLeniency`).
+        let d_lenient = ws_scene
+            .and_then(|s| s.get("partialCellLeniency"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         // Scene override layer (per-scene `vision`/`lighting`; null/absent ⇒ inherit).
         let scene_sys = self
@@ -375,6 +408,12 @@ impl SceneEcs {
             .and_then(|s| s.pointer("/lighting/environment/intensity"))
             .and_then(|v| v.as_f64())
             .unwrap_or(d_env_int);
+        // Scene may override movementRestriction (string); null/absent ⇒ inherit world. Mirrors
+        // `v.movementRestriction ?? d.scene.movementRestriction`. partialCellLeniency has no scene override.
+        let move_str = s
+            .and_then(|s| s.pointer("/vision/movementRestriction"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(d_move);
 
         ResolvedScene {
             los_restriction: los,
@@ -388,6 +427,8 @@ impl SceneEcs {
             },
             env_color: parse_hex_color(env_color),
             env_intensity: env_int.clamp(0.0, 1.0),
+            movement_restriction: parse_movement_restriction(move_str),
+            partial_cell_leniency: d_lenient,
         }
     }
 
@@ -761,6 +802,37 @@ impl SceneEcs {
         out
     }
 
+    /// Scene-shared lighting/wall inputs for the visibility mask. Computed once per scene per
+    /// dispatch and reused for every vision source via `lighting_inputs`. `all_bright`
+    /// short-circuits light raycasts under lighting-off or globalIllumination (spec §3/§6).
+    pub(crate) fn lighting_inputs(&self, scene: Uuid, settings: &ResolvedScene) -> LightingInputs {
+        let all_bright = !settings.lighting_enabled
+            || matches!(settings.light_mode, LightMode::GlobalIllumination);
+        let lights = if all_bright {
+            Vec::new()
+        } else {
+            self.scene_lights(scene)
+        };
+        let light_walls = if all_bright {
+            Vec::new()
+        } else {
+            self.light_walls(scene)
+        };
+        let lit_polys: Vec<Vec<vision::P>> = lights
+            .iter()
+            .map(|l| {
+                let b = vision::bound_for(l.pos, &light_walls, VISION_BOUND_MARGIN);
+                vision::visibility_polygon(l.pos, &light_walls, b)
+            })
+            .collect();
+        LightingInputs {
+            all_bright,
+            lights,
+            lit_polys,
+            sight_walls: self.sight_walls(scene),
+        }
+    }
+
     /// The per-player lighting-aware visibility mask: per scene, the cells the user can currently
     /// see = LOS-cells ∩ (illumination ≥ vision floor ∨ darkvision-in-range), each tagged with its
     /// illumination band + tint. Vision sources = owned tokens ∪ (observerVision ? Observer-tier
@@ -864,45 +936,16 @@ impl SceneEcs {
             if cell <= 0.0 {
                 continue;
             }
-            let sight_walls = self.sight_walls(scene);
             // Lighting inputs: under globalIllumination or lighting-off, every LOS cell is bright;
             // else compute per-cell from lights (occluded by blocksLight) + environment.
-            let all_bright = !settings.lighting_enabled
-                || matches!(settings.light_mode, LightMode::GlobalIllumination);
-            let lights = if all_bright {
-                Vec::new()
-            } else {
-                self.scene_lights(scene)
-            };
-            let light_walls = if all_bright {
-                Vec::new()
-            } else {
-                self.light_walls(scene)
-            };
-            let lit_polys: Vec<Vec<vision::P>> = lights
-                .iter()
-                .map(|l| {
-                    let b = vision::bound_for(l.pos, &light_walls, VISION_BOUND_MARGIN);
-                    vision::visibility_polygon(l.pos, &light_walls, b)
-                })
-                .collect();
+            let li = self.lighting_inputs(scene, settings);
 
             let entry = per_scene
                 .entry(scene)
                 .or_insert_with(|| (cell, BTreeMap::new()));
             for src in sources.iter().filter(|s| s.scene == scene) {
                 // LOS polygon for this source (or, LOS off, the whole bound box as a polygon).
-                let b = vision::bound_for(src.vp, &sight_walls, VISION_BOUND_MARGIN);
-                let poly = if settings.los_restriction {
-                    vision::visibility_polygon(src.vp, &sight_walls, b)
-                } else {
-                    vec![
-                        (b.minx, b.miny),
-                        (b.maxx, b.miny),
-                        (b.maxx, b.maxy),
-                        (b.minx, b.maxy),
-                    ]
-                };
+                let poly = source_los_poly(src.vp, &li.sight_walls, settings.los_restriction);
                 if poly.len() < 3 {
                     continue;
                 }
@@ -936,7 +979,7 @@ impl SceneEcs {
                         // Spec §3/§6: lighting OFF ⇒ all-bright untinted; globalIllumination ⇒
                         // all-bright tinted by the environment. level=1.0 so every vision floor
                         // (incl. normal "dim") passes — every LOS cell is visible.
-                        let cl = if all_bright {
+                        let cl = if li.all_bright {
                             crate::scene::lighting::CellLight {
                                 level: 1.0,
                                 tint: if settings.lighting_enabled {
@@ -950,15 +993,16 @@ impl SceneEcs {
                                 (cx, cy),
                                 settings.env_intensity,
                                 settings.env_color,
-                                &lights,
-                                &lit_polys,
+                                &li.lights,
+                                &li.lit_polys,
                                 cell,
                             )
                         };
                         let dist_cells =
                             (((cx - src.vp.0).powi(2) + (cy - src.vp.1).powi(2)).sqrt()) / cell;
                         // Lowest applicable floor decides visibility; highest applicable floor decides the hint.
-                        let mut visible_floor = f64::INFINITY; // min admitting floor → does the cell show at all
+                        // `cell_visible` computes the same min-floor-over-in-range-modes decision
+                        // and is reused verbatim by the movement gate (spec §13 anti-drift).
                         let mut admit_floor = f64::NEG_INFINITY; // max admitting floor → which mode's hint wins
                         let mut admit_hint: Option<String> = None;
                         for (fmin, range, hint) in &src.floors {
@@ -966,7 +1010,6 @@ impl SceneEcs {
                             if !in_range {
                                 continue;
                             }
-                            visible_floor = visible_floor.min(*fmin);
                             if cl.level >= *fmin {
                                 // Highest admitting floor wins; on a tie, None (a normal-equivalent perception) wins.
                                 let take = *fmin > admit_floor
@@ -979,7 +1022,7 @@ impl SceneEcs {
                                 }
                             }
                         }
-                        if visible_floor.is_finite() && cl.level >= visible_floor {
+                        if cell_visible(&src.floors, cl.level, dist_cells) {
                             let band = crate::scene::lighting::band_index(&bands, cl.level);
                             let slot = entry.1.entry((i, j)).or_insert((
                                 cl.level,
@@ -1021,6 +1064,151 @@ impl SceneEcs {
             .collect()
     }
 
+    /// The set of cells visible to `user` in `scene` for the movement gate. Reuses the exact
+    /// egress primitives (`lighting_inputs`, `source_los_poly`, `cell_visible`) so it agrees with
+    /// the secrecy mask (spec §13). `lenient` selects the rasterization rule: strict samples the
+    /// cell CENTER only (≡ `player_lit_mask`); lenient also samples the four corners, so a cell
+    /// whose vision polygon merely overlaps it counts — a superset, never extending past polygon
+    /// overlap. Empty ⇒ no in-scene vision source for this user (fail closed).
+    pub fn visible_cells(
+        &self,
+        user: Uuid,
+        scene: Uuid,
+        lenient: bool,
+    ) -> std::collections::BTreeSet<(i32, i32)> {
+        use std::collections::BTreeSet;
+        let mut out: BTreeSet<(i32, i32)> = BTreeSet::new();
+        let settings = self.resolve_scene(scene);
+        let cell = self
+            .scene_grid_sizes()
+            .get(&scene)
+            .copied()
+            .unwrap_or(100.0);
+        if cell <= 0.0 {
+            return out;
+        }
+
+        // Gather this user's vision sources in THIS scene (owner ∪ observer-tier when
+        // observerVision). Mirrors player_lit_mask's source gather, scene-filtered.
+        struct Src {
+            vp: vision::P,
+            floors: Vec<(f64, f64, Option<String>)>,
+        }
+        let mut sources: Vec<Src> = Vec::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type != "token" || e.doc.parent_id != Some(scene) {
+                continue;
+            }
+            let owns = e.doc.owner == Some(user);
+            let is_source = owns
+                || (settings.observer_vision && {
+                    let role = e
+                        .doc
+                        .permissions
+                        .users
+                        .get(&user)
+                        .copied()
+                        .unwrap_or(e.doc.permissions.default);
+                    role <= crate::data::document::DocRole::Observer
+                });
+            if !is_source {
+                continue;
+            }
+            if let (Some(x), Some(y)) = (sys_f64(&e.doc, "/x"), sys_f64(&e.doc, "/y")) {
+                sources.push(Src {
+                    vp: (x, y),
+                    floors: self.token_vision_floors(&e.doc),
+                });
+            }
+        }
+        if sources.is_empty() {
+            return out;
+        }
+
+        // Scene-shared lighting inputs (once), then per-source per-cell test.
+        let li = self.lighting_inputs(scene, &settings);
+        for src in &sources {
+            let poly = source_los_poly(src.vp, &li.sight_walls, settings.los_restriction);
+            if poly.len() < 3 {
+                continue;
+            }
+            let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+            for &(x, y) in &poly {
+                minx = minx.min(x);
+                miny = miny.min(y);
+                maxx = maxx.max(x);
+                maxy = maxy.max(y);
+            }
+            // Lenient samples corners, so a cell just outside the center-bbox can still qualify:
+            // expand the scan by one cell each side under leniency.
+            let pad = if lenient { 1 } else { 0 };
+            let i0 = (minx / cell).floor() as i32 - pad;
+            let i1 = (maxx / cell).floor() as i32 + pad;
+            let j0 = (miny / cell).floor() as i32 - pad;
+            let j1 = (maxy / cell).floor() as i32 + pad;
+            let w = i1 as i64 - i0 as i64 + 1;
+            let h = j1 as i64 - j0 as i64 + 1;
+            if w.saturating_mul(h) > crate::scene::explored::MAX_CELLS_PER_POLYGON {
+                tracing::warn!("visible_cells scan exceeds cap; skipping source");
+                continue;
+            }
+            for i in i0..=i1 {
+                for j in j0..=j1 {
+                    if out.contains(&(i, j)) {
+                        continue;
+                    }
+                    // Strict: center only. Lenient: center first (so §13 strict cells are always
+                    // included), then corners if center fails — a cell whose polygon merely clips
+                    // a corner still qualifies under leniency.
+                    let center = ((i as f64 + 0.5) * cell, (j as f64 + 0.5) * cell);
+                    let corners = [
+                        (i as f64 * cell, j as f64 * cell),
+                        ((i + 1) as f64 * cell, j as f64 * cell),
+                        (i as f64 * cell, (j + 1) as f64 * cell),
+                        ((i + 1) as f64 * cell, (j + 1) as f64 * cell),
+                    ];
+                    let mut found = false;
+                    if lenient {
+                        // Check center first, then corners.
+                        if vision::point_in_poly(&poly, center)
+                            && point_qualifies(center, src.vp, &src.floors, &settings, &li, cell)
+                        {
+                            found = true;
+                        }
+                        if !found {
+                            for &corner in &corners {
+                                if vision::point_in_poly(&poly, corner)
+                                    && point_qualifies(
+                                        corner,
+                                        src.vp,
+                                        &src.floors,
+                                        &settings,
+                                        &li,
+                                        cell,
+                                    )
+                                {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        // Strict: center only (mirrors player_lit_mask exactly).
+                        if vision::point_in_poly(&poly, center)
+                            && point_qualifies(center, src.vp, &src.floors, &settings, &li, cell)
+                        {
+                            found = true;
+                        }
+                    }
+                    if found {
+                        out.insert((i, j));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Engine-owned movement collision (M9a, the second ARCHITECTURE #6 geometric
     /// exception). True if the move segment `a0→a1` crosses any `blocksMove` wall in `scene`.
     /// A no-op move (`a0 == a1`) never blocks.
@@ -1053,6 +1241,95 @@ impl SceneEcs {
             }
         }
         false
+    }
+}
+
+/// Scene-shared lighting/wall inputs for the visibility mask. Computed once per scene per
+/// dispatch and reused for every vision source. `all_bright` short-circuits light raycasts
+/// under lighting-off or globalIllumination (spec §3/§6).
+pub(crate) struct LightingInputs {
+    pub(crate) all_bright: bool,
+    pub(crate) lights: Vec<lighting::Light>,
+    pub(crate) lit_polys: Vec<Vec<vision::P>>,
+    pub(crate) sight_walls: Vec<vision::Seg>,
+}
+
+/// Whether a single sample `point` (already known to lie inside the LOS polygon) qualifies a
+/// cell as visible. Computes illumination (mirroring `player_lit_mask`'s all_bright arm exactly)
+/// and delegates to `cell_visible`. This is the ONE canonical place the per-point illumination +
+/// floor decision is made, shared by all three sampling arms of `visible_cells` (lenient-center,
+/// lenient-corner, strict-center) to prevent the §13 anti-drift hazard: if the decision logic
+/// were inlined separately in each arm, a future edit could silently fork the gate mask from the
+/// egress mask.
+///
+/// INVARIANT (§13): the all_bright tint expression `if lighting_enabled {env_color} else {0}`
+/// must stay identical to `player_lit_mask`'s copy. `cell_visible` reads only `level` today, but
+/// tint is passed through so the two masks can never structurally diverge even if tint gains
+/// semantics later.
+fn point_qualifies(
+    point: (f64, f64),
+    src_vp: (f64, f64),
+    floors: &[(f64, f64, Option<String>)],
+    settings: &ResolvedScene,
+    li: &LightingInputs,
+    cell: f64,
+) -> bool {
+    let cl = if li.all_bright {
+        crate::scene::lighting::CellLight {
+            level: 1.0,
+            tint: if settings.lighting_enabled {
+                settings.env_color
+            } else {
+                0
+            },
+        }
+    } else {
+        crate::scene::lighting::cell_illumination(
+            point,
+            settings.env_intensity,
+            settings.env_color,
+            &li.lights,
+            &li.lit_polys,
+            cell,
+        )
+    };
+    let dist_cells = (((point.0 - src_vp.0).powi(2) + (point.1 - src_vp.1).powi(2)).sqrt()) / cell;
+    cell_visible(floors, cl.level, dist_cells)
+}
+
+/// Per-cell visibility decision shared by `player_lit_mask` (egress/secrecy gate) and
+/// `visible_cells` (movement gate). INVARIANT: identical for both so the move gate never
+/// forbids a shipped-visible cell nor permits an unshipped one (spec §13). A cell is visible iff
+/// some in-range vision mode's illumination floor is met. `floors`: `(floor_min, range_cells,
+/// hint)`; `range == 0.0` ⇒ unbounded. Returns false when no mode is in range (fail closed).
+fn cell_visible(floors: &[(f64, f64, Option<String>)], cl_level: f64, dist_cells: f64) -> bool {
+    let mut min_floor = f64::INFINITY;
+    for (fmin, range, _hint) in floors {
+        if *range == 0.0 || dist_cells <= *range {
+            min_floor = min_floor.min(*fmin);
+        }
+    }
+    min_floor.is_finite() && cl_level >= min_floor
+}
+
+/// The LOS polygon for one vision source: the raycast visibility polygon when `los_restriction`
+/// is on, else the whole bound box as a rectangle (whole-scene visible). Source: M9 raycast
+/// (`vision::visibility_polygon`).
+fn source_los_poly(
+    vp: vision::P,
+    sight_walls: &[vision::Seg],
+    los_restriction: bool,
+) -> Vec<vision::P> {
+    let b = vision::bound_for(vp, sight_walls, VISION_BOUND_MARGIN);
+    if los_restriction {
+        vision::visibility_polygon(vp, sight_walls, b)
+    } else {
+        vec![
+            (b.minx, b.miny),
+            (b.maxx, b.miny),
+            (b.maxx, b.maxy),
+            (b.minx, b.maxy),
+        ]
     }
 }
 
@@ -1991,6 +2268,117 @@ mod tests {
         assert!(floors.iter().any(|(_, _, h)| h.is_none()));
     }
 
+    // --- Test helpers for movement-restriction resolution tests ---
+
+    /// Set `world_settings` to a doc whose `system` is `json_system` (test-only).
+    /// Mirrors how `room.rs` builds a world-settings config doc.
+    #[cfg(test)]
+    impl SceneEcs {
+        pub(crate) fn set_world_settings_for_test(&mut self, json_system: serde_json::Value) {
+            let mut d = crate::data::document::tests::world_scoped_doc(
+                Uuid::from_u128(9),
+                Uuid::from_u128(100),
+                "world-settings",
+            );
+            d.system = json_system;
+            self.world_settings = Some(d);
+        }
+
+        pub(crate) fn insert_scene_for_test(
+            &mut self,
+            scene_id: Uuid,
+            json_system: serde_json::Value,
+        ) {
+            let mut d = crate::data::document::tests::world_scoped_doc(
+                Uuid::from_u128(9),
+                scene_id,
+                "scene",
+            );
+            d.system = json_system;
+            // Remove stale entity if re-inserting.
+            if let Some(old_e) = self.index.remove(&scene_id) {
+                let _ = self.world.despawn(old_e);
+            }
+            let e = self.world.spawn((SceneEntity { doc: d },));
+            self.index.insert(scene_id, e);
+        }
+    }
+
+    #[test]
+    fn resolve_scene_movement_restriction_defaults_to_visible_and_lenient() {
+        // No world-settings doc, no scene override → built-in defaults.
+        let ecs = SceneEcs::new();
+        let r = ecs.resolve_scene(Uuid::from_u128(1));
+        assert_eq!(r.movement_restriction, MovementRestriction::Visible);
+        assert!(r.partial_cell_leniency);
+    }
+
+    #[test]
+    fn resolve_scene_movement_restriction_world_override_and_leniency_off() {
+        use serde_json::json;
+        let mut ecs = SceneEcs::new();
+        // A complete world-settings system (scene+pathfinding+animation) so the structural guard passes.
+        ecs.set_world_settings_for_test(json!({
+            "scene": { "losRestriction": true, "fog": true, "lightingEnabled": true,
+                       "lightMode": "environmentLight", "environment": {"color":"#0a0e1a","intensity":0.0},
+                       "observerVision": false, "movementRestriction": "revealed", "partialCellLeniency": false },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        let r = ecs.resolve_scene(Uuid::from_u128(1));
+        assert_eq!(r.movement_restriction, MovementRestriction::Revealed);
+        assert!(
+            !r.partial_cell_leniency,
+            "partialCellLeniency is world-only and was set false"
+        );
+    }
+
+    #[test]
+    fn resolve_scene_movement_restriction_scene_override_beats_world() {
+        use serde_json::json;
+        let mut ecs = SceneEcs::new();
+        let scene_id = Uuid::from_u128(7);
+        ecs.set_world_settings_for_test(json!({
+            "scene": { "movementRestriction": "visible", "partialCellLeniency": true },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        // Scene overrides vision.movementRestriction to "unrestricted".
+        ecs.insert_scene_for_test(
+            scene_id,
+            json!({
+                "grid": { "kind": "square", "size": 100 },
+                "vision": { "movementRestriction": "unrestricted" }
+            }),
+        );
+        let r = ecs.resolve_scene(scene_id);
+        assert_eq!(r.movement_restriction, MovementRestriction::Unrestricted);
+        // partialCellLeniency has NO scene override → still the world default (true here).
+        assert!(r.partial_cell_leniency);
+    }
+
+    #[test]
+    fn resolve_scene_movement_restriction_null_override_inherits_world() {
+        use serde_json::json;
+        let mut ecs = SceneEcs::new();
+        let scene_id = Uuid::from_u128(8);
+        ecs.set_world_settings_for_test(json!({
+            "scene": { "movementRestriction": "revealed", "partialCellLeniency": true },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        // null clears the override → inherit world "revealed" (mirrors `?? d.scene.movementRestriction`).
+        ecs.insert_scene_for_test(
+            scene_id,
+            json!({
+                "grid": { "kind": "square", "size": 100 },
+                "vision": { "movementRestriction": null }
+            }),
+        );
+        let r = ecs.resolve_scene(scene_id);
+        assert_eq!(r.movement_restriction, MovementRestriction::Revealed);
+    }
+
     #[test]
     fn lit_mask_suppresses_hint_when_normal_floor_wins_in_bright_cell() {
         use serde_json::json;
@@ -2034,6 +2422,267 @@ mod tests {
         assert!(
             lit_cells.iter().all(|(_, _, _, _, h)| h.is_none()),
             "normal-floor wins in bright cell: desaturate hint must be suppressed (None)"
+        );
+    }
+
+    #[test]
+    fn cell_visible_predicate_honors_floor_and_range() {
+        // floors: (floor_min_value, range_cells, render_hint). A normal mode (floor "dim" ~0.34),
+        // range 0 = unbounded. Lit level 1.0 ≥ 0.34 → visible; 0.1 < 0.34 → not.
+        let normal = vec![(0.34_f64, 0.0_f64, None)];
+        assert!(cell_visible(&normal, 1.0, 5.0));
+        assert!(!cell_visible(&normal, 0.1, 5.0));
+        // Darkvision floor 0.0 within range 6 admits an unlit cell; beyond range it does not.
+        let dark = vec![(0.0_f64, 6.0_f64, Some("desaturate".into()))];
+        assert!(
+            cell_visible(&dark, 0.0, 3.0),
+            "unlit but within darkvision range"
+        );
+        assert!(
+            !cell_visible(&dark, 0.0, 9.0),
+            "beyond darkvision range, unlit → not visible"
+        );
+        // No in-range mode → not visible (fail closed).
+        assert!(!cell_visible(&[], 1.0, 1.0));
+    }
+
+    /// Builds a SceneEcs with one scene (id 10), one player-owned token at (50, 50), and one
+    /// enabled white light at (50, 50) with bright=3 / dim=6 cells. The token has normal vision
+    /// (default), so cells within the lit radius are visible. Returns `(ecs, user, scene_id)`.
+    fn scene_with_lit_player_token() -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            }),
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
+        (ecs, user, scene_id)
+    }
+
+    /// Builds a SceneEcs whose light boundary crosses through cell (1,1), guaranteeing a
+    /// lenient-only cell. Cell (1,1) has center at (150, 150), distance ≈ 141.4 from the light
+    /// at (50, 50) — just beyond `dimRadius = 140` (1.4 cells × 100 units/cell), so
+    /// `cell_illumination` returns 0 for the center and strict rejects it. Corner (100, 100) is
+    /// at distance ≈ 70.7 < 140 → illuminated → lenient admits it. No sight walls + los_restriction
+    /// defaults false → the bound-box polygon covers all cells, so the LOS test never rejects a
+    /// corner. Returns `(ecs, user, scene_id)`.
+    fn scene_with_boundary_crossing_light() -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        // dimRadius = 1.4 cells (140 scene units): center of (1,1) at distance ≈141.4 > 140 (strict miss);
+        // corner (100,100) at distance ≈70.7 < 140 (lenient hit).
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 0.5, "dimRadius": 1.4, "enabled": true
+            }),
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
+        (ecs, user, scene_id)
+    }
+
+    #[test]
+    fn visible_cells_strict_equals_player_lit_mask_cells() {
+        // §13 parity: under strict (center-only) sampling, the movement gate mask must equal the
+        // egress secrecy mask for the scene. Both paths use the same cell_visible predicate and
+        // lighting_inputs, so any divergence is a sampling or illumination bug.
+        let (ecs, user, scene) = scene_with_lit_player_token();
+        let strict: std::collections::BTreeSet<(i32, i32)> = ecs.visible_cells(user, scene, false);
+        let egress: std::collections::BTreeSet<(i32, i32)> = ecs
+            .player_lit_mask(user)
+            .into_iter()
+            .filter(|s| s.scene == scene)
+            .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
+            .collect();
+        assert_eq!(
+            strict, egress,
+            "strict gate mask must equal the egress secrecy mask"
+        );
+        assert!(!strict.is_empty());
+    }
+
+    /// §13 parity helper: asserts `visible_cells(user, scene, false)` == the `(i,j)` set of
+    /// `player_lit_mask(user)` filtered to `scene`, and that neither set is empty (non-vacuous).
+    fn assert_strict_parity(ecs: &SceneEcs, user: Uuid, scene: Uuid) {
+        let strict: std::collections::BTreeSet<(i32, i32)> = ecs.visible_cells(user, scene, false);
+        let egress: std::collections::BTreeSet<(i32, i32)> = ecs
+            .player_lit_mask(user)
+            .into_iter()
+            .filter(|s| s.scene == scene)
+            .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
+            .collect();
+        assert!(
+            !strict.is_empty(),
+            "parity check must be non-vacuous (strict set empty)"
+        );
+        assert!(
+            !egress.is_empty(),
+            "parity check must be non-vacuous (egress set empty)"
+        );
+        assert_eq!(
+            strict, egress,
+            "strict gate mask must equal the egress secrecy mask"
+        );
+    }
+
+    #[test]
+    fn visible_cells_strict_parity_global_illumination() {
+        // §13 parity under globalIllumination: all LOS cells are all_bright. With no placed lights
+        // the all_bright arm fires for both paths, so any divergence would be in the all_bright
+        // branch — this guards it.
+        use serde_json::json;
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        // lightMode = globalIllumination: lighting_enabled true, all cells bright, env tint applied.
+        // No placed lights — confirms the all_bright short-circuit path in both player_lit_mask
+        // and visible_cells fires identically.
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "globalIllumination",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        assert_strict_parity(&ecs, user, scene_id);
+    }
+
+    #[test]
+    fn visible_cells_strict_parity_darkvision() {
+        // §13 parity for a darkvision token in a dark scene (no placed lights, env intensity=0).
+        // The darkvision floor (0.0) admits unlit-but-in-range cells; normal vision would see
+        // nothing. Both paths must agree on exactly those cells.
+        use serde_json::json;
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        // Embedded actor granting darkvision range 6 (mirrors lit_mask_gates_los test pattern).
+        tok.embedded.insert(
+            "actor".into(),
+            vec![{
+                let mut a = doc(99, None, "actor");
+                a.system = json!({ "vision": [{ "mode": "darkvision", "range": 6 }] });
+                a
+            }],
+        );
+        // Dark scene: lighting on, environmentLight, env intensity=0, no lights → only darkvision
+        // cells are visible. losRestriction=false keeps the LOS polygon as the full bound box so
+        // every in-range unlit cell is admitted — the test is purely about the floor/range gate.
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#000000", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        assert_strict_parity(&ecs, user, scene_id);
+    }
+
+    #[test]
+    fn visible_cells_strict_parity_los_restriction_with_occluding_wall() {
+        // §13 parity with losRestriction=true and a blocksSight wall that occludes some cells.
+        // Both paths use source_los_poly (the shared raycast), so any divergence would be in
+        // per-cell sampling AFTER the LOS polygon is built — this guards the occluded-scene path.
+        use serde_json::json;
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        // A blocksSight wall at x=200 (column 2) cuts off the right half of the scene from
+        // the token at (50,50). Combined with a bright light at the token, cells to the left of
+        // the wall are lit+visible; cells beyond the wall are occluded by LOS.
+        let wall = entity_doc(
+            30,
+            10,
+            "wall",
+            json!({ "seg": { "x1": 200, "y1": -200, "x2": 200, "y2": 400 }, "blocksSight": true }),
+        );
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true
+            }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, wall, light], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#000000", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        assert_strict_parity(&ecs, user, scene_id);
+    }
+
+    #[test]
+    fn visible_cells_lenient_is_a_superset_of_strict() {
+        // Uses scene_with_boundary_crossing_light: the light boundary (dimRadius 1.4 cells =
+        // 140 scene units) cuts through cell (1,1). Center (150,150) is ~141.4 units away →
+        // outside dim radius → strict rejects it. Corner (100,100) is ~70.7 units away → inside
+        // dim radius → lenient admits it. This guarantees at least one lenient-only cell, so the
+        // corner-sampling path is live and proven, not vacuously skipped.
+        let (ecs, user, scene) = scene_with_boundary_crossing_light();
+        let strict = ecs.visible_cells(user, scene, false);
+        let lenient = ecs.visible_cells(user, scene, true);
+        // Subset invariant: every strict cell is also in lenient.
+        assert!(
+            strict.iter().all(|c| lenient.contains(c)),
+            "lenient ⊇ strict"
+        );
+        // Strict superset: lenient must contain at least one cell strict does not.
+        assert!(
+            lenient.len() > strict.len(),
+            "lenient must admit at least one corner-only cell not in strict"
+        );
+        // Non-empty difference set: the corner path is proven live.
+        assert!(
+            lenient.difference(&strict).next().is_some(),
+            "difference(lenient, strict) must be non-empty"
+        );
+    }
+
+    #[test]
+    fn visible_cells_empty_when_user_has_no_source_in_scene() {
+        let (ecs, _user, scene) = scene_with_lit_player_token();
+        let stranger = Uuid::from_u128(999);
+        assert!(
+            ecs.visible_cells(stranger, scene, true).is_empty(),
+            "no sources → empty (fail closed)"
         );
     }
 }
