@@ -264,6 +264,10 @@ impl Room {
                         e.insert(set)
                     }
                 };
+                // Invariant: `visible` may be corner-sampled (lenient) while `explored` is
+                // center-sampled by construction (explored.rs). The asymmetry only ever ENLARGES
+                // `visible ∪ explored`, so it is fail-safe — it never over-permits beyond cells
+                // the player currently sees or has genuinely explored.
                 if !move_cells
                     .iter()
                     .all(|c| visible.contains(c) || explored.contains(*c))

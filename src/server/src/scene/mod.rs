@@ -1170,68 +1170,23 @@ impl SceneEcs {
                     let mut found = false;
                     if lenient {
                         // Check center first, then corners.
-                        if vision::point_in_poly(&poly, center) {
-                            // Invariant (§13): mirror player_lit_mask's all_bright arm exactly.
-                            // cell_visible reads level only today, but tint must agree so the gate
-                            // mask can never fork from the egress mask.
-                            let cl = if li.all_bright {
-                                crate::scene::lighting::CellLight {
-                                    level: 1.0,
-                                    tint: if settings.lighting_enabled {
-                                        settings.env_color
-                                    } else {
-                                        0
-                                    },
-                                }
-                            } else {
-                                crate::scene::lighting::cell_illumination(
-                                    center,
-                                    settings.env_intensity,
-                                    settings.env_color,
-                                    &li.lights,
-                                    &li.lit_polys,
-                                    cell,
-                                )
-                            };
-                            let dist_cells = (((center.0 - src.vp.0).powi(2)
-                                + (center.1 - src.vp.1).powi(2))
-                            .sqrt())
-                                / cell;
-                            if cell_visible(&src.floors, cl.level, dist_cells) {
-                                found = true;
-                            }
+                        if vision::point_in_poly(&poly, center)
+                            && point_qualifies(center, src.vp, &src.floors, &settings, &li, cell)
+                        {
+                            found = true;
                         }
                         if !found {
-                            for &(sx, sy) in &corners {
-                                if !vision::point_in_poly(&poly, (sx, sy)) {
-                                    continue;
-                                }
-                                // Invariant (§13): mirror player_lit_mask's all_bright arm exactly.
-                                // cell_visible reads level only today, but tint must agree so the
-                                // gate mask can never fork from the egress mask.
-                                let cl = if li.all_bright {
-                                    crate::scene::lighting::CellLight {
-                                        level: 1.0,
-                                        tint: if settings.lighting_enabled {
-                                            settings.env_color
-                                        } else {
-                                            0
-                                        },
-                                    }
-                                } else {
-                                    crate::scene::lighting::cell_illumination(
-                                        (sx, sy),
-                                        settings.env_intensity,
-                                        settings.env_color,
-                                        &li.lights,
-                                        &li.lit_polys,
+                            for &corner in &corners {
+                                if vision::point_in_poly(&poly, corner)
+                                    && point_qualifies(
+                                        corner,
+                                        src.vp,
+                                        &src.floors,
+                                        &settings,
+                                        &li,
                                         cell,
                                     )
-                                };
-                                let dist_cells =
-                                    (((sx - src.vp.0).powi(2) + (sy - src.vp.1).powi(2)).sqrt())
-                                        / cell;
-                                if cell_visible(&src.floors, cl.level, dist_cells) {
+                                {
                                     found = true;
                                     break;
                                 }
@@ -1239,36 +1194,10 @@ impl SceneEcs {
                         }
                     } else {
                         // Strict: center only (mirrors player_lit_mask exactly).
-                        if vision::point_in_poly(&poly, center) {
-                            // Invariant (§13): mirror player_lit_mask's all_bright arm exactly.
-                            // cell_visible reads level only today, but tint must agree so the gate
-                            // mask can never fork from the egress mask.
-                            let cl = if li.all_bright {
-                                crate::scene::lighting::CellLight {
-                                    level: 1.0,
-                                    tint: if settings.lighting_enabled {
-                                        settings.env_color
-                                    } else {
-                                        0
-                                    },
-                                }
-                            } else {
-                                crate::scene::lighting::cell_illumination(
-                                    center,
-                                    settings.env_intensity,
-                                    settings.env_color,
-                                    &li.lights,
-                                    &li.lit_polys,
-                                    cell,
-                                )
-                            };
-                            let dist_cells = (((center.0 - src.vp.0).powi(2)
-                                + (center.1 - src.vp.1).powi(2))
-                            .sqrt())
-                                / cell;
-                            if cell_visible(&src.floors, cl.level, dist_cells) {
-                                found = true;
-                            }
+                        if vision::point_in_poly(&poly, center)
+                            && point_qualifies(center, src.vp, &src.floors, &settings, &li, cell)
+                        {
+                            found = true;
                         }
                     }
                     if found {
@@ -1323,6 +1252,49 @@ pub(crate) struct LightingInputs {
     pub(crate) lights: Vec<lighting::Light>,
     pub(crate) lit_polys: Vec<Vec<vision::P>>,
     pub(crate) sight_walls: Vec<vision::Seg>,
+}
+
+/// Whether a single sample `point` (already known to lie inside the LOS polygon) qualifies a
+/// cell as visible. Computes illumination (mirroring `player_lit_mask`'s all_bright arm exactly)
+/// and delegates to `cell_visible`. This is the ONE canonical place the per-point illumination +
+/// floor decision is made, shared by all three sampling arms of `visible_cells` (lenient-center,
+/// lenient-corner, strict-center) to prevent the §13 anti-drift hazard: if the decision logic
+/// were inlined separately in each arm, a future edit could silently fork the gate mask from the
+/// egress mask.
+///
+/// INVARIANT (§13): the all_bright tint expression `if lighting_enabled {env_color} else {0}`
+/// must stay identical to `player_lit_mask`'s copy. `cell_visible` reads only `level` today, but
+/// tint is passed through so the two masks can never structurally diverge even if tint gains
+/// semantics later.
+fn point_qualifies(
+    point: (f64, f64),
+    src_vp: (f64, f64),
+    floors: &[(f64, f64, Option<String>)],
+    settings: &ResolvedScene,
+    li: &LightingInputs,
+    cell: f64,
+) -> bool {
+    let cl = if li.all_bright {
+        crate::scene::lighting::CellLight {
+            level: 1.0,
+            tint: if settings.lighting_enabled {
+                settings.env_color
+            } else {
+                0
+            },
+        }
+    } else {
+        crate::scene::lighting::cell_illumination(
+            point,
+            settings.env_intensity,
+            settings.env_color,
+            &li.lights,
+            &li.lit_polys,
+            cell,
+        )
+    };
+    let dist_cells = (((point.0 - src_vp.0).powi(2) + (point.1 - src_vp.1).powi(2)).sqrt()) / cell;
+    cell_visible(floors, cl.level, dist_cells)
 }
 
 /// Per-cell visibility decision shared by `player_lit_mask` (egress/secrecy gate) and
@@ -2540,6 +2512,141 @@ mod tests {
             "strict gate mask must equal the egress secrecy mask"
         );
         assert!(!strict.is_empty());
+    }
+
+    /// §13 parity helper: asserts `visible_cells(user, scene, false)` == the `(i,j)` set of
+    /// `player_lit_mask(user)` filtered to `scene`, and that neither set is empty (non-vacuous).
+    fn assert_strict_parity(ecs: &SceneEcs, user: Uuid, scene: Uuid) {
+        let strict: std::collections::BTreeSet<(i32, i32)> = ecs.visible_cells(user, scene, false);
+        let egress: std::collections::BTreeSet<(i32, i32)> = ecs
+            .player_lit_mask(user)
+            .into_iter()
+            .filter(|s| s.scene == scene)
+            .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
+            .collect();
+        assert!(
+            !strict.is_empty(),
+            "parity check must be non-vacuous (strict set empty)"
+        );
+        assert!(
+            !egress.is_empty(),
+            "parity check must be non-vacuous (egress set empty)"
+        );
+        assert_eq!(
+            strict, egress,
+            "strict gate mask must equal the egress secrecy mask"
+        );
+    }
+
+    #[test]
+    fn visible_cells_strict_parity_global_illumination() {
+        // §13 parity under globalIllumination: all LOS cells are all_bright. With no placed lights
+        // the all_bright arm fires for both paths, so any divergence would be in the all_bright
+        // branch — this guards it.
+        use serde_json::json;
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        // lightMode = globalIllumination: lighting_enabled true, all cells bright, env tint applied.
+        // No placed lights — confirms the all_bright short-circuit path in both player_lit_mask
+        // and visible_cells fires identically.
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "globalIllumination",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        assert_strict_parity(&ecs, user, scene_id);
+    }
+
+    #[test]
+    fn visible_cells_strict_parity_darkvision() {
+        // §13 parity for a darkvision token in a dark scene (no placed lights, env intensity=0).
+        // The darkvision floor (0.0) admits unlit-but-in-range cells; normal vision would see
+        // nothing. Both paths must agree on exactly those cells.
+        use serde_json::json;
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        // Embedded actor granting darkvision range 6 (mirrors lit_mask_gates_los test pattern).
+        tok.embedded.insert(
+            "actor".into(),
+            vec![{
+                let mut a = doc(99, None, "actor");
+                a.system = json!({ "vision": [{ "mode": "darkvision", "range": 6 }] });
+                a
+            }],
+        );
+        // Dark scene: lighting on, environmentLight, env intensity=0, no lights → only darkvision
+        // cells are visible. losRestriction=false keeps the LOS polygon as the full bound box so
+        // every in-range unlit cell is admitted — the test is purely about the floor/range gate.
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#000000", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        assert_strict_parity(&ecs, user, scene_id);
+    }
+
+    #[test]
+    fn visible_cells_strict_parity_los_restriction_with_occluding_wall() {
+        // §13 parity with losRestriction=true and a blocksSight wall that occludes some cells.
+        // Both paths use source_los_poly (the shared raycast), so any divergence would be in
+        // per-cell sampling AFTER the LOS polygon is built — this guards the occluded-scene path.
+        use serde_json::json;
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        // A blocksSight wall at x=200 (column 2) cuts off the right half of the scene from
+        // the token at (50,50). Combined with a bright light at the token, cells to the left of
+        // the wall are lit+visible; cells beyond the wall are occluded by LOS.
+        let wall = entity_doc(
+            30,
+            10,
+            "wall",
+            json!({ "seg": { "x1": 200, "y1": -200, "x2": 200, "y2": 400 }, "blocksSight": true }),
+        );
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true
+            }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, wall, light], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#000000", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        assert_strict_parity(&ecs, user, scene_id);
     }
 
     #[test]
