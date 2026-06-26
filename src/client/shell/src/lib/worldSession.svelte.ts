@@ -23,6 +23,7 @@ import {
   type SceneFrame,
   type SceneSubscription,
   type PathResult,
+  type MoveExecuted,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
@@ -185,6 +186,18 @@ export class WorldSession {
   ): Promise<PathResult> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     return this.#ws.pathfind(scene, start, waypoints, footprintRadius);
+  }
+
+  /** Request server-authoritative move execution for `tokenId` along `path` on
+   * `scene`. Thin delegate to `WsClient.moveRequest`; rejects immediately when
+   * there is no live transport. */
+  moveRequest(
+    scene: string,
+    tokenId: string,
+    path: [number, number][],
+  ): Promise<MoveExecuted> {
+    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    return this.#ws.moveRequest(scene, tokenId, path);
   }
 
   /** Subscribe to a SceneDerived channel. Returns a synchronous handle; the

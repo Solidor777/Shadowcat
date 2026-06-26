@@ -40,6 +40,7 @@ export type {
   WireWelcome,
   SearchPage,
   PathResult,
+  MoveExecuted,
   SubscriptionHandle,
   SceneFrame,
   SceneSubscription,

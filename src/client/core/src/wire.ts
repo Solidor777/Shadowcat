@@ -227,6 +227,19 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     request_id: z.string(),
     message: z.string(),
   }),
+  z.object({
+    type: z.literal("move_executed"),
+    request_id: z.string(),
+    token_id: z.string(),
+    stop: z.tuple([z.number(), z.number()]),
+    render_path: z.array(z.tuple([z.number(), z.number()])),
+    duration_ms: z.number(),
+  }),
+  z.object({
+    type: z.literal("move_error"),
+    request_id: z.string(),
+    message: z.string(),
+  }),
 ]);
 
 export type WireScope = z.infer<typeof ScopeSchema>;
@@ -261,6 +274,13 @@ export type ClientMsg =
       start: [number, number];
       waypoints: [number, number][];
       footprint_radius: number;
+    }
+  | {
+      type: "move_request";
+      request_id: string;
+      scene: string;
+      token_id: string;
+      path: [number, number][];
     };
 
 /** Parse + validate an inbound text frame; `null` on malformed/unknown input. */

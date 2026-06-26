@@ -24,6 +24,15 @@ export interface PathResult {
   cost: number;
 }
 
+/** A resolved move-execution result (WsClient.moveRequest). Wire snake_case fields
+ * are mapped to camelCase: token_id→tokenId, render_path→renderPath, duration_ms→durationMs. */
+export interface MoveExecuted {
+  tokenId: string;
+  stop: [number, number];
+  renderPath: [number, number][];
+  durationMs: number;
+}
+
 /** Handle to an active live search subscription (Core.subscribeSearch). */
 export interface SubscriptionHandle {
   unsubscribe(): void;
@@ -83,11 +92,11 @@ export class WsClient {
    * reconnects so resync resumes from where application left off. */
   private nextExpected = 1;
   private serverOffsetMs = 0;
-  /** In-flight correlated requests (search, pathfind), keyed by request_id. */
+  /** In-flight correlated requests (search, pathfind, moveRequest), keyed by request_id. */
   private pending = new Map<
     string,
     {
-      resolve: (result: SearchPage | PathResult) => void;
+      resolve: (result: SearchPage | PathResult | MoveExecuted) => void;
       reject: (e: Error) => void;
       timer: ReturnType<typeof setTimeout>;
     }
@@ -297,6 +306,29 @@ export class WsClient {
         }
         break;
       }
+      case "move_executed": {
+        const p = this.pending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.pending.delete(msg.request_id);
+          (p.resolve as (r: MoveExecuted) => void)({
+            tokenId: msg.token_id,
+            stop: msg.stop,
+            renderPath: msg.render_path,
+            durationMs: msg.duration_ms,
+          });
+        }
+        break;
+      }
+      case "move_error": {
+        const p = this.pending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.pending.delete(msg.request_id);
+          p.reject(new Error(msg.message));
+        }
+        break;
+      }
       case "search_update": {
         const handler = this.subscriptions.get(msg.request_id);
         if (handler) this.safeEmit(() => handler(msg.hits));
@@ -359,7 +391,7 @@ export class WsClient {
         this.pending.delete(request_id);
         reject(new Error("search request timeout"));
       }, timeoutMs);
-      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult) => void, reject, timer });
+      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult | MoveExecuted) => void, reject, timer });
       this.send({
         type: "search",
         request_id,
@@ -472,8 +504,37 @@ export class WsClient {
         this.pending.delete(request_id);
         reject(new Error("pathfind request timeout"));
       }, timeoutMs);
-      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult) => void, reject, timer });
+      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult | MoveExecuted) => void, reject, timer });
       this.send({ type: "pathfind", request_id, scene, start, waypoints, footprint_radius: footprintRadius });
+    });
+  }
+
+  /**
+   * Issue a correlated move-execution request and resolve with the execution
+   * result when the matching `move_executed` reply arrives. Rejects on a
+   * `move_error` frame or after `timeoutMs`. Pure transport mirror — no client-side
+   * movement logic. Wire field names are snake_case; the resolved value maps them
+   * to camelCase (token_id→tokenId, render_path→renderPath, duration_ms→durationMs).
+   */
+  moveRequest(
+    scene: string,
+    tokenId: string,
+    path: [number, number][],
+    opts: { timeoutMs?: number } = {},
+  ): Promise<MoveExecuted> {
+    const request_id = crypto.randomUUID();
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+    return new Promise<MoveExecuted>((resolve, reject) => {
+      if (!this.transport) {
+        reject(new Error("not connected"));
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.pending.delete(request_id);
+        reject(new Error("move_request timeout"));
+      }, timeoutMs);
+      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult | MoveExecuted) => void, reject, timer });
+      this.send({ type: "move_request", request_id, scene, token_id: tokenId, path });
     });
   }
 

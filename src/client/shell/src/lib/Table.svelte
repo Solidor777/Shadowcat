@@ -30,6 +30,7 @@
     tokenSelection: session.tokenSelection,
     sendPing: (x, y) => session.sendPing(x, y),
     pathfind: (s, st, wp, fr) => session.pathfind(s, st, wp, fr),
+    moveRequest: (s, tid, p) => session.moveRequest(s, tid, p),
     onPing: (cb) => session.onPing(cb),
     leaveWorld,
     logout: async () => {

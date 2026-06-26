@@ -442,4 +442,62 @@ describe("WsClient", () => {
     );
     await expect(p2).rejects.toThrow("unreachable");
   });
+
+  it("moveRequest resolves on move_executed", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+
+    const p = client.moveRequest("scene1", "tok1", [[0, 0], [100, 0]]);
+    const sentFrame = JSON.parse(sent.find((s) => JSON.parse(s).type === "move_request")!);
+    expect(sentFrame.type).toBe("move_request");
+    expect(sentFrame.token_id).toBe("tok1");
+    onMessage(
+      JSON.stringify({
+        type: "move_executed",
+        request_id: sentFrame.request_id,
+        token_id: "tok1",
+        stop: [100, 0],
+        render_path: [[0, 0], [100, 0]],
+        duration_ms: 200,
+      }),
+    );
+    await expect(p).resolves.toEqual({
+      tokenId: "tok1",
+      stop: [100, 0],
+      renderPath: [[0, 0], [100, 0]],
+      durationMs: 200,
+    });
+  });
+
+  it("moveRequest rejects on move_error", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+
+    const p = client.moveRequest("scene1", "tok1", [[0, 0], [100, 0]]);
+    const sentFrame = JSON.parse(sent.find((s) => JSON.parse(s).type === "move_request")!);
+    onMessage(
+      JSON.stringify({
+        type: "move_error",
+        request_id: sentFrame.request_id,
+        message: "move rejected",
+      }),
+    );
+    await expect(p).rejects.toThrow();
+  });
 });
