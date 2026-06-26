@@ -279,6 +279,8 @@ export class WorldSession {
     // MoveStream frame. serverNow() aligns startServerMs to local time for catch-up.
     // Coupling: sceneInteraction.animateSamples no-ops until Stage attaches the engine.
     const ws = this.#ws;
+    // Unsub return discarded: the listener's lifetime equals this WsClient instance
+    // (a fresh WsClient is created per enter() and discarded on leave()).
     this.#ws.onMoveStream((stream) => {
       this.sceneInteraction.animateSamples(
         stream.tokenId,

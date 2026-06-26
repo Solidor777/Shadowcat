@@ -261,5 +261,10 @@ describe("TokenAnimator.animateSamples", () => {
     expect(a.get("t1")).toEqual({ x: 100, y: 200, rotation: 0 });
     expect(a.isHidden("t1")).toBe(false);
     expect(a.tick(16)).toEqual([]); // settled — nothing moves
+    // No permanent suppression: once samplesAnim settles and clears its entry, a later
+    // setTarget retargets normally (the setTarget samplesAnim guard no longer fires).
+    a.setTarget("t1", { x: 200, y: 400, rotation: 0 });
+    a.tick(50);
+    expect(a.get("t1")!.x).toBeGreaterThan(100); // tween toward the new target is running
   });
 });
