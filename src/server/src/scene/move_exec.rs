@@ -5,9 +5,11 @@
 //! - the caller-supplied `visible` mask (M10e-4 gate — skipped for `Unrestricted`),
 //! - a region-arrest hook (M3/M10g stub, always returns false for now).
 //!
-//! Returns the stop cell + the legal prefix render-path.
+//! Returns the stop cell + the legal prefix render-path. `truncated` is true when the
+//! move stops before `path.last()` for any reason (wall, mask, or region-arrest),
+//! including a region-arrest on the final path step.
 //!
-//! INVARIANT (spec §13 / M10e-4 parity): step 2 calls the SAME
+//! INVARIANT (spec §13 / M10e-4 per-cell parity): step 2 calls the SAME
 //! `crate::scene::movement::supercover_cells(prev, next, cell)` and checks
 //! `all ∈ visible` that the M10e-4 gate in `Room::publish` does. The caller
 //! pre-computes `visible` off the ECS read lock (mirroring `publish`'s
@@ -37,7 +39,10 @@ pub(crate) struct MoveOutcome {
     pub stop: (f64, f64),
     /// The legal prefix of the input path that was actually walked: `path[0..=stop_index]`.
     pub render_path: Vec<(f64, f64)>,
-    /// `true` when the move stopped before `path.last()` (wall, mask, or region-arrest).
+    /// `true` when the move stopped before `path.last()` — wall, mask, OR region-arrest,
+    /// including a region-arrest on the FINAL step (where `stop_index == path.len()-1`
+    /// would make the index comparison alone report false; a `stopped_early` bool ensures
+    /// that case is reported correctly).
     // The room layer derives truncation from `stop != path.last()`; the field is
     // read by move_exec unit tests (see tests module). Suppress the dead_code lint
     // so the structural information remains available without cluttering call sites.
@@ -71,19 +76,17 @@ fn region_arrests(_ecs: &SceneEcs, _scene: Uuid, _cell_center: (f64, f64)) -> bo
 /// Walk `path` step by step, validating each step against the wall gate (step 1),
 /// the vision-mask gate (step 2), and the region-arrest hook (step 3).
 ///
-/// # Parity with M10e-4 (`Room::publish`)
+/// # Parity with M10e-4 (`Room::publish`) — per-cell decision only
 ///
-/// The M10e-4 gate (room.rs ~line 199-241) does, per move `a0→a1`:
-/// ```text
-/// 1. if scene.blocks_move(scene_id, a0, a1) → Forbidden
-/// 2. if !Unrestricted:
-///      move_cells = supercover_cells(a0, a1, cell)   // None → Forbidden
-///      if !move_cells.all(|c| visible.contains(c))   // Visible branch
-///          → Forbidden
-/// ```
-/// This executor replicates that decision per step, using the SAME primitives
-/// (`blocks_move`, `supercover_cells`, the pre-computed `visible` set) so the
-/// authoritative path-executor and the legacy single-step gate agree on every cell.
+/// The per-cell decision (step 1 + step 2) uses the SAME primitives as the M10e-4
+/// gate in `Room::publish`: `blocks_move`, `supercover_cells`, and the pre-computed
+/// `visible` set. This executor and the legacy single-step `publish` gate agree on
+/// every cell for every restriction mode.
+///
+/// This executor is additionally STRICTER than `publish` on path shape: it requires
+/// king-step adjacency between every consecutive waypoint pair (≤ 1 cell on each
+/// axis). The `publish` whole-segment gate does not enforce this per-step adjacency.
+///
 /// GM-ness is folded into `restriction == Unrestricted` by the caller (mirroring
 /// `publish`'s `if !Unrestricted { continue }` skip).
 ///
@@ -146,7 +149,11 @@ pub(crate) fn execute_move(
 
     // --- Per-step walk ---
     // `stop_index` tracks the last successfully reached path index; starts at 0 (start cell).
+    // `stopped_early` is set when the loop breaks due to region-arrest: a region-arrest on
+    // the FINAL step sets stop_index == path.len()-1, so the index comparison alone would
+    // report truncated=false — the flag captures that case correctly.
     let mut stop_index = 0usize;
+    let mut stopped_early = false;
     for i in 1..path.len() {
         let prev = path[i - 1];
         let next = path[i];
@@ -159,9 +166,13 @@ pub(crate) fn execute_move(
         }
 
         // Step 1: wall gate — mirrors `publish` line 199: `if scene.blocks_move(...)`.
-        // Active for ALL restriction modes including Unrestricted.
+        // Active for ALL restriction modes including Unrestricted. GMs mapped to
+        // Unrestricted above (mask-skip) still reach this gate: walls are honored for
+        // GMs by design in this executor. This intentionally diverges from `publish`'s
+        // legacy GM wall-bypass, which is to be retired — do NOT re-grant bypass here.
         if ecs.blocks_move(scene, prev, next) {
             // Stop at prev (the last safely reached cell); truncated.
+            stopped_early = true;
             break;
         }
 
@@ -173,18 +184,23 @@ pub(crate) fn execute_move(
         if check_mask {
             let Some(cells) = supercover_cells(prev, next, cell) else {
                 // Degenerate supercover (span overflow or bad coords) → stop here.
+                stopped_early = true;
                 break;
             };
             if !cells.iter().all(|c| visible.contains(c)) {
                 // A supercover cell is not in the visible set → stop at prev.
+                stopped_early = true;
                 break;
             }
         }
 
         // Step 3: region-arrest hook — M3/M10g stub (always false).
-        // Arrest fires AFTER entering the cell: stop = next, still advanced.
+        // Arrest fires AFTER entering the cell: stop = next, still advanced. A final-step
+        // arrest sets stop_index = path.len()-1 and stopped_early = true so truncated is
+        // correctly reported even though the index equals the last position.
         if region_arrests(ecs, scene, next) {
             stop_index = i;
+            stopped_early = true;
             break;
         }
 
@@ -194,7 +210,9 @@ pub(crate) fn execute_move(
 
     let render_path = path[0..=stop_index].to_vec();
     // Safe: path.len() >= 2 is already guarded above, so len() - 1 never underflows.
-    let truncated = stop_index < path.len() - 1;
+    // `stopped_early` captures arrest on the final step where the index comparison alone
+    // would be false (stop_index == path.len()-1 yet the move was arrested).
+    let truncated = stopped_early || stop_index < path.len() - 1;
     Ok(MoveOutcome {
         stop: path[stop_index],
         render_path,

@@ -429,7 +429,11 @@ impl Room {
                 .copied()
                 .unwrap_or(100.0);
 
-            // GMs use Unrestricted (mirrors `publish`'s GM gate-skip).
+            // GMs use Unrestricted (mask-skipped), but `execute_move` still honors walls for
+            // GMs (step-1 `blocks_move` is unconditional). This intentionally diverges from
+            // `publish`'s legacy GM wall-bypass, which is to be retired. Do NOT re-grant GM
+            // wall-bypass here: the M1 server-authoritative model requires wall enforcement
+            // for all movers including GMs when moves are executed through this path.
             restriction = if ctx.world_role == crate::data::document::WorldRole::Gm {
                 MovementRestriction::Unrestricted
             } else {
@@ -549,10 +553,14 @@ impl Room {
         // check-and-set with no window for a concurrent execute_move to slip through.
         // Uses server-owned `now` (captured at entry), never the caller-supplied `ts`
         // (which is only used for the committed event timestamp and is not trusted for timing).
-        // Lazy-expiry insert: expired entries from prior moves are simply overwritten.
+        // Lazy expiry: prune expired entries before inserting so the map stays bounded in
+        // long sessions (tokens that moved once and never moved again do not leak permanently).
+        // Sub-ms floor: a non-zero-progress move whose duration rounds to 0 ms would let the
+        // next request pass immediately; ceil().max(1) guarantees end > now for any real move.
         {
             let mut moving = self.moving.lock().await;
-            moving.insert(token, now + duration_ms as i64);
+            moving.retain(|_, &mut end| now < end);
+            moving.insert(token, now + (duration_ms.ceil() as i64).max(1));
         }
 
         Ok(MoveExecution {
