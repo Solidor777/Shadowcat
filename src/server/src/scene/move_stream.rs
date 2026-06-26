@@ -24,8 +24,8 @@ pub(crate) const SAMPLES_PER_CELL: f64 = 3.0;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PosSamplePt {
     /// Elapsed time in milliseconds from the move's `start_server_ms`.
-    /// INVARIANT: `t_ms >= 0`; samples are strictly non-decreasing (consecutive
-    /// equal values are de-duped defensively).
+    /// INVARIANT: `t_ms >= 0`; samples are strictly increasing (consecutive
+    /// exact-equal values are de-duped defensively).
     pub t_ms: f64,
     /// Scene-coordinate position (x, y) at this sample instant.
     pub pos: (f64, f64),
@@ -36,12 +36,13 @@ pub(crate) struct PosSamplePt {
 /// # Invariants
 /// - `cell` > 0; `duration_ms` >= 0.
 /// - Always includes the first and last vertex of `path`.
-/// - Samples are strictly non-decreasing in `t_ms` (consecutive equal values
+/// - Samples are strictly increasing in `t_ms` (consecutive exact-equal values
 ///   are removed defensively).
 /// - Returns exactly one sample `{t_ms: 0, pos: path[0]}` when:
 ///   - `path` has fewer than 2 points, OR
-///   - the total arc-length `L` is less than 1e-9, OR
-///   - `duration_ms` is 0.
+///   - the total arc-length `L` is less than 1e-9 (degenerate/zero-length guard), OR
+///   - `duration_ms` is 0, OR
+///   - any path coordinate is non-finite (fail-closed; mirrors `supercover_cells`).
 /// - Result count `n` satisfies:
 ///   `2 <= n <= MAX_VISION_SAMPLES` for any multi-point path with L > 0.
 ///
@@ -52,10 +53,27 @@ pub(crate) struct PosSamplePt {
 /// 4. Place `n` samples at equal arc-length steps `s_i = i/(n-1) * L` (0..=n-1).
 /// 5. Map each `s_i` onto the polyline (binary search segment, linear interp within).
 /// 6. `t_ms_i = s_i / L * duration_ms`.
-/// 7. De-dup consecutive samples with identical `t_ms` (defensive; prevents a
-///    zero-duration segment from producing duplicate timestamps).
+/// 7. De-dup consecutive samples with exact-equal `t_ms` (defensive; arc-length steps
+///    are strictly increasing by construction so this never fires on a valid path).
 pub(crate) fn sample_path(path: &[(f64, f64)], cell: f64, duration_ms: f64) -> Vec<PosSamplePt> {
     debug_assert!(cell > 0.0, "cell must be positive");
+
+    // Fail-closed non-finite guard: a NaN/Inf coordinate propagates through `sqrt` into
+    // `cum`, causing `binary_search_by(.partial_cmp().unwrap())` to panic. Mirrors the
+    // fail-closed convention of `supercover_cells`. Empty path returns a synthetic origin.
+    if path.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
+        return if path.is_empty() {
+            vec![PosSamplePt {
+                t_ms: 0.0,
+                pos: (0.0, 0.0),
+            }]
+        } else {
+            vec![PosSamplePt {
+                t_ms: 0.0,
+                pos: path[0],
+            }]
+        };
+    }
 
     // Single-point or empty guard: one sample at t=0 at path[0] (or origin for empty).
     if path.is_empty() {
@@ -81,7 +99,7 @@ pub(crate) fn sample_path(path: &[(f64, f64)], cell: f64, duration_ms: f64) -> V
     }
     let total_len = *cum.last().unwrap();
 
-    // Zero-length guard (all vertices coincident): degenerate path → single sample.
+    // Zero-length guard (all vertices coincident, threshold < 1e-9): degenerate path → single sample.
     if total_len < 1e-9 {
         return vec![PosSamplePt {
             t_ms: 0.0,
@@ -90,7 +108,11 @@ pub(crate) fn sample_path(path: &[(f64, f64)], cell: f64, duration_ms: f64) -> V
     }
 
     // Target sample count: density SAMPLES_PER_CELL per cell, floored at 2, capped at MAX.
-    let density = (total_len / cell * SAMPLES_PER_CELL).ceil() as usize;
+    // Clamp to f64 before the usize cast to prevent overflow on 32-bit targets (mobile):
+    // an uncapped `ceil()` on a very long path could exceed usize::MAX on 32-bit.
+    let density = (total_len / cell * SAMPLES_PER_CELL)
+        .ceil()
+        .min(MAX_VISION_SAMPLES as f64) as usize;
     let n = density.clamp(2, MAX_VISION_SAMPLES);
 
     // Place n samples at equal arc-length steps.
@@ -100,6 +122,7 @@ pub(crate) fn sample_path(path: &[(f64, f64)], cell: f64, duration_ms: f64) -> V
         let s = if i == n - 1 {
             total_len
         } else {
+            // Division is safe: n >= 2 is invariant (enforced by .clamp(2, …) above).
             (i as f64) / ((n - 1) as f64) * total_len
         };
 
@@ -136,10 +159,13 @@ pub(crate) fn sample_path(path: &[(f64, f64)], cell: f64, duration_ms: f64) -> V
         samples.push(PosSamplePt { t_ms, pos });
     }
 
-    // Defensive de-dup: remove consecutive samples with identical t_ms.
-    // Prevents duplicate timestamps when duration_ms rounds two adjacent arc-length
-    // steps to the same value; preserves the non-decreasing INVARIANT.
-    samples.dedup_by(|b, a| (b.t_ms - a.t_ms).abs() < f64::EPSILON);
+    // Defensive de-dup: remove consecutive samples with exact-equal t_ms.
+    // Arc-length steps s_i = i/(n-1)*L are strictly increasing for n>=2, L>0, so this
+    // never fires on a valid path. Pure defence against any future caller deviation.
+    // Exact equality is correct here — f64::EPSILON absolute tolerance was too tight to
+    // fire for the rounding case and gave false assurance; samples are strictly increasing
+    // by construction.
+    samples.dedup_by(|b, a| b.t_ms == a.t_ms);
 
     samples
 }
@@ -222,7 +248,7 @@ mod tests {
         let last = samples.last().unwrap();
         assert!((first.t_ms - 0.0).abs() < 1e-9, "first t_ms {}", first.t_ms);
         assert!(
-            (first.pos.0 - 0.0).abs() < 1.0,
+            (first.pos.0 - 0.0).abs() < 1e-6,
             "first pos.x {}",
             first.pos.0
         );
@@ -232,7 +258,7 @@ mod tests {
             last.t_ms
         );
         assert!(
-            (last.pos.0 - (n_cells as f64 * cell)).abs() < 1.0,
+            (last.pos.0 - (n_cells as f64 * cell)).abs() < 1e-6,
             "last pos.x {}",
             last.pos.0
         );

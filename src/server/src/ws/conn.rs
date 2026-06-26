@@ -477,8 +477,13 @@ async fn handle_move_request(
     // Convert wire `[f64; 2]` arrays to the internal `(f64, f64)` tuple representation
     // expected by `Room::execute_move`.
     let path_tuples: Vec<(f64, f64)> = path.iter().map(|p| (p[0], p[1])).collect();
+    // Single clock capture: `now` is used both as the committed event timestamp and as
+    // `start_server_ms` so the animation origin equals the commit instant — a second
+    // `now_millis()` call after `execute_move` returns (after the DB write) would drift
+    // `start_server_ms` forward from the actual commit timestamp.
+    let now = now_millis();
     match room
-        .execute_move(repo, ctx, scene_id, token_id, path_tuples, now_millis())
+        .execute_move(repo, ctx, scene_id, token_id, path_tuples, now)
         .await
     {
         Ok(exec) => {
@@ -488,7 +493,7 @@ async fn handle_move_request(
                 token_id,
                 mover: ctx.user_id,
                 scene: scene_id,
-                start_server_ms: now_millis() as f64,
+                start_server_ms: now as f64,
                 duration_ms: exec.duration_ms,
                 stop: [exec.stop.0, exec.stop.1],
                 samples: exec

@@ -75,8 +75,9 @@ pub enum ClientMsg {
     },
     /// A server-authoritative move request: the client submits the previewed cell-center scene
     /// points (start … goal) for a token it controls. The server validates, executes the move,
-    /// and replies with `MoveExecuted` (broadcast to the scene) or `MoveError` (originator only).
-    /// `path` carries the exact route preview so the server can reproduce the animation.
+    /// and broadcasts `MoveStream` out-of-band to the scene on success, or replies `MoveError`
+    /// to the originator on failure. `path` carries the exact route preview so the server can
+    /// reproduce the animation.
     MoveRequest {
         request_id: Uuid,
         scene: Uuid,
