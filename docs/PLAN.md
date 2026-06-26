@@ -324,9 +324,33 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > Plan: `docs/superpowers/plans/2026-06-25-m10e-6-grid-pathfinder.md`.
 > Spec: `docs/superpowers/specs/2026-06-25-m10e-6-grid-pathfinder-design.md`.
 >
-> **M10e status: e-1 + e-2 + e-3 + e-4 + e-6 DONE; e-5 (movement animation) is the only M10e
-> remainder (anytime). Next = M10e-5, then M10f (continuous/Polyanya pathfinding) + M10g
-> (weighted/impassable regions).**
+> **M10e-5 REDIRECTED → server-authoritative movement model.** The M10e-5 animation engine was
+> built (duration/easing/interruptible `TokenAnimator`, Stage config wiring — KEPT), but its
+> optimistic client-chained route-commit was DROPPED: a buddy-check exposed that optimistic
+> prediction of *gated* moves rubber-bands, so the model was redirected to **server-authoritative
+> gated moves** (request-only, server-executed, atomic state, moving-lock, vision-gated,
+> region-arrestable). Decomposed **M1** (server move execution + mover-only render-path) → **M2**
+> (observer render-path + continuous client vision) → **M3** (vision-gated pathfinder + region
+> hook). Spec: `docs/superpowers/specs/2026-06-25-server-authoritative-movement-design.md`.
+>
+> **M1 DONE** (branch `m10e-5-movement-animation`, commits `98bf191..15076ca`, all green, NOT
+> pushed/merged — push gate = full M10): `MoveRequest`/`MoveExecuted`/`MoveError` protocol; pure
+> `scene/move_exec.rs` executor (per-step walls + vision-mask + region-arrest hook; §13 per-cell
+> mask-parity with the `publish` gate, no fork; stricter on path-shape via king-step adjacency;
+> new `token_position` + `resolved_animation_speed`); `commit_ops_locked` (gate-free `publish`
+> tail) + `Room::execute_move` (`publish_guard` held across the whole validate→commit = atomic;
+> Revealed = `visible_cells ∪ explored`; `moving` lazy-expiry lock; OCC pre-image defense-in-depth;
+> GM wall-honored, diverging from `publish`'s legacy GM wall-bypass); `conn.rs handle_move_request`
+> (mover-only `etx` reply, generic `MoveError` — no geometry leak); client `WsClient.moveRequest` +
+> `AppContext.moveRequest` + request-only measure-tool route-commit (the M10e-5 animator drives the
+> returned render-path; `collinearRuns` + `path-runs.ts` removed). SDD-executed (8 tasks, per-task
+> two-reviewer gate + whole-branch buddy-check scoped Tasks 2,3,4 CONVERGED — 1 Critical refuted by
+> ground truth, 5 Minors fixed; reviewed skill-update gate PASS).
+> Plan: `docs/superpowers/plans/2026-06-25-m1-server-authoritative-move-execution.md`.
+>
+> **M10e status: e-1 + e-2 + e-3 + e-4 + e-6 DONE; e-5 animation engine done + redirected (M1 DONE).
+> Next = M2 (observer render-path + continuous client vision), then M3 (vision-gated pathfinder +
+> region hook), then M10f (continuous/Polyanya pathfinding) + M10g (weighted/impassable regions).**
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
