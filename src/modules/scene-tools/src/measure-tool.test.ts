@@ -287,15 +287,12 @@ function makeFakeNow(initial = 0): FakeNow {
 
 /**
  * Build a ToolContext wired for route-commit tests: a scene + token seeded in the store,
- * a single token selected, injected pathfind/dispatchIntent/animateAlongPath stubs, and
+ * a single token selected, injected pathfind/moveRequest/animateAlongPath stubs, and
  * a controllable clock. Returns the ctx, the clock, and the backing store.
- *
- * Default dispatchIntent: applies each intent's ops into `docs` synchronously so the
- * next `ctx.documents.get(id)?.system` reflects the update. This makes the per-run
- * `old` re-read verifiable: each run reads the post-apply value of the prior run as `old`.
  */
 function seedRouteCtx(over: {
   pathfind: ToolContext["pathfind"];
+  moveRequest?: ToolContext["moveRequest"];
   dispatchIntent?: (ops: WireOperation[]) => void;
   animateAlongPath?: (id: string, path: [number, number][]) => void;
   tokenAt: { id: string; x: number; y: number };
@@ -338,9 +335,7 @@ function seedRouteCtx(over: {
   sel.set([over.tokenAt.id]);
 
   // Default dispatchIntent applies each batch's ops into `docs` via applyCommand so
-  // subsequent ctx.documents.get() calls see the updated system values. This verifies
-  // the per-run `old` re-read: if the store is NOT advanced, all `old` values would be
-  // the seed (0,0) and a regression hoisting `sys` out of the loop would still pass.
+  // subsequent ctx.documents.get() calls see the updated system values.
   const defaultDispatch = (ops: WireOperation[]): void => {
     docs.applyCommand({ seq: seq++, world_id: "w1", author: "a", ts: 0, ops });
   };
@@ -354,114 +349,75 @@ function seedRouteCtx(over: {
     sendPing: () => {},
     tokenSelection: sel,
     pathfind: over.pathfind,
+    moveRequest: over.moveRequest,
     now,
   };
 
   return { ctx, now, docs };
 }
 
-test("double-click in route mode commits: animates the path and dispatches one intent per collinear run", async () => {
-  const sent: WireOperation[][] = [];
-  const animated: Array<{ id: string; path: [number, number][] }> = [];
-  // L-route 0,0 → 200,0 → 200,200 (per-cell points); collinearRuns → 2 runs.
-  const pathfind: ToolContext["pathfind"] = async () => ({
-    path: [[0, 0], [100, 0], [200, 0], [200, 100], [200, 200]] as [number, number][],
-    cost: 4,
-  });
-  const { ctx, now, docs } = seedRouteCtx({
-    pathfind,
+test("double-click commits via moveRequest and animates the returned render-path", async () => {
+  const moves: Array<{ tokenId: string; path: [number,number][] }> = [];
+  const animated: Array<{ id: string; path: [number,number][] }> = [];
+  const moveRequest = async (_s: string, tokenId: string, path: [number,number][]) => {
+    moves.push({ tokenId, path });
+    return { tokenId, stop: path.at(-1)!, renderPath: path, durationMs: 300 };
+  };
+  const { ctx, now } = seedRouteCtx({
+    pathfind: async () => ({ path: [[0,0],[100,0],[100,100]] as [number,number][], cost: 2 }),
+    moveRequest,
     animateAlongPath: (id, path) => animated.push({ id, path }),
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
-  // Wrap the default store-advancing dispatch to also record ops for assertion.
-  // Sequence counter mirrors seedRouteCtx's internal counter (starts at 2, but
-  // seedRouteCtx already holds the seq reference, so we use a separate dispatch that
-  // first records then applies).
-  let dispatchSeq = 2;
-  ctx.dispatchIntent = (ops) => {
-    sent.push(ops);
-    // Apply optimistically: advances ctx.documents so the next run's `old` re-read is correct.
-    docs.applyCommand({ seq: dispatchSeq++, world_id: "w1", author: "a", ts: 0, ops });
-  };
   const tool = makeMeasureTool(ctx);
-  tool.onPointerDown({ x: 200, y: 200 }, ev()); // first click → records time
+  tool.onPointerDown({ x: 100, y: 100 }, ev()); tool.onPointerUp({ x: 100, y: 100 }, ev());
   now.advance(100);
-  tool.onPointerDown({ x: 200, y: 200 }, ev()); // double-click → commit
-  await drain(); // resolve the pathfind promise
-
-  expect(animated).toEqual([{ id: "tok1", path: [[0, 0], [100, 0], [200, 0], [200, 100], [200, 200]] }]);
-  // Two collinear runs → two SEPARATE dispatchIntent calls (chaining through the gate).
-  expect(sent.length).toBe(2);
-  expect(sent[0][0]).toMatchObject({ op: "update", doc_id: "tok1" });
-
-  // Helper: extract new x/y from a dispatchIntent batch.
-  const xy = (ops: WireOperation[]) => {
-    const ch = (ops[0] as { changes: { path: string; new: unknown }[] }).changes;
-    return [ch.find((c) => c.path === "/system/x")!.new, ch.find((c) => c.path === "/system/y")!.new];
-  };
-  // Helper: extract old x value from a dispatchIntent batch.
-  const oldX = (ops: WireOperation[]) => {
-    const ch = (ops[0] as { changes: { path: string; old: unknown }[] }).changes;
-    return ch.find((c) => c.path === "/system/x")!.old;
-  };
-
-  // First run goal = the corner (200,0); second = final goal (200,200).
-  expect(xy(sent[0])).toEqual([200, 0]);
-  expect(xy(sent[1])).toEqual([200, 200]);
-  // Old-chaining: the second run's `old` x must equal the first run's `new` x (200),
-  // proving the synchronous store re-read works — a regression hoisting `sys` out of
-  // the loop would read 0 here (the seed value) instead of 200.
-  expect(oldX(sent[1])).toBe(200);
+  tool.onPointerDown({ x: 100, y: 100 }, ev()); tool.onPointerUp({ x: 100, y: 100 }, ev());
+  await drain();
+  expect(moves).toEqual([{ tokenId: "tok1", path: [[0,0],[100,0],[100,100]] }]);
+  expect(animated).toEqual([{ id: "tok1", path: [[0,0],[100,0],[100,100]] }]);
 });
 
 test("a single click in route mode does NOT commit", async () => {
-  const sent: WireOperation[][] = [];
+  const moves: Array<unknown> = [];
   const animated: Array<{ id: string; path: [number, number][] }> = [];
   const { ctx } = seedRouteCtx({
     pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1 }),
+    moveRequest: async (_s, tokenId, path) => { moves.push({ tokenId, path }); return { tokenId, stop: path.at(-1)!, renderPath: path, durationMs: 300 }; },
     animateAlongPath: (id, path) => animated.push({ id, path }),
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
-  ctx.dispatchIntent = (o) => sent.push(o);
   const tool = makeMeasureTool(ctx);
   tool.onPointerDown({ x: 100, y: 0 }, ev());
   await drain();
-  expect(sent.length).toBe(0);
+  expect(moves.length).toBe(0); // moveRequest must not fire on a single click
   expect(animated.length).toBe(0); // animateAlongPath must not fire on a single click
 });
 
-test("route commit survives its own pointer-up: pathfind resolves after pointer-up and still fires", async () => {
-  // REGRESSION: the Critical bug. In production, onPointerDown(double) is immediately
-  // followed by onPointerUp on release. The old code called clearRoute() in onPointerUp,
-  // which bumped pendingSeq, so the in-flight commit's seq guard (seq !== pendingSeq)
-  // fired and the token never moved. This test models the REAL event ordering.
+test("route commit survives its own pointer-up: moveRequest resolves after pointer-up and still fires", async () => {
+  // REGRESSION guard: in production, onPointerDown(double) is immediately followed by
+  // onPointerUp. The committing flag must suppress clearRoute() in onPointerUp so the
+  // in-flight moveRequest's seq guard is not invalidated.
   //
-  // The deferred pathfind resolves ONLY after both pointer-ups, catching any code that
+  // The deferred moveRequest resolves ONLY after both pointer-ups to catch any code that
   // allows onPointerUp to invalidate an in-flight commit.
 
-  // A manually-resolved deferred so the pathfind resolves only after the pointer-ups.
-  let resolvePathfind!: (r: { path: [number, number][]; cost: number }) => void;
-  const deferredPathfind: ToolContext["pathfind"] = (_scene, _start, _waypoints, _fp) =>
-    new Promise((res) => { resolvePathfind = res; });
+  let resolveMoveRequest!: (r: { tokenId: string; stop: [number,number]; renderPath: [number,number][]; durationMs: number }) => void;
+  const deferredMoveRequest: ToolContext["moveRequest"] = (_scene, _tokenId, _path) =>
+    new Promise((res) => { resolveMoveRequest = res; });
 
-  const sent: WireOperation[][] = [];
   const animated: Array<{ id: string; path: [number, number][] }> = [];
 
-  const { ctx, now, docs } = seedRouteCtx({
-    pathfind: deferredPathfind,
+  const { ctx, now } = seedRouteCtx({
+    pathfind: async () => ({ path: [[0, 0], [200, 0], [200, 200]] as [number, number][], cost: 4 }),
+    moveRequest: deferredMoveRequest,
     animateAlongPath: (id, path) => animated.push({ id, path }),
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
 
-  let dispatchSeq = 2;
-  ctx.dispatchIntent = (ops) => {
-    sent.push(ops);
-    docs.applyCommand({ seq: dispatchSeq++, world_id: "w1", author: "a", ts: 0, ops });
-  };
-
   const tool = makeMeasureTool(ctx);
 
-  // First pointer-down at the goal — starts the double-click window.
+  // First pointer-down — starts the double-click window.
   tool.onPointerDown({ x: 200, y: 200 }, ev());
   tool.onPointerUp({ x: 200, y: 200 }, ev()); // trailing up (real engine always sends up)
 
@@ -470,60 +426,54 @@ test("route commit survives its own pointer-up: pathfind resolves after pointer-
   tool.onPointerDown({ x: 200, y: 200 }, ev()); // second down → commitRoute called
   tool.onPointerUp({ x: 200, y: 200 }, ev()); // trailing up on the double-click release
 
-  // Pathfind has NOT resolved yet. The commit must be in flight (committing=true),
-  // so both pointer-ups must have been suppressed and pendingSeq must NOT have been bumped.
+  // Let the internal pathfind resolve so moveRequest is called and resolveMoveRequest is assigned.
+  // moveRequest itself is still deferred (resolveMoveRequest not yet called).
+  await drain();
 
-  // Now resolve the deferred pathfind with a two-run L-route.
-  resolvePathfind({
-    path: [[0, 0], [200, 0], [200, 200]] as [number, number][],
-    cost: 4,
+  // moveRequest has been called but NOT resolved. committing=true must suppress the already-fired
+  // pointer-up's clearRoute — committing must still be true at this point.
+
+  resolveMoveRequest({
+    tokenId: "tok1",
+    stop: [200, 200],
+    renderPath: [[0, 0], [200, 0], [200, 200]],
+    durationMs: 500,
   });
-  await drain(); // let the .then handler run
+  await drain();
 
   // The commit must have survived the pointer-ups.
-  expect(animated.length).toBe(1); // animateAlongPath was called
+  expect(animated.length).toBe(1);
   expect(animated[0].id).toBe("tok1");
-  // Two collinear runs → two dispatches.
-  expect(sent.length).toBe(2);
-  expect(sent[0][0]).toMatchObject({ op: "update", doc_id: "tok1" });
-  const xy = (ops: WireOperation[]) => {
-    const ch = (ops[0] as { changes: { path: string; new: unknown }[] }).changes;
-    return [ch.find((c) => c.path === "/system/x")!.new, ch.find((c) => c.path === "/system/y")!.new];
-  };
-  expect(xy(sent[0])).toEqual([200, 0]);
-  expect(xy(sent[1])).toEqual([200, 200]);
+  expect(animated[0].path).toEqual([[0, 0], [200, 0], [200, 200]]);
 });
 
 test("stale commit resolve does not clear a newer commit's suppression flag", async () => {
   // Invariant: only the still-current commit (seq === pendingSeq) may mutate `committing`.
   // Commit A starts → onDeactivate aborts A → tool reactivated → commit B starts →
-  // A's stale promise resolves. The stale resolve must not touch `committing`, or it wipes
-  // B's pointer-up suppression and a trailing up bumps pendingSeq, silently bailing B.
+  // A's stale moveRequest resolves. The stale resolve must not touch `committing`, or it
+  // wipes B's pointer-up suppression and a trailing up bumps pendingSeq, silently bailing B.
 
   // Two independently-controllable deferreds so A and B resolve in controlled order.
-  let resolveA!: (r: { path: [number, number][]; cost: number }) => void;
-  let resolveB!: (r: { path: [number, number][]; cost: number }) => void;
+  let resolveA!: (r: { tokenId: string; stop: [number,number]; renderPath: [number,number][]; durationMs: number }) => void;
+  let resolveB!: (r: { tokenId: string; stop: [number,number]; renderPath: [number,number][]; durationMs: number }) => void;
   let callCount = 0;
-  const deferredPathfind: ToolContext["pathfind"] = (_scene, _start, _waypoints, _fp) =>
+  const deferredMoveRequest: ToolContext["moveRequest"] = (_scene, _tokenId, _path) =>
     new Promise((res) => {
       callCount === 0 ? (resolveA = res) : (resolveB = res);
       callCount++;
     });
 
-  const sent: WireOperation[][] = [];
   const animated: Array<{ id: string; path: [number, number][] }> = [];
 
-  const { ctx, now, docs } = seedRouteCtx({
-    pathfind: deferredPathfind,
+  const { ctx, now } = seedRouteCtx({
+    pathfind: async (_s, _start, waypoints) => ({
+      path: [_start, waypoints.at(-1)!] as [number, number][],
+      cost: 1,
+    }),
+    moveRequest: deferredMoveRequest,
     animateAlongPath: (id, path) => animated.push({ id, path }),
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
-
-  let dispatchSeq = 2;
-  ctx.dispatchIntent = (ops) => {
-    sent.push(ops);
-    docs.applyCommand({ seq: dispatchSeq++, world_id: "w1", author: "a", ts: 0, ops });
-  };
 
   const tool = makeMeasureTool(ctx);
 
@@ -531,27 +481,29 @@ test("stale commit resolve does not clear a newer commit's suppression flag", as
   tool.onPointerDown({ x: 100, y: 0 }, ev());
   now.advance(100);
   tool.onPointerDown({ x: 100, y: 0 }, ev()); // double-click → commit A in flight
+  await drain(); // let A's pathfind resolve so moveRequest is called
   tool.onDeactivate!(); // aborts A: committing=false, pendingSeq bumped
 
   // Start commit B (tool reactivated on same instance, as ToolController reuses instances).
   tool.onPointerDown({ x: 200, y: 0 }, ev()); // first click of new double-click
   now.advance(100);
   tool.onPointerDown({ x: 200, y: 0 }, ev()); // double-click → commit B in flight
+  await drain(); // let B's pathfind resolve so moveRequest is called
 
   // A resolves while B is in flight. A is stale (seq_A < pendingSeq).
   // Must not touch committing — B's suppression flag must remain true.
-  resolveA({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1 });
+  resolveA({ tokenId: "tok1", stop: [100, 0], renderPath: [[0, 0], [100, 0]], durationMs: 300 });
   await drain();
 
   // A trailing pointer-up must be suppressed by B's still-intact committing flag.
   // If the stale resolve wiped it, clearRoute fires here and bumps pendingSeq, bailing B.
   tool.onPointerUp({ x: 200, y: 0 }, ev());
 
-  // B resolves: must find seq === pendingSeq and dispatch its move.
-  resolveB({ path: [[0, 0], [200, 0]] as [number, number][], cost: 2 });
+  // B resolves: must find seq === pendingSeq and animate.
+  resolveB({ tokenId: "tok1", stop: [200, 0], renderPath: [[0, 0], [200, 0]], durationMs: 300 });
   await drain();
 
   expect(animated.length).toBe(1); // B's animateAlongPath fired
   expect(animated[0].id).toBe("tok1");
-  expect(sent.length).toBeGreaterThan(0); // B's move intent dispatched
+  expect(animated[0].path).toEqual([[0, 0], [200, 0]]);
 });

@@ -3,8 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult } from "@shadowcat/core";
-import { collinearRuns } from "./path-runs";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveExecuted } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import { topTokenAt } from "./hit-test";
 
@@ -37,6 +36,14 @@ export interface ToolContext {
     waypoints: [number, number][],
     footprintRadius: number,
   ) => Promise<PathResult>;
+  /** Request server-authoritative move execution (from AppContext). When present,
+   * double-click commit sends a MoveRequest and animates the server-returned render-path.
+   * When absent, double-click is a no-op (graceful degradation). */
+  moveRequest?: (
+    scene: string,
+    tokenId: string,
+    path: [number, number][],
+  ) => Promise<MoveExecuted>;
 }
 
 /** The active scene (single scene in M8d §15) + its grid cell size (default 100) and
@@ -218,6 +225,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // `waypoints` accumulates user-clicked intermediate goals (snapped); the start
   // is always derived live from the selected token's position.
   let waypoints: [number, number][] = [];
+  // The path returned by the most-recently-resolved preview pathfind. Reused by
+  // commitRoute to avoid a second pathfind round-trip when the route is already known.
+  let lastPreviewedPath: [number, number][] | null = null;
   // Track the in-flight pathfind so we can ignore stale responses that arrive
   // after a newer request has been issued (last-write-wins coalescing).
   let pendingSeq = 0;
@@ -275,6 +285,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     ctx.pathfind(scene.id, start, allWaypoints, fp).then(
       (result) => {
         if (seq !== pendingSeq) return; // superseded by a newer move
+        // Cache the resolved path for reuse by commitRoute (avoids a second pathfind).
+        lastPreviewedPath = result.path;
         // Render the routed polyline via previewOverlay.
         const pts = result.path.flat();
         ctx.scene.previewOverlay([{ points: pts, closed: false, stroke: { color: ROUTE_COLOR, width: 3 }, fill: null }]);
@@ -286,6 +298,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
       },
       () => {
         if (seq !== pendingSeq) return;
+        lastPreviewedPath = null;
         // No route available: clear the overlay and show a "no route" label.
         ctx.scene.clearOverlay();
         const startPt: Point = { x: start[0], y: start[1] };
@@ -300,18 +313,23 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     ctx.scene.clearOverlay();
     ctx.scene.clearMeasure();
     waypoints = [];
+    lastPreviewedPath = null;
   }
 
-  /** Commit a route from the selected token's center to `goal`: smooth local walk +
-   * one position intent per collinear run (separate publishes so each gates against the
-   * prior committed cell — a single straight start→goal op would be Forbidden around walls).
+  /** Commit a route from the selected token's center to `goal`: send a MoveRequest to
+   * the server and animate along the returned render-path on resolve. The authoritative
+   * position arrives via the normal store Event (token → stop); the animator's any-ahead
+   * rule recognizes it. On reject, clear the route overlay (no move).
+   *
+   * Simpler path: reuse the last previewed PathResult.path when already computed for the
+   * same goal; if none is cached, do one pathfind then send the moveRequest.
    *
    * Invariant: `committing` is set TRUE before `seq` is captured, and cleared ONLY by
    * `finish()` on resolve or by the reject handler. This ensures pointer-up (which calls
    * clearRoute in non-committing paths) cannot bump `pendingSeq` between commit start and
    * the async resolve — keeping `seq === pendingSeq` true so the commit proceeds. */
   function commitRoute(goal: Point): void {
-    if (!ctx.pathfind || !ctx.tokenSelection || ctx.tokenSelection.ids.size !== 1) return;
+    if (!ctx.pathfind || !ctx.moveRequest || !ctx.tokenSelection || ctx.tokenSelection.ids.size !== 1) return;
     const scene = activeScene(ctx);
     const start = tokenCenter();
     if (!scene || !start) return;
@@ -322,32 +340,38 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     // and return early, so they cannot bump pendingSeq while this commit is in flight.
     committing = true;
     const seq = ++pendingSeq;
-    // Teardown shared by the success path (resolves cleanly) and the reject path (no route).
+    // Teardown shared by the success path and the reject path.
     const finish = (): void => { committing = false; clearRoute(); };
-    ctx.pathfind(scene.id, start, [...waypoints, [goal.x, goal.y]], fp).then(
-      (result) => {
-        // Stale: a newer commit (or onDeactivate) now owns committing + clearRoute.
-        // Touching either here would wipe the newer owner's suppression flag.
-        if (seq !== pendingSeq) return;
-        if (result.path.length < 2) { finish(); return; }
-        ctx.scene.animateAlongPath(tokenId, result.path);
-        const runs = collinearRuns(result.path);
-        for (let i = 1; i < runs.length; i++) {
-          const [nx, ny] = runs[i];
-          // Re-read sys after each dispatchIntent: the optimistic store advances
-          // synchronously, giving each op the correct `old` for the server gate chain.
-          const sys = ctx.documents.get(tokenId)?.system as { x?: number; y?: number } | undefined;
-          ctx.dispatchIntent([{ op: "update", doc_id: tokenId, changes: [
-            { path: "/system/x", old: sys?.x ?? null, new: nx },
-            { path: "/system/y", old: sys?.y ?? null, new: ny },
-          ] }]);
-        }
-        finish();
-      },
-      // Stale reject: do nothing — the newer owner handles teardown.
-      // Current reject: finish() clears committing + route so the next gesture is clean.
-      () => { if (seq === pendingSeq) finish(); },
-    );
+
+    // Inner function: given a proposed path, send the moveRequest and animate on resolve.
+    const sendRequest = (proposedPath: [number, number][]): void => {
+      if (!ctx.moveRequest) return;
+      ctx.moveRequest(scene.id, tokenId, proposedPath).then(
+        (result) => {
+          // Stale: a newer commit (or onDeactivate) now owns committing + clearRoute.
+          if (seq !== pendingSeq) return;
+          ctx.scene.animateAlongPath(tokenId, result.renderPath);
+          finish();
+        },
+        // Stale reject: do nothing. Current reject: clear route (no move).
+        () => { if (seq === pendingSeq) finish(); },
+      );
+    };
+
+    // Reuse the last previewed path when available (avoids a redundant pathfind round-trip).
+    // If none is cached, do one pathfind then send the moveRequest.
+    if (lastPreviewedPath && lastPreviewedPath.length >= 2) {
+      sendRequest(lastPreviewedPath);
+    } else {
+      ctx.pathfind(scene.id, start, [...waypoints, [goal.x, goal.y]], fp).then(
+        (result) => {
+          if (seq !== pendingSeq) return;
+          if (result.path.length < 2) { finish(); return; }
+          sendRequest(result.path);
+        },
+        () => { if (seq === pendingSeq) finish(); },
+      );
+    }
   }
 
   return {
