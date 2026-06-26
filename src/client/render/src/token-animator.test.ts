@@ -154,17 +154,89 @@ describe("TokenAnimator.animateSamples", () => {
     expect(a.isHidden("t1")).toBe(false);
   });
 
-  it("hides the token across a gap (consecutive tMs gap > durationMs/2) and reveals at endpoints", () => {
+  it("hides the token across an occlusion gap (nominal-interval-based threshold)", () => {
     const a = fresh();
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
-    // Gap = 800ms; durationMs = 1000; threshold = durationMs/2 = 500 → gap > threshold → hidden.
-    a.animateSamples("t1", [{ tMs: 0, pos: [0, 0] }, { tMs: 800, pos: [800, 0] }], 1000, 1000, () => 1000);
+    // 3 samples: contiguous run 0→100 (delta=100), then occlusion gap 100→900 (delta=800).
+    // minConsecutiveDelta = 100; gapThreshold = 150. Delta 800 > 150 → hidden inside the gap.
+    // With only 2 samples (≤1 delta), gapThreshold = Infinity; 3 samples are required for
+    // interior gap detection.
+    a.animateSamples(
+      "t1",
+      [{ tMs: 0, pos: [0, 0] }, { tMs: 100, pos: [100, 0] }, { tMs: 900, pos: [900, 0] }],
+      1000, 1000, () => 1000,
+    );
     expect(a.isHidden("t1")).toBe(false); // visible at first sample (t=0)
-    a.tick(1);   // t=1: inside gap (0,800), gap=800 > threshold=500 → hidden
-    expect(a.isHidden("t1")).toBe(true);
-    a.tick(850); // t=851: past tMs=800 → visible at last sample
+    a.tick(1);   // t=1: inside segment 0→100 (gap=100 ≤ threshold=150) → visible
     expect(a.isHidden("t1")).toBe(false);
-    expect(a.get("t1")!.x).toBeCloseTo(800, 0);
+    a.tick(100); // t=101: inside gap 100→900 (gap=800 > threshold=150) → hidden
+    expect(a.isHidden("t1")).toBe(true);
+    a.tick(800); // t=901: past tMs=900 → visible at last sample
+    expect(a.isHidden("t1")).toBe(false);
+    expect(a.get("t1")!.x).toBeCloseTo(900, 0);
+  });
+
+  it("partial-occlusion: mid-path gap detected with nominal-interval threshold, contiguous runs stay visible", () => {
+    // Spec: samples at tMs 0,100,200,600,700,800 (durationMs 800). Two contiguous runs
+    // (0→100→200 and 600→700→800) with an occlusion gap (200→600, delta=400).
+    // minConsecutiveDelta = 100 (from the contiguous runs); gapThreshold = 150.
+    // The durationMs/2 = 400 heuristic would miss this gap entirely (400 = 400 is not >).
+    const a = fresh();
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
+    const samples = [
+      { tMs:   0, pos: [  0, 0] as [number, number] },
+      { tMs: 100, pos: [100, 0] as [number, number] },
+      { tMs: 200, pos: [200, 0] as [number, number] },
+      { tMs: 600, pos: [600, 0] as [number, number] },
+      { tMs: 700, pos: [700, 0] as [number, number] },
+      { tMs: 800, pos: [800, 0] as [number, number] },
+    ];
+    a.animateSamples("t1", samples, 800, 0, () => 0);
+
+    // t=0: visible at first sample.
+    expect(a.isHidden("t1")).toBe(false);
+    expect(a.get("t1")!.x).toBeCloseTo(0, 0);
+
+    // t=100: still visible, at second sample (segment 0→100, gap=100 ≤ 150).
+    a.tick(100);
+    expect(a.isHidden("t1")).toBe(false);
+    expect(a.get("t1")!.x).toBeCloseTo(100, 0);
+
+    // t=201: inside 200→600 gap (delta=400 > threshold=150) → hidden.
+    a.tick(101);
+    expect(a.isHidden("t1")).toBe(true);
+
+    // t=601: inside 600→700 run (delta=100 ≤ threshold=150) → visible again.
+    a.tick(400);
+    expect(a.isHidden("t1")).toBe(false);
+    expect(a.get("t1")!.x).toBeCloseTo(601, 0);
+
+    // t=850: settle region past last sample → visible.
+    a.tick(249);
+    expect(a.isHidden("t1")).toBe(false);
+  });
+
+  it("setTarget before animateSamples: sample animation takes precedence over ease-to-stop", () => {
+    // Reproduces the typical server ordering: the authoritative position Event (→ setTarget via
+    // reconcile) arrives before the MoveStream broadcast (→ animateSamples). samplesAnim must
+    // cancel the ease entry and drive the token along the sample trajectory (y=500 path), NOT
+    // along the straight ease to stop (y=0 path).
+    const a = fresh();
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 }); // snap to origin
+    // Ease-to-stop registered by reconcile for the authoritative position Event (stop at x=1000, y=0).
+    a.setTarget("t1", { x: 1000, y: 0, rotation: 0 });
+    // MoveStream arrives: samples along y=500 (perpendicular to the ease path).
+    a.animateSamples(
+      "t1",
+      [{ tMs: 0, pos: [0, 500] }, { tMs: 500, pos: [500, 500] }],
+      500, 0, () => 0,
+    );
+    // Tick to mid-animation.
+    a.tick(250);
+    // Must match sample interpolation at elapsed=250: 50% of x[0→500]=250, y=500.
+    // The ease path would place y=0; sample path places y=500.
+    expect(a.get("t1")!.y).toBeCloseTo(500, 0);
+    expect(a.get("t1")!.x).toBeCloseTo(250, 0);
   });
 
   it("catch-up: jumps to the server-aligned position when startServerMs is in the past", () => {

@@ -86,7 +86,11 @@ optimistically and roll back on divergence.
   generic (no path geometry / vision state disclosed — no-geometry-leak invariant). `conn.rs`
   `handle_move_request` dispatches `execute_move`, then broadcasts `MoveStream` to the scene.
   Client animation is driven by `TokenAnimator.animateSamples` (time-tagged playback, catch-up on
-  late arrival, gap/occlusion detection: gap threshold = `durationMs / 2`). Wired end-to-end:
+  late arrival, gap/occlusion detection: gap threshold = `minConsecutiveDelta × 1.5` where
+  `minConsecutiveDelta` is the minimum positive inter-sample interval across all consecutive pairs;
+  Infinity for < 3 samples — no interior gap detectable). `animateSamples` cancels any competing
+  ease-to-stop `anim` entry (handles Event-before-MoveStream ordering); `setTarget` is a no-op
+  while `samplesAnim` is live (handles MoveStream-before-Event ordering). Wired end-to-end:
   `WsClient.onMoveStream` → `worldSession` → `SceneInteractionBridge.animateSamples` →
   `RenderEngine` → `TokenView` / `TokenAnimator`. `onMoveStream` listeners survive reconnects
   (NOT cleared in `failPending`).

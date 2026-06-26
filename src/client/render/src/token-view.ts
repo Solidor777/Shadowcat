@@ -21,6 +21,9 @@ interface TokenSystem {
 export class TokenView {
   private readonly animator = new TokenAnimator();
   private readonly specs = new Map<string, TokenNodeSpec>();
+  /** Tracks tokens that were hidden on the previous push call, to detect visible↔hidden
+   * transitions and call removeToken only once per gap entry (not every tick). */
+  private readonly wasHidden = new Set<string>();
   /** A locally-dragged token id snaps to its target each reconcile (no tween lag);
    * remote tokens still tween. Set by the move tool via the engine. */
   private dragging: string | null = null;
@@ -100,6 +103,7 @@ export class TokenView {
       if (seen.has(id)) continue;
       this.specs.delete(id);
       this.animator.remove(id);
+      this.wasHidden.delete(id);
       this.backend.removeToken(id);
     }
   }
@@ -109,16 +113,26 @@ export class TokenView {
   }
 
   /** Push a token to the backend with its latest visual + current (tweened) transform.
-   * Coupling: if the animator marks the token hidden (occlusion gap), removes it from the
-   * backend so it disappears for the viewer; the next non-hidden tick re-adds it. */
+   * INVARIANT: removeToken is called exactly once per visible→hidden transition (gap entry),
+   * not every tick. setToken is called on every visible tick. wasHidden tracks the prior-call
+   * state to detect transitions without querying backend state.
+   * Coupling: reconcile respects isHidden through this path; wasHidden is cleared on token
+   * removal so a re-created token starts from a clean visible state. */
   private push(id: string): void {
     const spec = this.specs.get(id);
     const t = this.animator.get(id);
     if (!spec) return;
-    if (this.animator.isHidden(id)) {
-      this.backend.removeToken(id);
+    const hidden = this.animator.isHidden(id);
+    if (hidden) {
+      if (!this.wasHidden.has(id)) {
+        // Transition: visible → hidden. Remove from backend once at gap entry.
+        this.backend.removeToken(id);
+        this.wasHidden.add(id);
+      }
       return;
     }
+    // Visible: clear wasHidden (handles gap-exit transition implicitly) and update backend.
+    this.wasHidden.delete(id);
     if (t) this.backend.setToken(id, { ...spec, x: t.x, y: t.y, rotation: t.rotation });
   }
 

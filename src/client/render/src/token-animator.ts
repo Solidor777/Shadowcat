@@ -18,8 +18,8 @@ interface SamplesAnim {
   elapsed: number;
   durationMs: number;
   /** Gap threshold: consecutive tMs gaps exceeding this are treated as occlusion spans.
-   * Formula: durationMs/2. Rationale: any span larger than half the animation budget
-   * cannot be a normal inter-sample interval, so it must be a visibility gap. */
+   * Computed as minConsecutiveDelta × 1.5 (nominal-interval-based); Infinity when fewer than
+   * 3 samples are present (no interior gap distinguishable with ≤ 1 delta). */
   gapThreshold: number;
 }
 
@@ -32,6 +32,25 @@ export interface AnimationConfig {
 }
 
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+
+/** Compute the gap detection threshold for occlusion spans from a sample list.
+ * Strategy: minimum positive consecutive inter-sample interval × 1.5. Contiguous (non-occluded)
+ * sample pairs produce ≈ the nominal inter-sample interval; occlusion gaps are larger and exceed
+ * this threshold. Replaces the durationMs/2 heuristic, which only catches gaps larger than half
+ * the total animation (misses mid-path occlusion spans shorter than that — secrecy violation).
+ * Degenerate: fewer than 3 samples (≤ 1 interior delta) → Infinity (gap detection disabled;
+ * no interior segment is distinguishable when only one delta exists). */
+function computeGapThreshold(samples: MoveSample[]): number {
+  if (samples.length < 3) return Infinity;
+  let minDelta = Infinity;
+  for (let i = 0; i < samples.length - 1; i++) {
+    const d = samples[i + 1].tMs - samples[i].tMs;
+    if (d > 0) minDelta = Math.min(minDelta, d);
+  }
+  // All deltas zero (degenerate timestamp data) → disable gap detection.
+  if (!Number.isFinite(minDelta)) return Infinity;
+  return minDelta * 1.5;
+}
 
 interface Anim {
   /** Polyline in scene px; `poly[0]` is the start captured at (re)target time. */
@@ -83,10 +102,11 @@ export class TokenAnimator {
 
   /** Begin sample-driven playback from a server broadcast MoveStream. Interpolates the token
    * position between adjacent samples by tMs on the server-aligned clock; hides the token during
-   * spans whose tMs gap exceeds durationMs/2 (server-clipped occlusion). Catch-up: if the server
-   * clock (serverNow) is ahead of startServerMs, playback begins from the matching elapsed offset.
-   * Coexists with any active polyline Anim; a subsequent setTarget retargets from the final
-   * position after playback settles.
+   * spans whose tMs gap exceeds the nominal-interval-based threshold (minConsecutiveDelta × 1.5).
+   * Cancels any competing ease-to-stop Anim entry for this id: handles the typical server ordering
+   * where the authoritative position Event (→ setTarget) arrives before the MoveStream broadcast.
+   * Catch-up: if the server clock (serverNow) is ahead of startServerMs, playback begins from the
+   * matching elapsed offset.
    *
    * @param serverNow Optional injected server clock (defaults to Date.now). Used only once at
    *   call time to compute the initial catch-up offset; subsequent ticks use the render clock. */
@@ -99,8 +119,12 @@ export class TokenAnimator {
   ): void {
     if (samples.length === 0) return;
     const initialElapsed = serverNow ? Math.max(0, serverNow() - startServerMs) : 0;
-    const gapThreshold = durationMs / 2;
+    const gapThreshold = computeGapThreshold(samples);
     const sa: SamplesAnim = { samples, elapsed: initialElapsed, durationMs, gapThreshold };
+    // Cancel any competing ease-to-stop Anim: samplesAnim takes exclusive precedence.
+    // Coupling: the authoritative position Event arrives before the MoveStream broadcast
+    // (normal server ordering), so reconcile() → setTarget already registered an ease entry.
+    this.anim.delete(id);
     this.samplesAnim.set(id, sa);
     // Ensure cur exists so tick + push work even if the token was never setTarget-ed locally.
     if (!this.cur.has(id)) {
@@ -111,6 +135,10 @@ export class TokenAnimator {
   }
 
   setTarget(id: string, t: TokenTransform): void {
+    // Guard: do not start an ease tween while sample playback is live for this id.
+    // Handles MoveStream-before-Event ordering: samplesAnim registered first; the late-arriving
+    // authoritative Event must not override the in-progress broadcast trajectory.
+    if (this.samplesAnim.has(id)) return;
     const c = this.cur.get(id);
     if (!c) {
       this.cur.set(id, { ...t }); // brand-new → snap
@@ -268,6 +296,9 @@ export class TokenAnimator {
       moved.push(id);
     }
     for (const [id, a] of this.anim) {
+      // samplesAnim takes exclusive precedence; anim.delete(id) in animateSamples prevents this
+      // in normal Event-before-MoveStream ordering. Explicit guard for reverse-ordering edge cases.
+      if (this.samplesAnim.has(id)) continue;
       a.elapsed += dtMs;
       const tRaw = Math.min(1, a.elapsed / a.duration);
       const e = applyEasing(a.easing, tRaw);
