@@ -29,6 +29,15 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 - `AppContext.pathfind` (`src/client/ui-kit/src/appContext.ts`) — correlated-request seam: issues a
   `Pathfind` frame via `WsClient.pathfind` and resolves with `PathResult` or rejects with
   `PathError`; wired through `WorldSession` and consumed by `scene-tools` measure-tool route mode.
+- `WsClient.moveRequest(scene, tokenId, path) → Promise<MoveExecuted>` (`src/client/core/src/ws-client.ts`)
+  — correlated-request mirror of `pathfind`: sends `MoveRequest`, resolves on `move_executed` reply
+  (camelCase-mapped: `tokenId`, `renderPath`, `durationMs`), rejects on `move_error` or timeout
+  (default 10 s). Pure transport — no client-side movement logic. Keyed in the shared `pending` map
+  alongside search and pathfind.
+- `AppContext.moveRequest` (`src/client/ui-kit/src/appContext.ts`) — AppContext seam wired through
+  `WorldSession`; consumed by scene-tools measure-tool route-commit. The measure-tool sends
+  `MoveRequest` and animates the returned `renderPath` via the M10e-5 animator. Optimistic dispatch
+  + `collinearRuns` chaining were removed; route-commit is now request-only.
 - `src/client/shell/src/` — `App.svelte`, `main.ts`, `lib/` (hash router, api client, session,
   WorldSession controller, default-module wiring).
 - `src/modules/{entry,core-ui,topbar,statusbar,settings,game-settings}/` — entry =

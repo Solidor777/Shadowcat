@@ -40,6 +40,18 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   structs): gradation `Band`s (`sorted_bands`/`band_index`/`floor_min`), `Light` radial falloff
   (`light_illumination`), `cell_illumination` (max-compose env + lights, `blocksLight` occlusion via
   `point_in_poly`). Clean-room. Non-finite/empty inputs fail closed (under-reveal).
+- `src/server/src/scene/move_exec.rs` — pure, lock-free `execute_move(ecs, scene, token, path,
+  restriction, visible, cell) -> Result<MoveOutcome, MoveReject>` (M1 server-authoritative movement):
+  walks the path step by step — (1) wall gate (`blocks_move`, all modes incl. GM), (2) vision-mask
+  gate (`supercover_cells` + `visible` membership, skipped for `Unrestricted`), (3) region-arrest
+  hook (`region_arrests` — inert stub, always `false`, until M10g). Returns `stop` + `render_path`
+  (legal prefix) + `truncated`. `MAX_MOVE_PATH=256` DoS guard. `MoveReject` variants: `NotAToken`,
+  `EmptyPath`, `TooLong`, `Degenerate` (non-finite coords / bad start / non-adjacent king-step).
+  `region_arrests` and `cost_field` are both inert stubs until M10g — do not implement region
+  behavior there.
+- `src/server/src/scene/mod.rs` — adds `SceneEcs::token_position(token) -> Option<(f64,f64)>` and
+  `SceneEcs::resolved_animation_speed() -> f64` (`pub(crate)` seams; the latter sits alongside
+  `resolved_diagonal_rule`, sources `world_settings.animation`, defaults to 6 cells/sec).
 - `src/server/src/scene/explored.rs` — `ExploredSet` fog memory: `mark_polygons(polys, cell_size)`,
   `to_bytes`/`from_bytes` (persistence), cell-based.
 - `src/server/src/scene/pathfinding.rs` — pure, headless grid A* (no I/O; clean-room):
@@ -143,6 +155,15 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   asymmetry is intentional: route ⊆ gate-allowed keeps the preview from suggesting a move the router
   would reject. The route never threads cells the gate would block (`visible_cells` mask is shared —
   spec §13). Never make the pathfinder mask test weaker than the gate mask.
+- **M1 executor per-cell parity (spec §13):** `execute_move` uses the SAME `blocks_move` +
+  `supercover_cells` + `visible` membership as the M10e-4 `publish` move gate — per-cell decision
+  parity, NO fork. A divergence between the executor and the gate equals a movement-into-fog leak.
+  The executor is additionally STRICTER on path shape (requires king-step adjacency per consecutive
+  waypoint pair; the legacy `publish` whole-segment gate does not enforce this). For `Revealed`, the
+  caller MUST pass `visible_cells ∪ explored` as the `visible` argument (not raw `visible_cells`
+  alone) — same union `publish` uses. Do NOT re-grant GM wall-bypass in `execute_move`: GMs are
+  folded to `Unrestricted` (mask-skip) but `blocks_move` is still enforced for GMs. This
+  intentionally diverges from `publish`'s legacy GM wall-bypass (to be retired).
 
 ## Gotchas
 

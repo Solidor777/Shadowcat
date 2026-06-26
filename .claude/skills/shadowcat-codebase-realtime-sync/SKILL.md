@@ -23,6 +23,23 @@ optimistically and roll back on divergence.
   scene entities (`query_scene_entities`) **plus** the M10e-2 world config-docs
   `world-settings`/`light-gradation`/`vision-modes` + actors (`query_documents`), seeded via
   `SceneEcs::set_world_config`/`set_actors`; the live `apply_op` path keeps the side-tables current.
+  **M1 additions:**
+  - `Room::commit_ops_locked(repo, ctx, ops, ts)` (`pub(crate)`) — gate-free authoritative write
+    tail (apply_intent → ECS-hydrate → ring/seq → broadcast Event → stats). Extracted from
+    `publish`; PRECONDITION: caller MUST already hold `publish_guard`. Non-reentrant — do NOT
+    re-acquire `publish_guard` inside (tokio `Mutex` would deadlock). Both `publish` and
+    `execute_move` call this as their commit step.
+  - `Room::execute_move(repo, ctx, scene_id, token, path, ts)` — server-authoritative token move.
+    Acquires `publish_guard` at the TOP and HOLDS it across the entire validate→commit critical
+    section (mirrors `publish` atomicity). Scene read locks are scoped and dropped before the
+    `get_explored().await` (no lock across await); `publish_guard` (tokio `Mutex`) is intentionally
+    held across awaits. Calls `move_exec::execute_move` (pure, lock-free), then `commit_ops_locked`
+    (single acquisition, no re-entry). Atomic single position write (`/system/x` + `/system/y`
+    OCC pre-image ops). Returns `MoveExecution { stop, render_path, duration_ms }`.
+  - `moving: Mutex<HashMap<Uuid, i64>>` — per-token moving lock: token → move-end epoch-ms. Lazy
+    expiry (no timer); absent or expired entry allows the move. Updated after each successful commit
+    (still inside `publish_guard`). In-memory only — cleared on server restart (move state is derived,
+    not durable).
 - `src/server/src/ws/protocol.rs` — client/server message frames; `ServerMsg`, `event_seq()`.
 - `src/server/src/ws/conn.rs` — per-connection loop + egress; `ws/time.rs` — server time source +
   client offset calibration (exists before its consumer, per ARCHITECTURE §2 invariant 2).
@@ -58,9 +75,18 @@ optimistically and roll back on divergence.
 - **Live search rides the broadcast** as top-N subscriptions over the same egress
   [[m6c-2-live-search]].
 - **One-shot correlated request pairs** (`Search`→`SearchResult`/`SearchError`;
-  `Pathfind`→`PathResult`/`PathError`) route replies to the requesting connection only (never
-  broadcast); correlated by `request_id` via the `pending` map in `WsClient`. See
-  `src/client/core/src/ws-client.ts` (`pathfind`) and `src/server/src/ws/protocol.rs`.
+  `Pathfind`→`PathResult`/`PathError`; `MoveRequest`→`MoveExecuted`/`MoveError`) route replies to
+  the requesting connection only (never broadcast); correlated by `request_id` via the `pending` map
+  in `WsClient`. See `src/client/core/src/ws-client.ts` and `src/server/src/ws/protocol.rs`.
+  `MoveExecuted` carries `stop`, `render_path`, and `duration_ms` (mover-only in M1; observers
+  receive the atomic position `Event` from `commit_ops_locked`). `MoveError` message is always
+  generic ("move rejected") — no path geometry or vision state disclosed (no-geometry-leak
+  invariant). `conn.rs` `handle_move_request` dispatches `execute_move` and sends the reply to
+  `etx` only.
+- **Gated moves are request-only + server-executed (M1 invariant):** the client sends `MoveRequest`
+  and waits; the server validates, executes, and replies. The client MUST NOT apply an optimistic
+  position update for a gated move. The atomic position `Event` (from `commit_ops_locked`) is the
+  authoritative update; the `MoveExecuted` render-path is cosmetic (animation only).
 
 ## Pointers
 
