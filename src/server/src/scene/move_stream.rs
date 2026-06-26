@@ -9,7 +9,8 @@
 //! linear interpolation, and assign `t_ms = s / L * duration_ms`.
 //!
 //! Coupling: `MAX_VISION_SAMPLES` is the shared cap for both position samples
-//! and vision samples (the vision sampler is a future consumer). The cap
+//! and vision samples; vision samples are computed by `Room::execute_move` via
+//! `SceneEcs::player_vision_inputs` + `VisionMoveInputs::polygons_at`. The cap
 //! prevents a pathologically long path from flooding the broadcast.
 
 /// Maximum number of samples in a `MoveStream` (position or vision).
@@ -28,7 +29,7 @@ pub(crate) const SAMPLES_PER_CELL: f64 = 3.0;
 /// A time-tagged vision sample for the mover's fog-sweep trajectory. `t_ms` matches
 /// the corresponding `PosSamplePt.t_ms`; `polygons` are the visible regions computed
 /// via `player_vision_polygons_at` at the sample's viewpoint, scene-local.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct VisionSamplePt {
     /// Elapsed time in milliseconds from the move's `start_server_ms`.
     pub t_ms: f64,

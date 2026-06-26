@@ -119,6 +119,40 @@ pub struct LitScene {
 /// so rays always terminate on the box rather than escaping to infinity.
 const VISION_BOUND_MARGIN: f64 = 100.0;
 
+/// Pre-collected per-move-constant inputs for the mover's vision trajectory.
+/// Holds the full `blocksSight` wall set and the visibility polygons for every stationary
+/// owned token (all owned tokens in the scene except the moving one). Computed once per move
+/// via `SceneEcs::player_vision_inputs`; each sample then calls the cheaper `polygons_at`
+/// (one moving-token raycast only, no repeated O(entities) ECS or wall scan).
+pub(crate) struct VisionMoveInputs {
+    /// Full `blocksSight` wall set (includes `gm_only` walls — full-wall-set invariant, M9b).
+    walls: Vec<vision::Seg>,
+    /// Vision polygons for every owned token in the scene EXCEPT the moving token, at their
+    /// committed (stationary) positions. Constant across all samples of one move.
+    static_polys: Vec<Vec<vision::P>>,
+    /// True when the user owns no token in this scene: `polygons_at` returns empty (fail-closed).
+    empty: bool,
+}
+
+impl VisionMoveInputs {
+    /// Per-sample: compute the moving token's visibility polygon at `viewpoint` and prepend it
+    /// to the precomputed static polygons. Returns empty when `empty == true` (no owned token
+    /// in this scene — fail-closed). Uses the same `sight_walls` set and raycast primitives as
+    /// `player_vision_polygons` (full-wall-set invariant, M9b; no fork).
+    pub(crate) fn polygons_at(&self, viewpoint: (f64, f64)) -> Vec<Vec<vision::P>> {
+        if self.empty {
+            return Vec::new();
+        }
+        let bound = vision::bound_for(viewpoint, &self.walls, VISION_BOUND_MARGIN);
+        let moving_poly = vision::visibility_polygon(viewpoint, &self.walls, bound);
+        // Moving token's polygon first (index 0); static polygons follow.
+        let mut out = Vec::with_capacity(1 + self.static_polys.len());
+        out.push(moving_poly);
+        out.extend_from_slice(&self.static_polys);
+        out
+    }
+}
+
 /// The per-world derived world. Writes are serialized by the caller
 /// (`Room::publish` under `publish_guard`); reads (derived recompute) take a
 /// shared borrow.
@@ -635,25 +669,23 @@ impl SceneEcs {
         out
     }
 
-    /// Vision polygons for `user` in `scene` as if their `moving_token` were at `viewpoint`:
-    /// one polygon for `moving_token` at `viewpoint`, plus one for each other owned token in
-    /// `scene` at its committed position. Scene-local. Empty when the user owns no token here.
-    ///
-    /// Reuses the FULL `sight_walls` set (same as `player_vision_polygons`): a `gm_only` wall
-    /// the player cannot read still occludes the raycast. The server never leaks the wall's
-    /// existence to clients; it only uses it for geometry (full-wall-set invariant, M9b).
+    /// Pre-collect the per-move-constant vision inputs for the mover's fog-sweep trajectory:
+    /// the full `blocksSight` wall set (computed once) and the visibility polygons for every
+    /// owned token in `scene` EXCEPT `moving_token` (whose viewpoint varies per sample).
+    /// Call once per move; then call `VisionMoveInputs::polygons_at` once per sample to obtain
+    /// the moving token's polygon at that sample's viewpoint unioned with the static polygons.
     ///
     /// INVARIANT: same wall set and same raycast primitives as `player_vision_polygons`; no fork.
-    pub(crate) fn player_vision_polygons_at(
+    pub(crate) fn player_vision_inputs(
         &self,
         user: Uuid,
         scene: Uuid,
         moving_token: Uuid,
-        viewpoint: (f64, f64),
-    ) -> Vec<Vec<vision::P>> {
-        // Gather viewpoints: for `moving_token` use `viewpoint`; for other owned tokens in
-        // `scene` use their committed (x, y). Drop the query borrow before wall queries.
-        let mut vps: Vec<vision::P> = Vec::new();
+    ) -> VisionMoveInputs {
+        // Collect static-token viewpoints (non-moving owned tokens in `scene`). Drop the query
+        // borrow before wall queries — mirrors player_vision_polygons collect-then-query order.
+        let mut static_vps: Vec<vision::P> = Vec::new();
+        let mut has_owned = false;
         for e in self.world.query::<&SceneEntity>().iter() {
             if e.doc.doc_type != "token"
                 || e.doc.parent_id != Some(scene)
@@ -661,24 +693,53 @@ impl SceneEcs {
             {
                 continue;
             }
+            has_owned = true;
             if e.doc.id == moving_token {
-                // Use the hypothetical viewpoint instead of the committed position.
-                vps.push(viewpoint);
-            } else if let (Some(x), Some(y)) = (sys_f64(&e.doc, "/x"), sys_f64(&e.doc, "/y")) {
-                vps.push((x, y));
+                continue; // mover's viewpoint varies per sample; skip here
+            }
+            if let (Some(x), Some(y)) = (sys_f64(&e.doc, "/x"), sys_f64(&e.doc, "/y")) {
+                static_vps.push((x, y));
             }
         }
-        if vps.is_empty() {
-            return Vec::new();
+        if !has_owned {
+            return VisionMoveInputs {
+                walls: Vec::new(),
+                static_polys: Vec::new(),
+                empty: true,
+            };
         }
-        // Full wall set (same as player_vision_polygons): gm_only walls still occlude.
+        // Full wall set: computed once for the entire move (same as player_vision_polygons).
         let walls = self.sight_walls(scene);
-        let mut out = Vec::with_capacity(vps.len());
-        for vp in vps {
-            let bound = vision::bound_for(vp, &walls, VISION_BOUND_MARGIN);
-            out.push(vision::visibility_polygon(vp, &walls, bound));
+        // Static polygons: one per stationary owned token; constant across all samples.
+        let static_polys = static_vps
+            .iter()
+            .map(|&vp| {
+                let bound = vision::bound_for(vp, &walls, VISION_BOUND_MARGIN);
+                vision::visibility_polygon(vp, &walls, bound)
+            })
+            .collect();
+        VisionMoveInputs {
+            walls,
+            static_polys,
+            empty: false,
         }
-        out
+    }
+
+    /// Single-viewpoint convenience wrapper used by the `vision_at_*` tests. Production code
+    /// calls `player_vision_inputs` once per move and then `VisionMoveInputs::polygons_at` per
+    /// sample to avoid repeating the O(entities) ECS and wall scans each iteration.
+    ///
+    /// INVARIANT: same wall set and same raycast primitives as `player_vision_polygons`; no fork.
+    #[cfg(test)]
+    pub(crate) fn player_vision_polygons_at(
+        &self,
+        user: Uuid,
+        scene: Uuid,
+        moving_token: Uuid,
+        viewpoint: (f64, f64),
+    ) -> Vec<Vec<vision::P>> {
+        let inputs = self.player_vision_inputs(user, scene, moving_token);
+        inputs.polygons_at(viewpoint)
     }
 
     /// Each scene's grid cell size (`system.grid.size`), defaulting to 100 — the unit the M9c

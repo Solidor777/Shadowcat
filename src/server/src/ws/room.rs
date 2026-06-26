@@ -531,20 +531,18 @@ impl Room {
             // GM mover (Unrestricted) → None (no fog to sweep). Player movers get a per-sample
             // vision polygon at each hypothetical position along the trajectory. The SAME
             // full sight_walls set is used as for static vision (M9b full-wall-set invariant).
+            // Hoisting: player_vision_inputs collects walls + static-token polygons ONCE per move;
+            // each sample calls polygons_at (one moving-token raycast only, no repeated ECS scan).
             mover_vision = if matches!(restriction, MovementRestriction::Unrestricted) {
                 None
             } else {
+                let vision_inputs = scene.player_vision_inputs(ctx.user_id, scene_id, token);
                 Some(
                     samples
                         .iter()
                         .map(|s| crate::scene::move_stream::VisionSamplePt {
                             t_ms: s.t_ms,
-                            polygons: scene.player_vision_polygons_at(
-                                ctx.user_id,
-                                scene_id,
-                                token,
-                                s.pos,
-                            ),
+                            polygons: vision_inputs.polygons_at(s.pos),
                         })
                         .collect(),
                 )
@@ -563,7 +561,10 @@ impl Room {
                     t_ms: 0.0,
                     pos: start,
                 }],
-                mover_vision: None, // no animation for zero-progress → no fog sweep
+                // None regardless of world role: zero-progress has no animation or fog sweep.
+                // Deliberate exception to the convention that None signals a GM (Unrestricted)
+                // mover — here None signals stop == start, not an Unrestricted restriction.
+                mover_vision: None,
             });
         }
 
