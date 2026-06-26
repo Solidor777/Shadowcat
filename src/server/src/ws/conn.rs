@@ -1398,14 +1398,23 @@ mod tests {
             Uuid::from_u128(7),
         )
         .await;
+        // Goal cell-center: start=(50,50) + one step right on a 100-unit grid → (150,50).
+        let expected_goal = [150.0_f64, 50.0_f64];
         match frame {
             ServerMsg::MoveExecuted {
                 request_id,
                 render_path,
+                stop,
                 ..
             } => {
                 assert_eq!(request_id, Uuid::from_u128(7));
                 assert!(!render_path.is_empty(), "render_path must be non-empty");
+                assert_eq!(stop, expected_goal, "stop must equal the goal cell-center");
+                assert_eq!(
+                    render_path.last().copied(),
+                    Some(expected_goal),
+                    "render_path must terminate at the goal cell-center"
+                );
             }
             other => panic!("expected MoveExecuted, got {other:?}"),
         }

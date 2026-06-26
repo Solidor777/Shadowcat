@@ -222,10 +222,11 @@ pub enum ServerMsg {
     },
     /// The `Pathfind` with this `request_id` failed (unreachable / invalid request / search exceeded).
     PathError { request_id: Uuid, message: String },
-    /// Confirms a `MoveRequest` was accepted and executed. Broadcast to the scene room so all
-    /// observers can animate the token. `render_path` is the authoritative route (may differ from
-    /// the client's preview if the server recomputed it); `stop` is the final position.
-    /// `duration_ms` is the animation wall-clock budget derived from world animation settings.
+    /// Reply to the originating connection only (mover-only): carries the cosmetic render-path
+    /// the mover animates. Observers receive the token's stop position via the authoritative
+    /// `Event` broadcast from the move commit; the render-path is not broadcast in M1.
+    /// `render_path` is the authoritative route; `stop` is the final position; `duration_ms`
+    /// is the animation wall-clock budget derived from world animation settings.
     MoveExecuted {
         request_id: Uuid,
         token_id: Uuid,
