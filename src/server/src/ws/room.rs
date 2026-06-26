@@ -18,14 +18,20 @@ use crate::scene::SceneEcs;
 use crate::ws::protocol::{ResyncSource, ServerMsg};
 
 /// The room-facing result of a server-authoritative token move: the stop cell, the legal
-/// prefix of the path that was walked (render animation input), and the animation duration.
-pub struct MoveExecution {
+/// prefix of the path that was walked (render animation input), the animation duration,
+/// and the time-tagged position samples for `MoveStream` broadcast playback.
+pub(crate) struct MoveExecution {
     /// The last successfully reached path coordinate (the committed position after the move).
     pub stop: (f64, f64),
     /// The legal prefix of the requested path including `start` through `stop`.
+    /// Retained for future vision-sample and per-recipient clipping consumers.
+    #[allow(dead_code)]
     pub render_path: Vec<(f64, f64)>,
     /// Animation duration in milliseconds (distance / cell / speed * 1000). Zero when stop == start.
     pub duration_ms: f64,
+    /// Time-tagged position samples for `MoveStream` broadcast playback.
+    /// Non-empty; the first sample has `t_ms == 0.0` at the starting position.
+    pub samples: Vec<crate::scene::move_stream::PosSamplePt>,
 }
 
 const MAX_EVENTS: usize = 1024;
@@ -373,7 +379,7 @@ impl Room {
     /// the move. After a successful commit the entry is updated to `now + duration_ms`. Lazy
     /// expiry — no cleanup timer; a fresh server reload has no in-memory lock, consistent with
     /// the atomic-state invariant (the lock is a liveness hint, not durable state).
-    pub async fn execute_move(
+    pub(crate) async fn execute_move(
         &self,
         repo: &dyn Repository,
         ctx: &PermissionContext,
@@ -520,6 +526,10 @@ impl Room {
                 stop: start,
                 render_path: vec![start],
                 duration_ms: 0.0,
+                samples: vec![crate::scene::move_stream::PosSamplePt {
+                    t_ms: 0.0,
+                    pos: start,
+                }],
             });
         }
 
@@ -563,10 +573,14 @@ impl Room {
             moving.insert(token, now + (duration_ms.ceil() as i64).max(1));
         }
 
+        let samples =
+            crate::scene::move_stream::sample_path(&outcome.render_path, cell, duration_ms);
+
         Ok(MoveExecution {
             stop: outcome.stop,
             render_path: outcome.render_path,
             duration_ms,
+            samples,
         })
     }
 

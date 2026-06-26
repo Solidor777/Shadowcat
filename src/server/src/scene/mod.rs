@@ -5,6 +5,7 @@
 pub mod explored;
 pub mod lighting;
 pub(crate) mod move_exec;
+pub(crate) mod move_stream;
 pub mod movement;
 pub(crate) mod pathfinding;
 pub mod vision;

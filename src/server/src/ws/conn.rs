@@ -332,12 +332,13 @@ async fn handle_socket(
                             }
                         }
                         Ok(ClientMsg::MoveRequest { request_id, scene, token_id, path }) => {
-                            // Server-authoritative move execution. Resolves room, calls
-                            // execute_move, replies MoveExecuted to the requester's etx only.
-                            // INVARIANT (one-shot-to-requester): the atomic position Event
-                            // broadcast to the room is produced by execute_move internally;
-                            // the MoveExecuted reply (carrying render_path) goes to etx only.
-                            let frame = handle_move_request(
+                            // Server-authoritative move execution. On success, broadcasts
+                            // MoveStream out-of-band to the room — no etx reply to the requester.
+                            // On failure, returns MoveError to etx only (no geometry leak).
+                            // INVARIANT (broadcast-not-requester): the atomic position Event
+                            // from commit_ops_locked + the MoveStream broadcast are the
+                            // notifications; no success frame is sent to the requester's etx.
+                            if let Some(err_frame) = handle_move_request(
                                 &room,
                                 repo.as_ref(),
                                 &ctx,
@@ -346,9 +347,11 @@ async fn handle_socket(
                                 path,
                                 request_id,
                             )
-                            .await;
-                            if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
-                                break;
+                            .await
+                            {
+                                if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                    break;
+                                }
                             }
                         }
                         Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius }) => {
@@ -452,11 +455,15 @@ async fn handle_pathfind(
 
 /// Resolve and execute a server-authoritative one-shot move request.
 ///
-/// INVARIANT (one-shot-to-requester): the `MoveExecuted` reply is returned to the caller for
-/// placement on `etx` only — it is never broadcast. The atomic position `Event` is already
-/// broadcast by `Room::execute_move` via `commit_ops_locked`.
+/// INVARIANT (broadcast-not-requester): on success, broadcasts `MoveStream` out-of-band to the
+/// room via `broadcast_aux` (no seq, mirrors `ScenePing`). No success frame is returned to
+/// the requester's `etx` — the broadcast IS the notification. The atomic position `Event`
+/// from `commit_ops_locked` carries the authoritative position update for document-store sync.
 /// INVARIANT (no-geometry-leak): on any `execute_move` failure the reply is a generic
-/// `MoveError { message: "move rejected" }` — no path geometry or vision state is disclosed.
+/// `MoveError { message: "move rejected" }` to `etx` only — no path geometry or vision state
+/// is disclosed.
+/// INVARIANT (mover_vision: None): vision sample population is deferred; this handler emits
+/// the full unclipped position samples for all recipients. Per-recipient clipping follows.
 async fn handle_move_request(
     room: &crate::ws::room::Room,
     repo: &dyn crate::data::repository::Repository,
@@ -466,7 +473,7 @@ async fn handle_move_request(
     // Ordered cell-center scene points: start … goal as `[f64; 2]` wire arrays.
     path: Vec<[f64; 2]>,
     request_id: Uuid,
-) -> ServerMsg {
+) -> Option<ServerMsg> {
     // Convert wire `[f64; 2]` arrays to the internal `(f64, f64)` tuple representation
     // expected by `Room::execute_move`.
     let path_tuples: Vec<(f64, f64)> = path.iter().map(|p| (p[0], p[1])).collect();
@@ -474,17 +481,34 @@ async fn handle_move_request(
         .execute_move(repo, ctx, scene_id, token_id, path_tuples, now_millis())
         .await
     {
-        Ok(exec) => ServerMsg::MoveExecuted {
-            request_id,
-            token_id,
-            stop: [exec.stop.0, exec.stop.1],
-            render_path: exec.render_path.iter().map(|p| [p.0, p.1]).collect(),
-            duration_ms: exec.duration_ms,
-        },
-        Err(_) => ServerMsg::MoveError {
+        Ok(exec) => {
+            use crate::ws::protocol::PosSample;
+            let frame = ServerMsg::MoveStream {
+                request_id,
+                token_id,
+                mover: ctx.user_id,
+                scene: scene_id,
+                start_server_ms: now_millis() as f64,
+                duration_ms: exec.duration_ms,
+                stop: [exec.stop.0, exec.stop.1],
+                samples: exec
+                    .samples
+                    .iter()
+                    .map(|s| PosSample {
+                        t_ms: s.t_ms,
+                        pos: [s.pos.0, s.pos.1],
+                    })
+                    .collect(),
+                mover_vision: None,
+            };
+            room.broadcast_aux(frame);
+            // No success frame to the requester: the broadcast is the notification.
+            None
+        }
+        Err(_) => Some(ServerMsg::MoveError {
             request_id,
             message: "move rejected".into(),
-        },
+        }),
     }
 }
 
@@ -1288,15 +1312,16 @@ mod tests {
         );
     }
 
-    /// `handle_move_request` executes a move for a player-owned token and replies
-    /// `MoveExecuted` to the requester only. The reply carries the authoritative
-    /// `render_path` (at least the start cell) and the correlated `request_id`.
-    /// The atomic position `Event` is broadcast by `execute_move` internally.
+    /// `handle_move_request` executes a move, broadcasts `MoveStream` to the room,
+    /// and returns no success frame to the requester. The broadcast carries non-empty
+    /// samples terminating at the goal. A rejected move still yields `MoveError` to
+    /// the requester only.
     #[tokio::test]
-    async fn handle_move_request_executes_and_replies_to_requester() {
+    async fn handle_move_request_broadcasts_move_stream_no_etx_on_success() {
         use crate::auth::role::ServerRole;
         use crate::data::document::{DocRole, WorldRole};
         use crate::data::membership::PermissionContext;
+        use crate::ws::protocol::ServerMsg;
         use crate::ws::room::RoomRegistry;
 
         let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
@@ -1388,36 +1413,95 @@ mod tests {
         .await
         .unwrap();
 
-        let frame = handle_move_request(
+        // Subscribe BEFORE issuing the request so the broadcast is not missed.
+        let (mut rx, _) = room.subscribe();
+
+        let request_id = Uuid::from_u128(7);
+        let expected_goal = [150.0_f64, 50.0_f64];
+
+        // Success: handle_move_request returns None (no etx frame to the requester).
+        let result = handle_move_request(
             &room,
             repo.as_ref(),
             &player,
             scene_id,
             token_id,
             vec![[50.0, 50.0], [150.0, 50.0]],
-            Uuid::from_u128(7),
+            request_id,
         )
         .await;
-        // Goal cell-center: start=(50,50) + one step right on a 100-unit grid → (150,50).
-        let expected_goal = [150.0_f64, 50.0_f64];
-        match frame {
-            ServerMsg::MoveExecuted {
-                request_id,
-                render_path,
+        assert!(
+            result.is_none(),
+            "success path must return None (no etx frame); got {result:?}"
+        );
+
+        // The broadcast ring must contain a MoveStream observable on a second subscriber.
+        // broadcast_aux sends to existing receivers; rx was subscribed before the call.
+        let bcast = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match rx.recv().await {
+                    Ok(msg) => {
+                        if matches!(*msg, ServerMsg::MoveStream { .. }) {
+                            return Some((*msg).clone());
+                        }
+                        // Skip other frames (e.g. position Event from commit_ops_locked).
+                    }
+                    Err(_) => return None,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for MoveStream broadcast")
+        .expect("receiver closed before MoveStream");
+
+        match bcast {
+            ServerMsg::MoveStream {
+                request_id: rid,
+                token_id: tid,
+                mover,
                 stop,
+                samples,
+                mover_vision,
                 ..
             } => {
-                assert_eq!(request_id, Uuid::from_u128(7));
-                assert!(!render_path.is_empty(), "render_path must be non-empty");
-                assert_eq!(stop, expected_goal, "stop must equal the goal cell-center");
+                assert_eq!(rid, request_id, "request_id must be correlated");
+                assert_eq!(tid, token_id, "token_id must match");
+                assert_eq!(mover, p, "mover must be the player");
+                assert_eq!(stop, expected_goal, "stop must equal the goal");
+                assert!(!samples.is_empty(), "samples must be non-empty");
+                assert!(
+                    (samples[0].t_ms - 0.0).abs() < 1e-9,
+                    "first sample t_ms must be 0"
+                );
                 assert_eq!(
-                    render_path.last().copied(),
-                    Some(expected_goal),
-                    "render_path must terminate at the goal cell-center"
+                    samples.last().unwrap().pos,
+                    expected_goal,
+                    "last sample pos must equal stop"
+                );
+                assert!(
+                    mover_vision.is_none(),
+                    "mover_vision must be None at this stage"
                 );
             }
-            other => panic!("expected MoveExecuted, got {other:?}"),
+            other => panic!("expected MoveStream, got {other:?}"),
         }
+
+        // Rejection: a move for a non-existent token yields MoveError to etx only.
+        let bad_token = Uuid::from_u128(0xDEAD);
+        let err_result = handle_move_request(
+            &room,
+            repo.as_ref(),
+            &player,
+            scene_id,
+            bad_token,
+            vec![[50.0, 50.0], [150.0, 50.0]],
+            Uuid::from_u128(8),
+        )
+        .await;
+        assert!(
+            matches!(err_result, Some(ServerMsg::MoveError { .. })),
+            "rejection must return MoveError; got {err_result:?}"
+        );
     }
 
     /// A token-less player (masked + empty polygons) accumulates nothing and emits empty explored
