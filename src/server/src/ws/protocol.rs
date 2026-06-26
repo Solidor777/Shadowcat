@@ -287,8 +287,9 @@ pub enum ServerMsg {
         /// Ordered position samples along the route (t=0 is start, t=duration_ms is stop).
         /// INVARIANT: non-empty; first sample t_ms == 0.0 is the starting cell-center.
         samples: Vec<PosSample>,
-        /// Per-sample vision polygons for the mover only. `None` for observers (they compute
-        /// their own visibility; sending mover vision to observers would leak unexplored geometry).
+        /// Per-sample vision polygons for the mover only. `None` for observers, who receive
+        /// server-clipped position samples and render against their existing authoritative fog;
+        /// the client computes no vision. Sending mover vision to observers would leak geometry.
         mover_vision: Option<Vec<VisionSample>>,
     },
 }
