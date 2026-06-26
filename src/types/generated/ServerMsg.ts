@@ -51,7 +51,7 @@ mover: string,
 scene: string, 
 /**
  * Authoritative server wall-clock time (ms) at which the animation starts.
- * INVARIANT: must be set before broadcast so all clients sync to the same origin.
+ * INVARIANT: must be set before send so all clients sync to the same origin.
  */
 start_server_ms: number, 
 /**

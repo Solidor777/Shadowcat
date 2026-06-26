@@ -2,13 +2,10 @@
 
 /**
  * A single vision-polygon sample in a `MoveStream` timeline, paired with a `PosSample` by `t_ms`.
- * Each polygon is a convex hull of visible scene coords at that instant. Sent only for the mover.
+ * Ordered `[x,y]` vertices of a visible region at this instant; multiple polygons cover
+ * non-contiguous visible regions. Not necessarily convex. Sent only for the mover.
  */
-export type VisionSample = { 
-/**
- * Elapsed time in milliseconds — matches the corresponding `PosSample.t_ms`.
- */
-t_ms: number, 
+export type VisionSample = { t_ms: number, 
 /**
  * Visibility polygons (scene coords) visible at this instant. Each polygon is
  * an ordered list of [x, y] vertices; multiple polygons cover non-contiguous visible areas.

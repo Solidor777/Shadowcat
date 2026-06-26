@@ -177,12 +177,14 @@ describe("parseServerMsg", () => {
       ],
     };
     const m = parseServerMsg(JSON.stringify(frame));
+    expect(m).not.toBeNull();
     expect(m?.type).toBe("move_stream");
     if (m?.type === "move_stream") {
       expect(m.stop).toEqual([100.0, 200.0]);
       expect(m.samples).toHaveLength(2);
       expect(m.mover_vision).toHaveLength(1);
-      expect(m.mover_vision![0].polygons[0]).toHaveLength(3);
+      const vision = m.mover_vision;
+      if (vision) expect(vision[0].polygons[0]).toHaveLength(3);
     }
   });
 
@@ -200,6 +202,7 @@ describe("parseServerMsg", () => {
       mover_vision: null,
     };
     const m = parseServerMsg(JSON.stringify(frame));
+    expect(m).not.toBeNull();
     expect(m?.type).toBe("move_stream");
     if (m?.type === "move_stream") {
       expect(m.mover_vision).toBeNull();
