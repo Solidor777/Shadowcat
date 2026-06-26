@@ -3,7 +3,7 @@ import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistrySys
 import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec } from "./types";
 import { parseColor } from "./geometry";
-import { TokenAnimator } from "./token-animator";
+import { TokenAnimator, type MoveSample } from "./token-animator";
 import type { EasingMode } from "./easing";
 
 /** Engine-reserved token system fields (M8 §4.2; client-owned). `(x,y)` = center. */
@@ -69,6 +69,20 @@ export class TokenView {
     this.push(id);
   }
 
+  /** Drive server-broadcast sample-based playback. Interpolates position between adjacent samples
+   * by tMs; hides the token across occlusion gaps (server-clipped visibility spans). Catch-up: if
+   * `serverNow()` is ahead of `startServerMs`, playback begins from the matching elapsed offset. */
+  animateSamples(
+    id: string,
+    samples: MoveSample[],
+    durationMs: number,
+    startServerMs: number,
+    serverNow?: () => number,
+  ): void {
+    this.animator.animateSamples(id, samples, durationMs, startServerMs, serverNow);
+    this.push(id);
+  }
+
   reconcile(): void {
     const seen = new Set<string>();
     for (const doc of this.store.query("token")) {
@@ -94,11 +108,18 @@ export class TokenView {
     for (const id of this.animator.tick(dtMs)) this.push(id);
   }
 
-  /** Push a token to the backend with its latest visual + current (tweened) transform. */
+  /** Push a token to the backend with its latest visual + current (tweened) transform.
+   * Coupling: if the animator marks the token hidden (occlusion gap), removes it from the
+   * backend so it disappears for the viewer; the next non-hidden tick re-adds it. */
   private push(id: string): void {
     const spec = this.specs.get(id);
     const t = this.animator.get(id);
-    if (spec && t) this.backend.setToken(id, { ...spec, x: t.x, y: t.y, rotation: t.rotation });
+    if (!spec) return;
+    if (this.animator.isHidden(id)) {
+      this.backend.removeToken(id);
+      return;
+    }
+    if (t) this.backend.setToken(id, { ...spec, x: t.x, y: t.y, rotation: t.rotation });
   }
 
   private toSpec(doc: WireDocument): TokenNodeSpec | null {

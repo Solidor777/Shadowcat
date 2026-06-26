@@ -14,6 +14,7 @@ export function fakeSceneHost(over: Partial<SceneToolHost> = {}): SceneToolHost 
     clearMeasure: () => {},
     addPing: () => {},
     animateAlongPath: () => {},
+    animateSamples: () => {},
     ...over,
   };
 }

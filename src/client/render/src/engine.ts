@@ -379,6 +379,18 @@ export class RenderEngine implements SceneToolHost {
     this.tokens.animateAlongPath(id, path);
   }
 
+  /** Drive server-broadcast sample-based playback (SceneToolHost seam). Forwards to
+   * TokenView; `serverNow` used once at call time for catch-up alignment. */
+  animateSamples(
+    id: string,
+    samples: { tMs: number; pos: [number, number] }[],
+    durationMs: number,
+    startServerMs: number,
+    serverNow?: () => number,
+  ): void {
+    this.tokens.animateSamples(id, samples, durationMs, startServerMs, serverNow);
+  }
+
   dispatchPointerDown(screen: Point, ev: PointerEvent): void {
     if (this.toolGesture || this.panning) return; // a gesture already owns the canvas
     this.activePointerId = ev.pointerId;

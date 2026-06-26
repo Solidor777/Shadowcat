@@ -137,3 +137,57 @@ describe("TokenAnimator duration model", () => {
     expect(a.get("t1")).toBeUndefined();
   });
 });
+
+describe("TokenAnimator.animateSamples", () => {
+  it("interpolates position between adjacent samples by tMs", () => {
+    const a = fresh();
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
+    // serverNow returns startServerMs → initialElapsed = 0.
+    a.animateSamples("t1", [{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [300, 0] }], 1000, 1000, () => 1000);
+    expect(a.get("t1")).toEqual({ x: 0, y: 0, rotation: 0 }); // at t=0
+    expect(a.isHidden("t1")).toBe(false);
+    a.tick(250); // 250 ms elapsed → 50% of [0→300] = 150
+    expect(a.get("t1")!.x).toBeCloseTo(150, 0);
+    expect(a.isHidden("t1")).toBe(false);
+    a.tick(10_000); // settle at last sample
+    expect(a.get("t1")).toEqual({ x: 300, y: 0, rotation: 0 });
+    expect(a.isHidden("t1")).toBe(false);
+  });
+
+  it("hides the token across a gap (consecutive tMs gap > durationMs/2) and reveals at endpoints", () => {
+    const a = fresh();
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
+    // Gap = 800ms; durationMs = 1000; threshold = durationMs/2 = 500 → gap > threshold → hidden.
+    a.animateSamples("t1", [{ tMs: 0, pos: [0, 0] }, { tMs: 800, pos: [800, 0] }], 1000, 1000, () => 1000);
+    expect(a.isHidden("t1")).toBe(false); // visible at first sample (t=0)
+    a.tick(1);   // t=1: inside gap (0,800), gap=800 > threshold=500 → hidden
+    expect(a.isHidden("t1")).toBe(true);
+    a.tick(850); // t=851: past tMs=800 → visible at last sample
+    expect(a.isHidden("t1")).toBe(false);
+    expect(a.get("t1")!.x).toBeCloseTo(800, 0);
+  });
+
+  it("catch-up: jumps to the server-aligned position when startServerMs is in the past", () => {
+    const a = fresh();
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
+    // serverNow = startServerMs + 500 → initialElapsed = 500 → starts at mid-sample
+    const samples = [
+      { tMs: 0, pos: [0, 0] as [number, number] },
+      { tMs: 500, pos: [300, 0] as [number, number] },
+      { tMs: 1000, pos: [600, 0] as [number, number] },
+    ];
+    a.animateSamples("t1", samples, 1000, 1000, () => 1500);
+    // elapsed=500 → interpolating between tMs=500 and tMs=1000 at t=500 → should be at (300,0)
+    expect(a.get("t1")!.x).toBeCloseTo(300, 0);
+  });
+
+  it("settles at last sample position and clears hidden after durationMs", () => {
+    const a = fresh();
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
+    a.animateSamples("t1", [{ tMs: 0, pos: [10, 20] }, { tMs: 500, pos: [100, 200] }], 500, 0, () => 0);
+    a.tick(10_000);
+    expect(a.get("t1")).toEqual({ x: 100, y: 200, rotation: 0 });
+    expect(a.isHidden("t1")).toBe(false);
+    expect(a.tick(16)).toEqual([]); // settled — nothing moves
+  });
+});

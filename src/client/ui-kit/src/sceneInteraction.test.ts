@@ -88,3 +88,14 @@ test("animateAlongPath forwards to the host (no-op when detached)", () => {
   bridge.animateAlongPath("t1", [[0, 0], [1, 1]]);
   expect(calls).toEqual([{ id: "t1", path: [[0, 0], [1, 1]] }]);
 });
+
+test("animateSamples forwards to the host (no-op when detached)", () => {
+  const bridge = new SceneInteractionBridge();
+  const samples = [{ tMs: 0, pos: [0, 0] as [number, number] }, { tMs: 500, pos: [100, 0] as [number, number] }];
+  expect(() => bridge.animateSamples("t1", samples, 1000, 0)).not.toThrow(); // detached: no-op
+  type Call = { id: string; samples: typeof samples; durationMs: number; startServerMs: number };
+  const calls: Call[] = [];
+  bridge.attach(fakeSceneHost({ animateSamples: (id, s, d, st) => calls.push({ id, samples: s as typeof samples, durationMs: d, startServerMs: st }) }));
+  bridge.animateSamples("t1", samples, 1000, 500);
+  expect(calls).toEqual([{ id: "t1", samples, durationMs: 1000, startServerMs: 500 }]);
+});

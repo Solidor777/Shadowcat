@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, type WireOperation, type MoveStream } from "@shadowcat/core";
 import type { Point } from "@shadowcat/render";
 import { SceneInteractionBridge, TokenSelection } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
@@ -358,17 +358,15 @@ function seedRouteCtx(over: {
   return { ctx, now, docs };
 }
 
-test("double-click commits via moveRequest and animates the returned render-path", async () => {
+test("double-click commits via moveRequest (animation is broadcast-driven)", async () => {
   const moves: Array<{ tokenId: string; path: [number,number][] }> = [];
-  const animated: Array<{ id: string; path: [number,number][] }> = [];
-  const moveRequest = async (_s: string, tokenId: string, path: [number,number][]) => {
+  const moveRequest: ToolContext["moveRequest"] = async (_s, tokenId, path) => {
     moves.push({ tokenId, path });
-    return { tokenId, stop: path.at(-1)!, renderPath: path, durationMs: 300 };
+    return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null };
   };
   const { ctx, now } = seedRouteCtx({
     pathfind: async () => ({ path: [[0,0],[100,0],[100,100]] as [number,number][], cost: 2 }),
     moveRequest,
-    animateAlongPath: (id, path) => animated.push({ id, path }),
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
   const tool = makeMeasureTool(ctx);
@@ -377,23 +375,23 @@ test("double-click commits via moveRequest and animates the returned render-path
   tool.onPointerDown({ x: 100, y: 100 }, ev()); tool.onPointerUp({ x: 100, y: 100 }, ev());
   await drain();
   expect(moves).toEqual([{ tokenId: "tok1", path: [[0,0],[100,0],[100,100]] }]);
-  expect(animated).toEqual([{ id: "tok1", path: [[0,0],[100,0],[100,100]] }]);
+  // Animation is now broadcast-driven via onMoveStream for all scene viewers.
 });
 
 test("a single click in route mode does NOT commit", async () => {
   const moves: Array<unknown> = [];
-  const animated: Array<{ id: string; path: [number, number][] }> = [];
   const { ctx } = seedRouteCtx({
     pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1 }),
-    moveRequest: async (_s, tokenId, path) => { moves.push({ tokenId, path }); return { tokenId, stop: path.at(-1)!, renderPath: path, durationMs: 300 }; },
-    animateAlongPath: (id, path) => animated.push({ id, path }),
+    moveRequest: async (_s, tokenId, path) => {
+      moves.push({ tokenId, path });
+      return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null };
+    },
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
   const tool = makeMeasureTool(ctx);
   tool.onPointerDown({ x: 100, y: 0 }, ev());
   await drain();
   expect(moves.length).toBe(0); // moveRequest must not fire on a single click
-  expect(animated.length).toBe(0); // animateAlongPath must not fire on a single click
 });
 
 test("route commit survives its own pointer-up: moveRequest resolves after pointer-up and still fires", async () => {
@@ -404,16 +402,16 @@ test("route commit survives its own pointer-up: moveRequest resolves after point
   // The deferred moveRequest resolves ONLY after both pointer-ups to catch any code that
   // allows onPointerUp to invalidate an in-flight commit.
 
-  let resolveMoveRequest!: (r: { tokenId: string; stop: [number,number]; renderPath: [number,number][]; durationMs: number }) => void;
+  let resolveMoveRequest!: (r: MoveStream) => void;
   const deferredMoveRequest: ToolContext["moveRequest"] = (_scene, _tokenId, _path) =>
     new Promise((res) => { resolveMoveRequest = res; });
 
-  const animated: Array<{ id: string; path: [number, number][] }> = [];
+  let clearCount = 0;
 
   const { ctx, now } = seedRouteCtx({
     pathfind: async () => ({ path: [[0, 0], [200, 0], [200, 200]] as [number, number][], cost: 4 }),
     moveRequest: deferredMoveRequest,
-    animateAlongPath: (id, path) => animated.push({ id, path }),
+    onClearOverlay: () => { clearCount++; },
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
 
@@ -434,19 +432,18 @@ test("route commit survives its own pointer-up: moveRequest resolves after point
 
   // moveRequest has been called but NOT resolved. committing=true must suppress the already-fired
   // pointer-up's clearRoute — committing must still be true at this point.
+  const clearsBefore = clearCount;
 
   resolveMoveRequest({
-    tokenId: "tok1",
-    stop: [200, 200],
-    renderPath: [[0, 0], [200, 0], [200, 200]],
-    durationMs: 500,
+    requestId: "r1", tokenId: "tok1", mover: "u1", scene: "s1",
+    startServerMs: 0, durationMs: 500,
+    stop: [200, 200] as [number, number],
+    samples: [], moverVision: null,
   });
   await drain();
 
-  // The commit must have survived the pointer-ups.
-  expect(animated.length).toBe(1);
-  expect(animated[0].id).toBe("tok1");
-  expect(animated[0].path).toEqual([[0, 0], [200, 0], [200, 200]]);
+  // The commit must have survived: finish() ran, calling clearRoute() → clearOverlay.
+  expect(clearCount).toBeGreaterThan(clearsBefore);
 });
 
 test("rejected moveRequest calls clearRoute and does NOT animate", async () => {
@@ -488,7 +485,7 @@ test("cache-hit: commitRoute reuses lastPreviewedPath and does not call pathfind
   const moveRequestReceived: Array<[number, number][]> = [];
   const moveRequest: ToolContext["moveRequest"] = async (_s, _id, path) => {
     moveRequestReceived.push(path);
-    return { tokenId: "tok1", stop: path.at(-1)!, renderPath: path, durationMs: 300 };
+    return { requestId: "r1", tokenId: "tok1", mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null };
   };
 
   const { ctx, now } = seedRouteCtx({
@@ -530,16 +527,16 @@ test("stale commit resolve does not clear a newer commit's suppression flag", as
   // wipes B's pointer-up suppression and a trailing up bumps pendingSeq, silently bailing B.
 
   // Two independently-controllable deferreds so A and B resolve in controlled order.
-  let resolveA!: (r: { tokenId: string; stop: [number,number]; renderPath: [number,number][]; durationMs: number }) => void;
-  let resolveB!: (r: { tokenId: string; stop: [number,number]; renderPath: [number,number][]; durationMs: number }) => void;
+  let resolveA!: (r: MoveStream) => void;
+  let resolveB!: (r: MoveStream) => void;
   let callCount = 0;
   const deferredMoveRequest: ToolContext["moveRequest"] = (_scene, _tokenId, _path) =>
     new Promise((res) => {
-      callCount === 0 ? (resolveA = res) : (resolveB = res);
+      if (callCount === 0) { resolveA = res; } else { resolveB = res; }
       callCount++;
     });
 
-  const animated: Array<{ id: string; path: [number, number][] }> = [];
+  let clearCount = 0;
 
   const { ctx, now } = seedRouteCtx({
     pathfind: async (_s, _start, waypoints) => ({
@@ -547,7 +544,7 @@ test("stale commit resolve does not clear a newer commit's suppression flag", as
       cost: 1,
     }),
     moveRequest: deferredMoveRequest,
-    animateAlongPath: (id, path) => animated.push({ id, path }),
+    onClearOverlay: () => { clearCount++; },
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
 
@@ -568,18 +565,22 @@ test("stale commit resolve does not clear a newer commit's suppression flag", as
 
   // A resolves while B is in flight. A is stale (seq_A < pendingSeq).
   // Must not touch committing — B's suppression flag must remain true.
-  resolveA({ tokenId: "tok1", stop: [100, 0], renderPath: [[0, 0], [100, 0]], durationMs: 300 });
+  resolveA({ requestId: "rA", tokenId: "tok1", mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: [100, 0] as [number, number], samples: [], moverVision: null });
   await drain();
 
   // A trailing pointer-up must be suppressed by B's still-intact committing flag.
-  // If the stale resolve wiped it, clearRoute fires here and bumps pendingSeq, bailing B.
+  // If the stale resolve wiped committing, clearRoute fires here and bumps pendingSeq,
+  // making B stale too — so B's finish() would never run.
   tool.onPointerUp({ x: 200, y: 0 }, ev());
 
-  // B resolves: must find seq === pendingSeq and animate.
-  resolveB({ tokenId: "tok1", stop: [200, 0], renderPath: [[0, 0], [200, 0]], durationMs: 300 });
+  // Capture count AFTER the pointer-up: if committing was wiped, the pointer-up already
+  // bumped pendingSeq, so B would resolve stale with no finish() call.
+  const clearsBefore = clearCount;
+
+  // B resolves: must find seq === pendingSeq and call finish() → clearRoute().
+  resolveB({ requestId: "rB", tokenId: "tok1", mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: [200, 0] as [number, number], samples: [], moverVision: null });
   await drain();
 
-  expect(animated.length).toBe(1); // B's animateAlongPath fired
-  expect(animated[0].id).toBe("tok1");
-  expect(animated[0].path).toEqual([[0, 0], [200, 0]]);
+  // B's finish() fired: clearRoute() was called, incrementing clearCount.
+  expect(clearCount).toBeGreaterThan(clearsBefore);
 });

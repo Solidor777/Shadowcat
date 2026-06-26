@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveExecuted } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import { topTokenAt } from "./hit-test";
 
@@ -37,13 +37,13 @@ export interface ToolContext {
     footprintRadius: number,
   ) => Promise<PathResult>;
   /** Request server-authoritative move execution (from AppContext). When present,
-   * double-click commit sends a MoveRequest and animates the server-returned render-path.
-   * When absent, double-click is a no-op (graceful degradation). */
+   * double-click commit sends a MoveRequest; animation is broadcast-driven via MoveStream
+   * for all viewers. When absent, double-click is a no-op (graceful degradation). */
   moveRequest?: (
     scene: string,
     tokenId: string,
     path: [number, number][],
-  ) => Promise<MoveExecuted>;
+  ) => Promise<MoveStream>;
 }
 
 /** The active scene (single scene in M8d §15) + its grid cell size (default 100) and
@@ -349,10 +349,11 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     const moveRequest = ctx.moveRequest;
     const sendRequest = (proposedPath: [number, number][]): void => {
       moveRequest(scene.id, tokenId, proposedPath).then(
-        (result) => {
+        () => {
           // Stale: a newer commit (or onDeactivate) now owns committing + clearRoute.
           if (seq !== pendingSeq) return;
-          ctx.scene.animateAlongPath(tokenId, result.renderPath);
+          // Animation is broadcast-driven via onMoveStream for all scene viewers;
+          // no local animation from the moveRequest resolve value.
           finish();
         },
         // Stale reject: do nothing. Current reject: clear route (no move).

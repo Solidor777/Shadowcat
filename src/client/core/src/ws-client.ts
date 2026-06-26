@@ -24,13 +24,31 @@ export interface PathResult {
   cost: number;
 }
 
-/** A resolved move-execution result (WsClient.moveRequest). Wire snake_case fields
- * are mapped to camelCase: token_id→tokenId, render_path→renderPath, duration_ms→durationMs. */
-export interface MoveExecuted {
+/** A single position sample in a MoveStream, with elapsed-ms origin at startServerMs. */
+export interface MoveSample {
+  tMs: number;
+  pos: [number, number];
+}
+
+/** A vision-polygon sample paired with a MoveSample by tMs (mover-only; null for observers). */
+export interface MoveVisionSample {
+  tMs: number;
+  polygons: [number, number][][];
+}
+
+/** Broadcast animation frame delivered to every scene viewer (mover + observers).
+ * Wire snake_case fields are mapped to camelCase. Mover receives the full trajectory +
+ * moverVision; observers receive server-clipped position samples, moverVision=null. */
+export interface MoveStream {
+  requestId: string;
   tokenId: string;
-  stop: [number, number];
-  renderPath: [number, number][];
+  mover: string;
+  scene: string;
+  startServerMs: number;
   durationMs: number;
+  stop: [number, number];
+  samples: MoveSample[];
+  moverVision: MoveVisionSample[] | null;
 }
 
 /** Handle to an active live search subscription (Core.subscribeSearch). */
@@ -96,11 +114,13 @@ export class WsClient {
   private pending = new Map<
     string,
     {
-      resolve: (result: SearchPage | PathResult | MoveExecuted) => void;
+      resolve: (result: SearchPage | PathResult | MoveStream) => void;
       reject: (e: Error) => void;
       timer: ReturnType<typeof setTimeout>;
     }
   >();
+  /** Persistent listeners for broadcast MoveStream frames (mover + all observers). */
+  private moveStreamListeners = new Set<(s: MoveStream) => void>();
   /** Active live search subscriptions, keyed by request_id; persists across
    * updates until unsubscribe/disconnect. */
   private subscriptions = new Map<string, (hits: WireSearchHit[]) => void>();
@@ -306,17 +326,31 @@ export class WsClient {
         }
         break;
       }
-      case "move_executed": {
+      case "move_stream": {
+        // Map wire snake_case to camelCase MoveStream for all consumers.
+        const stream: MoveStream = {
+          requestId: msg.request_id,
+          tokenId: msg.token_id,
+          mover: msg.mover,
+          scene: msg.scene,
+          startServerMs: msg.start_server_ms,
+          durationMs: msg.duration_ms,
+          stop: msg.stop,
+          samples: msg.samples.map((s) => ({ tMs: s.t_ms, pos: s.pos })),
+          moverVision: msg.mover_vision
+            ? msg.mover_vision.map((v) => ({ tMs: v.t_ms, polygons: v.polygons as [number, number][][] }))
+            : null,
+        };
+        // Resolve the mover's pending promise (if request_id matches).
         const p = this.pending.get(msg.request_id);
         if (p) {
           clearTimeout(p.timer);
           this.pending.delete(msg.request_id);
-          (p.resolve as (r: MoveExecuted) => void)({
-            tokenId: msg.token_id,
-            stop: msg.stop,
-            renderPath: msg.render_path,
-            durationMs: msg.duration_ms,
-          });
+          (p.resolve as (r: MoveStream) => void)(stream);
+        }
+        // Broadcast to all registered listeners (mover + observers).
+        for (const cb of this.moveStreamListeners) {
+          this.safeEmit(() => cb(stream));
         }
         break;
       }
@@ -391,7 +425,7 @@ export class WsClient {
         this.pending.delete(request_id);
         reject(new Error("search request timeout"));
       }, timeoutMs);
-      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult | MoveExecuted) => void, reject, timer });
+      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult | MoveStream) => void, reject, timer });
       this.send({
         type: "search",
         request_id,
@@ -504,27 +538,26 @@ export class WsClient {
         this.pending.delete(request_id);
         reject(new Error("pathfind request timeout"));
       }, timeoutMs);
-      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult | MoveExecuted) => void, reject, timer });
+      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult | MoveStream) => void, reject, timer });
       this.send({ type: "pathfind", request_id, scene, start, waypoints, footprint_radius: footprintRadius });
     });
   }
 
   /**
-   * Issue a correlated move-execution request and resolve with the execution
-   * result when the matching `move_executed` reply arrives. Rejects on a
-   * `move_error` frame or after `timeoutMs`. Pure transport mirror — no client-side
-   * movement logic. Wire field names are snake_case; the resolved value maps them
-   * to camelCase (token_id→tokenId, render_path→renderPath, duration_ms→durationMs).
+   * Issue a correlated move-execution request; resolves with the broadcast `MoveStream` when
+   * the matching `move_stream` frame arrives (mover's request_id correlates). Rejects on a
+   * `move_error` frame or after `timeoutMs`. Pure transport mirror — no client-side movement
+   * logic. All scene viewers (mover + observers) also receive the frame via `onMoveStream`.
    */
   moveRequest(
     scene: string,
     tokenId: string,
     path: [number, number][],
     opts: { timeoutMs?: number } = {},
-  ): Promise<MoveExecuted> {
+  ): Promise<MoveStream> {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
-    return new Promise<MoveExecuted>((resolve, reject) => {
+    return new Promise<MoveStream>((resolve, reject) => {
       if (!this.transport) {
         reject(new Error("not connected"));
         return;
@@ -533,9 +566,19 @@ export class WsClient {
         this.pending.delete(request_id);
         reject(new Error("move_request timeout"));
       }, timeoutMs);
-      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult | MoveExecuted) => void, reject, timer });
+      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult | MoveStream) => void, reject, timer });
       this.send({ type: "move_request", request_id, scene, token_id: tokenId, path });
     });
+  }
+
+  /**
+   * Subscribe to broadcast MoveStream frames. Called for every recipient (mover + observers)
+   * whenever a token's server-authoritative move completes. Returns an unsubscribe function.
+   * Listeners survive reconnects; a caller that subscribes once keeps receiving across drops.
+   */
+  onMoveStream(cb: (s: MoveStream) => void): () => void {
+    this.moveStreamListeners.add(cb);
+    return () => this.moveStreamListeners.delete(cb);
   }
 
   private applyEvent(cmd: WireCommand): void {

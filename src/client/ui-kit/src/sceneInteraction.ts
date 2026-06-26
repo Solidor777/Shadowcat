@@ -62,4 +62,14 @@ export class SceneInteractionBridge implements SceneInteraction {
   animateAlongPath(id: string, path: [number, number][]): void {
     this.#host?.animateAlongPath(id, path);
   }
+
+  animateSamples(
+    id: string,
+    samples: { tMs: number; pos: [number, number] }[],
+    durationMs: number,
+    startServerMs: number,
+    serverNow?: () => number,
+  ): void {
+    this.#host?.animateSamples(id, samples, durationMs, startServerMs, serverNow);
+  }
 }

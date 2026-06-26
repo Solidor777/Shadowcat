@@ -124,4 +124,14 @@ export interface SceneToolHost {
   addPing(x: number, y: number): void;
   /** Drive a smooth local walk of a token along a route's scene-coord waypoints. */
   animateAlongPath(id: string, path: [number, number][]): void;
+  /** Drive server-broadcast sample-based playback: interpolates position between adjacent
+   * MoveSamples by tMs; hides the token across occlusion gaps. `serverNow` is optional and
+   * used only at call time for catch-up (defaults to Date.now). */
+  animateSamples(
+    id: string,
+    samples: { tMs: number; pos: [number, number] }[],
+    durationMs: number,
+    startServerMs: number,
+    serverNow?: () => number,
+  ): void;
 }

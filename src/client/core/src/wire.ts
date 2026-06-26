@@ -228,14 +228,6 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     message: z.string(),
   }),
   z.object({
-    type: z.literal("move_executed"),
-    request_id: z.string(),
-    token_id: z.string(),
-    stop: z.tuple([z.number(), z.number()]),
-    render_path: z.array(z.tuple([z.number(), z.number()])),
-    duration_ms: z.number(),
-  }),
-  z.object({
     type: z.literal("move_error"),
     request_id: z.string(),
     message: z.string(),

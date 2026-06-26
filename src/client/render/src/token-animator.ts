@@ -4,6 +4,25 @@ import { applyEasing, type EasingMode } from "./easing";
 /** Below this distance (px) a component is treated as coincident. */
 const EPSILON = 0.01;
 
+/** A server-sampled position entry: elapsed ms from startServerMs + scene-coord position. */
+export interface MoveSample {
+  tMs: number;
+  pos: [number, number];
+}
+
+/** State for a sample-driven playback (animateSamples). Separate from the polyline Anim so
+ * the two modes can coexist independently (e.g. a route-commit walk alongside a broadcast play). */
+interface SamplesAnim {
+  samples: MoveSample[];
+  /** Accumulated elapsed time (ms) from the start of the animation; pre-seeded for catch-up. */
+  elapsed: number;
+  durationMs: number;
+  /** Gap threshold: consecutive tMs gaps exceeding this are treated as occlusion spans.
+   * Formula: durationMs/2. Rationale: any span larger than half the animation budget
+   * cannot be a normal inter-sample interval, so it must be a visibility gap. */
+  gapThreshold: number;
+}
+
 /** Animation tuning resolved from `world-settings.animation` + the active grid. */
 export interface AnimationConfig {
   speedCellsPerSec: number;
@@ -36,6 +55,9 @@ interface Anim {
 export class TokenAnimator {
   private cur = new Map<string, TokenTransform>();
   private anim = new Map<string, Anim>();
+  private samplesAnim = new Map<string, SamplesAnim>();
+  /** Token ids currently in an occlusion gap (server-clipped visibility span). */
+  private hidden = new Set<string>();
   private cfg: AnimationConfig = { speedCellsPerSec: 6, easing: "easeInOut", cellSize: 100 };
 
   setConfig(cfg: AnimationConfig): void {
@@ -50,6 +72,42 @@ export class TokenAnimator {
   remove(id: string): void {
     this.cur.delete(id);
     this.anim.delete(id);
+    this.samplesAnim.delete(id);
+    this.hidden.delete(id);
+  }
+
+  /** True when the token is in a server-defined occlusion gap and should not be rendered. */
+  isHidden(id: string): boolean {
+    return this.hidden.has(id);
+  }
+
+  /** Begin sample-driven playback from a server broadcast MoveStream. Interpolates the token
+   * position between adjacent samples by tMs on the server-aligned clock; hides the token during
+   * spans whose tMs gap exceeds durationMs/2 (server-clipped occlusion). Catch-up: if the server
+   * clock (serverNow) is ahead of startServerMs, playback begins from the matching elapsed offset.
+   * Coexists with any active polyline Anim; a subsequent setTarget retargets from the final
+   * position after playback settles.
+   *
+   * @param serverNow Optional injected server clock (defaults to Date.now). Used only once at
+   *   call time to compute the initial catch-up offset; subsequent ticks use the render clock. */
+  animateSamples(
+    id: string,
+    samples: MoveSample[],
+    durationMs: number,
+    startServerMs: number,
+    serverNow?: () => number,
+  ): void {
+    if (samples.length === 0) return;
+    const initialElapsed = serverNow ? Math.max(0, serverNow() - startServerMs) : 0;
+    const gapThreshold = durationMs / 2;
+    const sa: SamplesAnim = { samples, elapsed: initialElapsed, durationMs, gapThreshold };
+    this.samplesAnim.set(id, sa);
+    // Ensure cur exists so tick + push work even if the token was never setTarget-ed locally.
+    if (!this.cur.has(id)) {
+      this.cur.set(id, { x: samples[0].pos[0], y: samples[0].pos[1], rotation: 0 });
+    }
+    // Apply initial position immediately (no wait for tick).
+    this.applySamplesAt(id, sa);
   }
 
   setTarget(id: string, t: TokenTransform): void {
@@ -102,6 +160,60 @@ export class TokenAnimator {
     this.startAnim(id, c, pts, rotation, true);
   }
 
+  /** Evaluate the sample-driven position at `sa.elapsed` and apply it to `cur`.
+   * Sets or clears the hidden flag based on whether elapsed falls in an occlusion gap.
+   * INVARIANT: elapsed at or past the last sample tMs → settle visible at last position. */
+  private applySamplesAt(id: string, sa: SamplesAnim): void {
+    const { samples, elapsed, gapThreshold } = sa;
+    const cur = this.cur.get(id);
+    if (!cur) return;
+    const last = samples[samples.length - 1];
+    // Single-sample degenerate: always visible at that position.
+    if (samples.length === 1) {
+      cur.x = samples[0].pos[0];
+      cur.y = samples[0].pos[1];
+      this.hidden.delete(id);
+      return;
+    }
+    // Past the last sample's timestamp: settle visibly at last position (not a gap).
+    if (elapsed >= last.tMs) {
+      cur.x = last.pos[0];
+      cur.y = last.pos[1];
+      this.hidden.delete(id);
+      return;
+    }
+    // Find the segment [i, i+1] whose interval contains elapsed.
+    for (let i = 0; i < samples.length - 1; i++) {
+      if (elapsed <= samples[i + 1].tMs) {
+        const gap = samples[i + 1].tMs - samples[i].tMs;
+        if (gap > gapThreshold) {
+          // Occlusion span: visible only exactly at the left endpoint, hidden inside the gap.
+          if (elapsed <= samples[i].tMs) {
+            cur.x = samples[i].pos[0];
+            cur.y = samples[i].pos[1];
+            this.hidden.delete(id);
+          } else {
+            // Inside the gap: freeze cur at the left endpoint and hide.
+            cur.x = samples[i].pos[0];
+            cur.y = samples[i].pos[1];
+            this.hidden.add(id);
+          }
+          return;
+        }
+        // Normal interpolation within this segment.
+        const f = gap > 0 ? Math.min(1, (elapsed - samples[i].tMs) / gap) : 1;
+        cur.x = lerp(samples[i].pos[0], samples[i + 1].pos[0], f);
+        cur.y = lerp(samples[i].pos[1], samples[i + 1].pos[1], f);
+        this.hidden.delete(id);
+        return;
+      }
+    }
+    // Fallback: settle at last (should be unreachable after the elapsed >= last.tMs guard above).
+    cur.x = last.pos[0];
+    cur.y = last.pos[1];
+    this.hidden.delete(id);
+  }
+
   private startAnim(id: string, c: TokenTransform, poly: [number, number][], finalRot: number, pathDriven: boolean): void {
     const segLen: number[] = [];
     let total = 0;
@@ -139,6 +251,22 @@ export class TokenAnimator {
   /** Advance all animations by `dtMs`; return ids whose transform changed. */
   tick(dtMs: number): string[] {
     const moved: string[] = [];
+    // Advance sample-driven playbacks (broadcast MoveStream animations).
+    for (const [id, sa] of this.samplesAnim) {
+      sa.elapsed += dtMs;
+      if (sa.elapsed >= sa.durationMs) {
+        // Playback complete: settle at the last sample, clear hidden, remove entry.
+        const last = sa.samples[sa.samples.length - 1];
+        const cur = this.cur.get(id);
+        if (cur) { cur.x = last.pos[0]; cur.y = last.pos[1]; }
+        this.hidden.delete(id);
+        this.samplesAnim.delete(id);
+        moved.push(id);
+        continue;
+      }
+      this.applySamplesAt(id, sa);
+      moved.push(id);
+    }
     for (const [id, a] of this.anim) {
       a.elapsed += dtMs;
       const tRaw = Math.min(1, a.elapsed / a.duration);

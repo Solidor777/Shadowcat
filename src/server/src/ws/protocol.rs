@@ -248,21 +248,6 @@ pub enum ServerMsg {
     },
     /// The `Pathfind` with this `request_id` failed (unreachable / invalid request / search exceeded).
     PathError { request_id: Uuid, message: String },
-    /// Reply to the originating connection only (mover-only): carries the cosmetic render-path
-    /// the mover animates. Observers receive the token's stop position via the authoritative
-    /// `Event` broadcast from the move commit; the render-path is not broadcast in M1.
-    /// `render_path` is the authoritative route; `stop` is the final position; `duration_ms`
-    /// is the animation wall-clock budget derived from world animation settings.
-    MoveExecuted {
-        request_id: Uuid,
-        token_id: Uuid,
-        /// Final resting position (scene coords).
-        stop: [f64; 2],
-        /// Authoritative ordered cell-center scene points for client animation.
-        render_path: Vec<[f64; 2]>,
-        /// Wall-clock animation budget in milliseconds.
-        duration_ms: f64,
-    },
     /// A `MoveRequest` was rejected (token already moving, caller not owner, malformed path, etc.).
     /// Addressed to the originating connection only; never broadcast.
     MoveError { request_id: Uuid, message: String },
@@ -511,7 +496,7 @@ mod protocol_tests {
     }
 
     #[test]
-    fn move_request_and_executed_round_trip() {
+    fn move_request_round_trip() {
         let req = ClientMsg::MoveRequest {
             request_id: Uuid::from_u128(1),
             scene: Uuid::from_u128(2),
@@ -519,18 +504,11 @@ mod protocol_tests {
             path: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]],
         };
         let wire = serde_json::to_string(&req).unwrap();
+        assert!(wire.contains("\"type\":\"move_request\""), "got {wire}");
         let back: ClientMsg = serde_json::from_str(&wire).unwrap();
         assert!(matches!(back, ClientMsg::MoveRequest { .. }));
 
-        let ok = ServerMsg::MoveExecuted {
-            request_id: Uuid::from_u128(1),
-            token_id: Uuid::from_u128(3),
-            stop: [100.0, 100.0],
-            render_path: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]],
-            duration_ms: 500.0,
-        };
-        let w2 = serde_json::to_string(&ok).unwrap();
-        assert!(w2.contains("move_executed"));
+        // Server replies with MoveError (rejection path) or MoveStream (success path); no MoveExecuted.
         let err = ServerMsg::MoveError {
             request_id: Uuid::from_u128(1),
             message: "token is moving".into(),

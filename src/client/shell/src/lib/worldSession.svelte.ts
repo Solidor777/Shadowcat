@@ -23,7 +23,7 @@ import {
   type SceneFrame,
   type SceneSubscription,
   type PathResult,
-  type MoveExecuted,
+  type MoveStream,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
@@ -189,13 +189,14 @@ export class WorldSession {
   }
 
   /** Request server-authoritative move execution for `tokenId` along `path` on
-   * `scene`. Thin delegate to `WsClient.moveRequest`; rejects immediately when
-   * there is no live transport. */
+   * `scene`. Resolves with the broadcast `MoveStream` when the server confirms;
+   * rejects immediately when there is no live transport. Animation is broadcast-driven
+   * via `onMoveStream` for all scene viewers; the resolve value signals success only. */
   moveRequest(
     scene: string,
     tokenId: string,
     path: [number, number][],
-  ): Promise<MoveExecuted> {
+  ): Promise<MoveStream> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     return this.#ws.moveRequest(scene, tokenId, path);
   }
@@ -273,6 +274,19 @@ export class WorldSession {
           for (const cb of this.#pingListeners) cb(msg);
         },
       },
+    });
+    // Broadcast-driven animation: drive all scene viewers (mover + observers) from the
+    // MoveStream frame. serverNow() aligns startServerMs to local time for catch-up.
+    // Coupling: sceneInteraction.animateSamples no-ops until Stage attaches the engine.
+    const ws = this.#ws;
+    this.#ws.onMoveStream((stream) => {
+      this.sceneInteraction.animateSamples(
+        stream.tokenId,
+        stream.samples,
+        stream.durationMs,
+        stream.startServerMs,
+        () => ws.serverNow(),
+      );
     });
     await this.#ws.start();
     this.state = "open";

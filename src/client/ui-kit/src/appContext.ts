@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveExecuted } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -65,14 +65,14 @@ export interface AppContext {
     footprintRadius: number,
   ) => Promise<PathResult>;
   /** Request server-authoritative move execution for `tokenId` along `path` on
-   * `scene`. Resolves with the executed result (stop cell, render path, duration);
-   * rejects on server rejection or timeout. Pure transport mirror — no client-side
-   * movement logic. */
+   * `scene`. Resolves with the broadcast `MoveStream` on success; rejects on server
+   * rejection or timeout. Animation is broadcast-driven for all viewers via onMoveStream;
+   * the resolve value signals success only. */
   moveRequest: (
     scene: string,
     tokenId: string,
     path: [number, number][],
-  ) => Promise<MoveExecuted>;
+  ) => Promise<MoveStream>;
   /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe. */
   onPing: (cb: (msg: { scene: string; x: number; y: number; user: string }) => void) => () => void;
   /** Leave the current world and return to world-select. */
