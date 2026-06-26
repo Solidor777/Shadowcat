@@ -12,6 +12,9 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - TODO: Buddy-check Minor (B2): the A* search window = AABB{start∪waypoints∪wall-endpoints}+8-cell margin; a legitimate route whose detour must bulge >8 cells beyond that AABB is reported Unreachable (fail-closed). Inert until a real map hits it; add a `tracing::debug!` at window-edge leg failures for future tuning if needed.
 - TODO: Hex-grid pathfinding (M10e-6 is square-grid-only; the ruler's hex distance is untouched by the `alternating` rule addition).
 
+## Server / move-execution (M1 server-authoritative)
+- TODO: Add a `move_exec::execute_move` unit test asserting a final-step region-arrest reports `truncated = true` (via the `stopped_early` flag). Blocked: `region_arrests` is an unconditional `false` stub with no injectable seam; wire the test once M10g provides the real `region_arrests` hook. The `stopped_early` logic is correct by construction today. (Surfaced by the M1 whole-branch buddy check.)
+
 ## Server / scene-vision
 - TODO: Implement edge-projected, `blocksLight`-occludable environment light once scenes gain dimensions. M10e-2's `player_lit_mask` treats environment light as a flat scene-wide ambient floor (inert by default, `env.intensity` = 0.0) because the scene model is dimensionless — there is no boundary to project edge light from, so a `blocksLight`-sealed interior is not darkened by the *ambient* term (placed-light occlusion IS implemented). Land with scene dimensions (M12). (Constraint-forced deviation from the M10e spec §6/§12.5.)
 - TODO: Cache the per-`(user, scene)` visibility mask for the M10e-4 movement gate. The gate recomputes `visible_cells` on demand per move (human-paced; acceptable per spec §8). If profiling shows it hot — e.g. under M10e-6 multi-waypoint preview/commit — reuse the last egress-computed `player_lit_mask` for `(user, scene)` instead of recomputing. Inert until measured.
