@@ -75,18 +75,28 @@ optimistically and roll back on divergence.
 - **Live search rides the broadcast** as top-N subscriptions over the same egress
   [[m6c-2-live-search]].
 - **One-shot correlated request pairs** (`Search`→`SearchResult`/`SearchError`;
-  `Pathfind`→`PathResult`/`PathError`; `MoveRequest`→`MoveExecuted`/`MoveError`) route replies to
-  the requesting connection only (never broadcast); correlated by `request_id` via the `pending` map
-  in `WsClient`. See `src/client/core/src/ws-client.ts` and `src/server/src/ws/protocol.rs`.
-  `MoveExecuted` carries `stop`, `render_path`, and `duration_ms` (mover-only in M1; observers
-  receive the atomic position `Event` from `commit_ops_locked`). `MoveError` message is always
-  generic ("move rejected") — no path geometry or vision state disclosed (no-geometry-leak
-  invariant). `conn.rs` `handle_move_request` dispatches `execute_move` and sends the reply to
-  `etx` only.
-- **Gated moves are request-only + server-executed (M1 invariant):** the client sends `MoveRequest`
-  and waits; the server validates, executes, and replies. The client MUST NOT apply an optimistic
-  position update for a gated move. The atomic position `Event` (from `commit_ops_locked`) is the
-  authoritative update; the `MoveExecuted` render-path is cosmetic (animation only).
+  `Pathfind`→`PathResult`/`PathError`) route replies to the requesting connection only (never
+  broadcast); correlated by `request_id` via the `pending` map in `WsClient`. See
+  `src/client/core/src/ws-client.ts` and `src/server/src/ws/protocol.rs`.
+- **MoveRequest → MoveStream (M2, broadcast):** `MoveRequest` is still a one-shot correlated pair
+  for the mover's promise (resolves on the matching `move_stream` frame via `pending` map), but
+  `MoveStream` is broadcast to ALL scene viewers, not just the mover. The server clips the sample
+  list per-recipient based on the viewer's vision mask (mover gets full trajectory + `moverVision`;
+  observers get clipped samples + `moverVision: null`). `MoveError` remains mover-only, always
+  generic (no path geometry / vision state disclosed — no-geometry-leak invariant). `conn.rs`
+  `handle_move_request` dispatches `execute_move`, then broadcasts `MoveStream` to the scene.
+  Client animation is driven by `TokenAnimator.animateSamples` (time-tagged playback, catch-up on
+  late arrival, gap/occlusion detection: gap threshold = `durationMs / 2`). Wired end-to-end:
+  `WsClient.onMoveStream` → `worldSession` → `SceneInteractionBridge.animateSamples` →
+  `RenderEngine` → `TokenView` / `TokenAnimator`. `onMoveStream` listeners survive reconnects
+  (NOT cleared in `failPending`).
+- **Gated moves are request-only + server-executed (M1/M2 invariant):** the client sends
+  `MoveRequest` and waits; the server validates, executes, and broadcasts `MoveStream`. The client
+  MUST NOT apply an optimistic position update for a gated move. The atomic position `Event` (from
+  `commit_ops_locked`) is the authoritative document update; the `MoveStream.samples` drive
+  cosmetic animation for all scene viewers. The `moveRequest` promise resolves on success (the
+  `MoveStream` frame) but the animation is broadcast-driven — no local `animateAlongPath` call
+  on the mover side.
 
 ## Pointers
 
