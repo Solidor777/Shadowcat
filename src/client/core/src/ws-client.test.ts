@@ -498,6 +498,17 @@ describe("WsClient", () => {
         message: "move rejected",
       }),
     );
-    await expect(p).rejects.toThrow();
+    await expect(p).rejects.toThrow("move rejected");
+  });
+
+  it("moveRequest rejects immediately when there is no live transport", async () => {
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
+      handlers: noop,
+    });
+    // Not started → transport is null. A long timeout would otherwise hang.
+    await expect(
+      client.moveRequest("scene1", "tok1", [[0, 0], [100, 0]]),
+    ).rejects.toThrow(/not connected/i);
   });
 });
