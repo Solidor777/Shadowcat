@@ -597,45 +597,12 @@ async fn enrich_vision_explored(
     payload["explored"] = serde_json::json!(explored_out);
 }
 
-/// Extract scene-local vision polygons for `scene` from a cached "vision" channel payload.
-///
-/// The `polygons` array in the payload contains `{ "scene": "<uuid>", "points": [x,y,…] }`
-/// entries (flat coordinate pairs). Returns empty when the payload has no entries for `scene`
-/// (fail-closed: the caller suppresses the frame).
-fn extract_polys_for_scene(
-    fingerprint: &serde_json::Value,
-    scene: Uuid,
-) -> Vec<Vec<crate::scene::vision::P>> {
-    let arr = match fingerprint.get("polygons").and_then(|p| p.as_array()) {
-        Some(a) => a,
-        None => return Vec::new(),
-    };
-    arr.iter()
-        .filter(|entry| {
-            entry
-                .get("scene")
-                .and_then(|s| s.as_str())
-                .and_then(|s| Uuid::parse_str(s).ok())
-                == Some(scene)
-        })
-        .map(|entry| {
-            let pts: Vec<f64> = entry
-                .get("points")
-                .and_then(|p| p.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_f64()).collect())
-                .unwrap_or_default();
-            pts.chunks_exact(2).map(|c| (c[0], c[1])).collect()
-        })
-        .collect()
-}
-
 /// Return the recipient's authoritative vision polygons that cover `scene`.
 ///
-/// Preference order:
-/// 1. Cached fingerprint from the connection's own "vision" scene subscription
-///    (zero ECS I/O, already-computed).
-/// 2. Fresh `player_vision_polygons` ECS read — lock acquired, data cloned, lock
-///    dropped before this function returns.
+/// Always reads from the authoritative ECS `player_vision_polygons` — a rendering cache
+/// is NOT a secrecy gate: if the observer's vision shrank within the ~150 ms debounce
+/// window a stale, wider polygon would admit a now-hidden sample. One ECS read per
+/// MoveStream per observer is acceptable for a security gate.
 ///
 /// Returns empty on any failure or when the recipient controls no token in `scene`
 /// (fail-closed: caller suppresses the frame).
@@ -647,24 +614,8 @@ async fn observer_vision_polys_for_scene(
     user_id: Uuid,
     scene: Uuid,
     room: &crate::ws::room::Room,
-    scene_subs: &std::collections::HashMap<Uuid, SceneSub>,
 ) -> Vec<Vec<crate::scene::vision::P>> {
-    // Prefer the cached "vision" sub fingerprint for the connection's own view.
-    // Skip subs with a different view_ctx.user_id (e.g. a GM see-as-player sub).
-    for sub in scene_subs.values() {
-        if sub.channel != "vision" || sub.view_ctx.user_id != user_id {
-            continue;
-        }
-        if let Some(fp) = &sub.fingerprint {
-            // "mode":"all" is the GM sentinel; the GM fast-path fires before this
-            // function is called — handle defensively as fail-closed (empty).
-            if fp.get("mode").and_then(|m| m.as_str()) == Some("all") {
-                return Vec::new();
-            }
-            return extract_polys_for_scene(fp, scene);
-        }
-    }
-    // Fall back: fresh ECS read. Drop the lock before returning so no lock crosses
+    // Authoritative ECS read. Drop the lock before returning so no lock crosses
     // the downstream `sink.send` await.
     let polys_all = {
         let ecs = room.scene().read().await;
@@ -685,19 +636,24 @@ async fn observer_vision_polys_for_scene(
 /// Discrimination:
 /// - **Mover** (`ctx.user_id == frame.mover`): full frame forwarded unchanged (all
 ///   samples + `mover_vision`).
-/// - **GM** (world role): all samples forwarded, `mover_vision` nulled.
+/// - **GM** (world role): all samples forwarded, `mover_vision` nulled, full `stop`
+///   and `duration_ms` preserved.
 /// - **Observer**: only samples whose `pos` lies within the recipient's authoritative
 ///   vision polygons are forwarded; `mover_vision` nulled; fully-occluded → `None`.
+///   `stop` and `duration_ms` are clipped to the LAST VISIBLE sample — the true final
+///   position and full travel distance are not disclosed.
 ///
 /// INVARIANT (mover_vision-isolation): `mover_vision` reaches only the mover's socket.
 /// INVARIANT (fail-closed): no derivable vision → empty clip → suppress.
+/// INVARIANT (no-stale-cache): observer vision is always read from the authoritative ECS,
+///   never from a rendering-cache fingerprint (a stale wider polygon would admit a
+///   now-hidden sample).
 /// INVARIANT (no-lock-across-await): the ECS read lock (if taken) is dropped inside
-/// `observer_vision_polys_for_scene` before this function returns.
+///   `observer_vision_polys_for_scene` before this function returns.
 async fn clip_move_stream(
     msg: &ServerMsg,
     ctx: &PermissionContext,
     room: &crate::ws::room::Room,
-    scene_subs: &std::collections::HashMap<Uuid, SceneSub>,
 ) -> Option<ServerMsg> {
     let ServerMsg::MoveStream {
         request_id,
@@ -735,9 +691,9 @@ async fn clip_move_stream(
     }
 
     // Observer: clip to samples the recipient can see within their authoritative vision.
-    // The ECS read (if needed) is dropped inside `observer_vision_polys_for_scene`,
-    // so no lock crosses the `sink.send` await in the caller.
-    let polys = observer_vision_polys_for_scene(ctx.user_id, *scene, room, scene_subs).await;
+    // The ECS read is dropped inside `observer_vision_polys_for_scene` before this
+    // function returns, so no lock crosses the `sink.send` await in the caller.
+    let polys = observer_vision_polys_for_scene(ctx.user_id, *scene, room).await;
     use crate::scene::vision::point_in_poly;
     use crate::ws::protocol::PosSample;
     let visible: Vec<PosSample> = samples
@@ -751,14 +707,20 @@ async fn clip_move_stream(
     if visible.is_empty() {
         return None; // SUPPRESS: fully occluded or no vision available (fail-closed)
     }
+    // Clip stop and duration_ms to the last VISIBLE sample so the observer learns
+    // neither the true final position (which may be behind a wall) nor the full
+    // travel distance. The authoritative position Event (from commit_ops_locked)
+    // delivers the real stop coordinate later, gated by the client's fog layer.
+    let clipped_stop = visible.last().map(|s| s.pos).unwrap_or(*stop);
+    let clipped_duration_ms = visible.last().map(|s| s.t_ms).unwrap_or(*duration_ms);
     Some(ServerMsg::MoveStream {
         request_id: *request_id,
         token_id: *token_id,
         mover: *mover,
         scene: *scene,
         start_server_ms: *start_server_ms,
-        duration_ms: *duration_ms,
-        stop: *stop,
+        duration_ms: clipped_duration_ms,
+        stop: clipped_stop,
         samples: visible,
         mover_vision: None, // INVARIANT: mover_vision strictly mover-only
     })
@@ -969,9 +931,7 @@ async fn egress_loop<S>(
                         // frame passes through the generic permission filter unchanged.
                         let should_break = match msg.as_ref() {
                             ServerMsg::MoveStream { .. } => {
-                                match clip_move_stream(msg.as_ref(), &ctx, &room, &scene_subs)
-                                    .await
-                                {
+                                match clip_move_stream(msg.as_ref(), &ctx, &room).await {
                                     Some(out) => sink.send(text(&out)).await.is_err(),
                                     None => false, // suppressed: do not send
                                 }
@@ -1890,8 +1850,7 @@ mod tests {
             mover_vision: mv.clone(),
         };
 
-        let scene_subs = std::collections::HashMap::new();
-        let result = clip_move_stream(&frame, &ctx, &room, &scene_subs).await;
+        let result = clip_move_stream(&frame, &ctx, &room).await;
 
         assert!(result.is_some(), "mover must receive a frame");
         match result.unwrap() {
@@ -1942,8 +1901,7 @@ mod tests {
             mover_vision: None,
         };
 
-        let scene_subs = std::collections::HashMap::new();
-        let result = clip_move_stream(&frame, &obs_ctx, &room, &scene_subs).await;
+        let result = clip_move_stream(&frame, &obs_ctx, &room).await;
 
         assert!(
             result.is_none(),
@@ -1993,8 +1951,7 @@ mod tests {
             mover_vision: None,
         };
 
-        let scene_subs = std::collections::HashMap::new();
-        let result = clip_move_stream(&frame, &obs_ctx, &room, &scene_subs).await;
+        let result = clip_move_stream(&frame, &obs_ctx, &room).await;
 
         assert!(
             result.is_some(),
@@ -2004,6 +1961,8 @@ mod tests {
             ServerMsg::MoveStream {
                 samples: s,
                 mover_vision: mv,
+                stop: out_stop,
+                duration_ms: out_duration_ms,
                 ..
             } => {
                 assert_eq!(
@@ -2018,6 +1977,17 @@ mod tests {
                     "visible sample must be (50,50)"
                 );
                 assert_eq!(mv, None, "mover_vision must be None for observers");
+                // Critical 2 regression: stop and duration_ms must be clipped to
+                // the last visible sample, NOT the true goal/full travel distance.
+                assert_eq!(
+                    out_stop,
+                    [50.0_f64, 50.0_f64],
+                    "stop must be clipped to last visible sample pos, not the true goal"
+                );
+                assert!(
+                    (out_duration_ms - 0.0_f64).abs() < 1e-9,
+                    "duration_ms must be clipped to last visible sample t_ms (0 ms), got {out_duration_ms}"
+                );
             }
             other => panic!("expected MoveStream, got {other:?}"),
         }
@@ -2062,8 +2032,7 @@ mod tests {
             mover_vision: None,
         };
 
-        let scene_subs = std::collections::HashMap::new();
-        let result = clip_move_stream(&frame, &obs_ctx, &room, &scene_subs).await;
+        let result = clip_move_stream(&frame, &obs_ctx, &room).await;
 
         // Must be None (fully suppressed), NOT Some(MoveStream { samples: [], .. }).
         // The secrecy invariant: zero frames sent, never an empty-samples frame.
@@ -2072,5 +2041,88 @@ mod tests {
             "observer behind gm_only wall must receive zero MoveStream frames (None, not \
              Some(empty)); got {result:?}"
         );
+    }
+
+    /// A GM who is NOT the mover receives ALL position samples regardless of LOS, with
+    /// `mover_vision` nulled and the full `stop`/`duration_ms` intact.
+    ///
+    /// Invariants verified:
+    /// - GM branch fires before observer branch (ctx.user_id != mover, but Gm role).
+    /// - All samples pass through unfiltered.
+    /// - `mover_vision` is never forwarded to anyone but the mover.
+    /// - `stop` and `duration_ms` are the full values (no clip for GM).
+    #[tokio::test]
+    async fn clip_gm_receives_all_samples_mover_vision_nulled() {
+        use crate::data::document::WorldRole;
+        use crate::ws::protocol::{PosSample, VisionSample};
+
+        // Wall at x=100; the mover's samples cross to the far side, but a GM sees everything.
+        let wall_sys = json!({
+            "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
+            "blocksSight": true
+        });
+        let (room, gm_ctx, _, scene_id) = setup_clip_room(None, Some(wall_sys), false).await;
+
+        // GM is NOT the mover.
+        let mover_id = Uuid::from_u128(0xAABB);
+        assert_ne!(
+            gm_ctx.user_id, mover_id,
+            "GM must not be the mover in this test"
+        );
+        assert_eq!(gm_ctx.world_role, WorldRole::Gm);
+
+        let samples = vec![
+            PosSample {
+                t_ms: 0.0,
+                pos: [50.0, 50.0],
+            },
+            PosSample {
+                t_ms: 200.0,
+                pos: [150.0, 50.0],
+            }, // behind wall — still visible to GM
+            PosSample {
+                t_ms: 400.0,
+                pos: [250.0, 50.0],
+            },
+        ];
+        let true_stop = [250.0_f64, 50.0_f64];
+        let true_duration_ms = 600.0_f64;
+        let mv = Some(vec![VisionSample {
+            t_ms: 0.0,
+            polygons: vec![vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]]],
+        }]);
+        let frame = ServerMsg::MoveStream {
+            request_id: Uuid::from_u128(1),
+            token_id: Uuid::from_u128(2),
+            mover: mover_id,
+            scene: scene_id,
+            start_server_ms: 1000.0,
+            duration_ms: true_duration_ms,
+            stop: true_stop,
+            samples: samples.clone(),
+            mover_vision: mv,
+        };
+
+        let result = clip_move_stream(&frame, &gm_ctx, &room).await;
+
+        assert!(result.is_some(), "GM must receive a frame");
+        match result.unwrap() {
+            ServerMsg::MoveStream {
+                samples: s,
+                mover_vision: mv_out,
+                stop: out_stop,
+                duration_ms: out_duration_ms,
+                ..
+            } => {
+                assert_eq!(s, samples, "GM receives all samples unchanged");
+                assert_eq!(mv_out, None, "mover_vision must be nulled for GM observers");
+                assert_eq!(out_stop, true_stop, "GM receives the full stop (no clip)");
+                assert!(
+                    (out_duration_ms - true_duration_ms).abs() < 1e-9,
+                    "GM receives the full duration_ms (no clip)"
+                );
+            }
+            other => panic!("expected MoveStream, got {other:?}"),
+        }
     }
 }
