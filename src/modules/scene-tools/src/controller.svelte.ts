@@ -235,7 +235,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // pointer-up cannot bump pendingSeq and invalidate the commit's seq guard.
   // Also prevents a stray down from starting a second commit concurrently.
   // Constraint: committing is set before seq is captured and cleared in finish()
-  // (resolve) or the reject handler, or in onDeactivate (abort path).
+  // (resolve), the reject handler, or onDeactivate (abort path).
   let committing = false;
 
   // Monotonic clock (injected in tests; defaults to Date.now).
@@ -325,9 +325,10 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * same goal; if none is cached, do one pathfind then send the moveRequest.
    *
    * Invariant: `committing` is set TRUE before `seq` is captured, and cleared ONLY by
-   * `finish()` on resolve or by the reject handler. This ensures pointer-up (which calls
-   * clearRoute in non-committing paths) cannot bump `pendingSeq` between commit start and
-   * the async resolve — keeping `seq === pendingSeq` true so the commit proceeds. */
+   * `finish()` on resolve, by the reject handler, or by `onDeactivate` (abort path).
+   * This ensures pointer-up (which calls clearRoute in non-committing paths) cannot bump
+   * `pendingSeq` between commit start and the async resolve — keeping `seq === pendingSeq`
+   * true so the commit proceeds. */
   function commitRoute(goal: Point): void {
     if (!ctx.pathfind || !ctx.moveRequest || !ctx.tokenSelection || ctx.tokenSelection.ids.size !== 1) return;
     const scene = activeScene(ctx);
@@ -344,9 +345,10 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     const finish = (): void => { committing = false; clearRoute(); };
 
     // Inner function: given a proposed path, send the moveRequest and animate on resolve.
+    // `moveRequest` is narrowed to non-undefined here; `commitRoute` gates on it above.
+    const moveRequest = ctx.moveRequest;
     const sendRequest = (proposedPath: [number, number][]): void => {
-      if (!ctx.moveRequest) return;
-      ctx.moveRequest(scene.id, tokenId, proposedPath).then(
+      moveRequest(scene.id, tokenId, proposedPath).then(
         (result) => {
           // Stale: a newer commit (or onDeactivate) now owns committing + clearRoute.
           if (seq !== pendingSeq) return;

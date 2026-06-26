@@ -295,6 +295,8 @@ function seedRouteCtx(over: {
   moveRequest?: ToolContext["moveRequest"];
   dispatchIntent?: (ops: WireOperation[]) => void;
   animateAlongPath?: (id: string, path: [number, number][]) => void;
+  onClearOverlay?: () => void;
+  onClearMeasure?: () => void;
   tokenAt: { id: string; x: number; y: number };
 }): { ctx: ToolContext; now: FakeNow; docs: DocumentStore } {
   const docs = new DocumentStore();
@@ -325,9 +327,9 @@ function seedRouteCtx(over: {
   bridge.attach(fakeSceneHost({
     snap: (p: Point) => p,
     previewOverlay: () => {},
-    clearOverlay: () => {},
+    clearOverlay: over.onClearOverlay ?? (() => {}),
     drawMeasure: () => {},
-    clearMeasure: () => {},
+    clearMeasure: over.onClearMeasure ?? (() => {}),
     animateAlongPath: animateSpy,
   }));
 
@@ -445,6 +447,80 @@ test("route commit survives its own pointer-up: moveRequest resolves after point
   expect(animated.length).toBe(1);
   expect(animated[0].id).toBe("tok1");
   expect(animated[0].path).toEqual([[0, 0], [200, 0], [200, 200]]);
+});
+
+test("rejected moveRequest calls clearRoute and does NOT animate", async () => {
+  // Fix 3: reject path — moveRequest rejects → overlay/measure cleared, no animation.
+  let overlayClears = 0;
+  let measureClears = 0;
+  const animated: Array<{ id: string; path: [number, number][] }> = [];
+
+  const { ctx, now } = seedRouteCtx({
+    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1 }),
+    moveRequest: async () => Promise.reject(new Error("server denied")),
+    animateAlongPath: (id, path) => animated.push({ id, path }),
+    onClearOverlay: () => { overlayClears++; },
+    onClearMeasure: () => { measureClears++; },
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+  });
+
+  const tool = makeMeasureTool(ctx);
+
+  // First click — seeds lastDownAt / lastDownPt.
+  tool.onPointerDown({ x: 100, y: 0 }, ev());
+  tool.onPointerUp({ x: 100, y: 0 }, ev());
+  // Double-click within window → commitRoute fires.
+  now.advance(100);
+  tool.onPointerDown({ x: 100, y: 0 }, ev());
+  tool.onPointerUp({ x: 100, y: 0 }, ev());
+  await drain();
+
+  expect(animated.length).toBe(0);              // no animation on reject
+  expect(overlayClears + measureClears).toBeGreaterThan(0); // route cleared via finish()
+});
+
+test("cache-hit: commitRoute reuses lastPreviewedPath and does not call pathfind again", async () => {
+  // Fix 4: preview populates lastPreviewedPath; double-click commit reuses it — pathfind
+  // must NOT be called a second time, and moveRequest receives the cached path.
+  const pathfindCalls: number[] = [];
+  const cachedPath: [number, number][] = [[0, 0], [100, 0], [100, 100]];
+
+  const moveRequestReceived: Array<[number, number][]> = [];
+  const moveRequest: ToolContext["moveRequest"] = async (_s, _id, path) => {
+    moveRequestReceived.push(path);
+    return { tokenId: "tok1", stop: path.at(-1)!, renderPath: path, durationMs: 300 };
+  };
+
+  const { ctx, now } = seedRouteCtx({
+    pathfind: async () => {
+      pathfindCalls.push(1);
+      return { path: cachedPath, cost: 2 };
+    },
+    moveRequest,
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+  });
+
+  const tool = makeMeasureTool(ctx);
+
+  // Seed the preview: onPointerMove triggers pathfind → lastPreviewedPath = cachedPath.
+  tool.onPointerDown({ x: 100, y: 100 }, ev());
+  tool.onPointerMove({ x: 100, y: 100 }, ev());
+  await flush(); // let preview pathfind resolve → lastPreviewedPath populated
+
+  const pathfindCallsAfterPreview = pathfindCalls.length;
+  expect(pathfindCallsAfterPreview).toBeGreaterThan(0); // preview did call pathfind
+
+  // Double-click at the same goal (no intermediate clear).
+  now.advance(100);
+  tool.onPointerDown({ x: 100, y: 100 }, ev());
+  tool.onPointerUp({ x: 100, y: 100 }, ev());
+  await drain();
+
+  // Pathfind must NOT have been called again — commit reuses lastPreviewedPath.
+  expect(pathfindCalls.length).toBe(pathfindCallsAfterPreview);
+  // moveRequest must have received the cached path.
+  expect(moveRequestReceived).toHaveLength(1);
+  expect(moveRequestReceived[0]).toEqual(cachedPath);
 });
 
 test("stale commit resolve does not clear a newer commit's suppression flag", async () => {
