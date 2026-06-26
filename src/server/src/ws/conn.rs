@@ -462,8 +462,9 @@ async fn handle_pathfind(
 /// INVARIANT (no-geometry-leak): on any `execute_move` failure the reply is a generic
 /// `MoveError { message: "move rejected" }` to `etx` only — no path geometry or vision state
 /// is disclosed.
-/// INVARIANT (mover_vision: None): vision sample population is deferred; this handler emits
-/// the full unclipped position samples for all recipients. Per-recipient clipping follows.
+/// INVARIANT (mover_vision): `exec.mover_vision` is `None` for GM movers (no fog to sweep)
+/// and `Some` for player movers. It is mapped to wire `VisionSample` with per-polygon vertex
+/// capping (fail-closed under-reveal: truncation never over-reveals hidden area).
 async fn handle_move_request(
     room: &crate::ws::room::Room,
     repo: &dyn crate::data::repository::Repository,
@@ -487,7 +488,28 @@ async fn handle_move_request(
         .await
     {
         Ok(exec) => {
-            use crate::ws::protocol::PosSample;
+            use crate::scene::move_stream::MAX_VISION_POLYGON_VERTS;
+            use crate::ws::protocol::{PosSample, VisionSample};
+            // Map internal VisionSamplePt → wire VisionSample, capping polygon vertex count.
+            // Fail-closed: truncation under-reveals (the mover sees less of the fog sweep) but
+            // never over-reveals hidden geometry to the client.
+            let mover_vision = exec.mover_vision.map(|mvs| {
+                mvs.into_iter()
+                    .map(|vs| VisionSample {
+                        t_ms: vs.t_ms,
+                        polygons: vs
+                            .polygons
+                            .into_iter()
+                            .map(|poly| {
+                                poly.into_iter()
+                                    .take(MAX_VISION_POLYGON_VERTS)
+                                    .map(|(x, y)| [x, y])
+                                    .collect()
+                            })
+                            .collect(),
+                    })
+                    .collect()
+            });
             let frame = ServerMsg::MoveStream {
                 request_id,
                 token_id,
@@ -504,7 +526,7 @@ async fn handle_move_request(
                         pos: [s.pos.0, s.pos.1],
                     })
                     .collect(),
-                mover_vision: None,
+                mover_vision,
             };
             room.broadcast_aux(frame);
             // No success frame to the requester: the broadcast is the notification.

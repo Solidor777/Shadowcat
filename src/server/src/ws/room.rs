@@ -19,7 +19,7 @@ use crate::ws::protocol::{ResyncSource, ServerMsg};
 
 /// The room-facing result of a server-authoritative token move: the stop cell, the legal
 /// prefix of the path that was walked (render animation input), the animation duration,
-/// and the time-tagged position samples for `MoveStream` broadcast playback.
+/// the time-tagged position samples, and the per-sample vision trajectory for the mover.
 pub(crate) struct MoveExecution {
     /// The last successfully reached path coordinate (the committed position after the move).
     pub stop: (f64, f64),
@@ -33,6 +33,9 @@ pub(crate) struct MoveExecution {
     /// Time-tagged position samples for `MoveStream` broadcast playback.
     /// Non-empty; the first sample has `t_ms == 0.0` at the starting position.
     pub samples: Vec<crate::scene::move_stream::PosSamplePt>,
+    /// Per-sample vision polygons for the mover (fog-sweep trajectory). `None` for GM movers
+    /// (`Unrestricted` — no fog to sweep). Index-aligned with `samples` when `Some`.
+    pub mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>,
 }
 
 const MAX_EVENTS: usize = 1024;
@@ -480,14 +483,17 @@ impl Room {
             visible_cells
         };
 
-        // --- Pure path executor + animation speed (single ECS read acquisition) ---
-        // Re-acquire the read lock now that the explored await is complete. Hold it only for
-        // the synchronous executor call and the animation speed read, then drop before
-        // commit_ops_locked (no lock-across-await on the write path; publish_guard already held).
+        // --- Pure path executor, animation speed, samples, and mover vision ---
+        // Re-acquire the read lock now that the explored await is complete. All synchronous
+        // work — executor, animation speed, distance/duration, samples, and mover_vision
+        // raycasts — runs here before dropping the lock so no lock-across-await occurs.
+        // publish_guard remains held for the full body (commit_ops_locked depends on it).
         // Maps MoveReject → DataError::Forbidden (all reject reasons indicate the request
         // is invalid: unknown token, too-long path, bad start, non-adjacent step).
         let outcome;
-        let speed_cells_per_sec;
+        let duration_ms;
+        let samples;
+        let mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>;
         {
             let scene = self.scene.read().await;
             outcome = move_exec::execute_move(
@@ -500,24 +506,50 @@ impl Room {
                 cell,
             )
             .map_err(|_| DataError::Forbidden)?;
-            speed_cells_per_sec = scene.resolved_animation_speed();
+            let speed_cells_per_sec = scene.resolved_animation_speed();
+
+            // Distance and duration computed here so samples and mover_vision can be built
+            // under the same lock — all synchronous, no lock-across-await hazard.
+            let distance: f64 = outcome
+                .render_path
+                .windows(2)
+                .map(|w| {
+                    let dx = w[1].0 - w[0].0;
+                    let dy = w[1].1 - w[0].1;
+                    (dx * dx + dy * dy).sqrt()
+                })
+                .sum();
+            duration_ms = if distance < 1e-9 {
+                0.0
+            } else {
+                (distance / cell) / speed_cells_per_sec * 1000.0
+            };
+
+            samples =
+                crate::scene::move_stream::sample_path(&outcome.render_path, cell, duration_ms);
+
+            // GM mover (Unrestricted) → None (no fog to sweep). Player movers get a per-sample
+            // vision polygon at each hypothetical position along the trajectory. The SAME
+            // full sight_walls set is used as for static vision (M9b full-wall-set invariant).
+            mover_vision = if matches!(restriction, MovementRestriction::Unrestricted) {
+                None
+            } else {
+                Some(
+                    samples
+                        .iter()
+                        .map(|s| crate::scene::move_stream::VisionSamplePt {
+                            t_ms: s.t_ms,
+                            polygons: scene.player_vision_polygons_at(
+                                ctx.user_id,
+                                scene_id,
+                                token,
+                                s.pos,
+                            ),
+                        })
+                        .collect(),
+                )
+            };
         } // scene read lock dropped — commit_ops_locked awaits safely under publish_guard
-
-        let distance: f64 = outcome
-            .render_path
-            .windows(2)
-            .map(|w| {
-                let dx = w[1].0 - w[0].0;
-                let dy = w[1].1 - w[0].1;
-                (dx * dx + dy * dy).sqrt()
-            })
-            .sum();
-
-        let duration_ms = if distance < 1e-9 {
-            0.0
-        } else {
-            (distance / cell) / speed_cells_per_sec * 1000.0
-        };
 
         // Zero-progress move (stop == start): return immediately without writing.
         // Invariant: render_path always contains at least `start` (path.len() >= 2 was
@@ -531,6 +563,7 @@ impl Room {
                     t_ms: 0.0,
                     pos: start,
                 }],
+                mover_vision: None, // no animation for zero-progress → no fog sweep
             });
         }
 
@@ -574,14 +607,12 @@ impl Room {
             moving.insert(token, now + (duration_ms.ceil() as i64).max(1));
         }
 
-        let samples =
-            crate::scene::move_stream::sample_path(&outcome.render_path, cell, duration_ms);
-
         Ok(MoveExecution {
             stop: outcome.stop,
             render_path: outcome.render_path,
             duration_ms,
             samples,
+            mover_vision,
         })
     }
 

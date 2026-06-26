@@ -16,9 +16,27 @@
 /// Shared cap across all sample types on a single `MoveStream` frame.
 pub(crate) const MAX_VISION_SAMPLES: usize = 96;
 
+/// Maximum vertices per vision polygon in a `MoveStream` `VisionSample`.
+/// Visibility polygons in scenes with many wall segments can be large; beyond this
+/// bound truncation is applied (fail-closed under-reveal: truncation never over-reveals).
+pub(crate) const MAX_VISION_POLYGON_VERTS: usize = 512;
+
 /// Target density of position samples (samples per cell of arc-length).
 /// ~3 per cell gives smooth playback at normal animation speeds.
 pub(crate) const SAMPLES_PER_CELL: f64 = 3.0;
+
+/// A time-tagged vision sample for the mover's fog-sweep trajectory. `t_ms` matches
+/// the corresponding `PosSamplePt.t_ms`; `polygons` are the visible regions computed
+/// via `player_vision_polygons_at` at the sample's viewpoint, scene-local.
+#[derive(Debug, Clone)]
+pub(crate) struct VisionSamplePt {
+    /// Elapsed time in milliseconds from the move's `start_server_ms`.
+    pub t_ms: f64,
+    /// Visibility polygons (scene coords) visible at this instant. One polygon per owned
+    /// token contributing to the union (moving token at its sample viewpoint; other owned
+    /// tokens at committed positions).
+    pub polygons: Vec<Vec<crate::scene::vision::P>>,
+}
 
 /// A time-tagged position sample for client playback.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,19 +78,13 @@ pub(crate) fn sample_path(path: &[(f64, f64)], cell: f64, duration_ms: f64) -> V
 
     // Fail-closed non-finite guard: a NaN/Inf coordinate propagates through `sqrt` into
     // `cum`, causing `binary_search_by(.partial_cmp().unwrap())` to panic. Mirrors the
-    // fail-closed convention of `supercover_cells`. Empty path returns a synthetic origin.
+    // fail-closed convention of `supercover_cells`. The empty-path case cannot enter here
+    // (`iter().any()` returns false on an empty slice); it is handled by the guard below.
     if path.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
-        return if path.is_empty() {
-            vec![PosSamplePt {
-                t_ms: 0.0,
-                pos: (0.0, 0.0),
-            }]
-        } else {
-            vec![PosSamplePt {
-                t_ms: 0.0,
-                pos: path[0],
-            }]
-        };
+        return vec![PosSamplePt {
+            t_ms: 0.0,
+            pos: path[0],
+        }];
     }
 
     // Single-point or empty guard: one sample at t=0 at path[0] (or origin for empty).

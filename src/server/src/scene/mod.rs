@@ -635,6 +635,52 @@ impl SceneEcs {
         out
     }
 
+    /// Vision polygons for `user` in `scene` as if their `moving_token` were at `viewpoint`:
+    /// one polygon for `moving_token` at `viewpoint`, plus one for each other owned token in
+    /// `scene` at its committed position. Scene-local. Empty when the user owns no token here.
+    ///
+    /// Reuses the FULL `sight_walls` set (same as `player_vision_polygons`): a `gm_only` wall
+    /// the player cannot read still occludes the raycast. The server never leaks the wall's
+    /// existence to clients; it only uses it for geometry (full-wall-set invariant, M9b).
+    ///
+    /// INVARIANT: same wall set and same raycast primitives as `player_vision_polygons`; no fork.
+    pub(crate) fn player_vision_polygons_at(
+        &self,
+        user: Uuid,
+        scene: Uuid,
+        moving_token: Uuid,
+        viewpoint: (f64, f64),
+    ) -> Vec<Vec<vision::P>> {
+        // Gather viewpoints: for `moving_token` use `viewpoint`; for other owned tokens in
+        // `scene` use their committed (x, y). Drop the query borrow before wall queries.
+        let mut vps: Vec<vision::P> = Vec::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type != "token"
+                || e.doc.parent_id != Some(scene)
+                || e.doc.owner != Some(user)
+            {
+                continue;
+            }
+            if e.doc.id == moving_token {
+                // Use the hypothetical viewpoint instead of the committed position.
+                vps.push(viewpoint);
+            } else if let (Some(x), Some(y)) = (sys_f64(&e.doc, "/x"), sys_f64(&e.doc, "/y")) {
+                vps.push((x, y));
+            }
+        }
+        if vps.is_empty() {
+            return Vec::new();
+        }
+        // Full wall set (same as player_vision_polygons): gm_only walls still occlude.
+        let walls = self.sight_walls(scene);
+        let mut out = Vec::with_capacity(vps.len());
+        for vp in vps {
+            let bound = vision::bound_for(vp, &walls, VISION_BOUND_MARGIN);
+            out.push(vision::visibility_polygon(vp, &walls, bound));
+        }
+        out
+    }
+
     /// Each scene's grid cell size (`system.grid.size`), defaulting to 100 — the unit the M9c
     /// explored-fog accumulation quantizes vision into. Read once per dispatch (cheap doc scan).
     pub fn scene_grid_sizes(&self) -> std::collections::HashMap<Uuid, f64> {
@@ -3025,6 +3071,119 @@ mod tests {
         assert!(
             r.is_ok(),
             "explored corridor makes the goal routable under revealed"
+        );
+    }
+
+    // --- player_vision_polygons_at: mover vision trajectory ---
+
+    /// Advancing past a `blocksSight` wall changes the visibility polygon: a point beyond
+    /// the wall is invisible from the near viewpoint but visible from the far viewpoint.
+    #[test]
+    fn vision_at_grows_as_token_advances() {
+        // Vertical blocksSight wall at x=100 (y ±200). Token committed at (50,50).
+        // The wall spans the relevant y range of the bounding box so the test point
+        // (150,50) is directly occluded from the near side.
+        let scene = Uuid::from_u128(10);
+        let user = Uuid::from_u128(7);
+        let token_id = Uuid::from_u128(11);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 }));
+        tok.owner = Some(user);
+        let wall = entity_doc(
+            12,
+            10,
+            "wall",
+            json!({ "seg": {"x1": 100, "y1": -200, "x2": 100, "y2": 200},
+                    "blocksSight": true }),
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, wall], 0);
+
+        // Near viewpoint (50,50): wall at x=100 occludes (150,50) — ray crosses the wall.
+        let polys_near = ecs.player_vision_polygons_at(user, scene, token_id, (50.0, 50.0));
+        assert!(
+            !polys_near.is_empty(),
+            "must return a polygon for an owned token"
+        );
+        let in_near = vision::point_in_poly(&polys_near[0], (150.0, 50.0));
+
+        // Far viewpoint (200,50): token is past the wall; (150,50) is between wall and viewpoint
+        // on the same side, so it IS visible.
+        let polys_far = ecs.player_vision_polygons_at(user, scene, token_id, (200.0, 50.0));
+        assert!(
+            !polys_far.is_empty(),
+            "must return a polygon for an owned token"
+        );
+        let in_far = vision::point_in_poly(&polys_far[0], (150.0, 50.0));
+
+        assert!(
+            !in_near,
+            "near viewpoint (50,50) must NOT see (150,50) past the wall at x=100"
+        );
+        assert!(
+            in_far,
+            "far viewpoint (200,50) must see (150,50) between wall and viewpoint"
+        );
+    }
+
+    /// A `blocksSight` wall with `gm_only` permissions (DocRole::None default — players cannot
+    /// read this wall doc) must produce the SAME occlusion as an identically-placed normal wall.
+    /// Invariant: `sight_walls` uses the FULL ECS wall set regardless of doc permissions;
+    /// the server never leaks the wall's existence, only uses it for raycast geometry.
+    #[test]
+    fn vision_at_uses_full_wall_set() {
+        use crate::data::document::DocRole;
+        let scene = Uuid::from_u128(10);
+        let user = Uuid::from_u128(7);
+        let token_id = Uuid::from_u128(11);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 }));
+        tok.owner = Some(user);
+        let wall_sys =
+            json!({ "seg": {"x1": 100, "y1": -200, "x2": 100, "y2": 200}, "blocksSight": true });
+
+        // Normal wall (default permissions): occludes from (50,50).
+        let normal_wall = entity_doc(12, 10, "wall", wall_sys.clone());
+        let ecs_normal =
+            SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone(), normal_wall], 0);
+        let polys_normal =
+            ecs_normal.player_vision_polygons_at(user, scene, token_id, (50.0, 50.0));
+        assert!(!polys_normal.is_empty());
+
+        // gm_only wall (DocRole::None): players cannot access this doc, but must occlude equally.
+        let mut gm_wall = entity_doc(12, 10, "wall", wall_sys);
+        gm_wall.permissions.default = DocRole::None;
+        let ecs_gm = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, gm_wall], 0);
+        let polys_gm = ecs_gm.player_vision_polygons_at(user, scene, token_id, (50.0, 50.0));
+        assert!(!polys_gm.is_empty());
+
+        // Both walls must produce identical polygons — sight_walls is permission-blind.
+        assert_eq!(
+            polys_normal[0], polys_gm[0],
+            "gm_only wall must occlude identically to a normal wall with the same geometry"
+        );
+
+        // Cross-check: the occluded point (150,50) is NOT visible from (50,50) with either wall.
+        assert!(
+            !vision::point_in_poly(&polys_gm[0], (150.0, 50.0)),
+            "gm_only wall must occlude (150,50): point must not be inside the polygon"
+        );
+    }
+
+    /// Returns empty when the user owns no token in the scene, even when `moving_token`
+    /// points to an existing token owned by another user.
+    #[test]
+    fn vision_at_empty_when_user_owns_no_token() {
+        let scene = Uuid::from_u128(10);
+        let user = Uuid::from_u128(7);
+        let stranger = Uuid::from_u128(999);
+        let token_id = Uuid::from_u128(11);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 }));
+        tok.owner = Some(user); // owned by user, NOT stranger
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+
+        // Stranger owns no token in this scene → empty (fail-closed).
+        let polys = ecs.player_vision_polygons_at(stranger, scene, token_id, (50.0, 50.0));
+        assert!(
+            polys.is_empty(),
+            "user with no owned token must get empty polygons (fail-closed)"
         );
     }
 }
