@@ -148,7 +148,16 @@ where
             command: filter_command(repo, command, ctx, world_defaults).await,
             intent_id: *intent_id,
         },
-        other => other.clone(),
+        other => {
+            // MoveStream carries per-recipient position geometry and MUST be clipped
+            // through `clip_move_stream` in the egress loop, never passed through here
+            // unredacted. This guard catches a future routing regression at test time.
+            debug_assert!(
+                !matches!(other, ServerMsg::MoveStream { .. }),
+                "MoveStream must be clipped per-recipient in egress_loop, not sent via send_filtered"
+            );
+            other.clone()
+        }
     };
     sink.send(text(&out)).await.map_err(|_| ())
 }
@@ -711,6 +720,14 @@ async fn clip_move_stream(
     // neither the true final position (which may be behind a wall) nor the full
     // travel distance. The authoritative position Event (from commit_ops_locked)
     // delivers the real stop coordinate later, gated by the client's fog layer.
+    // INVARIANT: `visible` is non-empty here (the is_empty guard above returns None).
+    // The unwrap_or fallbacks below are unreachable; the assert makes the secrecy
+    // invariant machine-checked so a future refactor of the guard cannot silently
+    // fall back to the full unclipped stop/duration.
+    debug_assert!(
+        !visible.is_empty(),
+        "clip invariant: visible must be non-empty (else the move is suppressed)"
+    );
     let clipped_stop = visible.last().map(|s| s.pos).unwrap_or(*stop);
     let clipped_duration_ms = visible.last().map(|s| s.t_ms).unwrap_or(*duration_ms);
     Some(ServerMsg::MoveStream {
