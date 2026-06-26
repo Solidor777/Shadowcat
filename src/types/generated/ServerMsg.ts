@@ -4,9 +4,11 @@ import type { CapabilityGrants } from "./CapabilityGrants";
 import type { CapabilityRequirement } from "./CapabilityRequirement";
 import type { Command } from "./Command";
 import type { ContractDeclaration } from "./ContractDeclaration";
+import type { PosSample } from "./PosSample";
 import type { RejectReason } from "./RejectReason";
 import type { ResyncSource } from "./ResyncSource";
 import type { SearchHit } from "./SearchHit";
+import type { VisionSample } from "./VisionSample";
 import type { WorldRole } from "./WorldRole";
 import type { WsErrorCode } from "./WsErrorCode";
 
@@ -30,4 +32,43 @@ render_path: Array<[number, number]>,
 /**
  * Wall-clock animation budget in milliseconds.
  */
-duration_ms: number, } | { "type": "move_error", request_id: string, message: string, };
+duration_ms: number, } | { "type": "move_error", request_id: string, message: string, } | { "type": "move_stream", 
+/**
+ * Correlates with the originating `MoveRequest`.
+ */
+request_id: string, 
+/**
+ * The token being moved.
+ */
+token_id: string, 
+/**
+ * The user who owns the move (mover's user id).
+ */
+mover: string, 
+/**
+ * The scene in which the move occurs.
+ */
+scene: string, 
+/**
+ * Authoritative server wall-clock time (ms) at which the animation starts.
+ * INVARIANT: must be set before broadcast so all clients sync to the same origin.
+ */
+start_server_ms: number, 
+/**
+ * Total wall-clock animation budget in milliseconds.
+ */
+duration_ms: number, 
+/**
+ * Final resting position (scene coords) after the move completes.
+ */
+stop: [number, number], 
+/**
+ * Ordered position samples along the route (t=0 is start, t=duration_ms is stop).
+ * INVARIANT: non-empty; first sample t_ms == 0.0 is the starting cell-center.
+ */
+samples: Array<PosSample>, 
+/**
+ * Per-sample vision polygons for the mover only. `None` for observers (they compute
+ * their own visibility; sending mover vision to observers would leak unexplored geometry).
+ */
+mover_vision: Array<VisionSample> | null, };
