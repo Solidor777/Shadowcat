@@ -28,7 +28,8 @@ pub(crate) const SAMPLES_PER_CELL: f64 = 3.0;
 
 /// A time-tagged vision sample for the mover's fog-sweep trajectory. `t_ms` matches
 /// the corresponding `PosSamplePt.t_ms`; `polygons` are the visible regions computed
-/// via `player_vision_polygons_at` at the sample's viewpoint, scene-local.
+/// via `SceneEcs::player_vision_inputs` + `VisionMoveInputs::polygons_at` at the sample's
+/// viewpoint, scene-local.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct VisionSamplePt {
     /// Elapsed time in milliseconds from the move's `start_server_ms`.
@@ -82,6 +83,10 @@ pub(crate) fn sample_path(path: &[(f64, f64)], cell: f64, duration_ms: f64) -> V
     // fail-closed convention of `supercover_cells`. The empty-path case cannot enter here
     // (`iter().any()` returns false on an empty slice); it is handled by the guard below.
     if path.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
+        debug_assert!(
+            !path.is_empty(),
+            "any() is false on an empty slice, so path is non-empty here"
+        );
         return vec![PosSamplePt {
             t_ms: 0.0,
             pos: path[0],

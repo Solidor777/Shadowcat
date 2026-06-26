@@ -34,7 +34,8 @@ pub(crate) struct MoveExecution {
     /// Non-empty; the first sample has `t_ms == 0.0` at the starting position.
     pub samples: Vec<crate::scene::move_stream::PosSamplePt>,
     /// Per-sample vision polygons for the mover (fog-sweep trajectory). `None` for GM movers
-    /// (`Unrestricted` — no fog to sweep). Index-aligned with `samples` when `Some`.
+    /// (`Unrestricted` — no fog to sweep) and for a zero-progress move (`stop == start`, no
+    /// animation regardless of role). Index-aligned with `samples` when `Some`.
     pub mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>,
 }
 
