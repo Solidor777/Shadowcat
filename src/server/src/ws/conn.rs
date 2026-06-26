@@ -331,17 +331,23 @@ async fn handle_socket(
                                 });
                             }
                         }
-                        Ok(ClientMsg::MoveRequest { request_id, .. }) => {
-                            // TODO: Implement server-authoritative move execution.
-                            // Replies to originator only; never broadcast.
-                            if etx
-                                .send(Egress::Frame(Arc::new(ServerMsg::MoveError {
-                                    request_id,
-                                    message: "not implemented".into(),
-                                })))
-                                .await
-                                .is_err()
-                            {
+                        Ok(ClientMsg::MoveRequest { request_id, scene, token_id, path }) => {
+                            // Server-authoritative move execution. Resolves room, calls
+                            // execute_move, replies MoveExecuted to the requester's etx only.
+                            // INVARIANT (one-shot-to-requester): the atomic position Event
+                            // broadcast to the room is produced by execute_move internally;
+                            // the MoveExecuted reply (carrying render_path) goes to etx only.
+                            let frame = handle_move_request(
+                                &room,
+                                repo.as_ref(),
+                                &ctx,
+                                scene,
+                                token_id,
+                                path,
+                                request_id,
+                            )
+                            .await;
+                            if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
                                 break;
                             }
                         }
@@ -440,6 +446,44 @@ async fn handle_pathfind(
                 crate::scene::pathfinding::PathFail::Exceeded => "search exceeded",
             }
             .to_string(),
+        },
+    }
+}
+
+/// Resolve and execute a server-authoritative one-shot move request.
+///
+/// INVARIANT (one-shot-to-requester): the `MoveExecuted` reply is returned to the caller for
+/// placement on `etx` only — it is never broadcast. The atomic position `Event` is already
+/// broadcast by `Room::execute_move` via `commit_ops_locked`.
+/// INVARIANT (no-geometry-leak): on any `execute_move` failure the reply is a generic
+/// `MoveError { message: "move rejected" }` — no path geometry or vision state is disclosed.
+async fn handle_move_request(
+    room: &crate::ws::room::Room,
+    repo: &dyn crate::data::repository::Repository,
+    ctx: &crate::data::membership::PermissionContext,
+    scene_id: Uuid,
+    token_id: Uuid,
+    // Ordered cell-center scene points: start … goal as `[f64; 2]` wire arrays.
+    path: Vec<[f64; 2]>,
+    request_id: Uuid,
+) -> ServerMsg {
+    // Convert wire `[f64; 2]` arrays to the internal `(f64, f64)` tuple representation
+    // expected by `Room::execute_move`.
+    let path_tuples: Vec<(f64, f64)> = path.iter().map(|p| (p[0], p[1])).collect();
+    match room
+        .execute_move(repo, ctx, scene_id, token_id, path_tuples, now_millis())
+        .await
+    {
+        Ok(exec) => ServerMsg::MoveExecuted {
+            request_id,
+            token_id,
+            stop: [exec.stop.0, exec.stop.1],
+            render_path: exec.render_path.iter().map(|p| [p.0, p.1]).collect(),
+            duration_ms: exec.duration_ms,
+        },
+        Err(_) => ServerMsg::MoveError {
+            request_id,
+            message: "move rejected".into(),
         },
     }
 }
@@ -1242,6 +1286,129 @@ mod tests {
             matches!(player_result, ServerMsg::PathError { ref message, .. } if message == "unreachable"),
             "non-GM in dark scene should be unreachable; got {player_result:?}"
         );
+    }
+
+    /// `handle_move_request` executes a move for a player-owned token and replies
+    /// `MoveExecuted` to the requester only. The reply carries the authoritative
+    /// `render_path` (at least the start cell) and the correlated `request_id`.
+    /// The atomic position `Event` is broadcast by `execute_move` internally.
+    #[tokio::test]
+    async fn handle_move_request_executes_and_replies_to_requester() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::{DocRole, WorldRole};
+        use crate::data::membership::PermissionContext;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let author = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", author, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: author,
+            world_role: WorldRole::Gm,
+        };
+
+        let p = repo
+            .create_user("player", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world.id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg
+            .get_or_create(repo.as_ref(), world.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+
+        let (scene_id, token_id, ws_id) = (
+            Uuid::from_u128(0xB001),
+            Uuid::from_u128(0xB002),
+            Uuid::from_u128(0xB003),
+        );
+
+        // World-settings: unrestricted movement so the player token can move freely.
+        let mut ws = wdoc(world.id, ws_id, "world-settings");
+        ws.owner = Some(author);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": false, "fog": false,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: ws }],
+            0,
+        )
+        .await
+        .unwrap();
+
+        // Scene with a 100-unit grid.
+        let mut scene = wdoc(world.id, scene_id, "scene");
+        scene.owner = Some(author);
+        scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: scene }],
+            0,
+        )
+        .await
+        .unwrap();
+
+        // Player-owned token at (50,50). Start = cell-center (0,0); goal = (150,50) = one step right.
+        let mut token = wdoc(world.id, token_id, "token");
+        token.parent_id = Some(scene_id);
+        token.owner = Some(p);
+        token.permissions.users.insert(p, DocRole::Owner);
+        token.system = json!({ "x": 50.0, "y": 50.0 });
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: token }],
+            0,
+        )
+        .await
+        .unwrap();
+
+        let frame = handle_move_request(
+            &room,
+            repo.as_ref(),
+            &player,
+            scene_id,
+            token_id,
+            vec![[50.0, 50.0], [150.0, 50.0]],
+            Uuid::from_u128(7),
+        )
+        .await;
+        match frame {
+            ServerMsg::MoveExecuted {
+                request_id,
+                render_path,
+                ..
+            } => {
+                assert_eq!(request_id, Uuid::from_u128(7));
+                assert!(!render_path.is_empty(), "render_path must be non-empty");
+            }
+            other => panic!("expected MoveExecuted, got {other:?}"),
+        }
     }
 
     /// A token-less player (masked + empty polygons) accumulates nothing and emits empty explored
