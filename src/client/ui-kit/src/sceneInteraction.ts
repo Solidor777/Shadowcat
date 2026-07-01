@@ -69,7 +69,8 @@ export class SceneInteractionBridge implements SceneInteraction {
     durationMs: number,
     startServerMs: number,
     serverNow?: () => number,
+    moverVision?: { tMs: number; polygons: [number, number][][] }[] | null,
   ): void {
-    this.#host?.animateSamples(id, samples, durationMs, startServerMs, serverNow);
+    this.#host?.animateSamples(id, samples, durationMs, startServerMs, serverNow, moverVision);
   }
 }

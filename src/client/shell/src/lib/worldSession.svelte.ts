@@ -288,6 +288,7 @@ export class WorldSession {
         stream.durationMs,
         stream.startServerMs,
         () => ws.serverNow(),
+        stream.moverVision,
       );
     });
     await this.#ws.start();
