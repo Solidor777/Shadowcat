@@ -971,6 +971,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn permission_tightening_retracts_embedded_owner_or_gm_for_non_owner() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, FieldChange, Operation};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let owner = r
+            .create_user("owner", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+
+        // Parent (owner set) embeds an actor copy whose name is OwnerOrGm-hidden.
+        let mut child = doc(
+            PermissionSet::default(),
+            serde_json::json!({ "name": "Goblin Skirmisher", "displayName": "Goblin" }),
+        );
+        child
+            .permissions
+            .property_overrides
+            .insert("/system/name".into(), Visibility::OwnerOrGm);
+        let mut parent = doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "public": 0 }),
+        );
+        parent.scope = Scope::World { world_id: w.id };
+        parent.owner = Some(owner);
+        parent.embedded.insert("actor".into(), vec![child]);
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: parent.clone(),
+            }],
+            1,
+        )
+        .await
+        .unwrap();
+
+        // Tighten the embedded child's permissions (adds the name override).
+        let cmd = Command {
+            seq: 2,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id: parent.id,
+                changes: vec![FieldChange {
+                    path: "/embedded/actor/0/permissions/property_overrides".into(),
+                    old: serde_json::json!({}),
+                    new: serde_json::json!({ "/system/name": "owner_or_gm" }),
+                }],
+            }],
+        };
+
+        // Non-owner player: the embedded name is retracted with a null pre-image.
+        let other = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let out = filter_command(&r, &cmd, &other, &WorldCapDefaults::default()).await;
+        let Operation::Update { changes, .. } = &out.ops[0] else {
+            panic!("expected Update");
+        };
+        let retract = changes
+            .iter()
+            .find(|c| c.path == "/embedded/actor/0/system/name")
+            .expect("embedded name retracted");
+        assert_eq!(retract.new, serde_json::Value::Null);
+        assert_eq!(retract.old, serde_json::Value::Null);
+
+        // Owner: the embedded OwnerOrGm name stays visible — no retraction.
+        let owner_ctx = PermissionContext {
+            user_id: owner,
+            world_role: WorldRole::Player,
+        };
+        let out_owner = filter_command(&r, &cmd, &owner_ctx, &WorldCapDefaults::default()).await;
+        let Operation::Update { changes, .. } = &out_owner.ops[0] else {
+            panic!("expected Update");
+        };
+        assert!(!changes
+            .iter()
+            .any(|c| c.path == "/embedded/actor/0/system/name"));
+
+        // GM: sees everything — no retraction.
+        let out_gm = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
+        let Operation::Update { changes, .. } = &out_gm.ops[0] else {
+            panic!("expected Update");
+        };
+        assert!(!changes
+            .iter()
+            .any(|c| c.path == "/embedded/actor/0/system/name"));
+    }
+
+    #[tokio::test]
     async fn filter_command_update_redacts_embedded_child_gm_only() {
         use crate::auth::role::ServerRole;
         use crate::data::command::{Command, FieldChange, Operation};
