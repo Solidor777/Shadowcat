@@ -348,7 +348,7 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > ground truth, 5 Minors fixed; reviewed skill-update gate PASS).
 > Plan: `docs/superpowers/plans/2026-06-25-m1-server-authoritative-move-execution.md`.
 >
-> **M2 DONE** (branch `m10e-5-movement-animation`, commits `f403ff1..d3bd5fd`, all green, NOT
+> **M2 DONE** (branch `m10e-5-movement-animation`, commits `f403ff1..d748219`, all green, NOT
 > pushed/merged — push gate = full M10): streamed continuous vision, server-precomputed and
 > strictly leak-free. `PosSample`/`VisionSample`/`ServerMsg::MoveStream` protocol (ts-rs + Zod
 > mirror); `scene/move_stream.rs` pure path sampler (`sample_path`, arc-length parameterization,
@@ -363,7 +363,10 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > catch-up) + engine `visionSweeps` fog-sweep (snap, then `fog-blend.ts`/`setVisibilityBlend`
 > render-texture cross-fade) + `worldSession`'s active-scene filter on `onMoveStream` (cross-scene
 > leak guard). SDD-executed (8 tasks, per-task two-reviewer gate; reviewed skill-update gate DONE:
-> scene-rendering, realtime-sync, client-shell). Known v1 limitation (by design, not a bug): live
+> scene-rendering, realtime-sync, client-shell). Whole-branch buddy-check (2 independent blind
+> opus reviewers) CONVERGED: no-leak/§13-parity/no-lock-across-await/determinism all confirmed;
+> 1 Important (client-side backward-extrapolation on leading-occlusion clips) fixed + reverified.
+> Known v1 limitation (by design, not a bug): live
 > cross-animation concurrency deferred (`docs/TODO.md`) — a move's per-recipient clip is computed
 > once at its execute time, so two simultaneous moves don't reveal each other mid-walk if a
 > watcher's vision opens after the clip; reconciles at the stop + next `vision` rebroadcast.
