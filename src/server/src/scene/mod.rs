@@ -4,6 +4,8 @@
 
 pub mod explored;
 pub mod lighting;
+pub(crate) mod move_exec;
+pub(crate) mod move_stream;
 pub mod movement;
 pub(crate) mod pathfinding;
 pub mod vision;
@@ -116,6 +118,40 @@ pub struct LitScene {
 /// Margin (scene units, ~one default grid cell) the vision bound box extends past the walls
 /// so rays always terminate on the box rather than escaping to infinity.
 const VISION_BOUND_MARGIN: f64 = 100.0;
+
+/// Pre-collected per-move-constant inputs for the mover's vision trajectory.
+/// Holds the full `blocksSight` wall set and the visibility polygons for every stationary
+/// owned token (all owned tokens in the scene except the moving one). Computed once per move
+/// via `SceneEcs::player_vision_inputs`; each sample then calls the cheaper `polygons_at`
+/// (one moving-token raycast only, no repeated O(entities) ECS or wall scan).
+pub(crate) struct VisionMoveInputs {
+    /// Full `blocksSight` wall set (includes `gm_only` walls — full-wall-set invariant, M9b).
+    walls: Vec<vision::Seg>,
+    /// Vision polygons for every owned token in the scene EXCEPT the moving token, at their
+    /// committed (stationary) positions. Constant across all samples of one move.
+    static_polys: Vec<Vec<vision::P>>,
+    /// True when the user owns no token in this scene: `polygons_at` returns empty (fail-closed).
+    empty: bool,
+}
+
+impl VisionMoveInputs {
+    /// Per-sample: compute the moving token's visibility polygon at `viewpoint` and prepend it
+    /// to the precomputed static polygons. Returns empty when `empty == true` (no owned token
+    /// in this scene — fail-closed). Uses the same `sight_walls` set and raycast primitives as
+    /// `player_vision_polygons` (full-wall-set invariant, M9b; no fork).
+    pub(crate) fn polygons_at(&self, viewpoint: (f64, f64)) -> Vec<Vec<vision::P>> {
+        if self.empty {
+            return Vec::new();
+        }
+        let bound = vision::bound_for(viewpoint, &self.walls, VISION_BOUND_MARGIN);
+        let moving_poly = vision::visibility_polygon(viewpoint, &self.walls, bound);
+        // Moving token's polygon first (index 0); static polygons follow.
+        let mut out = Vec::with_capacity(1 + self.static_polys.len());
+        out.push(moving_poly);
+        out.extend_from_slice(&self.static_polys);
+        out
+    }
+}
 
 /// The per-world derived world. Writes are serialized by the caller
 /// (`Room::publish` under `publish_guard`); reads (derived recompute) take a
@@ -474,6 +510,19 @@ impl SceneEcs {
         pathfinding::parse_diagonal_rule(s)
     }
 
+    /// Resolved animation token speed in cells/second. World-scoped (no per-scene override;
+    /// mirrors `resolved_diagonal_rule`'s structural guard). Reads
+    /// `world-settings.animation.speedCellsPerSec`; falls back to 6 when the doc is absent or
+    /// structurally incomplete. The floor of 0.001 prevents a zero/negative config from causing
+    /// a division-by-zero in the duration formula.
+    pub(crate) fn resolved_animation_speed(&self) -> f64 {
+        self.validated_world_settings_system()
+            .and_then(|s| s.pointer("/animation/speedCellsPerSec"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(6.0)
+            .max(0.001)
+    }
+
     /// Resolved vision-mode registry. Returns a `BTreeMap` for deterministic key order (mirrors
     /// the plan's Global Constraint on determinism; `.get(id)` works identically for callers).
     /// Fail-closed to the built-in `normal`+`darkvision` seed ONLY when no doc/`modes` is present
@@ -539,6 +588,22 @@ impl SceneEcs {
         self.index.len()
     }
 
+    /// The token's current committed position `(x, y)` in scene coordinates.
+    /// `None` if `token` is not a token entity or has no `(x, y)` in its `system`.
+    /// Coupling: `move_exec::execute_move` calls this to verify `path[0]` against the
+    /// authoritative ECS state; `Room::execute_move` calls it to read the committed start
+    /// position before dispatching to the executor.
+    pub(crate) fn token_position(&self, token: Uuid) -> Option<(f64, f64)> {
+        let &e = self.index.get(&token)?;
+        let tok = self.world.get::<&SceneEntity>(e).ok()?;
+        if tok.doc.doc_type != "token" {
+            return None;
+        }
+        let cx = sys_f64(&tok.doc, "/x")?;
+        let cy = sys_f64(&tok.doc, "/y")?;
+        Some((cx, cy))
+    }
+
     /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,
     /// post_image_end)`. The end is the committed `system` with **all** changes applied in
     /// array order (last-write-wins) — exactly what `apply_intent` commits — so a wholesale
@@ -551,14 +616,20 @@ impl SceneEcs {
         changes: &[crate::data::command::FieldChange],
     ) -> Option<TokenMove> {
         let &e = self.index.get(&token_id)?;
-        let tok = self.world.get::<&SceneEntity>(e).ok()?;
-        if tok.doc.doc_type != "token" {
-            return None;
-        }
-        let scene = tok.doc.parent_id?;
-        let cx = sys_f64(&tok.doc, "/x")?;
-        let cy = sys_f64(&tok.doc, "/y")?;
-        let mut v = serde_json::to_value(&tok.doc).ok()?;
+        // Read scene + committed position in a scoped borrow so the reference is dropped
+        // before the post-image serde round-trip (avoids holding two borrows).
+        let (scene, cx, cy, doc_value) = {
+            let tok = self.world.get::<&SceneEntity>(e).ok()?;
+            if tok.doc.doc_type != "token" {
+                return None;
+            }
+            let scene = tok.doc.parent_id?;
+            let cx = sys_f64(&tok.doc, "/x")?;
+            let cy = sys_f64(&tok.doc, "/y")?;
+            let v = serde_json::to_value(&tok.doc).ok()?;
+            (scene, cx, cy, v)
+        };
+        let mut v = doc_value;
         for ch in changes {
             let _ = set_pointer(&mut v, &ch.path, ch.new.clone());
         }
@@ -596,6 +667,79 @@ impl SceneEcs {
             out.push((scene, vision::visibility_polygon(vp, &walls, bound)));
         }
         out
+    }
+
+    /// Pre-collect the per-move-constant vision inputs for the mover's fog-sweep trajectory:
+    /// the full `blocksSight` wall set (computed once) and the visibility polygons for every
+    /// owned token in `scene` EXCEPT `moving_token` (whose viewpoint varies per sample).
+    /// Call once per move; then call `VisionMoveInputs::polygons_at` once per sample to obtain
+    /// the moving token's polygon at that sample's viewpoint unioned with the static polygons.
+    ///
+    /// INVARIANT: same wall set and same raycast primitives as `player_vision_polygons`; no fork.
+    pub(crate) fn player_vision_inputs(
+        &self,
+        user: Uuid,
+        scene: Uuid,
+        moving_token: Uuid,
+    ) -> VisionMoveInputs {
+        // Collect static-token viewpoints (non-moving owned tokens in `scene`). Drop the query
+        // borrow before wall queries — mirrors player_vision_polygons collect-then-query order.
+        let mut static_vps: Vec<vision::P> = Vec::new();
+        let mut has_owned = false;
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type != "token"
+                || e.doc.parent_id != Some(scene)
+                || e.doc.owner != Some(user)
+            {
+                continue;
+            }
+            has_owned = true;
+            if e.doc.id == moving_token {
+                continue; // mover's viewpoint varies per sample; skip here
+            }
+            if let (Some(x), Some(y)) = (sys_f64(&e.doc, "/x"), sys_f64(&e.doc, "/y")) {
+                static_vps.push((x, y));
+            }
+        }
+        if !has_owned {
+            return VisionMoveInputs {
+                walls: Vec::new(),
+                static_polys: Vec::new(),
+                empty: true,
+            };
+        }
+        // Full wall set: computed once for the entire move (same as player_vision_polygons).
+        let walls = self.sight_walls(scene);
+        // Static polygons: one per stationary owned token; constant across all samples.
+        let static_polys = static_vps
+            .iter()
+            .map(|&vp| {
+                let bound = vision::bound_for(vp, &walls, VISION_BOUND_MARGIN);
+                vision::visibility_polygon(vp, &walls, bound)
+            })
+            .collect();
+        VisionMoveInputs {
+            walls,
+            static_polys,
+            empty: false,
+        }
+    }
+
+    /// Single-viewpoint convenience wrapper used by the `vision_at_*` tests. Production code
+    /// calls `player_vision_inputs` once per move and then `VisionMoveInputs::polygons_at` per
+    /// sample to avoid repeating the O(entities) ECS and wall scans each iteration.
+    ///
+    /// INVARIANT: same wall set and same raycast primitives as `player_vision_polygons`; no fork.
+    #[cfg(test)]
+    pub(crate) fn player_vision_polygons_at(
+        &self,
+        user: Uuid,
+        scene: Uuid,
+        moving_token: Uuid,
+        viewpoint: (f64, f64),
+    ) -> Vec<Vec<vision::P>> {
+        let inputs = self.player_vision_inputs(user, scene, moving_token);
+        inputs.polygons_at(viewpoint)
     }
 
     /// Each scene's grid cell size (`system.grid.size`), defaulting to 100 — the unit the M9c
@@ -2988,6 +3132,119 @@ mod tests {
         assert!(
             r.is_ok(),
             "explored corridor makes the goal routable under revealed"
+        );
+    }
+
+    // --- player_vision_polygons_at: mover vision trajectory ---
+
+    /// Advancing past a `blocksSight` wall changes the visibility polygon: a point beyond
+    /// the wall is invisible from the near viewpoint but visible from the far viewpoint.
+    #[test]
+    fn vision_at_grows_as_token_advances() {
+        // Vertical blocksSight wall at x=100 (y ±200). Token committed at (50,50).
+        // The wall spans the relevant y range of the bounding box so the test point
+        // (150,50) is directly occluded from the near side.
+        let scene = Uuid::from_u128(10);
+        let user = Uuid::from_u128(7);
+        let token_id = Uuid::from_u128(11);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 }));
+        tok.owner = Some(user);
+        let wall = entity_doc(
+            12,
+            10,
+            "wall",
+            json!({ "seg": {"x1": 100, "y1": -200, "x2": 100, "y2": 200},
+                    "blocksSight": true }),
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, wall], 0);
+
+        // Near viewpoint (50,50): wall at x=100 occludes (150,50) — ray crosses the wall.
+        let polys_near = ecs.player_vision_polygons_at(user, scene, token_id, (50.0, 50.0));
+        assert!(
+            !polys_near.is_empty(),
+            "must return a polygon for an owned token"
+        );
+        let in_near = vision::point_in_poly(&polys_near[0], (150.0, 50.0));
+
+        // Far viewpoint (200,50): token is past the wall; (150,50) is between wall and viewpoint
+        // on the same side, so it IS visible.
+        let polys_far = ecs.player_vision_polygons_at(user, scene, token_id, (200.0, 50.0));
+        assert!(
+            !polys_far.is_empty(),
+            "must return a polygon for an owned token"
+        );
+        let in_far = vision::point_in_poly(&polys_far[0], (150.0, 50.0));
+
+        assert!(
+            !in_near,
+            "near viewpoint (50,50) must NOT see (150,50) past the wall at x=100"
+        );
+        assert!(
+            in_far,
+            "far viewpoint (200,50) must see (150,50) between wall and viewpoint"
+        );
+    }
+
+    /// A `blocksSight` wall with `gm_only` permissions (DocRole::None default — players cannot
+    /// read this wall doc) must produce the SAME occlusion as an identically-placed normal wall.
+    /// Invariant: `sight_walls` uses the FULL ECS wall set regardless of doc permissions;
+    /// the server never leaks the wall's existence, only uses it for raycast geometry.
+    #[test]
+    fn vision_at_uses_full_wall_set() {
+        use crate::data::document::DocRole;
+        let scene = Uuid::from_u128(10);
+        let user = Uuid::from_u128(7);
+        let token_id = Uuid::from_u128(11);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 }));
+        tok.owner = Some(user);
+        let wall_sys =
+            json!({ "seg": {"x1": 100, "y1": -200, "x2": 100, "y2": 200}, "blocksSight": true });
+
+        // Normal wall (default permissions): occludes from (50,50).
+        let normal_wall = entity_doc(12, 10, "wall", wall_sys.clone());
+        let ecs_normal =
+            SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone(), normal_wall], 0);
+        let polys_normal =
+            ecs_normal.player_vision_polygons_at(user, scene, token_id, (50.0, 50.0));
+        assert!(!polys_normal.is_empty());
+
+        // gm_only wall (DocRole::None): players cannot access this doc, but must occlude equally.
+        let mut gm_wall = entity_doc(12, 10, "wall", wall_sys);
+        gm_wall.permissions.default = DocRole::None;
+        let ecs_gm = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, gm_wall], 0);
+        let polys_gm = ecs_gm.player_vision_polygons_at(user, scene, token_id, (50.0, 50.0));
+        assert!(!polys_gm.is_empty());
+
+        // Both walls must produce identical polygons — sight_walls is permission-blind.
+        assert_eq!(
+            polys_normal[0], polys_gm[0],
+            "gm_only wall must occlude identically to a normal wall with the same geometry"
+        );
+
+        // Cross-check: the occluded point (150,50) is NOT visible from (50,50) with either wall.
+        assert!(
+            !vision::point_in_poly(&polys_gm[0], (150.0, 50.0)),
+            "gm_only wall must occlude (150,50): point must not be inside the polygon"
+        );
+    }
+
+    /// Returns empty when the user owns no token in the scene, even when `moving_token`
+    /// points to an existing token owned by another user.
+    #[test]
+    fn vision_at_empty_when_user_owns_no_token() {
+        let scene = Uuid::from_u128(10);
+        let user = Uuid::from_u128(7);
+        let stranger = Uuid::from_u128(999);
+        let token_id = Uuid::from_u128(11);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 }));
+        tok.owner = Some(user); // owned by user, NOT stranger
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+
+        // Stranger owns no token in this scene → empty (fail-closed).
+        let polys = ecs.player_vision_polygons_at(stranger, scene, token_id, (50.0, 50.0));
+        assert!(
+            polys.is_empty(),
+            "user with no owned token must get empty polygons (fail-closed)"
         );
     }
 }

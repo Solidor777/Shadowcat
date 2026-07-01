@@ -3,7 +3,8 @@ import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistrySys
 import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec } from "./types";
 import { parseColor } from "./geometry";
-import { TokenAnimator } from "./token-animator";
+import { TokenAnimator, type MoveSample } from "./token-animator";
+import type { EasingMode } from "./easing";
 
 /** Engine-reserved token system fields (M8 §4.2; client-owned). `(x,y)` = center. */
 interface TokenSystem {
@@ -20,9 +21,17 @@ interface TokenSystem {
 export class TokenView {
   private readonly animator = new TokenAnimator();
   private readonly specs = new Map<string, TokenNodeSpec>();
+  /** Tracks tokens that were hidden on the previous push call, to detect visible↔hidden
+   * transitions and call removeToken only once per gap entry (not every tick). */
+  private readonly wasHidden = new Set<string>();
   /** A locally-dragged token id snaps to its target each reconcile (no tween lag);
    * remote tokens still tween. Set by the move tool via the engine. */
   private dragging: string | null = null;
+
+  // Animation config fields; kept in sync with the animator via pushAnimConfig().
+  private cellSize = 100;
+  private animSpeed = 6;
+  private animEasing: EasingMode = "easeInOut";
 
   constructor(
     private readonly store: ReadableDocuments,
@@ -32,6 +41,49 @@ export class TokenView {
 
   setDragging(id: string | null): void {
     this.dragging = id;
+  }
+
+  /** Update the pixel-per-cell value used to compute tween durations. */
+  setCellSize(px: number): void {
+    this.cellSize = px;
+    this.pushAnimConfig();
+  }
+
+  /** Update the speed + easing used to compute tween durations. */
+  setAnimationConfig(cfg: { speedCellsPerSec: number; easing: EasingMode }): void {
+    this.animSpeed = cfg.speedCellsPerSec;
+    this.animEasing = cfg.easing;
+    this.pushAnimConfig();
+  }
+
+  /** Merge the stored speed/easing/cellSize into a single AnimationConfig and forward it to the
+   * animator. Coupling: both setCellSize and setAnimationConfig must call this so the animator's
+   * config is always the product of the latest values of all three fields. */
+  private pushAnimConfig(): void {
+    this.animator.setConfig({ speedCellsPerSec: this.animSpeed, easing: this.animEasing, cellSize: this.cellSize });
+  }
+
+  /** Drive a smooth local walk along a route's scene-coord waypoints. Rotation is held (a route
+   * move does not rotate the token). The prompt authoritative commit catches up via reconcile()'s
+   * setTarget, which the animator recognizes as expected progress. */
+  animateAlongPath(id: string, path: [number, number][]): void {
+    const rotation = this.specs.get(id)?.rotation ?? 0;
+    this.animator.animateAlongPath(id, path, rotation);
+    this.push(id);
+  }
+
+  /** Drive server-broadcast sample-based playback. Interpolates position between adjacent samples
+   * by tMs; hides the token across occlusion gaps (server-clipped visibility spans). Catch-up: if
+   * `serverNow()` is ahead of `startServerMs`, playback begins from the matching elapsed offset. */
+  animateSamples(
+    id: string,
+    samples: MoveSample[],
+    durationMs: number,
+    startServerMs: number,
+    serverNow?: () => number,
+  ): void {
+    this.animator.animateSamples(id, samples, durationMs, startServerMs, serverNow);
+    this.push(id);
   }
 
   reconcile(): void {
@@ -51,6 +103,7 @@ export class TokenView {
       if (seen.has(id)) continue;
       this.specs.delete(id);
       this.animator.remove(id);
+      this.wasHidden.delete(id);
       this.backend.removeToken(id);
     }
   }
@@ -59,11 +112,28 @@ export class TokenView {
     for (const id of this.animator.tick(dtMs)) this.push(id);
   }
 
-  /** Push a token to the backend with its latest visual + current (tweened) transform. */
+  /** Push a token to the backend with its latest visual + current (tweened) transform.
+   * INVARIANT: removeToken is called exactly once per visible→hidden transition (gap entry),
+   * not every tick. setToken is called on every visible tick. wasHidden tracks the prior-call
+   * state to detect transitions without querying backend state.
+   * Coupling: reconcile respects isHidden through this path; wasHidden is cleared on token
+   * removal so a re-created token starts from a clean visible state. */
   private push(id: string): void {
     const spec = this.specs.get(id);
     const t = this.animator.get(id);
-    if (spec && t) this.backend.setToken(id, { ...spec, x: t.x, y: t.y, rotation: t.rotation });
+    if (!spec) return;
+    const hidden = this.animator.isHidden(id);
+    if (hidden) {
+      if (!this.wasHidden.has(id)) {
+        // Transition: visible → hidden. Remove from backend once at gap entry.
+        this.backend.removeToken(id);
+        this.wasHidden.add(id);
+      }
+      return;
+    }
+    // Visible: clear wasHidden (handles gap-exit transition implicitly) and update backend.
+    this.wasHidden.delete(id);
+    if (t) this.backend.setToken(id, { ...spec, x: t.x, y: t.y, rotation: t.rotation });
   }
 
   private toSpec(doc: WireDocument): TokenNodeSpec | null {

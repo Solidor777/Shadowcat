@@ -227,6 +227,35 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     request_id: z.string(),
     message: z.string(),
   }),
+  z.object({
+    type: z.literal("move_error"),
+    request_id: z.string(),
+    message: z.string(),
+  }),
+  z.object({
+    type: z.literal("move_stream"),
+    request_id: z.string(),
+    token_id: z.string(),
+    mover: z.string(),
+    scene: z.string(),
+    start_server_ms: z.number(),
+    duration_ms: z.number(),
+    stop: z.tuple([z.number(), z.number()]),
+    samples: z.array(
+      z.object({
+        t_ms: z.number(),
+        pos: z.tuple([z.number(), z.number()]),
+      }),
+    ),
+    mover_vision: z
+      .array(
+        z.object({
+          t_ms: z.number(),
+          polygons: z.array(z.array(z.tuple([z.number(), z.number()]))),
+        }),
+      )
+      .nullable(),
+  }),
 ]);
 
 export type WireScope = z.infer<typeof ScopeSchema>;
@@ -261,6 +290,13 @@ export type ClientMsg =
       start: [number, number];
       waypoints: [number, number][];
       footprint_radius: number;
+    }
+  | {
+      type: "move_request";
+      request_id: string;
+      scene: string;
+      token_id: string;
+      path: [number, number][];
     };
 
 /** Parse + validate an inbound text frame; `null` on malformed/unknown input. */

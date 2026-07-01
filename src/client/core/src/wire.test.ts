@@ -161,6 +161,70 @@ describe("parseServerMsg", () => {
     expect(err?.type).toBe("path_error");
   });
 
+  it("parses a well-formed move_stream frame", () => {
+    const frame = {
+      type: "move_stream",
+      request_id: "00000000-0000-0000-0000-000000000001",
+      token_id: "00000000-0000-0000-0000-000000000002",
+      mover: "00000000-0000-0000-0000-000000000003",
+      scene: "00000000-0000-0000-0000-000000000004",
+      start_server_ms: 1000.0,
+      duration_ms: 500.0,
+      stop: [100.0, 200.0],
+      samples: [{ t_ms: 0.0, pos: [0.0, 0.0] }, { t_ms: 500.0, pos: [100.0, 200.0] }],
+      mover_vision: [
+        { t_ms: 0.0, polygons: [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]] },
+      ],
+    };
+    const m = parseServerMsg(JSON.stringify(frame));
+    expect(m).not.toBeNull();
+    expect(m?.type).toBe("move_stream");
+    if (m?.type === "move_stream") {
+      expect(m.stop).toEqual([100.0, 200.0]);
+      expect(m.samples).toHaveLength(2);
+      expect(m.mover_vision).toHaveLength(1);
+      const vision = m.mover_vision;
+      if (vision) expect(vision[0].polygons[0]).toHaveLength(3);
+    }
+  });
+
+  it("parses a move_stream frame with null mover_vision (observer path)", () => {
+    const frame = {
+      type: "move_stream",
+      request_id: "00000000-0000-0000-0000-000000000001",
+      token_id: "00000000-0000-0000-0000-000000000002",
+      mover: "00000000-0000-0000-0000-000000000003",
+      scene: "00000000-0000-0000-0000-000000000004",
+      start_server_ms: 1000.0,
+      duration_ms: 500.0,
+      stop: [100.0, 200.0],
+      samples: [{ t_ms: 0.0, pos: [0.0, 0.0] }],
+      mover_vision: null,
+    };
+    const m = parseServerMsg(JSON.stringify(frame));
+    expect(m).not.toBeNull();
+    expect(m?.type).toBe("move_stream");
+    if (m?.type === "move_stream") {
+      expect(m.mover_vision).toBeNull();
+    }
+  });
+
+  it("rejects a move_stream frame missing samples", () => {
+    const frame = {
+      type: "move_stream",
+      request_id: "00000000-0000-0000-0000-000000000001",
+      token_id: "00000000-0000-0000-0000-000000000002",
+      mover: "00000000-0000-0000-0000-000000000003",
+      scene: "00000000-0000-0000-0000-000000000004",
+      start_server_ms: 1000.0,
+      duration_ms: 500.0,
+      stop: [100.0, 200.0],
+      // samples intentionally omitted
+      mover_vision: null,
+    };
+    expect(parseServerMsg(JSON.stringify(frame))).toBeNull();
+  });
+
   it("returns null on malformed or unknown frames", () => {
     expect(parseServerMsg("{not json")).toBeNull();
     expect(parseServerMsg(JSON.stringify({ type: "nope" }))).toBeNull();

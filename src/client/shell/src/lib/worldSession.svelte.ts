@@ -23,6 +23,7 @@ import {
   type SceneFrame,
   type SceneSubscription,
   type PathResult,
+  type MoveStream,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
@@ -187,6 +188,19 @@ export class WorldSession {
     return this.#ws.pathfind(scene, start, waypoints, footprintRadius);
   }
 
+  /** Request server-authoritative move execution for `tokenId` along `path` on
+   * `scene`. Resolves with the broadcast `MoveStream` when the server confirms;
+   * rejects immediately when there is no live transport. Animation is broadcast-driven
+   * via `onMoveStream` for all scene viewers; the resolve value signals success only. */
+  moveRequest(
+    scene: string,
+    tokenId: string,
+    path: [number, number][],
+  ): Promise<MoveStream> {
+    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    return this.#ws.moveRequest(scene, tokenId, path);
+  }
+
   /** Subscribe to a SceneDerived channel. Returns a synchronous handle; the
    * underlying WS subscription is (re)established on every Welcome so derived state
    * survives a reconnect. */
@@ -260,6 +274,29 @@ export class WorldSession {
           for (const cb of this.#pingListeners) cb(msg);
         },
       },
+    });
+    // Broadcast-driven animation: drive all scene viewers (mover + observers) from the
+    // MoveStream frame. serverNow() aligns startServerMs to local time for catch-up.
+    // Coupling: sceneInteraction.animateSamples no-ops until Stage attaches the engine.
+    const ws = this.#ws;
+    // Unsub return discarded: the listener's lifetime equals this WsClient instance
+    // (a fresh WsClient is created per enter() and discarded on leave()).
+    this.#ws.onMoveStream((stream) => {
+      // MoveStream broadcasts room-wide (not scoped to the viewer's active scene), and the wire
+      // frame carries no reconciler-level scene tag beyond `stream.scene` — mirrors the fog
+      // cross-scene guard in `engine.ts`'s `toVisibility`/`toLighting` (container-local coords
+      // reused across containers must be tagged + filtered to the active one). A stream for a
+      // non-active scene is ignored: fail-closed against a latent cross-scene fog/animation leak.
+      const activeScene = this.#optimistic.query("scene")[0]?.id;
+      if (stream.scene !== activeScene) return;
+      this.sceneInteraction.animateSamples(
+        stream.tokenId,
+        stream.samples,
+        stream.durationMs,
+        stream.startServerMs,
+        () => ws.serverNow(),
+        stream.moverVision,
+      );
     });
     await this.#ws.start();
     this.state = "open";

@@ -324,9 +324,77 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > Plan: `docs/superpowers/plans/2026-06-25-m10e-6-grid-pathfinder.md`.
 > Spec: `docs/superpowers/specs/2026-06-25-m10e-6-grid-pathfinder-design.md`.
 >
-> **M10e status: e-1 + e-2 + e-3 + e-4 + e-6 DONE; e-5 (movement animation) is the only M10e
-> remainder (anytime). Next = M10e-5, then M10f (continuous/Polyanya pathfinding) + M10g
-> (weighted/impassable regions).**
+> **M10e-5 REDIRECTED → server-authoritative movement model.** The M10e-5 animation engine was
+> built (duration/easing/interruptible `TokenAnimator`, Stage config wiring — KEPT), but its
+> optimistic client-chained route-commit was DROPPED: a buddy-check exposed that optimistic
+> prediction of *gated* moves rubber-bands, so the model was redirected to **server-authoritative
+> gated moves** (request-only, server-executed, atomic state, moving-lock, vision-gated,
+> region-arrestable). Decomposed **M1** (server move execution + mover-only render-path) → **M2**
+> (observer render-path + continuous client vision) → **M3** (vision-gated pathfinder + region
+> hook). Spec: `docs/superpowers/specs/2026-06-25-server-authoritative-movement-design.md`.
+>
+> **M1 DONE** (branch `m10e-5-movement-animation`, commits `98bf191..15076ca`, all green, NOT
+> pushed/merged — push gate = full M10): `MoveRequest`/`MoveExecuted`/`MoveError` protocol; pure
+> `scene/move_exec.rs` executor (per-step walls + vision-mask + region-arrest hook; §13 per-cell
+> mask-parity with the `publish` gate, no fork; stricter on path-shape via king-step adjacency;
+> new `token_position` + `resolved_animation_speed`); `commit_ops_locked` (gate-free `publish`
+> tail) + `Room::execute_move` (`publish_guard` held across the whole validate→commit = atomic;
+> Revealed = `visible_cells ∪ explored`; `moving` lazy-expiry lock; OCC pre-image defense-in-depth;
+> GM wall-honored, diverging from `publish`'s legacy GM wall-bypass); `conn.rs handle_move_request`
+> (mover-only `etx` reply, generic `MoveError` — no geometry leak); client `WsClient.moveRequest` +
+> `AppContext.moveRequest` + request-only measure-tool route-commit (the M10e-5 animator drives the
+> returned render-path; `collinearRuns` + `path-runs.ts` removed). SDD-executed (8 tasks, per-task
+> two-reviewer gate + whole-branch buddy-check scoped Tasks 2,3,4 CONVERGED — 1 Critical refuted by
+> ground truth, 5 Minors fixed; reviewed skill-update gate PASS).
+> Plan: `docs/superpowers/plans/2026-06-25-m1-server-authoritative-move-execution.md`.
+>
+> **M2 DONE** (branch `m10e-5-movement-animation`, commits `f403ff1..d748219`, all green, NOT
+> pushed/merged — push gate = full M10): streamed continuous vision, server-precomputed and
+> strictly leak-free. `PosSample`/`VisionSample`/`ServerMsg::MoveStream` protocol (ts-rs + Zod
+> mirror); `scene/move_stream.rs` pure path sampler (`sample_path`, arc-length parameterization,
+> `MAX_VISION_SAMPLES`=96 shared cap); `SceneEcs::player_vision_inputs`/`VisionMoveInputs::polygons_at`
+> (mover vision trajectory — full-wall-set raycast per path sample, reusing `sight_walls` +
+> `vision::visibility_polygon`, no new vision model); `conn.rs egress_loop`'s dedicated `MoveStream`
+> branch (`clip_move_stream`/`observer_vision_polys_for_scene`) — THE secrecy boundary: mover gets
+> the full trajectory + `mover_vision`, an observer gets only the samples their OWN authoritative
+> vision admits with `mover_vision` nulled, a wholly-occluded move is suppressed (zero frames, not
+> an empty-`samples` frame); client `WsClient.onMoveStream` broadcast-driven playback (`MoveExecuted`
+> fully retired) + `TokenAnimator.animateSamples` (time-synced tween, gap/occlusion detection,
+> catch-up) + engine `visionSweeps` fog-sweep (snap, then `fog-blend.ts`/`setVisibilityBlend`
+> render-texture cross-fade) + `worldSession`'s active-scene filter on `onMoveStream` (cross-scene
+> leak guard). SDD-executed (8 tasks, per-task two-reviewer gate; reviewed skill-update gate DONE:
+> scene-rendering, realtime-sync, client-shell). Whole-branch buddy-check (2 independent blind
+> opus reviewers) CONVERGED: no-leak/§13-parity/no-lock-across-await/determinism all confirmed;
+> 1 Important (client-side backward-extrapolation on leading-occlusion clips) fixed + reverified.
+> Known v1 limitation (by design, not a bug): live
+> cross-animation concurrency deferred (`docs/TODO.md`) — a move's per-recipient clip is computed
+> once at its execute time, so two simultaneous moves don't reveal each other mid-walk if a
+> watcher's vision opens after the clip; reconciles at the stop + next `vision` rebroadcast.
+> Plan: `docs/superpowers/plans/2026-06-25-m2-streamed-continuous-vision.md`.
+> Spec: `docs/superpowers/specs/2026-06-25-m2-streamed-continuous-vision-design.md`.
+>
+> **M3 DONE** (branch `m10e-5-movement-animation`, commits `7043419..fb8b7dd`): closes buddy-check
+> P1 at the root by making the M10e-6 grid-A* router's vision-mask predicate a superset of the M1
+> move executor's — `cell_enterable` now unions `movement::supercover_cells(from, to, cell)` (the
+> same primitive `move_exec.rs`/`ws/room.rs::publish` use per step, including diagonal
+> corner-flankers) into its mask check alongside the existing footprint-disc test, and fails closed
+> on a degenerate/over-cap `None` result exactly like the gate. Restores `route ⊆ gate-allowed` for
+> the sub-0.5-cell-footprint diagonal case the P1 buddy-check exposed. Also adds a same-shaped inert
+> region-arrest hook (`fn region_arrests(_to: Cell) -> bool { false }`) to the router, mirroring
+> `move_exec.rs`'s M1 stub, so M10g wires real region data into one hook shape in both places
+> instead of discovering the router needs one later. Plan-level buddy-check (two reviewers, PHASE
+> = spec) converged after one round (1 Important + 3 Minor folded into the plan before execution).
+> Task 1 (the mask-parity fix) was itself pre-authorized for a per-task buddy check (two reviewers,
+> PHASE = code); one Important/Minor-disputed finding (a doc comment briefly overclaiming the
+> region hook as already wired) was fixed and reverified. Task 2 (the region stub) passed a normal
+> two-reviewer pass clean. A final whole-checkpoint review (opus spec-lens + code-lens over the
+> full M3 diff) found zero further issues. Plan:
+> `docs/superpowers/plans/2026-07-01-m3-vision-gated-pathfinder.md`.
+> Spec: `docs/superpowers/specs/2026-07-01-m3-vision-gated-pathfinder-design.md`.
+>
+> **M10e status: e-1 through e-6 DONE; the M10e-5 server-authoritative-movement redirect (M1 + M2 +
+> M3) is fully DONE.** Next = M10f (continuous/Polyanya pathfinding) + M10g (weighted/impassable
+> regions).**
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 

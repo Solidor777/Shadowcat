@@ -98,17 +98,28 @@
       // a real change so a token drag does not rebuild the grid each frame; also expose
       // the rendered token count as a test/observability signal (mirrors render-ready).
       let lastGridKey = "";
+      let lastAnimKey = "";
       const onDocs = (): void => {
         const scene = documents.query("scene")[0];
+        // Resolved once so both diagonalRule and animation read from the same snapshot.
+        const settings = resolveSceneSettings(scene, documents);
         const g = (scene?.system as { grid?: { kind: "square" | "hex"; size: number } } | undefined)?.grid;
         // Diagonal rule is world-scoped (world-settings.pathfinding.diagonalRule); resolved
         // here so the ruler reflects the GM's active rule choice without requiring a page reload.
-        const diagonalRule = resolveSceneSettings(scene, documents).diagonalRule;
+        const diagonalRule = settings.diagonalRule;
         const spec = { ...(g ?? { kind: "square" as const, size: 100 }), diagonalRule };
         const key = `${spec.kind}:${spec.size}:${diagonalRule}`;
         if (key !== lastGridKey) {
           lastGridKey = key;
           e.setGrid(spec);
+        }
+        // Animation config is world-scoped (world-settings.animation); only push to the
+        // engine on change so a token drag does not re-push config each frame.
+        const anim = settings.animation;
+        const animKey = `${anim.speedCellsPerSec}:${anim.easing}`;
+        if (animKey !== lastAnimKey) {
+          lastAnimKey = animKey;
+          e.setAnimation({ speedCellsPerSec: anim.speedCellsPerSec, easing: anim.easing });
         }
         host.dataset.tokenCount = String(documents.query("token").length);
         host.dataset.shapeCount = String(documents.query("drawing").length + documents.query("template").length);

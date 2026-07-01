@@ -27,6 +27,7 @@ pub fn parse_diagonal_rule(s: &str) -> DiagonalRule {
     }
 }
 
+use crate::scene::movement;
 use crate::scene::vision::{self, point_segment_distance};
 use std::collections::BTreeSet;
 
@@ -80,9 +81,19 @@ fn footprint_cells(anchor: Cell, ctr: vision::P, r_scene: f64, cell: f64) -> Vec
     out
 }
 
-/// Whether a token may step from `from` into `to`. INVARIANT (spec §4.3): full geometric footprint
-/// clearance — (1) the footprint disc at `to` clears every `blocksMove` wall, (2) every
-/// footprint-overlapped cell is in the mask (non-GM), (3) the center step `from→to` crosses no wall.
+/// Region-arrest hook stub (mirrors `move_exec.rs::region_arrests`). Returns `true` when a region
+/// halts entry into `to`. Currently always `false`; the region system (M10g) replaces this body.
+/// Pure/headless: unlike `move_exec.rs`'s version, this takes no ECS handle — this module borrows
+/// no ECS and owns no I/O (module invariant).
+fn region_arrests(_to: Cell) -> bool {
+    false
+}
+
+/// Whether a token may step from `from` into `to`. INVARIANT (spec §4.3, M3 spec §3): full
+/// geometric footprint clearance — (1) the footprint disc at `to` clears every `blocksMove` wall,
+/// (2) every footprint-overlapped cell AND every cell the center-to-center step's supercover
+/// crosses (including diagonal corner-flankers) is in the mask (non-GM), (3) the center step
+/// `from→to` crosses no wall, (4) the region-arrest hook (M3/M10g stub) does not halt entry.
 pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     let (i0, j0, i1, j1) = grid.window;
     if to.0 < i0 || to.0 > i1 || to.1 < j0 || to.1 > j1 {
@@ -90,6 +101,7 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     }
     let r_scene = grid.footprint_radius_cells.max(0.0) * grid.cell;
     let ctr = cell_center(to, grid.cell);
+    let a = cell_center(from, grid.cell);
 
     // (1) Footprint disc vs every blocksMove wall.
     for w in grid.walls {
@@ -97,21 +109,43 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
             return false;
         }
     }
-    // (2) Mask: every footprint-overlapped cell must be visible/revealed (non-GM).
+    // (2) Mask: every footprint-overlapped cell, AND every cell the center-to-center step's
+    // supercover crosses, must be visible/revealed (non-GM).
+    //
+    // INVARIANT (spec §13 / M3 design §3): `movement::supercover_cells` is the SAME primitive
+    // the M1 move executor (`move_exec.rs`) and the M10e-4 `ws/room.rs::publish` gate check per
+    // step. The router's mask predicate must be a superset of the gate's, or a route this A*
+    // search approves can be rejected at execution time (buddy-check P1: for a sub-0.5-cell
+    // footprint, the destination footprint disc alone never reaches a diagonal step's corner
+    // flanker cells). `None` (degenerate/over-cap span) fails closed: not enterable, mirroring
+    // the gate's `None ⇒ Forbidden`.
     if let Some(mask) = grid.mask {
         for c in footprint_cells(to, ctr, r_scene, grid.cell) {
             if !mask.contains(&c) {
                 return false;
             }
         }
+        match movement::supercover_cells(a, ctr, grid.cell) {
+            Some(step_cells) => {
+                if !step_cells.iter().all(|c| mask.contains(c)) {
+                    return false;
+                }
+            }
+            None => return false,
+        }
     }
     // (3) Center-to-center step clears every wall (reuses the M9 segment-cross predicate).
-    let a = cell_center(from, grid.cell);
     for w in grid.walls {
         if crate::scene::segments_cross(a, ctr, w.a, w.b) {
             return false;
         }
     }
+    // (4) Region-arrest hook (M3/M10g stub) — mirrors move_exec.rs::region_arrests. Always false
+    // today; M10g wires real region data into both this stub and move_exec's.
+    if region_arrests(to) {
+        return false;
+    }
+
     true
 }
 
@@ -749,9 +783,75 @@ mod tests {
             "overlapped neighbor cells not in mask"
         );
 
-        // A point-sized footprint overlaps only (1,0) → enterable.
-        let gp = grid(&walls, Some(&mask), 0.0);
+        // A point-sized footprint overlaps only (1,0) at the destination — but the M3 fix also
+        // requires the FROM cell in the mask (supercover_cells always includes both endpoint
+        // cells). Add (1,1) to represent a realistic case where both the mover's current cell
+        // and its destination are visible.
+        let mut mask_from_and_to = mask.clone();
+        mask_from_and_to.insert((1, 1));
+        let gp = grid(&walls, Some(&mask_from_and_to), 0.0);
         assert!(cell_enterable(&gp, (1, 1), (1, 0)));
+    }
+
+    #[test]
+    fn diagonal_step_missing_flanker_cell_is_not_enterable_small_footprint() {
+        // Buddy-check P1 regression. A perfectly diagonal step (0,0)->(1,1) at cell=100 crosses
+        // the shared corner exactly, so supercover_cells emits BOTH flanker cells (1,0) and (0,1)
+        // in addition to the two endpoint cells. A small (point-sized) footprint disc at the
+        // destination (1,1) only overlaps (1,1) itself — footprint_cells alone would not catch a
+        // missing flanker. The mask below has every cell EXCEPT the (0,1) flanker: the step must
+        // be rejected once the router's mask check includes the step's supercover, even though
+        // the footprint-disc-only check (pre-fix behavior) would have passed it.
+        let walls: Vec<Seg> = vec![];
+        let mut mask = BTreeSet::new();
+        mask.insert((0, 0));
+        mask.insert((1, 0));
+        mask.insert((1, 1));
+        // (0, 1) deliberately absent — the missing flanker.
+        let g = grid(&walls, Some(&mask), 0.1);
+        assert!(
+            !cell_enterable(&g, (0, 0), (1, 1)),
+            "diagonal step must be rejected when a supercover flanker cell is outside the mask, \
+             even though the footprint disc at the destination doesn't reach that flanker"
+        );
+    }
+
+    #[test]
+    fn degenerate_step_supercover_is_not_enterable_even_if_mask_covers_destination() {
+        // A step spanning an enormous cell distance makes `supercover_cells` return `None` (the
+        // MAX_MOVE_CELLS span guard in movement.rs). The router must fail closed on `None`, same
+        // as move_exec.rs and ws/room.rs::publish, regardless of what the mask contains at `to`.
+        let walls: Vec<Seg> = vec![];
+        let mut mask = BTreeSet::new();
+        mask.insert((5000, 5000)); // covers the destination; would pass footprint_cells alone.
+        let mut g = grid(&walls, Some(&mask), 0.0);
+        g.window = (-10_000, -10_000, 10_000, 10_000);
+        assert!(
+            !cell_enterable(&g, (0, 0), (5000, 5000)),
+            "an over-cap/degenerate step supercover must fail closed, not fall back to the \
+             footprint-only mask check"
+        );
+    }
+
+    fn visible_grid(range: i32) -> BTreeSet<Cell> {
+        (0..range)
+            .flat_map(|i| (0..range).map(move |j| (i, j)))
+            .collect()
+    }
+
+    #[test]
+    fn large_footprint_diagonal_step_with_flankers_in_mask_is_still_enterable() {
+        // A large footprint (1.0 cell radius) at the destination of a diagonal step already
+        // overlaps both corner-flanker cells — the footprint_cells check alone would pass this.
+        // Prove the ADDED step-supercover union doesn't introduce a new false rejection when the
+        // mask already covers everything the footprint disc covers.
+        let walls: Vec<Seg> = vec![];
+        let mask = visible_grid(6); // covers (0,0)..(5,5); large enough for both footprint + step.
+        let g = grid(&walls, Some(&mask), 1.0);
+        assert!(
+            cell_enterable(&g, (2, 2), (3, 3)),
+            "large footprint with a fully-visible mask must remain enterable after the union fix"
+        );
     }
 
     #[test]
@@ -762,6 +862,24 @@ mod tests {
         assert!(
             !cell_enterable(&g, (2, 2), (3, 2)),
             "outside the search window"
+        );
+    }
+
+    #[test]
+    fn region_arrest_stub_is_inert_and_does_not_block_an_otherwise_open_step() {
+        // The router-side region-arrest hook (mirrors move_exec.rs::region_arrests) must be a
+        // true no-op today — the region system doesn't exist until M10g. This guards against an
+        // accidental future default flip: if `region_arrests` ever returns `true` unconditionally,
+        // this test fails immediately instead of silently breaking every open-grid path.
+        assert!(
+            !region_arrests((3, 3)),
+            "region-arrest hook must stay an inert stub until M10g provides real region data"
+        );
+        let walls: Vec<Seg> = vec![];
+        let g = grid(&walls, None, 0.2);
+        assert!(
+            cell_enterable(&g, (0, 0), (1, 0)),
+            "an otherwise-open step must remain enterable with the inert region hook in place"
         );
     }
 }

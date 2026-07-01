@@ -4,9 +4,11 @@ import type { CapabilityGrants } from "./CapabilityGrants";
 import type { CapabilityRequirement } from "./CapabilityRequirement";
 import type { Command } from "./Command";
 import type { ContractDeclaration } from "./ContractDeclaration";
+import type { PosSample } from "./PosSample";
 import type { RejectReason } from "./RejectReason";
 import type { ResyncSource } from "./ResyncSource";
 import type { SearchHit } from "./SearchHit";
+import type { VisionSample } from "./VisionSample";
 import type { WorldRole } from "./WorldRole";
 import type { WsErrorCode } from "./WsErrorCode";
 
@@ -18,4 +20,44 @@ export type ServerMsg = { "type": "welcome", world: string, current_seq: bigint,
  * The world's UI contract declarations, so the client can validate its
  * loaded module set against the world's declared topology.
  */
-contract_declarations: Array<ContractDeclaration>, } | { "type": "event", command: Command, intent_id: string | null, } | { "type": "reject", intent_id: string, reason: RejectReason, } | { "type": "resync_begin", from_seq: bigint, to_seq: bigint, source: ResyncSource, } | { "type": "resync_end", current_seq: bigint, } | { "type": "time_pong", client_t0: bigint, server_t: bigint, } | { "type": "ping" } | { "type": "error", code: WsErrorCode, message: string, } | { "type": "search_result", request_id: string, hits: Array<SearchHit>, next_cursor: string | null, } | { "type": "search_error", request_id: string, message: string, } | { "type": "search_update", request_id: string, hits: Array<SearchHit>, } | { "type": "scene_derived", request_id: string, channel: string, computed_at_seq: bigint, payload: unknown, } | { "type": "scene_error", request_id: string, message: string, } | { "type": "asset_changed", uuid: string, op: AssetOp, } | { "type": "scene_ping", scene: string, x: number, y: number, user: string, } | { "type": "path_result", request_id: string, path: Array<[number, number]>, cost: number, } | { "type": "path_error", request_id: string, message: string, };
+contract_declarations: Array<ContractDeclaration>, } | { "type": "event", command: Command, intent_id: string | null, } | { "type": "reject", intent_id: string, reason: RejectReason, } | { "type": "resync_begin", from_seq: bigint, to_seq: bigint, source: ResyncSource, } | { "type": "resync_end", current_seq: bigint, } | { "type": "time_pong", client_t0: bigint, server_t: bigint, } | { "type": "ping" } | { "type": "error", code: WsErrorCode, message: string, } | { "type": "search_result", request_id: string, hits: Array<SearchHit>, next_cursor: string | null, } | { "type": "search_error", request_id: string, message: string, } | { "type": "search_update", request_id: string, hits: Array<SearchHit>, } | { "type": "scene_derived", request_id: string, channel: string, computed_at_seq: bigint, payload: unknown, } | { "type": "scene_error", request_id: string, message: string, } | { "type": "asset_changed", uuid: string, op: AssetOp, } | { "type": "scene_ping", scene: string, x: number, y: number, user: string, } | { "type": "path_result", request_id: string, path: Array<[number, number]>, cost: number, } | { "type": "path_error", request_id: string, message: string, } | { "type": "move_error", request_id: string, message: string, } | { "type": "move_stream", 
+/**
+ * Correlates with the originating `MoveRequest`.
+ */
+request_id: string, 
+/**
+ * The token being moved.
+ */
+token_id: string, 
+/**
+ * The user who owns the move (mover's user id).
+ */
+mover: string, 
+/**
+ * The scene in which the move occurs.
+ */
+scene: string, 
+/**
+ * Authoritative server wall-clock time (ms) at which the animation starts.
+ * INVARIANT: must be set before send so all clients sync to the same origin.
+ */
+start_server_ms: number, 
+/**
+ * Total wall-clock animation budget in milliseconds.
+ */
+duration_ms: number, 
+/**
+ * Final resting position (scene coords) after the move completes.
+ */
+stop: [number, number], 
+/**
+ * Ordered position samples along the route (t=0 is start, t=duration_ms is stop).
+ * INVARIANT: non-empty; first sample t_ms == 0.0 is the starting cell-center.
+ */
+samples: Array<PosSample>, 
+/**
+ * Per-sample vision polygons for the mover only. `None` for observers, who receive
+ * server-clipped position samples and render against their existing authoritative fog;
+ * the client computes no vision. Sending mover vision to observers would leak geometry.
+ */
+mover_vision: Array<VisionSample> | null, };

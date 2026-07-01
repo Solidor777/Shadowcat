@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import { topTokenAt } from "./hit-test";
 
@@ -36,6 +36,14 @@ export interface ToolContext {
     waypoints: [number, number][],
     footprintRadius: number,
   ) => Promise<PathResult>;
+  /** Request server-authoritative move execution (from AppContext). When present,
+   * double-click commit sends a MoveRequest; animation is broadcast-driven via MoveStream
+   * for all viewers. When absent, double-click is a no-op (graceful degradation). */
+  moveRequest?: (
+    scene: string,
+    tokenId: string,
+    path: [number, number][],
+  ) => Promise<MoveStream>;
 }
 
 /** The active scene (single scene in M8d §15) + its grid cell size (default 100) and
@@ -51,6 +59,11 @@ function activeScene(ctx: ToolContext): { id: string; size: number; perCell: num
 
 /** Route color for the A* preview polyline (blue-teal, distinct from walls and selection). */
 const ROUTE_COLOR = 0x3399ff;
+/** Maximum milliseconds between two pointer-downs to count as a double-click. */
+const DOUBLE_CLICK_MS = 350;
+/** Maximum scene-coord distance between two pointer-downs to count as a double-click
+ * (generous: post-snap, a double-click lands on the same cell center). */
+const COMMIT_RADIUS = 12;
 
 /** Owns the active-tool + selected-asset UI state and routes activation to the engine
  * via the scene bridge. */
@@ -212,9 +225,24 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // `waypoints` accumulates user-clicked intermediate goals (snapped); the start
   // is always derived live from the selected token's position.
   let waypoints: [number, number][] = [];
+  // The path returned by the most-recently-resolved preview pathfind. Reused by
+  // commitRoute to avoid a second pathfind round-trip when the route is already known.
+  let lastPreviewedPath: [number, number][] | null = null;
   // Track the in-flight pathfind so we can ignore stale responses that arrive
   // after a newer request has been issued (last-write-wins coalescing).
   let pendingSeq = 0;
+  // When a commit is in flight, suppress pointer-down/move/up so a trailing
+  // pointer-up cannot bump pendingSeq and invalidate the commit's seq guard.
+  // Also prevents a stray down from starting a second commit concurrently.
+  // Constraint: committing is set before seq is captured and cleared in finish()
+  // (resolve), the reject handler, or onDeactivate (abort path).
+  let committing = false;
+
+  // Monotonic clock (injected in tests; defaults to Date.now).
+  const now = ctx.now ?? ((): number => Date.now());
+  // Double-click detection state: timestamp and snapped position of the last pointer-down.
+  let lastDownAt = -Infinity;
+  let lastDownPt: Point = { x: 0, y: 0 };
 
   /** True when the measure tool should operate in route mode (see above). */
   function inRouteMode(): boolean {
@@ -257,6 +285,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     ctx.pathfind(scene.id, start, allWaypoints, fp).then(
       (result) => {
         if (seq !== pendingSeq) return; // superseded by a newer move
+        // Cache the resolved path for reuse by commitRoute (avoids a second pathfind).
+        lastPreviewedPath = result.path;
         // Render the routed polyline via previewOverlay.
         const pts = result.path.flat();
         ctx.scene.previewOverlay([{ points: pts, closed: false, stroke: { color: ROUTE_COLOR, width: 3 }, fill: null }]);
@@ -268,6 +298,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
       },
       () => {
         if (seq !== pendingSeq) return;
+        lastPreviewedPath = null;
         // No route available: clear the overlay and show a "no route" label.
         ctx.scene.clearOverlay();
         const startPt: Point = { x: start[0], y: start[1] };
@@ -282,16 +313,93 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     ctx.scene.clearOverlay();
     ctx.scene.clearMeasure();
     waypoints = [];
+    lastPreviewedPath = null;
+  }
+
+  /** Commit a route from the selected token's center to `goal`: send a MoveRequest to
+   * the server and animate along the returned render-path on resolve. The authoritative
+   * position arrives via the normal store Event (token → stop); the animator's any-ahead
+   * rule recognizes it. On reject, clear the route overlay (no move).
+   *
+   * Simpler path: reuse the last previewed PathResult.path when already computed for the
+   * same goal; if none is cached, do one pathfind then send the moveRequest.
+   *
+   * Invariant: `committing` is set TRUE before `seq` is captured, and cleared ONLY by
+   * `finish()` on resolve, by the reject handler, or by `onDeactivate` (abort path).
+   * This ensures pointer-up (which calls clearRoute in non-committing paths) cannot bump
+   * `pendingSeq` between commit start and the async resolve — keeping `seq === pendingSeq`
+   * true so the commit proceeds. */
+  function commitRoute(goal: Point): void {
+    if (!ctx.pathfind || !ctx.moveRequest || !ctx.tokenSelection || ctx.tokenSelection.ids.size !== 1) return;
+    const scene = activeScene(ctx);
+    const start = tokenCenter();
+    if (!scene || !start) return;
+    const tokenId = [...ctx.tokenSelection.ids][0];
+    const fp = resolveFootprint();
+    // Set committing BEFORE capturing seq so the pointer-up guard (committing check) is
+    // already in place before the async call starts. onPointerUp/Move check committing
+    // and return early, so they cannot bump pendingSeq while this commit is in flight.
+    committing = true;
+    const seq = ++pendingSeq;
+    // Teardown shared by the success path and the reject path.
+    const finish = (): void => { committing = false; clearRoute(); };
+
+    // Inner function: given a proposed path, send the moveRequest and animate on resolve.
+    // `moveRequest` is narrowed to non-undefined here; `commitRoute` gates on it above.
+    const moveRequest = ctx.moveRequest;
+    const sendRequest = (proposedPath: [number, number][]): void => {
+      moveRequest(scene.id, tokenId, proposedPath).then(
+        () => {
+          // Stale: a newer commit (or onDeactivate) now owns committing + clearRoute.
+          if (seq !== pendingSeq) return;
+          // Animation is broadcast-driven via onMoveStream for all scene viewers;
+          // no local animation from the moveRequest resolve value.
+          finish();
+        },
+        // Stale reject: do nothing. Current reject: clear route (no move).
+        () => { if (seq === pendingSeq) finish(); },
+      );
+    };
+
+    // Reuse the last previewed path when available (avoids a redundant pathfind round-trip).
+    // If none is cached, do one pathfind then send the moveRequest.
+    if (lastPreviewedPath && lastPreviewedPath.length >= 2) {
+      sendRequest(lastPreviewedPath);
+    } else {
+      ctx.pathfind(scene.id, start, [...waypoints, [goal.x, goal.y]], fp).then(
+        (result) => {
+          if (seq !== pendingSeq) return;
+          if (result.path.length < 2) { finish(); return; }
+          sendRequest(result.path);
+        },
+        () => { if (seq === pendingSeq) finish(); },
+      );
+    }
   }
 
   return {
     onPointerDown(p: Point): boolean {
       if (inRouteMode()) {
+        // A commit is in flight: ignore further input until it settles. Prevents a
+        // stray pointer-down from starting a second commit or bumping pendingSeq.
+        if (committing) return true;
         const scene = activeScene(ctx);
         if (scene) {
-          // Snap the click and push it as a waypoint; the start pin is always the
-          // selected token's live center (not an accumulated waypoint).
           const snapped = ctx.scene.snap(p);
+          const t = now();
+          const isDouble =
+            t - lastDownAt < DOUBLE_CLICK_MS &&
+            Math.hypot(snapped.x - lastDownPt.x, snapped.y - lastDownPt.y) < COMMIT_RADIUS;
+          if (isDouble) {
+            // Consume the gesture so the next down starts fresh.
+            lastDownAt = -Infinity;
+            commitRoute(snapped);
+            return true;
+          }
+          // Record this down as a potential first half of a double-click, then push
+          // the waypoint for the existing preview behavior.
+          lastDownAt = t;
+          lastDownPt = snapped;
           waypoints.push([snapped.x, snapped.y]);
           return true;
         }
@@ -302,6 +410,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     },
     onPointerMove(p: Point): void {
       if (inRouteMode()) {
+        // Suppress preview requests during a commit: a new pathfind call would bump
+        // pendingSeq and invalidate the in-flight commit's seq guard.
+        if (committing) return;
         const scene = activeScene(ctx);
         const start = tokenCenter();
         if (scene && start) {
@@ -316,6 +427,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     },
     onPointerUp(_p: Point): void {
       if (inRouteMode()) {
+        // When a commit is in flight, the commit owns its own teardown via finish().
+        // Do NOT call clearRoute() here — that would bump pendingSeq and abort the commit.
+        if (committing) return;
         // Release: clear overlays (mid-gesture-clear invariant). The actual move is
         // handled by the select-move tool / M10e-4 server gate — not here.
         clearRoute();
@@ -327,8 +441,10 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
       anchor = null;
     },
     onDeactivate(): void {
-      // Tool-swap teardown: clears the routed polyline overlay + budget label so a
-      // mid-gesture tool switch doesn't leave stale geometry on screen.
+      // Tool-swap teardown: abort any in-flight commit and clear all overlays.
+      // Setting committing=false before clearRoute lets clearRoute bump pendingSeq,
+      // which causes any in-flight commit's seq guard to fail (seq !== pendingSeq).
+      committing = false;
       clearRoute();
       // Also clear any in-progress plain-measure anchor.
       if (anchor) {

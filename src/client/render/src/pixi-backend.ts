@@ -1,4 +1,4 @@
-import { Application, BlurFilter, Container, Graphics, Sprite, Text, Assets, type Filter } from "pixi.js";
+import { Application, BlurFilter, Container, Graphics, RenderTexture, Sprite, Text, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend } from "./backend";
 import type { LightingFrame } from "./lighting";
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
@@ -20,6 +20,13 @@ export class PixiBackend implements DisplayBackend {
    * cut from `fogDim`. */
   private readonly exploredHoles = new Graphics();
   private readonly visibleHoles = new Graphics();
+  /** Cross-fade sprites: stage-level (screen-space, untransformed) overlays showing two
+   * rasterized fog snapshots at complementary alpha while a vision sweep is mid-interval.
+   * Hidden (and `fogDark`/`fogDim` shown) outside a blend. */
+  private readonly fogBlendFrom = new Sprite();
+  private readonly fogBlendTo = new Sprite();
+  private fogBlendFromRT: RenderTexture | null = null;
+  private fogBlendToRT: RenderTexture | null = null;
   private readonly toolOverlay = new Graphics();
   private readonly measureGraphics = new Graphics();
   private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
@@ -45,6 +52,11 @@ export class PixiBackend implements DisplayBackend {
 
   constructor(private readonly app: Application) {
     this.app.stage.addChild(this.world);
+    // Screen-space, added directly to the stage (not `world`) so the captured, already
+    // camera-transformed fog snapshots display 1:1 without a second transform on top.
+    this.fogBlendFrom.visible = false;
+    this.fogBlendTo.visible = false;
+    this.app.stage.addChild(this.fogBlendFrom, this.fogBlendTo);
   }
 
   ensureLayers(orderedIds: string[]): void {
@@ -122,6 +134,17 @@ export class PixiBackend implements DisplayBackend {
   }
 
   setVisibility(input: VisibilityInput): void {
+    // A plain (non-blended) apply ends any in-flight cross-fade — restore the normal sheets and
+    // eagerly free the last sweep's capture textures rather than leaving them GPU-resident until
+    // the next setVisibilityBlend call (or backend teardown).
+    this.fogBlendFrom.visible = false;
+    this.fogBlendTo.visible = false;
+    this.fogBlendFromRT?.destroy(true);
+    this.fogBlendToRT?.destroy(true);
+    this.fogBlendFromRT = null;
+    this.fogBlendToRT = null;
+    this.fogDark.visible = true;
+    this.fogDim.visible = true;
     this.fogDark.clear();
     this.fogDim.clear();
     this.exploredHoles.clear();
@@ -131,27 +154,55 @@ export class PixiBackend implements DisplayBackend {
       this.fogDim.mask = null;
       return;
     }
-    // Three-state fog: two opaque sheets over a large world region, scene-locked in the camera-
-    // transformed `mask` layer (holes sit at scene positions and pan/zoom with the map).
-    // `fogDark` (near-opaque) is cut by `explored ∪ visible` → remains only on UNEXPLORED area.
-    // `fogDim` (semi-transparent) is cut by `visible` → remains on unexplored + explored, so
-    // explored shows dimmed and visible shows clear. Empty visible + empty explored → no holes →
-    // full dark fog (see nothing).
-    const R = 1_000_000; // world units; the viewport shows only a portion, so this covers it
-    this.fogDark.rect(-R, -R, 2 * R, 2 * R).fill({ color: 0x000000, alpha: 0.92 });
-    this.fogDim.rect(-R, -R, 2 * R, 2 * R).fill({ color: 0x000000, alpha: 0.5 });
-    for (const poly of input.explored) {
-      if (poly.points.length >= 6) this.exploredHoles.poly(poly.points).fill({ color: 0xffffff });
-    }
-    for (const poly of input.visible) {
-      if (poly.points.length >= 6) {
-        // Visible is clear in BOTH sheets, so it is cut from explored-holes too (visible ⊆ explored).
-        this.exploredHoles.poly(poly.points).fill({ color: 0xffffff });
-        this.visibleHoles.poly(poly.points).fill({ color: 0xffffff });
-      }
-    }
-    this.fogDark.setMask({ mask: this.exploredHoles, inverse: true });
-    this.fogDim.setMask({ mask: this.visibleHoles, inverse: true });
+    paintFogSheets(this.fogDark, this.fogDim, this.exploredHoles, this.visibleHoles, input);
+  }
+
+  /** Cross-fade the mask between two consecutive vision samples: rasterize each sample's fog
+   * into a screen-sized `RenderTexture` (a scratch capture of the SAME sheet+hole technique
+   * `setVisibility` draws live, positioned/scaled to the current camera transform so the two
+   * snapshots line up with what's on screen), then show both as complementary-alpha sprites — an
+   * actual GPU alpha blend between two rasterized states, not a polygon-vertex morph. Recaptured
+   * on every call (a sweep ticks ~60/s) — the previous textures are destroyed first so a
+   * multi-second sweep doesn't leak GPU memory.
+   * TODO: cache/reuse the RenderTextures across ticks (recreate only on resize or fog-input
+   * change) instead of a full recapture every call. */
+  setVisibilityBlend(from: VisibilityInput, to: VisibilityInput, factor: number): void {
+    const width = Math.max(1, this.app.screen.width);
+    const height = Math.max(1, this.app.screen.height);
+    this.fogBlendFromRT?.destroy(true);
+    this.fogBlendToRT?.destroy(true);
+    this.fogBlendFromRT = this.captureFog(from, width, height);
+    this.fogBlendToRT = this.captureFog(to, width, height);
+    this.fogBlendFrom.texture = this.fogBlendFromRT;
+    this.fogBlendTo.texture = this.fogBlendToRT;
+    const f = Math.min(1, Math.max(0, factor));
+    this.fogBlendFrom.alpha = 1 - f;
+    this.fogBlendTo.alpha = f;
+    this.fogBlendFrom.visible = true;
+    this.fogBlendTo.visible = true;
+    this.fogDark.visible = false;
+    this.fogDim.visible = false;
+  }
+
+  /** Rasterize one visibility sample's fog (the same sheet+hole technique as `setVisibility`)
+   * into a screen-sized RenderTexture, applying the world container's CURRENT camera transform
+   * to the scratch capture container so the snapshot lines up with what is on screen right now. */
+  private captureFog(input: VisibilityInput, width: number, height: number): RenderTexture {
+    const dark = new Graphics();
+    const dim = new Graphics();
+    const exploredHoles = new Graphics();
+    const visibleHoles = new Graphics();
+    paintFogSheets(dark, dim, exploredHoles, visibleHoles, input);
+    const capture = new Container();
+    capture.addChild(dim, dark, exploredHoles, visibleHoles);
+    capture.position.copyFrom(this.world.position);
+    capture.scale.copyFrom(this.world.scale);
+    // Match the renderer's device-pixel-ratio resolution (Application runs `autoDensity: true`
+    // at `devicePixelRatio`) or the capture rasterizes at 1x and visibly blurs on HiDPI displays.
+    const texture = RenderTexture.create({ width, height, resolution: this.app.renderer.resolution });
+    this.app.renderer.render({ container: capture, target: texture });
+    capture.destroy({ children: true });
+    return texture;
   }
 
   setToken(id: string, spec: TokenNodeSpec): void {
@@ -334,6 +385,10 @@ export class PixiBackend implements DisplayBackend {
 
   destroy(): void {
     this.loadSeq++; // invalidate any in-flight background load post-destroy
+    // Destroy the blend RenderTextures explicitly first: they are NOT shared/cached (unlike
+    // Assets.load results), so the stage-destroy cascade below must not be their only owner.
+    this.fogBlendFromRT?.destroy(true);
+    this.fogBlendToRT?.destroy(true);
     // Release GPU resources + remove the canvas; children/textures included.
     this.app.destroy({ removeView: true }, { children: true, texture: true });
   }
@@ -349,6 +404,31 @@ function paintShape(g: Graphics, spec: Omit<ShapeNodeSpec, "layer">): void {
   if (spec.closed) g.closePath();
   if (spec.fill) g.fill({ color: spec.fill.color, alpha: spec.fill.alpha });
   if (spec.stroke) g.stroke({ width: spec.stroke.width, color: spec.stroke.color });
+}
+
+/** Paint the three-state fog (unexplored darkest / explored dimmed / visible clear) onto the
+ * given sheet + hole Graphics: two opaque sheets over a large world region, cut by inverse
+ * masks built from the input's `explored`/`visible` polygons. Shared by the live `mask` layer
+ * (`setVisibility`) and the cross-fade capture (`captureFog`) so both draw IDENTICAL fog for
+ * the same input — the cross-fade blends between two genuinely equivalent renders, not a
+ * lookalike approximation. `mode:"all"` paints nothing (caller handles the no-fog case). */
+function paintFogSheets(dark: Graphics, dim: Graphics, exploredHoles: Graphics, visibleHoles: Graphics, input: VisibilityInput): void {
+  if (input.mode !== "masked") return;
+  const R = 1_000_000; // world units; the viewport shows only a portion, so this covers it
+  dark.rect(-R, -R, 2 * R, 2 * R).fill({ color: 0x000000, alpha: 0.92 });
+  dim.rect(-R, -R, 2 * R, 2 * R).fill({ color: 0x000000, alpha: 0.5 });
+  for (const poly of input.explored) {
+    if (poly.points.length >= 6) exploredHoles.poly(poly.points).fill({ color: 0xffffff });
+  }
+  for (const poly of input.visible) {
+    if (poly.points.length >= 6) {
+      // Visible is clear in BOTH sheets, so it is cut from explored-holes too (visible ⊆ explored).
+      exploredHoles.poly(poly.points).fill({ color: 0xffffff });
+      visibleHoles.poly(poly.points).fill({ color: 0xffffff });
+    }
+  }
+  dark.setMask({ mask: exploredHoles, inverse: true });
+  dim.setMask({ mask: visibleHoles, inverse: true });
 }
 
 /** Construct a PixiBackend over a canvas (async: v8 Application.init is async). */

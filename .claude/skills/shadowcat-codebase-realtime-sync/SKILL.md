@@ -23,6 +23,23 @@ optimistically and roll back on divergence.
   scene entities (`query_scene_entities`) **plus** the M10e-2 world config-docs
   `world-settings`/`light-gradation`/`vision-modes` + actors (`query_documents`), seeded via
   `SceneEcs::set_world_config`/`set_actors`; the live `apply_op` path keeps the side-tables current.
+  **M1 additions:**
+  - `Room::commit_ops_locked(repo, ctx, ops, ts)` (`pub(crate)`) — gate-free authoritative write
+    tail (apply_intent → ECS-hydrate → ring/seq → broadcast Event → stats). Extracted from
+    `publish`; PRECONDITION: caller MUST already hold `publish_guard`. Non-reentrant — do NOT
+    re-acquire `publish_guard` inside (tokio `Mutex` would deadlock). Both `publish` and
+    `execute_move` call this as their commit step.
+  - `Room::execute_move(repo, ctx, scene_id, token, path, ts)` — server-authoritative token move.
+    Acquires `publish_guard` at the TOP and HOLDS it across the entire validate→commit critical
+    section (mirrors `publish` atomicity). Scene read locks are scoped and dropped before the
+    `get_explored().await` (no lock across await); `publish_guard` (tokio `Mutex`) is intentionally
+    held across awaits. Calls `move_exec::execute_move` (pure, lock-free), then `commit_ops_locked`
+    (single acquisition, no re-entry). Atomic single position write (`/system/x` + `/system/y`
+    OCC pre-image ops). Returns `MoveExecution { stop, render_path, duration_ms }`.
+  - `moving: Mutex<HashMap<Uuid, i64>>` — per-token moving lock: token → move-end epoch-ms. Lazy
+    expiry (no timer); absent or expired entry allows the move. Updated after each successful commit
+    (still inside `publish_guard`). In-memory only — cleared on server restart (move state is derived,
+    not durable).
 - `src/server/src/ws/protocol.rs` — client/server message frames; `ServerMsg`, `event_seq()`.
 - `src/server/src/ws/conn.rs` — per-connection loop + egress; `ws/time.rs` — server time source +
   client offset calibration (exists before its consumer, per ARCHITECTURE §2 invariant 2).
@@ -60,7 +77,35 @@ optimistically and roll back on divergence.
 - **One-shot correlated request pairs** (`Search`→`SearchResult`/`SearchError`;
   `Pathfind`→`PathResult`/`PathError`) route replies to the requesting connection only (never
   broadcast); correlated by `request_id` via the `pending` map in `WsClient`. See
-  `src/client/core/src/ws-client.ts` (`pathfind`) and `src/server/src/ws/protocol.rs`.
+  `src/client/core/src/ws-client.ts` and `src/server/src/ws/protocol.rs`.
+- **MoveRequest → MoveStream (M2, broadcast):** `MoveStream` is an **aux broadcast frame** — sent
+  via `Room::broadcast_aux` like `ScenePing`, carrying NO seq number (it is cosmetic playback data,
+  not an authoritative document event; it never touches the `RingBuffer`/gap-resync path).
+  `MoveRequest` is still a one-shot correlated pair for the mover's promise (resolves on the
+  matching `move_stream` frame via `pending` map), but `MoveStream` is broadcast to ALL scene
+  viewers, not just the mover — the **per-recipient egress transform** (mover full incl.
+  `moverVision`; observer clipped to their own visible samples with `moverVision: null`; suppressed
+  entirely — zero frames — when the recipient's vision admits none of the move) is where the
+  leak-free secrecy boundary lives (`egress_loop`'s dedicated `MoveStream` branch, detailed in
+  `shadowcat-codebase-scene-rendering`). `MoveError` remains mover-only, always generic (no path
+  geometry / vision state disclosed — no-geometry-leak invariant). `conn.rs`
+  `handle_move_request` dispatches `execute_move`, then broadcasts `MoveStream` to the scene.
+  Client animation is driven by `TokenAnimator.animateSamples` (time-tagged playback, catch-up on
+  late arrival, gap/occlusion detection: gap threshold = `minConsecutiveDelta × 1.5` where
+  `minConsecutiveDelta` is the minimum positive inter-sample interval across all consecutive pairs;
+  Infinity for < 3 samples — no interior gap detectable). `animateSamples` cancels any competing
+  ease-to-stop `anim` entry (handles Event-before-MoveStream ordering); `setTarget` is a no-op
+  while `samplesAnim` is live (handles MoveStream-before-Event ordering). Wired end-to-end:
+  `WsClient.onMoveStream` → `worldSession` → `SceneInteractionBridge.animateSamples` →
+  `RenderEngine` → `TokenView` / `TokenAnimator`. `onMoveStream` listeners survive reconnects
+  (NOT cleared in `failPending`).
+- **Gated moves are request-only + server-executed (M1/M2 invariant):** the client sends
+  `MoveRequest` and waits; the server validates, executes, and broadcasts `MoveStream`. The client
+  MUST NOT apply an optimistic position update for a gated move. The atomic position `Event` (from
+  `commit_ops_locked`) is the authoritative document update; the `MoveStream.samples` drive
+  cosmetic animation for all scene viewers. The `moveRequest` promise resolves on success (the
+  `MoveStream` frame) but the animation is broadcast-driven — no local `animateAlongPath` call
+  on the mover side.
 
 ## Pointers
 

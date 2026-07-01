@@ -148,7 +148,16 @@ where
             command: filter_command(repo, command, ctx, world_defaults).await,
             intent_id: *intent_id,
         },
-        other => other.clone(),
+        other => {
+            // MoveStream carries per-recipient position geometry and MUST be clipped
+            // through `clip_move_stream` in the egress loop, never passed through here
+            // unredacted. This guard catches a future routing regression at test time.
+            debug_assert!(
+                !matches!(other, ServerMsg::MoveStream { .. }),
+                "MoveStream must be clipped per-recipient in egress_loop, not sent via send_filtered"
+            );
+            other.clone()
+        }
     };
     sink.send(text(&out)).await.map_err(|_| ())
 }
@@ -331,6 +340,29 @@ async fn handle_socket(
                                 });
                             }
                         }
+                        Ok(ClientMsg::MoveRequest { request_id, scene, token_id, path }) => {
+                            // Server-authoritative move execution. On success, broadcasts
+                            // MoveStream out-of-band to the room — no etx reply to the requester.
+                            // On failure, returns MoveError to etx only (no geometry leak).
+                            // INVARIANT (broadcast-not-requester): the atomic position Event
+                            // from commit_ops_locked + the MoveStream broadcast are the
+                            // notifications; no success frame is sent to the requester's etx.
+                            if let Some(err_frame) = handle_move_request(
+                                &room,
+                                repo.as_ref(),
+                                &ctx,
+                                scene,
+                                token_id,
+                                path,
+                                request_id,
+                            )
+                            .await
+                            {
+                                if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
                         Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius }) => {
                             // One-shot pathfinding: resolve GM status, fetch explored off the lock for
                             // non-GM Revealed, call SceneEcs::pathfind, reply to this connection only.
@@ -430,6 +462,92 @@ async fn handle_pathfind(
     }
 }
 
+/// Resolve and execute a server-authoritative one-shot move request.
+///
+/// INVARIANT (broadcast-not-requester): on success, broadcasts `MoveStream` out-of-band to the
+/// room via `broadcast_aux` (no seq, mirrors `ScenePing`). No success frame is returned to
+/// the requester's `etx` — the broadcast IS the notification. The atomic position `Event`
+/// from `commit_ops_locked` carries the authoritative position update for document-store sync.
+/// INVARIANT (no-geometry-leak): on any `execute_move` failure the reply is a generic
+/// `MoveError { message: "move rejected" }` to `etx` only — no path geometry or vision state
+/// is disclosed.
+/// INVARIANT (mover_vision): `exec.mover_vision` is `None` for GM movers (no fog to sweep)
+/// and `Some` for player movers. It is mapped to wire `VisionSample` with per-polygon vertex
+/// capping (fail-closed under-reveal: truncation never over-reveals hidden area).
+async fn handle_move_request(
+    room: &crate::ws::room::Room,
+    repo: &dyn crate::data::repository::Repository,
+    ctx: &crate::data::membership::PermissionContext,
+    scene_id: Uuid,
+    token_id: Uuid,
+    // Ordered cell-center scene points: start … goal as `[f64; 2]` wire arrays.
+    path: Vec<[f64; 2]>,
+    request_id: Uuid,
+) -> Option<ServerMsg> {
+    // Convert wire `[f64; 2]` arrays to the internal `(f64, f64)` tuple representation
+    // expected by `Room::execute_move`.
+    let path_tuples: Vec<(f64, f64)> = path.iter().map(|p| (p[0], p[1])).collect();
+    // Single clock capture: `now` is used both as the committed event timestamp and as
+    // `start_server_ms` so the animation origin equals the commit instant — a second
+    // `now_millis()` call after `execute_move` returns (after the DB write) would drift
+    // `start_server_ms` forward from the actual commit timestamp.
+    let now = now_millis();
+    match room
+        .execute_move(repo, ctx, scene_id, token_id, path_tuples, now)
+        .await
+    {
+        Ok(exec) => {
+            use crate::scene::move_stream::MAX_VISION_POLYGON_VERTS;
+            use crate::ws::protocol::{PosSample, VisionSample};
+            // Map internal VisionSamplePt → wire VisionSample, capping polygon vertex count.
+            // Fail-closed: truncation under-reveals (the mover sees less of the fog sweep) but
+            // never over-reveals hidden geometry to the client.
+            let mover_vision = exec.mover_vision.map(|mvs| {
+                mvs.into_iter()
+                    .map(|vs| VisionSample {
+                        t_ms: vs.t_ms,
+                        polygons: vs
+                            .polygons
+                            .into_iter()
+                            .map(|poly| {
+                                poly.into_iter()
+                                    .take(MAX_VISION_POLYGON_VERTS)
+                                    .map(|(x, y)| [x, y])
+                                    .collect()
+                            })
+                            .collect(),
+                    })
+                    .collect()
+            });
+            let frame = ServerMsg::MoveStream {
+                request_id,
+                token_id,
+                mover: ctx.user_id,
+                scene: scene_id,
+                start_server_ms: now as f64,
+                duration_ms: exec.duration_ms,
+                stop: [exec.stop.0, exec.stop.1],
+                samples: exec
+                    .samples
+                    .iter()
+                    .map(|s| PosSample {
+                        t_ms: s.t_ms,
+                        pos: [s.pos.0, s.pos.1],
+                    })
+                    .collect(),
+                mover_vision,
+            };
+            room.broadcast_aux(frame);
+            // No success frame to the requester: the broadcast is the notification.
+            None
+        }
+        Err(_) => Some(ServerMsg::MoveError {
+            request_id,
+            message: "move rejected".into(),
+        }),
+    }
+}
+
 /// Inject the player's scene-tagged `explored` cell sets into a `vision` **masked** payload, and —
 /// when `accumulate` — mark the currently-visible cells into the player's stored explored and
 /// persist on growth. No-op for a GM (`mode:"all"`) or any payload without masked polygons. Runs
@@ -486,6 +604,143 @@ async fn enrich_vision_explored(
         explored_out.push(serde_json::json!({ "scene": scene, "cell": cell, "cells": cells }));
     }
     payload["explored"] = serde_json::json!(explored_out);
+}
+
+/// Return the recipient's authoritative vision polygons that cover `scene`.
+///
+/// Always reads from the authoritative ECS `player_vision_polygons` — a rendering cache
+/// is NOT a secrecy gate: if the observer's vision shrank within the ~150 ms debounce
+/// window a stale, wider polygon would admit a now-hidden sample. One ECS read per
+/// MoveStream per observer is acceptable for a security gate.
+///
+/// Returns empty on any failure or when the recipient controls no token in `scene`
+/// (fail-closed: caller suppresses the frame).
+///
+/// INVARIANT (no-lock-across-await): the ECS read guard is held only for the synchronous
+/// `player_vision_polygons` call and is dropped before this `async fn` returns, so no
+/// lock survives to the `sink.send` await in the egress loop.
+async fn observer_vision_polys_for_scene(
+    user_id: Uuid,
+    scene: Uuid,
+    room: &crate::ws::room::Room,
+) -> Vec<Vec<crate::scene::vision::P>> {
+    // Authoritative ECS read. Drop the lock before returning so no lock crosses
+    // the downstream `sink.send` await.
+    let polys_all = {
+        let ecs = room.scene().read().await;
+        ecs.player_vision_polygons(user_id)
+    };
+    polys_all
+        .into_iter()
+        .filter(|(s, _)| *s == scene)
+        .map(|(_, poly)| poly)
+        .collect()
+}
+
+/// Per-recipient `MoveStream` clip — the egress secrecy boundary.
+///
+/// Returns `Some(clipped)` when the recipient may see ≥1 position sample, `None` to
+/// suppress the frame entirely.
+///
+/// Discrimination:
+/// - **Mover** (`ctx.user_id == frame.mover`): full frame forwarded unchanged (all
+///   samples + `mover_vision`).
+/// - **GM** (world role): all samples forwarded, `mover_vision` nulled, full `stop`
+///   and `duration_ms` preserved.
+/// - **Observer**: only samples whose `pos` lies within the recipient's authoritative
+///   vision polygons are forwarded; `mover_vision` nulled; fully-occluded → `None`.
+///   `stop` and `duration_ms` are clipped to the LAST VISIBLE sample — the true final
+///   position and full travel distance are not disclosed.
+///
+/// INVARIANT (mover_vision-isolation): `mover_vision` reaches only the mover's socket.
+/// INVARIANT (fail-closed): no derivable vision → empty clip → suppress.
+/// INVARIANT (no-stale-cache): observer vision is always read from the authoritative ECS,
+///   never from a rendering-cache fingerprint (a stale wider polygon would admit a
+///   now-hidden sample).
+/// INVARIANT (no-lock-across-await): the ECS read lock (if taken) is dropped inside
+///   `observer_vision_polys_for_scene` before this function returns.
+async fn clip_move_stream(
+    msg: &ServerMsg,
+    ctx: &PermissionContext,
+    room: &crate::ws::room::Room,
+) -> Option<ServerMsg> {
+    let ServerMsg::MoveStream {
+        request_id,
+        token_id,
+        mover,
+        scene,
+        start_server_ms,
+        duration_ms,
+        stop,
+        samples,
+        mover_vision: _, // forwarded only to the mover via msg.clone(); observers get None
+    } = msg
+    else {
+        return None;
+    };
+
+    // Mover receives their own stream unchanged (all samples + mover_vision).
+    if ctx.user_id == *mover {
+        return Some(msg.clone());
+    }
+
+    // GM: all position samples pass, but mover sightlines are never disclosed.
+    if ctx.world_role == crate::data::document::WorldRole::Gm {
+        return Some(ServerMsg::MoveStream {
+            request_id: *request_id,
+            token_id: *token_id,
+            mover: *mover,
+            scene: *scene,
+            start_server_ms: *start_server_ms,
+            duration_ms: *duration_ms,
+            stop: *stop,
+            samples: samples.clone(),
+            mover_vision: None,
+        });
+    }
+
+    // Observer: clip to samples the recipient can see within their authoritative vision.
+    // The ECS read is dropped inside `observer_vision_polys_for_scene` before this
+    // function returns, so no lock crosses the `sink.send` await in the caller.
+    let polys = observer_vision_polys_for_scene(ctx.user_id, *scene, room).await;
+    use crate::scene::vision::point_in_poly;
+    use crate::ws::protocol::PosSample;
+    let visible: Vec<PosSample> = samples
+        .iter()
+        .filter(|s| {
+            let p = (s.pos[0], s.pos[1]);
+            polys.iter().any(|poly| point_in_poly(poly, p))
+        })
+        .copied()
+        .collect();
+    if visible.is_empty() {
+        return None; // SUPPRESS: fully occluded or no vision available (fail-closed)
+    }
+    // Clip stop and duration_ms to the last VISIBLE sample so the observer learns
+    // neither the true final position (which may be behind a wall) nor the full
+    // travel distance. The authoritative position Event (from commit_ops_locked)
+    // delivers the real stop coordinate later, gated by the client's fog layer.
+    // INVARIANT: `visible` is non-empty here (the is_empty guard above returns None).
+    // The unwrap_or fallbacks below are unreachable; the assert makes the secrecy
+    // invariant machine-checked so a future refactor of the guard cannot silently
+    // fall back to the full unclipped stop/duration.
+    debug_assert!(
+        !visible.is_empty(),
+        "clip invariant: visible must be non-empty (else the move is suppressed)"
+    );
+    let clipped_stop = visible.last().map(|s| s.pos).unwrap_or(*stop);
+    let clipped_duration_ms = visible.last().map(|s| s.t_ms).unwrap_or(*duration_ms);
+    Some(ServerMsg::MoveStream {
+        request_id: *request_id,
+        token_id: *token_id,
+        mover: *mover,
+        scene: *scene,
+        start_server_ms: *start_server_ms,
+        duration_ms: clipped_duration_ms,
+        stop: clipped_stop,
+        samples: visible,
+        mover_vision: None, // INVARIANT: mover_vision strictly mover-only
+    })
 }
 
 async fn egress_loop<S>(
@@ -687,8 +942,30 @@ async fn egress_loop<S>(
                         {
                             reeval_deadline = Some(tokio::time::Instant::now() + SEARCH_DEBOUNCE);
                         }
-                    } else if send_filtered(&mut sink, repo.as_ref(), &ctx, &world_defaults, msg.as_ref()).await.is_err() {
-                        break;
+                    } else {
+                        // Non-Event, non-sequenced out-of-band frame. `MoveStream` requires
+                        // per-recipient egress clipping (the secrecy boundary); every other
+                        // frame passes through the generic permission filter unchanged.
+                        let should_break = match msg.as_ref() {
+                            ServerMsg::MoveStream { .. } => {
+                                match clip_move_stream(msg.as_ref(), &ctx, &room).await {
+                                    Some(out) => sink.send(text(&out)).await.is_err(),
+                                    None => false, // suppressed: do not send
+                                }
+                            }
+                            other => send_filtered(
+                                &mut sink,
+                                repo.as_ref(),
+                                &ctx,
+                                &world_defaults,
+                                other,
+                            )
+                            .await
+                            .is_err(),
+                        };
+                        if should_break {
+                            break;
+                        }
                     }
                 }
                 Err(RecvError::Lagged(n)) => {
@@ -1230,6 +1507,198 @@ mod tests {
         );
     }
 
+    /// `handle_move_request` executes a move, broadcasts `MoveStream` to the room,
+    /// and returns no success frame to the requester. The broadcast carries non-empty
+    /// samples terminating at the goal. A rejected move still yields `MoveError` to
+    /// the requester only.
+    #[tokio::test]
+    async fn handle_move_request_broadcasts_move_stream_no_etx_on_success() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::{DocRole, WorldRole};
+        use crate::data::membership::PermissionContext;
+        use crate::ws::protocol::ServerMsg;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let author = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", author, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: author,
+            world_role: WorldRole::Gm,
+        };
+
+        let p = repo
+            .create_user("player", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world.id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg
+            .get_or_create(repo.as_ref(), world.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+
+        let (scene_id, token_id, ws_id) = (
+            Uuid::from_u128(0xB001),
+            Uuid::from_u128(0xB002),
+            Uuid::from_u128(0xB003),
+        );
+
+        // World-settings: unrestricted movement so the player token can move freely.
+        let mut ws = wdoc(world.id, ws_id, "world-settings");
+        ws.owner = Some(author);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": false, "fog": false,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: ws }],
+            0,
+        )
+        .await
+        .unwrap();
+
+        // Scene with a 100-unit grid.
+        let mut scene = wdoc(world.id, scene_id, "scene");
+        scene.owner = Some(author);
+        scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: scene }],
+            0,
+        )
+        .await
+        .unwrap();
+
+        // Player-owned token at (50,50). Start = cell-center (0,0); goal = (150,50) = one step right.
+        let mut token = wdoc(world.id, token_id, "token");
+        token.parent_id = Some(scene_id);
+        token.owner = Some(p);
+        token.permissions.users.insert(p, DocRole::Owner);
+        token.system = json!({ "x": 50.0, "y": 50.0 });
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: token }],
+            0,
+        )
+        .await
+        .unwrap();
+
+        // Subscribe BEFORE issuing the request so the broadcast is not missed.
+        let (mut rx, _) = room.subscribe();
+
+        let request_id = Uuid::from_u128(7);
+        let expected_goal = [150.0_f64, 50.0_f64];
+
+        // Success: handle_move_request returns None (no etx frame to the requester).
+        let result = handle_move_request(
+            &room,
+            repo.as_ref(),
+            &player,
+            scene_id,
+            token_id,
+            vec![[50.0, 50.0], [150.0, 50.0]],
+            request_id,
+        )
+        .await;
+        assert!(
+            result.is_none(),
+            "success path must return None (no etx frame); got {result:?}"
+        );
+
+        // The broadcast ring must contain a MoveStream observable on a second subscriber.
+        // broadcast_aux sends to existing receivers; rx was subscribed before the call.
+        let bcast = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match rx.recv().await {
+                    Ok(msg) => {
+                        if matches!(*msg, ServerMsg::MoveStream { .. }) {
+                            return Some((*msg).clone());
+                        }
+                        // Skip other frames (e.g. position Event from commit_ops_locked).
+                    }
+                    Err(_) => return None,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for MoveStream broadcast")
+        .expect("receiver closed before MoveStream");
+
+        match bcast {
+            ServerMsg::MoveStream {
+                request_id: rid,
+                token_id: tid,
+                mover,
+                stop,
+                samples,
+                mover_vision,
+                ..
+            } => {
+                assert_eq!(rid, request_id, "request_id must be correlated");
+                assert_eq!(tid, token_id, "token_id must match");
+                assert_eq!(mover, p, "mover must be the player");
+                assert_eq!(stop, expected_goal, "stop must equal the goal");
+                assert!(!samples.is_empty(), "samples must be non-empty");
+                assert!(
+                    (samples[0].t_ms - 0.0).abs() < 1e-9,
+                    "first sample t_ms must be 0"
+                );
+                assert_eq!(
+                    samples.last().unwrap().pos,
+                    expected_goal,
+                    "last sample pos must equal stop"
+                );
+                assert!(
+                    mover_vision.is_none(),
+                    "mover_vision must be None at this stage"
+                );
+            }
+            other => panic!("expected MoveStream, got {other:?}"),
+        }
+
+        // Rejection: a move for a non-existent token yields MoveError to etx only.
+        let bad_token = Uuid::from_u128(0xDEAD);
+        let err_result = handle_move_request(
+            &room,
+            repo.as_ref(),
+            &player,
+            scene_id,
+            bad_token,
+            vec![[50.0, 50.0], [150.0, 50.0]],
+            Uuid::from_u128(8),
+        )
+        .await;
+        assert!(
+            matches!(err_result, Some(ServerMsg::MoveError { .. })),
+            "rejection must return MoveError; got {err_result:?}"
+        );
+    }
+
     /// A token-less player (masked + empty polygons) accumulates nothing and emits empty explored
     /// → full fog. No per-scene secret memory is fabricated.
     #[tokio::test]
@@ -1247,5 +1716,430 @@ mod tests {
         )
         .await;
         assert_eq!(payload["explored"].as_array().unwrap().len(), 0);
+    }
+
+    // ─── clip_move_stream: per-recipient secrecy boundary tests ───────────────
+
+    /// Shared setup for `clip_move_stream` integration tests: creates an in-memory world, a GM
+    /// user, an observer player user, one scene, and optionally an observer token + a wall doc.
+    /// Returns `(room, gm_ctx, observer_ctx, scene_id)`.
+    ///
+    /// world-settings are omitted — `player_vision_polygons` only needs tokens + walls.
+    async fn setup_clip_room(
+        obs_token_pos: Option<(f64, f64)>,
+        wall_system: Option<serde_json::Value>,
+        wall_gm_only: bool,
+    ) -> (
+        Arc<crate::ws::room::Room>,
+        PermissionContext,
+        PermissionContext,
+        Uuid,
+    ) {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::Operation;
+        use crate::data::document::{DocRole, WorldRole};
+        use crate::ws::room::RoomRegistry;
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let obs = repo
+            .create_user("obs", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world.id, obs, WorldRole::Player)
+            .await
+            .unwrap();
+        let obs_ctx = PermissionContext {
+            user_id: obs,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg
+            .get_or_create(repo.as_ref(), world.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+
+        let scene_id = Uuid::from_u128(0xE001);
+        let mut scene = wdoc(world.id, scene_id, "scene");
+        scene.owner = Some(gm);
+        scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![Operation::Create { doc: scene }],
+            0,
+        )
+        .await
+        .unwrap();
+
+        if let Some(pos) = obs_token_pos {
+            let token_id = Uuid::from_u128(0xE002);
+            let mut tok = wdoc(world.id, token_id, "token");
+            tok.parent_id = Some(scene_id);
+            tok.owner = Some(obs);
+            tok.permissions.users.insert(obs, DocRole::Owner);
+            tok.system = json!({ "x": pos.0, "y": pos.1 });
+            room.publish(
+                repo.as_ref(),
+                &gm_ctx,
+                vec![Operation::Create { doc: tok }],
+                0,
+            )
+            .await
+            .unwrap();
+        }
+
+        if let Some(ws) = wall_system {
+            let wall_id = Uuid::from_u128(0xE003);
+            let mut wall = wdoc(world.id, wall_id, "wall");
+            wall.parent_id = Some(scene_id);
+            wall.owner = Some(gm);
+            wall.system = ws;
+            if wall_gm_only {
+                // gm_only wall: DocRole::None means players cannot read the doc;
+                // sight_walls uses the FULL wall set regardless (permission-blind).
+                wall.permissions.default = DocRole::None;
+            }
+            room.publish(
+                repo.as_ref(),
+                &gm_ctx,
+                vec![Operation::Create { doc: wall }],
+                0,
+            )
+            .await
+            .unwrap();
+        }
+
+        (room, gm_ctx, obs_ctx, scene_id)
+    }
+
+    /// The mover (ctx.user_id == frame.mover) receives their own full frame
+    /// unchanged — all samples and `mover_vision` are forwarded verbatim.
+    #[tokio::test]
+    async fn clip_mover_receives_full_frame() {
+        use crate::data::document::WorldRole;
+        use crate::ws::protocol::{PosSample, VisionSample};
+
+        let (room, _, _, scene_id) = setup_clip_room(None, None, false).await;
+
+        let mover_id = Uuid::from_u128(0xAABB);
+        // ctx.user_id == mover → mover branch fires before GM / observer branches.
+        let ctx = PermissionContext {
+            user_id: mover_id,
+            world_role: WorldRole::Player,
+        };
+
+        let samples = vec![
+            PosSample {
+                t_ms: 0.0,
+                pos: [50.0, 50.0],
+            },
+            PosSample {
+                t_ms: 200.0,
+                pos: [150.0, 50.0],
+            },
+        ];
+        let mv = Some(vec![VisionSample {
+            t_ms: 0.0,
+            polygons: vec![vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]]],
+        }]);
+        let frame = ServerMsg::MoveStream {
+            request_id: Uuid::from_u128(1),
+            token_id: Uuid::from_u128(2),
+            mover: mover_id,
+            scene: scene_id,
+            start_server_ms: 1000.0,
+            duration_ms: 400.0,
+            stop: [150.0, 50.0],
+            samples: samples.clone(),
+            mover_vision: mv.clone(),
+        };
+
+        let result = clip_move_stream(&frame, &ctx, &room).await;
+
+        assert!(result.is_some(), "mover must receive a frame");
+        match result.unwrap() {
+            ServerMsg::MoveStream {
+                samples: s,
+                mover_vision: mv_out,
+                ..
+            } => {
+                assert_eq!(s, samples, "mover receives all samples unchanged");
+                assert_eq!(mv_out, mv, "mover receives mover_vision unchanged");
+            }
+            other => panic!("expected MoveStream, got {other:?}"),
+        }
+    }
+
+    /// An observer with no token in the scene has empty vision polygons → every sample is
+    /// outside their vision → the frame is suppressed entirely (None, not empty-samples Some).
+    #[tokio::test]
+    async fn clip_observer_no_token_suppressed() {
+        use crate::ws::protocol::PosSample;
+
+        // No observer token in the scene — player_vision_polygons returns empty.
+        let (room, _, obs_ctx, scene_id) = setup_clip_room(None, None, false).await;
+
+        let mover_id = Uuid::from_u128(0xAABB);
+        let frame = ServerMsg::MoveStream {
+            request_id: Uuid::from_u128(1),
+            token_id: Uuid::from_u128(2),
+            mover: mover_id,
+            scene: scene_id,
+            start_server_ms: 1000.0,
+            duration_ms: 600.0,
+            stop: [250.0, 50.0],
+            samples: vec![
+                PosSample {
+                    t_ms: 0.0,
+                    pos: [50.0, 50.0],
+                },
+                PosSample {
+                    t_ms: 200.0,
+                    pos: [150.0, 50.0],
+                },
+                PosSample {
+                    t_ms: 400.0,
+                    pos: [250.0, 50.0],
+                },
+            ],
+            mover_vision: None,
+        };
+
+        let result = clip_move_stream(&frame, &obs_ctx, &room).await;
+
+        assert!(
+            result.is_none(),
+            "observer with no token must receive no frame (suppressed); got {result:?}"
+        );
+    }
+
+    /// An observer whose token is on the near side of a `blocksSight` wall sees only samples
+    /// on their side. The clipped frame carries those samples with `mover_vision = None`.
+    ///
+    /// Setup: observer token at (50,50); vertical wall at x=100. Samples at (50,50), (150,50),
+    /// (250,50). Only (50,50) is on the near side — the other two are occluded.
+    #[tokio::test]
+    async fn clip_observer_sees_near_side_prefix() {
+        use crate::ws::protocol::PosSample;
+
+        let wall_sys = json!({
+            "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
+            "blocksSight": true
+        });
+        let (room, _, obs_ctx, scene_id) =
+            setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
+
+        let mover_id = Uuid::from_u128(0xAABB);
+        let frame = ServerMsg::MoveStream {
+            request_id: Uuid::from_u128(1),
+            token_id: Uuid::from_u128(2),
+            mover: mover_id,
+            scene: scene_id,
+            start_server_ms: 1000.0,
+            duration_ms: 600.0,
+            stop: [250.0, 50.0],
+            samples: vec![
+                PosSample {
+                    t_ms: 0.0,
+                    pos: [50.0, 50.0], // near side — observer can see this
+                },
+                PosSample {
+                    t_ms: 200.0,
+                    pos: [150.0, 50.0], // behind wall — occluded
+                },
+                PosSample {
+                    t_ms: 400.0,
+                    pos: [250.0, 50.0], // further behind wall — occluded
+                },
+            ],
+            mover_vision: None,
+        };
+
+        let result = clip_move_stream(&frame, &obs_ctx, &room).await;
+
+        assert!(
+            result.is_some(),
+            "partial-visibility observer must receive a clipped frame"
+        );
+        match result.unwrap() {
+            ServerMsg::MoveStream {
+                samples: s,
+                mover_vision: mv,
+                stop: out_stop,
+                duration_ms: out_duration_ms,
+                ..
+            } => {
+                assert_eq!(
+                    s.len(),
+                    1,
+                    "only one sample (near side) should be visible; got {} samples: {s:?}",
+                    s.len()
+                );
+                assert_eq!(
+                    s[0].pos,
+                    [50.0_f64, 50.0_f64],
+                    "visible sample must be (50,50)"
+                );
+                assert_eq!(mv, None, "mover_vision must be None for observers");
+                // Critical 2 regression: stop and duration_ms must be clipped to
+                // the last visible sample, NOT the true goal/full travel distance.
+                assert_eq!(
+                    out_stop,
+                    [50.0_f64, 50.0_f64],
+                    "stop must be clipped to last visible sample pos, not the true goal"
+                );
+                assert!(
+                    (out_duration_ms - 0.0_f64).abs() < 1e-9,
+                    "duration_ms must be clipped to last visible sample t_ms (0 ms), got {out_duration_ms}"
+                );
+            }
+            other => panic!("expected MoveStream, got {other:?}"),
+        }
+    }
+
+    /// A `gm_only` (`DocRole::None`) `blocksSight` wall bounds the observer's authoritative
+    /// vision identically to a normal wall — `sight_walls` is permission-blind (full wall set,
+    /// M9b invariant). When the mover's entire path lies behind the secret wall, the frame is
+    /// fully suppressed: the observer receives zero `MoveStream` frames, not an empty-sample one.
+    #[tokio::test]
+    async fn clip_gm_only_wall_suppresses_observer() {
+        use crate::ws::protocol::PosSample;
+
+        // gm_only wall at x=100; observer token at (50,50) cannot see x>100.
+        // All mover samples are beyond the wall → every sample is occluded → suppress.
+        let wall_sys = json!({
+            "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
+            "blocksSight": true
+        });
+        let (room, _, obs_ctx, scene_id) =
+            setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), true /* gm_only */).await;
+
+        let mover_id = Uuid::from_u128(0xAABB);
+        let frame = ServerMsg::MoveStream {
+            request_id: Uuid::from_u128(1),
+            token_id: Uuid::from_u128(2),
+            mover: mover_id,
+            scene: scene_id,
+            start_server_ms: 1000.0,
+            duration_ms: 400.0,
+            stop: [250.0, 50.0],
+            samples: vec![
+                PosSample {
+                    t_ms: 0.0,
+                    pos: [150.0, 50.0], // behind gm_only wall — occluded
+                },
+                PosSample {
+                    t_ms: 200.0,
+                    pos: [250.0, 50.0], // further behind — also occluded
+                },
+            ],
+            mover_vision: None,
+        };
+
+        let result = clip_move_stream(&frame, &obs_ctx, &room).await;
+
+        // Must be None (fully suppressed), NOT Some(MoveStream { samples: [], .. }).
+        // The secrecy invariant: zero frames sent, never an empty-samples frame.
+        assert!(
+            result.is_none(),
+            "observer behind gm_only wall must receive zero MoveStream frames (None, not \
+             Some(empty)); got {result:?}"
+        );
+    }
+
+    /// A GM who is NOT the mover receives ALL position samples regardless of LOS, with
+    /// `mover_vision` nulled and the full `stop`/`duration_ms` intact.
+    ///
+    /// Invariants verified:
+    /// - GM branch fires before observer branch (ctx.user_id != mover, but Gm role).
+    /// - All samples pass through unfiltered.
+    /// - `mover_vision` is never forwarded to anyone but the mover.
+    /// - `stop` and `duration_ms` are the full values (no clip for GM).
+    #[tokio::test]
+    async fn clip_gm_receives_all_samples_mover_vision_nulled() {
+        use crate::data::document::WorldRole;
+        use crate::ws::protocol::{PosSample, VisionSample};
+
+        // Wall at x=100; the mover's samples cross to the far side, but a GM sees everything.
+        let wall_sys = json!({
+            "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
+            "blocksSight": true
+        });
+        let (room, gm_ctx, _, scene_id) = setup_clip_room(None, Some(wall_sys), false).await;
+
+        // GM is NOT the mover.
+        let mover_id = Uuid::from_u128(0xAABB);
+        assert_ne!(
+            gm_ctx.user_id, mover_id,
+            "GM must not be the mover in this test"
+        );
+        assert_eq!(gm_ctx.world_role, WorldRole::Gm);
+
+        let samples = vec![
+            PosSample {
+                t_ms: 0.0,
+                pos: [50.0, 50.0],
+            },
+            PosSample {
+                t_ms: 200.0,
+                pos: [150.0, 50.0],
+            }, // behind wall — still visible to GM
+            PosSample {
+                t_ms: 400.0,
+                pos: [250.0, 50.0],
+            },
+        ];
+        let true_stop = [250.0_f64, 50.0_f64];
+        let true_duration_ms = 600.0_f64;
+        let mv = Some(vec![VisionSample {
+            t_ms: 0.0,
+            polygons: vec![vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]]],
+        }]);
+        let frame = ServerMsg::MoveStream {
+            request_id: Uuid::from_u128(1),
+            token_id: Uuid::from_u128(2),
+            mover: mover_id,
+            scene: scene_id,
+            start_server_ms: 1000.0,
+            duration_ms: true_duration_ms,
+            stop: true_stop,
+            samples: samples.clone(),
+            mover_vision: mv,
+        };
+
+        let result = clip_move_stream(&frame, &gm_ctx, &room).await;
+
+        assert!(result.is_some(), "GM must receive a frame");
+        match result.unwrap() {
+            ServerMsg::MoveStream {
+                samples: s,
+                mover_vision: mv_out,
+                stop: out_stop,
+                duration_ms: out_duration_ms,
+                ..
+            } => {
+                assert_eq!(s, samples, "GM receives all samples unchanged");
+                assert_eq!(mv_out, None, "mover_vision must be nulled for GM observers");
+                assert_eq!(out_stop, true_stop, "GM receives the full stop (no clip)");
+                assert!(
+                    (out_duration_ms - true_duration_ms).abs() < 1e-9,
+                    "GM receives the full duration_ms (no clip)"
+                );
+            }
+            other => panic!("expected MoveStream, got {other:?}"),
+        }
     }
 }

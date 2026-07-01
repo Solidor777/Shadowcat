@@ -79,3 +79,33 @@ test("a stale detach does not clear a newer host", () => {
   bridge.setDraggingToken("x");
   expect(b.drags).toEqual(["x"]); // b still attached
 });
+
+test("animateAlongPath forwards to the host (no-op when detached)", () => {
+  const bridge = new SceneInteractionBridge();
+  expect(() => bridge.animateAlongPath("t1", [[0, 0], [1, 1]])).not.toThrow(); // detached: no-op
+  const calls: Array<{ id: string; path: [number, number][] }> = [];
+  bridge.attach(fakeSceneHost({ animateAlongPath: (id, path) => calls.push({ id, path }) }));
+  bridge.animateAlongPath("t1", [[0, 0], [1, 1]]);
+  expect(calls).toEqual([{ id: "t1", path: [[0, 0], [1, 1]] }]);
+});
+
+test("animateSamples forwards to the host (no-op when detached)", () => {
+  const bridge = new SceneInteractionBridge();
+  const samples = [{ tMs: 0, pos: [0, 0] as [number, number] }, { tMs: 500, pos: [100, 0] as [number, number] }];
+  expect(() => bridge.animateSamples("t1", samples, 1000, 0)).not.toThrow(); // detached: no-op
+  type Call = { id: string; samples: typeof samples; durationMs: number; startServerMs: number };
+  const calls: Call[] = [];
+  bridge.attach(fakeSceneHost({ animateSamples: (id, s, d, st) => calls.push({ id, samples: s as typeof samples, durationMs: d, startServerMs: st }) }));
+  bridge.animateSamples("t1", samples, 1000, 500);
+  expect(calls).toEqual([{ id: "t1", samples, durationMs: 1000, startServerMs: 500 }]);
+});
+
+test("animateSamples forwards moverVision to the host (M2 §T6 seam)", () => {
+  const bridge = new SceneInteractionBridge();
+  const samples = [{ tMs: 0, pos: [0, 0] as [number, number] }, { tMs: 500, pos: [100, 0] as [number, number] }];
+  const moverVision = [{ tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]] as [number, number][]] }];
+  let gotMoverVision: unknown;
+  bridge.attach(fakeSceneHost({ animateSamples: (_id, _s, _d, _st, _sn, mv) => { gotMoverVision = mv; } }));
+  bridge.animateSamples("t1", samples, 1000, 0, () => 0, moverVision);
+  expect(gotMoverVision).toEqual(moverVision);
+});

@@ -1,4 +1,4 @@
-import { test, expect } from "vitest";
+import { test, expect, it } from "vitest";
 import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
 import type { WireDocument, WireOperation } from "@shadowcat/core";
@@ -168,4 +168,68 @@ test("raw token keeps its own size + defaults to square", () => {
   expect(spec.w).toBe(80);
   expect(spec.h).toBe(80);
   expect(spec.shape).toBe("square");
+});
+
+// ---- helpers for animation-config tests ----
+
+/** Extends MockBackend with convenience accessors for token position queries. */
+class RecordingBackend extends MockBackend {
+  lastTokenX(id: string): number {
+    return this.tokens.get(id)!.x;
+  }
+  lastTokenY(id: string): number {
+    return this.tokens.get(id)!.y;
+  }
+}
+
+/** Build a DocumentStore pre-seeded with a single token at the given position. */
+function makeStoreWithToken(id: string, pos: { x: number; y: number }): DocumentStore {
+  const store = new DocumentStore();
+  store.applyCommand(cmd(1, [{ op: "create", doc: tokenDoc(id, pos.x, pos.y, "img1") }]));
+  return store;
+}
+
+/** Apply an authoritative move to a token already in the store. */
+function moveToken(store: DocumentStore, id: string, pos: { x: number; y: number }): void {
+  const prev = (store.query("token").find((d) => d.id === id)?.system as { x: number; y: number }) ?? { x: 0, y: 0 };
+  store.applyCommand(
+    cmd(
+      (store.query("token").find((d) => d.id === id)?.updated_at ?? 0) + 2,
+      [
+        { op: "update", doc_id: id, changes: [
+          { path: "/system/x", old: prev.x, new: pos.x },
+          { path: "/system/y", old: prev.y, new: pos.y },
+        ]},
+      ],
+    ),
+  );
+}
+
+// Animation config reaches the animator: a slow speed makes a move take longer.
+it("setAnimationConfig + setCellSize drive tween duration", () => {
+  const store = makeStoreWithToken("tok1", { x: 0, y: 0 });
+  const backend = new RecordingBackend();
+  const view = new TokenView(store, new AssetResolver(), backend);
+  view.setCellSize(100);
+  view.setAnimationConfig({ speedCellsPerSec: 1, easing: "linear" }); // 1 cell/s
+  view.reconcile(); // snap at (0,0)
+  moveToken(store, "tok1", { x: 100, y: 0 }); // 1 cell → 1000ms
+  view.reconcile();
+  view.tick(500); // half → ~x=50
+  expect(backend.lastTokenX("tok1")).toBeCloseTo(50, 0);
+  view.tick(500);
+  expect(backend.lastTokenX("tok1")).toBeCloseTo(100, 0);
+});
+
+it("animateAlongPath walks the route polyline", () => {
+  const store = makeStoreWithToken("tok1", { x: 0, y: 0 });
+  const backend = new RecordingBackend();
+  const view = new TokenView(store, new AssetResolver(), backend);
+  view.setCellSize(100);
+  view.setAnimationConfig({ speedCellsPerSec: 6, easing: "linear" });
+  view.reconcile();
+  view.animateAlongPath("tok1", [[0, 0], [300, 0], [300, 300]]); // 6 cells → 1000ms
+  view.tick(500);
+  expect(backend.lastTokenX("tok1")).toBeCloseTo(300, 0); // at the corner
+  expect(backend.lastTokenY("tok1")).toBeCloseTo(0, 0);
 });

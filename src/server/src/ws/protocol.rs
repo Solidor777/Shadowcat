@@ -73,6 +73,19 @@ pub enum ClientMsg {
         waypoints: Vec<(f64, f64)>,
         footprint_radius: f64,
     },
+    /// A server-authoritative move request: the client submits the previewed cell-center scene
+    /// points (start … goal) for a token it controls. The server validates, executes the move,
+    /// and broadcasts `MoveStream` out-of-band to the scene on success, or replies `MoveError`
+    /// to the originator on failure. `path` carries the exact route preview so the server can
+    /// reproduce the animation.
+    MoveRequest {
+        request_id: Uuid,
+        scene: Uuid,
+        token_id: Uuid,
+        /// Ordered cell-center scene points: start … goal (inclusive). Type is `[f64; 2]` not a
+        /// tuple so the TS binding emits `[number, number][]` (array literal, not tuple object).
+        path: Vec<[f64; 2]>,
+    },
 }
 
 /// Which tier served a resync.
@@ -114,6 +127,31 @@ pub enum RejectReason {
 pub enum AssetOp {
     Replaced,
     Deleted,
+}
+
+/// A single position sample in a `MoveStream` timeline.
+/// `t_ms` is elapsed milliseconds from `start_server_ms`; `pos` is the scene-coord
+/// cell-center at that instant. INVARIANT: `t_ms >= 0`; samples are ordered by ascending `t_ms`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct PosSample {
+    /// Elapsed time in milliseconds from `MoveStream.start_server_ms`.
+    pub t_ms: f64,
+    /// Scene-coordinate position (x, y) at this sample instant.
+    pub pos: [f64; 2],
+}
+
+/// A single vision-polygon sample in a `MoveStream` timeline, paired with a `PosSample` by `t_ms`.
+/// Ordered `[x,y]` vertices of a visible region at this instant; multiple polygons cover
+/// non-contiguous visible regions. Not necessarily convex. Sent only for the mover.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct VisionSample {
+    /// Elapsed time in milliseconds — matches the corresponding `PosSample.t_ms`.
+    pub t_ms: f64,
+    /// Visibility polygons (scene coords) visible at this instant. Each polygon is
+    /// an ordered list of [x, y] vertices; multiple polygons cover non-contiguous visible areas.
+    pub polygons: Vec<Vec<[f64; 2]>>,
 }
 
 /// Server -> client frames.
@@ -210,6 +248,36 @@ pub enum ServerMsg {
     },
     /// The `Pathfind` with this `request_id` failed (unreachable / invalid request / search exceeded).
     PathError { request_id: Uuid, message: String },
+    /// A `MoveRequest` was rejected (token already moving, caller not owner, malformed path, etc.).
+    /// Addressed to the originating connection only; never broadcast.
+    MoveError { request_id: Uuid, message: String },
+    /// Broadcast to the scene, then clipped per recipient at egress: the mover receives the full
+    /// trajectory and `mover_vision`; observers receive only the position samples their own vision
+    /// admits, with `mover_vision` nulled; a fully-occluded recipient receives nothing.
+    MoveStream {
+        /// Correlates with the originating `MoveRequest`.
+        request_id: Uuid,
+        /// The token being moved.
+        token_id: Uuid,
+        /// The user who owns the move (mover's user id).
+        mover: Uuid,
+        /// The scene in which the move occurs.
+        scene: Uuid,
+        /// Authoritative server wall-clock time (ms) at which the animation starts.
+        /// INVARIANT: must be set before send so all clients sync to the same origin.
+        start_server_ms: f64,
+        /// Total wall-clock animation budget in milliseconds.
+        duration_ms: f64,
+        /// Final resting position (scene coords) after the move completes.
+        stop: [f64; 2],
+        /// Ordered position samples along the route (t=0 is start, t=duration_ms is stop).
+        /// INVARIANT: non-empty; first sample t_ms == 0.0 is the starting cell-center.
+        samples: Vec<PosSample>,
+        /// Per-sample vision polygons for the mover only. `None` for observers, who receive
+        /// server-clipped position samples and render against their existing authoritative fog;
+        /// the client computes no vision. Sending mover vision to observers would leak geometry.
+        mover_vision: Option<Vec<VisionSample>>,
+    },
 }
 
 impl ServerMsg {
@@ -425,6 +493,106 @@ mod protocol_tests {
         assert_eq!(j["type"], "scene_derived");
         assert_eq!(j["computed_at_seq"], 7);
         assert_eq!(j["payload"]["entity_count"], 3);
+    }
+
+    #[test]
+    fn move_request_round_trip() {
+        let req = ClientMsg::MoveRequest {
+            request_id: Uuid::from_u128(1),
+            scene: Uuid::from_u128(2),
+            token_id: Uuid::from_u128(3),
+            path: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]],
+        };
+        let wire = serde_json::to_string(&req).unwrap();
+        assert!(wire.contains("\"type\":\"move_request\""), "got {wire}");
+        let back: ClientMsg = serde_json::from_str(&wire).unwrap();
+        assert!(matches!(back, ClientMsg::MoveRequest { .. }));
+
+        // Server replies with MoveError (rejection path) or MoveStream (success path); no MoveExecuted.
+        let err = ServerMsg::MoveError {
+            request_id: Uuid::from_u128(1),
+            message: "token is moving".into(),
+        };
+        assert!(serde_json::to_string(&err).unwrap().contains("move_error"));
+    }
+
+    #[test]
+    fn move_stream_round_trips_and_is_tagged() {
+        let in_samples = vec![PosSample {
+            t_ms: 0.0,
+            pos: [0.0, 0.0],
+        }];
+        let in_vision = Some(vec![VisionSample {
+            t_ms: 0.0,
+            polygons: vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]],
+        }]);
+        let msg = ServerMsg::MoveStream {
+            request_id: Uuid::from_u128(1),
+            token_id: Uuid::from_u128(2),
+            mover: Uuid::from_u128(3),
+            scene: Uuid::from_u128(4),
+            start_server_ms: 1000.0,
+            duration_ms: 500.0,
+            stop: [100.0, 200.0],
+            samples: in_samples.clone(),
+            mover_vision: in_vision.clone(),
+        };
+        let wire = serde_json::to_string(&msg).unwrap();
+        // Tag must be snake_case.
+        assert!(wire.contains("\"type\":\"move_stream\""), "got {wire}");
+        // Deserializes back; each field survives the round-trip.
+        let back: ServerMsg = serde_json::from_str(&wire).unwrap();
+        match back {
+            ServerMsg::MoveStream {
+                request_id,
+                token_id,
+                mover,
+                scene,
+                start_server_ms,
+                duration_ms,
+                stop,
+                samples,
+                mover_vision,
+            } => {
+                assert_eq!(request_id, Uuid::from_u128(1));
+                assert_eq!(token_id, Uuid::from_u128(2));
+                assert_eq!(mover, Uuid::from_u128(3));
+                assert_eq!(scene, Uuid::from_u128(4));
+                assert_eq!(start_server_ms, 1000.0);
+                assert_eq!(duration_ms, 500.0);
+                assert_eq!(stop, [100.0, 200.0]);
+                assert_eq!(samples, in_samples);
+                assert_eq!(mover_vision, in_vision);
+            }
+            _ => panic!("expected MoveStream"),
+        }
+        // None mover_vision path — verify mover_vision round-trips as None.
+        let in_samples2 = vec![PosSample {
+            t_ms: 0.0,
+            pos: [0.0, 0.0],
+        }];
+        let msg_no_vision = ServerMsg::MoveStream {
+            request_id: Uuid::from_u128(1),
+            token_id: Uuid::from_u128(2),
+            mover: Uuid::from_u128(3),
+            scene: Uuid::from_u128(4),
+            start_server_ms: 1000.0,
+            duration_ms: 500.0,
+            stop: [100.0, 200.0],
+            samples: in_samples2,
+            mover_vision: None,
+        };
+        let wire2 = serde_json::to_string(&msg_no_vision).unwrap();
+        let back2: ServerMsg = serde_json::from_str(&wire2).unwrap();
+        match back2 {
+            ServerMsg::MoveStream { mover_vision, .. } => {
+                assert_eq!(
+                    mover_vision, None,
+                    "observer path: mover_vision must round-trip as None"
+                );
+            }
+            _ => panic!("expected MoveStream"),
+        }
     }
 
     #[test]

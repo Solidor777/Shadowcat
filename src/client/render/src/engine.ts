@@ -1,6 +1,8 @@
 import type { ReadableDocuments, AssetResolver } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon } from "./types";
+import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample } from "./types";
+import type { EasingMode } from "./easing";
+import { computeFogBlendFactor } from "./fog-blend";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
@@ -100,12 +102,22 @@ export class RenderEngine implements SceneToolHost {
   /** GM see-as-player target (M9c-2): the user whose vision the `vision` subscription requests, or
    * null for the GM's own view. The server gates + resolves it (a non-GM is rejected). */
   private viewAsUser: string | null = null;
+  /** Active mover vision-sweep overrides, keyed by token id (M2 §T6): while a mover's own
+   * MoveStream plays, the `moverVision` sample with the greatest `tMs <= elapsed` feeds the fog,
+   * bypassing `lastInput`. Keyed (mirrors `TokenAnimator.samplesAnim`) so a second concurrent sweep
+   * for a DIFFERENT token cannot clobber an in-flight one; when non-empty, ALL active sweeps'
+   * chosen samples are unioned into the rendered visible set. Empty when no sweep is in flight
+   * (observers never populate this — `animateSamples` only starts a sweep when `moverVision` is
+   * non-empty, and only the mover's own MoveStream carries a non-null `moverVision`, per the M2
+   * per-recipient egress clip). */
+  private readonly visionSweeps = new Map<string, { samples: MoveVisionSample[]; elapsed: number; durationMs: number }>();
 
   constructor(private readonly opts: RenderEngineOpts) {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend);
     this.tokens = new TokenView(opts.store, opts.assets, opts.backend);
+    this.tokens.setCellSize(opts.grid.size);
     this.drawings = new DrawingView(opts.store, opts.backend);
     this.templates = new TemplateView(opts.store, opts.backend);
     this.walls = new WallView(opts.store, opts.backend);
@@ -132,6 +144,7 @@ export class RenderEngine implements SceneToolHost {
     this.opts.backend.startTicker((dt) => {
       this.tokens.tick(dt);
       this.lighting.tick(dt);
+      this.tickVisionSweep(dt);
       const rings = this.pings.tick(dt);
       // Redraw only while rings live (plus one final clear when they expire).
       if (rings.length > 0 || this.pingsActive) {
@@ -197,13 +210,18 @@ export class RenderEngine implements SceneToolHost {
     this.renderVisibility();
   }
 
-  /** Apply the last derived visibility through the GM fog-preview override. */
+  /** Apply the last derived visibility through the GM fog-preview override. Skips the actual
+   * `compositor.setVisibility` call while a vision-sweep is in flight (`visionSweeps` non-empty):
+   * a move commit's own server-recomputed vision broadcast (or any other scene update) would
+   * otherwise clobber the sweep's progressive polygon until the next tick reasserts it — a visible
+   * flicker. `lastInput` is still updated (and the host still notified) so the sweep's completion
+   * (`tickVisionSweep`) reverts to the CURRENT derived vision, not a stale one. */
   private renderVisibility(): void {
     const eff: VisibilityInput =
       this.fogPreview && this.lastInput.mode === "all"
         ? { mode: "masked", visible: [], explored: [] }
         : this.lastInput;
-    this.compositor.setVisibility(eff);
+    if (this.visionSweeps.size === 0) this.compositor.setVisibility(eff);
     this.opts.onDerivedApplied?.(eff);
   }
 
@@ -355,10 +373,127 @@ export class RenderEngine implements SceneToolHost {
     this.pings.add(x, y);
   }
 
-  /** Swap the active grid (from the active scene's `system.grid`) and redraw lines. */
+  /** Swap the active grid (from the active scene's `system.grid`) and redraw lines.
+   * Coupling: notifies the token animator so tween durations are recalculated in the
+   * new cell size (px/cell ratio changes when the grid changes). */
   setGrid(spec: GridSpec): void {
     this.grid = new Grid(spec);
+    this.tokens.setCellSize(spec.size);
     this.redrawGrid();
+  }
+
+  /** Push animation config (speed + easing) to the token animator. Separate from setGrid
+   * so world-settings animation changes can be applied without rebuilding the grid. */
+  setAnimation(cfg: { speedCellsPerSec: number; easing: EasingMode }): void {
+    this.tokens.setAnimationConfig(cfg);
+  }
+
+  /** Drive a smooth local walk of token `id` along scene-coord waypoints (SceneToolHost seam).
+   * Forwards to TokenView which anchors the walk at the live current position and
+   * ignores authoritative setTarget calls for each waypoint as the commit burst arrives. */
+  animateAlongPath(id: string, path: [number, number][]): void {
+    this.tokens.animateAlongPath(id, path);
+  }
+
+  /** Drive server-broadcast sample-based playback (SceneToolHost seam). Forwards the position
+   * samples to TokenView; `serverNow` used once at call time for catch-up alignment. When
+   * `moverVision` is present (non-empty — only the mover's own MoveStream carries it, per the M2
+   * per-recipient egress clip), also starts a fog vision-sweep keyed to the SAME clock: the
+   * override is applied immediately (T6 §Step 3) and advanced each tick by `tickVisionSweep`. */
+  animateSamples(
+    id: string,
+    samples: { tMs: number; pos: [number, number] }[],
+    durationMs: number,
+    startServerMs: number,
+    serverNow?: () => number,
+    moverVision?: MoveVisionSample[] | null,
+  ): void {
+    this.tokens.animateSamples(id, samples, durationMs, startServerMs, serverNow);
+    if (moverVision && moverVision.length > 0) {
+      const initialElapsed = serverNow ? Math.max(0, serverNow() - startServerMs) : 0;
+      this.visionSweeps.set(id, { samples: moverVision, elapsed: initialElapsed, durationMs });
+      this.applyVisionSweep();
+    }
+  }
+
+  /** Advance every in-flight vision-sweep by `dtMs` (called from the backend ticker alongside
+   * token/lighting tick). A sweep completes (elapsed reaches its durationMs) independently of the
+   * others — each token's own MoveStream duration governs its own sweep. Once ALL sweeps have
+   * completed, the override clears and the last derived (subscription) vision re-applies via the
+   * existing `lastInput`/`renderVisibility` path — never leaves the fog pinned to a stale sample. */
+  private tickVisionSweep(dtMs: number): void {
+    if (this.visionSweeps.size === 0) return;
+    let anyCompleted = false;
+    for (const [id, sweep] of this.visionSweeps) {
+      sweep.elapsed += dtMs;
+      if (sweep.elapsed >= sweep.durationMs) {
+        this.visionSweeps.delete(id);
+        anyCompleted = true;
+      }
+    }
+    if (this.visionSweeps.size === 0) {
+      if (anyCompleted) this.renderVisibility(); // revert to the last derived vision (+ fog-preview override)
+      return;
+    }
+    this.applyVisionSweep();
+  }
+
+  /** The sample with the greatest `tMs <= sweep.elapsed` (falls back to the first sample when
+   * elapsed precedes it). */
+  private chosenSample(sweep: { samples: MoveVisionSample[]; elapsed: number }): MoveVisionSample {
+    let chosen = sweep.samples[0];
+    for (const s of sweep.samples) {
+      if (s.tMs <= sweep.elapsed) chosen = s;
+    }
+    return chosen;
+  }
+
+  private samplePolygons(s: MoveVisionSample): Polygon[] {
+    return s.polygons.filter((pts) => pts.length >= 3).map((pts) => ({ points: pts.flat() }));
+  }
+
+  /** For a SINGLE in-flight sweep, the `(from, to, factor)` cross-fade triple between the
+   * chosen sample and the next one (smallest `tMs` strictly greater than the chosen sample's) —
+   * or `null` when there is no next sample (elapsed at/after the last sample: nothing to fade
+   * toward, caller snaps instead). `explored` is carried from the last derived frame in both
+   * endpoints — only `visible` cross-fades. */
+  private sweepBlendInputs(
+    sweep: { samples: MoveVisionSample[]; elapsed: number },
+  ): { from: VisibilityInput; to: VisibilityInput; factor: number } | null {
+    const cur = this.chosenSample(sweep);
+    let next: MoveVisionSample | null = null;
+    for (const s of sweep.samples) {
+      if (s.tMs > cur.tMs && (next === null || s.tMs < next.tMs)) next = s;
+    }
+    if (!next) return null;
+    return {
+      from: { mode: "masked", visible: this.samplePolygons(cur), explored: this.lastInput.explored },
+      to: { mode: "masked", visible: this.samplePolygons(next), explored: this.lastInput.explored },
+      factor: computeFogBlendFactor(sweep.elapsed, cur.tMs, next.tMs),
+    };
+  }
+
+  /** Drive the fog from the active vision-sweep(s) (bypasses `lastInput`/`renderVisibility` — the
+   * sweep is a transient animation override, not a new derived frame). With exactly one active
+   * sweep AND a next sample to fade toward, cross-fades between the current and next sample via
+   * `Compositor.setVisibilityBlend`. Otherwise (no next sample yet to fade toward, or multiple
+   * concurrent sweeps whose sample timelines aren't comparable to a single blend factor) falls
+   * back to the union of every active sweep's chosen sample (a hard snap, no cross-fade). */
+  private applyVisionSweep(): void {
+    if (this.visionSweeps.size === 0) return;
+    if (this.visionSweeps.size === 1) {
+      const [sweep] = this.visionSweeps.values();
+      const blend = this.sweepBlendInputs(sweep);
+      if (blend) {
+        this.compositor.setVisibilityBlend(blend.from, blend.to, blend.factor);
+        return;
+      }
+    }
+    const visible: Polygon[] = [];
+    for (const sweep of this.visionSweeps.values()) {
+      visible.push(...this.samplePolygons(this.chosenSample(sweep)));
+    }
+    this.compositor.setVisibility({ mode: "masked", visible, explored: this.lastInput.explored });
   }
 
   dispatchPointerDown(screen: Point, ev: PointerEvent): void {

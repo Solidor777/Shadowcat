@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { WsClient } from "./ws-client";
+import type { MoveStream } from "./ws-client";
 import { MockServer } from "./mock-server";
 import { DocumentStore } from "./store";
 import type { ClientMsg, ServerMsg, WireOperation } from "./wire";
@@ -441,5 +442,132 @@ describe("WsClient", () => {
       }),
     );
     await expect(p2).rejects.toThrow("unreachable");
+  });
+
+  it("move_stream resolves moveRequest AND fires onMoveStream for mover", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+
+    const streams: MoveStream[] = [];
+    const unsub = client.onMoveStream((s) => streams.push(s));
+
+    const p = client.moveRequest("scene1", "tok1", [[0, 0], [100, 0]]);
+    const sentFrame = JSON.parse(sent.find((s) => JSON.parse(s).type === "move_request")!);
+    expect(sentFrame.type).toBe("move_request");
+    expect(sentFrame.token_id).toBe("tok1");
+
+    onMessage(
+      JSON.stringify({
+        type: "move_stream",
+        request_id: sentFrame.request_id,
+        token_id: "tok1",
+        mover: "user1",
+        scene: "scene1",
+        start_server_ms: 1000,
+        duration_ms: 500,
+        stop: [100, 0],
+        samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
+        mover_vision: null,
+      }),
+    );
+
+    // Promise resolves with camelCase-mapped MoveStream.
+    const result = await p;
+    expect(result.tokenId).toBe("tok1");
+    expect(result.startServerMs).toBe(1000);
+    expect(result.durationMs).toBe(500);
+    expect(result.stop).toEqual([100, 0]);
+    expect(result.samples).toEqual([{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [100, 0] }]);
+    expect(result.moverVision).toBeNull();
+
+    // Listener fires for BOTH mover and observers.
+    expect(streams).toHaveLength(1);
+    expect(streams[0].tokenId).toBe("tok1");
+    expect(streams[0].mover).toBe("user1");
+
+    unsub();
+  });
+
+  it("move_stream with unknown request_id (observer) fires onMoveStream without rejecting", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+
+    const streams: MoveStream[] = [];
+    const unsub = client.onMoveStream((s) => streams.push(s));
+
+    // Simulate observer receiving a move_stream with no pending request.
+    onMessage(
+      JSON.stringify({
+        type: "move_stream",
+        request_id: "00000000-0000-0000-0000-000000000099",
+        token_id: "tok2",
+        mover: "user2",
+        scene: "scene1",
+        start_server_ms: 2000,
+        duration_ms: 300,
+        stop: [200, 0],
+        samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 300, pos: [200, 0] }],
+        mover_vision: null,
+      }),
+    );
+    await flush();
+
+    // No pending promise was rejected; listener fires with camelCase fields.
+    expect(streams).toHaveLength(1);
+    expect(streams[0].tokenId).toBe("tok2");
+    expect(streams[0].mover).toBe("user2");
+    expect(streams[0].moverVision).toBeNull();
+
+    unsub();
+  });
+
+  it("moveRequest rejects on move_error", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+
+    const p = client.moveRequest("scene1", "tok1", [[0, 0], [100, 0]]);
+    const sentFrame = JSON.parse(sent.find((s) => JSON.parse(s).type === "move_request")!);
+    onMessage(
+      JSON.stringify({
+        type: "move_error",
+        request_id: sentFrame.request_id,
+        message: "move rejected",
+      }),
+    );
+    await expect(p).rejects.toThrow("move rejected");
+  });
+
+  it("moveRequest rejects immediately when there is no live transport", async () => {
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
+      handlers: noop,
+    });
+    // Not started → transport is null. A long timeout would otherwise hang.
+    await expect(
+      client.moveRequest("scene1", "tok1", [[0, 0], [100, 0]]),
+    ).rejects.toThrow(/not connected/i);
   });
 });
