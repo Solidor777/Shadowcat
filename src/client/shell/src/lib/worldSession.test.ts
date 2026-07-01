@@ -350,3 +350,79 @@ test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Wel
     expect(sent.some((m) => m.type === "scene_unsubscribe" && m.request_id === req.request_id)).toBe(true),
   );
 });
+
+// Minimal SceneToolHost fake (mirrors @shadowcat/ui-kit's __fixtures__/fakeSceneHost.ts, not
+// exported from the ui-kit barrel — this package only needs the one method under test here).
+function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
+  calls: Array<{ id: string; moverVision: unknown }>;
+} {
+  const calls: Array<{ id: string; moverVision: unknown }> = [];
+  return {
+    setActiveTool: () => {},
+    snap: (p) => p,
+    setDraggingToken: () => {},
+    previewOverlay: () => {},
+    clearOverlay: () => {},
+    gridDistance: () => 0,
+    drawMeasure: () => {},
+    clearMeasure: () => {},
+    addPing: () => {},
+    animateAlongPath: () => {},
+    animateSamples: (id, _s, _d, _st, _sn, moverVision) => { calls.push({ id, moverVision }); },
+    calls,
+  };
+}
+
+function moveStreamFrame(scene: string, moverVision: unknown = null): Record<string, unknown> {
+  return {
+    type: "move_stream",
+    request_id: "r1",
+    token_id: "tok1",
+    mover: "u1",
+    scene,
+    start_server_ms: 0,
+    duration_ms: 1000,
+    stop: [100, 0],
+    samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
+    mover_vision: moverVision,
+  };
+}
+
+test("onMoveStream forwards to sceneInteraction (incl. moverVision) for the active scene", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame); // GM auto-creates the active scene
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const sceneId = (
+    (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id
+  ) as string;
+
+  const host = fakeMoveHost();
+  session.sceneInteraction.attach(host);
+  const moverVision = [{ t_ms: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }];
+  push(moveStreamFrame(sceneId, moverVision));
+  await vi.waitFor(() => expect(host.calls).toHaveLength(1));
+  expect(host.calls[0]).toEqual({
+    id: "tok1",
+    moverVision: [{ tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
+  });
+});
+
+test("onMoveStream for a non-active scene is ignored (fail-closed cross-scene guard)", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame);
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+
+  const host = fakeMoveHost();
+  session.sceneInteraction.attach(host);
+  push(moveStreamFrame("some-other-scene-id"));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(host.calls).toHaveLength(0);
+});

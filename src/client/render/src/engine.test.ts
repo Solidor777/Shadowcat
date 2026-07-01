@@ -703,6 +703,117 @@ test("animateSamples with no moverVision (observer) leaves the fog untouched", (
   expect(backend.visibility).toEqual(before);
 });
 
+test("a concurrent derived frame does not clobber an in-flight vision-sweep (no flicker)", () => {
+  // A move commit's own server-recomputed vision broadcast (or any other scene update) arriving
+  // WHILE the sweep animation plays must not clobber the sweep's progressive polygon with the
+  // derived one — that would flicker until the next tick reasserts the sweep.
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
+
+  engine.animateSamples(
+    "tok1", [{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [100, 0] }], 1000, 0, () => 0,
+    [{ tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
+  );
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20] }], explored: [] });
+
+  // Bump the store to seq 2 so the seq-2 derived frame below applies IMMEDIATELY (not deferred
+  // behind the appliedSeq watermark) — isolates the sweep-suppression behavior under test.
+  store.applyCommand(tokenCmd(2, "tokX", 0));
+  // A new derived (subscription) frame arrives mid-sweep, at a higher seq — normally this would
+  // re-render immediately, but a sweep is in flight so the compositor must not be touched yet.
+  onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [0, 0, 99, 0, 99, 99] }] }, computedAtSeq: 2 });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20] }], explored: [] }); // unchanged: still the sweep
+
+  // The sweep completes: reverts to the LATEST derived vision (the seq=2 frame), not a stale one.
+  backend.runTicker(1000);
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 99, 0, 99, 99] }], explored: [] });
+});
+
+test("animateSamples' moverVision seeds a server-aligned catch-up mid-sample (startServerMs in the past)", () => {
+  // Mirrors token-animator.test.ts's "catch-up: jumps to the server-aligned position when
+  // startServerMs is in the past" — exercises the highest-risk untested path: initialElapsed
+  // computed from a non-zero serverNow()-startServerMs delta, not always 0.
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
+
+  // startServerMs=1000, serverNow()=1500 → initialElapsed=500 → the sweep must start already
+  // seeded at the tMs=500 sample, NOT at tMs=0 (which `initialElapsed: 0` tests never exercise).
+  engine.animateSamples(
+    "tok1",
+    [{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [100, 0] }],
+    1000,
+    1000,
+    () => 1500,
+    [
+      { tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] },
+      { tMs: 500, polygons: [[[0, 0], [50, 0], [50, 50]]] },
+    ],
+  );
+  // Applied immediately at call time (before any tick): the mid-sample (tMs=500), not tMs=0.
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 50, 0, 50, 50] }], explored: [] });
+});
+
+test("concurrent sweeps for different tokens do not clobber each other; each settles independently", () => {
+  // Guards the keyed (Map<string, …>) sweep state: a second token's sweep must not replace the
+  // first's while both are in flight, and each must revert to derived vision only once ITS OWN
+  // duration elapses (not when the other's does).
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
+
+  engine.animateSamples(
+    "tokA", [{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [100, 0] }], 500, 0, () => 0,
+    [{ tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
+  );
+  // Second token's sweep starts while tokA's is still in flight: both polygons must be present
+  // (union), proving tokA's entry was not replaced.
+  engine.animateSamples(
+    "tokB", [{ tMs: 0, pos: [0, 0] }, { tMs: 1000, pos: [100, 0] }], 1000, 0, () => 0,
+    [{ tMs: 0, polygons: [[[100, 100], [120, 100], [120, 120]]] }],
+  );
+  expect(backend.visibility).toEqual({
+    mode: "masked",
+    visible: [{ points: [0, 0, 20, 0, 20, 20] }, { points: [100, 100, 120, 100, 120, 120] }],
+    explored: [],
+  });
+
+  // tokA's 500ms sweep completes; tokB's 1000ms sweep is still in flight — the fog must NOT
+  // revert to derived vision yet (tokB is still sweeping), only tokA's polygon drops out.
+  backend.runTicker(500);
+  expect(backend.visibility).toEqual({
+    mode: "masked",
+    visible: [{ points: [100, 100, 120, 100, 120, 120] }],
+    explored: [],
+  });
+
+  // tokB's sweep also completes: NOW the fog reverts to the last derived vision.
+  backend.runTicker(500);
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [] });
+});
+
 test("toLighting parses lit cells for the active scene and fails safe", () => {
   const { store, engine } = makeEngine();
   engine.start();

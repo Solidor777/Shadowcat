@@ -282,6 +282,13 @@ export class WorldSession {
     // Unsub return discarded: the listener's lifetime equals this WsClient instance
     // (a fresh WsClient is created per enter() and discarded on leave()).
     this.#ws.onMoveStream((stream) => {
+      // MoveStream broadcasts room-wide (not scoped to the viewer's active scene), and the wire
+      // frame carries no reconciler-level scene tag beyond `stream.scene` — mirrors the fog
+      // cross-scene guard in `engine.ts`'s `toVisibility`/`toLighting` (container-local coords
+      // reused across containers must be tagged + filtered to the active one). A stream for a
+      // non-active scene is ignored: fail-closed against a latent cross-scene fog/animation leak.
+      const activeScene = this.#optimistic.query("scene")[0]?.id;
+      if (stream.scene !== activeScene) return;
       this.sceneInteraction.animateSamples(
         stream.tokenId,
         stream.samples,

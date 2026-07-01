@@ -101,12 +101,15 @@ export class RenderEngine implements SceneToolHost {
   /** GM see-as-player target (M9c-2): the user whose vision the `vision` subscription requests, or
    * null for the GM's own view. The server gates + resolves it (a non-GM is rejected). */
   private viewAsUser: string | null = null;
-  /** Active mover vision-sweep override (M2 §T6): while a mover's own MoveStream plays, the
-   * `moverVision` sample with the greatest `tMs <= elapsed` feeds the fog directly, bypassing
-   * `lastInput`. `null` when no sweep is in flight (observers never populate this — `animateSamples`
-   * only starts a sweep when `moverVision` is non-empty, and only the mover's own MoveStream
-   * carries a non-null `moverVision`, per the M2 per-recipient egress clip). */
-  private visionSweep: { samples: MoveVisionSample[]; elapsed: number; durationMs: number } | null = null;
+  /** Active mover vision-sweep overrides, keyed by token id (M2 §T6): while a mover's own
+   * MoveStream plays, the `moverVision` sample with the greatest `tMs <= elapsed` feeds the fog,
+   * bypassing `lastInput`. Keyed (mirrors `TokenAnimator.samplesAnim`) so a second concurrent sweep
+   * for a DIFFERENT token cannot clobber an in-flight one; when non-empty, ALL active sweeps'
+   * chosen samples are unioned into the rendered visible set. Empty when no sweep is in flight
+   * (observers never populate this — `animateSamples` only starts a sweep when `moverVision` is
+   * non-empty, and only the mover's own MoveStream carries a non-null `moverVision`, per the M2
+   * per-recipient egress clip). */
+  private readonly visionSweeps = new Map<string, { samples: MoveVisionSample[]; elapsed: number; durationMs: number }>();
 
   constructor(private readonly opts: RenderEngineOpts) {
     this.grid = new Grid(opts.grid);
@@ -206,13 +209,18 @@ export class RenderEngine implements SceneToolHost {
     this.renderVisibility();
   }
 
-  /** Apply the last derived visibility through the GM fog-preview override. */
+  /** Apply the last derived visibility through the GM fog-preview override. Skips the actual
+   * `compositor.setVisibility` call while a vision-sweep is in flight (`visionSweeps` non-empty):
+   * a move commit's own server-recomputed vision broadcast (or any other scene update) would
+   * otherwise clobber the sweep's progressive polygon until the next tick reasserts it — a visible
+   * flicker. `lastInput` is still updated (and the host still notified) so the sweep's completion
+   * (`tickVisionSweep`) reverts to the CURRENT derived vision, not a stale one. */
   private renderVisibility(): void {
     const eff: VisibilityInput =
       this.fogPreview && this.lastInput.mode === "all"
         ? { mode: "masked", visible: [], explored: [] }
         : this.lastInput;
-    this.compositor.setVisibility(eff);
+    if (this.visionSweeps.size === 0) this.compositor.setVisibility(eff);
     this.opts.onDerivedApplied?.(eff);
   }
 
@@ -402,41 +410,50 @@ export class RenderEngine implements SceneToolHost {
     this.tokens.animateSamples(id, samples, durationMs, startServerMs, serverNow);
     if (moverVision && moverVision.length > 0) {
       const initialElapsed = serverNow ? Math.max(0, serverNow() - startServerMs) : 0;
-      this.visionSweep = { samples: moverVision, elapsed: initialElapsed, durationMs };
+      this.visionSweeps.set(id, { samples: moverVision, elapsed: initialElapsed, durationMs });
       this.applyVisionSweep();
     }
   }
 
-  /** Advance the in-flight vision-sweep by `dtMs` (called from the backend ticker alongside
-   * token/lighting tick). Completion (elapsed reaches durationMs) clears the override and
-   * re-applies the last derived (subscription) vision via the existing `lastInput`/
-   * `renderVisibility` path — never leaves the fog pinned to the animation's last sample. */
+  /** Advance every in-flight vision-sweep by `dtMs` (called from the backend ticker alongside
+   * token/lighting tick). A sweep completes (elapsed reaches its durationMs) independently of the
+   * others — each token's own MoveStream duration governs its own sweep. Once ALL sweeps have
+   * completed, the override clears and the last derived (subscription) vision re-applies via the
+   * existing `lastInput`/`renderVisibility` path — never leaves the fog pinned to a stale sample. */
   private tickVisionSweep(dtMs: number): void {
-    const sweep = this.visionSweep;
-    if (!sweep) return;
-    sweep.elapsed += dtMs;
-    if (sweep.elapsed >= sweep.durationMs) {
-      this.visionSweep = null;
-      this.renderVisibility(); // revert to the last derived vision (+ fog-preview override)
+    if (this.visionSweeps.size === 0) return;
+    let anyCompleted = false;
+    for (const [id, sweep] of this.visionSweeps) {
+      sweep.elapsed += dtMs;
+      if (sweep.elapsed >= sweep.durationMs) {
+        this.visionSweeps.delete(id);
+        anyCompleted = true;
+      }
+    }
+    if (this.visionSweeps.size === 0) {
+      if (anyCompleted) this.renderVisibility(); // revert to the last derived vision (+ fog-preview override)
       return;
     }
     this.applyVisionSweep();
   }
 
-  /** Feed the moverVision sample with the greatest `tMs <= elapsed` to the compositor directly
-   * (bypasses `lastInput`/`renderVisibility` — the sweep is a transient animation override, not a
-   * new derived frame). `explored` is carried from the last derived frame so the dimmed-memory
-   * layer stays consistent while the sweep drives `visible`. */
+  /** Feed the UNION of every active sweep's chosen sample (the one with the greatest
+   * `tMs <= elapsed`, per sweep) to the compositor directly (bypasses `lastInput`/
+   * `renderVisibility` — the sweep is a transient animation override, not a new derived frame).
+   * `explored` is carried from the last derived frame so the dimmed-memory layer stays consistent
+   * while the sweep(s) drive `visible`. */
   private applyVisionSweep(): void {
-    const sweep = this.visionSweep;
-    if (!sweep) return;
-    let chosen = sweep.samples[0];
-    for (const s of sweep.samples) {
-      if (s.tMs <= sweep.elapsed) chosen = s;
+    if (this.visionSweeps.size === 0) return;
+    const visible: Polygon[] = [];
+    for (const sweep of this.visionSweeps.values()) {
+      let chosen = sweep.samples[0];
+      for (const s of sweep.samples) {
+        if (s.tMs <= sweep.elapsed) chosen = s;
+      }
+      for (const pts of chosen.polygons) {
+        if (pts.length >= 3) visible.push({ points: pts.flat() });
+      }
     }
-    const visible: Polygon[] = chosen.polygons
-      .filter((pts) => pts.length >= 3)
-      .map((pts) => ({ points: pts.flat() }));
     this.compositor.setVisibility({ mode: "masked", visible, explored: this.lastInput.explored });
   }
 
