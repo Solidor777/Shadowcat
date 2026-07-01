@@ -78,12 +78,17 @@ optimistically and roll back on divergence.
   `Pathfind`→`PathResult`/`PathError`) route replies to the requesting connection only (never
   broadcast); correlated by `request_id` via the `pending` map in `WsClient`. See
   `src/client/core/src/ws-client.ts` and `src/server/src/ws/protocol.rs`.
-- **MoveRequest → MoveStream (M2, broadcast):** `MoveRequest` is still a one-shot correlated pair
-  for the mover's promise (resolves on the matching `move_stream` frame via `pending` map), but
-  `MoveStream` is broadcast to ALL scene viewers, not just the mover. The server clips the sample
-  list per-recipient based on the viewer's vision mask (mover gets full trajectory + `moverVision`;
-  observers get clipped samples + `moverVision: null`). `MoveError` remains mover-only, always
-  generic (no path geometry / vision state disclosed — no-geometry-leak invariant). `conn.rs`
+- **MoveRequest → MoveStream (M2, broadcast):** `MoveStream` is an **aux broadcast frame** — sent
+  via `Room::broadcast_aux` like `ScenePing`, carrying NO seq number (it is cosmetic playback data,
+  not an authoritative document event; it never touches the `RingBuffer`/gap-resync path).
+  `MoveRequest` is still a one-shot correlated pair for the mover's promise (resolves on the
+  matching `move_stream` frame via `pending` map), but `MoveStream` is broadcast to ALL scene
+  viewers, not just the mover — the **per-recipient egress transform** (mover full incl.
+  `moverVision`; observer clipped to their own visible samples with `moverVision: null`; suppressed
+  entirely — zero frames — when the recipient's vision admits none of the move) is where the
+  leak-free secrecy boundary lives (`egress_loop`'s dedicated `MoveStream` branch, detailed in
+  `shadowcat-codebase-scene-rendering`). `MoveError` remains mover-only, always generic (no path
+  geometry / vision state disclosed — no-geometry-leak invariant). `conn.rs`
   `handle_move_request` dispatches `execute_move`, then broadcasts `MoveStream` to the scene.
   Client animation is driven by `TokenAnimator.animateSamples` (time-tagged playback, catch-up on
   late arrival, gap/occlusion detection: gap threshold = `minConsecutiveDelta × 1.5` where

@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-scene-rendering
-description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, lighting, the server visibility/lit mask, movement restriction (the Room::publish move gate, supercover, visible_cells), the grid A* pathfinder (scene/pathfinding.rs, SceneEcs::pathfind, Pathfind/PathResult frames, diagonal rules), or scene-tools (place/select/move/draw/template/measure/ping). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, lighting, the server visibility/lit mask, movement restriction (the Room::publish move gate, supercover, visible_cells), the grid A* pathfinder (scene/pathfinding.rs, SceneEcs::pathfind, Pathfind/PathResult frames, diagonal rules), streamed continuous vision (MoveStream, scene/move_stream.rs, player_vision_polygons_at, the per-recipient egress clip, client fog-sweep/cross-fade playback), or scene-tools (place/select/move/draw/template/measure/ping). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Scene & Rendering
@@ -52,6 +52,38 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - `src/server/src/scene/mod.rs` — adds `SceneEcs::token_position(token) -> Option<(f64,f64)>` and
   `SceneEcs::resolved_animation_speed() -> f64` (`pub(crate)` seams; the latter sits alongside
   `resolved_diagonal_rule`, sources `world_settings.animation`, defaults to 6 cells/sec).
+  **M2 streamed-vision seam:** `SceneEcs::player_vision_inputs(user, scene, moving_token) ->
+  VisionMoveInputs` hoists the per-move-invariant inputs (full `sight_walls` set + the user's
+  OTHER owned tokens' static polygons) **once per move**; `VisionMoveInputs::polygons_at(viewpoint)`
+  (also exposed as the convenience wrapper `SceneEcs::player_vision_polygons_at(user, scene,
+  moving_token, viewpoint)`) is the cheap per-sample call — raycasts the moving token from
+  `viewpoint` against the SAME full wall set (including `gm_only` sight walls) and unions it with
+  the pre-hoisted static polygons. Empty when the user owns no token in the scene (fail-closed).
+  Reused primitives, not a new vision model: identical `sight_walls` + `vision::visibility_polygon`
+  as `player_vision_polygons`.
+- `src/server/src/scene/move_stream.rs` (M2) — pure, no-I/O position/vision path sampler for the
+  `MoveStream` broadcast: `sample_path(path, cell, duration_ms) -> Vec<PosSamplePt>` (arc-length
+  parameterization; ~`SAMPLES_PER_CELL`=3 samples/cell; always includes the exact first/last
+  vertex; strictly increasing `t_ms`, exact-equal consecutive dedup). `MAX_VISION_SAMPLES` (96) is
+  the SHARED cap for both position samples and vision samples on one `MoveStream` frame — bounds
+  the mover's per-move raycast count. `MAX_VISION_POLYGON_VERTS` (512) caps each `VisionSamplePt`
+  polygon's vertex count (fail-closed truncation — under-reveal, never over-reveal).
+  `Room::execute_move` calls `sample_path` then, for each sample, `player_vision_inputs` (once) +
+  `VisionMoveInputs::polygons_at` (per sample) to fill `MoveExecution.mover_vision` (`None` for a
+  GM mover — `Unrestricted` sees all, nothing to sweep).
+- `src/server/src/ws/conn.rs` — **the M2 per-recipient egress clip is the secrecy boundary** for
+  `MoveStream`. `handle_move_request` broadcasts the FULL (unclipped) `MoveStream` via
+  `room.broadcast_aux` — the full trajectory lives only in-process. `egress_loop`'s dedicated
+  `MoveStream` branch (`clip_move_stream` + `observer_vision_polys_for_scene`) runs BEFORE the sink
+  write, per connection: the mover (or a GM see-as target) gets `samples` + `mover_vision`
+  unchanged; every other recipient gets `samples` clipped to those whose `pos` falls inside the
+  recipient's OWN authoritative vision polygons (`point_in_poly`, recomputed off the current ECS
+  read — never a stale cache; the ECS guard drops before any await) with `mover_vision` forced to
+  `None`; a wholly-invisible move (empty clip) is **not sent at all** (suppressed, not an
+  empty-`samples` frame — asserted by a dedicated test). `send_filtered` intentionally panics if a
+  `MoveStream` reaches it — the clip MUST happen in the dedicated `egress_loop` branch, never the
+  generic per-recipient filter path. `MoveError` stays mover-only via `etx`, generic (no path/vision
+  geometry disclosed).
 - `src/server/src/scene/explored.rs` — `ExploredSet` fog memory: `mark_polygons(polys, cell_size)`,
   `to_bytes`/`from_bytes` (persistence), cell-based.
 - `src/server/src/scene/pathfinding.rs` — pure, headless grid A* (no I/O; clean-room):
@@ -82,6 +114,25 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `camera.ts`, `grid.ts`, `token-view.ts` + `token-animator.ts` (tween),
   `wall-view.ts`, `drawing-view.ts`, `template-view.ts`, `ping-view.ts`. Modules draw through the
   render-layer API; the canvas host is not replaceable.
+- `src/client/render/src/engine.ts` (M2) — `visionSweeps: Map<tokenId, {samples, elapsed,
+  durationMs}>` drives the mover's fog sweep during `MoveStream` playback (keyed per token — unions
+  concurrent sweeps' visible sets rather than clobbering). `animateSamples(id, samples, durationMs,
+  startServerMs, moverVision?)` starts a sweep only when `moverVision` is present (an observer never
+  populates this — observers receive `moverVision: null` from the egress clip and simply tween
+  position). While `visionSweeps.size > 0`, the engine feeds the SNAPPED (Task 6) or CROSS-FADED
+  (Task 7) sweep polygon to the compositor instead of the last `vision` subscription payload;
+  reverts to that payload the instant the sweep map empties (sweep end or catch-up completion).
+- `src/client/render/src/fog-blend.ts` (M2 Task 7) — `computeFogBlendFactor(clock, tCur, tNext)`:
+  pure, unit-testable blend-factor helper (0 at `tCur` → 1 at `tNext`, clamped `[0,1]`; a
+  degenerate/non-finite span snaps to 1 — fail-safe toward the newer sample, never frozen on a
+  stale one). Extracted from `pixi-backend.ts` because that file is WebGL-only (Playwright-covered,
+  no jsdom GL context).
+- `src/client/render/src/pixi-backend.ts` (M2 Task 7) — `setVisibilityBlend(from, to, factor)`
+  rasterizes both the outgoing and incoming vision-sample fog into `RenderTexture`s via the shared
+  `captureFog`/`paintFogSheets` helpers (the SAME paint path `setVisibility` uses — draws IDENTICAL
+  fog for a given input) and alpha cross-fades between them; falls back to the Task 6 snap when a
+  next sample is unavailable or more than one sweep is concurrently in flight. No polygon morphing
+  — cross-fades rasterized textures only.
 - `src/client/render/src/lighting.ts` — `Lighting` class (M10e-3, GL-free, unit-tested):
   resolves gradation band→darkening alpha + tint color, applies `renderHint` (e.g. `"darkvision"`
   → gray-wash desaturation overlay), and interpolates day/night fades. Called by `PixiBackend`
@@ -164,6 +215,27 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   alone) — same union `publish` uses. Do NOT re-grant GM wall-bypass in `execute_move`: GMs are
   folded to `Unrestricted` (mask-skip) but `blocks_move` is still enforced for GMs. This
   intentionally diverges from `publish`'s legacy GM wall-bypass (to be retired).
+- **M2 streamed vision is strictly leak-free — no fork of the secrecy decision, fail closed
+  (`fog-is-the-secrecy-gate-fail-closed`).** The mover's swept vision trajectory raycasts the SAME
+  `sight_walls` (full set, incl. `gm_only`) as `player_vision_polygons`; the observer egress clip
+  filters against the recipient's OWN authoritative vision (never the mover's) — a `gm_only`-walled
+  area is never streamed to a non-owner because the observer's own vision already excludes it. No
+  render-path leak: the full trajectory is broadcast in-process only; `egress_loop`'s dedicated
+  branch strips it per recipient before the sink write, same discipline as `Event`/`vision` egress.
+  A wholly-occluded move is suppressed (zero frames), never sent as an empty-`samples` frame — an
+  observer must not learn a move even happened if they can't see any of it. `mover_vision` is
+  disclosed to the mover only (nulled for every other recipient, incl. a full-vision GM observer who
+  has no fog to sweep anyway). **Design doc scope note:** "strictly leak-free" covers the IN-FLIGHT
+  path only; RESTING token positions still ride the pre-existing position `Event` + client-side fog
+  model (delivered to all scene readers, fogged client-side per `fog-is-the-secrecy-gate-fail-closed`)
+  — M2 does not change that. **Known v1 limitation (by design, not a bug):** each move's
+  per-recipient clip is computed once at ITS execute time against the recipient's then-current
+  vision; two tokens moving simultaneously do not reveal each other mid-walk if a watcher's vision
+  opens after the clip — reconciles at the stop + the next `vision` rebroadcast. Live
+  cross-animation concurrency is deferred (`docs/TODO.md` — needs a per-move server loop). Client
+  computes NO vision in any of this (ARCHITECTURE §2 invariant 3/4) — it renders only the streamed,
+  already-clipped polygons. Design doc:
+  `docs/superpowers/specs/2026-06-25-m2-streamed-continuous-vision-design.md`.
 
 ## Gotchas
 
@@ -178,7 +250,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 ## Pointers
 
 - Rationale: `docs/design/ARCHITECTURE.md` §2 (invariants 3, 5, 6 + the M9 geometry exception)
-  + §7 (rendering provenance); `docs/PLAN.md` (M8/M9 milestones).
+  + §7 (rendering provenance); `docs/PLAN.md` (M8/M9/M10e/M2 milestones);
+  `docs/superpowers/specs/2026-06-25-m2-streamed-continuous-vision-design.md` (streamed vision).
 - Relationships:
   `graphify query "scene ECS derived read-model vision fog stage pixi render tokens"`.
-- History/decisions: [[m8-brainstorm]], [[m8d-2-scene-tools]], [[m9-progress]].
+- History/decisions: [[m8-brainstorm]], [[m8d-2-scene-tools]], [[m9-progress]],
+  [[server-authoritative-movement-rule]].

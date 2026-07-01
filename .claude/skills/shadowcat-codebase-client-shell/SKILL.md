@@ -29,15 +29,30 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 - `AppContext.pathfind` (`src/client/ui-kit/src/appContext.ts`) — correlated-request seam: issues a
   `Pathfind` frame via `WsClient.pathfind` and resolves with `PathResult` or rejects with
   `PathError`; wired through `WorldSession` and consumed by `scene-tools` measure-tool route mode.
-- `WsClient.moveRequest(scene, tokenId, path) → Promise<MoveExecuted>` (`src/client/core/src/ws-client.ts`)
-  — correlated-request mirror of `pathfind`: sends `MoveRequest`, resolves on `move_executed` reply
-  (camelCase-mapped: `tokenId`, `renderPath`, `durationMs`), rejects on `move_error` or timeout
-  (default 10 s). Pure transport — no client-side movement logic. Keyed in the shared `pending` map
-  alongside search and pathfind.
+- `WsClient.moveRequest(scene, tokenId, path) → Promise<MoveStream>` (`src/client/core/src/ws-client.ts`,
+  M2 — `MoveExecuted` is FULLY RETIRED, server + Zod + client) — correlated-request mirror of
+  `pathfind`: sends `MoveRequest`, resolves with the broadcast `MoveStream` when the matching
+  `move_stream` frame arrives (mover's `request_id` correlates; the resolved value signals success
+  only — it does NOT drive animation), rejects on `move_error` or timeout (default 10 s). Pure
+  transport — no client-side movement logic. Keyed in the shared `pending` map alongside search and
+  pathfind.
+- `WsClient.onMoveStream(cb) -> unsubscribe` (M2) — the actual playback seam: fires for EVERY scene
+  viewer (mover + observers) on every broadcast `MoveStream`, independent of the `moveRequest`
+  promise. Listeners survive reconnects (not cleared by `failPending`).
 - `AppContext.moveRequest` (`src/client/ui-kit/src/appContext.ts`) — AppContext seam wired through
-  `WorldSession`; consumed by scene-tools measure-tool route-commit. The measure-tool sends
-  `MoveRequest` and animates the returned `renderPath` via the M10e-5 animator. Optimistic dispatch
-  + `collinearRuns` chaining were removed; route-commit is now request-only.
+  `WorldSession`; consumed by scene-tools measure-tool route-commit (sends `MoveRequest`, awaits the
+  signal-only resolution, does NOT locally animate — the M10e-5 `TokenAnimator` plays back from the
+  broadcast, not the promise). Optimistic dispatch + `collinearRuns` chaining were removed;
+  route-commit is request-only.
+- `onMoveStream` wiring (M2 Tasks 5-6, `worldSession.svelte.ts`): subscribes once at session start,
+  **filters `stream.scene` against the active scene** (`this.#optimistic.query("scene")[0]?.id`)
+  before forwarding — a room-wide `MoveStream` broadcast for a DIFFERENT scene must not animate a
+  token or feed a fog sweep in the one currently rendered (cross-scene leak/flicker guard, mirrors
+  the existing `toVisibility`/`toLighting` active-scene filter). On a match, calls
+  `sceneInteraction.animateSamples(tokenId, samples, durationMs, startServerMs, moverVision)`, which
+  forwards through `RenderEngine` to `TokenView`/`TokenAnimator` (position tween) and, when
+  `moverVision` is present (mover only), the engine's `visionSweeps` fog-sweep playback (see
+  `shadowcat-codebase-scene-rendering`).
 - `src/client/shell/src/` — `App.svelte`, `main.ts`, `lib/` (hash router, api client, session,
   WorldSession controller, default-module wiring).
 - `src/modules/{entry,core-ui,topbar,statusbar,settings,game-settings}/` — entry =

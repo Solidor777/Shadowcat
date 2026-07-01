@@ -348,9 +348,31 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > ground truth, 5 Minors fixed; reviewed skill-update gate PASS).
 > Plan: `docs/superpowers/plans/2026-06-25-m1-server-authoritative-move-execution.md`.
 >
-> **M10e status: e-1 + e-2 + e-3 + e-4 + e-6 DONE; e-5 animation engine done + redirected (M1 DONE).
-> Next = M2 (observer render-path + continuous client vision), then M3 (vision-gated pathfinder +
-> region hook), then M10f (continuous/Polyanya pathfinding) + M10g (weighted/impassable regions).**
+> **M2 DONE** (branch `m10e-5-movement-animation`, commits `f403ff1..d3bd5fd`, all green, NOT
+> pushed/merged — push gate = full M10): streamed continuous vision, server-precomputed and
+> strictly leak-free. `PosSample`/`VisionSample`/`ServerMsg::MoveStream` protocol (ts-rs + Zod
+> mirror); `scene/move_stream.rs` pure path sampler (`sample_path`, arc-length parameterization,
+> `MAX_VISION_SAMPLES`=96 shared cap); `SceneEcs::player_vision_inputs`/`VisionMoveInputs::polygons_at`
+> (mover vision trajectory — full-wall-set raycast per path sample, reusing `sight_walls` +
+> `vision::visibility_polygon`, no new vision model); `conn.rs egress_loop`'s dedicated `MoveStream`
+> branch (`clip_move_stream`/`observer_vision_polys_for_scene`) — THE secrecy boundary: mover gets
+> the full trajectory + `mover_vision`, an observer gets only the samples their OWN authoritative
+> vision admits with `mover_vision` nulled, a wholly-occluded move is suppressed (zero frames, not
+> an empty-`samples` frame); client `WsClient.onMoveStream` broadcast-driven playback (`MoveExecuted`
+> fully retired) + `TokenAnimator.animateSamples` (time-synced tween, gap/occlusion detection,
+> catch-up) + engine `visionSweeps` fog-sweep (snap, then `fog-blend.ts`/`setVisibilityBlend`
+> render-texture cross-fade) + `worldSession`'s active-scene filter on `onMoveStream` (cross-scene
+> leak guard). SDD-executed (8 tasks, per-task two-reviewer gate; reviewed skill-update gate DONE:
+> scene-rendering, realtime-sync, client-shell). Known v1 limitation (by design, not a bug): live
+> cross-animation concurrency deferred (`docs/TODO.md`) — a move's per-recipient clip is computed
+> once at its execute time, so two simultaneous moves don't reveal each other mid-walk if a
+> watcher's vision opens after the clip; reconciles at the stop + next `vision` rebroadcast.
+> Plan: `docs/superpowers/plans/2026-06-25-m2-streamed-continuous-vision.md`.
+> Spec: `docs/superpowers/specs/2026-06-25-m2-streamed-continuous-vision-design.md`.
+>
+> **M10e status: e-1 + e-2 + e-3 + e-4 + e-6 DONE; e-5 animation engine done + redirected (M1 DONE);
+> M2 DONE. Next = M3** (vision-gated pathfinder + region hook), then M10f (continuous/Polyanya
+> pathfinding) + M10g (weighted/impassable regions).**
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
