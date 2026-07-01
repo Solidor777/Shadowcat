@@ -24,8 +24,10 @@ pub(crate) struct MoveExecution {
     /// The last successfully reached path coordinate (the committed position after the move).
     pub stop: (f64, f64),
     /// The legal prefix of the requested path including `start` through `stop`.
-    /// Retained for the per-recipient clipping consumer that trims the path to each
-    /// viewer's vision boundary before broadcasting the individual `MoveStream` frame.
+    /// NOT read by the per-recipient egress clip (`clip_move_stream` trims `samples`, never
+    /// `render_path`). Kept alive by this struct's own construction (distance/duration and
+    /// `sample_path` input, computed inline above) and by a test assertion that the executor's
+    /// stop matches the path's last coordinate.
     #[allow(dead_code)]
     pub render_path: Vec<(f64, f64)>,
     /// Animation duration in milliseconds (distance / cell / speed * 1000). Zero when stop == start.

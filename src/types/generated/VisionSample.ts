@@ -5,7 +5,11 @@
  * Ordered `[x,y]` vertices of a visible region at this instant; multiple polygons cover
  * non-contiguous visible regions. Not necessarily convex. Sent only for the mover.
  */
-export type VisionSample = { t_ms: number, 
+export type VisionSample = { 
+/**
+ * Elapsed time in milliseconds — matches the corresponding `PosSample.t_ms`.
+ */
+t_ms: number, 
 /**
  * Visibility polygons (scene coords) visible at this instant. Each polygon is
  * an ordered list of [x, y] vertices; multiple polygons cover non-contiguous visible areas.

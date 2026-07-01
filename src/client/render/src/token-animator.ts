@@ -39,7 +39,17 @@ const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
  * this threshold. Replaces the durationMs/2 heuristic, which only catches gaps larger than half
  * the total animation (misses mid-path occlusion spans shorter than that — secrecy violation).
  * Degenerate: fewer than 3 samples (≤ 1 interior delta) → Infinity (gap detection disabled;
- * no interior segment is distinguishable when only one delta exists). */
+ * no interior segment is distinguishable when only one delta exists).
+ * Accepted limitation: when a clip leaves EXACTLY 2 visible samples (visible only at the move's
+ * start and end, fully occluded in between), there is no third sample to derive a nominal
+ * interval from, so the single interval is never flagged as a gap and the token is linearly
+ * interpolated straight across the occluded span instead of hidden. This is NOT a secrecy leak —
+ * the fog mask (the actual secrecy gate, see fog-is-the-secrecy-gate-fail-closed) already covers
+ * any interpolated position outside the observer's vision, and both endpoints are legitimately
+ * visible to this observer. A robust fix would need the animator to know the server's nominal
+ * inter-sample interval independent of the clipped sample count (e.g. threaded through from
+ * move_stream.rs's SAMPLES_PER_CELL/duration), which this pure client-side heuristic cannot
+ * derive from 2 points alone without risking new false-positive/negative gap calls. */
 function computeGapThreshold(samples: MoveSample[]): number {
   if (samples.length < 3) return Infinity;
   let minDelta = Infinity;
@@ -208,6 +218,17 @@ export class TokenAnimator {
       cur.x = last.pos[0];
       cur.y = last.pos[1];
       this.hidden.delete(id);
+      return;
+    }
+    // Before the first sample's timestamp: this observer's clip starts with leading occlusion
+    // (the move began outside their vision, so their earliest visible sample has tMs > 0). A
+    // fresh-broadcast catch-up (initialElapsed ≈ network latency) can land in this window before
+    // samples[0].tMs. Extrapolating backward from samples[0] would invent a position the observer
+    // never had visibility into; hide instead, mirroring the mid-path occlusion-gap treatment.
+    if (elapsed < samples[0].tMs) {
+      cur.x = samples[0].pos[0];
+      cur.y = samples[0].pos[1];
+      this.hidden.add(id);
       return;
     }
     // Find the segment [i, i+1] whose interval contains elapsed.

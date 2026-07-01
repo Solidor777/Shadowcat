@@ -216,6 +216,31 @@ describe("TokenAnimator.animateSamples", () => {
     expect(a.isHidden("t1")).toBe(false);
   });
 
+  it("hides the token (not extrapolated) when catch-up elapsed lands before the first sample (leading-occlusion clip)", () => {
+    // This observer's clip removed the leading samples (the move started outside their vision),
+    // so their earliest visible sample has tMs=200. A fresh-broadcast catch-up landing at
+    // elapsed=50 (< samples[0].tMs) must NOT extrapolate backward past samples[0] — the token
+    // must be hidden until elapsed reaches samples[0].tMs.
+    const a = fresh();
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
+    const samples = [
+      { tMs: 200, pos: [200, 0] as [number, number] },
+      { tMs: 400, pos: [400, 0] as [number, number] },
+    ];
+    // serverNow = startServerMs + 50 → initialElapsed = 50, well before samples[0].tMs = 200.
+    a.animateSamples("t1", samples, 400, 1000, () => 1050);
+    expect(a.isHidden("t1")).toBe(true);
+    // Must not have been extrapolated backward: still hidden, position pinned at samples[0].
+    expect(a.get("t1")!.x).toBeCloseTo(200, 0);
+    // Ticking forward but still short of samples[0].tMs keeps it hidden.
+    a.tick(100); // elapsed = 150
+    expect(a.isHidden("t1")).toBe(true);
+    // Reaching samples[0].tMs reveals the token, starting normal interpolation.
+    a.tick(50); // elapsed = 200
+    expect(a.isHidden("t1")).toBe(false);
+    expect(a.get("t1")!.x).toBeCloseTo(200, 0);
+  });
+
   it("setTarget before animateSamples: sample animation takes precedence over ease-to-stop", () => {
     // Reproduces the typical server ordering: the authoritative position Event (→ setTarget via
     // reconcile) arrives before the MoveStream broadcast (→ animateSamples). samplesAnim must

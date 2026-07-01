@@ -147,7 +147,7 @@ pub struct PosSample {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct VisionSample {
-    // Elapsed time in milliseconds — matches the corresponding `PosSample.t_ms`.
+    /// Elapsed time in milliseconds — matches the corresponding `PosSample.t_ms`.
     pub t_ms: f64,
     /// Visibility polygons (scene coords) visible at this instant. Each polygon is
     /// an ordered list of [x, y] vertices; multiple polygons cover non-contiguous visible areas.
