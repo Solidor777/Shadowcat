@@ -85,7 +85,9 @@ fn footprint_cells(anchor: Cell, ctr: vision::P, r_scene: f64, cell: f64) -> Vec
 /// geometric footprint clearance — (1) the footprint disc at `to` clears every `blocksMove` wall,
 /// (2) every footprint-overlapped cell AND every cell the center-to-center step's supercover
 /// crosses (including diagonal corner-flankers) is in the mask (non-GM), (3) the center step
-/// `from→to` crosses no wall, (4) no region arrests entry (M3/M10g stub).
+/// `from→to` crosses no wall. Region-arrest gating is NOT YET IMPLEMENTED: no fourth check
+/// runs in this function today.
+/// TODO: add region-arrest gating as a fourth entry check.
 pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     let (i0, j0, i1, j1) = grid.window;
     if to.0 < i0 || to.0 > i1 || to.1 < j0 || to.1 > j1 {
