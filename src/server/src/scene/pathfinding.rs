@@ -81,13 +81,19 @@ fn footprint_cells(anchor: Cell, ctr: vision::P, r_scene: f64, cell: f64) -> Vec
     out
 }
 
+/// Region-arrest hook stub (mirrors `move_exec.rs::region_arrests`). Returns `true` when a region
+/// halts entry into `to`. Currently always `false`; the region system (M10g) replaces this body.
+/// Pure/headless: unlike `move_exec.rs`'s version, this takes no ECS handle — this module borrows
+/// no ECS and owns no I/O (module invariant).
+fn region_arrests(_to: Cell) -> bool {
+    false
+}
+
 /// Whether a token may step from `from` into `to`. INVARIANT (spec §4.3, M3 spec §3): full
 /// geometric footprint clearance — (1) the footprint disc at `to` clears every `blocksMove` wall,
 /// (2) every footprint-overlapped cell AND every cell the center-to-center step's supercover
 /// crosses (including diagonal corner-flankers) is in the mask (non-GM), (3) the center step
-/// `from→to` crosses no wall. Region-arrest gating is NOT YET IMPLEMENTED: no fourth check
-/// runs in this function today.
-/// TODO: add region-arrest gating as a fourth entry check.
+/// `from→to` crosses no wall, (4) the region-arrest hook (M3/M10g stub) does not halt entry.
 pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     let (i0, j0, i1, j1) = grid.window;
     if to.0 < i0 || to.0 > i1 || to.1 < j0 || to.1 > j1 {
@@ -134,6 +140,12 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
             return false;
         }
     }
+    // (4) Region-arrest hook (M3/M10g stub) — mirrors move_exec.rs::region_arrests. Always false
+    // today; M10g wires real region data into both this stub and move_exec's.
+    if region_arrests(to) {
+        return false;
+    }
+
     true
 }
 
@@ -850,6 +862,24 @@ mod tests {
         assert!(
             !cell_enterable(&g, (2, 2), (3, 2)),
             "outside the search window"
+        );
+    }
+
+    #[test]
+    fn region_arrest_stub_is_inert_and_does_not_block_an_otherwise_open_step() {
+        // The router-side region-arrest hook (mirrors move_exec.rs::region_arrests) must be a
+        // true no-op today — the region system doesn't exist until M10g. This guards against an
+        // accidental future default flip: if `region_arrests` ever returns `true` unconditionally,
+        // this test fails immediately instead of silently breaking every open-grid path.
+        assert!(
+            !region_arrests((3, 3)),
+            "region-arrest hook must stay an inert stub until M10g provides real region data"
+        );
+        let walls: Vec<Seg> = vec![];
+        let g = grid(&walls, None, 0.2);
+        assert!(
+            cell_enterable(&g, (0, 0), (1, 0)),
+            "an otherwise-open step must remain enterable with the inert region hook in place"
         );
     }
 }
