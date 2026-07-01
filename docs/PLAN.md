@@ -373,9 +373,28 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > Plan: `docs/superpowers/plans/2026-06-25-m2-streamed-continuous-vision.md`.
 > Spec: `docs/superpowers/specs/2026-06-25-m2-streamed-continuous-vision-design.md`.
 >
-> **M10e status: e-1 + e-2 + e-3 + e-4 + e-6 DONE; e-5 animation engine done + redirected (M1 DONE);
-> M2 DONE. Next = M3** (vision-gated pathfinder + region hook), then M10f (continuous/Polyanya
-> pathfinding) + M10g (weighted/impassable regions).**
+> **M3 DONE** (branch `m10e-5-movement-animation`, commits `7043419..fb8b7dd`): closes buddy-check
+> P1 at the root by making the M10e-6 grid-A* router's vision-mask predicate a superset of the M1
+> move executor's — `cell_enterable` now unions `movement::supercover_cells(from, to, cell)` (the
+> same primitive `move_exec.rs`/`ws/room.rs::publish` use per step, including diagonal
+> corner-flankers) into its mask check alongside the existing footprint-disc test, and fails closed
+> on a degenerate/over-cap `None` result exactly like the gate. Restores `route ⊆ gate-allowed` for
+> the sub-0.5-cell-footprint diagonal case the P1 buddy-check exposed. Also adds a same-shaped inert
+> region-arrest hook (`fn region_arrests(_to: Cell) -> bool { false }`) to the router, mirroring
+> `move_exec.rs`'s M1 stub, so M10g wires real region data into one hook shape in both places
+> instead of discovering the router needs one later. Plan-level buddy-check (two reviewers, PHASE
+> = spec) converged after one round (1 Important + 3 Minor folded into the plan before execution).
+> Task 1 (the mask-parity fix) was itself pre-authorized for a per-task buddy check (two reviewers,
+> PHASE = code); one Important/Minor-disputed finding (a doc comment briefly overclaiming the
+> region hook as already wired) was fixed and reverified. Task 2 (the region stub) passed a normal
+> two-reviewer pass clean. A final whole-checkpoint review (opus spec-lens + code-lens over the
+> full M3 diff) found zero further issues. Plan:
+> `docs/superpowers/plans/2026-07-01-m3-vision-gated-pathfinder.md`.
+> Spec: `docs/superpowers/specs/2026-07-01-m3-vision-gated-pathfinder-design.md`.
+>
+> **M10e status: e-1 through e-6 DONE; the M10e-5 server-authoritative-movement redirect (M1 + M2 +
+> M3) is fully DONE.** Next = M10f (continuous/Polyanya pathfinding) + M10g (weighted/impassable
+> regions).**
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 

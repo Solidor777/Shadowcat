@@ -91,10 +91,15 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - `src/server/src/scene/pathfinding.rs` — pure, headless grid A* (no I/O; clean-room):
   `DiagonalRule` (`chebyshev`|`manhattan`|`euclidean`|`alternating`) + `resolved_diagonal_rule`
   (world-only — no per-scene override; mirrors `resolveSceneSettings` precedence); `PathGrid` (wall-
-  segment lookup built from `move_walls`); `cell_enterable(cell, grid, footprint_radius, user_mask)`
-  — full geometric footprint-disc clearance: the token's bounding disc must clear ALL `blocksMove`
-  segments (checked via `point_segment_distance`) **and** ALL footprint cells must be in the non-GM
-  mask **and** the cell center must pass the mask test; `astar_leg` — king-move A*, 4 diagonal
+  segment lookup built from `move_walls`); `cell_enterable(grid, from, to)` — four checks, ALL must
+  pass: (1) footprint-disc-vs-wall clearance (the token's bounding disc must clear ALL `blocksMove`
+  segments, via `point_segment_distance`); (2) **mask** — every cell in `footprint_cells(to,...) ∪
+  movement::supercover_cells(cell_center(from), cell_center(to), cell)` must be in the non-GM mask
+  (M3: the union closes buddy-check P1 — footprint-disc-at-destination alone missed a diagonal
+  step's corner-flanker cells for sub-0.5-cell footprints, letting the router approve a step the
+  M1 executor then rejected; `None` from `supercover_cells` fails closed); (3) center-to-center
+  step crosses no wall (`segments_cross`); (4) `region_arrests(to)` (M3 stub, mirrors
+  `move_exec.rs`'s, always `false` until M10g). `astar_leg` — king-move A*, 4 diagonal
   rules, 5-10-5 parity tracked in the `(cell, parity)` node and carried across waypoint legs (cost
   1,2,1,2…, never reset per leg), admissible+consistent heuristics per rule, stale-pop skip,
   `MAX_PATH_NODES`/`MAX_WAYPOINTS`/`MAX_FOOTPRINT_CELLS` fail-closed bounds; `find` — validates
@@ -201,13 +206,18 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   environment light is a flat ambient (NOT edge-projected/occludable) until scenes gain dimensions —
   placed-light `blocksLight` occlusion IS implemented (see `docs/TODO.md`).
 
-- **The pathfinder route is footprint-STRICTER than the center-based authoritative gate, but shares
-  the SAME mask (never weaker).** `cell_enterable` enforces full geometric footprint-disc clearance;
-  the M9/M10e-4 authoritative gate stays center-based (parent spec §14). A wide token can be dragged
-  (gate allows the center path) along a corridor the router refuses (footprint doesn't fit). This
-  asymmetry is intentional: route ⊆ gate-allowed keeps the preview from suggesting a move the router
-  would reject. The route never threads cells the gate would block (`visible_cells` mask is shared —
-  spec §13). Never make the pathfinder mask test weaker than the gate mask.
+- **The pathfinder route is footprint-STRICTER than the center-based authoritative gate on WALLS,
+  but its MASK predicate is now a superset of the gate's (M3, spec §3 of the M3 design doc).**
+  `cell_enterable`'s wall check (footprint-disc clearance) is stricter than the M9/M10e-4
+  authoritative gate's center-based wall check (parent spec §14) — a wide token can be dragged
+  (gate allows the center path) along a corridor the router refuses (footprint doesn't fit); this
+  wall asymmetry is intentional and safe (over-restrictive, never under). The MASK check requires
+  `footprint_cells(to,...) ∪ supercover_cells(from,to,cell)` — the same `supercover_cells` primitive
+  `move_exec.rs`/`publish` use per step — so the router's mask predicate is provably `≥` the gate's;
+  **route ⊆ gate-allowed holds for every footprint size**, including the sub-0.5-cell diagonal case
+  where the pre-M3 footprint-disc-only check let the router approve a step the gate rejected
+  (buddy-check P1). Never make the pathfinder mask test weaker than `footprint_cells ∪
+  supercover_cells` — that union IS the invariant, not merely a suggestion.
 - **M1 executor per-cell parity (spec §13):** `execute_move` uses the SAME `blocks_move` +
   `supercover_cells` + `visible` membership as the M10e-4 `publish` move gate — per-cell decision
   parity, NO fork. A divergence between the executor and the gate equals a movement-into-fog leak.

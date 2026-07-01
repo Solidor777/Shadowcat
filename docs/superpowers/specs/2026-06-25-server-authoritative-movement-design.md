@@ -130,13 +130,23 @@ remain M10g**; until then the hook has no registered arresting regions (no behav
 
 | # | Checkpoint | Deliverable |
 |---|---|---|
-| **M1** | Server-authoritative move execution | `MoveRequest`/`MoveExecuted` frames; exact-path step validation (walls + vision mask incl. diagonal flankers); atomic stop-location write via the document-command path; `moving` lock + server rejection of moves for a moving token; reload/resync resolves at stop location; render-path returned **to the mover only** (one-shot; mover animates their walk). Observers see the atomic position (straight tween) until M2. Client: request-only commit (rework the measure-tool route-commit) + animate the render-path via the kept animation engine. |
-| **M2** | Observer render-path + continuous client vision | Deliver the render-path to observers — first **server-clipped per recipient** as timing-tagged visible sub-segments (static-observer occlusion gaps, no leak), then **full broadcast** + per-frame shared deterministic LOS recompute from each token's animated position (observer-moved-first + concurrent pick-up). |
-| **M3** | Vision-gated pathfinder + region-arrest hook | Make the preview pathfinder vision-gated and deterministic-equal to server validation (closes buddy-check P1 at the root — router mask predicate ≥ gate supercover predicate, incl. diagonal flankers / sub-0.5 footprints); add the per-step region-arrest hook in the executor. Region system itself = M10g. |
+| **M1** ✅ | Server-authoritative move execution | `MoveRequest`/`MoveExecuted` frames; exact-path step validation (walls + vision mask incl. diagonal flankers); atomic stop-location write via the document-command path; `moving` lock + server rejection of moves for a moving token; reload/resync resolves at stop location; render-path returned **to the mover only** (one-shot; mover animates their walk). Observers see the atomic position (straight tween) until M2. Client: request-only commit (rework the measure-tool route-commit) + animate the render-path via the kept animation engine. |
+| **M2** ✅ | Observer render-path + continuous client vision | Deliver the render-path to observers — first **server-clipped per recipient** as timing-tagged visible sub-segments (static-observer occlusion gaps, no leak), then **full broadcast** + per-frame shared deterministic LOS recompute from each token's animated position (observer-moved-first + concurrent pick-up). |
+| **M3** ✅ | Vision-gated pathfinder + region-arrest hook | Make the preview pathfinder vision-gated and deterministic-equal to server validation (closes buddy-check P1 at the root — router mask predicate ≥ gate supercover predicate, incl. diagonal flankers / sub-0.5 footprints); add the per-step region-arrest hook in the executor. Region system itself = M10g. |
 
 **Dependency order:** M1 → M2 → M3. M1 is independently shippable (basic static-vision
 clipping); M2 upgrades the render fidelity; M3 closes the preview/gate parity and seats the
 region hook. Each is independently buddy-checked (M8/M9 cadence).
+
+**Status: ALL THREE CHECKPOINTS DONE** (branch `m10e-5-movement-animation`, commits
+`98bf191..fb8b7dd`). M3 landed via `docs/superpowers/plans/2026-07-01-m3-vision-gated-pathfinder.md`
++ `docs/superpowers/specs/2026-07-01-m3-vision-gated-pathfinder-design.md` — the router's
+`cell_enterable` now unions `movement::supercover_cells(from, to, cell)` into its mask check
+(the same primitive the M1 executor and the legacy `publish` gate use per step) alongside the
+existing footprint-disc test, fails closed on a degenerate `None`, and carries a same-shaped inert
+region-arrest stub mirroring the M1 executor's. This milestone (the server-authoritative-movement
+redirect of M10e-5) is complete; M10f (continuous/Polyanya pathfinding) and M10g (weighted/
+impassable regions) remain, unstarted.
 
 ## 8. Disposition of the M10e-5 branch (`m10e-5-movement-animation` @ fd344af)
 
