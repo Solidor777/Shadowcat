@@ -85,6 +85,16 @@ export interface SceneTool {
   onDeactivate?(): void;
 }
 
+/** A vision-polygon sample paired with a MoveSample by `tMs` (mover-only trajectory vision; a
+ * MoveStream's `moverVision` is `null` for observers). Feeds the fog progressively during the
+ * mover's own animation playback (`animateSamples`'s `moverVision` argument): the sample with the
+ * greatest `tMs <= clock` is applied via `VisibilityInput{mode:"masked"}`, reverting to the last
+ * subscription-derived vision at animation end. */
+export interface MoveVisionSample {
+  tMs: number;
+  polygons: [number, number][][];
+}
+
 /** One visible cell's lighting: grid coords + gradation band index + packed tint + hint ref.
  * `hint` is an index into `LightingInput.hints`; -1 = no hint. */
 export interface LitCell { i: number; j: number; band: number; tint: number; hint: number }
@@ -126,12 +136,15 @@ export interface SceneToolHost {
   animateAlongPath(id: string, path: [number, number][]): void;
   /** Drive server-broadcast sample-based playback: interpolates position between adjacent
    * MoveSamples by tMs; hides the token across occlusion gaps. `serverNow` is optional and
-   * used only at call time for catch-up (defaults to Date.now). */
+   * used only at call time for catch-up (defaults to Date.now). `moverVision` (mover-only; null
+   * for observers) drives a progressive fog sweep in step with this same clock — see
+   * `MoveVisionSample`. */
   animateSamples(
     id: string,
     samples: { tMs: number; pos: [number, number] }[],
     durationMs: number,
     startServerMs: number,
     serverNow?: () => number,
+    moverVision?: MoveVisionSample[] | null,
   ): void;
 }

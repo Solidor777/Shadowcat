@@ -647,6 +647,62 @@ test("animateAlongPath forwards to the token view (SceneToolHost seam)", () => {
   expect(backend.lastTokenX("tok1")).toBeCloseTo(300, 0);
 });
 
+test("animateSamples' moverVision progressively sweeps the fog, reverting to derived vision on completion", () => {
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  // Baseline derived (subscription) vision: a small polygon.
+  onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [] });
+
+  // Mover's own MoveStream: two moverVision samples, small polygon → larger polygon.
+  engine.animateSamples(
+    "tok1",
+    [{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [100, 0] }],
+    1000,
+    0,
+    () => 0,
+    [
+      { tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] },
+      { tMs: 500, polygons: [[[0, 0], [50, 0], [50, 50]]] },
+    ],
+  );
+  // At clock 0, the first (small) moverVision sample feeds the fog.
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20] }], explored: [] });
+
+  // Advance the clock past the second sample's tMs (500 < 1000, animation still in flight).
+  backend.runTicker(500);
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 50, 0, 50, 50] }], explored: [] });
+
+  // Animation completes (elapsed reaches durationMs): fog reverts to the last derived vision.
+  backend.runTicker(500);
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [] });
+});
+
+test("animateSamples with no moverVision (observer) leaves the fog untouched", () => {
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
+  const before = backend.visibility;
+  engine.animateSamples("tok1", [{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [100, 0] }], 1000, 0, () => 0, null);
+  expect(backend.visibility).toEqual(before);
+  backend.runTicker(1000);
+  expect(backend.visibility).toEqual(before);
+});
+
 test("toLighting parses lit cells for the active scene and fails safe", () => {
   const { store, engine } = makeEngine();
   engine.start();

@@ -1,6 +1,6 @@
 import type { ReadableDocuments, AssetResolver } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon } from "./types";
+import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample } from "./types";
 import type { EasingMode } from "./easing";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
@@ -101,6 +101,12 @@ export class RenderEngine implements SceneToolHost {
   /** GM see-as-player target (M9c-2): the user whose vision the `vision` subscription requests, or
    * null for the GM's own view. The server gates + resolves it (a non-GM is rejected). */
   private viewAsUser: string | null = null;
+  /** Active mover vision-sweep override (M2 §T6): while a mover's own MoveStream plays, the
+   * `moverVision` sample with the greatest `tMs <= elapsed` feeds the fog directly, bypassing
+   * `lastInput`. `null` when no sweep is in flight (observers never populate this — `animateSamples`
+   * only starts a sweep when `moverVision` is non-empty, and only the mover's own MoveStream
+   * carries a non-null `moverVision`, per the M2 per-recipient egress clip). */
+  private visionSweep: { samples: MoveVisionSample[]; elapsed: number; durationMs: number } | null = null;
 
   constructor(private readonly opts: RenderEngineOpts) {
     this.grid = new Grid(opts.grid);
@@ -134,6 +140,7 @@ export class RenderEngine implements SceneToolHost {
     this.opts.backend.startTicker((dt) => {
       this.tokens.tick(dt);
       this.lighting.tick(dt);
+      this.tickVisionSweep(dt);
       const rings = this.pings.tick(dt);
       // Redraw only while rings live (plus one final clear when they expire).
       if (rings.length > 0 || this.pingsActive) {
@@ -379,16 +386,58 @@ export class RenderEngine implements SceneToolHost {
     this.tokens.animateAlongPath(id, path);
   }
 
-  /** Drive server-broadcast sample-based playback (SceneToolHost seam). Forwards to
-   * TokenView; `serverNow` used once at call time for catch-up alignment. */
+  /** Drive server-broadcast sample-based playback (SceneToolHost seam). Forwards the position
+   * samples to TokenView; `serverNow` used once at call time for catch-up alignment. When
+   * `moverVision` is present (non-empty — only the mover's own MoveStream carries it, per the M2
+   * per-recipient egress clip), also starts a fog vision-sweep keyed to the SAME clock: the
+   * override is applied immediately (T6 §Step 3) and advanced each tick by `tickVisionSweep`. */
   animateSamples(
     id: string,
     samples: { tMs: number; pos: [number, number] }[],
     durationMs: number,
     startServerMs: number,
     serverNow?: () => number,
+    moverVision?: MoveVisionSample[] | null,
   ): void {
     this.tokens.animateSamples(id, samples, durationMs, startServerMs, serverNow);
+    if (moverVision && moverVision.length > 0) {
+      const initialElapsed = serverNow ? Math.max(0, serverNow() - startServerMs) : 0;
+      this.visionSweep = { samples: moverVision, elapsed: initialElapsed, durationMs };
+      this.applyVisionSweep();
+    }
+  }
+
+  /** Advance the in-flight vision-sweep by `dtMs` (called from the backend ticker alongside
+   * token/lighting tick). Completion (elapsed reaches durationMs) clears the override and
+   * re-applies the last derived (subscription) vision via the existing `lastInput`/
+   * `renderVisibility` path — never leaves the fog pinned to the animation's last sample. */
+  private tickVisionSweep(dtMs: number): void {
+    const sweep = this.visionSweep;
+    if (!sweep) return;
+    sweep.elapsed += dtMs;
+    if (sweep.elapsed >= sweep.durationMs) {
+      this.visionSweep = null;
+      this.renderVisibility(); // revert to the last derived vision (+ fog-preview override)
+      return;
+    }
+    this.applyVisionSweep();
+  }
+
+  /** Feed the moverVision sample with the greatest `tMs <= elapsed` to the compositor directly
+   * (bypasses `lastInput`/`renderVisibility` — the sweep is a transient animation override, not a
+   * new derived frame). `explored` is carried from the last derived frame so the dimmed-memory
+   * layer stays consistent while the sweep drives `visible`. */
+  private applyVisionSweep(): void {
+    const sweep = this.visionSweep;
+    if (!sweep) return;
+    let chosen = sweep.samples[0];
+    for (const s of sweep.samples) {
+      if (s.tMs <= sweep.elapsed) chosen = s;
+    }
+    const visible: Polygon[] = chosen.polygons
+      .filter((pts) => pts.length >= 3)
+      .map((pts) => ({ points: pts.flat() }));
+    this.compositor.setVisibility({ mode: "masked", visible, explored: this.lastInput.explored });
   }
 
   dispatchPointerDown(screen: Point, ev: PointerEvent): void {
