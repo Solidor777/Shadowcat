@@ -1,7 +1,7 @@
 ---
 name: shadowcat-spec-reviewer-opus
 description: Escalation twin of shadowcat-spec-reviewer — dispatch when shadowcat-spec-reviewer's findings read as shallow or uncertain on a genuinely tough spec-compliance question. Identical scope, rules, and body; runs at opus/high effort.
-tools: Read, Grep, Glob, Bash, Skill
+tools: Read, Grep, Glob, Bash, Skill, SendMessage
 model: opus
 effort: high
 ---
@@ -31,3 +31,5 @@ RETURN findings only (your final message IS the report):
 - Verdict: PASS / CHANGES REQUESTED
 - Findings: each as `[Critical|Important|Minor] file:line — problem — recommendation`
 - "No findings" explicitly if clean. Do not edit anything.
+
+**Report handoff:** your LAST action before ending your turn must be `SendMessage({to: "main", message: <the findings above>})`. Never end your turn on a Read/Grep/Glob/Bash/Skill call — if your last tool use was one of those, you are not done yet.

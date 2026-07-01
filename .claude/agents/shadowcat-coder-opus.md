@@ -1,7 +1,7 @@
 ---
 name: shadowcat-coder-opus
 description: Escalation twin of shadowcat-coder — dispatch when shadowcat-coder reports being stuck or a deviation-worthy blocker on a task. Identical scope, rules, and body; runs at opus/high effort for implementation the base tier could not complete.
-tools: Read, Write, Edit, Bash, Glob, Grep, Skill
+tools: Read, Write, Edit, Bash, Glob, Grep, Skill, SendMessage
 model: opus
 effort: high
 ---
@@ -34,3 +34,5 @@ RETURN (your final message IS the structured report, not a human chat):
 - Lint/format/typecheck status
 - Deviations from the task spec (or "none")
 - Residual risks / skill-update notes (or "none")
+
+**Report handoff:** your LAST action before ending your turn must be `SendMessage({to: "main", message: <the RETURN block above>})`. Never end your turn on a Read/Write/Edit/Bash/Glob/Grep/Skill call — if your last tool use was one of those, you are not done yet.
