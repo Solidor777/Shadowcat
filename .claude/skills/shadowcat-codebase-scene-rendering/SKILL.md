@@ -75,12 +75,14 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `MoveStream`. `handle_move_request` broadcasts the FULL (unclipped) `MoveStream` via
   `room.broadcast_aux` — the full trajectory lives only in-process. `egress_loop`'s dedicated
   `MoveStream` branch (`clip_move_stream` + `observer_vision_polys_for_scene`) runs BEFORE the sink
-  write, per connection: the mover (or a GM see-as target) gets `samples` + `mover_vision`
-  unchanged; every other recipient gets `samples` clipped to those whose `pos` falls inside the
-  recipient's OWN authoritative vision polygons (`point_in_poly`, recomputed off the current ECS
-  read — never a stale cache; the ECS guard drops before any await) with `mover_vision` forced to
-  `None`; a wholly-invisible move (empty clip) is **not sent at all** (suppressed, not an
-  empty-`samples` frame — asserted by a dedicated test). `send_filtered` intentionally panics if a
+  write, per connection, in three branches: the mover gets `samples` + `mover_vision` unchanged;
+  a GM gets the FULL `samples` unclipped (GMs bypass position secrecy) but `mover_vision` forced
+  to `None` (a GM has no fog to sweep); every other (non-GM, non-mover) recipient gets `samples`
+  clipped to those whose `pos` falls inside the recipient's OWN authoritative vision polygons
+  (`point_in_poly`, recomputed off the current ECS read — never a stale cache; the ECS guard drops
+  before any await) with `mover_vision` also forced to `None`; a wholly-invisible move (empty clip)
+  is **not sent at all** (suppressed, not an empty-`samples` frame — asserted by a dedicated test).
+  `send_filtered` intentionally panics if a
   `MoveStream` reaches it — the clip MUST happen in the dedicated `egress_loop` branch, never the
   generic per-recipient filter path. `MoveError` stays mover-only via `etx`, generic (no path/vision
   geometry disclosed).

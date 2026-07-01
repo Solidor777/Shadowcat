@@ -49,7 +49,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   before forwarding — a room-wide `MoveStream` broadcast for a DIFFERENT scene must not animate a
   token or feed a fog sweep in the one currently rendered (cross-scene leak/flicker guard, mirrors
   the existing `toVisibility`/`toLighting` active-scene filter). On a match, calls
-  `sceneInteraction.animateSamples(tokenId, samples, durationMs, startServerMs, moverVision)`, which
+  `sceneInteraction.animateSamples(tokenId, samples, durationMs, startServerMs, () => ws.serverNow(), moverVision)`, which
   forwards through `RenderEngine` to `TokenView`/`TokenAnimator` (position tween) and, when
   `moverVision` is present (mover only), the engine's `visionSweeps` fog-sweep playback (see
   `shadowcat-codebase-scene-rendering`).
