@@ -134,9 +134,15 @@ export class PixiBackend implements DisplayBackend {
   }
 
   setVisibility(input: VisibilityInput): void {
-    // A plain (non-blended) apply ends any in-flight cross-fade — restore the normal sheets.
+    // A plain (non-blended) apply ends any in-flight cross-fade — restore the normal sheets and
+    // eagerly free the last sweep's capture textures rather than leaving them GPU-resident until
+    // the next setVisibilityBlend call (or backend teardown).
     this.fogBlendFrom.visible = false;
     this.fogBlendTo.visible = false;
+    this.fogBlendFromRT?.destroy(true);
+    this.fogBlendToRT?.destroy(true);
+    this.fogBlendFromRT = null;
+    this.fogBlendToRT = null;
     this.fogDark.visible = true;
     this.fogDim.visible = true;
     this.fogDark.clear();
@@ -191,7 +197,9 @@ export class PixiBackend implements DisplayBackend {
     capture.addChild(dim, dark, exploredHoles, visibleHoles);
     capture.position.copyFrom(this.world.position);
     capture.scale.copyFrom(this.world.scale);
-    const texture = RenderTexture.create({ width, height });
+    // Match the renderer's device-pixel-ratio resolution (Application runs `autoDensity: true`
+    // at `devicePixelRatio`) or the capture rasterizes at 1x and visibly blurs on HiDPI displays.
+    const texture = RenderTexture.create({ width, height, resolution: this.app.renderer.resolution });
     this.app.renderer.render({ container: capture, target: texture });
     capture.destroy({ children: true });
     return texture;
