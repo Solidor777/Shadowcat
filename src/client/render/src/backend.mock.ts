@@ -10,6 +10,9 @@ export class MockBackend implements DisplayBackend {
   gridColor: number | null = null;
   camera: CameraTransform | null = null;
   visibility: VisibilityInput | null = null;
+  /** Last `setVisibilityBlend` call recorded verbatim (from/to/factor), for asserting the
+   * M2 §T7 cross-fade advances 0→1 across a sample interval. */
+  visibilityBlend: { from: VisibilityInput; to: VisibilityInput; factor: number } | null = null;
   size: { width: number; height: number } | null = null;
   filters: Array<{ layerId: string; filter: unknown }> = [];
   tokens = new Map<string, TokenNodeSpec>();
@@ -36,6 +39,11 @@ export class MockBackend implements DisplayBackend {
   }
   setVisibility(input: VisibilityInput): void {
     this.visibility = input;
+    this.visibilityBlend = null;
+  }
+  setVisibilityBlend(from: VisibilityInput, to: VisibilityInput, factor: number): void {
+    this.visibilityBlend = { from, to, factor };
+    this.visibility = factor < 0.5 ? from : to;
   }
   addLayerFilter(layerId: string, filter: unknown): () => void {
     const entry = { layerId, filter };

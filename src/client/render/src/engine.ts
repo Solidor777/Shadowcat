@@ -2,6 +2,7 @@ import type { ReadableDocuments, AssetResolver } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample } from "./types";
 import type { EasingMode } from "./easing";
+import { computeFogBlendFactor } from "./fog-blend";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
@@ -437,22 +438,60 @@ export class RenderEngine implements SceneToolHost {
     this.applyVisionSweep();
   }
 
-  /** Feed the UNION of every active sweep's chosen sample (the one with the greatest
-   * `tMs <= elapsed`, per sweep) to the compositor directly (bypasses `lastInput`/
-   * `renderVisibility` — the sweep is a transient animation override, not a new derived frame).
-   * `explored` is carried from the last derived frame so the dimmed-memory layer stays consistent
-   * while the sweep(s) drive `visible`. */
+  /** The sample with the greatest `tMs <= sweep.elapsed` (falls back to the first sample when
+   * elapsed precedes it). */
+  private chosenSample(sweep: { samples: MoveVisionSample[]; elapsed: number }): MoveVisionSample {
+    let chosen = sweep.samples[0];
+    for (const s of sweep.samples) {
+      if (s.tMs <= sweep.elapsed) chosen = s;
+    }
+    return chosen;
+  }
+
+  private samplePolygons(s: MoveVisionSample): Polygon[] {
+    return s.polygons.filter((pts) => pts.length >= 3).map((pts) => ({ points: pts.flat() }));
+  }
+
+  /** For a SINGLE in-flight sweep, the `(from, to, factor)` cross-fade triple between the
+   * chosen sample and the next one (smallest `tMs` strictly greater than the chosen sample's) —
+   * or `null` when there is no next sample (elapsed at/after the last sample: nothing to fade
+   * toward, caller snaps instead). `explored` is carried from the last derived frame in both
+   * endpoints — only `visible` cross-fades. */
+  private sweepBlendInputs(
+    sweep: { samples: MoveVisionSample[]; elapsed: number },
+  ): { from: VisibilityInput; to: VisibilityInput; factor: number } | null {
+    const cur = this.chosenSample(sweep);
+    let next: MoveVisionSample | null = null;
+    for (const s of sweep.samples) {
+      if (s.tMs > cur.tMs && (next === null || s.tMs < next.tMs)) next = s;
+    }
+    if (!next) return null;
+    return {
+      from: { mode: "masked", visible: this.samplePolygons(cur), explored: this.lastInput.explored },
+      to: { mode: "masked", visible: this.samplePolygons(next), explored: this.lastInput.explored },
+      factor: computeFogBlendFactor(sweep.elapsed, cur.tMs, next.tMs),
+    };
+  }
+
+  /** Drive the fog from the active vision-sweep(s) (bypasses `lastInput`/`renderVisibility` — the
+   * sweep is a transient animation override, not a new derived frame). With exactly one active
+   * sweep AND a next sample to fade toward, cross-fades between the current and next sample via
+   * `Compositor.setVisibilityBlend`. Otherwise (no next sample yet to fade toward, or multiple
+   * concurrent sweeps whose sample timelines aren't comparable to a single blend factor) falls
+   * back to the union of every active sweep's chosen sample (a hard snap, no cross-fade). */
   private applyVisionSweep(): void {
     if (this.visionSweeps.size === 0) return;
+    if (this.visionSweeps.size === 1) {
+      const [sweep] = this.visionSweeps.values();
+      const blend = this.sweepBlendInputs(sweep);
+      if (blend) {
+        this.compositor.setVisibilityBlend(blend.from, blend.to, blend.factor);
+        return;
+      }
+    }
     const visible: Polygon[] = [];
     for (const sweep of this.visionSweeps.values()) {
-      let chosen = sweep.samples[0];
-      for (const s of sweep.samples) {
-        if (s.tMs <= sweep.elapsed) chosen = s;
-      }
-      for (const pts of chosen.polygons) {
-        if (pts.length >= 3) visible.push({ points: pts.flat() });
-      }
+      visible.push(...this.samplePolygons(this.chosenSample(sweep)));
     }
     this.compositor.setVisibility({ mode: "masked", visible, explored: this.lastInput.explored });
   }

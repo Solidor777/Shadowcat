@@ -703,6 +703,51 @@ test("animateSamples with no moverVision (observer) leaves the fog untouched", (
   expect(backend.visibility).toEqual(before);
 });
 
+test("a single in-flight sweep cross-fades the fog between consecutive samples (no snap)", () => {
+  // Strictly between two sample tMs (not at a boundary), the compositor blends rather than
+  // snapping: the mock backend records the (from, to, factor) triple, factor advancing 0→1
+  // as the clock moves across the [0, 500) interval.
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
+
+  engine.animateSamples(
+    "tok1",
+    [{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [100, 0] }],
+    1000,
+    0,
+    () => 0,
+    [
+      { tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] },
+      { tMs: 500, polygons: [[[0, 0], [50, 0], [50, 50]]] },
+    ],
+  );
+  // Immediately (elapsed 0, exactly tCur): factor 0, fully the first sample.
+  expect(backend.visibilityBlend).toEqual({
+    from: { mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20] }], explored: [] },
+    to: { mode: "masked", visible: [{ points: [0, 0, 50, 0, 50, 50] }], explored: [] },
+    factor: 0,
+  });
+
+  // Advance 200ms into the [0,500) interval: factor 0.4, still blending toward the next sample.
+  backend.runTicker(200);
+  expect(backend.visibilityBlend?.factor).toBeCloseTo(0.4);
+  expect(backend.visibilityBlend?.from.visible).toEqual([{ points: [0, 0, 20, 0, 20, 20] }]);
+  expect(backend.visibilityBlend?.to.visible).toEqual([{ points: [0, 0, 50, 0, 50, 50] }]);
+
+  // At exactly tMs=500 there is no further "next" sample (only two total): the sweep falls
+  // back to the plain snap, clearing any stale blend record.
+  backend.runTicker(300);
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 50, 0, 50, 50] }], explored: [] });
+});
+
 test("a concurrent derived frame does not clobber an in-flight vision-sweep (no flicker)", () => {
   // A move commit's own server-recomputed vision broadcast (or any other scene update) arriving
   // WHILE the sweep animation plays must not clobber the sweep's progressive polygon with the

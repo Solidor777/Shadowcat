@@ -15,6 +15,12 @@ export interface DisplayBackend {
   /** Apply the visibility mask (the mask slot). Empty `visible` = identity
    * (full visibility → transparent overlay). */
   setVisibility(input: VisibilityInput): void;
+  /** Cross-fade the visibility mask between two consecutive vision samples (M2 §T7 fog
+   * cross-fade — a mover's own vision sweep interpolates between samples instead of
+   * snapping). `factor` in `[0,1]`: 0 = fully `from`, 1 = fully `to`. Optional: a backend
+   * without cross-fade support may omit it; `Compositor.setVisibilityBlend` falls back to a
+   * plain `setVisibility` nearest-sample snap when absent. */
+  setVisibilityBlend?(from: VisibilityInput, to: VisibilityInput, factor: number): void;
   /** Apply the camera transform to the world container. */
   setCameraTransform(t: CameraTransform): void;
   /** Module-facing shader-filter seam: attach an opaque filter to a layer; returns a
