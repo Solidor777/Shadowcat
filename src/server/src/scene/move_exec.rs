@@ -3,11 +3,14 @@
 //! Walks a proposed cell-path step by step, validating each step against:
 //! - `blocks_move` wall geometry (M9a gate — always active),
 //! - the caller-supplied `visible` mask (M10e-4 gate — skipped for `Unrestricted`),
-//! - a region-arrest hook (M3/M10g stub, always returns false for now).
+//! - the region field (M10g): impassable stops before entry, arrest stops at entry, terrain
+//!   accumulates weighted cost. Always reads the AUTHORITATIVE field (`ecs.region_field(scene,
+//!   None)`) — this executor springs every region regardless of what the mover's own pathfind
+//!   preview could see (spec §6).
 //!
-//! Returns the stop cell + the legal prefix render-path. `truncated` is true when the
-//! move stops before `path.last()` for any reason (wall, mask, or region-arrest),
-//! including a region-arrest on the final path step.
+//! Returns the stop cell + the legal prefix render-path + accumulated cost. `truncated` is true
+//! when the move stops before `path.last()` for any reason (wall, mask, region-impassable, or
+//! region-arrest), including a region-arrest on the final path step.
 //!
 //! INVARIANT (spec §13 / M10e-4 per-cell parity): step 2 calls the SAME
 //! `crate::scene::movement::supercover_cells(prev, next, cell)` and checks
@@ -39,15 +42,18 @@ pub(crate) struct MoveOutcome {
     pub stop: (f64, f64),
     /// The legal prefix of the input path that was actually walked: `path[0..=stop_index]`.
     pub render_path: Vec<(f64, f64)>,
-    /// `true` when the move stopped before `path.last()` — wall, mask, OR region-arrest,
-    /// including a region-arrest on the FINAL step (where `stop_index == path.len()-1`
-    /// would make the index comparison alone report false; a `stopped_early` bool ensures
-    /// that case is reported correctly).
+    /// `true` when the move stopped before `path.last()` — wall, mask, region-impassable, OR
+    /// region-arrest, including a region-arrest on the FINAL step (where `stop_index ==
+    /// path.len()-1` would make the index comparison alone report false; a `stopped_early`
+    /// bool ensures that case is reported correctly).
     // The room layer derives truncation from `stop != path.last()`; the field is
     // read by move_exec unit tests (see tests module). Suppress the dead_code lint
     // so the structural information remains available without cluttering call sites.
     #[allow(dead_code)]
     pub truncated: bool,
+    /// Total terrain-weighted cost accumulated over the walked prefix. Not consumed by any
+    /// per-turn movement-budget cap (none exists yet); exposed for the wire and future use.
+    pub cost: f64,
 }
 
 /// Reason an `execute_move` call was rejected before any walking.
@@ -64,17 +70,8 @@ pub(crate) enum MoveReject {
     Degenerate,
 }
 
-/// Region-arrest hook stub. Returns `true` when a region halts a token entering
-/// `cell_center`. Currently always false; the region system (M10g) replaces this body.
-///
-/// Coupling: the region system updates this function body only; the call site in
-/// `execute_move` (step 3 of the walk loop) is the stable hook entry point.
-fn region_arrests(_ecs: &SceneEcs, _scene: Uuid, _cell_center: (f64, f64)) -> bool {
-    false
-}
-
 /// Walk `path` step by step, validating each step against the wall gate (step 1),
-/// the vision-mask gate (step 2), and the region-arrest hook (step 3).
+/// the vision-mask gate (step 2), and the region field (step 3).
 ///
 /// # Parity with M10e-4 (`Room::publish`) — per-cell decision only
 ///
@@ -147,6 +144,10 @@ pub(crate) fn execute_move(
     // (The caller folds GM-ness into `Unrestricted`, mirroring `publish`.)
     let check_mask = !matches!(restriction, MovementRestriction::Unrestricted);
 
+    // Authoritative region field (M10g): always the full field, never filtered — this executor
+    // springs secret regions regardless of what the mover's pathfind preview could see (§6).
+    let regions = ecs.region_field(scene, None);
+
     // --- Per-step walk ---
     // `stop_index` tracks the last successfully reached path index; starts at 0 (start cell).
     // `stopped_early` is set when the loop breaks due to region-arrest: a region-arrest on
@@ -154,6 +155,7 @@ pub(crate) fn execute_move(
     // report truncated=false — the flag captures that case correctly.
     let mut stop_index = 0usize;
     let mut stopped_early = false;
+    let mut cost = 0.0;
     for i in 1..path.len() {
         let prev = path[i - 1];
         let next = path[i];
@@ -194,11 +196,21 @@ pub(crate) fn execute_move(
             }
         }
 
-        // Step 3: region-arrest hook — M3/M10g stub (always false).
-        // Arrest fires AFTER entering the cell: stop = next, still advanced. A final-step
-        // arrest sets stop_index = path.len()-1 and stopped_early = true so truncated is
-        // correctly reported even though the index equals the last position.
-        if region_arrests(ecs, scene, next) {
+        // Step 3: region gate (M10g). Center-cell only (mirrors this executor's existing
+        // center-cell model — no footprint check here, unlike the router; see pathfinding.rs's
+        // `cell_enterable` doc comment for the footprint/center-cell asymmetry rationale).
+        let region_cell = to_cell(next);
+        if regions.is_impassable(region_cell) {
+            // Defense-in-depth: a well-formed path from the router already avoids impassable
+            // cells. Treated exactly like a wall — stop BEFORE entry (stop stays at `prev`).
+            stopped_early = true;
+            break;
+        }
+        cost += regions.terrain_multiplier(region_cell);
+        if regions.is_arrest(region_cell) {
+            // Arrest fires AFTER entering: stop AT `next`. A final-step arrest sets
+            // stop_index = path.len()-1 and stopped_early = true so `truncated` is correctly
+            // reported even though the index equals the last position.
             stop_index = i;
             stopped_early = true;
             break;
@@ -217,6 +229,7 @@ pub(crate) fn execute_move(
         stop: path[stop_index],
         render_path,
         truncated,
+        cost,
     })
 }
 
@@ -538,5 +551,156 @@ mod tests {
         assert_eq!(out.stop, (100.0, 100.0));
         assert!(!out.truncated);
         assert_eq!(out.render_path.len(), 3);
+    }
+
+    fn region_doc(
+        id: u128,
+        parent: u128,
+        behavior: &str,
+        cost: f64,
+        x0: f64,
+        y0: f64,
+        x1: f64,
+        y1: f64,
+    ) -> crate::data::document::Document {
+        entity_doc(
+            id,
+            parent,
+            "region",
+            json!({
+                "shape": { "kind": "rect", "points": [x0, y0, x1, y1] },
+                "behavior": behavior,
+                "cost": cost,
+                "enabled": true,
+            }),
+        )
+    }
+
+    #[test]
+    fn impassable_region_stops_before_entry_like_a_wall() {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
+                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                region_doc(12, 10, "impassable", 1.0, 50.0, 0.0, 150.0, 100.0),
+            ],
+            0,
+        );
+        let visible = visible_grid(3);
+        let out = execute_move(
+            &ecs,
+            scene_id,
+            token_id,
+            &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+            MovementRestriction::Unrestricted,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert_eq!(
+            out.stop,
+            (0.0, 0.0),
+            "stops BEFORE entering the impassable cell, like a wall"
+        );
+        assert!(out.truncated);
+    }
+
+    #[test]
+    fn arrest_region_stops_at_entry_including_final_step() {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
+                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                region_doc(12, 10, "arrest", 1.0, 50.0, -50.0, 150.0, 50.0),
+            ],
+            0,
+        );
+        let visible = visible_grid(3);
+        let out = execute_move(
+            &ecs,
+            scene_id,
+            token_id,
+            &[(0.0, 0.0), (100.0, 0.0)],
+            MovementRestriction::Unrestricted,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert_eq!(
+            out.stop,
+            (100.0, 0.0),
+            "arrest stops AT the cell, not before it"
+        );
+        assert!(
+            out.truncated,
+            "final-step arrest must still report truncated=true"
+        );
+    }
+
+    #[test]
+    fn terrain_region_accumulates_weighted_cost() {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
+                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                region_doc(12, 10, "terrain", 2.5, 50.0, 0.0, 150.0, 100.0),
+            ],
+            0,
+        );
+        let visible = visible_grid(3);
+        let out = execute_move(
+            &ecs,
+            scene_id,
+            token_id,
+            &[(0.0, 0.0), (100.0, 0.0)],
+            MovementRestriction::Unrestricted,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert!((out.cost - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn authoritative_field_springs_a_secret_region_a_player_was_routed_through() {
+        // A gm_only impassable region: move_exec must still enforce it (it always uses the
+        // authoritative field, spec §6), even though a player's pathfind field never saw it.
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let mut secret = region_doc(12, 10, "impassable", 1.0, 50.0, 0.0, 150.0, 100.0);
+        secret
+            .permissions
+            .property_overrides
+            .insert("/system".into(), crate::data::document::Visibility::GmOnly);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
+                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                secret,
+            ],
+            0,
+        );
+        let visible = visible_grid(3);
+        let out = execute_move(
+            &ecs,
+            scene_id,
+            token_id,
+            &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+            MovementRestriction::Visible,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert_eq!(
+            out.stop,
+            (0.0, 0.0),
+            "authoritative field springs the secret impassable region"
+        );
     }
 }
