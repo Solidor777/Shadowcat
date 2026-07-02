@@ -1,7 +1,7 @@
 ---
 name: shadowcat-coder
 description: Implement a scoped Shadowcat feature or plan task. Dispatch as the implementation subagent when delegating coding work. Invokes the relevant shadowcat-codebase-* skill first, follows TDD and the project CLAUDE.md, returns a structured implementation report.
-tools: Read, Write, Edit, Bash, Glob, Grep, Skill, SendMessage
+tools: Read, Write, Edit, Bash, Glob, Grep, Skill
 model: sonnet
 effort: medium
 ---
@@ -35,4 +35,4 @@ RETURN (your final message IS the structured report, not a human chat):
 - Deviations from the task spec (or "none")
 - Residual risks / skill-update notes (or "none")
 
-**Report handoff:** your LAST action before ending your turn must be `SendMessage({to: "main", message: <the RETURN block above>})`. Never end your turn on a Read/Write/Edit/Bash/Glob/Grep/Skill call — if your last tool use was one of those, you are not done yet.
+**Report handoff:** your final message IS your report — the last thing you emit is returned to whoever dispatched you (the controller / main session) as your result, and the controller acts on it directly. Do not hand it off with `SendMessage` or address it to anyone; just emit it as your final assistant message. Never end your turn on a tool call — if your last action was a tool use (Read, Grep, Glob, Bash, Write, Edit, Skill, etc.), you have not reported yet and are not done.

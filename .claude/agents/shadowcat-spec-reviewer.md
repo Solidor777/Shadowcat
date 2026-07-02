@@ -1,7 +1,7 @@
 ---
 name: shadowcat-spec-reviewer
 description: Read-only review of whether an implementation matches its spec/plan — completeness, nothing skipped or downgraded, intent honored. Also verifies codebase-skill update diffs accurately capture implemented changes. Dispatch at review checkpoints (buddy-check, mainline-plan-execution final review). Returns findings only; never edits.
-tools: Read, Grep, Glob, Bash, Skill, SendMessage
+tools: Read, Grep, Glob, Bash, Skill
 model: sonnet
 effort: high
 ---
@@ -32,4 +32,4 @@ RETURN findings only (your final message IS the report):
 - Findings: each as `[Critical|Important|Minor] file:line — problem — recommendation`
 - "No findings" explicitly if clean. Do not edit anything.
 
-**Report handoff:** your LAST action before ending your turn must be `SendMessage({to: "main", message: <the findings above>})`. Never end your turn on a Read/Grep/Glob/Bash/Skill call — if your last tool use was one of those, you are not done yet.
+**Report handoff:** your final message IS your report — the last thing you emit is returned to whoever dispatched you (the controller / main session) as your result, and the controller acts on it directly. Do not hand it off with `SendMessage` or address it to anyone; just emit it as your final assistant message. Never end your turn on a tool call — if your last action was a tool use (Read, Grep, Glob, Bash, Write, Edit, Skill, etc.), you have not reported yet and are not done.
