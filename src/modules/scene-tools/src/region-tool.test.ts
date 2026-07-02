@@ -39,7 +39,7 @@ test("rect mode: drag persists a region doc with the configured behavior/cost", 
   }
 });
 
-test("secret toggle declares /system as gm_only on the created doc", () => {
+test("secret toggle declares default:none and /system gm_only on the created doc", () => {
   const { tool, controller, sent } = setup();
   controller.regionShapeMode = "circle";
   controller.regionSecret = true;
@@ -50,6 +50,7 @@ test("secret toggle declares /system as gm_only on the created doc", () => {
   expect(op.op).toBe("create");
   if (op.op === "create") {
     expect(op.doc.permissions.property_overrides["/system"]).toBe("gm_only");
+    expect(op.doc.permissions.default).toBe("none");
   }
 });
 

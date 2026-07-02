@@ -838,6 +838,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn filter_command_create_drops_op_entirely_for_default_none_region() {
+        // M10g secrecy fix: a secret region declares `default: DocRole::None` (not just a
+        // `/system` gm_only override), so `filter_command` must drop the Create op ENTIRELY
+        // for a non-GM/non-owner recipient (no envelope at all — id/parent_id/existence must
+        // never reach them), while a GM still receives the full op.
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, Operation};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+
+        let mut region = doc(
+            PermissionSet {
+                default: DocRole::None,
+                ..Default::default()
+            },
+            serde_json::json!({ "shape": "rect", "behavior": "arrest" }),
+        );
+        region.scope = Scope::World { world_id: w.id };
+        region
+            .permissions
+            .property_overrides
+            .insert("/system".into(), Visibility::GmOnly);
+
+        let cmd = Command {
+            seq: 1,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Create {
+                doc: region.clone(),
+            }],
+        };
+
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let filtered_for_player =
+            filter_command(&r, &cmd, &player, &WorldCapDefaults::default()).await;
+        assert!(
+            filtered_for_player.ops.is_empty(),
+            "a default:none secret region's Create op must be dropped entirely for a non-GM \
+             recipient, not merely nulled — the doc's existence/id must not reach them"
+        );
+
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let filtered_for_gm = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
+        assert_eq!(
+            filtered_for_gm.ops.len(),
+            1,
+            "the GM must still receive the region's Create op"
+        );
+        let Operation::Create { doc } = &filtered_for_gm.ops[0] else {
+            panic!("expected Create");
+        };
+        assert_eq!(doc.system.get("behavior").unwrap(), "arrest");
+    }
+
+    #[tokio::test]
     async fn filter_command_strips_and_preserves_seq() {
         use crate::auth::role::ServerRole;
         use crate::data::command::{Command, FieldChange, Operation};

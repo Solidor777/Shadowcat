@@ -449,15 +449,23 @@ export function buildRegionDoc(worldId: string, sceneId: string, system: RegionS
   return envelope(worldId, "region", sceneId, system, id);
 }
 
-/** Set/clear the secrecy override on a region doc's permissions: hiding declares the WHOLE
- * `/system` body (geometry + behavior + cost) as the `gm_only` tier — the server strips it
- * from non-GM egress entirely (spec §3: "no new secrecy machinery"), so a hidden region never
- * reaches a player's `documents` store and needs no client-side hide logic. Mutates in place +
- * returns `doc`. */
+/** Set/clear the secrecy override on a region doc's permissions. Hiding sets BOTH:
+ * (1) `permissions.default = "none"` — denies whole-document `READ` to any non-owner/non-GM
+ *     recipient, so the server's `filter_command` drops the region's `Create` op ENTIRELY for
+ *     them (never delivered, not even nulled) — this is what actually keeps a hidden region's
+ *     existence, id, and shape out of a player's `documents` store;
+ * (2) `property_overrides["/system"] = "gm_only"` — defense-in-depth: nulls the `/system` body
+ *     if a future capability grant ever widens `default`/`users` without revisiting secrecy.
+ * Un-hiding restores `default = "observer"` (the original `envelope()` default) and clears the
+ * override. Mutates in place + returns `doc`. */
 export function setRegionVisibility(doc: WireDocument, hidden: boolean): WireDocument {
   const overrides = { ...doc.permissions.property_overrides };
   if (hidden) overrides["/system"] = "gm_only";
   else delete overrides["/system"];
-  doc.permissions = { ...doc.permissions, property_overrides: overrides };
+  doc.permissions = {
+    ...doc.permissions,
+    default: hidden ? "none" : "observer",
+    property_overrides: overrides,
+  };
   return doc;
 }

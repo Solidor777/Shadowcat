@@ -342,9 +342,11 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - **`RegionView` (`region-view.ts`) mirrors `WallView` exactly** — a dumb per-frame reconciler with
   NO client-side secrecy logic. The `"regions"` render layer sits between `"tiles"` and
   `"drawings"` in `layers.ts`'s `CORE_LAYERS`. Only regions the viewer is permitted to see ever
-  reach `store` in the first place (server-side egress filtering via `region_field`'s
-  per-requester view, feeding the same document-visibility pipeline as every other doc type) —
-  there is no client-side hide check to get wrong, by design.
+  reach `store` in the first place: `setRegionVisibility(doc, true)` sets `permissions.default =
+  "none"` (NOT just a `/system` override), so `filter_command` drops a secret region's whole
+  `Create` op for non-owner/non-GM recipients — the doc never arrives, not even redacted — while
+  `region_field`'s per-requester view independently keeps a secret region out of a non-GM's
+  pathfinder/budget field. There is no client-side hide check to get wrong, by design.
 
 ## Gotchas
 
