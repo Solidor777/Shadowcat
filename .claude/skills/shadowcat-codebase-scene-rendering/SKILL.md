@@ -43,12 +43,27 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - `src/server/src/scene/move_exec.rs` — pure, lock-free `execute_move(ecs, scene, token, path,
   restriction, visible, cell) -> Result<MoveOutcome, MoveReject>` (M1 server-authoritative movement):
   walks the path step by step — (1) wall gate (`blocks_move`, all modes incl. GM), (2) vision-mask
-  gate (`supercover_cells` + `visible` membership, skipped for `Unrestricted`), (3) region-arrest
-  hook (`region_arrests` — inert stub, always `false`, until M10g). Returns `stop` + `render_path`
-  (legal prefix) + `truncated`. `MAX_MOVE_PATH=256` DoS guard. `MoveReject` variants: `NotAToken`,
-  `EmptyPath`, `TooLong`, `Degenerate` (non-finite coords / bad start / non-adjacent king-step).
-  `region_arrests` and `cost_field` are both inert stubs until M10g — do not implement region
-  behavior there.
+  gate (`supercover_cells` + `visible` membership, skipped for `Unrestricted`), (3) region gate
+  (M10g — see below). Returns `stop` + `render_path` (legal prefix) + `truncated` + `cost`.
+  `MAX_MOVE_PATH=256` DoS guard. `MoveReject` variants: `NotAToken`, `EmptyPath`, `TooLong`,
+  `Degenerate` (non-finite coords / bad start / non-adjacent king-step).
+  **Region gate (M10g, step 3):** always reads `ecs.region_field(scene, None)` — the AUTHORITATIVE
+  field, computed once before the walk loop begins (never per-step, never filtered) — so a
+  `gm_only` secret region "springs" on execution even for a mover whose own route preview couldn't
+  see it. Center-cell only (`to_cell(next)`; no footprint check) — a documented asymmetry against
+  the router's footprint-aware `cell_enterable` (router stricter, executor looser), but `route ⊆
+  gate-allowed` still holds because the router's mask predicate is already a superset (see the
+  pathfinder invariant below). Impassable stops BEFORE entry into the cell (like a wall — `stop`
+  lands on the prior cell); arrest stops AT entry (the cell is entered, then the walk halts — a
+  final-step arrest still sets `truncated: true` even though `stop_index == path.len()-1`).
+  `MoveOutcome.cost` accumulates `regions.terrain_multiplier(region_cell)` per step (1.0 outside any
+  terrain region) — center-cell-only, terrain-only; it does NOT apply the diagonal-rule step-cost
+  factor (`sc` — 1.0/2.0/√2/alternating) that `pathfinding.rs`'s router applies. **Known, logged
+  inconsistency (`docs/TODO.md`):** the two `cost` values are numerically comparable only under
+  Chebyshev (where the diagonal step cost is 1.0); under any other diagonal rule they diverge. This
+  is a deliberate v1 scoping decision (M10g Task 7), not a bug — nothing currently consumes or
+  compares the two costs together. Resolve before any per-turn movement-budget system consumes
+  either `MoveOutcome.cost` or `MoveStream.cost`.
 - `src/server/src/scene/mod.rs` — adds `SceneEcs::token_position(token) -> Option<(f64,f64)>` and
   `SceneEcs::resolved_animation_speed() -> f64` (`pub(crate)` seams; the latter sits alongside
   `resolved_diagonal_rule`, sources `world_settings.animation`, defaults to 6 cells/sec).
@@ -88,6 +103,34 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   geometry disclosed).
 - `src/server/src/scene/explored.rs` — `ExploredSet` fog memory: `mark_polygons(polys, cell_size)`,
   `to_bytes`/`from_bytes` (persistence), cell-based.
+- `src/server/src/scene/regions.rs` (M10g) — pure region geometry, no ECS/I/O (mirrors
+  `movement.rs`'s module invariant): `RegionShape` (`Rect`/`Circle`/`Polygon`), `RegionBehavior`
+  (`Terrain`/`Impassable`/`Arrest`), `RegionEffect` (composed per-cell result), `rasterize(shape,
+  cell)` (grid cells whose CENTER falls inside the shape — fails closed to `None` on a degenerate
+  shape (non-finite coords, non-positive radius, `<3`-vertex polygon) or an over-cap AABB
+  (`MAX_REGION_CELLS`=100_000), never a partial/silently-empty result), `compose(contributions)`
+  (precedence `Impassable > Arrest > Terrain`; overlapping Terrain costs take the MAX, never
+  summed), `RegionField`/`RegionFieldBuilder` (`.add` silently drops a fail-closed shape —
+  contributes nothing, never all-passes; `.build` composes per-cell), and `parse_region_shape`
+  (structural-only parse of a region doc's `/shape` body; any malformed field fails closed to
+  `None`, dropping the whole region). **Historical bug (fixed):** an extreme-magnitude finite
+  coordinate (e.g. `-1e300`) saturated the float→cell-index cast to `i64::MIN/MAX`, letting the
+  subsequent `i1 - i0 + 1` cell-count arithmetic overflow BEFORE the `checked_mul` DoS-cap check
+  ever ran — a bypass of the cap, not merely a wrong count. Fixed via an explicit `MAX_CELL_COORD`
+  (`i32::MAX - 1.0`) bound checked on all four AABB edges before any i64 arithmetic. A
+  large-magnitude-but-small-span coordinate (e.g. `1e13`) is a separate failure mode also caught by
+  the same bound (would otherwise silently truncate/wrap under `as i32`, aliasing onto an unrelated
+  real cell).
+- `SceneEcs::region_field(scene, viewer)` (`mod.rs`, M10g) — the composed `RegionField` for a
+  scene. **Two-value contract, never a third mode:** `viewer: None` is the AUTHORITATIVE view
+  (every enabled region, unfiltered) — used by the GM and by `move_exec` (which always springs
+  secret regions on execution regardless of what the mover's own route preview could see);
+  `viewer: Some(user)` is the PER-REQUESTER view used by the grid A* router — a region is included
+  only when `user` can see the visibility tier declared on its `/system` (defaults to `All` when
+  undeclared), via the SAME `resolve_access`/`property_overrides["/system"]` mechanism that already
+  gates every other document's egress (spec §3: no new secrecy machinery). **Callers MUST pass
+  `None` for a GM requester** — mirrors `visible_cells`'s GM-skips-the-mask convention; passing
+  `Some(gm_user)` would incorrectly filter a GM's own field.
 - `src/server/src/scene/pathfinding.rs` — pure, headless grid A* (no I/O; clean-room):
   `DiagonalRule` (`chebyshev`|`manhattan`|`euclidean`|`alternating`) + `resolved_diagonal_rule`
   (world-only — no per-scene override; mirrors `resolveSceneSettings` precedence); `PathGrid` (wall-
@@ -98,20 +141,40 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (M3: the union closes buddy-check P1 — footprint-disc-at-destination alone missed a diagonal
   step's corner-flanker cells for sub-0.5-cell footprints, letting the router approve a step the
   M1 executor then rejected; `None` from `supercover_cells` fails closed); (3) center-to-center
-  step crosses no wall (`segments_cross`); (4) `region_arrests(to)` (M3 stub, mirrors
-  `move_exec.rs`'s, always `false` until M10g). `astar_leg` — king-move A*, 4 diagonal
+  step crosses no wall (`segments_cross`); (4) `region_arrests`/impassable check via `PathGrid.regions:
+  Option<&RegionField>` (M10g — see below; a `None` grid field means "no region enforcement",
+  distinct from an empty `RegionField`). `astar_leg` — king-move A*, 4 diagonal
   rules, 5-10-5 parity tracked in the `(cell, parity)` node and carried across waypoint legs (cost
   1,2,1,2…, never reset per leg), admissible+consistent heuristics per rule, stale-pop skip,
-  `MAX_PATH_NODES`/`MAX_WAYPOINTS`/`MAX_FOOTPRINT_CELLS` fail-closed bounds; `find` — validates
+  `MAX_PATH_NODES`/`MAX_WAYPOINTS`/`MAX_FOOTPRINT_CELLS` fail-closed bounds; **M10g terrain
+  weighting:** the step-cost function multiplies the diagonal-rule base cost (`sc`) by
+  `grid.regions.map_or(1.0, |r| r.terrain_multiplier(next))`, so a terrain region raises (never
+  lowers — multipliers are validated `>= 1.0` at `region_field` construction) the A* edge weight
+  into that cell, honored by the admissible/consistent heuristic (which already lower-bounds the
+  UNWEIGHTED cost, so remains admissible under any `>=1.0` weighting). `find` — validates
   request, computes search window (AABB{start∪waypoints∪wall-endpoints}+8-cell margin), threads
-  end-parity of each leg into the next, sums cost, returns ordered cell-center scene coords.
+  end-parity of each leg into the next, sums cost, returns ordered cell-center scene coords, THEN
+  (M10g) applies **arrest truncation**: cuts the assembled route at the first cell (after the
+  start — a token already standing in a cell is not "entering" it) flagged `is_arrest` in the
+  region field, sets `arrested: true`, and recomputes the truncated `cost` by REPLAYING
+  `step_cost` over the surviving prefix from parity 0 (a cost-replay technique, not trusting
+  `astar_leg`'s per-leg running total, because parity threading is purely sequential/order-
+  dependent — replaying reproduces the exact cost the original per-leg accumulation would give for
+  that same prefix). Returns `PathOutcome { path, cost, arrested }`. This truncation exists so a
+  player-facing route preview is honest about a hazard it already knows about (spec §5: "arrest is
+  honest in preview") — never shows a route running past an arrest cell the requester can see.
   `SceneEcs::pathfind` — reuses the SAME `visible_cells` mask as the M10e-4 movement gate (**§13
   invariant: never fork the per-cell visibility decision** — the route cannot thread the unknown nor
   leak hidden geometry); unions `explored` (`ExploredSet::iter`) for `revealed`; GM unconstrained
-  (no mask); empty non-GM mask ⇒ `PathError::Unreachable` (fail-closed). New `move_walls(scene)`
-  accessor returns the `blocksMove` segment list (mirrors the M9 `blocks_move` filter). Wire
-  frames `Pathfind`/`PathResult`/`PathError` — one-shot to the requesting connection only (never
-  broadcast); `get_explored` fetched off the scene read lock (no lock across await).
+  (no mask); empty non-GM mask ⇒ `PathError::Unreachable` (fail-closed); passes
+  `ecs.region_field(scene, if is_gm { None } else { Some(user) })` — the PER-REQUESTER field (a
+  non-GM's route/budget silently omits a region they cannot see; the secret region only "springs"
+  later, at `move_exec`, which always reads the authoritative field — see `region_field` above).
+  New `move_walls(scene)` accessor returns the `blocksMove` segment list (mirrors the M9
+  `blocks_move` filter). Wire frames `Pathfind`/`PathResult` (`{path, cost, arrested}` —
+  `arrested` is always disclosed to the requester, no secrecy concern: it only tells them a route
+  THEY could already see is truncating)/`PathError` — one-shot to the requesting connection only
+  (never broadcast); `get_explored` fetched off the scene read lock (no lock across await).
   Client: `ToolContext.pathfind?` seam + `SceneTool.onDeactivate?()` hook in scene-tools (clears
   route overlay on tool swap); ruler `Grid.distance()` gains the `alternating` (5-10-5) rule wired
   from `resolveSceneSettings(...).diagonalRule` into the Stage `GridSpec`.
@@ -258,6 +321,30 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   computes NO vision in any of this (ARCHITECTURE §2 invariant 3/4) — it renders only the streamed,
   already-clipped polygons. Design doc:
   `docs/superpowers/specs/2026-06-25-m2-streamed-continuous-vision-design.md`.
+- **Region secrecy is a two-value contract on `region_field`, never a third mode (M10g).**
+  `region_field(scene, None)` = authoritative (GM + `move_exec`); `region_field(scene, Some(user))`
+  = per-requester (the router only). Callers must never pass `Some(gm_user)`. By construction the
+  router's field is a SUBSET of the authoritative field (spec §6 parity) — a secret region can
+  narrow a player's route/preview but can never appear to them where it wouldn't to the GM, and it
+  always still applies at `move_exec` regardless of what the router showed. Reuses the EXACT same
+  `resolve_access`/`property_overrides["/system"]` mechanism as ordinary document egress — no new
+  secrecy machinery was introduced for regions (spec §3).
+- **A whole-region-scalar disclosed on `MoveStream` must default to trusted-recipient-only, not
+  broadcast-by-default.** `PathResult.arrested: bool` is always disclosed (no secrecy concern — it
+  only tells the requester their OWN already-visible route is truncating). `MoveStream.cost:
+  Option<f64>` is `Some` for the mover/GM (trusted, full information) and `None` for a clipped
+  observer, mirroring `mover_vision`'s pre-existing null-for-observers pattern — because the
+  authoritative cost may reflect `gm_only` secret-region terrain the observer's own vision would
+  never reveal. This was a Critical finding caught and fixed during the M10g Task 9 review (an
+  earlier draft broadcast `cost` unconditionally). **Load-bearing invariant, not a footnote:** any
+  FUTURE whole-move scalar added to `MoveStream` must default to the same trusted-only disclosure
+  pattern unless explicitly proven safe to broadcast to every recipient.
+- **`RegionView` (`region-view.ts`) mirrors `WallView` exactly** — a dumb per-frame reconciler with
+  NO client-side secrecy logic. The `"regions"` render layer sits between `"tiles"` and
+  `"drawings"` in `layers.ts`'s `CORE_LAYERS`. Only regions the viewer is permitted to see ever
+  reach `store` in the first place (server-side egress filtering via `region_field`'s
+  per-requester view, feeding the same document-visibility pipeline as every other doc type) —
+  there is no client-side hide check to get wrong, by design.
 
 ## Gotchas
 
@@ -268,13 +355,37 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - **`resolved_diagonal_rule` is world-only** — there is intentionally no per-scene `diagonalRule`
   override in the pathfinder; the same rule applies across all scenes in a world. Matches the client
   `resolveSceneSettings` precedence (the setting lives in `world-settings`, not per-scene).
+- **`region_arrests`/impassable checking is footprint-gated in the router (`cell_enterable`'s mask
+  check, via `footprint_cells ∪ supercover_cells`) but CENTER-CELL-ONLY in `move_exec` — a
+  deliberate asymmetry (route stricter, execution looser), not a bug (M10g).** `route ⊆
+  gate-allowed` still holds because the router's predicate is already a documented superset of the
+  executor's. Do not "fix" `move_exec` to match the router's footprint check without re-deriving
+  the parity argument — the asymmetry is load-bearing, matching the pre-existing wall-check
+  asymmetry the pathfinder invariant above already documents.
+- **`find()`'s arrest truncation recomputes cost by REPLAYING `step_cost`, never by trusting
+  `astar_leg`'s per-leg running total for the truncated prefix.** Parity threading is purely
+  sequential/order-dependent (not leg-boundary-dependent), so a naive "sum the per-leg totals up to
+  the truncation point" would be wrong whenever the truncation falls mid-leg; the cost-replay
+  technique (walk the surviving cell sequence from parity 0, re-run `step_cost` per pair) is the
+  only correct way to get an accurate truncated cost (M10g).
+- **A whole-`/system` `GmOnly` override must NULL the field, not remove the key, in
+  `filter_properties` (M10g discovery).** `Document::system` is a required serde field — dropping
+  the `"system"` key from the redacted JSON before re-deserializing into `Document` panics.
+  `filter_properties` special-cases the exact pointer `"/system"` (as opposed to a nested pointer
+  like `"/system/name"`, which keeps the normal key-strip) to null the value instead. This branch
+  was previously a latent, unexercised code path — no doc type before M10g declared a whole-`/system`
+  visibility override (only nested-property overrides existed); secret regions were the first doc
+  type to exercise it, and the panic-on-strip bug was caught before it shipped. Any future doc type
+  that wants whole-body secrecy (vs. per-field) must go through this same branch, not a new one.
 
 ## Pointers
 
 - Rationale: `docs/design/ARCHITECTURE.md` §2 (invariants 3, 5, 6 + the M9 geometry exception)
-  + §7 (rendering provenance); `docs/PLAN.md` (M8/M9/M10e/M2 milestones);
-  `docs/superpowers/specs/2026-06-25-m2-streamed-continuous-vision-design.md` (streamed vision).
+  + §7 (rendering provenance); `docs/PLAN.md` (M8/M9/M10e/M2/M10g milestones);
+  `docs/superpowers/specs/2026-06-25-m2-streamed-continuous-vision-design.md` (streamed vision);
+  `docs/superpowers/specs/2026-07-01-m10g-regions-design.md` (regions design spec);
+  `docs/superpowers/plans/2026-07-02-m10g-regions.md` (regions implementation plan).
 - Relationships:
-  `graphify query "scene ECS derived read-model vision fog stage pixi render tokens"`.
+  `graphify query "scene ECS derived read-model vision fog stage pixi render tokens regions"`.
 - History/decisions: [[m8-brainstorm]], [[m8d-2-scene-tools]], [[m9-progress]],
-  [[server-authoritative-movement-rule]].
+  [[server-authoritative-movement-rule]], [[m10-pathfinding-architecture]].
