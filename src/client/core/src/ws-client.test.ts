@@ -525,7 +525,8 @@ describe("WsClient", () => {
         stop: [200, 0],
         samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 300, pos: [200, 0] }],
         mover_vision: null,
-        cost: 3,
+        // A clipped observer's cost is server-nulled (secrecy: mirrors moverVision).
+        cost: null,
       }),
     );
     await flush();
@@ -535,6 +536,7 @@ describe("WsClient", () => {
     expect(streams[0].tokenId).toBe("tok2");
     expect(streams[0].mover).toBe("user2");
     expect(streams[0].moverVision).toBeNull();
+    expect(streams[0].cost).toBeNull();
 
     unsub();
   });

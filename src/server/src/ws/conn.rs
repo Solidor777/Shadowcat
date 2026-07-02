@@ -537,7 +537,10 @@ async fn handle_move_request(
                     })
                     .collect(),
                 mover_vision,
-                cost: exec.cost,
+                // Broadcast in-process carries the full authoritative cost; `clip_move_stream`
+                // nulls it per recipient at egress for a clipped observer (secrecy: see
+                // `ServerMsg::MoveStream.cost` doc).
+                cost: Some(exec.cost),
             };
             room.broadcast_aux(frame);
             // No success frame to the requester: the broadcast is the notification.
@@ -646,15 +649,18 @@ async fn observer_vision_polys_for_scene(
 ///
 /// Discrimination:
 /// - **Mover** (`ctx.user_id == frame.mover`): full frame forwarded unchanged (all
-///   samples + `mover_vision`).
-/// - **GM** (world role): all samples forwarded, `mover_vision` nulled, full `stop`
-///   and `duration_ms` preserved.
+///   samples + `mover_vision` + `cost`).
+/// - **GM** (world role): all samples and the true `cost` forwarded (trusted, full
+///   information), `mover_vision` nulled, full `stop` and `duration_ms` preserved.
 /// - **Observer**: only samples whose `pos` lies within the recipient's authoritative
-///   vision polygons are forwarded; `mover_vision` nulled; fully-occluded → `None`.
-///   `stop` and `duration_ms` are clipped to the LAST VISIBLE sample — the true final
-///   position and full travel distance are not disclosed.
+///   vision polygons are forwarded; `mover_vision` AND `cost` nulled; fully-occluded →
+///   `None`. `stop` and `duration_ms` are clipped to the LAST VISIBLE sample — the true
+///   final position and full travel distance are not disclosed.
 ///
 /// INVARIANT (mover_vision-isolation): `mover_vision` reaches only the mover's socket.
+/// INVARIANT (no-cost-leak): the true `cost` reaches only the mover and GM sockets; a
+///   clipped observer receives `None` (mirrors mover_vision-isolation) so hidden
+///   (`gm_only`) region terrain cannot be inferred by diffing visible distance vs. cost.
 /// INVARIANT (fail-closed): no derivable vision → empty clip → suppress.
 /// INVARIANT (no-stale-cache): observer vision is always read from the authoritative ECS,
 ///   never from a rendering-cache fingerprint (a stale wider polygon would admit a
@@ -744,7 +750,12 @@ async fn clip_move_stream(
         stop: clipped_stop,
         samples: visible,
         mover_vision: None, // INVARIANT: mover_vision strictly mover-only
-        cost: *cost,
+        // INVARIANT (no-cost-leak): the authoritative `cost` may include secret (`gm_only`)
+        // region terrain the observer's clipped `samples` never reveal; disclosing it would
+        // let an observer detect/estimate hidden terrain by comparing the visible portion of
+        // the move against the reported total. Mirrors `mover_vision`'s null-for-observers
+        // treatment above.
+        cost: None,
     })
 }
 
@@ -1870,7 +1881,7 @@ mod tests {
             stop: [150.0, 50.0],
             samples: samples.clone(),
             mover_vision: mv.clone(),
-            cost: 2.0,
+            cost: Some(2.0),
         };
 
         let result = clip_move_stream(&frame, &ctx, &room).await;
@@ -1880,10 +1891,12 @@ mod tests {
             ServerMsg::MoveStream {
                 samples: s,
                 mover_vision: mv_out,
+                cost,
                 ..
             } => {
                 assert_eq!(s, samples, "mover receives all samples unchanged");
                 assert_eq!(mv_out, mv, "mover receives mover_vision unchanged");
+                assert_eq!(cost, Some(2.0), "mover receives the true cost unchanged");
             }
             other => panic!("expected MoveStream, got {other:?}"),
         }
@@ -1922,7 +1935,7 @@ mod tests {
                 },
             ],
             mover_vision: None,
-            cost: 2.0,
+            cost: Some(2.0),
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, &room).await;
@@ -1973,7 +1986,7 @@ mod tests {
                 },
             ],
             mover_vision: None,
-            cost: 2.0,
+            cost: Some(2.0),
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, &room).await;
@@ -1988,6 +2001,7 @@ mod tests {
                 mover_vision: mv,
                 stop: out_stop,
                 duration_ms: out_duration_ms,
+                cost,
                 ..
             } => {
                 assert_eq!(
@@ -2012,6 +2026,14 @@ mod tests {
                 assert!(
                     (out_duration_ms - 0.0_f64).abs() < 1e-9,
                     "duration_ms must be clipped to last visible sample t_ms (0 ms), got {out_duration_ms}"
+                );
+                // Critical security fix regression: a clipped observer must never learn the
+                // true authoritative cost — it may reflect secret (gm_only) region terrain
+                // the observer's clipped samples never reveal.
+                assert_eq!(
+                    cost, None,
+                    "cost must be nulled for a clipped observer (secrecy: must not disclose \
+                     authoritative cost, which may include secret-region terrain)"
                 );
             }
             other => panic!("expected MoveStream, got {other:?}"),
@@ -2055,7 +2077,7 @@ mod tests {
                 },
             ],
             mover_vision: None,
-            cost: 2.0,
+            cost: Some(2.0),
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, &room).await;
@@ -2127,7 +2149,7 @@ mod tests {
             stop: true_stop,
             samples: samples.clone(),
             mover_vision: mv,
-            cost: 2.0,
+            cost: Some(2.0),
         };
 
         let result = clip_move_stream(&frame, &gm_ctx, &room).await;
@@ -2139,6 +2161,7 @@ mod tests {
                 mover_vision: mv_out,
                 stop: out_stop,
                 duration_ms: out_duration_ms,
+                cost,
                 ..
             } => {
                 assert_eq!(s, samples, "GM receives all samples unchanged");
@@ -2147,6 +2170,11 @@ mod tests {
                 assert!(
                     (out_duration_ms - true_duration_ms).abs() < 1e-9,
                     "GM receives the full duration_ms (no clip)"
+                );
+                assert_eq!(
+                    cost,
+                    Some(2.0),
+                    "GM receives the true cost unchanged (trusted, full information)"
                 );
             }
             other => panic!("expected MoveStream, got {other:?}"),

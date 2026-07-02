@@ -51,8 +51,10 @@ export interface MoveStream {
   stop: [number, number];
   samples: MoveSample[];
   moverVision: MoveVisionSample[] | null;
-  /** Total terrain-weighted movement cost for this move (M10g). Informational. */
-  cost: number;
+  /** Total terrain-weighted movement cost for this move (M10g). Informational.
+   * Null for a clipped observer (mirrors moverVision) — the authoritative cost may reflect
+   * secret-region terrain the observer's clipped samples don't reveal. */
+  cost: number | null;
 }
 
 /** Handle to an active live search subscription (Core.subscribeSearch). */

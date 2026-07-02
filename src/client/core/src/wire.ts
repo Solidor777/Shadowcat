@@ -256,7 +256,9 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
         }),
       )
       .nullable(),
-    cost: z.number(),
+    // Null for a clipped observer (mirrors mover_vision) — the authoritative cost may
+    // reflect secret-region terrain the observer's clipped samples don't reveal.
+    cost: z.number().nullable(),
   }),
 ]);
 

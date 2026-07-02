@@ -283,7 +283,12 @@ pub enum ServerMsg {
         mover_vision: Option<Vec<VisionSample>>,
         /// Total terrain-weighted movement cost accumulated over the executed move (M10g spec
         /// §6). Informational — no per-turn budget cap consumes it in v1.
-        cost: f64,
+        /// `Some(cost)` for the mover and a GM (trusted, full information); `None` for a
+        /// clipped observer, mirroring `mover_vision`'s null-for-observers treatment — the
+        /// authoritative cost may reflect secret-region (`gm_only`) terrain the observer's
+        /// clipped `samples` don't show, and disclosing it would let an observer detect hidden
+        /// terrain by comparing the visible portion of the move against the reported total.
+        cost: Option<f64>,
     },
 }
 
@@ -548,7 +553,7 @@ mod protocol_tests {
             stop: [100.0, 200.0],
             samples: in_samples.clone(),
             mover_vision: in_vision.clone(),
-            cost: 3.5,
+            cost: Some(3.5),
         };
         let wire = serde_json::to_string(&msg).unwrap();
         // Tag must be snake_case.
@@ -577,11 +582,11 @@ mod protocol_tests {
                 assert_eq!(stop, [100.0, 200.0]);
                 assert_eq!(samples, in_samples);
                 assert_eq!(mover_vision, in_vision);
-                assert!((cost - 3.5).abs() < 1e-9);
+                assert_eq!(cost, Some(3.5), "mover/GM path: cost is disclosed");
             }
             _ => panic!("expected MoveStream"),
         }
-        // None mover_vision path — verify mover_vision round-trips as None.
+        // None mover_vision + None cost path — verify both round-trip as None for a clipped observer.
         let in_samples2 = vec![PosSample {
             t_ms: 0.0,
             pos: [0.0, 0.0],
@@ -596,15 +601,22 @@ mod protocol_tests {
             stop: [100.0, 200.0],
             samples: in_samples2,
             mover_vision: None,
-            cost: 1.0,
+            cost: None,
         };
         let wire2 = serde_json::to_string(&msg_no_vision).unwrap();
         let back2: ServerMsg = serde_json::from_str(&wire2).unwrap();
         match back2 {
-            ServerMsg::MoveStream { mover_vision, .. } => {
+            ServerMsg::MoveStream {
+                mover_vision, cost, ..
+            } => {
                 assert_eq!(
                     mover_vision, None,
                     "observer path: mover_vision must round-trip as None"
+                );
+                assert_eq!(
+                    cost, None,
+                    "observer path: cost must round-trip as None (secrecy: must not disclose \
+                     authoritative cost, which may reflect secret terrain, to an observer)"
                 );
             }
             _ => panic!("expected MoveStream"),

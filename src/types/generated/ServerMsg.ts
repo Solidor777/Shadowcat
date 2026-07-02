@@ -64,5 +64,10 @@ mover_vision: Array<VisionSample> | null,
 /**
  * Total terrain-weighted movement cost accumulated over the executed move (M10g spec
  * §6). Informational — no per-turn budget cap consumes it in v1.
+ * `Some(cost)` for the mover and a GM (trusted, full information); `None` for a
+ * clipped observer, mirroring `mover_vision`'s null-for-observers treatment — the
+ * authoritative cost may reflect secret-region (`gm_only`) terrain the observer's
+ * clipped `samples` don't show, and disclosing it would let an observer detect hidden
+ * terrain by comparing the visible portion of the move against the reported total.
  */
-cost: number, };
+cost: number | null, };
