@@ -20,11 +20,21 @@ export interface GridDistance { perCell: number; unit: string; }
  * triangulates this bounded rectangle; grid A* never needs it. Absent ⇒ DEFAULT_SCENE_BOUNDS. */
 export interface SceneDimensions { width: number; height: number; }
 
+// Recursive freeze helper — makes default constants immutable so shared refs
+// returned by resolver functions cannot be mutated by consumers in dev.
+function deepFreeze<T>(obj: T): T {
+  Object.freeze(obj);
+  for (const v of Object.values(obj as object)) {
+    if (v !== null && typeof v === "object" && !Object.isFrozen(v)) deepFreeze(v);
+  }
+  return obj;
+}
+
 /** Fail-safe finite default scene size (grid units) when a scene has no authored `bounds`, so
  * navmesh construction never faces an unbounded plane. MUST match DEFAULT_SCENE_BOUNDS_UNITS in
  * the server `scene/mod.rs`. Deliberately a fixed constant — NOT a content AABB (content-derived
  * bounds were rejected: edge-drag re-mesh churn, ill-defined for open scenes). */
-export const DEFAULT_SCENE_BOUNDS: SceneDimensions = { width: 100, height: 100 };
+export const DEFAULT_SCENE_BOUNDS: SceneDimensions = deepFreeze({ width: 100, height: 100 });
 
 /** Per-scene overrides for vision behaviour; absent fields fall back to world defaults.
  * Null is a valid wire value: the UI writes null to clear an override; resolveSceneSettings
@@ -71,16 +81,6 @@ export interface WorldSettingsSystem {
   scene: WorldSceneDefaults;
   pathfinding: { diagonalRule: DiagonalRule };
   animation: { speedCellsPerSec: number; easing: EasingMode };
-}
-
-// Recursive freeze helper — makes DEFAULT_WORLD_SETTINGS immutable so shared refs
-// returned by resolveSceneSettings cannot be mutated by consumers in dev.
-function deepFreeze<T>(obj: T): T {
-  Object.freeze(obj);
-  for (const v of Object.values(obj as object)) {
-    if (v !== null && typeof v === "object" && !Object.isFrozen(v)) deepFreeze(v);
-  }
-  return obj;
 }
 
 /** Built-in defaults — used when no world-settings doc exists or a field is absent.
