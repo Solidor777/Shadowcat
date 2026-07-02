@@ -148,6 +148,7 @@ describe("parseServerMsg", () => {
         request_id: "00000000-0000-0000-0000-000000000001",
         path: [[50, 50], [150, 50]],
         cost: 2,
+        arrested: false,
       }),
     );
     expect(ok?.type).toBe("path_result");

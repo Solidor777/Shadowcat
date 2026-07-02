@@ -449,6 +449,7 @@ async fn handle_pathfind(
             request_id,
             path: outcome.path,
             cost: outcome.cost,
+            arrested: outcome.arrested,
         },
         Err(e) => ServerMsg::PathError {
             request_id,

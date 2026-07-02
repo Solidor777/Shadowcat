@@ -18,10 +18,12 @@ export interface SearchPage {
   nextCursor?: string;
 }
 
-/** A resolved pathfind result (WsClient.pathfind). */
+/** A resolved pathfind result (WsClient.pathfind). `arrested` is true when the route was cut
+ * short by a visible arrest region (spec §5). */
 export interface PathResult {
   path: [number, number][];
   cost: number;
+  arrested: boolean;
 }
 
 /** A single position sample in a MoveStream, with elapsed-ms origin at startServerMs. */
@@ -313,7 +315,7 @@ export class WsClient {
         if (p) {
           clearTimeout(p.timer);
           this.pending.delete(msg.request_id);
-          (p.resolve as (r: PathResult) => void)({ path: msg.path, cost: msg.cost });
+          (p.resolve as (r: PathResult) => void)({ path: msg.path, cost: msg.cost, arrested: msg.arrested });
         }
         break;
       }

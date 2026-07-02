@@ -428,9 +428,10 @@ describe("WsClient", () => {
         request_id: sentFrame.request_id,
         path: [[50, 50], [250, 50]],
         cost: 2,
+        arrested: false,
       }),
     );
-    await expect(p).resolves.toEqual({ path: [[50, 50], [250, 50]], cost: 2 });
+    await expect(p).resolves.toEqual({ path: [[50, 50], [250, 50]], cost: 2, arrested: false });
 
     const p2 = client.pathfind("scene-1", [50, 50], [[9999, 9999]], 0.5);
     const sentFrame2 = JSON.parse(sent.find((s, i) => i > sent.indexOf(JSON.stringify(sentFrame)) && JSON.parse(s).type === "pathfind")!);

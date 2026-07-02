@@ -221,6 +221,7 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     request_id: z.string(),
     path: z.array(z.tuple([z.number(), z.number()])),
     cost: z.number(),
+    arrested: z.boolean(),
   }),
   z.object({
     type: z.literal("path_error"),

@@ -241,10 +241,14 @@ pub enum ServerMsg {
     },
     /// The route for the `Pathfind` with this `request_id`: ordered cell-center scene points
     /// (incl. start + goal) and the total cost in cells (client multiplies `grid.distance.perCell`).
+    /// `arrested` is true when an arrest region truncated the route before the requested goal
+    /// (spec §5 "honest preview" — the player-facing route never silently ends short without
+    /// telling the client why).
     PathResult {
         request_id: Uuid,
         path: Vec<(f64, f64)>,
         cost: f64,
+        arrested: bool,
     },
     /// The `Pathfind` with this `request_id` failed (unreachable / invalid request / search exceeded).
     PathError { request_id: Uuid, message: String },
@@ -459,10 +463,15 @@ mod protocol_tests {
             request_id: Uuid::from_u128(1),
             path: vec![(50.0, 50.0)],
             cost: 2.0,
+            arrested: true,
         };
-        assert!(serde_json::to_string(&ok)
-            .unwrap()
-            .contains("\"type\":\"path_result\""));
+        let json = serde_json::to_string(&ok).unwrap();
+        assert!(json.contains("\"type\":\"path_result\""));
+        let back: ServerMsg = serde_json::from_str(&json).unwrap();
+        match back {
+            ServerMsg::PathResult { arrested, .. } => assert!(arrested),
+            _ => panic!("expected PathResult"),
+        }
         let err = ServerMsg::PathError {
             request_id: Uuid::from_u128(1),
             message: "unreachable".into(),

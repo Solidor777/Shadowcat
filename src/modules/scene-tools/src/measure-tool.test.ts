@@ -99,6 +99,7 @@ test("measure tool routes via pathfind for the selected token and previews the p
   const pathfind: ToolContext["pathfind"] = async () => ({
     path: [[50, 50], [150, 50]] as [number, number][],
     cost: 2,
+    arrested: false,
   });
   const { tool, overlays, measures } = setupRoute({ pathfind });
 
@@ -115,7 +116,7 @@ test("measure tool falls back to plain anchor-point measure when no token is sel
   const pathfinderCalled: boolean[] = [];
   const pathfind: ToolContext["pathfind"] = async () => {
     pathfinderCalled.push(true);
-    return { path: [], cost: 0 };
+    return { path: [], cost: 0, arrested: false };
   };
   // Build the route context but override tokenIds to empty — no selection.
   const { tool, overlays } = setupRoute({ pathfind, tokenIds: [] });
@@ -132,6 +133,7 @@ test("measure tool clears overlay and measure label on pointer up (mid-gesture-c
   const pathfind: ToolContext["pathfind"] = async () => ({
     path: [[50, 50], [150, 50]] as [number, number][],
     cost: 2,
+    arrested: false,
   });
   const { tool, overlayClears, measureClears } = setupRoute({ pathfind });
 
@@ -180,7 +182,7 @@ test("measure tool onDeactivate clears route overlay on tool swap (mid-gesture-c
   // onDeactivate fires and clears the live overlay + budget label. We test onDeactivate
   // directly because ToolController.toggle calls tool.onDeactivate?.() before swapping.
   const { tool, overlayClears, measureClears } = setupRoute({
-    pathfind: async () => ({ path: [[50, 50], [150, 50]] as [number, number][], cost: 2 }),
+    pathfind: async () => ({ path: [[50, 50], [150, 50]] as [number, number][], cost: 2, arrested: false }),
   });
 
   tool.onPointerDown({ x: 50, y: 50 }, ev());
@@ -243,7 +245,7 @@ test("measure tool accumulates multiple waypoints and passes them to pathfind in
   const calls: { start: [number,number]; waypoints: [number,number][] }[] = [];
   const pathfind: ToolContext["pathfind"] = async (_, start, waypoints) => {
     calls.push({ start, waypoints: [...waypoints] });
-    return { path: [[start[0], start[1]], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number,number][], cost: waypoints.length };
+    return { path: [[start[0], start[1]], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number,number][], cost: waypoints.length, arrested: false };
   };
 
   const bridge = new SceneInteractionBridge();
@@ -365,7 +367,7 @@ test("double-click commits via moveRequest (animation is broadcast-driven)", asy
     return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null };
   };
   const { ctx, now } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0,0],[100,0],[100,100]] as [number,number][], cost: 2 }),
+    pathfind: async () => ({ path: [[0,0],[100,0],[100,100]] as [number,number][], cost: 2, arrested: false }),
     moveRequest,
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
@@ -381,7 +383,7 @@ test("double-click commits via moveRequest (animation is broadcast-driven)", asy
 test("a single click in route mode does NOT commit", async () => {
   const moves: Array<unknown> = [];
   const { ctx } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1 }),
+    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1, arrested: false }),
     moveRequest: async (_s, tokenId, path) => {
       moves.push({ tokenId, path });
       return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null };
@@ -409,7 +411,7 @@ test("route commit survives its own pointer-up: moveRequest resolves after point
   let clearCount = 0;
 
   const { ctx, now } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0, 0], [200, 0], [200, 200]] as [number, number][], cost: 4 }),
+    pathfind: async () => ({ path: [[0, 0], [200, 0], [200, 200]] as [number, number][], cost: 4, arrested: false }),
     moveRequest: deferredMoveRequest,
     onClearOverlay: () => { clearCount++; },
     tokenAt: { id: "tok1", x: 0, y: 0 },
@@ -453,7 +455,7 @@ test("rejected moveRequest calls clearRoute and does NOT animate", async () => {
   const animated: Array<{ id: string; path: [number, number][] }> = [];
 
   const { ctx, now } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1 }),
+    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1, arrested: false }),
     moveRequest: async () => Promise.reject(new Error("server denied")),
     animateAlongPath: (id, path) => animated.push({ id, path }),
     onClearOverlay: () => { overlayClears++; },
@@ -491,7 +493,7 @@ test("cache-hit: commitRoute reuses lastPreviewedPath and does not call pathfind
   const { ctx, now } = seedRouteCtx({
     pathfind: async () => {
       pathfindCalls.push(1);
-      return { path: cachedPath, cost: 2 };
+      return { path: cachedPath, cost: 2, arrested: false };
     },
     moveRequest,
     tokenAt: { id: "tok1", x: 0, y: 0 },
@@ -542,6 +544,7 @@ test("stale commit resolve does not clear a newer commit's suppression flag", as
     pathfind: async (_s, _start, waypoints) => ({
       path: [_start, waypoints.at(-1)!] as [number, number][],
       cost: 1,
+      arrested: false,
     }),
     moveRequest: deferredMoveRequest,
     onClearOverlay: () => { clearCount++; },
