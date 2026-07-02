@@ -436,9 +436,21 @@ fn to_cell(p: vision::P, cell: f64) -> Cell {
     ((p.0 / cell).floor() as i32, (p.1 / cell).floor() as i32)
 }
 
+/// The result of a `find()` route: cell-center scene points (incl. start + goal, or truncated at
+/// an arrest cell), the total weighted cost in cells, and whether an arrest region cut the route
+/// short (spec §5: "arrest is honest in preview" — the player-facing router must never show a
+/// route past a hazard it knows about).
+#[derive(Debug, PartialEq)]
+pub struct PathOutcome {
+    pub path: Vec<vision::P>,
+    pub cost: f64,
+    pub arrested: bool,
+}
+
 /// Plan a footprint-clear, mask-bounded route `start -> waypoints[0] -> ... -> waypoints[last]`.
 /// `waypoints` is the full ordered leg list whose last element is the goal (empty => `Invalid`).
 /// Returns cell-center scene points (incl. start and goal) and the total cost in cells.
+#[allow(clippy::too_many_arguments)]
 pub fn find(
     start: vision::P,
     waypoints: &[vision::P],
@@ -447,7 +459,8 @@ pub fn find(
     rule: DiagonalRule,
     walls: &[vision::Seg],
     mask: Option<&BTreeSet<Cell>>,
-) -> Result<(Vec<vision::P>, f64), PathFail> {
+    regions: Option<&crate::scene::regions::RegionField>,
+) -> Result<PathOutcome, PathFail> {
     // Validation (fail-closed): all degenerate inputs => Invalid.
     if waypoints.is_empty() || waypoints.len() > MAX_WAYPOINTS {
         return Err(PathFail::Invalid);
@@ -495,7 +508,7 @@ pub fn find(
         footprint_radius_cells: footprint_radius,
         walls,
         mask,
-        regions: None,
+        regions,
         window,
     };
 
@@ -524,8 +537,40 @@ pub fn find(
         from = goal;
     }
 
+    // Arrest truncation (spec §5): the route is cut at the FIRST visible arrest cell after the
+    // start (a token already standing in a cell is not "entering" it). Recompute the truncated
+    // cost by replaying `step_cost` across the surviving prefix — parity threading is purely
+    // sequential (order-dependent, not leg-boundary-dependent), so replaying from parity 0 over
+    // the assembled `cells` reproduces exactly the cost the original per-leg accumulation gives
+    // for that same prefix.
+    let mut arrested = false;
+    if let Some(rf) = regions {
+        if let Some(idx) = cells
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find(|(_, c)| rf.is_arrest(**c))
+            .map(|(i, _)| i)
+        {
+            cells.truncate(idx + 1);
+            arrested = true;
+            let mut p = 0u8;
+            total = 0.0;
+            for w in cells.windows(2) {
+                let (di, dj) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+                let (sc, next_p) = step_cost(rule, di, dj, p);
+                total += sc * rf.terrain_multiplier(w[1]);
+                p = next_p;
+            }
+        }
+    }
+
     let path: Vec<vision::P> = cells.into_iter().map(|c| cell_center(c, cell)).collect();
-    Ok((path, total))
+    Ok(PathOutcome {
+        path,
+        cost: total,
+        arrested,
+    })
 }
 
 #[cfg(test)]
@@ -545,6 +590,7 @@ mod find_tests {
             DiagonalRule::Chebyshev,
             &NO_WALLS,
             None,
+            None,
         );
         assert_eq!(r, Err(PathFail::Invalid));
     }
@@ -560,6 +606,7 @@ mod find_tests {
                 100.0,
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
+                None,
                 None
             ),
             Err(PathFail::Invalid)
@@ -573,6 +620,7 @@ mod find_tests {
                 100.0,
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
+                None,
                 None
             ),
             Err(PathFail::Invalid)
@@ -586,6 +634,7 @@ mod find_tests {
                 0.0,
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
+                None,
                 None
             ),
             Err(PathFail::Invalid)
@@ -599,6 +648,7 @@ mod find_tests {
                 100.0,
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
+                None,
                 None
             ),
             Err(PathFail::Invalid)
@@ -612,6 +662,7 @@ mod find_tests {
                 100.0,
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
+                None,
                 None
             ),
             Err(PathFail::Invalid)
@@ -625,6 +676,7 @@ mod find_tests {
                 100.0,
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
+                None,
                 None
             ),
             Err(PathFail::Invalid)
@@ -634,7 +686,7 @@ mod find_tests {
     #[test]
     fn straight_route_returns_cell_centers_and_cost() {
         // (50,50)->(250,50): cells (0,0)->(2,0), 2 chebyshev steps. Points = centers of (0,0),(1,0),(2,0).
-        let (path, cost) = find(
+        let outcome = find(
             (50.0, 50.0),
             &[(250.0, 50.0)],
             0.1,
@@ -642,12 +694,13 @@ mod find_tests {
             DiagonalRule::Chebyshev,
             &NO_WALLS,
             None,
+            None,
         )
         .unwrap();
-        assert!((cost - 2.0).abs() < 1e-9);
-        assert_eq!(path.first(), Some(&(50.0, 50.0)));
-        assert_eq!(path.last(), Some(&(250.0, 50.0)));
-        assert_eq!(path.len(), 3);
+        assert!((outcome.cost - 2.0).abs() < 1e-9);
+        assert_eq!(outcome.path.first(), Some(&(50.0, 50.0)));
+        assert_eq!(outcome.path.last(), Some(&(250.0, 50.0)));
+        assert_eq!(outcome.path.len(), 3);
     }
 
     #[test]
@@ -657,7 +710,7 @@ mod find_tests {
         let start = (50.0, 50.0);
         let wp = (150.0, 150.0);
         let goal = (250.0, 250.0);
-        let (_p, cost) = find(
+        let outcome = find(
             start,
             &[wp, goal],
             0.1,
@@ -665,10 +718,11 @@ mod find_tests {
             DiagonalRule::Alternating,
             &NO_WALLS,
             None,
+            None,
         )
         .unwrap();
         assert!(
-            (cost - 3.0).abs() < 1e-9,
+            (outcome.cost - 3.0).abs() < 1e-9,
             "parity carries across the waypoint (1 + 2)"
         );
     }
@@ -686,6 +740,7 @@ mod find_tests {
                 100.0,
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
+                None,
                 None
             ),
             Err(PathFail::Invalid)
@@ -703,10 +758,76 @@ mod find_tests {
                 100.0,
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
-                Some(&mask)
+                Some(&mask),
+                None
             ),
             Err(PathFail::Unreachable)
         );
+    }
+
+    #[test]
+    fn arrest_region_truncates_the_route_and_flags_arrested() {
+        use crate::scene::regions::{RegionBehavior, RegionField, RegionShape};
+        let mut b = RegionField::builder();
+        // Arrest region covering the ENTIRE i=2 column (x in [200,300), a wide y band). Deviation
+        // from a narrower single-cell rect: under Chebyshev, orthogonal and diagonal steps cost
+        // the same, so (0,0)->(4,0) has several tied-cost 4-step routes and this build's A*
+        // tie-break (QNode ties favor the lexicographically LARGER (cell, parity) key) resolves to
+        // a diagonal detour through (2,2), not the straight row — the same tie-break ambiguity the
+        // pre-existing `terrain_region_raises_astar_step_cost` test's comment documents. Covering
+        // the whole column (rather than only the straight-line cell) makes the test robust to
+        // which tied route is chosen while still proving arrest fires exactly when the route
+        // FIRST reaches x in [200,300), at cost 2.0 (2 steps in).
+        b.add(
+            &RegionShape::Rect {
+                x0: 200.0,
+                y0: -300.0,
+                x1: 300.0,
+                y1: 300.0,
+            },
+            RegionBehavior::Arrest,
+            1.0,
+            100.0,
+        );
+        let field = b.build();
+        let outcome = find(
+            (50.0, 50.0),
+            &[(450.0, 50.0)],
+            0.1,
+            100.0,
+            DiagonalRule::Chebyshev,
+            &NO_WALLS,
+            None,
+            Some(&field),
+        )
+        .unwrap();
+        assert!(outcome.arrested);
+        assert_eq!(
+            outcome.path.last(),
+            Some(&(250.0, 250.0)),
+            "route truncates AT the arrest cell (2,2), the tie-broken A* route's column-2 cell"
+        );
+        assert!(
+            (outcome.cost - 2.0).abs() < 1e-9,
+            "2 steps to reach the arrest column"
+        );
+    }
+
+    #[test]
+    fn no_regions_argument_is_backward_compatible() {
+        let outcome = find(
+            (50.0, 50.0),
+            &[(250.0, 50.0)],
+            0.1,
+            100.0,
+            DiagonalRule::Chebyshev,
+            &NO_WALLS,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(!outcome.arrested);
+        assert!((outcome.cost - 2.0).abs() < 1e-9);
     }
 }
 

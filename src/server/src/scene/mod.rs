@@ -878,7 +878,7 @@ impl SceneEcs {
         footprint_radius: f64,
         is_gm: bool,
         explored: Option<&crate::scene::explored::ExploredSet>,
-    ) -> Result<(Vec<(f64, f64)>, f64), pathfinding::PathFail> {
+    ) -> Result<pathfinding::PathOutcome, pathfinding::PathFail> {
         let cell = self
             .scene_grid_sizes()
             .get(&scene)
@@ -907,6 +907,12 @@ impl SceneEcs {
             }
         };
 
+        // Per-requester region field (spec §4): GM (or `is_gm`) sees the authoritative field;
+        // a non-GM requester's field silently omits any region they cannot see, so a secret
+        // region never influences their route or budget (it "springs" only at execution,
+        // `move_exec`, which always reads the authoritative field).
+        let regions = self.region_field(scene, if is_gm { None } else { Some(user) });
+
         pathfinding::find(
             start,
             waypoints,
@@ -915,6 +921,7 @@ impl SceneEcs {
             rule,
             &walls,
             mask.as_ref(),
+            Some(&regions),
         )
     }
 
@@ -3242,9 +3249,9 @@ mod tests {
             true,
             None,
         );
-        let (path, cost) = r.expect("GM route");
-        assert!((cost - 2.0).abs() < 1e-9);
-        assert_eq!(path.last(), Some(&(250.0, 50.0)));
+        let outcome = r.expect("GM route");
+        assert!((outcome.cost - 2.0).abs() < 1e-9);
+        assert_eq!(outcome.path.last(), Some(&(250.0, 50.0)));
     }
 
     #[test]

@@ -445,10 +445,10 @@ async fn handle_pathfind(
         is_gm,
         explored.as_ref(),
     ) {
-        Ok((path, cost)) => ServerMsg::PathResult {
+        Ok(outcome) => ServerMsg::PathResult {
             request_id,
-            path,
-            cost,
+            path: outcome.path,
+            cost: outcome.cost,
         },
         Err(e) => ServerMsg::PathError {
             request_id,
