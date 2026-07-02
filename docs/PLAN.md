@@ -393,8 +393,26 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > Spec: `docs/superpowers/specs/2026-07-01-m3-vision-gated-pathfinder-design.md`.
 >
 > **M10e status: e-1 through e-6 DONE; the M10e-5 server-authoritative-movement redirect (M1 + M2 +
-> M3) is fully DONE.** Next = M10f (continuous/Polyanya pathfinding) + M10g (weighted/impassable
-> regions).**
+> M3) is fully DONE.**
+>
+> **M10g SPEC'D (design approved 2026-07-01)** — weighted/impassable/hazard-arrest regions,
+> **grid engine only**. Spec: `superpowers/specs/2026-07-01-m10g-regions-design.md`. Locked: three
+> behaviors (`terrain` per-cell cost multiplier / `impassable` / `arrest` stop-on-enter); per-region
+> secrecy via envelope permission tiers (secret regions absent from a player's router/budget field,
+> sprung by `move_exec`); vector-shape authoring (rect/circle/polygon, rasterized to cells);
+> precedence+MAX overlap compose; honest arrest preview (`PathResult.arrested` truncation). Lights up
+> the planted inert `region_arrests()` hooks in `scene/move_exec.rs` + `scene/pathfinding.rs` as a
+> matched pair. No new crate (cargo-bloat untouched). **Three items EXPLICITLY DEFERRED from M10g and
+> homed below so they are not lost:** (a) Polyanya/navmesh cost-layers → **M10f**; (b) per-actor/
+> faction movement exemptions → **Phase 2 vision/lighting/movement completion**; (c) mechanical/
+> trigger effects on arrest → **Phase 2 trigger regions**.
+>
+> **M10f (continuous pathfinding)** now explicitly includes wiring region cost/impassable/arrest into
+> the Polyanya cost-layers / conditional-layers (the grid engine gets them in M10g; the navmesh engine
+> gets them here) — deferred from M10g.
+>
+> Next = **M10g** (weighted/impassable regions, spec'd — grid engine) then M10f (continuous/Polyanya
+> pathfinding, incl. the region cost-layer wiring above).
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
@@ -412,7 +430,7 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 **▶ Dogfood alpha gate** — backups (M12.5) must exist before real worlds accrue.
 
 ## Phase 2 — Full table
-Combat tracker (initiative, hidden combatants, turn-event triggers; depends on M11 dice) → real asset pipeline (chunked upload, image conversion, tags, derived tags) + asset browser (regex / tag / dir search, preview / rename / move / tag) + bulk import/export → layout / theming completion (drag-resize, pop-out, multi / user themes, module styling modes) → vision / lighting completion (photometric, darkvision / tremorsense / height) → token enrichment (aura / light / sound / VFX emitters, trigger regions, token-art) → rollable tables (on the dice engine + document model), rich-text notes (on the document model), chat media linking (images; YouTube as thumbnail + external link only — no IFrame / Data API) → full default module suite → search consolidated into one milestone (single backend; no three-backend split).
+Combat tracker (initiative, hidden combatants, turn-event triggers; depends on M11 dice) → real asset pipeline (chunked upload, image conversion, tags, derived tags) + asset browser (regex / tag / dir search, preview / rename / move / tag) + bulk import/export → layout / theming completion (drag-resize, pop-out, multi / user themes, module styling modes) → vision / lighting / movement completion (photometric, darkvision / tremorsense / height; **per-actor/faction movement exemptions — flying/incorporeal ignore difficult terrain, deferred from M10g; needs movement-type tags on actors**) → token enrichment (aura / light / sound / VFX emitters, **trigger regions — mechanical/trigger effects built on the M10g region primitive: damage, condition application, scripted triggers on enter/arrest**, token-art) → rollable tables (on the dice engine + document model), rich-text notes (on the document model), chat media linking (images; YouTube as thumbnail + external link only — no IFrame / Data API) → full default module suite → search consolidated into one milestone (single backend; no three-backend split).
 
 ## Phase 3 — Atmosphere
 Audio (mixer, channels, playlists, world-clock sync; then spatial + wall occlusion; transcode via `symphonia` + `opus`/`vorbis_rs`) → VFX (sprite effects, concurrent SFX) → multi-level maps + portals → 3D dice (decide the rendering context up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer) → Discord audio-ducking module (OS audio-session monitoring — PipeWire / WASAPI / CoreAudio — never the proprietary Discord Game SDK; requires a dependency / licensing review before integration).
