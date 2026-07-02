@@ -105,4 +105,7 @@ export const en: Messages = {
   "gameSettings.scene.envIntensity": "Environment light intensity (override)",
   "gameSettings.scene.distancePerCell": "Distance per cell (override)",
   "gameSettings.scene.distanceUnit": "Distance unit (override)",
+  "gameSettings.scene.bounds": "Scene size (grid units)",
+  "gameSettings.scene.boundsWidth": "Scene width (cells)",
+  "gameSettings.scene.boundsHeight": "Scene height (cells)",
 };

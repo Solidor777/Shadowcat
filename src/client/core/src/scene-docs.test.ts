@@ -1,7 +1,7 @@
 import { test, expect, describe, it } from "vitest";
-import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, type TokenSystem, type ActorSystem, type Faction, type Condition } from "./scene-docs";
+import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, type TokenSystem, type ActorSystem, type Faction, type Condition, type SceneSystem, type SceneDimensions } from "./scene-docs";
 import {
-  buildWorldSettingsDoc, resolveSceneSettings, DEFAULT_WORLD_SETTINGS,
+  buildWorldSettingsDoc, resolveSceneSettings, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
   type WireDocument,
 } from "./scene-docs";
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc } from "./scene-docs";
@@ -22,6 +22,26 @@ describe("resolveSceneSettings", () => {
     expect(r.movementRestriction).toBe("visible");
     expect(r.diagonalRule).toBe("chebyshev");
     expect(r.gridDistance).toEqual({ perCell: 5, unit: "ft" });
+  });
+
+  it("absent bounds resolves to DEFAULT_SCENE_BOUNDS", () => {
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    const r = resolveSceneSettings(scene, storeWith(scene));
+    expect(r.bounds).toEqual({ width: 100, height: 100 });
+  });
+
+  it("explicit bounds pass through", () => {
+    const scene = buildSceneDoc("w1", { bounds: { width: 40, height: 25 } }, "scene1");
+    const r = resolveSceneSettings(scene, storeWith(scene));
+    expect(r.bounds).toEqual({ width: 40, height: 25 });
+  });
+
+  it("malformed bounds fail closed to the default", () => {
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    // Non-positive on either axis is degenerate for a navmesh rectangle → default.
+    (scene.system as SceneSystem).bounds = { width: 0, height: -5 } as SceneDimensions;
+    const r = resolveSceneSettings(scene, storeWith(scene));
+    expect(r.bounds).toEqual(DEFAULT_SCENE_BOUNDS);
   });
 
   it("uses world-settings defaults over built-ins", () => {

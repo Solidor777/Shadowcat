@@ -395,24 +395,56 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > **M10e status: e-1 through e-6 DONE; the M10e-5 server-authoritative-movement redirect (M1 + M2 +
 > M3) is fully DONE.**
 >
-> **M10g SPEC'D (design approved 2026-07-01)** — weighted/impassable/hazard-arrest regions,
-> **grid engine only**. Spec: `superpowers/specs/2026-07-01-m10g-regions-design.md`. Locked: three
-> behaviors (`terrain` per-cell cost multiplier / `impassable` / `arrest` stop-on-enter); per-region
-> secrecy via envelope permission tiers (secret regions absent from a player's router/budget field,
-> sprung by `move_exec`); vector-shape authoring (rect/circle/polygon, rasterized to cells);
-> precedence+MAX overlap compose; honest arrest preview (`PathResult.arrested` truncation). Lights up
-> the planted inert `region_arrests()` hooks in `scene/move_exec.rs` + `scene/pathfinding.rs` as a
-> matched pair. No new crate (cargo-bloat untouched). **Three items EXPLICITLY DEFERRED from M10g and
-> homed below so they are not lost:** (a) Polyanya/navmesh cost-layers → **M10f**; (b) per-actor/
-> faction movement exemptions → **Phase 2 vision/lighting/movement completion**; (c) mechanical/
-> trigger effects on arrest → **Phase 2 trigger regions**.
+> **M10g DONE** (merged --no-ff to LOCAL main `ba1dfcf`, NOT pushed — push gate = full M10) —
+> weighted/impassable/hazard-arrest regions, **grid engine only**. Spec:
+> `superpowers/specs/2026-07-01-m10g-regions-design.md`. Shipped: three behaviors (`terrain`
+> per-cell cost multiplier / `impassable` / `arrest` stop-on-enter); per-region secrecy via
+> envelope permission tiers (secret regions absent from a player's router/budget field, sprung by
+> `move_exec`; `permissions.default="none"` drops a secret region's whole Create op at egress, not
+> just a `/system` field-null — a Critical caught + fixed in the final whole-branch review);
+> vector-shape authoring (rect/circle/polygon, rasterized to cells); precedence+MAX overlap
+> compose; honest arrest preview (`PathResult.arrested` truncation); GM region-authoring tool +
+> `RegionView` render layer. Lit up the planted inert `region_arrests()` hooks in
+> `scene/move_exec.rs` + `scene/pathfinding.rs` as a matched pair. No new crate (cargo-bloat
+> untouched). SDD-executed (13 tasks, per-task two-reviewer gate incl. 4 buddy-checked tasks +
+> whole-branch review). **Three items EXPLICITLY DEFERRED from M10g and homed below so they are not
+> lost:** (a) Polyanya/navmesh cost-layers → **M10f-4**; (b) per-actor/faction movement exemptions →
+> **Phase 2 vision/lighting/movement completion**; (c) mechanical/trigger effects on arrest →
+> **Phase 2 trigger regions**.
 >
-> **M10f (continuous pathfinding)** now explicitly includes wiring region cost/impassable/arrest into
-> the Polyanya cost-layers / conditional-layers (the grid engine gets them in M10g; the navmesh engine
-> gets them here) — deferred from M10g.
+> **M10f (continuous/navmesh movement) SPEC'D (design approved 2026-07-02)** — the M10e-5
+> server-authoritative movement redirect (M1/M2/M3) made M10f bigger than the original "adopt
+> `vleue/polyanya`" line item: the whole movement stack (router + gated execution + streamed
+> vision) is grid-cell-based end to end, so continuous movement needs its own decomposition, not a
+> second router bolted on. Spec: `superpowers/specs/2026-07-02-m10f-continuous-navmesh-movement-
+> design.md`. Locked: full continuous stack, decomposed not descoped; **cell-sampled gate** — the
+> polyanya router's any-angle polyline is arc-length-sampled and gated against the SAME
+> `visible_cells` cell mask grid movement uses (§13 never-fork preserved; continuous changes
+> geometry/distance-metric only, never the secrecy decision); **one unified sampled executor** —
+> `move_exec`'s king-step walk generalizes to an arc-length-sampled polyline walk so grid A* and
+> polyanya share one gate/region/arrest/commit path (grid = the ≤1-cell-apart special case);
+> **explicit scene bounds primitive** (a navmesh needs a bounded triangulation region; grid A* never
+> did). Decomposed **M10f-0 → M10f-4**; region cost-layers (deferred from M10g above) land in
+> **M10f-4**.
 >
-> Next = **M10g** (weighted/impassable regions, spec'd — grid engine) then M10f (continuous/Polyanya
-> pathfinding, incl. the region cost-layer wiring above).
+> **M10f-0 DONE** (branch `m10f-0-scene-bounds`, commits `7afd610..2401783`, all green, NOT
+> merged/pushed — merge gate = full M10f) — scene bounds primitive: `scene.system.bounds
+> {width,height}` (grid units), mirrored client (`scene-docs.ts` `SceneDimensions`/
+> `DEFAULT_SCENE_BOUNDS`, deep-frozen) + server (`scene/mod.rs` `ResolvedScene.bounds`/
+> `DEFAULT_SCENE_BOUNDS_UNITS`), both fail-closed to a `100×100` grid-unit default (non-finite or
+> ≤0-on-either-axis never produces a degenerate rectangle); per-scene only, no world-settings layer,
+> deliberately NOT content-derived (rejected at design time: edge-drag re-mesh churn, ill-defined
+> for open scenes); GM width/height authoring control in `module-game-settings`. SDD-executed (3
+> tasks, per-task two-reviewer gate — Task 1 had one Important fixed [`DEFAULT_SCENE_BOUNDS` not
+> deep-frozen, a shared-mutation risk via the fail-closed fallback's shared reference]; Task 3 found
+> + fixed an incidental Task-1-left-behind `@shadowcat/core` barrel-export gap, precedent-matched to
+> the M10g region export gap). Whole-branch review: Ready to merge, zero Critical/Important.
+> **Unblocks** (but does not itself implement) the M10e-2 edge-projected-environment-light
+> deviation — that implementation stays homed to M12 (logged `docs/TODO.md`). Reviewed
+> skill-update gate: `shadowcat-codebase-scene-rendering` updated + confirmed ACCURATE.
+>
+> Next = **M10f-1** (movementModel axis + dispatch + polyanya router; adds the `polyanya`+`spade`+
+> `geo` deps — cargo-bloat check required).
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 

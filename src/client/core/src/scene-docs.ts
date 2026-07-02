@@ -16,6 +16,26 @@ export interface EnvironmentLight { color: string; intensity: number; }
 /** Distance-per-cell scale for a scene grid. `unit` is a display label (e.g. "ft", "m"). */
 export interface GridDistance { perCell: number; unit: string; }
 
+/** A scene's authored dimensions in GRID UNITS (width × height cells). The M10f navmesh
+ * triangulates this bounded rectangle; grid A* never needs it. Absent ⇒ DEFAULT_SCENE_BOUNDS. */
+export interface SceneDimensions { width: number; height: number; }
+
+// Recursive freeze helper — makes default constants immutable so shared refs
+// returned by resolver functions cannot be mutated by consumers in dev.
+function deepFreeze<T>(obj: T): T {
+  Object.freeze(obj);
+  for (const v of Object.values(obj as object)) {
+    if (v !== null && typeof v === "object" && !Object.isFrozen(v)) deepFreeze(v);
+  }
+  return obj;
+}
+
+/** Fail-safe finite default scene size (grid units) when a scene has no authored `bounds`, so
+ * navmesh construction never faces an unbounded plane. MUST match DEFAULT_SCENE_BOUNDS_UNITS in
+ * the server `scene/mod.rs`. Deliberately a fixed constant — NOT a content AABB (content-derived
+ * bounds were rejected: edge-drag re-mesh churn, ill-defined for open scenes). */
+export const DEFAULT_SCENE_BOUNDS: SceneDimensions = deepFreeze({ width: 100, height: 100 });
+
 /** Per-scene overrides for vision behaviour; absent fields fall back to world defaults.
  * Null is a valid wire value: the UI writes null to clear an override; resolveSceneSettings
  * uses ?? so null and undefined both fall through to the world default. */
@@ -33,10 +53,12 @@ export interface SceneLightingOverrides {
   environment?: EnvironmentLight | null;
 }
 
-/** A scene's engine-owned config (M8d §15, extended M10e-1). Dimensions deferred (canvas pans freely). */
+/** A scene's engine-owned config (M8d §15, extended M10e-1). `bounds` (M10f-0) = the navmesh's
+ * outer rectangle in grid units; absent ⇒ DEFAULT_SCENE_BOUNDS. */
 export interface SceneSystem {
   grid: { kind: "square" | "hex"; size: number; distance?: GridDistance };
   background: string | null;
+  bounds?: SceneDimensions;
   vision?: SceneVisionOverrides;
   lighting?: SceneLightingOverrides;
 }
@@ -59,16 +81,6 @@ export interface WorldSettingsSystem {
   scene: WorldSceneDefaults;
   pathfinding: { diagonalRule: DiagonalRule };
   animation: { speedCellsPerSec: number; easing: EasingMode };
-}
-
-// Recursive freeze helper — makes DEFAULT_WORLD_SETTINGS immutable so shared refs
-// returned by resolveSceneSettings cannot be mutated by consumers in dev.
-function deepFreeze<T>(obj: T): T {
-  Object.freeze(obj);
-  for (const v of Object.values(obj as object)) {
-    if (v !== null && typeof v === "object" && !Object.isFrozen(v)) deepFreeze(v);
-  }
-  return obj;
 }
 
 /** Built-in defaults — used when no world-settings doc exists or a field is absent.
@@ -104,6 +116,7 @@ export interface ResolvedSceneSettings {
   diagonalRule: DiagonalRule;
   animation: { speedCellsPerSec: number; easing: EasingMode };
   gridDistance: GridDistance;
+  bounds: SceneDimensions;
 }
 
 /** A token's transform + visual (M8d §4). `(x,y)` is the token CENTER. `visual` is the
@@ -187,6 +200,7 @@ export function buildSceneDoc(worldId: string, system: Partial<SceneSystem> = {}
   const full: SceneSystem = {
     grid: system.grid ?? { kind: "square", size: 100 },
     background: system.background ?? null,
+    ...(system.bounds ? { bounds: system.bounds } : {}),
     ...(system.vision ? { vision: system.vision } : {}),
     ...(system.lighting ? { lighting: system.lighting } : {}),
   };
@@ -209,6 +223,17 @@ export function buildWorldSettingsDoc(worldId: string, system: WorldSettingsSyst
  * that removed a top-level key) is non-null but structurally incomplete, so the `??`
  * guard alone is insufficient; we require all three top-level keys to be present.
  * Default gridDistance: 5 ft/cell (standard D&D 5e scale). */
+/** Fail-closed bounds resolve: a present-but-malformed bounds (non-finite or ≤ 0 on either
+ * axis) falls back to the finite default rather than yielding a degenerate navmesh rectangle. */
+function resolveBounds(b: SceneDimensions | undefined): SceneDimensions {
+  const w = b?.width, h = b?.height;
+  if (typeof w === "number" && Number.isFinite(w) && w > 0 &&
+      typeof h === "number" && Number.isFinite(h) && h > 0) {
+    return { width: w, height: h };
+  }
+  return DEFAULT_SCENE_BOUNDS;
+}
+
 export function resolveSceneSettings(scene: WireDocument | undefined, store: ReadableDocuments): ResolvedSceneSettings {
   const ws = store.query("world-settings")[0]?.system as WorldSettingsSystem | undefined;
   // Structural guard: a partial doc (missing scene/pathfinding/animation) falls back to
@@ -229,6 +254,7 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
     diagonalRule: d.pathfinding.diagonalRule,
     animation: d.animation,
     gridDistance: sys?.grid?.distance ?? { perCell: 5, unit: "ft" },
+    bounds: resolveBounds(sys?.bounds),
   };
 }
 

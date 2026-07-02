@@ -88,4 +88,33 @@ describe("per-scene overrides", () => {
       { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/movementRestriction", old: null, new: null }] },
     ]);
   });
+
+  it("setting scene bounds width writes the whole /system/bounds object (height defaults)", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const input = screen.getByLabelText("gameSettings.scene.boundsWidth") as HTMLInputElement;
+    await fireEvent.change(input, { target: { value: "40" } });
+
+    // No prior bounds → height falls back to DEFAULT_SCENE_BOUNDS.height (100).
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/system/bounds", old: null, new: { width: 40, height: 100 } }] },
+    ]);
+  });
+
+  it("setting scene bounds height preserves an existing authored width", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", { bounds: { width: 30, height: 30 } }, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const input = screen.getByLabelText("gameSettings.scene.boundsHeight") as HTMLInputElement;
+    await fireEvent.change(input, { target: { value: "50" } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/system/bounds", old: null, new: { width: 30, height: 50 } }] },
+    ]);
+  });
 });

@@ -46,6 +46,10 @@ fn parse_movement_restriction(s: &str) -> MovementRestriction {
     }
 }
 
+/// Fail-safe finite default scene size (grid units) when a scene has no authored `bounds`.
+/// MUST match `DEFAULT_SCENE_BOUNDS` in the client `scene-docs.ts` (client/server parity).
+pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
+
 /// The resolved per-scene lighting/vision/movement settings (subset of the client
 /// `ResolvedSceneSettings`; pathfinding/animation fields are resolved in later checkpoints).
 #[derive(Clone, Debug)]
@@ -59,6 +63,9 @@ pub struct ResolvedScene {
     pub env_intensity: f64,
     pub movement_restriction: MovementRestriction,
     pub partial_cell_leniency: bool,
+    /// Scene dimensions (width, height) in grid units. Always finite `> 0`
+    /// (default `DEFAULT_SCENE_BOUNDS_UNITS`). The M10f navmesh's outer rectangle.
+    pub bounds: (f64, f64),
 }
 
 /// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
@@ -460,6 +467,23 @@ impl SceneEcs {
             .and_then(|v| v.as_str())
             .unwrap_or(d_move);
 
+        // Scene bounds (M10f-0): per-scene, no world default — a fixed finite fallback. A
+        // non-finite or non-positive axis is degenerate for a navmesh rectangle → fail closed.
+        let bounds = {
+            let w = s
+                .and_then(|s| s.pointer("/bounds/width"))
+                .and_then(|v| v.as_f64());
+            let h = s
+                .and_then(|s| s.pointer("/bounds/height"))
+                .and_then(|v| v.as_f64());
+            match (w, h) {
+                (Some(w), Some(h)) if w.is_finite() && w > 0.0 && h.is_finite() && h > 0.0 => {
+                    (w, h)
+                }
+                _ => DEFAULT_SCENE_BOUNDS_UNITS,
+            }
+        };
+
         ResolvedScene {
             los_restriction: los,
             fog,
@@ -474,6 +498,7 @@ impl SceneEcs {
             env_intensity: env_int.clamp(0.0, 1.0),
             movement_restriction: parse_movement_restriction(move_str),
             partial_cell_leniency: d_lenient,
+            bounds,
         }
     }
 
@@ -2773,6 +2798,46 @@ mod tests {
         );
         let r = ecs.resolve_scene(scene_id);
         assert_eq!(r.movement_restriction, MovementRestriction::Revealed);
+    }
+
+    #[test]
+    fn resolve_scene_bounds_defaults_when_absent() {
+        let ecs = SceneEcs::new();
+        let r = ecs.resolve_scene(Uuid::from_u128(1));
+        assert_eq!(r.bounds, (100.0, 100.0));
+    }
+
+    #[test]
+    fn resolve_scene_bounds_reads_authored_value() {
+        use serde_json::json;
+        let mut ecs = SceneEcs::new();
+        let scene_id = Uuid::from_u128(2);
+        ecs.insert_scene_for_test(
+            scene_id,
+            json!({
+                "grid": { "kind": "square", "size": 100 },
+                "bounds": { "width": 40.0, "height": 25.0 }
+            }),
+        );
+        let r = ecs.resolve_scene(scene_id);
+        assert_eq!(r.bounds, (40.0, 25.0));
+    }
+
+    #[test]
+    fn resolve_scene_bounds_fail_closed_on_degenerate() {
+        use serde_json::json;
+        let mut ecs = SceneEcs::new();
+        let scene_id = Uuid::from_u128(3);
+        // Zero width + negative height are degenerate for a navmesh rectangle → default.
+        ecs.insert_scene_for_test(
+            scene_id,
+            json!({
+                "grid": { "kind": "square", "size": 100 },
+                "bounds": { "width": 0.0, "height": -5.0 }
+            }),
+        );
+        let r = ecs.resolve_scene(scene_id);
+        assert_eq!(r.bounds, (100.0, 100.0));
     }
 
     #[test]
