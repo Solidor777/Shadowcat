@@ -44,6 +44,7 @@ pub struct PathGrid<'a> {
     pub footprint_radius_cells: f64,
     pub walls: &'a [vision::Seg],
     pub mask: Option<&'a BTreeSet<Cell>>,
+    pub regions: Option<&'a crate::scene::regions::RegionField>,
     pub window: (i32, i32, i32, i32),
 }
 
@@ -81,19 +82,12 @@ fn footprint_cells(anchor: Cell, ctr: vision::P, r_scene: f64, cell: f64) -> Vec
     out
 }
 
-/// Region-arrest hook stub (mirrors `move_exec.rs::region_arrests`). Returns `true` when a region
-/// halts entry into `to`. Currently always `false`; the region system (M10g) replaces this body.
-/// Pure/headless: unlike `move_exec.rs`'s version, this takes no ECS handle — this module borrows
-/// no ECS and owns no I/O (module invariant).
-fn region_arrests(_to: Cell) -> bool {
-    false
-}
-
 /// Whether a token may step from `from` into `to`. INVARIANT (spec §4.3, M3 spec §3): full
 /// geometric footprint clearance — (1) the footprint disc at `to` clears every `blocksMove` wall,
 /// (2) every footprint-overlapped cell AND every cell the center-to-center step's supercover
 /// crosses (including diagonal corner-flankers) is in the mask (non-GM), (3) the center step
-/// `from→to` crosses no wall, (4) the region-arrest hook (M3/M10g stub) does not halt entry.
+/// `from→to` crosses no wall, (4) no footprint-overlapped cell is `impassable` in the region field
+/// (M10g; arrest/terrain apply elsewhere — see the region-gate comment inline below).
 pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     let (i0, j0, i1, j1) = grid.window;
     if to.0 < i0 || to.0 > i1 || to.1 < j0 || to.1 > j1 {
@@ -140,10 +134,19 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
             return false;
         }
     }
-    // (4) Region-arrest hook (M3/M10g stub) — mirrors move_exec.rs::region_arrests. Always false
-    // today; M10g wires real region data into both this stub and move_exec's.
-    if region_arrests(to) {
-        return false;
+    // (4) Region gate: impassable footprint-overlap blocks entry, mirroring the wall-clearance
+    // rule (§4 membership: any footprint-overlapped cell counts, not just the destination
+    // center — a wide-bodied token can't fit past impassable terrain any more than a wall).
+    // Arrest/terrain are NOT footprint-gated here: they represent effects on the mover's own
+    // position rather than solid geometry it must clear, so they are evaluated once each, in
+    // `find()`'s route assembly (arrest truncation) and in `astar_leg`'s step cost (terrain),
+    // both keyed on cell-center only — mirroring `move_exec.rs`'s existing center-cell model.
+    if let Some(regions) = grid.regions {
+        for c in footprint_cells(to, ctr, r_scene, grid.cell) {
+            if regions.is_impassable(c) {
+                return false;
+            }
+        }
     }
 
     true
@@ -162,6 +165,7 @@ mod astar_tests {
             footprint_radius_cells: footprint,
             walls: &NO_WALLS,
             mask: None,
+            regions: None,
             window: (-50, -50, 50, 50),
         }
     }
@@ -233,6 +237,7 @@ mod astar_tests {
             footprint_radius_cells: 0.1,
             walls: &walls,
             mask: None,
+            regions: None,
             window: (-10, -10, 10, 10),
         };
         assert_eq!(astar_leg(&g, (0, 0), (3, 3), 0), Err(PathFail::Unreachable));
@@ -309,6 +314,11 @@ fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
     }
 }
 
+/// ADMISSIBILITY WITH TERRAIN (M10g): `astar_leg`'s actual step cost is `step_cost(...) *
+/// terrain_multiplier(next)`, and every multiplier is >= 1.0 (validated where `RegionField` is
+/// built, `SceneEcs::region_field`/spec §3). This heuristic already lower-bounds the UNWEIGHTED
+/// step cost, so it remains a valid (never-overestimating) lower bound on the weighted cost too —
+/// terrain can only make the real path more expensive, never cheaper than this heuristic assumes.
 /// Consistent (not merely admissible) heuristic from `c` to `goal` under `rule`. Consistency
 /// holds because Δh per king-move never exceeds that move's minimum step cost: orthogonal Δh ≤ 1 =
 /// orthogonal cost; diagonal Δh ≤ √2 ≤ each rule's diagonal cost (Chebyshev 1, Manhattan 2,
@@ -397,7 +407,8 @@ pub(crate) fn astar_leg(
                 continue;
             }
             let (sc, next_parity) = step_cost(grid.rule, di, dj, parity);
-            let tentative = g_popped + sc;
+            let mult = grid.regions.map_or(1.0, |r| r.terrain_multiplier(next));
+            let tentative = g_popped + sc * mult;
             let key = (next, next_parity);
             if tentative < *g_score.get(&key).unwrap_or(&f64::INFINITY) {
                 came_from.insert(key, (cell, parity));
@@ -484,6 +495,7 @@ pub fn find(
         footprint_radius_cells: footprint_radius,
         walls,
         mask,
+        regions: None,
         window,
     };
 
@@ -715,6 +727,7 @@ mod tests {
             footprint_radius_cells: footprint,
             walls,
             mask,
+            regions: None,
             window: (-100, -100, 100, 100),
         }
     }
@@ -866,20 +879,63 @@ mod tests {
     }
 
     #[test]
-    fn region_arrest_stub_is_inert_and_does_not_block_an_otherwise_open_step() {
-        // The router-side region-arrest hook (mirrors move_exec.rs::region_arrests) must be a
-        // true no-op today — the region system doesn't exist until M10g. This guards against an
-        // accidental future default flip: if `region_arrests` ever returns `true` unconditionally,
-        // this test fails immediately instead of silently breaking every open-grid path.
-        assert!(
-            !region_arrests((3, 3)),
-            "region-arrest hook must stay an inert stub until M10g provides real region data"
+    fn impassable_region_blocks_entry_like_a_wall() {
+        use crate::scene::regions::{RegionBehavior, RegionField, RegionShape};
+        let mut b = RegionField::builder();
+        b.add(
+            &RegionShape::Rect {
+                x0: 100.0,
+                y0: 0.0,
+                x1: 200.0,
+                y1: 100.0,
+            },
+            RegionBehavior::Impassable,
+            1.0,
+            100.0,
         );
+        let field = b.build();
         let walls: Vec<Seg> = vec![];
-        let g = grid(&walls, None, 0.2);
+        let mut g = grid(&walls, None, 0.2);
+        g.regions = Some(&field);
         assert!(
-            cell_enterable(&g, (0, 0), (1, 0)),
-            "an otherwise-open step must remain enterable with the inert region hook in place"
+            !cell_enterable(&g, (0, 0), (1, 0)),
+            "cell (1,0) center (150,50) is inside the impassable rect"
+        );
+    }
+
+    #[test]
+    fn terrain_region_raises_astar_step_cost() {
+        use crate::scene::regions::{RegionBehavior, RegionField, RegionShape};
+        let mut b = RegionField::builder();
+        // Terrain cost 3 covering every cell reachable in a single king-move step from BOTH the
+        // start and the goal — i.e. every possible intermediate cell of a 2-step (0,0)->(2,0)
+        // route, not merely the direct orthogonal row. Deviation from a narrower single-row rect:
+        // under Chebyshev a narrower rect leaves a same-length diagonal detour (via (1,1) or
+        // (1,-1)) that pays the multiplier only once, at cost 4.0 not 6.0 — that isn't a routing
+        // bug, it's terrain-weighting correctly picking the cheaper of two equal-length routes.
+        // Covering all three king-move-adjacent intermediates (1,-1)/(1,0)/(1,1) removes that
+        // escape so every legal 2-step route pays the multiplier twice, proving the weighting is
+        // applied per entered cell regardless of which route is chosen.
+        b.add(
+            &RegionShape::Rect {
+                x0: 0.0,
+                y0: -100.0,
+                x1: 300.0,
+                y1: 200.0,
+            },
+            RegionBehavior::Terrain,
+            3.0,
+            100.0,
+        );
+        let field = b.build();
+        let walls: Vec<Seg> = vec![];
+        let mut g = grid(&walls, None, 0.1);
+        g.regions = Some(&field);
+        let (_cells, cost, _p) = astar_leg(&g, (0, 0), (2, 0), 0).unwrap();
+        assert!(
+            (cost - 6.0).abs() < 1e-9,
+            "2 steps through terrain at multiplier 3 = 6.0, regardless of which of the three \
+             king-move-adjacent intermediate cells the route passes through"
         );
     }
 }
