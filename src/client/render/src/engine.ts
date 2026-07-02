@@ -13,6 +13,7 @@ import { TokenView } from "./token-view";
 import { DrawingView } from "./drawing-view";
 import { TemplateView } from "./template-view";
 import { WallView } from "./wall-view";
+import { RegionView } from "./region-view";
 import { PingView } from "./ping-view";
 
 /** Rasterize a flat `[i,j,…]` explored-cell list into one square rect polygon per cell at
@@ -72,6 +73,7 @@ export class RenderEngine implements SceneToolHost {
   private readonly drawings: DrawingView;
   private readonly templates: TemplateView;
   private readonly walls: WallView;
+  private readonly regions: RegionView;
   private readonly pings = new PingView();
   /** Whether ping rings were drawn last frame, so the ticker stops redrawing once idle. */
   private pingsActive = false;
@@ -121,6 +123,7 @@ export class RenderEngine implements SceneToolHost {
     this.drawings = new DrawingView(opts.store, opts.backend);
     this.templates = new TemplateView(opts.store, opts.backend);
     this.walls = new WallView(opts.store, opts.backend);
+    this.regions = new RegionView(opts.store, opts.backend);
     this.compositor = new Compositor(opts.backend);
     this.lighting = new Lighting(opts.backend);
   }
@@ -133,12 +136,14 @@ export class RenderEngine implements SceneToolHost {
     this.drawings.reconcile();
     this.templates.reconcile();
     this.walls.reconcile();
+    this.regions.reconcile();
     this.unsubscribe = this.opts.store.subscribe(() => {
       this.reconciler.reconcile();
       this.tokens.reconcile();
       this.drawings.reconcile();
       this.templates.reconcile();
       this.walls.reconcile();
+      this.regions.reconcile();
       this.flushPendingDerived();
     });
     this.opts.backend.startTicker((dt) => {

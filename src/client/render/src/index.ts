@@ -7,6 +7,7 @@ export { TokenView } from "./token-view";
 export { DrawingView } from "./drawing-view";
 export { TemplateView } from "./template-view";
 export { WallView } from "./wall-view";
+export { RegionView } from "./region-view";
 export { PingView, type PingRing } from "./ping-view";
 export { LayerRegistry, CORE_LAYERS, type CoreLayerId } from "./layers";
 export { Camera } from "./camera";

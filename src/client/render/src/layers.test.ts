@@ -5,14 +5,14 @@ test("core layers are in the fixed §6.1 z-order", () => {
   const r = new LayerRegistry();
   expect(r.orderedIds()).toEqual([...CORE_LAYERS]);
   expect(CORE_LAYERS).toEqual([
-    "background", "grid", "tiles", "drawings", "walls",
+    "background", "grid", "tiles", "regions", "drawings", "walls",
     "tokens", "templates", "lighting", "mask", "overlays",
   ]);
 });
 
 test("a module layer is spliced by ascending order; dispose removes it", () => {
   const r = new LayerRegistry();
-  const dispose = r.register("fx", 6.5); // between tokens(5) and templates(6); lighting(7), mask(8)
+  const dispose = r.register("fx", 6.5); // between tokens(6) and templates(7); lighting(8), mask(9)
   const ids = r.orderedIds();
   expect(ids.indexOf("fx")).toBeGreaterThan(ids.indexOf("tokens"));
   expect(ids.indexOf("fx")).toBeLessThan(ids.indexOf("mask"));
