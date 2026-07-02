@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-scene-rendering
-description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, lighting, the server visibility/lit mask, movement restriction (the Room::publish move gate, supercover, visible_cells), the grid A* pathfinder (scene/pathfinding.rs, SceneEcs::pathfind, Pathfind/PathResult frames, diagonal rules), streamed continuous vision (MoveStream, scene/move_stream.rs, player_vision_polygons_at, the per-recipient egress clip, client fog-sweep/cross-fade playback), or scene-tools (place/select/move/draw/template/measure/ping). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, lighting, the server visibility/lit mask, movement restriction (the Room::publish move gate, supercover, visible_cells), the grid A* pathfinder (scene/pathfinding.rs, SceneEcs::pathfind, Pathfind/PathResult frames, diagonal rules), streamed continuous vision (MoveStream, scene/move_stream.rs, player_vision_polygons_at, the per-recipient egress clip, client fog-sweep/cross-fade playback), regions (weighted/impassable/arrest zones, region docs, region-view.ts render layer), or scene-tools (place/select/move/draw/template/measure/ping/wall/region). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Scene & Rendering
@@ -147,8 +147,18 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   Plan: `docs/superpowers/plans/2026-06-25-m10e-3-client-lighting-render.md`.
 - `src/modules/stage/Stage.svelte` — mounts the render engine over a `ReadableDocuments` view.
 - `src/modules/scene-tools/` — `controller.svelte.ts`, `hit-test.ts`, tools (place/select/move/
-  draw/template/measure/ping) dispatching intents. Wall tool writes a **three-flag** segment:
-  `blocksSight` + `blocksMove` + `blocksLight`.
+  draw/template/measure/ping/wall/region) dispatching intents. Wall tool writes a **three-flag**
+  segment: `blocksSight` + `blocksMove` + `blocksLight`. Region tool (`makeRegionTool`) drags out
+  a rect/circle/polygon `region` doc (`ToolController.regionShapeMode`/`regionBehavior`/
+  `regionCost`/`regionSecret` reactive fields) via `buildRegionDoc` +, when `regionSecret`,
+  `setRegionVisibility(doc, true)` (declares `/system` `gm_only` at construction — the create op
+  never carries the geometry in the clear). Create-only, mirroring `makeWallTool`: no edit UI for
+  an already-placed region's behavior/cost/visibility/`enabled` — a GM re-authors via
+  delete+recreate, or the server's live `enabled` toggle (region_field already honors it) without
+  a UI surface. `buildRegionDoc`/`setRegionVisibility`/`RegionSystem`/`RegionShape`/
+  `RegionShapeKind`/`RegionBehavior` are exported from `@shadowcat/core`'s public `index.ts` (the
+  scene-docs.ts source predates the export; any future scene-docs.ts addition needs its own
+  `index.ts` export line — it is not automatic).
 - `src/client/core/src/scene-docs.ts` — **vision/lighting/movement data model (M10e-1 client model;
   the M10e-2 server mask now consumes these shapes; no client lighting render yet — M10e-3)**:
   world-scoped config-docs `world-settings`/`light-gradation`/`vision-modes`
