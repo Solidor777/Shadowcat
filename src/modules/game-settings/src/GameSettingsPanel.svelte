@@ -5,7 +5,7 @@
     buildWorldSettingsDoc, buildLightGradationDoc, buildVisionModesDoc,
     DEFAULT_WORLD_SETTINGS,
     type WorldSettingsSystem, type LightGradationSystem, type VisionModesSystem,
-    type SceneSystem, type WireDocument,
+    type SceneSystem, type WireDocument, DEFAULT_SCENE_BOUNDS,
   } from "@shadowcat/core";
 
   const ctx = getAppContext();
@@ -80,6 +80,14 @@
   function setScene(path: string, value: unknown): void {
     if (!scene) return;
     ctx.dispatchIntent([{ op: "update", doc_id: scene.id, changes: [{ path, old: null, new: value }] }]);
+  }
+
+  // Whole-object write: set_pointer cannot create a missing /system/bounds parent from a
+  // sub-path, so we always dispatch the full { width, height } (mirrors the environment editor).
+  // The unedited axis falls back to the current authored value, else DEFAULT_SCENE_BOUNDS.
+  function setBounds(axis: "width" | "height", value: number): void {
+    const cur = ssys?.bounds ?? DEFAULT_SCENE_BOUNDS;
+    setScene("/system/bounds", { ...cur, [axis]: value });
   }
 </script>
 
@@ -368,6 +376,20 @@
             perCell: ssys?.grid?.distance?.perCell ?? 5,
             unit: (e.currentTarget as HTMLInputElement).value,
           })} />
+      </label>
+
+      <!-- Scene bounds: per-scene only, fixed default (not an inherit-from-world tri-state). -->
+      <label>
+        {ctx.t("gameSettings.scene.boundsWidth")}
+        <input type="number" min="1" step="1" aria-label="gameSettings.scene.boundsWidth"
+          value={ssys?.bounds?.width ?? DEFAULT_SCENE_BOUNDS.width}
+          onchange={(e) => setBounds("width", Number((e.currentTarget as HTMLInputElement).value))} />
+      </label>
+      <label>
+        {ctx.t("gameSettings.scene.boundsHeight")}
+        <input type="number" min="1" step="1" aria-label="gameSettings.scene.boundsHeight"
+          value={ssys?.bounds?.height ?? DEFAULT_SCENE_BOUNDS.height}
+          onchange={(e) => setBounds("height", Number((e.currentTarget as HTMLInputElement).value))} />
       </label>
     </fieldset>
   {/if}
