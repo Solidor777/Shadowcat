@@ -3,13 +3,15 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import { topTokenAt } from "./hit-test";
 
-export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping" | "wall";
+export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping" | "wall" | "region";
 export type DrawMode = "freehand" | "rect" | "ellipse" | "line";
 export type TemplateMode = "circle" | "cone" | "rect" | "line";
+export type RegionShapeMode = "rect" | "circle" | "polygon";
+export type RegionBehaviorMode = "terrain" | "impassable" | "arrest";
 
 /** The AppContext slice the tools need. `documents` is the optimistic view, so a
  * just-auto-created scene / just-placed token is visible to the tools immediately. */
@@ -77,6 +79,11 @@ export class ToolController {
   /** Template-tool shape mode + color. */
   templateMode = $state<TemplateMode>("circle");
   templateColor = $state("#3388ff");
+  /** Region-tool shape mode + behavior/cost/secrecy config (M10g authoring). */
+  regionShapeMode = $state<RegionShapeMode>("rect");
+  regionBehavior = $state<RegionBehaviorMode>("terrain");
+  regionCost = $state<number>(2);
+  regionSecret = $state<boolean>(false);
   readonly #tools: Record<ToolId, SceneTool>;
 
   constructor(private readonly ctx: ToolContext) {
@@ -88,6 +95,7 @@ export class ToolController {
       measure: makeMeasureTool(ctx),
       ping: makePingTool(ctx),
       wall: makeWallTool(ctx),
+      region: makeRegionTool(ctx, this),
     };
   }
 
@@ -186,6 +194,85 @@ export function makeWallTool(ctx: ToolContext): SceneTool {
       anchor = null;
     },
   };
+}
+
+/** Region preview stroke color (distinct from walls/measure route). Actual persisted fill/stroke
+ * is behavior-tinted by the render layer (`region-view.ts`); this is just the drag preview. */
+const REGION_PREVIEW_COLOR = 0xd0a030;
+
+/** Author a vector-shaped region: rect/circle drag two opposite corners; polygon is a freehand
+ * drag whose traced path becomes the closed boundary (mirrors `makeDrawTool`'s freehand capture).
+ * Release persists a `region` doc with the controller's configured behavior/cost/secrecy.
+ * Create-only (no edit UI) — mirrors `makeWallTool`'s precedent: editing behavior/cost/visibility
+ * on an already-placed region has no dedicated UI; a GM re-authors by delete+recreate, or toggles
+ * `enabled` server-side. GM-gated (all rail tools are). */
+export function makeRegionTool(ctx: ToolContext, controller: ToolController): SceneTool {
+  let anchor: Point | null = null;
+  let freehand: number[] = [];
+
+  return {
+    onPointerDown(p: Point): boolean {
+      if (!activeScene(ctx)) return false;
+      anchor = ctx.scene.snap(p);
+      freehand = [anchor.x, anchor.y];
+      return true;
+    },
+    onPointerMove(p: Point): void {
+      if (!anchor) return;
+      const b = ctx.scene.snap(p);
+      if (controller.regionShapeMode === "polygon") freehand.push(b.x, b.y);
+      const { points, closed } = regionShapePath(controller.regionShapeMode, anchor, b, freehand);
+      ctx.scene.previewOverlay([{ points, closed, stroke: { color: REGION_PREVIEW_COLOR, width: 2 }, fill: null }]);
+    },
+    onPointerUp(p: Point): void {
+      if (!anchor) return;
+      const scene = activeScene(ctx);
+      const b = ctx.scene.snap(p);
+      const mode = controller.regionShapeMode;
+      const hasExtentForRegion =
+        mode === "polygon" ? freehand.length >= 6 : Math.hypot(b.x - anchor.x, b.y - anchor.y) >= 1;
+      if (scene && hasExtentForRegion) {
+        const shapePoints = regionShapeGeometry(mode, anchor, b, freehand);
+        const doc = buildRegionDoc(ctx.world, scene.id, {
+          shape: { kind: mode, points: shapePoints },
+          behavior: controller.regionBehavior,
+          cost: Math.max(1, controller.regionCost),
+          enabled: true,
+        });
+        if (controller.regionSecret) setRegionVisibility(doc, true);
+        ctx.dispatchIntent([{ op: "create", doc }]);
+      }
+      ctx.scene.clearOverlay();
+      anchor = null;
+      freehand = [];
+    },
+  };
+}
+
+/** Preview points for the in-progress region drag (closed for all three shape kinds — a region
+ * is always an area, unlike walls/lines). */
+function regionShapePath(mode: RegionShapeMode, a: Point, b: Point, freehand: number[]): { points: number[]; closed: boolean } {
+  switch (mode) {
+    case "rect":
+      return { points: rectPoints(a.x, a.y, b.x, b.y), closed: true };
+    case "circle":
+      return { points: circlePoints(a.x, a.y, Math.hypot(b.x - a.x, b.y - a.y)), closed: true };
+    case "polygon":
+      return { points: freehand, closed: true };
+  }
+}
+
+/** The persisted `system.shape.points` layout for `mode`: rect=[x0,y0,x1,y1], circle=[cx,cy,r],
+ * polygon=[x0,y0,x1,y1,...] — matches the server's region shape parser expectations. */
+function regionShapeGeometry(mode: RegionShapeMode, a: Point, b: Point, freehand: number[]): number[] {
+  switch (mode) {
+    case "rect":
+      return [a.x, a.y, b.x, b.y];
+    case "circle":
+      return [a.x, a.y, Math.hypot(b.x - a.x, b.y - a.y)];
+    case "polygon":
+      return freehand;
+  }
 }
 
 /** Click to ping a location: broadcasts a transient marker. The server relays it back to

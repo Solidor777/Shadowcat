@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { ToolController, type ToolId, type DrawMode, type TemplateMode } from "./controller.svelte";
+  import { ToolController, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
 
   const ctx = getAppContext();
@@ -29,9 +29,12 @@
     { id: "measure", label: t("tools.measure") },
     { id: "ping", label: t("tools.ping") },
     { id: "wall", label: t("tools.wall") },
+    { id: "region", label: t("tools.region") },
   ];
   const drawModes: DrawMode[] = ["freehand", "rect", "ellipse", "line"];
   const templateModes: TemplateMode[] = ["circle", "cone", "rect", "line"];
+  const regionShapeModes: RegionShapeMode[] = ["rect", "circle", "polygon"];
+  const regionBehaviors: RegionBehaviorMode[] = ["terrain", "impassable", "arrest"];
 </script>
 
 {#if isGm}
@@ -65,6 +68,20 @@
           {#each templateModes as m (m)}<option value={m}>{m}</option>{/each}
         </select>
         <input type="color" data-testid="template-color" aria-label={t("tools.color")} bind:value={controller.templateColor} />
+      </div>
+    {:else if controller.active === "region"}
+      <div class="controls">
+        <select data-testid="region-shape" aria-label={t("tools.shape")} bind:value={controller.regionShapeMode}>
+          {#each regionShapeModes as m (m)}<option value={m}>{m}</option>{/each}
+        </select>
+        <select data-testid="region-behavior" aria-label={t("tools.behavior")} bind:value={controller.regionBehavior}>
+          {#each regionBehaviors as b (b)}<option value={b}>{b}</option>{/each}
+        </select>
+        <input type="number" data-testid="region-cost" aria-label={t("tools.cost")} min="1" step="0.5" bind:value={controller.regionCost} disabled={controller.regionBehavior !== "terrain"} />
+        <label>
+          <input type="checkbox" data-testid="region-secret" bind:checked={controller.regionSecret} />
+          {t("tools.secret")}
+        </label>
       </div>
     {/if}
   </div>
