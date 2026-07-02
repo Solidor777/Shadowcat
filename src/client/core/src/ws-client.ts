@@ -51,6 +51,8 @@ export interface MoveStream {
   stop: [number, number];
   samples: MoveSample[];
   moverVision: MoveVisionSample[] | null;
+  /** Total terrain-weighted movement cost for this move (M10g). Informational. */
+  cost: number;
 }
 
 /** Handle to an active live search subscription (Core.subscribeSearch). */
@@ -342,6 +344,7 @@ export class WsClient {
           moverVision: msg.mover_vision
             ? msg.mover_vision.map((v) => ({ tMs: v.t_ms, polygons: v.polygons as [number, number][][] }))
             : null,
+          cost: msg.cost,
         };
         // Resolve the mover's pending promise (if request_id matches).
         const p = this.pending.get(msg.request_id);

@@ -281,6 +281,9 @@ pub enum ServerMsg {
         /// server-clipped position samples and render against their existing authoritative fog;
         /// the client computes no vision. Sending mover vision to observers would leak geometry.
         mover_vision: Option<Vec<VisionSample>>,
+        /// Total terrain-weighted movement cost accumulated over the executed move (M10g spec
+        /// §6). Informational — no per-turn budget cap consumes it in v1.
+        cost: f64,
     },
 }
 
@@ -545,6 +548,7 @@ mod protocol_tests {
             stop: [100.0, 200.0],
             samples: in_samples.clone(),
             mover_vision: in_vision.clone(),
+            cost: 3.5,
         };
         let wire = serde_json::to_string(&msg).unwrap();
         // Tag must be snake_case.
@@ -562,6 +566,7 @@ mod protocol_tests {
                 stop,
                 samples,
                 mover_vision,
+                cost,
             } => {
                 assert_eq!(request_id, Uuid::from_u128(1));
                 assert_eq!(token_id, Uuid::from_u128(2));
@@ -572,6 +577,7 @@ mod protocol_tests {
                 assert_eq!(stop, [100.0, 200.0]);
                 assert_eq!(samples, in_samples);
                 assert_eq!(mover_vision, in_vision);
+                assert!((cost - 3.5).abs() < 1e-9);
             }
             _ => panic!("expected MoveStream"),
         }
@@ -590,6 +596,7 @@ mod protocol_tests {
             stop: [100.0, 200.0],
             samples: in_samples2,
             mover_vision: None,
+            cost: 1.0,
         };
         let wire2 = serde_json::to_string(&msg_no_vision).unwrap();
         let back2: ServerMsg = serde_json::from_str(&wire2).unwrap();

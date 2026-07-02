@@ -60,4 +60,9 @@ samples: Array<PosSample>,
  * server-clipped position samples and render against their existing authoritative fog;
  * the client computes no vision. Sending mover vision to observers would leak geometry.
  */
-mover_vision: Array<VisionSample> | null, };
+mover_vision: Array<VisionSample> | null, 
+/**
+ * Total terrain-weighted movement cost accumulated over the executed move (M10g spec
+ * §6). Informational — no per-turn budget cap consumes it in v1.
+ */
+cost: number, };

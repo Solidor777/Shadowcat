@@ -256,6 +256,7 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
         }),
       )
       .nullable(),
+    cost: z.number(),
   }),
 ]);
 

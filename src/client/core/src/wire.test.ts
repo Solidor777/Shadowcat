@@ -176,6 +176,7 @@ describe("parseServerMsg", () => {
       mover_vision: [
         { t_ms: 0.0, polygons: [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]] },
       ],
+      cost: 3.5,
     };
     const m = parseServerMsg(JSON.stringify(frame));
     expect(m).not.toBeNull();
@@ -201,6 +202,7 @@ describe("parseServerMsg", () => {
       stop: [100.0, 200.0],
       samples: [{ t_ms: 0.0, pos: [0.0, 0.0] }],
       mover_vision: null,
+      cost: 1.0,
     };
     const m = parseServerMsg(JSON.stringify(frame));
     expect(m).not.toBeNull();

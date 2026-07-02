@@ -385,6 +385,7 @@ function moveStreamFrame(scene: string, moverVision: unknown = null): Record<str
     stop: [100, 0],
     samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
     mover_vision: moverVision,
+    cost: 2,
   };
 }
 

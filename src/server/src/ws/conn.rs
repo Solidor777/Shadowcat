@@ -537,6 +537,7 @@ async fn handle_move_request(
                     })
                     .collect(),
                 mover_vision,
+                cost: exec.cost,
             };
             room.broadcast_aux(frame);
             // No success frame to the requester: the broadcast is the notification.
@@ -675,6 +676,7 @@ async fn clip_move_stream(
         stop,
         samples,
         mover_vision: _, // forwarded only to the mover via msg.clone(); observers get None
+        cost,
     } = msg
     else {
         return None;
@@ -697,6 +699,7 @@ async fn clip_move_stream(
             stop: *stop,
             samples: samples.clone(),
             mover_vision: None,
+            cost: *cost,
         });
     }
 
@@ -741,6 +744,7 @@ async fn clip_move_stream(
         stop: clipped_stop,
         samples: visible,
         mover_vision: None, // INVARIANT: mover_vision strictly mover-only
+        cost: *cost,
     })
 }
 
@@ -1866,6 +1870,7 @@ mod tests {
             stop: [150.0, 50.0],
             samples: samples.clone(),
             mover_vision: mv.clone(),
+            cost: 2.0,
         };
 
         let result = clip_move_stream(&frame, &ctx, &room).await;
@@ -1917,6 +1922,7 @@ mod tests {
                 },
             ],
             mover_vision: None,
+            cost: 2.0,
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, &room).await;
@@ -1967,6 +1973,7 @@ mod tests {
                 },
             ],
             mover_vision: None,
+            cost: 2.0,
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, &room).await;
@@ -2048,6 +2055,7 @@ mod tests {
                 },
             ],
             mover_vision: None,
+            cost: 2.0,
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, &room).await;
@@ -2119,6 +2127,7 @@ mod tests {
             stop: true_stop,
             samples: samples.clone(),
             mover_vision: mv,
+            cost: 2.0,
         };
 
         let result = clip_move_stream(&frame, &gm_ctx, &room).await;

@@ -477,6 +477,7 @@ describe("WsClient", () => {
         stop: [100, 0],
         samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
         mover_vision: null,
+        cost: 2,
       }),
     );
 
@@ -524,6 +525,7 @@ describe("WsClient", () => {
         stop: [200, 0],
         samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 300, pos: [200, 0] }],
         mover_vision: null,
+        cost: 3,
       }),
     );
     await flush();
