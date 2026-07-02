@@ -5,6 +5,7 @@ import {
   type WireDocument,
 } from "./scene-docs";
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc } from "./scene-docs";
+import { buildRegionDoc, setRegionVisibility, type RegionSystem } from "./scene-docs";
 import { DocumentStore } from "./store";
 
 function storeWith(...docs: WireDocument[]): DocumentStore {
@@ -220,4 +221,33 @@ it("builds a light doc parented to its scene", () => {
   expect(l.doc_type).toBe("light");
   expect(l.parent_id).toBe("scene1");
   expect((l.system as { brightRadius: number }).brightRadius).toBe(4);
+});
+
+describe("buildRegionDoc", () => {
+  it("builds a region doc parented to the scene with the given system", () => {
+    const sys: RegionSystem = {
+      shape: { kind: "rect", points: [0, 0, 100, 100] },
+      behavior: "terrain",
+      cost: 2,
+      enabled: true,
+    };
+    const doc = buildRegionDoc("world1", "scene1", sys);
+    expect(doc.doc_type).toBe("region");
+    expect(doc.parent_id).toBe("scene1");
+    expect(doc.system).toEqual(sys);
+    expect(doc.permissions.property_overrides).toEqual({});
+  });
+
+  it("setRegionVisibility(true) declares /system as gm_only; false clears it", () => {
+    const doc = buildRegionDoc("world1", "scene1", {
+      shape: { kind: "circle", points: [50, 50, 25] },
+      behavior: "arrest",
+      cost: 1,
+      enabled: true,
+    });
+    setRegionVisibility(doc, true);
+    expect(doc.permissions.property_overrides["/system"]).toBe("gm_only");
+    setRegionVisibility(doc, false);
+    expect(doc.permissions.property_overrides["/system"]).toBeUndefined();
+  });
 });

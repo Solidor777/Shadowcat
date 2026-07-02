@@ -419,3 +419,45 @@ export interface LightSystem {
 export function buildLightDoc(worldId: string, sceneId: string, system: LightSystem, id?: string): WireDocument {
   return envelope(worldId, "light", sceneId, system, id);
 }
+
+// --- Region doc type (M10g) ---
+
+export type RegionShapeKind = "rect" | "circle" | "polygon";
+
+/** A region's vector geometry (M8d-3a shape vocabulary). `points` layout by kind:
+ *  rect: [x0,y0,x1,y1]; circle: [cx,cy,r]; polygon: [x0,y0,x1,y1,...] (>=3 vertices, even length). */
+export interface RegionShape {
+  kind: RegionShapeKind;
+  points: number[];
+}
+
+export type RegionBehavior = "terrain" | "impassable" | "arrest";
+
+/** A region document: a vector-shaped zone that weights, blocks, or arrests grid movement
+ * (M10g). `cost` is a multiplier (>=1) meaningful only for `behavior:"terrain"`. `enabled`
+ * lets a GM toggle a region off without deleting it (server drops disabled regions entirely). */
+export interface RegionSystem {
+  shape: RegionShape;
+  behavior: RegionBehavior;
+  cost: number;
+  enabled: boolean;
+}
+
+/** A region document parented to `sceneId`. Visible to all by default; use
+ * `setRegionVisibility` to make it a secret trap. */
+export function buildRegionDoc(worldId: string, sceneId: string, system: RegionSystem, id?: string): WireDocument {
+  return envelope(worldId, "region", sceneId, system, id);
+}
+
+/** Set/clear the secrecy override on a region doc's permissions: hiding declares the WHOLE
+ * `/system` body (geometry + behavior + cost) as the `gm_only` tier — the server strips it
+ * from non-GM egress entirely (spec §3: "no new secrecy machinery"), so a hidden region never
+ * reaches a player's `documents` store and needs no client-side hide logic. Mutates in place +
+ * returns `doc`. */
+export function setRegionVisibility(doc: WireDocument, hidden: boolean): WireDocument {
+  const overrides = { ...doc.permissions.property_overrides };
+  if (hidden) overrides["/system"] = "gm_only";
+  else delete overrides["/system"];
+  doc.permissions = { ...doc.permissions, property_overrides: overrides };
+  return doc;
+}
