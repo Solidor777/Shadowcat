@@ -918,6 +918,65 @@ impl SceneEcs {
         )
     }
 
+    /// The composed region field for `scene`. `viewer: None` is the AUTHORITATIVE view (every
+    /// enabled region, no filtering) — used by the GM and by `move_exec` (which springs secret
+    /// regions on execution regardless of what the mover could see). `viewer: Some(user)` is the
+    /// PER-REQUESTER view used by the grid A* router: a region is included only when `user` can
+    /// see the visibility tier declared on its `/system` (defaults to `All` when undeclared) —
+    /// the SAME `resolve_access`/`property_overrides` mechanism that already gates every other
+    /// document's egress (spec §3: "no new secrecy machinery"). Callers MUST pass `None` for a
+    /// GM requester (a GM always sees the authoritative field, mirroring `visible_cells`'s
+    /// GM-skips-the-mask convention in `pathfind`).
+    pub(crate) fn region_field(&self, scene: Uuid, viewer: Option<Uuid>) -> regions::RegionField {
+        let cell = self
+            .scene_grid_sizes()
+            .get(&scene)
+            .copied()
+            .unwrap_or(100.0);
+        let mut builder = regions::RegionField::builder();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            let doc = &e.doc;
+            if doc.doc_type != "region" || doc.parent_id != Some(scene) {
+                continue;
+            }
+            if doc.system.pointer("/enabled").and_then(|v| v.as_bool()) != Some(true) {
+                continue;
+            }
+            if let Some(user) = viewer {
+                let tier = doc
+                    .permissions
+                    .property_overrides
+                    .get("/system")
+                    .copied()
+                    .unwrap_or(crate::data::document::Visibility::All);
+                let access = crate::data::permission::resolve_access(
+                    user,
+                    crate::data::document::WorldRole::Player,
+                    doc,
+                );
+                if !access.can_see(tier) {
+                    continue;
+                }
+            }
+            let Some(shape) = regions::parse_region_shape(&doc.system) else {
+                continue;
+            };
+            let behavior = match doc.system.pointer("/behavior").and_then(|v| v.as_str()) {
+                Some("impassable") => regions::RegionBehavior::Impassable,
+                Some("arrest") => regions::RegionBehavior::Arrest,
+                _ => regions::RegionBehavior::Terrain,
+            };
+            let cost = doc
+                .system
+                .pointer("/cost")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1.0)
+                .max(1.0);
+            builder.add(&shape, behavior, cost, cell);
+        }
+        builder.build()
+    }
+
     /// The enabled `light` docs parented to `scene`, parsed into `lighting::Light`. Disabled lights
     /// are dropped here (they contribute nothing). `falloff` defaults to Linear; missing radii → 0.
     pub(crate) fn scene_lights(&self, scene: Uuid) -> Vec<crate::scene::lighting::Light> {
@@ -3033,6 +3092,105 @@ mod tests {
             0,
         );
         (ecs, scene)
+    }
+
+    #[test]
+    fn region_field_authoritative_includes_secret_regions_visible_excludes_them() {
+        use crate::data::document::Visibility;
+        let scene_id = Uuid::from_u128(10);
+        let owner = Uuid::from_u128(1);
+        let player = Uuid::from_u128(2);
+
+        let mut secret = crate::data::document::tests::world_scoped_doc(
+            Uuid::from_u128(9),
+            Uuid::from_u128(20),
+            "region",
+        );
+        secret.parent_id = Some(scene_id);
+        secret.owner = Some(owner);
+        secret.system = serde_json::json!({
+            "shape": { "kind": "rect", "points": [0.0, 0.0, 100.0, 100.0] },
+            "behavior": "impassable",
+            "cost": 1.0,
+            "enabled": true,
+        });
+        secret
+            .permissions
+            .property_overrides
+            .insert("/system".into(), Visibility::GmOnly);
+
+        let mut visible = crate::data::document::tests::world_scoped_doc(
+            Uuid::from_u128(9),
+            Uuid::from_u128(21),
+            "region",
+        );
+        visible.parent_id = Some(scene_id);
+        visible.system = serde_json::json!({
+            "shape": { "kind": "rect", "points": [200.0, 0.0, 300.0, 100.0] },
+            "behavior": "terrain",
+            "cost": 2.0,
+            "enabled": true,
+        });
+
+        let ecs = SceneEcs::from_documents(
+            vec![
+                crate::data::document::tests::world_scoped_doc(
+                    Uuid::from_u128(9),
+                    scene_id,
+                    "scene",
+                ),
+                secret,
+                visible,
+            ],
+            0,
+        );
+
+        let authoritative = ecs.region_field(scene_id, None);
+        assert!(
+            authoritative.is_impassable((0, 0)),
+            "authoritative field includes the secret region"
+        );
+        assert_eq!(authoritative.terrain_multiplier((2, 0)), 2.0);
+
+        let player_field = ecs.region_field(scene_id, Some(player));
+        assert!(
+            !player_field.is_impassable((0, 0)),
+            "secret region absent from a non-owner player's field"
+        );
+        assert_eq!(
+            player_field.terrain_multiplier((2, 0)),
+            2.0,
+            "visible region still present"
+        );
+    }
+
+    #[test]
+    fn region_field_ignores_disabled_regions() {
+        let scene_id = Uuid::from_u128(10);
+        let mut disabled = crate::data::document::tests::world_scoped_doc(
+            Uuid::from_u128(9),
+            Uuid::from_u128(20),
+            "region",
+        );
+        disabled.parent_id = Some(scene_id);
+        disabled.system = serde_json::json!({
+            "shape": { "kind": "rect", "points": [0.0, 0.0, 100.0, 100.0] },
+            "behavior": "impassable",
+            "cost": 1.0,
+            "enabled": false,
+        });
+        let ecs = SceneEcs::from_documents(
+            vec![
+                crate::data::document::tests::world_scoped_doc(
+                    Uuid::from_u128(9),
+                    scene_id,
+                    "scene",
+                ),
+                disabled,
+            ],
+            0,
+        );
+        assert!(!ecs.region_field(scene_id, None).is_impassable((0, 0)));
     }
 
     #[test]
