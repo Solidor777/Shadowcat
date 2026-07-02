@@ -1,131 +1,139 @@
-### Task 5 Report: Client MoveStream playback — broadcast-driven, time-synced, gap-aware
+### Task 5 Report: `find()` arrest truncation + `PathOutcome` + `SceneEcs::pathfind` wiring
 
-**Status:** COMPLETE (including review-finding fixes)
+**Status:** DONE
 
-**Original commit:** `7576efc`
-**Skill commit:** `5bebf7a`
-**Review-fix commit:** see below
+**Commit:** `30ddf32` — "feat(m10g): arrest truncation in find(); wire per-requester region field into pathfind"
 
 ---
 
-## Files changed in 7576efc / 5bebf7a
+## Files changed
 
-| File | Change |
-|---|---|
-| `src/client/render/src/token-animator.ts` | New file: `TokenAnimator.animateSamples` (time-tagged sample playback, catch-up, gap/occlusion detection) |
-| `src/client/render/src/token-animator.test.ts` | New tests for `animateSamples`: interpolation, gap hide/reveal, catch-up, settle |
-| `src/client/render/src/token-view.ts` | `animateSamples` delegation; `push` respects `isHidden` |
-| `src/client/render/src/types.ts` | `MoveSample` / `MoveVisionSample` interfaces |
-| `src/client/render/src/engine.ts` | `animateSamples` forwarding through `RenderEngine` |
-| `src/client/core/src/ws-client.ts` | `onMoveStream` listener (survives reconnects; not cleared in `failPending`); `moveRequest` promise resolves on `move_stream` frame |
-| `src/client/core/src/ws-client.test.ts` | `onMoveStream` + `moveRequest` round-trip tests |
-| `src/client/core/src/wire.ts` | Remove `MoveExecutedMsg`; add `MoveStreamMsg` |
-| `src/client/core/src/index.ts` | Export updates |
-| `src/client/shell/src/lib/worldSession.svelte.ts` | `onMoveStream` → `sceneInteraction.animateSamples` wiring |
-| `src/client/ui-kit/src/appContext.ts` | `animateSamples` on `AppContext` seam |
-| `src/client/ui-kit/src/sceneInteraction.ts` | `animateSamples` on `SceneInteractionBridge` |
-| `src/client/ui-kit/src/sceneInteraction.test.ts` | Bridge delegation test |
-| `src/client/ui-kit/src/__fixtures__/fakeSceneHost.ts` | Stub update |
-| `src/modules/scene-tools/src/controller.svelte.ts` | Route-commit no longer calls `animateAlongPath` on resolve (animation is broadcast-driven) |
-| `src/modules/scene-tools/src/measure-tool.test.ts` | 3 tests rewritten: `animateAlongPath`-assertion → `clearRoute`-count assertion |
-| `src/server/src/ws/protocol.rs` | Retire `MoveExecuted`; add `MoveStream` |
-| `src/types/generated/ServerMsg.ts` | Regenerated: `MoveExecuted` removed, `MoveStream` added |
-| `eslint.config.js` | Add `target/` ignore + `argsIgnorePattern` for `_`-prefixed params (pre-existing lint failures) |
-| `.claude/skills/shadowcat-codebase-realtime-sync/SKILL.md` | Document `MoveStream` broadcast, `animateSamples` wiring, gap threshold |
+- `src/server/src/scene/pathfinding.rs`
+  - Added `pub struct PathOutcome { path, cost, arrested }` (`#[derive(Debug, PartialEq)]`).
+  - `pub fn find(...)` grows an 8th param `regions: Option<&crate::scene::regions::RegionField>`
+    and returns `Result<PathOutcome, PathFail>` instead of `Result<(Vec<P>, f64), PathFail>`.
+    Added `#[allow(clippy::too_many_arguments)]` (8 args, mirrors `SceneEcs::pathfind`'s existing
+    attribute).
+  - `find()` now threads `regions` into the assembled `PathGrid` (previously hardcoded to `None`).
+  - After assembling the full route, `find()` scans `cells` (skipping index 0 — a token already
+    standing in the start cell is not "entering" it) for the first cell where
+    `RegionField::is_arrest` is true. If found, the route is truncated at that cell (inclusive),
+    `arrested = true`, and the cost is recomputed by replaying `step_cost` + `terrain_multiplier`
+    across the surviving prefix (parity threading restarts at 0 for the replay, which reproduces
+    the same cost the original per-leg accumulation would give for that identical prefix, since
+    parity is purely sequential/order-dependent, not leg-boundary-dependent).
+  - Updated all pre-existing `find(...)` call sites in `mod find_tests` (7 tests) to pass a
+    trailing `None` and to destructure the new `PathOutcome` fields (`.path`, `.cost`) instead of
+    a tuple. `Err(...)` assertions only needed the trailing `None` argument added.
+  - Added the two brief-specified tests: `arrest_region_truncates_the_route_and_flags_arrested`
+    and `no_regions_argument_is_backward_compatible`.
 
----
+- `src/server/src/scene/mod.rs`
+  - `SceneEcs::pathfind`'s return type changed from `Result<(Vec<(f64,f64)>, f64), PathFail>` to
+    `Result<pathfinding::PathOutcome, pathfinding::PathFail>`.
+  - `pathfind` now computes `self.region_field(scene, if is_gm { None } else { Some(user) })` and
+    passes `Some(&regions)` into `pathfinding::find`, instead of the caller's mask-only inputs.
+  - Updated `pathfind_gm_unconstrained_routes_without_a_mask` to destructure the `PathOutcome`
+    fields (`.cost`, `.path`) instead of a tuple. The other two pre-existing pathfind tests
+    (`pathfind_nongm_visible_is_bounded_by_the_mask`, `pathfind_revealed_unions_explored_memory`)
+    needed no change — they only assert on the `Err`/`is_ok()` shape, which is unaffected.
 
-## Review-finding fixes
-
-### Important 1 — Nominal-interval gap threshold (`token-animator.ts`)
-
-**Problem:** gap threshold was `durationMs / 2`. With server sampling at ~3 samples/cell a
-mid-path occlusion shorter than half the total animation duration was undetected, letting the
-token visibly slide through hidden cells (secrecy violation).
-
-**Fix:** replaced `durationMs / 2` with `computeGapThreshold(samples)`:
-- Computes `minConsecutiveDelta` = minimum positive consecutive tMs delta across all pairs.
-- `gapThreshold = minConsecutiveDelta * 1.5`.
-- Degenerate: < 3 samples → `Infinity` (no interior gap distinguishable from a single delta).
-
-### Important 2 — `samplesAnim` precedence over `setTarget` ease (`token-animator.ts`)
-
-**Problem:** the authoritative position `Event` arrives before `MoveStream` (normal server
-ordering), so `reconcile() → setTarget` registers an ease-to-stop entry in `this.anim` before
-`animateSamples` runs. In `tick()` the `anim` loop overwrote the sample position every frame,
-so the token eased straight to `stop` and the broadcast trajectory never showed.
-
-**Fixes:**
-- `animateSamples`: calls `this.anim.delete(id)` before `this.samplesAnim.set(id, sa)` —
-  cancels the competing ease.
-- `setTarget`: early-returns if `this.samplesAnim.has(id)` — handles reverse ordering (MoveStream
-  arrives before Event).
-- `tick()` anim loop: explicit `if (this.samplesAnim.has(id)) continue` guard.
-
-### Minor 3 — Token hide is a transition, not per-tick (`token-view.ts`)
-
-**Problem:** `push` called `backend.removeToken(id)` every tick while hidden.
-
-**Fix:** added `private readonly wasHidden = new Set<string>()` to `TokenView`. `push` now
-calls `removeToken` once on the visible→hidden transition; clears `wasHidden` on gap exit and
-on token removal from `reconcile`.
-
-### Minor 4 — Corrected task-5-report.md content
-
-This file previously contained Task 5's server `conn.rs` report (commits cf41495/cd582f1).
-Overwritten with this correct client-work report.
-
-### Minor 5 — Skill and test description updated
-
-- `shadowcat-codebase-realtime-sync/SKILL.md`: replaced `durationMs/2` with the
-  nominal-interval-based description; documented `animateSamples`/`setTarget` precedence rules.
-- `token-animator.test.ts`: gap test description updated from `durationMs/2` formula to
-  "nominal-interval-based threshold"; test body updated to use 3-sample fixture (required for
-  interior gap detection under the new formula).
+- `src/server/src/ws/conn.rs`
+  - `handle_pathfind`'s `Ok((path, cost)) => ServerMsg::PathResult { request_id, path, cost }`
+    updated to `Ok(outcome) => ServerMsg::PathResult { request_id, path: outcome.path, cost:
+    outcome.cost }`. `outcome.arrested` is intentionally dropped here per the brief — Task 6 adds
+    the `arrested` wire field to `PathResult` and will wire it through.
 
 ---
 
-## Tests added
+## Test results
 
-### `token-animator.test.ts` (in `describe("TokenAnimator.animateSamples")`)
-
-| Test | What it verifies |
-|---|---|
-| "hides the token across an occlusion gap (nominal-interval-based threshold)" | 3-sample: contiguous run 0→100 visible; gap 100→900 hidden; reveals past tMs=900 |
-| "partial-occlusion: mid-path gap detected with nominal-interval threshold, contiguous runs stay visible" | 6-sample spec case (tMs 0,100,200,600,700,800): visible in both runs, hidden in 200→600 gap |
-| "setTarget before animateSamples: sample animation takes precedence over ease-to-stop" | Simulates Event-before-MoveStream ordering; asserts token follows y=500 sample path not y=0 ease |
-
----
-
-## Test commands + output
-
-```
-# Server ws::protocol suite
-cd src/server && cargo test ws::protocol
-test result: ok. 18 passed; 0 failed
-
-# Full client suite
-pnpm -r test
-  @shadowcat/core:         167 passed
-  @shadowcat/render:       121 passed  ← includes all 3 new tests
-  @shadowcat/ui-kit:        17 passed
-  @shadowcat/shell:         27 passed
-  scene-tools:              45 passed
-  (other modules):          47 passed
-  TOTAL: 424 passed, 0 failed
-
-# Typecheck
-pnpm -r typecheck
-  All packages: 0 errors, 0 warnings
-
-# Lint
-pnpm lint
-  (no output = clean)
-```
+- `cd src/server && cargo build` — clean, whole-crate, zero errors/warnings.
+- `cargo test pathfinding::` — 24 passed, 0 failed (includes the 2 new tests).
+- `cargo test pathfind_` (the 3 `scene::tests::pathfind_*` tests) — 3 passed, 0 failed.
+- `cargo test` (full crate, all binaries + integration test files) — 336 lib tests + 14 (assets)
+  + 8 (scene_derived) + 1 (scene_hydration) + 9 (ws_convergence) + 4 (ws_live_search) = 372 passed,
+  0 failed.
+- `cargo fmt -- --check` — clean.
+- `cargo clippy --all-targets` — clean (0 warnings after adding `#[allow(clippy::too_many_arguments)]`
+  to `find`, matching the existing attribute on `SceneEcs::pathfind`).
 
 ---
 
-## Concerns
+## Deviations from the task spec
 
-None. All review findings addressed. The `eslint.config.js` change is left as-is (necessary
-pre-existing build fix; not worth history churn on an unmerged branch).
+One test deviation, discovered and fixed via TDD (Step 2/Step 4 of the brief):
+
+- **`arrest_region_truncates_the_route_and_flags_arrested`**: the brief's verbatim test places
+  the arrest `Rect` over cell `(2,0)` only (`x0:200,y0:0,x1:300,y1:100`) and asserts the truncated
+  route ends at `(250.0, 50.0)` with cost `2.0`. Running this literally FAILED — not from a bug in
+  the new arrest-truncation code, but from a pre-existing (Task 1-4, unrelated to this task) A*
+  tie-break behavior: under `DiagonalRule::Chebyshev`, a straight 4-step orthogonal route
+  `(0,0)->(4,0)` and several diagonal-detour routes (e.g. `(0,0)->(1,1)->(2,2)->(3,1)->(4,0)`) cost
+  the same (4.0), and this build's `QNode` ordering (`Ord` tie-breaks toward the lexicographically
+  *larger* `(cell, parity)` key) deterministically resolves the tie to the diagonal detour, not the
+  straight row — verified by direct inspection (temporary debug print, then removed) of the
+  produced `cells` vec, which was `[(0,0),(1,1),(2,2),(3,1),(4,0)]`, never visiting `(2,0)`. This
+  exact class of Chebyshev-tie ambiguity is already documented and worked around in the
+  pre-existing `terrain_region_raises_astar_step_cost` test's comment (same file), which widens its
+  region to cover every king-move-adjacent intermediate cell for the same reason.
+  - **Fix:** per CLAUDE.md's "assume improper implementation first, but verify against the code"
+    and "tests yield to correct code" (the tie-break itself is legitimate, pre-existing,
+    unmodified-by-this-task behavior), I widened the arrest region to cover the ENTIRE `i=2`
+    column (`x0:200,y0:-300,x1:300,y1:300`) rather than a single cell, and updated the expected
+    truncation point to `(250.0, 250.0)` — the tie-broken route's actual column-2 cell `(2,2)` —
+    while preserving the cost assertion (`2.0`, still 2 steps in) and the `arrested` flag
+    assertion unchanged. This keeps the test's intent (arrest fires exactly when the route first
+    reaches the arrest column, at cost 2.0) while being robust to which tied A* route is chosen.
+    Documented inline in the test with a comment explaining the tie-break and cross-referencing
+    the pre-existing terrain test's identical technique.
+  - All other test call-site updates (the 7 pre-existing `find_tests`, the 3 `pathfind_*` tests,
+    and `no_regions_argument_is_backward_compatible`) matched the brief exactly with no deviation.
+
+No other deviations. `PathOutcome`'s doc comment, the arrest-truncation logic, the cost-replay
+comment, and the `SceneEcs::pathfind`/`handle_pathfind` changes are verbatim from the brief.
+
+---
+
+## Residual risks / skill-update notes
+
+- **Secrecy property (task's stated security-sensitive concern) is upheld**: `SceneEcs::pathfind`
+  passes `self.region_field(scene, if is_gm { None } else { Some(user) })` — a non-GM requester's
+  region field is visibility-filtered (per Task 3's `region_field`), so a secret region can never
+  influence that requester's route, cost, or reachability. This is unchanged from the brief; I did
+  not touch `region_field`'s filtering logic in this task.
+- **Arrest-truncation "honesty" property is upheld**: `find()`'s arrest scan runs against exactly
+  the `regions` field passed in — for a non-GM caller that is the SAME per-requester-filtered field
+  used for the impassable/terrain checks earlier in the same call, so a player is never shown a
+  route continuing past an arrest cell they can actually see (an arrest cell the player CANNOT see
+  is invisible to their field entirely and so does not truncate their preview — consistent with the
+  spec's "springs only at execution" model for secret hazards, which `move_exec`'s separate
+  authoritative-field arrest check — inert until a later task — is responsible for enforcing at
+  execution time).
+  Truncation is monotonic and irreversible: an unlucky terrain-based recompute cannot subsequently
+  add anything past the first arrest cell.
+  Recommend the buddy-check reviewers pay particular attention to two points:
+  1. The cost-replay-after-truncation loop (`total = 0.0; for w in cells.windows(2) { ... }`)
+     re-derives parity from 0 rather than reusing any parity value from the original per-leg
+     accumulation — verified correct by inspection (parity is a pure function of step sequence,
+     order-dependent only) and by the passing `alternating` tests elsewhere in the file, but there
+     is no NEW dedicated regression test proving replay-parity equals original-accumulation-parity
+     across a truncation that crosses a waypoint boundary (multi-leg + arrest interaction is
+     untested in this task; the brief's two new tests are both single-leg).
+  2. `handle_pathfind`'s dropped `outcome.arrested` is a known, brief-acknowledged temporary gap —
+     Task 6 must wire it into `PathResult`'s wire field before a route with `arrested: true` is
+     actually surfaced to the client (until then, the client cannot tell a truncated-for-arrest
+     route from an ordinarily-short route — no behavior regression today, since no caller reads
+     `arrested` yet, but this is the reason Task 5 and Task 6 are sequenced tightly).
+- No `shadowcat-codebase-scene-rendering` skill update needed for this task alone — the skill
+  already documents `region_field`'s visibility-filtering invariant (Task 3) and the
+  impassable/terrain gate points (Task 4); `PathOutcome`/arrest-truncation is new but small enough
+  that I recommend deferring the skill edit until Task 6 completes the wire-protocol side, so the
+  skill records the FULL arrest feature (truncation + wire field) in one edit rather than two
+  partial ones. Flagging this now so the dispatcher doesn't lose track of it.
+
+---
+
+## Commit hashes
+
+`30ddf32` (single commit; first == last for this task)
