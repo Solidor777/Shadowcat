@@ -72,10 +72,27 @@ pub(crate) fn rasterize(shape: &RegionShape, cell: f64) -> Option<Vec<Cell>> {
             (minx, miny, maxx, maxy)
         }
     };
-    let i0 = (minx / cell).floor() as i64;
-    let i1 = (maxx / cell).floor() as i64;
-    let j0 = (miny / cell).floor() as i64;
-    let j1 = (maxy / cell).floor() as i64;
+    let i0f = (minx / cell).floor();
+    let i1f = (maxx / cell).floor();
+    let j0f = (miny / cell).floor();
+    let j1f = (maxy / cell).floor();
+    // `Cell = (i32, i32)`: any raw index outside i32's safe range must fail closed BEFORE any
+    // i64 arithmetic or the final `as i32` cast — an extreme-magnitude finite coordinate (e.g.
+    // -1e300) saturates the float->int cast to i64::MIN/MAX, and unchecked `i1 - i0 + 1` on that
+    // overflows i64 itself (wraps in release, panics in debug) before `checked_mul` is reached;
+    // a large-magnitude-but-small-span coordinate (e.g. 1e13) stays a valid, in-range i64 but
+    // would silently truncate/wrap under `as i32`, aliasing onto an unrelated real cell.
+    const MAX_CELL_COORD: f64 = (i32::MAX as f64) - 1.0;
+    if !(i0f.abs() <= MAX_CELL_COORD
+        && i1f.abs() <= MAX_CELL_COORD
+        && j0f.abs() <= MAX_CELL_COORD
+        && j1f.abs() <= MAX_CELL_COORD)
+    {
+        return None;
+    }
+    let (i0, i1, j0, j1) = (i0f as i64, i1f as i64, j0f as i64, j1f as i64);
+    // Defensive: unreachable given minx<=maxx/miny<=maxy above and the floor()-monotonic bound
+    // check, but kept as a guard against a future refactor that decouples the two invariants.
     if i1 < i0 || j1 < j0 {
         return None;
     }
@@ -112,7 +129,9 @@ fn cell_center_in_shape(p: (f64, f64), shape: &RegionShape) -> bool {
 }
 
 /// Even-odd ray-casting point-in-polygon test. Source: Franklin, PNPOLY (standard algorithm,
-/// public domain reference implementation).
+/// public domain reference implementation). Precondition: `poly.len() >= 3` (unchecked here — the
+/// sole call site, `cell_center_in_shape`, only reaches a `Polygon` after `rasterize`'s `len() < 3`
+/// guard has already rejected shorter shapes).
 fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
     let mut inside = false;
     let n = poly.len();
@@ -227,8 +246,8 @@ pub(crate) fn parse_region_shape(system: &serde_json::Value) -> Option<RegionSha
         .pointer("/shape/points")?
         .as_array()?
         .iter()
-        .filter_map(|v| v.as_f64())
-        .collect();
+        .map(|v| v.as_f64())
+        .collect::<Option<Vec<f64>>>()?;
     match kind {
         "rect" if points.len() == 4 => Some(RegionShape::Rect {
             x0: points[0],
@@ -348,6 +367,33 @@ mod tests {
             y1: 1e12,
         };
         assert_eq!(rasterize(&shape, 100.0), None);
+    }
+
+    #[test]
+    fn extreme_magnitude_coordinates_fail_closed_not_overflow() {
+        let shape = RegionShape::Rect {
+            x0: -1e300,
+            y0: 0.0,
+            x1: 0.0,
+            y1: 0.0,
+        };
+        assert_eq!(
+            rasterize(&shape, 100.0),
+            None,
+            "extreme AABB extent must fail closed, not overflow/hang"
+        );
+
+        let shape2 = RegionShape::Rect {
+            x0: 1e13,
+            y0: 0.0,
+            x1: 1e13 + 1000.0,
+            y1: 100.0,
+        };
+        assert_eq!(
+            rasterize(&shape2, 100.0),
+            None,
+            "large-magnitude-but-small-span coords must fail closed, not truncate/alias"
+        );
     }
 
     #[test]
@@ -491,6 +537,14 @@ mod tests {
             parse_region_shape(&serde_json::json!({"shape": {"kind": "hexagon", "points": []}})),
             None,
             "unknown kind"
+        );
+        assert_eq!(
+            parse_region_shape(
+                &serde_json::json!({"shape": {"kind": "rect", "points": [0.0, 0.0, 100.0, "bad"]}})
+            ),
+            None,
+            "a non-numeric entry anywhere must fail the whole parse, never shift/drop into a \
+             coincidentally-valid-length Rect"
         );
     }
 }
