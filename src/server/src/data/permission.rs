@@ -246,7 +246,18 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
         .collect();
     let mut whole = serde_json::to_value(&out).expect("document serializes");
     for pointer in hidden {
-        strip_pointer(&mut whole, &pointer);
+        // `/system` (a whole-body GmOnly override, e.g. a secret region) targets a
+        // required `Document` field directly — dropping the key would make `whole`
+        // fail to re-deserialize into a `Document`. Null it instead; nested pointers
+        // (e.g. `/system/name`) target an arbitrary untyped JSON body one level down,
+        // where callers rely on true key absence, so those keep the normal strip.
+        if pointer == "/system" {
+            if let Some(sys) = whole.get_mut("system") {
+                *sys = serde_json::Value::Null;
+            }
+        } else {
+            strip_pointer(&mut whole, &pointer);
+        }
     }
     serde_json::from_value(whole).expect("filtered document deserializes")
 }
@@ -696,6 +707,32 @@ mod tests {
         let view = filter_properties(&d, &player);
         assert_eq!(view.system.get("secret"), None);
         assert_eq!(view.system["public"], serde_json::json!(1));
+
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d);
+        assert_eq!(
+            filter_properties(&d, &gm).system["secret"],
+            serde_json::json!(42)
+        );
+    }
+
+    #[test]
+    fn whole_system_gm_only_nulls_rather_than_drops_the_required_field() {
+        // A doc type (e.g. a secret region) may mark its ENTIRE `/system` body GmOnly,
+        // not just a leaf field. `system` is a required `Document` field, so stripping
+        // the key outright would make the redacted JSON fail to deserialize back into a
+        // `Document` — it must be nulled instead, never dropped.
+        let mut perms = PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        };
+        perms
+            .property_overrides
+            .insert("/system".into(), Visibility::GmOnly);
+        let d = doc(perms, serde_json::json!({ "secret": 42 }));
+
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d);
+        let view = filter_properties(&d, &player);
+        assert_eq!(view.system, serde_json::Value::Null);
 
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d);
         assert_eq!(

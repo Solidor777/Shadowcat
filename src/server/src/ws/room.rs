@@ -39,6 +39,10 @@ pub(crate) struct MoveExecution {
     /// (`Unrestricted` — no fog to sweep) and for a zero-progress move (`stop == start`, no
     /// animation regardless of role). Index-aligned with `samples` when `Some`.
     pub mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>,
+    /// Total terrain-weighted cost accumulated over the walked prefix, from
+    /// `move_exec::MoveOutcome::cost`. Threaded onto the `MoveStream` wire frame downstream.
+    #[allow(dead_code)]
+    pub cost: f64,
 }
 
 const MAX_EVENTS: usize = 1024;
@@ -568,6 +572,7 @@ impl Room {
                 // Deliberate exception to the convention that None signals a GM (Unrestricted)
                 // mover — here None signals stop == start, not an Unrestricted restriction.
                 mover_vision: None,
+                cost: 0.0,
             });
         }
 
@@ -617,6 +622,7 @@ impl Room {
             duration_ms,
             samples,
             mover_vision,
+            cost: outcome.cost,
         })
     }
 
@@ -1961,6 +1967,101 @@ mod room_tests {
             h.committed_pos(h.token_id).await,
             corner,
             "committed position must equal the truncation stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_move_authoritative_field_arrests_a_region_the_players_route_never_saw() {
+        use crate::data::document::Visibility;
+        use serde_json::json;
+
+        let (repo, world_id, gm) = repo_with_world().await;
+        let p = repo
+            .create_user("p", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world_id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let region_id = Uuid::from_u128(12);
+        let ws_id = Uuid::from_u128(13);
+
+        let mut ws = wdoc(world_id, ws_id, "world-settings");
+        ws.owner = Some(gm.user_id);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#000000", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "partialCellLeniency": true,
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" },
+        });
+        room.publish(&repo, &gm, vec![Operation::Create { doc: ws }], 0)
+            .await
+            .unwrap();
+
+        let mut scene = wdoc(world_id, scene_id, "scene");
+        scene.owner = Some(gm.user_id);
+        scene.system = json!({ "grid": { "size": 100 } });
+        room.publish(&repo, &gm, vec![Operation::Create { doc: scene }], 1)
+            .await
+            .unwrap();
+
+        let mut token = wdoc(world_id, token_id, "token");
+        token.parent_id = Some(scene_id);
+        token.owner = Some(player.user_id);
+        token.system = json!({ "x": 0.0, "y": 0.0, "w": 100, "h": 100, "rotation": 0 });
+        room.publish(&repo, &gm, vec![Operation::Create { doc: token }], 2)
+            .await
+            .unwrap();
+
+        let mut region = wdoc(world_id, region_id, "region");
+        region.parent_id = Some(scene_id);
+        region.owner = Some(gm.user_id);
+        region.system = json!({
+            "shape": { "kind": "rect", "points": [50.0, 0.0, 150.0, 100.0] },
+            "behavior": "impassable", "cost": 1.0, "enabled": true,
+        });
+        region
+            .permissions
+            .property_overrides
+            .insert("/system".into(), Visibility::GmOnly);
+        room.publish(&repo, &gm, vec![Operation::Create { doc: region }], 3)
+            .await
+            .unwrap();
+
+        // The player's own pathfind field never sees this secret region — the route request
+        // itself is out of scope here (the router is covered elsewhere); this test proves
+        // execute_move enforces it regardless.
+        let exec = room
+            .execute_move(
+                &repo,
+                &player,
+                scene_id,
+                token_id,
+                vec![(0.0, 0.0), (100.0, 0.0)],
+                100,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            exec.stop,
+            (0.0, 0.0),
+            "authoritative field blocks the secret impassable region"
         );
     }
 
