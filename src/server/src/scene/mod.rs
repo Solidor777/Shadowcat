@@ -8,6 +8,7 @@ pub(crate) mod move_exec;
 pub(crate) mod move_stream;
 pub mod movement;
 pub(crate) mod pathfinding;
+pub(crate) mod regions;
 pub mod vision;
 
 use std::collections::{BTreeMap, HashMap};
