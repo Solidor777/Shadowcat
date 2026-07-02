@@ -22,7 +22,14 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `player_vision_polygons(user_id)`, `player_lit_mask(user_id)` (the M10e-2 lighting-aware mask →
   `LitScene` cells), and the fail-closed server resolvers `resolve_scene`/`resolved_bands`/
   `resolved_vision_modes`/`token_vision_floors` (mirror scene-docs.ts + actor.ts `resolveTokenActor`
-  precedence) plus `scene_lights`/`light_walls` accessors. **Movement gate (M10e-4):**
+  precedence) plus `scene_lights`/`light_walls` accessors. `resolve_scene` also yields `bounds:
+  (f64,f64)` (M10f-0, `width,height` in grid units) via a fail-closed structural parse
+  (`s.pointer("/bounds/width")`/`/height"`, `serde_json::Value::pointer` + `unwrap_or`, matching
+  the file's existing sibling-field idiom — no ts-rs struct, the scene `system` body stays
+  client-owned/server-structural); non-finite or ≤0-on-either-axis falls back to
+  `DEFAULT_SCENE_BOUNDS_UNITS = (100.0, 100.0)`, which MUST numerically match the client's
+  `DEFAULT_SCENE_BOUNDS` in `scene-docs.ts` (dual-language default-parity invariant — verify both
+  when either changes). Per-scene only, no world-settings layer. **Movement gate (M10e-4):**
   `visible_cells(user, scene, lenient)` is the move-gate mask — under strict (center) sampling it
   EQUALS `player_lit_mask`'s cells (spec §13) because both share `cell_visible` / `lighting_inputs` /
   `source_los_poly` / `point_qualifies`; `lenient` adds the 4 corners (a superset, never a
@@ -227,10 +234,14 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   world-scoped config-docs `world-settings`/`light-gradation`/`vision-modes`
   (builders + deep-frozen defaults `DEFAULT_WORLD_SETTINGS`/`DEFAULT_GRADATION`/`SEED_VISION_MODES`;
   builders `structuredClone` the frozen default), per-scene `SceneSystem.vision?`/`lighting?`
-  overrides + `grid.distance?`, the scene-parented `light` doc_type (`LightSystem` +
-  `buildLightDoc`), and the fail-closed resolvers `resolveSceneSettings`/`resolveGradation`/
-  `resolveVisionModes`. Authored by `src/modules/game-settings/` (see
-  `shadowcat-codebase-client-shell`).
+  overrides + `grid.distance?` + `bounds?` (M10f-0), the scene-parented `light` doc_type
+  (`LightSystem` + `buildLightDoc`), and the fail-closed resolvers `resolveSceneSettings`/
+  `resolveGradation`/`resolveVisionModes`. **`bounds` (M10f-0):** `SceneDimensions {width,
+  height}` (grid units) — the M10f navmesh's future triangulation boundary; per-scene ONLY, no
+  world-settings layer; `resolveBounds` (private helper called from `resolveSceneSettings`) falls
+  back to the deep-frozen `DEFAULT_SCENE_BOUNDS = {width:100,height:100}` on absent OR malformed
+  (non-finite/≤0-on-either-axis) input — never a degenerate rectangle, never throws. Authored by
+  `src/modules/game-settings/` (see `shadowcat-codebase-client-shell`).
 
 ## Hard invariants
 
@@ -276,8 +287,11 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `polygons` + the post-lock `explored` are unchanged, GM stays `mode:"all"`. **Client lighting
   render is COSMETIC — fog stays the secrecy gate**; the per-cell `hint_idx` refines the visual
   (darkening + tint + desaturate) but never widens visibility or the secrecy mask. **Constraint:**
-  environment light is a flat ambient (NOT edge-projected/occludable) until scenes gain dimensions —
-  placed-light `blocksLight` occlusion IS implemented (see `docs/TODO.md`).
+  environment light is a flat ambient, NOT edge-projected/occludable. Originally blocked on scenes
+  being dimensionless; **M10f-0 added `scene.system.bounds` so a boundary now exists**, but
+  edge-projected light is deliberately still homed to M12 (design review 2026-07-02) — the bound
+  primitive alone does not implement the projection. Placed-light `blocksLight` occlusion IS
+  implemented (see `docs/TODO.md`).
 
 - **The pathfinder route is footprint-STRICTER than the center-based authoritative gate on WALLS,
   but its MASK predicate is now a superset of the gate's (M3, spec §3 of the M3 design doc).**
@@ -386,7 +400,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   + §7 (rendering provenance); `docs/PLAN.md` (M8/M9/M10e/M2/M10g milestones);
   `docs/superpowers/specs/2026-06-25-m2-streamed-continuous-vision-design.md` (streamed vision);
   `docs/superpowers/specs/2026-07-01-m10g-regions-design.md` (regions design spec);
-  `docs/superpowers/plans/2026-07-02-m10g-regions.md` (regions implementation plan).
+  `docs/superpowers/plans/2026-07-02-m10g-regions.md` (regions implementation plan);
+  `docs/superpowers/specs/2026-07-02-m10f-continuous-navmesh-movement-design.md` (M10f continuous/
+  navmesh movement design — bounds is §4.1/§5.1, checkpoint M10f-0 is §12);
+  `docs/superpowers/plans/2026-07-02-m10f-0-scene-bounds.md` (M10f-0 implementation plan).
 - Relationships:
   `graphify query "scene ECS derived read-model vision fog stage pixi render tokens regions"`.
 - History/decisions: [[m8-brainstorm]], [[m8d-2-scene-tools]], [[m9-progress]],
