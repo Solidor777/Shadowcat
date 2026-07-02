@@ -270,6 +270,22 @@ test("measure tool accumulates multiple waypoints and passes them to pathfind in
   expect(calls[0].waypoints).toEqual([[100, 50], [150, 50], [200, 50]]);
 });
 
+test("route mode: an arrested PathResult appends an arrest marker to the budget label", async () => {
+  const pathfind: ToolContext["pathfind"] = async () => ({
+    path: [[50, 50], [150, 50]] as [number, number][],
+    cost: 2,
+    arrested: true,
+  });
+  const { tool, measures } = setupRoute({ pathfind });
+
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 150, y: 50 }, ev());
+  await flush(); // allow the async pathfind to resolve
+
+  expect(measures.at(-1)!.label).toContain("10 ft"); // budget = cost(2) × perCell(5)
+  expect(measures.at(-1)!.label).toContain("⚠"); // arrest marker
+});
+
 // --- Route-commit (double-click) tests ---
 
 /** Controllable clock injected into ctx.now for double-click timing tests. */

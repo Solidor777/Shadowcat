@@ -381,7 +381,10 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
         // stays exact (diagonal rules like alternating/euclidean yield fractional cells).
         const budget = Math.round(result.cost * scene.perCell);
         const startPt: Point = { x: start[0], y: start[1] };
-        ctx.scene.drawMeasure(startPt, goal, `${budget} ${scene.unit}`);
+        // An arrested result means the server truncated the route at an arrest region;
+        // the ⚠ marker signals the previewed budget covers a shorter, non-final stop.
+        const label = result.arrested ? `${budget} ${scene.unit} ⚠` : `${budget} ${scene.unit}`;
+        ctx.scene.drawMeasure(startPt, goal, label);
       },
       () => {
         if (seq !== pendingSeq) return;
