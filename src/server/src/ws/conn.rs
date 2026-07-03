@@ -2094,6 +2094,7 @@ mod tests {
                 samples: s,
                 mover_vision: mv,
                 stop: out_stop,
+                duration_ms: out_duration_ms,
                 cost,
                 ..
             } => {
@@ -2109,6 +2110,13 @@ mod tests {
                     out_stop,
                     [50.0_f64, 60.0_f64],
                     "stop clips to the last visible sample, not the true diagonal goal"
+                );
+                // Critical 2 regression: duration_ms must be clipped to the last visible
+                // sample's t_ms, NOT the true goal/full travel duration (mirrors the
+                // axis-aligned sibling `clip_observer_sees_near_side_prefix`).
+                assert!(
+                    (out_duration_ms - 0.0_f64).abs() < 1e-9,
+                    "duration_ms must be clipped to last visible sample t_ms (0 ms), got {out_duration_ms}"
                 );
                 assert_eq!(cost, None, "cost must be nulled for a clipped observer");
             }
