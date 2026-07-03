@@ -206,6 +206,81 @@ pub(crate) fn build_navmesh(
     })
 }
 
+/// Any-angle route `start -> waypoints[0] -> ... -> waypoints[last]` over a built navmesh.
+/// Euclidean distance; concatenates per-leg polylines without a duplicated join vertex.
+/// Validation mirrors `pathfinding::find`'s `Invalid` guard: waypoints non-empty and bounded by
+/// `MAX_WAYPOINTS`, `start`/every waypoint finite AND bounded by `MAX_NAVMESH_COORD` — a
+/// `start`/waypoint value must not reach `glam::Vec2::new(x as f32, y as f32)` with an
+/// unbounded-but-finite coordinate, the SAME `f64 -> f32` saturating-cast hazard `build_navmesh`
+/// guards against (see `MAX_NAVMESH_COORD`'s doc comment): a saturated `Infinity` reaching
+/// `Mesh::path`'s internal spatial queries panics instead of failing closed. Any leg with no
+/// route ⇒ `Unreachable`. `arrested` is always `false` — this checkpoint's navmesh carries no
+/// region field.
+// TODO: remove once the navmesh cache/dispatch caller lands and calls this.
+#[allow(dead_code)]
+pub(crate) fn navmesh_find(
+    nav: &NavMesh,
+    start: crate::scene::vision::P,
+    waypoints: &[crate::scene::vision::P],
+) -> Result<crate::scene::pathfinding::PathOutcome, crate::scene::pathfinding::PathFail> {
+    use crate::scene::pathfinding::{PathFail, PathOutcome, MAX_WAYPOINTS};
+
+    if waypoints.is_empty() || waypoints.len() > MAX_WAYPOINTS {
+        return Err(PathFail::Invalid);
+    }
+    let all_finite = start.0.is_finite()
+        && start.1.is_finite()
+        && waypoints.iter().all(|w| w.0.is_finite() && w.1.is_finite());
+    if !all_finite {
+        return Err(PathFail::Invalid);
+    }
+    // Magnitude bound (not just finiteness) — see this function's doc comment above. Reuses
+    // `MAX_NAVMESH_COORD` rather than defining a second ceiling for the query side.
+    let in_bounds = start.0.abs() <= MAX_NAVMESH_COORD
+        && start.1.abs() <= MAX_NAVMESH_COORD
+        && waypoints
+            .iter()
+            .all(|w| w.0.abs() <= MAX_NAVMESH_COORD && w.1.abs() <= MAX_NAVMESH_COORD);
+    if !in_bounds {
+        return Err(PathFail::Invalid);
+    }
+
+    let mut full_path: Vec<crate::scene::vision::P> = vec![start];
+    let mut cost = 0.0_f64;
+    let mut leg_start = start;
+
+    for &wp in waypoints {
+        let from = glam::Vec2::new(leg_start.0 as f32, leg_start.1 as f32);
+        let to = glam::Vec2::new(wp.0 as f32, wp.1 as f32);
+        let Some(path) = nav.mesh.path(from, to) else {
+            return Err(PathFail::Unreachable);
+        };
+        cost += path.length as f64;
+
+        for (i, v) in path.path.iter().enumerate() {
+            let pt = (v.x as f64, v.y as f64);
+            if i == 0 {
+                // polyanya's returned polyline may or may not repeat the query start vertex;
+                // skip it only if it coincides with the point we already have, so the assembled
+                // polyline never gets a duplicated join vertex regardless of that detail.
+                let dx = pt.0 - leg_start.0;
+                let dy = pt.1 - leg_start.1;
+                if (dx * dx + dy * dy).sqrt() < 1e-6 {
+                    continue;
+                }
+            }
+            full_path.push(pt);
+        }
+        leg_start = wp;
+    }
+
+    Ok(PathOutcome {
+        path: full_path,
+        cost,
+        arrested: false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,6 +456,99 @@ mod tests {
         assert!(
             mesh.is_some(),
             "the oversized segment must be skipped, not fail the whole build"
+        );
+    }
+
+    #[test]
+    fn empty_waypoints_is_invalid() {
+        let nav = build_navmesh((100.0, 100.0), 100.0, &[], 0.4).unwrap();
+        let r = navmesh_find(&nav, (50.0, 50.0), &[]);
+        assert_eq!(r, Err(crate::scene::pathfinding::PathFail::Invalid));
+    }
+
+    #[test]
+    fn straight_route_cost_is_euclidean() {
+        let nav = build_navmesh((10.0, 10.0), 100.0, &[], 0.1).unwrap();
+        let outcome = navmesh_find(&nav, (50.0, 50.0), &[(950.0, 50.0)]).unwrap();
+        assert!(
+            (outcome.cost - 900.0).abs() < 2.0,
+            "expected ~900, got {}",
+            outcome.cost
+        );
+        assert!(!outcome.arrested, "M10f-1 navmesh carries no regions");
+        assert_eq!(outcome.path.first(), Some(&(50.0, 50.0)));
+        let last = *outcome.path.last().unwrap();
+        assert!((last.0 - 950.0).abs() < 1.0 && (last.1 - 50.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_wall_in_the_direct_path_forces_a_detour() {
+        // A vertical wall from (500,0) to (500,600) blocks the direct horizontal line at y=50,
+        // forcing the route to detour around its bottom end (600 < 1000 scene height).
+        let walls = vec![Seg {
+            a: (500.0, 0.0),
+            b: (500.0, 600.0),
+        }];
+        let nav = build_navmesh((10.0, 10.0), 100.0, &walls, 0.1).unwrap();
+        let outcome = navmesh_find(&nav, (50.0, 50.0), &[(950.0, 50.0)]).unwrap();
+        assert!(
+            outcome.cost > 900.5,
+            "a detour around the wall must cost more than the blocked straight line, got {}",
+            outcome.cost
+        );
+    }
+
+    #[test]
+    fn multi_leg_route_concatenates_without_a_duplicated_join_vertex() {
+        let nav = build_navmesh((10.0, 10.0), 100.0, &[], 0.1).unwrap();
+        let outcome = navmesh_find(&nav, (50.0, 50.0), &[(500.0, 50.0), (950.0, 50.0)]).unwrap();
+        // No two consecutive vertices should be exactly equal (a duplicated leg-join point).
+        for w in outcome.path.windows(2) {
+            assert_ne!(
+                w[0], w[1],
+                "consecutive duplicate vertex at a leg join: {:?}",
+                w
+            );
+        }
+    }
+
+    #[test]
+    fn over_cap_waypoints_is_invalid() {
+        let nav = build_navmesh((100.0, 100.0), 100.0, &[], 0.1).unwrap();
+        let waypoints: Vec<(f64, f64)> = (0..(crate::scene::pathfinding::MAX_WAYPOINTS + 1))
+            .map(|i| (i as f64, 0.0))
+            .collect();
+        let r = navmesh_find(&nav, (50.0, 50.0), &waypoints);
+        assert_eq!(r, Err(crate::scene::pathfinding::PathFail::Invalid));
+    }
+
+    #[test]
+    fn non_finite_start_or_waypoint_is_invalid() {
+        let nav = build_navmesh((100.0, 100.0), 100.0, &[], 0.1).unwrap();
+        assert_eq!(
+            navmesh_find(&nav, (f64::NAN, 50.0), &[(90.0, 50.0)]),
+            Err(crate::scene::pathfinding::PathFail::Invalid)
+        );
+        assert_eq!(
+            navmesh_find(&nav, (50.0, 50.0), &[(f64::INFINITY, 50.0)]),
+            Err(crate::scene::pathfinding::PathFail::Invalid)
+        );
+    }
+
+    #[test]
+    fn oversized_but_finite_start_or_waypoint_fails_closed_not_panic() {
+        // `1e40` is finite (passes `is_finite()`) but saturates an `f64 -> f32` cast to infinity,
+        // which would otherwise reach `Mesh::path`'s internal spatial queries and panic — the
+        // same cast hazard `build_navmesh`'s `MAX_NAVMESH_COORD` guards against, reachable here
+        // via `start`/`waypoints` instead of `bounds`/wall endpoints.
+        let nav = build_navmesh((100.0, 100.0), 100.0, &[], 0.1).unwrap();
+        assert_eq!(
+            navmesh_find(&nav, (1e40, 50.0), &[(90.0, 50.0)]),
+            Err(crate::scene::pathfinding::PathFail::Invalid)
+        );
+        assert_eq!(
+            navmesh_find(&nav, (50.0, 50.0), &[(1e40, 50.0)]),
+            Err(crate::scene::pathfinding::PathFail::Invalid)
         );
     }
 }

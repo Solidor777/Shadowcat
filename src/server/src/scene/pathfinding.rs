@@ -440,7 +440,7 @@ fn to_cell(p: vision::P, cell: f64) -> Cell {
 /// an arrest cell), the total weighted cost in cells, and whether an arrest region cut the route
 /// short (spec §5: "arrest is honest in preview" — the player-facing router must never show a
 /// route past a hazard it knows about).
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PathOutcome {
     pub path: Vec<vision::P>,
     pub cost: f64,
