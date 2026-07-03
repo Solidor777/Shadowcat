@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-scene-rendering
-description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, lighting, the server visibility/lit mask, movement restriction (the Room::publish move gate, supercover, visible_cells), the grid A* pathfinder (scene/pathfinding.rs, SceneEcs::pathfind, Pathfind/PathResult frames, diagonal rules), streamed continuous vision (MoveStream, scene/move_stream.rs, player_vision_polygons_at, the per-recipient egress clip, client fog-sweep/cross-fade playback), regions (weighted/impassable/arrest zones, region docs, region-view.ts render layer), or scene-tools (place/select/move/draw/template/measure/ping/wall/region). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, lighting, the server visibility/lit mask, movement restriction (the Room::publish move gate, supercover, visible_cells), the grid A* pathfinder (scene/pathfinding.rs, SceneEcs::pathfind, Pathfind/PathResult frames, diagonal rules), the continuous/navmesh router (movementModel axis, scene/navmesh.rs, polyanya, the navmesh cache, clip_to_visible_mask), streamed continuous vision (MoveStream, scene/move_stream.rs, player_vision_polygons_at, the per-recipient egress clip, client fog-sweep/cross-fade playback), regions (weighted/impassable/arrest zones, region docs, region-view.ts render layer), or scene-tools (place/select/move/draw/template/measure/ping/wall/region). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Scene & Rendering
@@ -185,6 +185,105 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   Client: `ToolContext.pathfind?` seam + `SceneTool.onDeactivate?()` hook in scene-tools (clears
   route overlay on tool swap); ruler `Grid.distance()` gains the `alternating` (5-10-5) rule wired
   from `resolveSceneSettings(...).diagonalRule` into the Stage `GridSpec`.
+- **`movementModel` axis (M10f-1)**: a per-scene/world-default routing-engine choice
+  (`MovementModel::{GridStepped,Continuous}` server-side, `MovementModel = "grid-stepped" |
+  "continuous"` client-side), resolved by `resolve_scene`/`resolveSceneSettings` with the EXACT
+  same shape as `movement_restriction`/`MovementRestriction` (world default in `/system/scene`, a
+  per-scene override in `/system/vision`, fail-closed to `GridStepped` on unknown/absent — never
+  silently promotes a scene to the newer engine). Opaque `system`-body JSON, no ts-rs type — the
+  approved design doc's claim that this axis needs "ts-rs → Zod mirror" is itself stale/inaccurate
+  (verified: `MovementRestriction` has no ts-rs derive either); do not add one. `SceneEcs::pathfind`
+  dispatches on `resolve_scene(scene).movement_model`: `GridStepped` calls the unchanged
+  `pathfinding::find`; `Continuous` calls `navmesh_for` → `navmesh::navmesh_find` →
+  `navmesh::clip_to_visible_mask` (below). Both branches build the per-`(user,scene)` visibility
+  mask ONCE, above the dispatch, and pass the SAME reference into whichever engine runs — never
+  forked (mirrors the pathfinder's own §13 invariant, generalized to a second engine). Client:
+  `movementModel` world-default + scene-override editor in `GameSettingsPanel.svelte` (mirrors the
+  `movementRestriction` editor exactly); the measure-tool's `commitRoute` (`controller.svelte.ts`)
+  refuses to send a `moveRequest` when the active scene's `movementModel` is `"continuous"` (checked
+  via `resolveSceneSettings`) — **continuous scenes get router + preview only; move EXECUTION does
+  not exist yet** (homed to a later checkpoint). `requestRoute` (the preview path) is unaffected —
+  no grid-snap fallback, silent no-op on double-click.
+- `src/server/src/scene/navmesh.rs` (M10f-1, new) — pure headless adapter around the `polyanya`
+  (any-angle navmesh) + `geo`/`spade` (CDT + Minkowski buffer) crates, engine-owned geometry
+  (ARCHITECTURE §6 exception). Carries **walls only** in this checkpoint — impassable/terrain
+  regions on the navmesh are a later checkpoint.
+  - `build_navmesh(bounds, cell, walls, footprint_radius_cells) -> Option<NavMesh>` — triangulates
+    the scene's bounds rectangle and inflates each `blocksMove` wall segment into a capsule
+    obstacle (`geo::Buffer`) by the requester's footprint radius. **`MAX_NAVMESH_COORD` (1e15)**
+    bounds EVERY value that reaches an `f64→f32` cast in this module (derived pixel bounds,
+    raw wall-segment endpoints, AND `footprint_scene` — all three were found and fixed as separate
+    Critical bugs across a multi-round buddy check: an unbounded-but-finite coordinate saturates to
+    `Infinity` on cast, which `spade`'s triangulation rejects via an unhandled internal `.unwrap()`
+    on `Err(InsertionError::TooLarge)` — a panic, not a fail-closed `None`). **Separately**, a
+    non-degenerate wall whose `footprint_scene`-to-segment-length ratio exceeds ~4.9e8 makes
+    `geo`/`i_overlay`'s internal fixed-point quantization collapse both endpoints to the same
+    integer point, silently returning ZERO polygons from `.buffer()` — a distinct, more severe bug
+    class (**silent fail-OPEN**: the wall obstacle vanishes from the mesh under inputs that pass
+    every magnitude check, and a route can pass straight through where a wall should block).
+    `build_navmesh` now treats an empty-buffer result for a non-degenerate wall as a hard
+    whole-build failure (`None`), distinguishing it from a genuinely zero-length segment (a
+    legitimate no-op, not a failure). `MAX_NAVMESH_OBSTACLE_SEGMENTS` (5000) caps wall count.
+  - `navmesh_find(nav, start, waypoints) -> Result<PathOutcome, PathFail>` — any-angle multi-leg
+    routing via `polyanya::Mesh::path`, Euclidean cost. **`polyanya::Path::path` EXCLUDES the query
+    start vertex** (verified against the pinned crate source) — the leg-concatenation logic skips
+    a returned vertex only if it coincides with the already-known `leg_start`, which is correct
+    regardless of whether the crate includes or excludes it (don't "fix" this dedup logic assuming
+    one behavior). Validates `waypoints.len() <= MAX_WAYPOINTS` and finiteness of `start`/every
+    waypoint (parity with the grid router's own `Invalid` guard) — this specific magnitude bound is
+    defense-in-depth/input-hygiene, NOT a proven panic-prevention fix (empirically verified: the
+    query side, `Mesh::path`, is pure point-in-polygon containment and never touches `spade`'s
+    triangulation, so it already fails closed to `None`/`Unreachable` without any guard — unlike
+    `build_navmesh`'s construction-side guards, which DO close real reproduced panics).
+  - `clip_to_visible_mask(outcome, mask, cell, footprint_radius_cells, walls) -> PathOutcome` — the
+    **fog-safe + wall-safe preview post-filter**, THE security-critical function in this module
+    (buddy-checked; every M9/M10e/M2/M10g/M3 milestone touching this invariant class has been).
+    Arc-length-samples the route (`move_stream::sample_path`) and truncates at the first sample
+    whose footprint cells (`footprint_cells ∪ supercover_cells`, the SAME predicate
+    `pathfinding::cell_enterable`'s mask check applies) leave `mask` — `mask: None` skips this
+    check (GM/unrestricted). **Independently**, every chord (from the previous retained sample) is
+    also tested against `walls` via `segments_cross`, ALWAYS (even when `mask: None`) — this is a
+    router-FIDELITY guarantee, not a secrecy one (walls are public geometry): the true navmesh
+    polyline can detour around a wall corner, but once downsampled to ≤`MAX_VISION_SAMPLES` (96)
+    arc-length samples, an undersampled chord between two corner-straddling samples could otherwise
+    visually cross the wall the true route avoided. Also validates `footprint_radius_cells` (against
+    `MAX_FOOTPRINT_CELLS`), `cell`, and skips (not fails) any individual non-finite wall
+    endpoint — mirroring `build_navmesh`'s defense-in-depth convention, since this function had been
+    the one place in the module NOT following it (found + fixed in buddy check). **Two-checks
+    dichotomy, never conflate:** the mask check is a genuine secrecy gate (route ⊆ gate-allowed);
+    the wall check is a fidelity/correctness guarantee with no confidentiality stake — don't reuse
+    one's severity framing for the other. Cost is recomputed as the Euclidean length of the
+    truncated polyline, never the original route's cost.
+  - `SceneEcs::navmesh_for(scene, footprint_radius_cells) -> Option<Arc<NavMesh>>` (`mod.rs`) —
+    memoized per `(scene, quantized footprint radius)` (nearest 1/1000 cell — matches the design
+    spec's explicit "cache stays bounded" requirement; a plan-level buddy check caught an earlier
+    exact-f64-bits keying scheme as a departure from this). **Validates `footprint_radius_cells`
+    BEFORE computing the quantized key or touching the cache** (a buddy-check finding: doing the
+    validation after the cache lookup let `NaN`/small-negative inputs alias onto an already-cached
+    LEGITIMATE mesh — e.g. `NaN` saturates to the same quantized key as `0.0` via `f64 as i64` —
+    silently returning a valid-looking result instead of `build_navmesh`'s own fail-closed `None`).
+    `navmesh_cache: std::sync::Mutex<HashMap<(Uuid,i64), Arc<NavMesh>>>` — `Mutex`+`Arc`, never
+    `RefCell`/`Rc` (`SceneEcs` lives behind a `tokio::sync::RwLock` shared across connection tasks;
+    the cache must stay `Sync`); never locked across an `.await`. Invalidated wholesale (all
+    scenes, not just the touched one — over-invalidation is the safe direction) in `apply_op`
+    whenever a `wall` or `scene` document is created/updated/deleted; the `Update` case resolves
+    the existing entity's doc_type from the ECS `index`/`world` BEFORE the mutation runs (an
+    `Update` never changes doc_type, so this pre-lookup is safe). A failed `build_navmesh` (`None`)
+    is never cached.
+  - **Grid/continuous engine parity, not just "shippable together":** the dispatch treats a route
+    whose destination coincides with the start (any waypoint sequence that collapses to a
+    zero-displacement request) as a legitimate zero-cost success on BOTH engines — the grid router
+    has always had this via `astar_leg`'s explicit `start == goal` short-circuit; the continuous
+    dispatch captures whether `navmesh_find`'s RAW (pre-clip) result was already length-`<2` before
+    `clip_to_visible_mask` consumes it, and only maps `clipped.path.len() < 2` to `Unreachable`
+    when the raw result was NOT already trivial — otherwise a "route to where you're already
+    standing" request would succeed on grid-stepped scenes and spuriously fail on continuous ones.
+  - Dependencies (Cargo.toml, `src/server/`): `polyanya = { version = "0.16", default-features =
+    false }` (drops `async`/`recast` — blocking `Mesh::path()` only), `geo = "0.32"` (pinned to
+    unify with polyanya's own dependency copy — one compiled `geo`, no duplicate), `glam = "0.30"`
+    (used directly for `Vec2`; must be a DIRECT dependency even though polyanya also pulls it
+    transitively — Rust requires a crate used by name to be declared directly). Binary-size delta
+    measured at ~0.94 MiB against the 60 MiB CI ceiling — no bloat concern.
 - `src/client/render/src/` — engine-owned PixiJS layer: `backend.ts` + `pixi-backend.ts`
   (renderer host), `engine.ts`, `reconciler.ts` (doc→scene reconcile), `compositor.ts`,
   `layers.ts` (CORE_LAYERS z-order; index 7 = `lighting`, between `templates` (6) and `mask` (8)),
@@ -305,6 +404,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   where the pre-M3 footprint-disc-only check let the router approve a step the gate rejected
   (buddy-check P1). Never make the pathfinder mask test weaker than `footprint_cells ∪
   supercover_cells` — that union IS the invariant, not merely a suggestion.
+- **The `route ⊆ gate-allowed` invariant is engine-agnostic, not grid-specific (M10f-1).**
+  `SceneEcs::pathfind` builds the per-`(user,scene)` visibility mask exactly once and passes the
+  SAME reference into both the grid (`pathfinding::find`) and continuous (`navmesh::
+  clip_to_visible_mask`) branches — never a forked mask computation. `clip_to_visible_mask` applies
+  the identical `footprint_cells ∪ supercover_cells` predicate `cell_enterable` uses, so a
+  continuous-scene route preview is fog-safe by the same mechanism the grid router already proved.
+  Any future third routing engine MUST reuse this same mask-passing shape, not recompute visibility.
 - **M1 executor per-cell parity (spec §13):** `execute_move` uses the SAME `blocks_move` +
   `supercover_cells` + `visible` membership as the M10e-4 `publish` move gate — per-cell decision
   parity, NO fork. A divergence between the executor and the gate equals a movement-into-fog leak.
@@ -403,7 +509,12 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `docs/superpowers/plans/2026-07-02-m10g-regions.md` (regions implementation plan);
   `docs/superpowers/specs/2026-07-02-m10f-continuous-navmesh-movement-design.md` (M10f continuous/
   navmesh movement design — bounds is §4.1/§5.1, checkpoint M10f-0 is §12);
-  `docs/superpowers/plans/2026-07-02-m10f-0-scene-bounds.md` (M10f-0 implementation plan).
+  `docs/superpowers/plans/2026-07-02-m10f-0-scene-bounds.md` (M10f-0 implementation plan);
+  `docs/superpowers/specs/2026-07-02-m10f-1-movement-model-dispatch-polyanya-router-design.md`
+  (M10f-1 checkpoint design — the polyanya/geo/glam crate facts, footprint-aware memoized-mesh
+  decision, preview-only execution boundary); `docs/superpowers/plans/2026-07-02-m10f-1-movement-
+  model-dispatch-polyanya-router.md` (M10f-1 implementation plan + its buddy-check history, incl.
+  the plan-level cache-quantization finding).
 - Relationships:
   `graphify query "scene ECS derived read-model vision fog stage pixi render tokens regions"`.
 - History/decisions: [[m8-brainstorm]], [[m8d-2-scene-tools]], [[m9-progress]],
