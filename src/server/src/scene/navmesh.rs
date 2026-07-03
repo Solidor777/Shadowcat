@@ -56,8 +56,6 @@ use geo::Line;
 /// DoS guard: a scene with more `blocksMove` segments than this fails closed (no navmesh) rather
 /// than triangulating an unbounded obstacle count. Generous relative to a hand-authored scene
 /// (mirrors the generosity of `movement::MAX_MOVE_CELLS` / `regions::MAX_REGION_CELLS`).
-// TODO: remove once the navmesh cache/dispatch caller lands and reads this constant.
-#[allow(dead_code)]
 pub(crate) const MAX_NAVMESH_OBSTACLE_SEGMENTS: usize = 5_000;
 
 /// Magnitude ceiling (scene-pixel units) for any coordinate that reaches an `f64 -> f32` cast in
@@ -85,8 +83,6 @@ pub(crate) const MAX_NAVMESH_COORD: f64 = 1e15;
 /// A built, footprint-inflated navmesh for one `(scene, footprint radius)` pair. Immutable after
 /// construction — a caller-side cache rebuilds a new one on wall/bounds mutation rather than
 /// mutating this in place.
-// TODO: remove once the navmesh cache/dispatch caller lands and constructs this.
-#[allow(dead_code)]
 pub(crate) struct NavMesh {
     pub(crate) mesh: polyanya::Mesh,
 }
@@ -96,8 +92,6 @@ pub(crate) struct NavMesh {
 /// non-positive bounds or cell size, a non-finite/negative/over-cap footprint radius, an obstacle
 /// count over `MAX_NAVMESH_OBSTACLE_SEGMENTS`, or a triangulation/mesh-build failure — callers
 /// MUST treat `None` as "no navmesh" (the scene reports `Unreachable`, never a silent all-pass).
-// TODO: remove once the navmesh cache/dispatch caller (movementModel dispatch) lands and calls this.
-#[allow(dead_code)]
 pub(crate) fn build_navmesh(
     bounds: (f64, f64),
     cell: f64,
@@ -228,8 +222,6 @@ pub(crate) fn build_navmesh(
 /// more precise `PathFail::Invalid` instead of an indistinguishable `Unreachable`. Any leg with no
 /// route ⇒ `Unreachable`. `arrested` is always `false` — this checkpoint's navmesh carries no
 /// region field.
-// TODO: remove once the navmesh cache/dispatch caller lands and calls this.
-#[allow(dead_code)]
 pub(crate) fn navmesh_find(
     nav: &NavMesh,
     start: crate::scene::vision::P,
@@ -316,8 +308,6 @@ pub(crate) fn navmesh_find(
 /// `cell`/`footprint_radius_cells` input (see the guard below) — unlike `build_navmesh` (returns
 /// `Option<NavMesh>`, can simply return `None`), this function's return type has no "absent"
 /// state, so truncating to just the start point is the most restrictive output it can produce.
-// TODO: remove once the navmesh cache/dispatch caller lands and calls this.
-#[allow(dead_code)]
 pub(crate) fn clip_to_visible_mask(
     outcome: crate::scene::pathfinding::PathOutcome,
     mask: Option<&std::collections::BTreeSet<crate::scene::pathfinding::Cell>>,

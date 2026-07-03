@@ -967,9 +967,6 @@ impl SceneEcs {
     /// requesting the same new key can each build a redundant (but equally valid) `NavMesh` before
     /// one wins the insert — wasted compute, never a correctness issue (both builds are pure
     /// functions of the same inputs).
-    // TODO: wire this into the continuous-movement dispatch path; until then it is exercised
-    // only by unit tests, so dead-code analysis needs an explicit allow.
-    #[allow(dead_code)]
     pub(crate) fn navmesh_for(
         &self,
         scene: Uuid,
@@ -1036,12 +1033,16 @@ impl SceneEcs {
             .unwrap_or(100.0);
         let rule = self.resolved_diagonal_rule();
         let walls = self.move_walls(scene);
+        // Hoisted so `movement_model` is available to the dispatch below regardless of `is_gm`
+        // (a GM can also route on a continuous scene) — the grid branch's OWN behavior is
+        // unchanged, it just now reads `settings` from this shared binding instead of a local one.
+        let settings = self.resolve_scene(scene);
 
-        // Build the per-(user,scene) mask (None ⇒ unconstrained).
+        // Build the per-(user,scene) mask (None ⇒ unconstrained). Shared by both engines —
+        // §13/§6.3: never fork the per-cell visibility decision.
         let mask: Option<std::collections::BTreeSet<pathfinding::Cell>> = if is_gm {
             None
         } else {
-            let settings = self.resolve_scene(scene);
             match settings.movement_restriction {
                 MovementRestriction::Unrestricted => None,
                 MovementRestriction::Visible => {
@@ -1057,22 +1058,44 @@ impl SceneEcs {
             }
         };
 
-        // Per-requester region field (spec §4): GM (or `is_gm`) sees the authoritative field;
-        // a non-GM requester's field silently omits any region they cannot see, so a secret
-        // region never influences their route or budget (it "springs" only at execution,
-        // `move_exec`, which always reads the authoritative field).
-        let regions = self.region_field(scene, if is_gm { None } else { Some(user) });
-
-        pathfinding::find(
-            start,
-            waypoints,
-            footprint_radius,
-            cell,
-            rule,
-            &walls,
-            mask.as_ref(),
-            Some(&regions),
-        )
+        match settings.movement_model {
+            MovementModel::GridStepped => {
+                // Per-requester region field (spec §4): GM (or `is_gm`) sees the authoritative
+                // field; a non-GM requester's field silently omits any region they cannot see, so
+                // a secret region never influences their route or budget (it "springs" only at
+                // execution, `move_exec`, which always reads the authoritative field).
+                let regions = self.region_field(scene, if is_gm { None } else { Some(user) });
+                pathfinding::find(
+                    start,
+                    waypoints,
+                    footprint_radius,
+                    cell,
+                    rule,
+                    &walls,
+                    mask.as_ref(),
+                    Some(&regions),
+                )
+            }
+            MovementModel::Continuous => {
+                // M10f-1: navmesh carries walls only (no regions yet — M10f-4); the cell-sampled
+                // post-filter is the ONLY visibility gate, reusing the same mask as the grid path.
+                let nav = self
+                    .navmesh_for(scene, footprint_radius)
+                    .ok_or(pathfinding::PathFail::Unreachable)?;
+                let raw = navmesh::navmesh_find(&nav, start, waypoints)?;
+                let clipped = navmesh::clip_to_visible_mask(
+                    raw,
+                    mask.as_ref(),
+                    cell,
+                    footprint_radius,
+                    &walls,
+                );
+                if clipped.path.len() < 2 {
+                    return Err(pathfinding::PathFail::Unreachable);
+                }
+                Ok(clipped)
+            }
+        }
     }
 
     /// The composed region field for `scene`. `viewer: None` is the AUTHORITATIVE view (every
@@ -3624,6 +3647,71 @@ mod tests {
         let outcome = r.expect("GM route");
         assert!((outcome.cost - 2.0).abs() < 1e-9);
         assert_eq!(outcome.path.last(), Some(&(250.0, 50.0)));
+    }
+
+    #[test]
+    fn pathfind_dispatches_to_the_navmesh_router_for_a_continuous_scene() {
+        let mut ecs = SceneEcs::from_documents(
+            vec![entity_doc_top(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                        "vision": { "movementModel": "continuous" } }),
+            )],
+            0,
+        );
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "movementModel": "continuous",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        let outcome = ecs
+            .pathfind(
+                Uuid::from_u128(1),
+                Uuid::from_u128(10),
+                (50.0, 50.0),
+                &[(950.0, 50.0)],
+                0.1,
+                true, // GM: unrestricted mask
+                None,
+            )
+            .expect("continuous route over an open bounded scene");
+        // Euclidean straight line ≈ 900, unlike a grid diagonal-rule cost — proves the navmesh
+        // path was actually taken, not the grid router.
+        assert!(
+            (outcome.cost - 900.0).abs() < 2.0,
+            "expected ~900 (Euclidean), got {}",
+            outcome.cost
+        );
+    }
+
+    #[test]
+    fn pathfind_grid_stepped_scene_is_byte_for_byte_unchanged() {
+        // Same fixture/assertions as the existing `pathfind_gm_unconstrained_routes_without_a_mask`
+        // test, proving the default (grid-stepped) dispatch branch is untouched by this checkpoint.
+        let (ecs, _user, scene) = scene_with_lit_player_token();
+        let r = ecs.pathfind(
+            Uuid::from_u128(1),
+            scene,
+            (50.0, 50.0),
+            &[(250.0, 50.0)],
+            0.1,
+            true,
+            None,
+        );
+        let outcome = r.expect("GM route");
+        assert!(
+            (outcome.cost - 2.0).abs() < 1e-9,
+            "grid Chebyshev cost unchanged"
+        );
     }
 
     #[test]
