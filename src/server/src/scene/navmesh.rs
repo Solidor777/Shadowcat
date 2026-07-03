@@ -190,6 +190,11 @@ pub(crate) fn build_navmesh(
                 .points()
                 .map(|p| glam::Vec2::new(p.x() as f32, p.y() as f32))
                 .collect();
+            // Believed unreachable: the `inflated.0.is_empty()` check above already catches
+            // `i_overlay`'s degenerate-collapse guard, which is all-or-nothing at the whole-buffer
+            // level (either a normal `MultiPolygon` or an empty one) — not a case where the
+            // `MultiPolygon` is non-empty but an individual ring within it has <3 points. Kept as
+            // a defensive filter, not a silent truncation path.
             if ring.len() >= 3 {
                 tri.add_obstacle(ring);
             }
