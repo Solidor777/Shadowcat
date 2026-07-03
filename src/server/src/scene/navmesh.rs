@@ -414,8 +414,11 @@ pub(crate) fn clip_to_visible_mask(
 /// valid, slightly-conservative budget for the straighter geometry — same preview-vs-execution
 /// divergence class already logged for the grid engine in `docs/TODO.md`). "Entered cells" = the
 /// destination footprint disc ∪ the step supercover, the SAME union `pathfinding::cell_enterable`
-/// and `clip_to_visible_mask` apply. Fail-closed: `< 3` vertices, or a degenerate
-/// `cell`/`footprint_radius_cells`, or an over-cap `supercover_cells`, returns the input unchanged.
+/// and `clip_to_visible_mask` apply. Fail-closed on two independent levels: (1) whole-input
+/// short-circuit — `< 3` vertices, or a degenerate `cell`/`footprint_radius_cells`, returns the
+/// input unchanged; (2) per-span fallback — an over-cap/degenerate `supercover_cells` for one
+/// candidate chord fails only that chord, leaving that span at its single unconditional grid step
+/// while smoothing continues over the rest of the path.
 // TODO: wire into the continuous dispatch once the weighted-route caller lands.
 #[allow(dead_code)]
 pub(crate) fn los_smooth(
@@ -440,6 +443,12 @@ pub(crate) fn los_smooth(
     // True iff the straight chord a->b passes only through plain, visible, unobstructed cells.
     let chord_ok = |a: (f64, f64), b: (f64, f64)| -> bool {
         let samples = crate::scene::move_stream::sample_path(&[a, b], cell, 1.0);
+        if samples.len() < 2 {
+            // Coincident/near-coincident endpoints (`sample_path`'s `total_len < 1e-9` guard):
+            // no supercover span exists to check the chord's own cell against the region field,
+            // mask, or walls. Refuse rather than silently passing an unchecked cell.
+            return false;
+        }
         let mut prev = samples[0].pos;
         for s in samples.iter().skip(1) {
             let to = (
@@ -641,6 +650,37 @@ mod tests {
             0.1,
         );
         assert_eq!(out.path.len(), 2, "nothing to straighten with < 3 vertices");
+    }
+
+    #[test]
+    fn los_smooth_refuses_shortcut_with_coincident_endpoints_in_impassable_cell() {
+        // A and C are coincident (distance 0 < sample_path's 1e-9 zero-length threshold), both
+        // sitting in cell (0,0), which is entirely impassable. B is a distinct, unrelated
+        // vertex the smoothing loop should not be able to skip over. Pre-fix, `chord_ok`
+        // collapsed to a single sample and fell through to `true` without checking cell (0,0)
+        // at all; post-fix it refuses a degenerate chord outright.
+        let mut b = RegionField::builder();
+        b.add(
+            &RegionShape::Rect {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 100.0,
+                y1: 100.0,
+            },
+            RegionBehavior::Impassable,
+            1.0,
+            100.0,
+        );
+        let field = b.build();
+        let a = (50.0, 50.0);
+        let c = (50.0, 50.0);
+        let mid = (250.0, 50.0);
+        let out = los_smooth(oc(vec![a, mid, c]), &[], None, &field, 100.0, 0.1);
+        assert_eq!(
+            out.path,
+            vec![a, mid, c],
+            "a coincident-endpoint chord through an impassable cell must not be straightened"
+        );
     }
 
     #[test]
