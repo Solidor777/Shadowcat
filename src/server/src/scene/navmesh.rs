@@ -61,7 +61,9 @@ use geo::Line;
 pub(crate) const MAX_NAVMESH_OBSTACLE_SEGMENTS: usize = 5_000;
 
 /// Magnitude ceiling (scene-pixel units) for any coordinate that reaches an `f64 -> f32` cast in
-/// this module (`bounds*cell`, or a wall segment endpoint). An `f64 -> f32` cast SATURATES an
+/// this module (derived `w_px`/`h_px` scene-pixel bounds, a raw wall-segment endpoint, or
+/// `footprint_scene` — the footprint-inflation distance passed to `line.buffer(...)`). An
+/// `f64 -> f32` cast SATURATES an
 /// out-of-range-but-finite value to `f32::INFINITY` rather than panicking or producing NaN, so
 /// `is_finite()` alone (checked upstream) never catches it — the resulting `Vec2` then reaches
 /// `polyanya::Triangulation::as_navmesh` -> `spade`'s `cdt.insert(...).unwrap()`, and `spade`
@@ -114,6 +116,17 @@ pub(crate) fn build_navmesh(
         return None;
     }
     let footprint_scene = (footprint_radius_cells * cell).max(0.01);
+    // `footprint_scene` is a single scene-wide value (not per-wall), so an oversized value here
+    // fails the whole build rather than skipping one segment. `cell` has no upper-magnitude bound
+    // elsewhere in this module (only `is_finite() && > 0.0`), so a tiny-but-finite `bounds` paired
+    // with an extreme `cell` can keep `w_px`/`h_px` under `MAX_NAVMESH_COORD` while still driving
+    // `footprint_scene` past it (e.g. `bounds=(1e-23,1e-23)`, `cell=1e37`,
+    // `footprint_radius_cells=MAX_FOOTPRINT_CELLS` -> `footprint_scene ~= 6.4e38 > f32::MAX`),
+    // which would otherwise saturate the buffered ring's vertices to infinity in the `as f32`
+    // cast below and panic inside `spade`, same hazard as `MAX_NAVMESH_COORD`'s doc comment.
+    if footprint_scene.abs() > MAX_NAVMESH_COORD {
+        return None;
+    }
     let (w_px, h_px) = (w * cell, h * cell);
     // Bound the DERIVED (post-multiplication) magnitude, not just the raw inputs: `w`/`cell`
     // individually finite-and-small can still multiply into an out-of-range product. Checked
@@ -243,6 +256,25 @@ mod tests {
         // Neither `w` nor `cell` alone is oversized, but their product (`w_px`) is — the bound
         // must be checked on the DERIVED magnitude, not just the raw inputs.
         assert!(build_navmesh((1e10, 100.0), 1e10, &[], 0.4).is_none());
+    }
+
+    #[test]
+    fn oversized_footprint_scene_fails_closed_not_panic() {
+        // Reproducer independently verified by two reviewers: tiny-but-finite bounds keep
+        // `w_px`/`h_px` well under `MAX_NAVMESH_COORD`, and the wall's raw endpoints are ordinary,
+        // yet `footprint_radius_cells * cell` (64.0 * 1e37) overflows `f32::MAX` and would
+        // saturate the buffered ring's vertices to infinity on cast, panicking inside `spade`.
+        let walls = vec![Seg {
+            a: (0.0, 0.0),
+            b: (1.0, 1.0),
+        }];
+        assert!(build_navmesh(
+            (1e-23, 1e-23),
+            1e37,
+            &walls,
+            crate::scene::pathfinding::MAX_FOOTPRINT_CELLS,
+        )
+        .is_none());
     }
 
     #[test]
