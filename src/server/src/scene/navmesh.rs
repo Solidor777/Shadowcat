@@ -167,6 +167,23 @@ pub(crate) fn build_navmesh(
         // agent's footprint radius is the correct Minkowski obstacle for a disc-footprint agent.
         let line = Line::new((seg.a.0, seg.a.1), (seg.b.0, seg.b.1));
         let inflated = line.buffer(footprint_scene);
+        // `geo`'s `Buffer` is backed by `i_overlay`'s fixed-point quantization
+        // (`FloatPointAdapter`), which scales its integer grid relative to
+        // `max(buffer_radius, geometry_extent)`. When `footprint_scene` is very large relative to
+        // this wall segment's own length, both endpoints can quantize to the SAME integer point;
+        // `i_overlay::StrokeBuilder::open_segments` has an explicit degenerate-collapse guard that
+        // then returns zero segments, so `.buffer()` silently returns an EMPTY `MultiPolygon` for
+        // an otherwise well-formed wall — not a panic, a silent obstacle-drop (fail-OPEN: a route
+        // could cross straight through a wall the scene author placed). A zero-length segment
+        // (`seg.a == seg.b`) is genuinely degenerate input and may legitimately buffer to nothing;
+        // that case is a no-op skip, not a build failure. Any other empty-buffer result is treated
+        // as a hard, whole-build failure (`None`) rather than a per-wall skip: unlike malformed/
+        // non-finite input (safe to drop), a well-formed wall that collapses only because of the
+        // buffer library's internal fixed-point precision limit is real scene geometry — dropping
+        // just that one wall would itself still be a silent fail-open for that specific obstacle.
+        if inflated.0.is_empty() && seg.a != seg.b {
+            return None;
+        }
         for poly in inflated.iter() {
             let ring: Vec<glam::Vec2> = poly
                 .exterior()
@@ -275,6 +292,69 @@ mod tests {
             crate::scene::pathfinding::MAX_FOOTPRINT_CELLS,
         )
         .is_none());
+    }
+
+    #[test]
+    fn a_footprint_buffer_that_collapses_a_wall_to_nothing_fails_the_whole_build() {
+        // `footprint_scene` (buffer radius) very large relative to an individual wall segment's
+        // own length drives `i_overlay`'s fixed-point quantization to collapse both of that
+        // segment's endpoints onto the same integer point, which its degenerate-collapse guard
+        // turns into an EMPTY buffer result — the wall would otherwise silently vanish from the
+        // mesh (fail-open) rather than the build failing.
+        // bounds=(1e-8,1e-8), cell=1e9 -> w_px=h_px=10 (an ordinary small domain); wall (5,0)-(5,10)
+        // bisects it; footprint_radius_cells=MAX_FOOTPRINT_CELLS (64.0, within the existing cap)
+        // -> footprint_scene = 6.4e10, ratio to the wall's own length (10) = 6.4e9, past the
+        // collapse threshold.
+        let walls = vec![Seg {
+            a: (5.0, 0.0),
+            b: (5.0, 10.0),
+        }];
+        assert!(
+            build_navmesh(
+                (1e-8, 1e-8),
+                1e9,
+                &walls,
+                crate::scene::pathfinding::MAX_FOOTPRINT_CELLS,
+            )
+            .is_none(),
+            "a wall whose Minkowski buffer silently collapses to zero polygons must fail the \
+             whole build, not silently drop just that wall"
+        );
+    }
+
+    #[test]
+    fn zero_length_wall_segment_is_a_degenerate_noop_not_a_hard_failure() {
+        // `seg.a == seg.b` is genuinely degenerate input (not a numerical-precision collapse of a
+        // real wall) — an empty buffer result for it must not trigger the hard-failure path.
+        let walls = vec![Seg {
+            a: (5.0, 5.0),
+            b: (5.0, 5.0),
+        }];
+        assert!(build_navmesh((100.0, 100.0), 100.0, &walls, 0.4).is_some());
+    }
+
+    #[test]
+    fn ordinary_wall_and_footprint_still_build_successfully() {
+        // Positive case: normal gameplay magnitudes (a small scene, a modest footprint radius, a
+        // single ordinary interior wall) must still build a valid mesh, and the wall's obstacle
+        // ring must actually be present in the resulting mesh (distinguishing "built successfully"
+        // from "built successfully but the wall silently vanished").
+        let walls = vec![Seg {
+            a: (5.0, 0.0),
+            b: (5.0, 10.0),
+        }];
+        let with_wall = build_navmesh((100.0, 100.0), 1.0, &walls, 0.4)
+            .expect("an ordinary wall + footprint must build a navmesh");
+        let without_wall = build_navmesh((100.0, 100.0), 1.0, &[], 0.4)
+            .expect("the walls-absent baseline must also build");
+        // Triangulating WITH an interior obstacle produces strictly more triangles than the empty
+        // rectangle baseline — a cheap, robust proxy that the wall's obstacle ring was actually
+        // incorporated into the triangulation rather than silently dropped.
+        assert!(
+            with_wall.mesh.layers[0].polygons.len() > without_wall.mesh.layers[0].polygons.len(),
+            "a mesh built with an interior wall obstacle must have more polygons than the \
+             walls-absent baseline"
+        );
     }
 
     #[test]
