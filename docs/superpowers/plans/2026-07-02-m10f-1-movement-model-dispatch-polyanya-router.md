@@ -1987,6 +1987,7 @@ git commit -m "feat(m10f-1): disable route commit in continuous scenes (preview 
 ## Model/Effort directives
 
 - Plan-writer: **mainline continuation** (chosen over dispatching `sdd-plan-writer-sonnet`/`sdd-plan-writer-opus`) — Sonnet 5, effort high (session default, unchanged for this plan-writing turn).
+- Dispatcher: **mainline** (chosen over dispatching `sdd-dispatcher` to own the full loop) — this session runs the SDD dispatch loop directly. Recommended tier per `sdd-model-effort-tiers.md` is Sonnet/low for this role; the session's actual effort is whatever `/effort` is currently set to (left to the human's control, not overridden here). Implementer/per-task-reviewer/final-reviewer roles are never a mainline choice — always the named `sdd-*` subagents per CLAUDE.md.
 
 ## Buddy-check directives
 
