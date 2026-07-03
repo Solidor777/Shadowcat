@@ -298,18 +298,24 @@ pub(crate) fn navmesh_find(
 
 /// Arc-length-samples `outcome.path` and truncates it at the first sample whose chord (from the
 /// previous retained sample) either (a) touches a cell outside `mask` (footprint disc ∪ the
-/// step's supercover) or (b) crosses a `blocksMove` wall. `mask: None` skips check (a) — the
-/// SAME per-cell predicate `pathfinding::cell_enterable` applies, no forked visibility decision,
-/// so a continuous preview is fog-safe and `route ⊆ gate-allowed` holds across both engines
-/// (parent spec §6.3). Check (b) always runs, independent of `mask` — this is a router-fidelity
-/// guarantee (walls are public geometry, not a secrecy concern): the navmesh's true polyline may
-/// detour around a wall corner, but once downsampled to at most `MAX_VISION_SAMPLES` arc-length
-/// samples, a chord between two samples straddling that corner could otherwise cross the wall the
-/// true route avoided. `mask: None` and `walls: &[]` together ⇒ returned unchanged.
+/// step's supercover) or (b) crosses a `blocksMove` wall. `mask: None` skips check (a) — this
+/// reuses the same `footprint_cells` ∪ `supercover_cells` union `pathfinding::cell_enterable`'s
+/// mask check applies (component #2), adapted to a continuous sample position rather than a grid
+/// cell center; no forked visibility decision, so a continuous preview is fog-safe and
+/// `route ⊆ gate-allowed` holds across both engines (parent spec §6.3). Check (b) always runs,
+/// independent of `mask` — this is a router-fidelity guarantee (walls are public geometry, not a
+/// secrecy concern): the navmesh's true polyline may detour around a wall corner, but once
+/// downsampled to at most `MAX_VISION_SAMPLES` arc-length samples, a chord between two samples
+/// straddling that corner could otherwise cross the wall the true route avoided. `mask: None` and
+/// `walls: &[]` together ⇒ returned unchanged.
 ///
 /// A zero/one-sample truncation (the very first sample already fails a check) yields a
 /// single-point path at `outcome.path[0]` with `cost: 0.0` — the caller is responsible for
-/// treating a degenerate result as appropriate for its context.
+/// treating a degenerate result as appropriate for its context. The SAME single-point-at-
+/// `path[0]`/`cost: 0.0` shape is also this function's fail-closed response to a degenerate
+/// `cell`/`footprint_radius_cells` input (see the guard below) — unlike `build_navmesh` (returns
+/// `Option<NavMesh>`, can simply return `None`), this function's return type has no "absent"
+/// state, so truncating to just the start point is the most restrictive output it can produce.
 // TODO: remove once the navmesh cache/dispatch caller lands and calls this.
 #[allow(dead_code)]
 pub(crate) fn clip_to_visible_mask(
@@ -321,6 +327,26 @@ pub(crate) fn clip_to_visible_mask(
 ) -> crate::scene::pathfinding::PathOutcome {
     if outcome.path.len() < 2 {
         return outcome;
+    }
+    // Defense-in-depth, mirroring `build_navmesh`'s guard style/ordering (same file, same
+    // convention): `cell` and `footprint_radius_cells` flow into `r_scene` and then into
+    // `pathfinding::footprint_cells`, which has NO internal cap on its nested cell-scan loop — an
+    // ordinary-looking oversized-but-finite `footprint_radius_cells` (e.g. `1e6`, no NaN/Inf
+    // needed) drives a catastrophic iteration count, and an extreme value saturates the `as i32`
+    // cast (Rust's `f64 as i32` is a stable saturating cast: `Infinity -> i32::MAX`, `-Infinity ->
+    // i32::MIN`, `NaN -> 0`), making the loop range `i32::MIN..=i32::MAX`. `build_navmesh` already
+    // guards the identical value with the same `MAX_FOOTPRINT_CELLS` range check; reused here
+    // verbatim. Fail-closed truncates to the start point (see the doc comment above) rather than
+    // panicking or returning the original unclipped outcome.
+    if !cell.is_finite()
+        || cell <= 0.0
+        || !(0.0..=crate::scene::pathfinding::MAX_FOOTPRINT_CELLS).contains(&footprint_radius_cells)
+    {
+        return crate::scene::pathfinding::PathOutcome {
+            path: vec![outcome.path[0]],
+            cost: 0.0,
+            arrested: outcome.arrested,
+        };
     }
     if mask.is_none() && walls.is_empty() {
         return outcome;
@@ -350,8 +376,17 @@ pub(crate) fn clip_to_visible_mask(
                     }
             }
         };
+        // Skip a single malformed (non-finite-endpoint) wall segment rather than rejecting the
+        // whole call — mirrors `build_navmesh`'s per-segment skip semantics (same file). A NaN
+        // wall coordinate makes EVERY comparison inside `segments_cross` evaluate `false` (no
+        // crossing detected), which would otherwise silently fail-OPEN the wall-crossing check
+        // this function exists to enforce; a malformed individual wall must not blind the check
+        // against every OTHER valid wall.
         let wall_ok = !walls
             .iter()
+            .filter(|w| {
+                w.a.0.is_finite() && w.a.1.is_finite() && w.b.0.is_finite() && w.b.1.is_finite()
+            })
             .any(|w| crate::scene::segments_cross(prev, s.pos, w.a, w.b));
         if !mask_ok || !wall_ok {
             break;
@@ -766,6 +801,82 @@ mod tests {
         assert!(
             last.0 <= 500.0 + 1e-6,
             "a chord crossing a wall must truncate before the wall, last x = {}",
+            last.0
+        );
+    }
+
+    #[test]
+    fn clip_with_over_cap_footprint_radius_fails_closed_without_hanging_or_panicking() {
+        // An oversized-but-finite `footprint_radius_cells` (exceeding `MAX_FOOTPRINT_CELLS`) must
+        // not be allowed to drive `pathfinding::footprint_cells`'s uncapped nested cell-scan loop
+        // (which saturates to an `i32::MIN..=i32::MAX` range under `as i32`) — it must fail closed
+        // to the truncated-to-start-point result instead.
+        let mut mask = BTreeSet::new();
+        mask.insert((0, 0));
+        let outcome = crate::scene::pathfinding::PathOutcome {
+            path: vec![(50.0, 50.0), (950.0, 50.0)],
+            cost: 900.0,
+            arrested: false,
+        };
+        let over_cap = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS + 1.0;
+        let clipped = clip_to_visible_mask(outcome.clone(), Some(&mask), 100.0, over_cap, &[]);
+        assert_eq!(clipped.path, vec![outcome.path[0]]);
+        assert_eq!(clipped.cost, 0.0);
+
+        // Also verify an infinite footprint radius (would saturate the `as i32` cast even more
+        // directly) is rejected the same way.
+        let clipped_inf =
+            clip_to_visible_mask(outcome.clone(), Some(&mask), 100.0, f64::INFINITY, &[]);
+        assert_eq!(clipped_inf.path, vec![outcome.path[0]]);
+        assert_eq!(clipped_inf.cost, 0.0);
+    }
+
+    #[test]
+    fn clip_with_a_degenerate_cell_fails_closed() {
+        let mut mask = BTreeSet::new();
+        mask.insert((0, 0));
+        let outcome = crate::scene::pathfinding::PathOutcome {
+            path: vec![(50.0, 50.0), (950.0, 50.0)],
+            cost: 900.0,
+            arrested: false,
+        };
+        for bad_cell in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let clipped = clip_to_visible_mask(outcome.clone(), Some(&mask), bad_cell, 0.4, &[]);
+            assert_eq!(
+                clipped.path,
+                vec![outcome.path[0]],
+                "cell={bad_cell} must fail closed to a single-point truncation"
+            );
+            assert_eq!(clipped.cost, 0.0);
+        }
+    }
+
+    #[test]
+    fn clip_skips_a_non_finite_wall_without_hiding_a_crossing_against_other_walls() {
+        // A malformed wall (NaN endpoint) must be skipped, not crash the call, and must NOT
+        // blind the crossing check against an OTHER, well-formed wall that genuinely bisects the
+        // route.
+        let walls = vec![
+            crate::scene::vision::Seg {
+                a: (f64::NAN, -100.0),
+                b: (f64::NAN, 200.0),
+            },
+            crate::scene::vision::Seg {
+                a: (500.0, -100.0),
+                b: (500.0, 200.0),
+            },
+        ];
+        let outcome = crate::scene::pathfinding::PathOutcome {
+            path: vec![(50.0, 50.0), (950.0, 50.0)],
+            cost: 900.0,
+            arrested: false,
+        };
+        let clipped = clip_to_visible_mask(outcome, None, 100.0, 0.1, &walls);
+        let last = *clipped.path.last().unwrap();
+        assert!(
+            last.0 <= 500.0 + 1e-6,
+            "the well-formed wall must still truncate the route even alongside a malformed one, \
+             last x = {}",
             last.0
         );
     }
