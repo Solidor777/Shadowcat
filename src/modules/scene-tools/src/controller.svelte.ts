@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, buildRegionDoc, setRegionVisibility, resolveSceneSettings, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import { topTokenAt } from "./hit-test";
 
@@ -421,13 +421,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * true so the commit proceeds. */
   function commitRoute(goal: Point): void {
     if (!ctx.pathfind || !ctx.moveRequest || !ctx.tokenSelection || ctx.tokenSelection.ids.size !== 1) return;
-    const sceneDoc = ctx.documents.query("scene")[0];
-    if (sceneDoc && resolveSceneSettings(sceneDoc, ctx.documents).movementModel === "continuous") {
-      // Continuous-scene execution lands in M10f-3; the router + preview already work (§9 of the
-      // M10f-1 design doc), but committing a route here would need the M10f-2 unified sampled
-      // executor, which does not exist yet. No grid-snap fallback — clear silence, not a fake move.
-      return;
-    }
+    // Continuous-scene execution is wired end-to-end (M10f-3): the server move-execution path
+    // is engine-agnostic since M10f-2 (no movementModel branch anywhere), so committing a route
+    // proceeds identically for grid-stepped and continuous scenes.
     const scene = activeScene(ctx);
     const start = tokenCenter();
     if (!scene || !start) return;
