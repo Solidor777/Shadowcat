@@ -47,6 +47,25 @@ fn parse_movement_restriction(s: &str) -> MovementRestriction {
     }
 }
 
+/// Per-scene movement/pathfinding engine choice (M10f-1). Mirrors `MovementModel` in
+/// `scene-docs.ts`. `GridStepped` = the existing grid A* router; `Continuous` = the polyanya
+/// navmesh router.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MovementModel {
+    GridStepped,
+    Continuous,
+}
+
+/// Parse a movement-model string; any unknown/missing value fails closed to `GridStepped` —
+/// the pre-existing, fully-proven engine. A scene is never silently switched to the newer
+/// navmesh router without an explicit author choice.
+fn parse_movement_model(s: &str) -> MovementModel {
+    match s {
+        "continuous" => MovementModel::Continuous,
+        _ => MovementModel::GridStepped,
+    }
+}
+
 /// Fail-safe finite default scene size (grid units) when a scene has no authored `bounds`.
 /// MUST match `DEFAULT_SCENE_BOUNDS` in the client `scene-docs.ts` (client/server parity).
 pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
@@ -63,6 +82,9 @@ pub struct ResolvedScene {
     pub env_color: u32,
     pub env_intensity: f64,
     pub movement_restriction: MovementRestriction,
+    /// Per-scene/world-default pathfinding engine choice (M10f-1). `GridStepped` dispatches to
+    /// `pathfinding::find`; `Continuous` dispatches to `navmesh::navmesh_find`.
+    pub movement_model: MovementModel,
     pub partial_cell_leniency: bool,
     /// Scene dimensions (width, height) in grid units. Always finite `> 0`
     /// (default `DEFAULT_SCENE_BOUNDS_UNITS`). The M10f navmesh's outer rectangle.
@@ -426,6 +448,11 @@ impl SceneEcs {
             .and_then(|s| s.get("movementRestriction"))
             .and_then(|v| v.as_str())
             .unwrap_or("visible");
+        // movementModel (M10f-1): scene `vision.movementModel` ?? world ?? "grid-stepped".
+        let d_model = ws_scene
+            .and_then(|s| s.get("movementModel"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("grid-stepped");
         // partialCellLeniency: world-only (no per-scene override; mirrors `d.scene.partialCellLeniency`).
         let d_lenient = ws_scene
             .and_then(|s| s.get("partialCellLeniency"))
@@ -467,6 +494,10 @@ impl SceneEcs {
             .and_then(|s| s.pointer("/vision/movementRestriction"))
             .and_then(|v| v.as_str())
             .unwrap_or(d_move);
+        let model_str = s
+            .and_then(|s| s.pointer("/vision/movementModel"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(d_model);
 
         // Scene bounds (M10f-0): per-scene, no world default — a fixed finite fallback. A
         // non-finite or non-positive axis is degenerate for a navmesh rectangle → fail closed.
@@ -498,6 +529,7 @@ impl SceneEcs {
             env_color: parse_hex_color(env_color),
             env_intensity: env_int.clamp(0.0, 1.0),
             movement_restriction: parse_movement_restriction(move_str),
+            movement_model: parse_movement_model(model_str),
             partial_cell_leniency: d_lenient,
             bounds,
         }
@@ -2799,6 +2831,89 @@ mod tests {
         );
         let r = ecs.resolve_scene(scene_id);
         assert_eq!(r.movement_restriction, MovementRestriction::Revealed);
+    }
+
+    #[test]
+    fn resolve_scene_movement_model_defaults_to_grid_stepped() {
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        let r = ecs.resolve_scene(Uuid::from_u128(10));
+        assert_eq!(r.movement_model, MovementModel::GridStepped);
+    }
+
+    #[test]
+    fn resolve_scene_movement_model_world_override_to_continuous() {
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "continuous",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        let r = ecs.resolve_scene(Uuid::from_u128(10));
+        assert_eq!(r.movement_model, MovementModel::Continuous);
+    }
+
+    #[test]
+    fn resolve_scene_movement_model_scene_override_beats_world() {
+        let mut ecs = SceneEcs::from_documents(
+            vec![entity_doc_top(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                        "vision": { "movementModel": "continuous" } }),
+            )],
+            0,
+        );
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "grid-stepped",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        let r = ecs.resolve_scene(Uuid::from_u128(10));
+        assert_eq!(r.movement_model, MovementModel::Continuous);
+    }
+
+    #[test]
+    fn resolve_scene_movement_model_null_scene_override_inherits_world() {
+        let mut ecs = SceneEcs::from_documents(
+            vec![entity_doc_top(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                        "vision": { "movementModel": null } }),
+            )],
+            0,
+        );
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "continuous",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        let r = ecs.resolve_scene(Uuid::from_u128(10));
+        assert_eq!(r.movement_model, MovementModel::Continuous);
     }
 
     #[test]
