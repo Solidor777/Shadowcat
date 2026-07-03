@@ -62,6 +62,14 @@ pub(crate) const MAX_GATE_WALK_SAMPLES: usize = 4096;
 /// below that ~3.5e13 threshold (tol stays under ~3e-5, negligible) while remaining generously
 /// large for any real authored scene (`resolve_scene`'s default bounds are `100x100` grid units;
 /// even an extreme scene would not need path coordinates near this ceiling).
+///
+/// Note: this bounds path COORDINATES, not `cell` itself (`scene_grid_sizes()` has no upper
+/// cap). That is sufficient, not an oversight: the false-identity failure only manifests when
+/// `cheby` (the per-step Chebyshev distance, itself bounded by `2 * MAX_GATE_WALK_COORD` once
+/// path coordinates are capped) is close enough to `cell` to sit within `tol` of it. An
+/// unboundedly large `cell` relative to a bounded `cheby` is never itself misclassified — it is
+/// trivially and correctly identified as a single-cell step, not a false one — so bounding
+/// coordinates alone closes the gap without needing to separately bound `cell`.
 pub(crate) const MAX_GATE_WALK_COORD: f64 = 1.0e9;
 
 /// One dense sample in a `gate_walk` output: a point at most one cell from its predecessor,
