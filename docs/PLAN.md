@@ -443,8 +443,58 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > deviation — that implementation stays homed to M12 (logged `docs/TODO.md`). Reviewed
 > skill-update gate: `shadowcat-codebase-scene-rendering` updated + confirmed ACCURATE.
 >
-> Next = **M10f-1** (movementModel axis + dispatch + polyanya router; adds the `polyanya`+`spade`+
-> `geo` deps — cargo-bloat check required).
+> **M10f-1 DONE** (branch `m10f-1-movement-model-dispatch`, commits `008e8e2..080de7f`, all green,
+> merged --no-ff to LOCAL main — merge gate = full M10f) — `movementModel` scene axis
+> (`grid-stepped` default, `continuous` opt-in; server `MovementModel`/`parse_movement_model` +
+> client `MovementModel` type, world-default + per-scene override, resolved exactly like
+> `movement_restriction`, fail-closed to `grid-stepped`) + a headless `polyanya`-navmesh router
+> dispatched alongside the existing grid A*. `scene/navmesh.rs` (new): `build_navmesh` (bounds +
+> `blocksMove`-wall footprint-inflated obstacles, `geo::Buffer` + `polyanya::Triangulation`),
+> `navmesh_find` (any-angle multi-leg routing, Euclidean cost), `clip_to_visible_mask` (the
+> security-critical fog-safe + wall-safe route-preview post-filter — arc-length-samples the route
+> and truncates at the first sample that leaves the requester's `visible_cells` mask OR whose chord
+> crosses a wall; reuses the SAME mask `SceneEcs::pathfind` builds once and shares across both
+> engines — never forked, generalizing the M10e-6 §13 invariant to a second routing engine).
+> Per-`(scene, quantized footprint radius)` memoized navmesh cache on `SceneEcs`
+> (`std::sync::Mutex`+`Arc`, invalidated wholesale on any `wall`/`scene` document mutation via
+> `apply_op`). New deps: `polyanya` (headless CDT-backed any-angle navmesh, default-features off),
+> `geo` (pinned to polyanya's own copy), `glam` (direct dep for `Vec2`, required even though
+> polyanya pulls it transitively) — binary-size delta ~0.94 MiB, well under the 60 MiB CI budget.
+> **Preview-only checkpoint, by design:** continuous scenes get the router + an honest fog-safe
+> route preview + Euclidean budget; committing (executing) a continuous-scene move is explicitly
+> disabled client-side (`commitRoute` gate in `controller.svelte.ts`, checked via
+> `resolveSceneSettings`) — no grid-snap fallback — since continuous move *execution* is a later
+> checkpoint (M10f-2/3). SDD-executed (10 tasks; Tasks 4/5/6/7 buddy-checked per the plan's
+> pre-authorization, Tasks 1-3/8-10 the standard two-reviewer gate). **Buddy-checking found and
+> fixed 6 distinct Critical/Important defects**, all independently re-confirmed resolved: three
+> separate `f64→f32` cast-saturation panics inside `spade`'s triangulation (unbounded `bounds`/
+> `cell`, then unbounded `footprint_scene`, each requiring its own fix round after the prior round's
+> guard proved incomplete) closed by a `MAX_NAVMESH_COORD` bound now covering every coordinate
+> surface that reaches a narrowing cast in the module; a **silent fail-open** where a wall obstacle
+> could vanish from the mesh entirely under ordinary-looking inputs (a `geo`/`i_overlay` fixed-point
+> quantization collapse, verified by both empirical worktree reproduction and independent
+> source-level derivation — arguably more severe than a panic, since it is invisible) closed by
+> treating an empty Minkowski-buffer result for a well-formed wall as a hard build failure; a
+> `NaN`/negative-radius navmesh-cache-key collision letting a degenerate footprint radius silently
+> return an already-cached valid mesh, closed by validating before the cache lookup rather than
+> after; and a grid/continuous engine-parity gap where routing to your own current position
+> succeeded on grid-stepped scenes but failed as `Unreachable` on continuous ones, closed via a
+> `raw_was_trivial` flag distinguishing a genuine zero-cost success from a real mask/wall rejection.
+> The plan document itself was buddy-checked BEFORE execution began (PHASE=spec), catching an
+> exact-f64-bits cache-key-quantization design flaw and a missing DoS-bound requirement before any
+> code was written. Final whole-branch review (opus, two-reviewer): clean integration, no
+> cross-task regressions, all per-task fixes intact in the assembled tree; one Minor (a
+> system-level test gap on the non-GM continuous secrecy path — closed with a dedicated
+> `pathfind`-level test proving the real `visible_cells` mask reaches `clip_to_visible_mask` through
+> the full dispatch chain, not just a hand-built mask in a unit test). Reviewed skill-update gate:
+> `shadowcat-codebase-scene-rendering` updated + confirmed ACCURATE (one round of Minor
+> corrections applied: an invariant promoted from prose to a top-level Hard Invariants entry, an
+> unverifiable buddy-check round-count claim softened).
+>
+> Next = **M10f-2** (unify the movement executor — refactor `move_exec`'s king-step walk into an
+> arc-length-sampled polyline walk so grid A* and the navmesh router share one gate/region/arrest/
+> commit path; grid §13 parity must be proven under heavy buddy-check before continuous execution
+> is layered on top).
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
