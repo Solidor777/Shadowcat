@@ -146,9 +146,10 @@ the parent spec's goal. Parent §9's mechanism is **superseded** by this toggle;
 
 - `Room::execute_move` on a **continuous** scene: an any-angle route executes and commits
   the stop atomically (mirror the existing grid `execute_move_commits_stop...` test).
-- A continuous route whose subdivided cells leave the mover's `visible` set is
-  **cell-gate rejected** (`Forbidden`, fail-closed) — proves the cell-sampled gate applies
-  to any-angle paths.
+- A continuous route whose subdivided cells leave the mover's `visible` set **truncates**
+  at the last visible sample (`Ok` with a partial `stop`, matching the wall/region gates'
+  existing mechanism — `Forbidden` is reserved for structural/degenerate input, never a
+  per-cell gate stop) — proves the cell-sampled gate applies to any-angle paths, fail-closed.
 - `MoveStream` samples an any-angle path correctly (arc-length monotonic `t_ms`; exact
   first/last vertex retained).
 - The M2 observer no-leak assertion holds over an any-angle path (reuse the suite; a
