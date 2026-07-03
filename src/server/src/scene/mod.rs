@@ -975,6 +975,17 @@ impl SceneEcs {
         scene: Uuid,
         footprint_radius_cells: f64,
     ) -> Option<std::sync::Arc<navmesh::NavMesh>> {
+        // Validate BEFORE computing the cache key or touching the cache at all. `f64 as i64`
+        // saturates NaN to 0 and rounds a tiny negative (e.g. -0.0001) to -0, which also casts to
+        // 0 — colliding with the legitimate key for `footprint_radius_cells == 0.0`. Without this
+        // upfront guard a degenerate radius would silently hit that cached entry and return a
+        // valid-looking `Some` mesh instead of failing closed, bypassing `build_navmesh`'s own
+        // range check entirely on any call after the 0.0 radius has already been cached. Mirrors
+        // `build_navmesh`'s guard exactly so the two stay consistent.
+        if !(0.0..=crate::scene::pathfinding::MAX_FOOTPRINT_CELLS).contains(&footprint_radius_cells)
+        {
+            return None;
+        }
         // Quantize to the nearest 1/1000 cell so floating-point noise in a client-computed radius
         // (e.g. derived via division) collapses onto the same cache entry as the canonical value.
         let quantized = (footprint_radius_cells * 1000.0).round() as i64;
@@ -3493,6 +3504,33 @@ mod tests {
         assert!(
             !std::sync::Arc::ptr_eq(&a, &b),
             "distinct footprint radii must get distinct cached meshes"
+        );
+    }
+
+    #[test]
+    fn navmesh_for_rejects_degenerate_radius_even_after_cache_primed_at_zero() {
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        let scene = Uuid::from_u128(10);
+        // Prime the cache at footprint_radius_cells == 0.0: quantized key (scene, 0).
+        let primed = ecs.navmesh_for(scene, 0.0);
+        assert!(
+            primed.is_some(),
+            "radius 0.0 must build and cache successfully"
+        );
+
+        // f64 as i64 saturates NaN to 0, colliding with the primed key above. Without an
+        // upfront validation guard this would return the CACHED radius-0.0 mesh instead of
+        // failing closed.
+        assert!(
+            ecs.navmesh_for(scene, f64::NAN).is_none(),
+            "NaN footprint radius must fail closed, not reuse the cached radius-0.0 mesh"
+        );
+
+        // A small negative rounds to -0 under `(x * 1000.0).round() as i64`, which also casts
+        // to the same colliding key.
+        assert!(
+            ecs.navmesh_for(scene, -0.0001).is_none(),
+            "negative footprint radius must fail closed, not reuse the cached radius-0.0 mesh"
         );
     }
 
