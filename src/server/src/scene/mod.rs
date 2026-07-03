@@ -3798,8 +3798,11 @@ mod tests {
         let far_goal = (9500.0, 9500.0);
         let outcome = ecs
             .pathfind(user, scene, (50.0, 50.0), &[far_goal], 0.1, false, None)
-            .expect("clip truncates the route short of the unseen goal rather than failing outright");
-        let dist_to_goal = ((far_goal.0 - 50.0_f64).powi(2) + (far_goal.1 - 50.0_f64).powi(2)).sqrt();
+            .expect(
+                "clip truncates the route short of the unseen goal rather than failing outright",
+            );
+        let dist_to_goal =
+            ((far_goal.0 - 50.0_f64).powi(2) + (far_goal.1 - 50.0_f64).powi(2)).sqrt();
         assert!(
             outcome.cost < dist_to_goal / 2.0,
             "route must truncate well short of the unseen far goal: cost {} vs distance {}",

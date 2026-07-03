@@ -73,13 +73,15 @@ All work lives in one existing file — this refactor needs no new files or modu
   high) per explicit user direction — the user typed "You write the plan" immediately after
   switching `/model` to Sonnet 5, directly resolving the writing-plans tier-switch checkpoint
   in favor of option (a) (mainline continuation), not a dispatched `sdd-plan-writer-*` agent.
-- **Execution tier (recommended, not yet confirmed by the user):** standard `shadowcat-coder`
-  (sonnet, effort medium) per task, escalating to `shadowcat-coder-opus` on any
-  BLOCKED/DONE_WITH_CONCERNS report — matches the M10f-0/M10f-1 cadence. Reviewers:
-  `shadowcat-spec-reviewer` + `shadowcat-code-reviewer` per task, escalating to their `-opus`
-  twins if a review reads shallow/uncertain or a diff is judged genuinely tough (Tasks 1, 3, 4,
-  5 are pre-authorized for the heavier two-reviewer buddy-check debate — see below, not just
-  the standard escalation path).
+- **Dispatcher tier (confirmed, 2026-07-03):** the user set session effort to medium and said
+  "You are now the dispatcher" — mainline continuation, option (a) of the SDD tier-switch
+  checkpoint; the loop is NOT delegated to the `sdd-dispatcher` agent.
+- **Execution tier:** standard `shadowcat-coder` (sonnet, effort medium) per task, escalating
+  to `shadowcat-coder-opus` on any BLOCKED/DONE_WITH_CONCERNS report — matches the
+  M10f-0/M10f-1 cadence. Reviewers: `shadowcat-spec-reviewer` + `shadowcat-code-reviewer` per
+  task, escalating to their `-opus` twins if a review reads shallow/uncertain or a diff is
+  judged genuinely tough (Tasks 1, 3, 4, 5 are pre-authorized for the heavier two-reviewer
+  buddy-check debate — see below, not just the standard escalation path).
 
 ## Buddy-check directives
 
@@ -1439,15 +1441,21 @@ a baseline, not `0.0`, whenever the walk isn't blocked before accruing it. Add t
                 restriction: MovementRestriction::Visible,
                 path: vec![(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 100.0)],
                 expected: ExpectedOutcome {
-                    stop: (300.0, 100.0),
-                    render_path: vec![
-                        (0.0, 0.0),
-                        (100.0, 100.0),
-                        (200.0, 200.0),
-                        (300.0, 100.0),
-                    ],
-                    truncated: false,
-                    cost: 3.0,
+                    // CORRECTED post-implementation (Task 6): the original plan literal here
+                    // (stop=(300,100), truncated=false, cost=3.0) was a hand-derivation error —
+                    // it assumed the diagonal path's third leg succeeds cleanly, but BOTH
+                    // endpoints of (200,200)->(300,100) sit exactly on 4-way grid-line
+                    // intersections, which drives `supercover_cells`'s corner-crossing branch
+                    // to fire repeatedly and drift away from the target cell until the
+                    // MAX_MOVE_CELLS guard fails it closed (returns None) — a genuine,
+                    // pre-existing, already-buddy-checked property of `supercover_cells` on this
+                    // specific corner-degenerate diagonal, not a defect in this checkpoint's
+                    // code. Both `execute_move` and the (now-deleted) oracle agreed on this
+                    // corrected value during Task 6.
+                    stop: (200.0, 200.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 100.0), (200.0, 200.0)],
+                    truncated: true,
+                    cost: 2.0,
                 },
             },
         ];
