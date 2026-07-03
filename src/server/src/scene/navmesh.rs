@@ -512,6 +512,59 @@ pub(crate) fn los_smooth(
     }
 }
 
+/// Truncate a continuous (polyanya) route at the first VISIBLE arrest cell TRANSITION, mirroring
+/// `pathfinding::find`'s arrest truncation (spec §5, "arrest is honest in preview") for the
+/// walls-only continuous path — which does not go through `find`. Arc-length-samples the route
+/// (`move_stream::sample_path`'s `SAMPLES_PER_CELL` density puts several consecutive samples in
+/// the same cell) and cuts at the first sample whose cell differs from the last distinct cell seen
+/// and is an arrest cell in `field` (the per-requester field, so a secret arrest is absent and
+/// never truncates a player's preview — it springs at `move_exec`). Cell-entry-transition dedup,
+/// not a raw per-sample check: the start cell is never a trigger even while several samples still
+/// sit inside it — a token already standing somewhere is not "entering" it, parity with `find`'s
+/// `.skip(1)` over CELLS. A route with no arrest transition is returned UNCHANGED (no resample).
+/// On truncation, cost is recomputed as the Euclidean length of the surviving polyline.
+// TODO: wire into the continuous dispatch once the pure-polyanya-path caller lands.
+#[allow(dead_code)]
+pub(crate) fn truncate_at_arrest(
+    outcome: crate::scene::pathfinding::PathOutcome,
+    field: &crate::scene::regions::RegionField,
+    cell: f64,
+) -> crate::scene::pathfinding::PathOutcome {
+    if outcome.path.len() < 2 || !cell.is_finite() || cell <= 0.0 {
+        return outcome;
+    }
+    let samples = crate::scene::move_stream::sample_path(&outcome.path, cell, 1.0);
+    let to_cell = |p: (f64, f64)| -> (i32, i32) {
+        ((p.0 / cell).floor() as i32, (p.1 / cell).floor() as i32)
+    };
+    let mut prev_cell = to_cell(samples[0].pos);
+    let mut hit = None;
+    for (i, s) in samples.iter().enumerate().skip(1) {
+        let c = to_cell(s.pos);
+        if c == prev_cell {
+            continue;
+        }
+        if field.is_arrest(c) {
+            hit = Some(i);
+            break;
+        }
+        prev_cell = c;
+    }
+    let Some(end) = hit else {
+        return outcome; // no arrest cell transition on the route: unchanged
+    };
+    let kept: Vec<(f64, f64)> = samples[..=end].iter().map(|s| s.pos).collect();
+    let cost: f64 = kept
+        .windows(2)
+        .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+        .sum();
+    crate::scene::pathfinding::PathOutcome {
+        path: kept,
+        cost,
+        arrested: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,6 +590,64 @@ mod tests {
             100.0,
         );
         b.build()
+    }
+    fn arrest_on(x0: f64, y0: f64, x1: f64, y1: f64) -> RegionField {
+        let mut b = RegionField::builder();
+        b.add(
+            &RegionShape::Rect { x0, y0, x1, y1 },
+            RegionBehavior::Arrest,
+            1.0,
+            100.0,
+        );
+        b.build()
+    }
+
+    #[test]
+    fn truncate_at_arrest_cuts_at_first_visible_arrest_cell() {
+        // Straight route (50,50)->(450,50): cells (0,0)..(4,0). Arrest on cell (2,0) = Rect
+        // [200,0]-[300,100]. Route truncates on entry to (2,0); the surviving path stays within x<=300.
+        let route = PathOutcome {
+            path: vec![(50.0, 50.0), (450.0, 50.0)],
+            cost: 400.0,
+            arrested: false,
+        };
+        let out = truncate_at_arrest(route, &arrest_on(200.0, 0.0, 300.0, 100.0), 100.0);
+        assert!(out.arrested, "arrest flag set");
+        assert!(
+            out.path.last().unwrap().0 <= 300.0 + 1e-6,
+            "truncated at/near the arrest cell entry"
+        );
+        assert!(
+            out.path.last().unwrap().0 >= 200.0,
+            "reached the arrest cell"
+        );
+    }
+
+    #[test]
+    fn truncate_at_arrest_no_arrest_is_unchanged() {
+        let route = PathOutcome {
+            path: vec![(50.0, 50.0), (450.0, 50.0)],
+            cost: 400.0,
+            arrested: false,
+        };
+        let out = truncate_at_arrest(route.clone(), &empty_field(), 100.0);
+        assert_eq!(out.path, route.path, "no arrest region: route unchanged");
+        assert!(!out.arrested);
+    }
+
+    #[test]
+    fn truncate_at_arrest_start_cell_is_not_a_trigger() {
+        // Arrest on the START cell (0,0); the token is already standing there, so it is not "entering".
+        let route = PathOutcome {
+            path: vec![(50.0, 50.0), (450.0, 50.0)],
+            cost: 400.0,
+            arrested: false,
+        };
+        let out = truncate_at_arrest(route, &arrest_on(0.0, 0.0, 100.0, 100.0), 100.0);
+        assert!(
+            out.path.last().unwrap().0 > 100.0,
+            "start-cell arrest does not immediately truncate"
+        );
     }
 
     // Base L-route at cell=100: right two cells then up one. Cells (0,0),(1,0),(2,0),(2,1).
