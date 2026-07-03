@@ -117,6 +117,14 @@ a pure Euclidean navmesh route. For a human-previewed, one-path-per-drag VTT thi
 the accepted approximation (parent §11.3 already deferred boundary-exact weighted
 continuous pathfinding permanently).
 
+**Cost units (correctness requirement):** the continuous engine reports `cost` in
+**scene units** (the polyanya path returns Euclidean scene-unit length). `pathfinding::
+find` returns `cost` in **cells** (step costs of 1.0/√2 × multiplier). So the weighted
+path MUST multiply `find`'s cost by `cell` before returning, so both continuous
+sub-paths report the same unit regardless of which ran. (The `GridStepped` engine keeps
+its cells-unit contract — the client multiplies by per-cell for display, M10g §5 — and
+is untouched.)
+
 ## 5. Server — LOS smoothing (`scene/pathfinding.rs` or a pure sibling)
 
 Pure, no-I/O. Input: the weighted cell-center polyline + `walls` (the `blocksMove`
