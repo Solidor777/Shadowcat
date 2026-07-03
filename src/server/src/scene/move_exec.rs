@@ -373,6 +373,101 @@ pub(crate) fn execute_move(
     })
 }
 
+/// Frozen differential-test oracle: a verbatim copy of the king-step executor's logic, kept
+/// solely so a differential test can prove a sampled/refactored executor agrees with it on every
+/// grid input. This is not a permanently-maintained second executor — reusing it as one would
+/// reintroduce the engine fork movement unification exists to avoid.
+///
+/// TODO: delete once grid-input parity between the sampled executor and this oracle is proven and
+/// frozen as literal fixtures.
+#[cfg(test)]
+pub(crate) fn execute_move_kingstep_oracle(
+    ecs: &SceneEcs,
+    scene: Uuid,
+    token: Uuid,
+    path: &[(f64, f64)],
+    restriction: MovementRestriction,
+    visible: &BTreeSet<(i32, i32)>,
+    cell: f64,
+) -> Result<MoveOutcome, MoveReject> {
+    if path.len() < 2 {
+        return Err(MoveReject::EmptyPath);
+    }
+    if path.len() > MAX_MOVE_PATH {
+        return Err(MoveReject::TooLong);
+    }
+    if !cell.is_finite() || cell <= 0.0 {
+        return Err(MoveReject::Degenerate);
+    }
+    if path.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+        return Err(MoveReject::Degenerate);
+    }
+
+    let cur = ecs.token_position(token).ok_or(MoveReject::NotAToken)?;
+    if (cur.0 - path[0].0).abs() > EPS || (cur.1 - path[0].1).abs() > EPS {
+        return Err(MoveReject::Degenerate);
+    }
+
+    let to_cell = |p: (f64, f64)| -> (i32, i32) {
+        ((p.0 / cell).floor() as i32, (p.1 / cell).floor() as i32)
+    };
+
+    let check_mask = !matches!(restriction, MovementRestriction::Unrestricted);
+    let regions = ecs.region_field(scene, None);
+
+    let mut stop_index = 0usize;
+    let mut stopped_early = false;
+    let mut cost = 0.0;
+    for i in 1..path.len() {
+        let prev = path[i - 1];
+        let next = path[i];
+
+        let (pc, nc) = (to_cell(prev), to_cell(next));
+        if (pc.0 - nc.0).abs() > 1 || (pc.1 - nc.1).abs() > 1 {
+            return Err(MoveReject::Degenerate);
+        }
+
+        if ecs.blocks_move(scene, prev, next) {
+            stopped_early = true;
+            break;
+        }
+
+        if check_mask {
+            let Some(cells) = supercover_cells(prev, next, cell) else {
+                stopped_early = true;
+                break;
+            };
+            if !cells.iter().all(|c| visible.contains(c)) {
+                stopped_early = true;
+                break;
+            }
+        }
+
+        let region_cell = to_cell(next);
+        if regions.is_impassable(region_cell) {
+            stopped_early = true;
+            break;
+        }
+        cost += regions.terrain_multiplier(region_cell);
+        if regions.is_arrest(region_cell) {
+            stop_index = i;
+            stopped_early = true;
+            break;
+        }
+
+        stop_index = i;
+    }
+
+    let render_path = path[0..=stop_index].to_vec();
+    let truncated = stopped_early || stop_index < path.len() - 1;
+    Ok(MoveOutcome {
+        stop: path[stop_index],
+        render_path,
+        truncated,
+        cost,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
