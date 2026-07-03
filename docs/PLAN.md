@@ -534,9 +534,69 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > from the actual geometry. Fail-closed, non-security, logged to `docs/TODO.md`. Reviewed
 > skill-update gate: `shadowcat-codebase-scene-rendering` updated + confirmed ACCURATE.
 >
-> Next = **M10f-3** (continuous execution + streamed vision — wires the now-unified executor's
-> continuous-polyline support into a real `MoveRequest`/`MoveStream` path end to end; client
-> no-snap place/move in continuous scenes).
+> **M10f-3 DONE** (branch `m10f-3-continuous-execution-snap-toggle`, commits `eb2cea9..f6571ca`,
+> all green, merge gate = full M10f) — a client-weighted checkpoint: unlocks server-authoritative
+> continuous (any-angle) movement execution and adds an independent scene-level `snapToGrid`
+> authoring axis. **The server needed ZERO production code changes** — `Room::execute_move`,
+> `move_exec::execute_move`/`gate_walk`, `move_stream::sample_path`, and the M2 `clip_move_stream`
+> egress clip have had NO `movementModel` branch anywhere since M10f-2, so the entire move-
+> execution/streaming/secrecy-clip path already gated, executed, and clipped any polyline (grid or
+> any-angle) correctly. The only thing blocking continuous execution was a client-side refusal:
+> `controller.svelte.ts`'s `commitRoute` removed its M10f-1 preview-only early-return, so committing
+> a route now proceeds identically for grid-stepped and continuous scenes. M10f-3's own server work
+> is therefore TEST-ONLY (Tasks 7-9): new `Room::execute_move`/`sample_path`/`clip_move_stream`
+> coverage empirically proving the already-engine-agnostic path handles any-angle geometry. New
+> **`snapToGrid`** scene axis (`scene-docs.ts`, opaque `system`-body JSON, no ts-rs type): a
+> `resolveSceneSettings`-derived default keyed off `movementModel` (`false` for continuous, `true`
+> otherwise, unless explicitly overridden in either direction — nullish-coalescing, never a truthy
+> check), enforced at a SINGLE chokepoint (`RenderEngine.snap`, gated by a new
+> `SceneToolHost.setSnapEnabled` seam forwarded through `SceneInteractionBridge` and pushed
+> unconditionally from `Stage.svelte`'s existing per-pass scene-settings effect) that every scene
+> tool inherits automatically via `ctx.scene.snap`; authored via a new GM-only tool-rail toggle
+> button. SDD-executed (9 tasks; Tasks 6-9 buddy-checked per the plan's pre-authorization, Tasks
+> 1-5 the standard two-reviewer gate, plus a mandatory whole-branch buddy-check before merge).
+> **Task 5 review caught a real Critical**: the tool-rail toggle hardcoded `old: null` in its
+> dispatched scene-doc update, so the server's field-level optimistic-concurrency check
+> (`Repository::apply_intent`) rejected every click after the first (the actual stored value is no
+> longer `null`/absent once written once) — the toggle silently stopped working after one use per
+> scene per session; fixed by reading the RAW stored value for `old` (mirroring the existing
+> `sendMoves` convention), with a new regression test confirmed genuinely discriminating (would
+> have failed pre-fix) by the reviewer. The SAME pre-existing bug shape was found (not introduced)
+> in `GameSettingsPanel`/`FactionsPanel`/`ConditionsPanel` — logged to `docs/TODO.md` rather than
+> fixed (out of scope), per this project's bug/TODO segregation discipline. **Buddy-checking on
+> Tasks 6-9 was genuinely valuable, not rubber-stamped:** Task 6's reviewers independently verified
+> the central safety claim (no `movementModel` branch anywhere in the execution chain) directly
+> against server source rather than trusting the diff, and both independently found a distinct
+> stale-doc Minor the other missed (both conceded + fixed). Task 7's brief itself assumed the
+> wrong server behavior (`Err(Forbidden)` for a cell-gate rejection) — the implementer discovered
+> `execute_move` actually TRUNCATES (never errors) for a wall/mask/region violation, matching the
+> same class of "brief literal wrong, halt and verify against real geometry" precedent as M10f-2
+> Task 6; both reviewers independently re-verified this from source and confirmed the rewritten
+> test is a faithful, non-weakened proof, then jointly caught and fixed a stale "Forbidden" wording
+> bug surviving in TWO approved design docs. Task 8's buddy check caught a genuinely load-bearing
+> gap: the test asserted only angle-independent properties (monotonic time, trivial boundary
+> positions) and never checked any INTERIOR sample's position, so it would not have caught a real
+> diagonal-interpolation bug; one reviewer's specific supporting claim (a differing binary-search
+> branch pattern between the new and sibling tests) was directly disproven by the other via
+> simulation before the fix was scoped, then BOTH reviewers independently re-derived the fix's hand-
+> computed interior-sample arithmetic from scratch and matched it bit-for-bit. Task 9's buddy check
+> caught the sibling-parity gap for `duration_ms` (disagreed on severity, agreed on the fix
+> regardless) plus converged 4 other Minors to no-action after real geometric re-derivation. The
+> mandatory whole-branch buddy-check (opus, two-reviewer) traced all 3 directed risks against
+> actual current source and confirmed clean — CONVERGED PASS, zero Critical/Important code defects
+> — with one Agreed Minor (non-GM invisibility of the snap toggle untested) whose OWN proposed
+> naive fix was caught as vacuous mid-debate (the existing non-GM test's fixture has no active
+> scene, so a different gate already hides the button regardless of the `isGm` check) and correctly
+> replaced with a genuinely isolating test before the fix was dispatched. Deviation from parent
+> spec §9 recorded: §9 tied "no snap" to `movementModel`; this checkpoint supersedes that with an
+> independent scene-level toggle (the derived default preserves §9's original intent). Reviewed
+> skill-update gate: `shadowcat-codebase-scene-rendering` updated (the `snapToGrid` axis + the
+> `RenderEngine.snap`/`setSnapEnabled` chokepoint + the raw-stored-value `old` convention) +
+> confirmed ACCURATE.
+>
+> Next = **M10f-4** (regions on the navmesh — terrain cost-layer, impassable obstacle/conditional-
+> layer, arrest cell-sampled truncation, two-field secrecy split; completes the M10g navmesh
+> deferral and lights up the last engine).
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
