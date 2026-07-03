@@ -205,6 +205,17 @@ pub struct SceneEcs {
     /// Point-lookup table keyed by actor doc id. Used only for `actors.get(id)` joins; must
     /// not be iterated for ordered or wire output (HashMap iteration order is non-deterministic).
     actors: HashMap<Uuid, Document>,
+    /// M10f-1 footprint-inflated navmesh cache, keyed by `(scene, quantized footprint-radius
+    /// millicells)`. `std::sync::Mutex` (not `RefCell`) + `Arc` (not `Rc`): `SceneEcs` sits behind
+    /// a `tokio::sync::RwLock` shared across connection tasks, so concurrent readers may call
+    /// `pathfind`/`navmesh_for` simultaneously — the cache needs `Sync` interior mutability.
+    /// Never held across an `.await` (lookup + build are synchronous). Quantized to the nearest
+    /// 1/1000 cell (Buddy-check finding, 2026-07-02, Important: the design spec explicitly calls
+    /// for "quantized footprintRadius" so the cache "stays bounded" given token sizes are a small
+    /// discrete set — exact f64-bit keying was an unjustified departure from that, vulnerable to
+    /// floating-point noise in a client-computed radius producing distinct bit-patterns for what
+    /// is logically the same size).
+    navmesh_cache: std::sync::Mutex<HashMap<(Uuid, i64), std::sync::Arc<navmesh::NavMesh>>>,
 }
 
 impl SceneEcs {
@@ -217,6 +228,7 @@ impl SceneEcs {
             gradation: None,
             vision_modes: None,
             actors: HashMap::new(),
+            navmesh_cache: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -306,6 +318,22 @@ impl SceneEcs {
 
     /// Reflect one already-committed authoritative op into the derived world.
     pub fn apply_op(&mut self, op: &Operation) {
+        // Determine whether this op can affect any cached navmesh's geometry (a `wall` doc's
+        // blocksMove/seg fields, or a `scene` doc's bounds) BEFORE applying it — an Update needs
+        // the existing entity's doc_type (Update never changes doc_type, so a pre-mutation lookup
+        // is safe and correct); Create/Delete carry their own doc_type directly.
+        let touches_navmesh_geometry = match op {
+            Operation::Create { doc } | Operation::Delete { doc } => {
+                matches!(doc.doc_type.as_str(), "wall" | "scene")
+            }
+            Operation::Update { doc_id, .. } => self
+                .index
+                .get(doc_id)
+                .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
+                .map(|c| matches!(c.doc.doc_type.as_str(), "wall" | "scene"))
+                .unwrap_or(false),
+        };
+
         match op {
             Operation::Create { doc } if is_scene_entity(doc) => {
                 if let Some(&e) = self.index.get(&doc.id) {
@@ -384,6 +412,14 @@ impl SceneEcs {
                     _ => {} // other non-scene document: ignored
                 }
             }
+        }
+
+        if touches_navmesh_geometry {
+            // Coarse but correct: clear every cached navmesh (all scenes), not just the one
+            // touched. Over-invalidation only costs an extra rebuild on the next query, never
+            // staleness — the safe failure direction, matching this codebase's established
+            // fail-safe-direction convention (e.g. `supercover_cells`'s over-include-on-corner).
+            self.navmesh_cache.lock().unwrap().clear();
         }
     }
 
@@ -912,6 +948,51 @@ impl SceneEcs {
             }
         }
         out
+    }
+
+    /// Build-or-fetch the footprint-inflated navmesh for `(scene, footprint_radius_cells)`,
+    /// memoized in `navmesh_cache` keyed on a quantized radius (nearest 1/1000 cell — see the
+    /// field doc comment). Returns `None` when `navmesh::build_navmesh` fails closed (degenerate
+    /// bounds/cell/footprint, or an over-cap obstacle count) — callers must treat this exactly
+    /// like the grid router's `Unreachable` (no silent all-pass). A failed build is intentionally
+    /// NOT cached: caching a failure under a mutable key would either mask a later successful
+    /// build once the scene's geometry is fixed up (stale-failure, never re-attempted without an
+    /// unrelated cache-clearing mutation), or require a separate "known-bad" sentinel distinct
+    /// from "not yet built" — added complexity for no correctness gain, since a redundant re-run
+    /// of `build_navmesh` on a still-degenerate scene hits the same fail-fast validation and is
+    /// never unsafe, only wasted compute.
+    ///
+    /// Accepted tradeoff: the cache-miss path is
+    /// lock→check→unlock→build→lock→insert, not atomic under the build. Two concurrent callers
+    /// requesting the same new key can each build a redundant (but equally valid) `NavMesh` before
+    /// one wins the insert — wasted compute, never a correctness issue (both builds are pure
+    /// functions of the same inputs).
+    // TODO: wire this into the continuous-movement dispatch path; until then it is exercised
+    // only by unit tests, so dead-code analysis needs an explicit allow.
+    #[allow(dead_code)]
+    pub(crate) fn navmesh_for(
+        &self,
+        scene: Uuid,
+        footprint_radius_cells: f64,
+    ) -> Option<std::sync::Arc<navmesh::NavMesh>> {
+        // Quantize to the nearest 1/1000 cell so floating-point noise in a client-computed radius
+        // (e.g. derived via division) collapses onto the same cache entry as the canonical value.
+        let quantized = (footprint_radius_cells * 1000.0).round() as i64;
+        let key = (scene, quantized);
+        if let Some(cached) = self.navmesh_cache.lock().unwrap().get(&key) {
+            return Some(cached.clone());
+        }
+        let bounds = self.resolve_scene(scene).bounds;
+        let cell = self
+            .scene_grid_sizes()
+            .get(&scene)
+            .copied()
+            .unwrap_or(100.0);
+        let walls = self.move_walls(scene);
+        let built = navmesh::build_navmesh(bounds, cell, &walls, footprint_radius_cells)?;
+        let arc = std::sync::Arc::new(built);
+        self.navmesh_cache.lock().unwrap().insert(key, arc.clone());
+        Some(arc)
     }
 
     /// Plan a route for `user`'s token in `scene` (M10e-6). Reuses the M10e-4 `visible_cells`
@@ -3389,6 +3470,78 @@ mod tests {
         assert_eq!(walls.len(), 1, "only the blocksMove wall is returned");
         let w = walls[0];
         assert_eq!((w.a, w.b), ((100.0, 0.0), (100.0, 200.0)));
+    }
+
+    #[test]
+    fn navmesh_for_is_memoized_across_calls() {
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        let scene = Uuid::from_u128(10);
+        let a = ecs.navmesh_for(scene, 0.4).expect("navmesh builds");
+        let b = ecs.navmesh_for(scene, 0.4).expect("navmesh builds");
+        assert!(
+            std::sync::Arc::ptr_eq(&a, &b),
+            "same (scene, radius) must return the SAME cached Arc, not rebuild"
+        );
+    }
+
+    #[test]
+    fn navmesh_for_distinguishes_footprint_radii() {
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        let scene = Uuid::from_u128(10);
+        let a = ecs.navmesh_for(scene, 0.4).expect("navmesh builds");
+        let b = ecs.navmesh_for(scene, 0.9).expect("navmesh builds");
+        assert!(
+            !std::sync::Arc::ptr_eq(&a, &b),
+            "distinct footprint radii must get distinct cached meshes"
+        );
+    }
+
+    #[test]
+    fn wall_mutation_invalidates_the_navmesh_cache() {
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        let scene = Uuid::from_u128(10);
+        let a = ecs.navmesh_for(scene, 0.4).expect("navmesh builds");
+        ecs.apply_op(&Operation::Create {
+            doc: entity_doc(
+                20,
+                10,
+                "wall",
+                json!({ "seg": { "x1": 10.0, "y1": 0.0, "x2": 10.0, "y2": 50.0 },
+                        "blocksMove": true, "blocksSight": false, "blocksLight": false }),
+            ),
+        });
+        let b = ecs.navmesh_for(scene, 0.4).expect("navmesh rebuilds");
+        assert!(
+            !std::sync::Arc::ptr_eq(&a, &b),
+            "adding a blocksMove wall must invalidate the cached navmesh"
+        );
+    }
+
+    #[test]
+    fn bounds_mutation_invalidates_the_navmesh_cache() {
+        let mut ecs = SceneEcs::from_documents(
+            vec![entity_doc_top(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+            )],
+            0,
+        );
+        let scene = Uuid::from_u128(10);
+        let a = ecs.navmesh_for(scene, 0.4).expect("navmesh builds");
+        ecs.apply_op(&Operation::Update {
+            doc_id: scene,
+            changes: vec![crate::data::command::FieldChange {
+                path: "/system/bounds".into(),
+                old: json!(null),
+                new: json!({ "width": 40, "height": 40 }),
+            }],
+        });
+        let b = ecs.navmesh_for(scene, 0.4).expect("navmesh rebuilds");
+        assert!(
+            !std::sync::Arc::ptr_eq(&a, &b),
+            "changing scene bounds must invalidate the cached navmesh"
+        );
     }
 
     /// Builds a SceneEcs with one scene (id 10), one player-owned token at (50, 50), and
