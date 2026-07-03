@@ -233,8 +233,9 @@ pub(crate) enum MoveReject {
 /// `Room::publish`: `blocks_move`, `supercover_cells`, and the pre-computed `visible` set.
 /// This executor and the legacy single-step `publish` gate agree on every cell for every
 /// restriction mode. For a grid input this executor is byte-identical in outcome to the
-/// pre-M10f-2 king-step executor (see `execute_move_kingstep_oracle` and the differential
-/// parity test suite).
+/// pre-M10f-2 king-step executor (proved via a differential oracle during M10f-2 and now
+/// frozen as literal fixtures — see
+/// `frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes`).
 ///
 /// A >1-cell authored jump is no longer rejected outright: it is subdivided by `gate_walk`
 /// and gated per crossed cell, exactly as if the client had sent the explicit intermediate
@@ -395,107 +396,6 @@ pub(crate) fn execute_move(
     let truncated = stopped_early || stop_idx < walk.len() - 1;
     Ok(MoveOutcome {
         stop: stop_sample.pos,
-        render_path,
-        truncated,
-        cost,
-    })
-}
-
-/// Frozen differential-test oracle: a verbatim copy of the king-step executor's logic, kept
-/// solely so a differential test can prove a sampled/refactored executor agrees with it on every
-/// grid input. This is not a permanently-maintained second executor — reusing it as one would
-/// reintroduce the engine fork movement unification exists to avoid.
-///
-/// TODO: delete once grid-input parity between the sampled executor and this oracle is proven and
-/// frozen as literal fixtures.
-
-/// DoS guard: a path longer than this is rejected outright (never truncated). Scoped to the
-/// frozen pre-M10f-2 oracle only — superseded in production by `MAX_GATE_WALK_SAMPLES`.
-#[cfg(test)]
-const MAX_MOVE_PATH: usize = 256;
-
-#[cfg(test)]
-pub(crate) fn execute_move_kingstep_oracle(
-    ecs: &SceneEcs,
-    scene: Uuid,
-    token: Uuid,
-    path: &[(f64, f64)],
-    restriction: MovementRestriction,
-    visible: &BTreeSet<(i32, i32)>,
-    cell: f64,
-) -> Result<MoveOutcome, MoveReject> {
-    if path.len() < 2 {
-        return Err(MoveReject::EmptyPath);
-    }
-    if path.len() > MAX_MOVE_PATH {
-        return Err(MoveReject::TooLong);
-    }
-    if !cell.is_finite() || cell <= 0.0 {
-        return Err(MoveReject::Degenerate);
-    }
-    if path.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
-        return Err(MoveReject::Degenerate);
-    }
-
-    let cur = ecs.token_position(token).ok_or(MoveReject::NotAToken)?;
-    if (cur.0 - path[0].0).abs() > EPS || (cur.1 - path[0].1).abs() > EPS {
-        return Err(MoveReject::Degenerate);
-    }
-
-    let to_cell = |p: (f64, f64)| -> (i32, i32) {
-        ((p.0 / cell).floor() as i32, (p.1 / cell).floor() as i32)
-    };
-
-    let check_mask = !matches!(restriction, MovementRestriction::Unrestricted);
-    let regions = ecs.region_field(scene, None);
-
-    let mut stop_index = 0usize;
-    let mut stopped_early = false;
-    let mut cost = 0.0;
-    for i in 1..path.len() {
-        let prev = path[i - 1];
-        let next = path[i];
-
-        let (pc, nc) = (to_cell(prev), to_cell(next));
-        if (pc.0 - nc.0).abs() > 1 || (pc.1 - nc.1).abs() > 1 {
-            return Err(MoveReject::Degenerate);
-        }
-
-        if ecs.blocks_move(scene, prev, next) {
-            stopped_early = true;
-            break;
-        }
-
-        if check_mask {
-            let Some(cells) = supercover_cells(prev, next, cell) else {
-                stopped_early = true;
-                break;
-            };
-            if !cells.iter().all(|c| visible.contains(c)) {
-                stopped_early = true;
-                break;
-            }
-        }
-
-        let region_cell = to_cell(next);
-        if regions.is_impassable(region_cell) {
-            stopped_early = true;
-            break;
-        }
-        cost += regions.terrain_multiplier(region_cell);
-        if regions.is_arrest(region_cell) {
-            stop_index = i;
-            stopped_early = true;
-            break;
-        }
-
-        stop_index = i;
-    }
-
-    let render_path = path[0..=stop_index].to_vec();
-    let truncated = stopped_early || stop_index < path.len() - 1;
-    Ok(MoveOutcome {
-        stop: path[stop_index],
         render_path,
         truncated,
         cost,
@@ -1183,7 +1083,14 @@ mod tests {
         (SceneEcs::from_documents(docs, 0), scene_id, token_id)
     }
 
-    struct DiffCase {
+    struct ExpectedOutcome {
+        stop: (f64, f64),
+        render_path: Vec<(f64, f64)>,
+        truncated: bool,
+        cost: f64,
+    }
+
+    struct FrozenCase {
         label: &'static str,
         wall: Option<(f64, f64, f64, f64)>,
         region: Option<(&'static str, f64, f64, f64, f64, f64)>,
@@ -1191,41 +1098,18 @@ mod tests {
         visible: BTreeSet<(i32, i32)>,
         restriction: MovementRestriction,
         path: Vec<(f64, f64)>,
+        expected: ExpectedOutcome,
     }
 
-    /// Compares a refactored-executor result against the frozen oracle's, asserting the two
-    /// agree on every field (or agree that both reject with the same variant).
-    fn assert_outcomes_match(
-        label: &str,
-        new: &Result<MoveOutcome, MoveReject>,
-        oracle: &Result<MoveOutcome, MoveReject>,
-    ) {
-        match (new, oracle) {
-            (Ok(n), Ok(o)) => {
-                assert_eq!(n.stop, o.stop, "{label}: stop mismatch ({n:?} vs {o:?})");
-                assert_eq!(
-                    n.render_path, o.render_path,
-                    "{label}: render_path mismatch"
-                );
-                assert_eq!(n.truncated, o.truncated, "{label}: truncated mismatch");
-                assert!(
-                    (n.cost - o.cost).abs() < 1e-9,
-                    "{label}: cost mismatch ({} vs {})",
-                    n.cost,
-                    o.cost
-                );
-            }
-            (Err(ne), Err(oe)) => {
-                assert_eq!(ne, oe, "{label}: reject variant mismatch")
-            }
-            _ => panic!("{label}: new={new:?} oracle={oracle:?} — Ok/Err disagreement"),
-        }
-    }
-
+    /// Frozen parity fixtures (M10f-2): 10 grid-input scenarios whose expected outcomes were
+    /// independently derived and cross-checked live against the pre-M10f-2 king-step oracle
+    /// during this task, before the oracle was deleted. This is the permanent parity
+    /// regression that proves `execute_move` still agrees with the pre-refactor executor on
+    /// every grid input, now that no oracle remains to compare against at runtime.
     #[test]
-    fn differential_parity_king_step_paths_match_oracle_across_scenarios() {
+    fn frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes() {
         let cases = vec![
-            DiffCase {
+            FrozenCase {
                 label: "clear scene, full visible, straight path",
                 wall: None,
                 region: None,
@@ -1233,8 +1117,14 @@ mod tests {
                 visible: visible_grid(3),
                 restriction: MovementRestriction::Visible,
                 path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 100.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                    truncated: false,
+                    cost: 2.0,
+                },
             },
-            DiffCase {
+            FrozenCase {
                 label: "clear scene, Unrestricted, empty mask",
                 wall: None,
                 region: None,
@@ -1242,8 +1132,14 @@ mod tests {
                 visible: BTreeSet::new(),
                 restriction: MovementRestriction::Unrestricted,
                 path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 100.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                    truncated: false,
+                    cost: 2.0,
+                },
             },
-            DiffCase {
+            FrozenCase {
                 label: "wall blocks second step, Visible",
                 wall: Some((50.0, 50.0, 150.0, 50.0)),
                 region: None,
@@ -1251,8 +1147,14 @@ mod tests {
                 visible: visible_grid(4),
                 restriction: MovementRestriction::Visible,
                 path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 0.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0)],
+                    truncated: true,
+                    cost: 1.0,
+                },
             },
-            DiffCase {
+            FrozenCase {
                 label: "partial mask truncates at unseen cell, Visible",
                 wall: None,
                 region: None,
@@ -1265,8 +1167,14 @@ mod tests {
                 },
                 restriction: MovementRestriction::Visible,
                 path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 0.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0)],
+                    truncated: true,
+                    cost: 1.0,
+                },
             },
-            DiffCase {
+            FrozenCase {
                 label: "full mask allowed under Revealed",
                 wall: None,
                 region: None,
@@ -1274,8 +1182,14 @@ mod tests {
                 visible: visible_grid(3),
                 restriction: MovementRestriction::Revealed,
                 path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 100.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                    truncated: false,
+                    cost: 2.0,
+                },
             },
-            DiffCase {
+            FrozenCase {
                 label: "impassable region stops before entry",
                 wall: None,
                 region: Some(("impassable", 1.0, 50.0, 0.0, 150.0, 100.0)),
@@ -1283,8 +1197,14 @@ mod tests {
                 visible: visible_grid(3),
                 restriction: MovementRestriction::Unrestricted,
                 path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (0.0, 0.0),
+                    render_path: vec![(0.0, 0.0)],
+                    truncated: true,
+                    cost: 0.0,
+                },
             },
-            DiffCase {
+            FrozenCase {
                 label: "arrest region stops at entry on final step",
                 wall: None,
                 region: Some(("arrest", 1.0, 50.0, -50.0, 150.0, 50.0)),
@@ -1292,8 +1212,14 @@ mod tests {
                 visible: visible_grid(3),
                 restriction: MovementRestriction::Unrestricted,
                 path: vec![(0.0, 0.0), (100.0, 0.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 0.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0)],
+                    truncated: true,
+                    cost: 1.0,
+                },
             },
-            DiffCase {
+            FrozenCase {
                 label: "terrain region accrues cost",
                 wall: None,
                 region: Some(("terrain", 2.5, 50.0, 0.0, 150.0, 100.0)),
@@ -1301,8 +1227,14 @@ mod tests {
                 visible: visible_grid(3),
                 restriction: MovementRestriction::Unrestricted,
                 path: vec![(0.0, 0.0), (100.0, 0.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 0.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0)],
+                    truncated: false,
+                    cost: 2.5,
+                },
             },
-            DiffCase {
+            FrozenCase {
                 label: "authoritative field springs a secret impassable region under Visible",
                 wall: None,
                 region: Some(("impassable", 1.0, 50.0, 0.0, 150.0, 100.0)),
@@ -1310,8 +1242,14 @@ mod tests {
                 visible: visible_grid(3),
                 restriction: MovementRestriction::Visible,
                 path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (0.0, 0.0),
+                    render_path: vec![(0.0, 0.0)],
+                    truncated: true,
+                    cost: 0.0,
+                },
             },
-            DiffCase {
+            FrozenCase {
                 label: "diagonal 3-step king path, full visible",
                 wall: None,
                 region: None,
@@ -1319,13 +1257,19 @@ mod tests {
                 visible: visible_grid(4),
                 restriction: MovementRestriction::Visible,
                 path: vec![(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (200.0, 200.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 100.0), (200.0, 200.0)],
+                    truncated: true,
+                    cost: 2.0,
+                },
             },
         ];
 
         for case in &cases {
             let (ecs, scene, token) =
                 scene_with_wall_and_region(case.wall, case.region, case.secret_region);
-            let new_result = execute_move(
+            let result = execute_move(
                 &ecs,
                 scene,
                 token,
@@ -1334,16 +1278,26 @@ mod tests {
                 &case.visible,
                 100.0,
             );
-            let oracle_result = execute_move_kingstep_oracle(
-                &ecs,
-                scene,
-                token,
-                &case.path,
-                case.restriction,
-                &case.visible,
-                100.0,
+            let actual =
+                result.unwrap_or_else(|e| panic!("{}: expected Ok, got Err({e:?})", case.label));
+            assert_eq!(actual.stop, case.expected.stop, "{}: stop", case.label);
+            assert_eq!(
+                actual.render_path, case.expected.render_path,
+                "{}: render_path",
+                case.label
             );
-            assert_outcomes_match(case.label, &new_result, &oracle_result);
+            assert_eq!(
+                actual.truncated, case.expected.truncated,
+                "{}: truncated",
+                case.label
+            );
+            assert!(
+                (actual.cost - case.expected.cost).abs() < 1e-9,
+                "{}: cost mismatch ({} vs {})",
+                case.label,
+                actual.cost,
+                case.expected.cost
+            );
         }
     }
 
