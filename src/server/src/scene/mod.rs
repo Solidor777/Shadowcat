@@ -3749,6 +3749,71 @@ mod tests {
         assert!(!outcome.arrested);
     }
 
+    /// Mirrors `scene_with_lit_player_token` (same token/light geometry) but the scene doc
+    /// declares `vision.movementModel: "continuous"`, so the fixture drives the REAL non-GM
+    /// `visible_cells` mask through the continuous dispatch branch instead of a hand-built
+    /// `BTreeSet` test double.
+    fn scene_with_lit_player_token_continuous() -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            }),
+        );
+        let scene = entity_doc_top(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "vision": { "movementModel": "continuous" } }),
+        );
+        let ecs = SceneEcs::from_documents(vec![scene, tok, light], 0);
+        (ecs, user, scene_id)
+    }
+
+    #[test]
+    fn pathfind_continuous_nongm_route_clips_to_the_visible_mask() {
+        // System-level §13 coverage: the two existing continuous `pathfind` tests
+        // (`pathfind_dispatches_to_the_navmesh_router_for_a_continuous_scene`,
+        // `pathfind_continuous_start_equals_goal_is_a_single_point_zero_cost`) both pass
+        // `is_gm: true`, so `mask` is always `None` and `clip_to_visible_mask` runs as a pure
+        // pass-through — nothing is ever actually clipped. This test drives a non-GM request
+        // through the FULL chain (`pathfind` → dispatch → `navmesh_for` → `navmesh_find` →
+        // `clip_to_visible_mask`) with the REAL per-(user,scene) `visible_cells` mask, proving a
+        // future fork/null of the mask on the `Continuous` branch would fail this test.
+        let (ecs, user, scene) = scene_with_lit_player_token_continuous();
+        let lenient = ecs.resolve_scene(scene).partial_cell_leniency;
+        let mask = ecs.visible_cells(user, scene, lenient);
+        assert!(!mask.is_empty(), "the lit token has a non-empty mask");
+
+        // Far goal well outside the light radius (dimRadius 6 cells = 600 scene units) but still
+        // inside the scene's default 100x100-cell bounds, so navmesh construction over the
+        // bounds rect itself never fails — only the visibility clip should stop the route short.
+        let far_goal = (9500.0, 9500.0);
+        let outcome = ecs
+            .pathfind(user, scene, (50.0, 50.0), &[far_goal], 0.1, false, None)
+            .expect("clip truncates the route short of the unseen goal rather than failing outright");
+        let dist_to_goal = ((far_goal.0 - 50.0_f64).powi(2) + (far_goal.1 - 50.0_f64).powi(2)).sqrt();
+        assert!(
+            outcome.cost < dist_to_goal / 2.0,
+            "route must truncate well short of the unseen far goal: cost {} vs distance {}",
+            outcome.cost,
+            dist_to_goal
+        );
+        let (lx, ly) = *outcome.path.last().expect("non-empty truncated path");
+        let dist_from_start = ((lx - 50.0_f64).powi(2) + (ly - 50.0_f64).powi(2)).sqrt();
+        assert!(
+            dist_from_start < 700.0,
+            "truncated endpoint must stay near the lit token, got ({lx}, {ly})"
+        );
+    }
+
     #[test]
     fn pathfind_grid_stepped_scene_is_byte_for_byte_unchanged() {
         // Same fixture/assertions as the existing `pathfind_gm_unconstrained_routes_without_a_mask`
