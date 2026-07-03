@@ -421,6 +421,15 @@ test("snap delegates to the active grid; setGrid changes it", () => {
   expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 125, y: 175 });
 });
 
+test("setSnapEnabled(false) makes snap identity; true restores the active grid's snap", () => {
+  const { engine } = makeEngine(); // square / 100
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 }); // default: enabled
+  engine.setSnapEnabled(false);
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 140, y: 160 }); // identity
+  engine.setSnapEnabled(true);
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 }); // restored
+});
+
 test("a second pointer mid-gesture is ignored (single-pointer dispatch)", () => {
   const { backend, engine } = makeEngine();
   engine.setViewport(300, 200);
