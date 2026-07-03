@@ -62,7 +62,9 @@ pub(crate) struct GateSample {
 /// grid-parity is a property of the code shape rather than something proven only by testing.
 ///
 /// `None` (fail-closed) on: a non-finite `path` coordinate, a non-finite or non-positive
-/// `cell`, or an emitted sample count that would exceed `MAX_GATE_WALK_SAMPLES`.
+/// `cell`, an authored `path` longer than `MAX_GATE_WALK_SAMPLES` (checked before any
+/// allocation — a valid walk output can never exceed the cap even in the non-subdividing
+/// case), or an emitted sample count that would exceed `MAX_GATE_WALK_SAMPLES`.
 #[allow(dead_code)]
 pub(crate) fn gate_walk(path: &[(f64, f64)], cell: f64) -> Option<Vec<GateSample>> {
     if !cell.is_finite() || cell <= 0.0 {
@@ -73,6 +75,9 @@ pub(crate) fn gate_walk(path: &[(f64, f64)], cell: f64) -> Option<Vec<GateSample
     }
     if path.is_empty() {
         return Some(Vec::new());
+    }
+    if path.len() > MAX_GATE_WALK_SAMPLES {
+        return None;
     }
 
     let mut out = Vec::with_capacity(path.len());
@@ -85,7 +90,21 @@ pub(crate) fn gate_walk(path: &[(f64, f64)], cell: f64) -> Option<Vec<GateSample
         let (px, py) = path[i - 1];
         let (nx, ny) = path[i];
         let cheby = (nx - px).abs().max((ny - py).abs());
-        let k_f = if cheby <= cell {
+        // Magnitude-relative tolerance (mirrors `movement.rs`'s `supercover_cells` corner-test
+        // convention, `(a.abs() + b.abs() + 1.0) * f64::EPSILON * K`): a genuine single-cell
+        // step's `cheby` is computed as `(nx-px).abs().max((ny-py).abs())` — two subtractions
+        // whose rounding error scales with the magnitude of their OPERANDS (`px`/`nx`/`py`/`ny`),
+        // not with the small result (`cheby`/`cell`) itself, so the tolerance must be built from
+        // the operand magnitudes: at scene coordinates in the tens of thousands (an ordinary
+        // multi-cell grid position), the subtraction can drift by ~1e-12, far above a
+        // cheby/cell-scaled tolerance. A fixed absolute epsilon (e.g. `1e-9`) would itself fail
+        // at larger coordinate magnitudes in the other direction, so the tolerance scales with
+        // the magnitude of the coordinates actually subtracted; 64 ULPs matches
+        // `supercover_cells`'s chosen constant.
+        let tol = (px.abs().max(nx.abs()) + py.abs().max(ny.abs()) + cell.abs() + 1.0)
+            * f64::EPSILON
+            * 64.0;
+        let k_f = if cheby <= cell + tol {
             1.0
         } else {
             (cheby / cell).ceil()
@@ -861,6 +880,73 @@ mod tests {
         // A single segment whose subdivision count alone exceeds the cap.
         let path = [(0.0, 0.0), (1.0e7, 0.0)]; // cell=1.0 -> 10,000,000 substeps
         assert!(gate_walk(&path, 1.0).is_none());
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_when_a_single_segment_lands_exactly_on_the_sample_cap() {
+        // k_f == MAX_GATE_WALK_SAMPLES exactly: the walk still needs 1 (start sample) +
+        // MAX_GATE_WALK_SAMPLES total samples, one over the cap. Must fail closed, not
+        // silently accept an off-by-one under-count.
+        let cell = 1.0;
+        let cheby = MAX_GATE_WALK_SAMPLES as f64 * cell;
+        let path = [(0.0, 0.0), (cheby, 0.0)];
+        assert!(gate_walk(&path, cell).is_none());
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_on_cumulative_cross_segment_sample_cap() {
+        // Each segment is individually well under the per-segment cap, but the summed
+        // sample count across segments exceeds MAX_GATE_WALK_SAMPLES. The pre-loop
+        // per-segment check alone would miss this; only the loop-internal running-total
+        // check (`out.len() >= MAX_GATE_WALK_SAMPLES`) catches it.
+        let cell = 1.0;
+        let seg_len = (MAX_GATE_WALK_SAMPLES / 2 + 100) as f64 * cell; // under the cap alone
+        let path = [
+            (0.0, 0.0),
+            (seg_len, 0.0),
+            (seg_len, seg_len), // second segment pushes the running total over the cap
+        ];
+        assert!(gate_walk(&path, cell).is_none());
+    }
+
+    #[test]
+    fn gate_walk_rejects_an_authored_path_longer_than_the_sample_cap_before_allocating() {
+        // Every step is a genuine 1-cell identity step (no subdivision at all), but the
+        // authored vertex count alone exceeds the cap. Must fail closed rather than
+        // pre-allocate `Vec::with_capacity(path.len())` for an arbitrarily large `path`.
+        let cell = 100.0;
+        let path: Vec<(f64, f64)> = (0..=(MAX_GATE_WALK_SAMPLES + 1))
+            .map(|i| (i as f64 * cell, 0.0))
+            .collect();
+        assert!(gate_walk(&path, cell).is_none());
+    }
+
+    #[test]
+    fn gate_walk_is_identity_on_non_round_cell_size_under_floating_point_noise() {
+        // Non-round cell (a perfectly normal GM-configured value; `scene/mod.rs` puts no
+        // round-number constraint on `cell`). A zero-tolerance `cheby <= cell` comparison
+        // spuriously subdivides some fraction of genuine single-cell steps here due to
+        // independent floating-point rounding in the two coordinate subtractions.
+        let cell = 33.33_f64;
+        for i in 0..2000u32 {
+            let base = i as f64 * cell;
+            // Orthogonal single-cell step.
+            let ortho = [(base, 0.0), (base + cell, 0.0)];
+            let walk = gate_walk(&ortho, cell).unwrap();
+            assert_eq!(
+                walk.len(),
+                2,
+                "orthogonal single-cell step at i={i} was spuriously subdivided: {walk:?}"
+            );
+            // Diagonal single-cell step.
+            let diag = [(base, base), (base + cell, base + cell)];
+            let walk = gate_walk(&diag, cell).unwrap();
+            assert_eq!(
+                walk.len(),
+                2,
+                "diagonal single-cell step at i={i} was spuriously subdivided: {walk:?}"
+            );
+        }
     }
 
     #[test]
