@@ -1250,6 +1250,13 @@ mod tests {
                 },
             },
             FrozenCase {
+                // Encodes a known, pre-existing supercover_cells defect (docs/OPEN_BUGS.md):
+                // the (200,200)->(300,100) leg has both endpoints exactly on 4-way grid-line
+                // intersections, which spuriously fails closed instead of succeeding. This is
+                // the CORRECT parity outcome (both execute_move and the removed oracle agreed
+                // on it) — if supercover_cells's corner-crossing branch is ever fixed, this
+                // case's expected values must be updated to the newly-correct (non-truncated)
+                // outcome, not treated as a parity regression.
                 label: "diagonal 3-step king path, full visible",
                 wall: None,
                 region: None,
