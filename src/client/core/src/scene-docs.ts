@@ -9,6 +9,9 @@ import type { ReadableDocuments } from "./store";
 // --- Vision / lighting / movement types (M10e-1) ---
 
 export type MovementRestriction = "visible" | "revealed" | "unrestricted";
+/** Per-scene pathfinding engine choice (M10f-1). `grid-stepped` = the existing grid A* router;
+ * `continuous` = the M10f polyanya navmesh router (preview only until M10f-3 ships execution). */
+export type MovementModel = "grid-stepped" | "continuous";
 export type LightMode = "globalIllumination" | "environmentLight";
 export type DiagonalRule = "chebyshev" | "alternating" | "euclidean" | "manhattan";
 export type EasingMode = "easeInOut" | "linear";
@@ -44,6 +47,7 @@ export interface SceneVisionOverrides {
   fog?: boolean | null;
   observerVision?: boolean | null;
   movementRestriction?: MovementRestriction | null;
+  movementModel?: MovementModel | null;
 }
 /** Per-scene overrides for lighting; absent fields fall back to world defaults.
  * Null is a valid wire value for the same reason as SceneVisionOverrides. */
@@ -74,6 +78,7 @@ export interface WorldSceneDefaults {
   environment: EnvironmentLight;
   observerVision: boolean;
   movementRestriction: MovementRestriction;
+  movementModel: MovementModel;
   partialCellLeniency: boolean;
 }
 /** The `system` body of a "world-settings" config document. */
@@ -95,6 +100,7 @@ export const DEFAULT_WORLD_SETTINGS: WorldSettingsSystem = deepFreeze({
     environment: { color: "#0a0e1a", intensity: 0.0 },
     observerVision: false,
     movementRestriction: "visible",
+    movementModel: "grid-stepped",
     partialCellLeniency: true,
   },
   pathfinding: { diagonalRule: "chebyshev" },
@@ -109,6 +115,7 @@ export interface ResolvedSceneSettings {
   fog: boolean;
   observerVision: boolean;
   movementRestriction: MovementRestriction;
+  movementModel: MovementModel;
   lightingEnabled: boolean;
   lightMode: LightMode;
   environment: EnvironmentLight;
@@ -247,6 +254,7 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
     fog: v.fog ?? d.scene.fog,
     observerVision: v.observerVision ?? d.scene.observerVision,
     movementRestriction: v.movementRestriction ?? d.scene.movementRestriction,
+    movementModel: v.movementModel ?? d.scene.movementModel,
     lightingEnabled: l.enabled ?? d.scene.lightingEnabled,
     lightMode: l.mode ?? d.scene.lightMode,
     environment: l.environment ?? d.scene.environment,
