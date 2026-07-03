@@ -207,10 +207,6 @@ impl RegionField {
     /// route (terrain/impassable present) and the pure any-angle polyanya route (neither).
     /// Arrest is excluded: it neither bends the route nor requires route-around, so an
     /// arrest-only scene stays on the polyanya path with an arrest post-filter.
-    // Not yet consumed by `SceneEcs::pathfind`'s continuous dispatch (a later checkpoint task
-    // wires it in); the predicate is added and tested standalone first. Suppresses dead_code
-    // until that consumer lands.
-    #[allow(dead_code)]
     pub(crate) fn has_terrain_or_impassable(&self) -> bool {
         self.cells.values().any(|e| match e {
             RegionEffect::Impassable => true,

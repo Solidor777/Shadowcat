@@ -419,8 +419,6 @@ pub(crate) fn clip_to_visible_mask(
 /// input unchanged; (2) per-span fallback — an over-cap/degenerate `supercover_cells` for one
 /// candidate chord fails only that chord, leaving that span at its single unconditional grid step
 /// while smoothing continues over the rest of the path.
-// TODO: wire into the continuous dispatch once the weighted-route caller lands.
-#[allow(dead_code)]
 pub(crate) fn los_smooth(
     outcome: crate::scene::pathfinding::PathOutcome,
     walls: &[crate::scene::vision::Seg],
@@ -523,8 +521,6 @@ pub(crate) fn los_smooth(
 /// sit inside it — a token already standing somewhere is not "entering" it, parity with `find`'s
 /// `.skip(1)` over CELLS. A route with no arrest transition is returned UNCHANGED (no resample).
 /// On truncation, cost is recomputed as the Euclidean length of the surviving polyline.
-// TODO: wire into the continuous dispatch once the pure-polyanya-path caller lands.
-#[allow(dead_code)]
 pub(crate) fn truncate_at_arrest(
     outcome: crate::scene::pathfinding::PathOutcome,
     field: &crate::scene::regions::RegionField,
