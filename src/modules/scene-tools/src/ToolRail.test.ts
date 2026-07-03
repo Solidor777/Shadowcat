@@ -4,6 +4,7 @@ import type { SceneTool } from "@shadowcat/render";
 import { SceneInteractionBridge } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
+import { DocumentStore, buildSceneDoc, type WireOperation } from "@shadowcat/core";
 import ToolRail from "./ToolRail.svelte";
 
 /** A bridge with an attached host that records every setActiveTool call. */
@@ -64,4 +65,46 @@ test("a non-GM sees no tool buttons", () => {
   expect(screen.queryByTestId("tool-select")).toBeNull();
   expect(screen.queryByTestId("tool-place")).toBeNull();
   expect(screen.queryByTestId("tool-draw")).toBeNull();
+});
+
+/** A DocumentStore seeded with one scene doc carrying `system`. */
+function sceneStore(system: Record<string, unknown> = {}): DocumentStore {
+  const docs = new DocumentStore();
+  docs.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: buildSceneDoc("w1", system, "s1") }],
+  });
+  return docs;
+}
+
+test("the snap toggle reflects the resolved snapToGrid (grid-stepped default: pressed) and dispatches an update on click", async () => {
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm",
+      documents: sceneStore(),
+      dispatchIntent: (ops) => dispatched.push(ops),
+    }),
+  });
+  const toggle = screen.getByTestId("snap-toggle");
+  expect(toggle.getAttribute("aria-pressed")).toBe("true"); // grid-stepped default
+  await fireEvent.click(toggle);
+  expect(dispatched.at(-1)).toEqual([
+    { op: "update", doc_id: "s1", changes: [{ path: "/system/snapToGrid", old: null, new: false }] },
+  ]);
+});
+
+test("the snap toggle reflects a continuous scene's false default", () => {
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm",
+      documents: sceneStore({ vision: { movementModel: "continuous" } }),
+    }),
+  });
+  expect(screen.getByTestId("snap-toggle").getAttribute("aria-pressed")).toBe("false");
+});
+
+test("no active scene: the snap toggle does not render", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", documents: new DocumentStore() }) });
+  expect(screen.queryByTestId("snap-toggle")).toBeNull();
 });

@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
+  import { resolveSceneSettings, type WireDocument } from "@shadowcat/core";
   import { ToolController, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
 
@@ -20,6 +22,30 @@
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).
   const isGm = ctx.role === "gm";
+
+  // Reactive subscription mirrors GameSettingsPanel's registry-seed pattern: calling
+  // subscribe() inside each $derived.by registers a reactive dependency on the document
+  // store so the snap toggle re-resolves as the active scene's doc changes (M10f-3 §4.4).
+  const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
+  const activeScene = $derived.by((): WireDocument | undefined => {
+    subscribe();
+    return ctx.documents.query("scene")[0];
+  });
+  const snapToGrid = $derived.by((): boolean => {
+    subscribe();
+    return resolveSceneSettings(activeScene, ctx.documents).snapToGrid;
+  });
+
+  /** GM-authored scene-level snap toggle (M10f-3 §4.4): writes the opaque
+   * `/system/snapToGrid` field on the active scene document (shared, not local UI state).
+   * No-op with no active scene. */
+  function toggleSnap(): void {
+    const scene = activeScene;
+    if (!scene) return;
+    ctx.dispatchIntent([
+      { op: "update", doc_id: scene.id, changes: [{ path: "/system/snapToGrid", old: null, new: !snapToGrid }] },
+    ]);
+  }
 
   const tools: { id: ToolId; label: string }[] = [
     { id: "select", label: t("tools.select") },
@@ -52,6 +78,19 @@
         {tool.label}
       </button>
     {/each}
+
+    {#if activeScene}
+      <button
+        type="button"
+        class="tool"
+        aria-pressed={snapToGrid}
+        data-testid="snap-toggle"
+        title={t("tools.snap")}
+        onclick={toggleSnap}
+      >
+        {t("tools.snap")}
+      </button>
+    {/if}
 
     {#if controller.active === "place"}
       <AssetPicker {controller} />

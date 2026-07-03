@@ -78,6 +78,7 @@ export const en: Messages = {
   "tools.secret": "Secret",
   "tools.shape": "Shape",
   "tools.color": "Color",
+  "tools.snap": "Snap to grid",
   "gameSettings.title": "Game settings",
   "gameSettings.movementRestriction": "Movement restriction",
   "gameSettings.movementModel": "Movement model",
