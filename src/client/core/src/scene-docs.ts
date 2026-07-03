@@ -10,7 +10,8 @@ import type { ReadableDocuments } from "./store";
 
 export type MovementRestriction = "visible" | "revealed" | "unrestricted";
 /** Per-scene pathfinding engine choice (M10f-1). `grid-stepped` = the existing grid A* router;
- * `continuous` = the M10f polyanya navmesh router (preview only until M10f-3 ships execution). */
+ * `continuous` = the M10f polyanya navmesh router, executed end-to-end since M10f-3
+ * (server-authoritative gated movement, same as grid-stepped). */
 export type MovementModel = "grid-stepped" | "continuous";
 export type LightMode = "globalIllumination" | "environmentLight";
 export type DiagonalRule = "chebyshev" | "alternating" | "euclidean" | "manhattan";

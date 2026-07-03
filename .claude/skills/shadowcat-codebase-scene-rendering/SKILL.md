@@ -240,11 +240,15 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   mask ONCE, above the dispatch, and pass the SAME reference into whichever engine runs — never
   forked (mirrors the pathfinder's own §13 invariant, generalized to a second engine). Client:
   `movementModel` world-default + scene-override editor in `GameSettingsPanel.svelte` (mirrors the
-  `movementRestriction` editor exactly); the measure-tool's `commitRoute` (`controller.svelte.ts`)
-  refuses to send a `moveRequest` when the active scene's `movementModel` is `"continuous"` (checked
-  via `resolveSceneSettings`) — **continuous scenes get router + preview only; move EXECUTION does
-  not exist yet** (homed to a later checkpoint). `requestRoute` (the preview path) is unaffected —
-  no grid-snap fallback, silent no-op on double-click.
+  `movementRestriction` editor exactly). **M10f-1 shipped router + preview only**: the measure-tool's
+  `commitRoute` (`controller.svelte.ts`) refused to send a `moveRequest` when the active scene's
+  `movementModel` was `"continuous"`, by design for that checkpoint. **M10f-3 lifted that
+  restriction** — `commitRoute` no longer branches on `movementModel` at all; committing a route
+  proceeds identically for grid-stepped and continuous scenes. This is possible because the server
+  move-execution path (`execute_move`/`gate_walk`/`sample_path`/the M2 egress clip) has been fully
+  engine-agnostic since M10f-2 — no `movementModel` branch anywhere in that path, so there was
+  nothing engine-specific left to gate at the client. `requestRoute` (the preview path) was always
+  unaffected — no grid-snap fallback, silent no-op on double-click.
 - `src/server/src/scene/navmesh.rs` (M10f-1, new) — pure headless adapter around the `polyanya`
   (any-angle navmesh) + `geo`/`spade` (CDT + Minkowski buffer) crates, engine-owned geometry
   (ARCHITECTURE §6 exception). Carries **walls only** in this checkpoint — impassable/terrain
