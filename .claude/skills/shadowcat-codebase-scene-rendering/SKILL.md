@@ -48,29 +48,70 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (`light_illumination`), `cell_illumination` (max-compose env + lights, `blocksLight` occlusion via
   `point_in_poly`). Clean-room. Non-finite/empty inputs fail closed (under-reveal).
 - `src/server/src/scene/move_exec.rs` — pure, lock-free `execute_move(ecs, scene, token, path,
-  restriction, visible, cell) -> Result<MoveOutcome, MoveReject>` (M1 server-authoritative movement):
-  walks the path step by step — (1) wall gate (`blocks_move`, all modes incl. GM), (2) vision-mask
-  gate (`supercover_cells` + `visible` membership, skipped for `Unrestricted`), (3) region gate
-  (M10g — see below). Returns `stop` + `render_path` (legal prefix) + `truncated` + `cost`.
-  `MAX_MOVE_PATH=256` DoS guard. `MoveReject` variants: `NotAToken`, `EmptyPath`, `TooLong`,
-  `Degenerate` (non-finite coords / bad start / non-adjacent king-step).
-  **Region gate (M10g, step 3):** always reads `ecs.region_field(scene, None)` — the AUTHORITATIVE
-  field, computed once before the walk loop begins (never per-step, never filtered) — so a
-  `gm_only` secret region "springs" on execution even for a mover whose own route preview couldn't
-  see it. Center-cell only (`to_cell(next)`; no footprint check) — a documented asymmetry against
-  the router's footprint-aware `cell_enterable` (router stricter, executor looser), but `route ⊆
-  gate-allowed` still holds because the router's mask predicate is already a superset (see the
-  pathfinder invariant below). Impassable stops BEFORE entry into the cell (like a wall — `stop`
-  lands on the prior cell); arrest stops AT entry (the cell is entered, then the walk halts — a
-  final-step arrest still sets `truncated: true` even though `stop_index == path.len()-1`).
-  `MoveOutcome.cost` accumulates `regions.terrain_multiplier(region_cell)` per step (1.0 outside any
-  terrain region) — center-cell-only, terrain-only; it does NOT apply the diagonal-rule step-cost
-  factor (`sc` — 1.0/2.0/√2/alternating) that `pathfinding.rs`'s router applies. **Known, logged
+  restriction, visible, cell) -> Result<MoveOutcome, MoveReject>` (M1 server-authoritative
+  movement; **engine-agnostic since M10f-2**): `path` may be ANY polyline — grid A* cell-center
+  vertices ≤1 cell apart, or any-angle continuous vertices arbitrarily far apart. `gate_walk`
+  (M10f-2, new pure primitive, same file) subdivides it into a DENSE walk where every consecutive
+  sample is ≤1 cell apart (Chebyshev), preserving already-≤1-cell input segments EXACTLY —
+  identity on grid input (cell-center vertices, ≤1 cell apart on every axis incl. diagonals). This
+  identity property is what makes grid-parity a property of the code shape rather than something
+  proven only by testing; empirically, a temporary `execute_move_kingstep_oracle` (a frozen,
+  `#[cfg(test)]`-only verbatim copy of the pre-M10f-2 king-step executor) was added, used to
+  prove parity across 10 scenarios, then DELETED once those cases were frozen as literal
+  fixtures — a second permanent executor would reintroduce exactly the fork this refactor exists
+  to avoid. The frozen fixture test,
+  `frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes`, is now the permanent
+  regression proof. The per-step gate — (1) wall gate (`blocks_move`, all modes incl. GM), (2)
+  vision-mask gate (`supercover_cells` + `visible` membership, skipped for `Unrestricted`), (3)
+  region gate (M10g — see below) — runs over this DENSE walk, not the raw authored path; the
+  coarse `render_path` returned to the caller is reconstructed as either the authored-vertex
+  prefix (when the stop lands exactly on an authored vertex — always true for grid input) or the
+  authored-prefix + the exact stop point (when the stop lands mid-subdivision — only possible for
+  a genuinely long/any-angle continuous segment). **Guard relaxation (M10f-2):** the pre-M10f-2
+  king-step adjacency guard (reject any >1-cell authored jump as `Degenerate`) is REMOVED — a
+  >1-cell jump is now subdivided and gated per cell instead, exactly as if the client had sent the
+  explicit intermediate waypoints (no new capability; security lives entirely in the per-cell
+  gate, never the shape check). **DoS bound (M10f-2):** `MAX_GATE_WALK_SAMPLES=4096` (dense
+  sample count, arc-length-based) + `MAX_GATE_WALK_COORD=1e9` (a coordinate-magnitude bound inside
+  `gate_walk` itself, closing a false-identity failure mode where the identity-comparison's
+  magnitude-scaled floating-point tolerance could otherwise grow large enough at extreme
+  coordinates to silently misclassify a genuinely-multi-cell segment as identity — buddy-check
+  caught this as a second-order defect introduced by the FIRST fix for a related zero-tolerance
+  identity bug at non-round `cell` sizes) REPLACE the pre-M10f-2 `MAX_MOVE_PATH=256`
+  authored-vertex-count cap; `MoveReject::TooLong` now reflects `gate_walk`'s `None` (either
+  cap), not vertex count. `MoveReject` variants: `NotAToken`, `EmptyPath`, `TooLong` (as above),
+  `Degenerate` (non-finite coords / bad start — no longer covers non-adjacent king-step, which is
+  now subdivided-and-gated rather than rejected). **Region gate (M10g, step 3):** always reads
+  `ecs.region_field(scene, None)` — the AUTHORITATIVE field, computed once before the walk loop
+  begins (never per-step, never filtered) — so a `gm_only` secret region "springs" on execution
+  even for a mover whose own route preview couldn't see it. Center-cell only (`to_cell(next)`; no
+  footprint check) — a documented asymmetry against the router's footprint-aware
+  `cell_enterable` (router stricter, executor looser), but `route ⊆ gate-allowed` still holds
+  because the router's mask predicate is already a superset (see the pathfinder invariant below).
+  **Keyed on CELL-ENTRY TRANSITIONS (M10f-2), not per dense sample:** a continuous path subdivided
+  into several sub-cell samples within the same cell is evaluated exactly once for that cell,
+  matching the pre-M10f-2 per-authored-step accrual count on grid input (where every step already
+  crossed into a distinct new cell); a non-consecutive re-entry into a previously-visited cell (A
+  → B → A) still re-evaluates correctly since the dedup only compares against the IMMEDIATELY
+  prior cell, never a stale earlier value. Impassable stops BEFORE entry into the cell (like a
+  wall — `stop` lands on the prior cell); arrest stops AT entry (the cell is entered, then the
+  walk halts — a final-step arrest still sets `truncated: true` even though `stop_index ==
+  path.len()-1`). `MoveOutcome.cost` accumulates `regions.terrain_multiplier(region_cell)` per
+  cell-entry (1.0 outside any terrain region — this is a per-step-distance BASELINE, not merely
+  additive terrain weighting; a plain grid move with no regions at all still accrues `1.0` per
+  step) — center-cell-only, terrain-only; it does NOT apply the diagonal-rule step-cost factor
+  (`sc` — 1.0/2.0/√2/alternating) that `pathfinding.rs`'s router applies. **Known, logged
   inconsistency (`docs/TODO.md`):** the two `cost` values are numerically comparable only under
   Chebyshev (where the diagonal step cost is 1.0); under any other diagonal rule they diverge. This
   is a deliberate v1 scoping decision (M10g Task 7), not a bug — nothing currently consumes or
   compares the two costs together. Resolve before any per-turn movement-budget system consumes
-  either `MoveOutcome.cost` or `MoveStream.cost`.
+  either `MoveOutcome.cost` or `MoveStream.cost`. **Gotcha (M10f-2):** `supercover_cells` can
+  fail-closed (return `None`, rejecting an otherwise-legal move) on a diagonal king-step whose leg
+  endpoints BOTH sit exactly on 4-way grid-line intersections — the Amanatides-Woo corner-crossing
+  branch fires repeatedly and drifts away from the target cell before `MAX_MOVE_CELLS` catches it;
+  fails closed (safe), never opens a forbidden move, but rejects a move a player might reasonably
+  expect to succeed (logged `docs/TODO.md`, discovered via an M10f-2 Task 6 fixture-derivation
+  error that surfaced it).
 - `src/server/src/scene/mod.rs` — adds `SceneEcs::token_position(token) -> Option<(f64,f64)>` and
   `SceneEcs::resolved_animation_speed() -> f64` (`pub(crate)` seams; the latter sits alongside
   `resolved_diagonal_rule`, sources `world_settings.animation`, defaults to 6 cells/sec).
@@ -414,8 +455,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - **M1 executor per-cell parity (spec §13):** `execute_move` uses the SAME `blocks_move` +
   `supercover_cells` + `visible` membership as the M10e-4 `publish` move gate — per-cell decision
   parity, NO fork. A divergence between the executor and the gate equals a movement-into-fog leak.
-  The executor is additionally STRICTER on path shape (requires king-step adjacency per consecutive
-  waypoint pair; the legacy `publish` whole-segment gate does not enforce this). For `Revealed`, the
+  **(M10f-2 revision)** The executor is no longer stricter on authored path shape — the pre-M10f-2
+  king-step-adjacency requirement (reject any >1-cell authored jump) is REMOVED; `gate_walk`
+  subdivides a >1-cell jump into dense ≤1-cell samples and gates each one, so a >1-cell authored
+  jump is now admitted exactly when every crossed cell is wall-clear/visible (equivalent to the
+  client having sent the explicit intermediate waypoints, which was always legal — no new
+  capability). The `blocks_move`/`supercover_cells`/`visible` per-cell decision parity itself is
+  UNCHANGED and remains the load-bearing invariant. For `Revealed`, the
   caller MUST pass `visible_cells ∪ explored` as the `visible` argument (not raw `visible_cells`
   alone) — same union `publish` uses. Do NOT re-grant GM wall-bypass in `execute_move`: GMs are
   folded to `Unrestricted` (mask-skip) but `blocks_move` is still enforced for GMs. This
@@ -499,6 +545,14 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   visibility override (only nested-property overrides existed); secret regions were the first doc
   type to exercise it, and the panic-on-strip bug was caught before it shipped. Any future doc type
   that wants whole-body secrecy (vs. per-field) must go through this same branch, not a new one.
+- **`supercover_cells` can fail-closed on a diagonal king-step whose leg endpoints BOTH sit exactly
+  on 4-way grid-line intersections** — the Amanatides-Woo corner-crossing branch fires repeatedly
+  and drifts away from the target cell until `MAX_MOVE_CELLS` catches it, returning `None` rather
+  than converging (M10f-2 discovery, via an M10f-2 Task 6 fixture-derivation error that surfaced
+  it; not a defect in M10f-2's own code — a pre-existing, already-buddy-checked property of
+  `movement.rs`). Fails closed (never opens a forbidden move) but rejects a move a player might
+  reasonably expect to succeed; logged `docs/TODO.md`, not fixed (out of scope for the checkpoint
+  that found it).
 
 ## Pointers
 
@@ -514,7 +568,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (M10f-1 checkpoint design — the polyanya/geo/glam crate facts, footprint-aware memoized-mesh
   decision, preview-only execution boundary); `docs/superpowers/plans/2026-07-02-m10f-1-movement-
   model-dispatch-polyanya-router.md` (M10f-1 implementation plan + its buddy-check history, incl.
-  the plan-level cache-quantization finding).
+  the plan-level cache-quantization finding);
+  `docs/superpowers/specs/2026-07-02-m10f-2-unified-movement-executor-design.md` (M10f-2
+  checkpoint design — the gate_walk subdivide-only/identity-on-grid decision, the engine-agnostic
+  executor, the differential-oracle parity-proof-then-delete strategy);
+  `docs/superpowers/plans/2026-07-02-m10f-2-unified-movement-executor.md` (M10f-2 implementation
+  plan + its buddy-check history, incl. the gate_walk floating-point tolerance bugs and the
+  Task-6 fixture-derivation error that surfaced the `supercover_cells` corner-drift gotcha above).
 - Relationships:
   `graphify query "scene ECS derived read-model vision fog stage pixi render tokens regions"`.
 - History/decisions: [[m8-brainstorm]], [[m8d-2-scene-tools]], [[m9-progress]],

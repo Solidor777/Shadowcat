@@ -1,6 +1,11 @@
-//! Pure, lock-free per-path move executor (M1 server-authoritative movement).
+//! Pure, lock-free per-path move executor (M1 server-authoritative movement; engine-agnostic
+//! since M10f-2).
 //!
-//! Walks a proposed cell-path step by step, validating each step against:
+//! `execute_move` is built on `gate_walk`, which subdivides ANY input polyline — grid A*
+//! cell-center vertices ≤1 cell apart, or any-angle continuous vertices arbitrarily far apart —
+//! into a dense walk where every consecutive pair is at most one cell apart (Chebyshev),
+//! preserving already-≤1-cell segments as an identity. The per-step gate then runs over this
+//! dense walk, validating each dense sub-step against:
 //! - `blocks_move` wall geometry (M9a gate — always active),
 //! - the caller-supplied `visible` mask (M10e-4 gate — skipped for `Unrestricted`),
 //! - the region field (M10g): impassable stops before entry, arrest stops at entry, terrain
@@ -27,28 +32,160 @@ use uuid::Uuid;
 
 use crate::scene::{movement::supercover_cells, MovementRestriction, SceneEcs};
 
-/// DoS guard: a path longer than this is rejected outright (never truncated).
-/// Sized to a generous multi-waypoint route; far below a coordinate-overflow risk.
-pub(crate) const MAX_MOVE_PATH: usize = 256;
-
 /// Epsilon for path[0]-vs-committed-position comparison (scene units).
 /// A client rounding the center-of-cell to the nearest float can drift by at most
 /// a few ULPs at typical coordinate magnitudes; 1e-6 is strict but not pedantic.
 const EPS: f64 = 1e-6;
 
+/// DoS guard for `gate_walk`: a walk requiring more than this many dense samples is
+/// rejected outright, never truncated. Arc-length/cell-count based — a single continuous
+/// segment can be arbitrarily long, so an authored-vertex-count cap is not the right invariant
+/// (unlike the pre-M10f-2 `MAX_MOVE_PATH`, which bounded the number of AUTHORED waypoints, not
+/// dense samples).
+pub(crate) const MAX_GATE_WALK_SAMPLES: usize = 4096;
+
+/// Magnitude ceiling (scene units) for any `gate_walk` input path coordinate, checked
+/// structurally BEFORE the per-step tolerance arithmetic below (mirrors `navmesh::
+/// MAX_NAVMESH_COORD`'s convention: bound the input before any downstream arithmetic that is
+/// sensitive to magnitude, not after).
+///
+/// This value is deliberately much smaller than `navmesh::MAX_NAVMESH_COORD` (1e15) — the two
+/// bounds guard against DIFFERENT failure modes and neither number transfers to the other's
+/// module. `MAX_NAVMESH_COORD` guards an `f64 -> f32` cast that only saturates near `f32::MAX`
+/// (~3.4e38), so 1e15 is safe there with enormous headroom. Here, the per-step tolerance below
+/// (`tol = (2*max(|px|,|nx|,|py|,|ny|) + cell + 1) * f64::EPSILON * 64`) scales linearly with
+/// coordinate magnitude and empirically exceeds a full 1.0-unit overshoot margin once that
+/// magnitude passes roughly `3.5e13` (verified directly against this formula) — reusing `1e15` as
+/// this bound would NOT close the false-identity gap this constant exists to prevent (a segment
+/// at base magnitude `1e14`, well under `1e15`, still misclassifies). `1e9` sits comfortably
+/// below that ~3.5e13 threshold (tol stays under ~3e-5, negligible) while remaining generously
+/// large for any real authored scene (`resolve_scene`'s default bounds are `100x100` grid units;
+/// even an extreme scene would not need path coordinates near this ceiling).
+///
+/// Note: this bounds path COORDINATES, not `cell` itself (`scene_grid_sizes()` has no upper
+/// cap). That is sufficient, not an oversight: the false-identity failure only manifests when
+/// `cheby` (the per-step Chebyshev distance, itself bounded by `2 * MAX_GATE_WALK_COORD` once
+/// path coordinates are capped) is close enough to `cell` to sit within `tol` of it. An
+/// unboundedly large `cell` relative to a bounded `cheby` is never itself misclassified — it is
+/// trivially and correctly identified as a single-cell step, not a false one — so bounding
+/// coordinates alone closes the gap without needing to separately bound `cell`.
+pub(crate) const MAX_GATE_WALK_COORD: f64 = 1.0e9;
+
+/// One dense sample in a `gate_walk` output: a point at most one cell from its predecessor,
+/// plus (when this sample exactly reproduces an authored input vertex) that vertex's index.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GateSample {
+    pub pos: (f64, f64),
+    /// `Some(i)` exactly when `pos == path[i]` (this sample completes an authored segment);
+    /// `None` for an interior subdivision point with no authored counterpart.
+    pub authored_idx: Option<usize>,
+}
+
+/// Subdivide `path` into dense samples that are each at most one cell apart (Chebyshev),
+/// preserving already-≤1-cell input segments EXACTLY — this makes the gate walk an IDENTITY on
+/// grid input (cell-center vertices, ≤1 cell apart on every axis including diagonals), so
+/// grid-parity is a property of the code shape rather than something proven only by testing.
+///
+/// `None` (fail-closed) on: a non-finite `path` coordinate, a `path` coordinate whose magnitude
+/// exceeds `MAX_GATE_WALK_COORD` (see that constant's doc comment), a non-finite or non-positive
+/// `cell`, an authored `path` longer than `MAX_GATE_WALK_SAMPLES` (checked before any allocation —
+/// a valid walk output can never exceed the cap even in the non-subdividing case), or an emitted
+/// sample count that would exceed `MAX_GATE_WALK_SAMPLES`.
+///
+/// # Coordinate bound (magnitude-independent, checked BEFORE any tolerance arithmetic)
+///
+/// The per-step Chebyshev comparison below uses a magnitude-SCALED float tolerance (built from
+/// `px`/`nx`/`py`/`ny`'s own absolute values, mirroring `supercover_cells`'s corner-test
+/// convention — see that comparison's doc comment) to absorb subtraction rounding error at
+/// ordinary grid magnitudes. That scaling is unbounded: at a large enough coordinate magnitude
+/// the tolerance itself can exceed a full cell length, which would silently misclassify a
+/// genuinely-multi-cell segment as a single identity step (a real gate-skip: a swallowed
+/// intermediate cell never gets a per-step wall/vision-mask/region check). `MAX_GATE_WALK_COORD`
+/// eliminates the failure mode categorically — inputs beyond the bound are rejected outright, so
+/// the tolerance can never reach a magnitude where this matters.
+pub(crate) fn gate_walk(path: &[(f64, f64)], cell: f64) -> Option<Vec<GateSample>> {
+    if !cell.is_finite() || cell <= 0.0 {
+        return None;
+    }
+    if path.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+        return None;
+    }
+    if path
+        .iter()
+        .any(|p| p.0.abs() > MAX_GATE_WALK_COORD || p.1.abs() > MAX_GATE_WALK_COORD)
+    {
+        return None;
+    }
+    if path.is_empty() {
+        return Some(Vec::new());
+    }
+    if path.len() > MAX_GATE_WALK_SAMPLES {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(path.len());
+    out.push(GateSample {
+        pos: path[0],
+        authored_idx: Some(0),
+    });
+
+    for i in 1..path.len() {
+        let (px, py) = path[i - 1];
+        let (nx, ny) = path[i];
+        let cheby = (nx - px).abs().max((ny - py).abs());
+        // Magnitude-relative tolerance (mirrors `movement.rs`'s `supercover_cells` corner-test
+        // convention, `(a.abs() + b.abs() + 1.0) * f64::EPSILON * K`): a genuine single-cell
+        // step's `cheby` is computed as `(nx-px).abs().max((ny-py).abs())` — two subtractions
+        // whose rounding error scales with the magnitude of their OPERANDS (`px`/`nx`/`py`/`ny`),
+        // not with the small result (`cheby`/`cell`) itself, so the tolerance must be built from
+        // the operand magnitudes: at scene coordinates in the tens of thousands (an ordinary
+        // multi-cell grid position), the subtraction can drift by ~1e-12, far above a
+        // cheby/cell-scaled tolerance. A fixed absolute epsilon (e.g. `1e-9`) would itself fail
+        // at larger coordinate magnitudes in the other direction, so the tolerance scales with
+        // the magnitude of the coordinates actually subtracted; 64 ULPs matches
+        // `supercover_cells`'s chosen constant.
+        let tol = (px.abs().max(nx.abs()) + py.abs().max(ny.abs()) + cell.abs() + 1.0)
+            * f64::EPSILON
+            * 64.0;
+        let k_f = if cheby <= cell + tol {
+            1.0
+        } else {
+            (cheby / cell).ceil()
+        };
+        if !k_f.is_finite() || k_f < 1.0 || k_f > MAX_GATE_WALK_SAMPLES as f64 {
+            return None;
+        }
+        let k = k_f as u64;
+        for step in 1..=k {
+            if out.len() >= MAX_GATE_WALK_SAMPLES {
+                return None;
+            }
+            let pos = if step == k {
+                (nx, ny) // exact endpoint, no float drift
+            } else {
+                let t = step as f64 / k as f64;
+                (px + t * (nx - px), py + t * (ny - py))
+            };
+            let authored_idx = if step == k { Some(i) } else { None };
+            out.push(GateSample { pos, authored_idx });
+        }
+    }
+    Some(out)
+}
+
 /// The legal outcome of an `execute_move` call.
+#[derive(Debug)]
 pub(crate) struct MoveOutcome {
     /// The path coordinate of the last successfully reached step (`path[stop_index]`).
     pub stop: (f64, f64),
-    /// The legal prefix of the input path that was actually walked: `path[0..=stop_index]`.
+    /// The legal prefix of the input path that was actually walked: every authored vertex
+    /// fully traversed, plus the exact stop point when the stop lands mid-subdivision (a
+    /// continuous-path truncation that is not itself an authored vertex).
     pub render_path: Vec<(f64, f64)>,
     /// `true` when the move stopped before `path.last()` — wall, mask, region-impassable, OR
     /// region-arrest, including a region-arrest on the FINAL step (where `stop_index ==
     /// path.len()-1` would make the index comparison alone report false; a `stopped_early`
     /// bool ensures that case is reported correctly).
-    // The room layer derives truncation from `stop != path.last()`; the field is
-    // read by move_exec unit tests (see tests module). Suppress the dead_code lint
-    // so the structural information remains available without cluttering call sites.
     #[allow(dead_code)]
     pub truncated: bool,
     /// Total terrain-weighted cost accumulated over the walked prefix. Not consumed by any
@@ -63,45 +200,63 @@ pub(crate) enum MoveReject {
     NotAToken,
     /// `path` has fewer than 2 points (no step to walk).
     EmptyPath,
-    /// `path` has more than `MAX_MOVE_PATH` points.
+    /// `gate_walk` returned `None`: either the path's dense walk (§4.3: arc-length/sample-count,
+    /// not authored-vertex-count) would exceed `MAX_GATE_WALK_SAMPLES` — the DoS bound, replacing
+    /// the pre-M10f-2 authored-vertex cap since a single arbitrarily-long continuous segment is
+    /// now the relevant DoS surface, not the number of authored waypoints — or a path coordinate's
+    /// magnitude exceeds `MAX_GATE_WALK_COORD` (a distinct, unreachable-in-practice degenerate
+    /// case sharing this variant rather than `Degenerate`, since both originate from the same
+    /// `gate_walk` fail-closed `None`).
     TooLong,
-    /// A structural invariant was violated: non-finite coords, non-positive cell,
-    /// `path[0]` not at the token's committed position, or a non-adjacent king-step.
+    /// A structural invariant was violated: non-finite coords, or `path[0]` not at the
+    /// token's committed position. (Pre-M10f-2 this variant also covered a non-adjacent
+    /// king-step jump; that case is now subdivided-and-gated instead of rejected — see
+    /// `gate_walk`, §4.2.)
     Degenerate,
 }
 
-/// Walk `path` step by step, validating each step against the wall gate (step 1),
-/// the vision-mask gate (step 2), and the region field (step 3).
+/// Walk `path` step by step, validating each step against the wall gate (step 1), the
+/// vision-mask gate (step 2), and the region field (step 3).
+///
+/// # Engine-agnostic gate walk (M10f-2)
+///
+/// `path` may be ANY polyline — grid A* emits cell-center vertices ≤1 cell apart; the
+/// polyanya router emits any-angle vertices arbitrarily far apart. `gate_walk` subdivides it
+/// into a dense walk where every consecutive pair is ≤1 cell apart, preserving already-≤1-cell
+/// segments EXACTLY (identity on grid input — see `gate_walk`'s doc comment). The per-step
+/// gate below runs over this DENSE walk; the coarse `render_path` returned to the caller is
+/// reconstructed from the authored vertices actually traversed plus the exact stop point.
 ///
 /// # Parity with M10e-4 (`Room::publish`) — per-cell decision only
 ///
-/// The per-cell decision (step 1 + step 2) uses the SAME primitives as the M10e-4
-/// gate in `Room::publish`: `blocks_move`, `supercover_cells`, and the pre-computed
-/// `visible` set. This executor and the legacy single-step `publish` gate agree on
-/// every cell for every restriction mode.
+/// The per-cell decision (step 1 + step 2) uses the SAME primitives as the M10e-4 gate in
+/// `Room::publish`: `blocks_move`, `supercover_cells`, and the pre-computed `visible` set.
+/// This executor and the legacy single-step `publish` gate agree on every cell for every
+/// restriction mode. For a grid input this executor is byte-identical in outcome to the
+/// pre-M10f-2 king-step executor (proved via a differential oracle during M10f-2 and now
+/// frozen as literal fixtures — see
+/// `frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes`).
 ///
-/// This executor is additionally STRICTER than `publish` on path shape: it requires
-/// king-step adjacency between every consecutive waypoint pair (≤ 1 cell on each
-/// axis). The `publish` whole-segment gate does not enforce this per-step adjacency.
+/// A >1-cell authored jump is no longer rejected outright: it is subdivided by `gate_walk`
+/// and gated per crossed cell, exactly as if the client had sent the explicit intermediate
+/// waypoints (§4.2) — no new capability, since a well-formed sequence of intermediate
+/// waypoints was always legal.
 ///
-/// GM-ness is folded into `restriction == Unrestricted` by the caller (mirroring
-/// `publish`'s `if !Unrestricted { continue }` skip).
+/// GM-ness is folded into `restriction == Unrestricted` by the caller (mirroring `publish`'s
+/// `if !Unrestricted { continue }` skip).
 ///
 /// # Arguments
 ///
 /// - `ecs` — ECS to query for token position and wall geometry.
 /// - `scene` — Scene the token lives in.
 /// - `token` — Token doc id.
-/// - `path` — Proposed cell-center path; `path[0]` must equal the token's
-///   committed position within `EPS`.
+/// - `path` — Proposed path (cell centers for grid, any-angle vertices for continuous);
+///   `path[0]` must equal the token's committed position within `EPS`.
 /// - `restriction` — Movement restriction mode pre-resolved by the caller from
 ///   `resolve_scene`; `Unrestricted` means mask is skipped.
-/// - `visible` — The resolved mask the gate decision uses (caller resolves off the
-///   read lock). Ignored when `Unrestricted`. For `Visible` this is `visible_cells(...)`;
-///   for `Revealed` the caller MUST pass `visible_cells(...) ∪ explored` — the same
-///   union `publish` tests with `visible.contains(c) || explored.contains(c)` — NOT
-///   the raw `visible_cache` alone (§13 parity contract: this executor and the
-///   `publish` gate must agree on every cell for every restriction mode).
+/// - `visible` — The resolved mask the gate decision uses (caller resolves off the read
+///   lock). Ignored when `Unrestricted`. For `Visible` this is `visible_cells(...)`; for
+///   `Revealed` the caller MUST pass `visible_cells(...) ∪ explored`.
 /// - `cell` — Grid cell size in scene units (positive finite).
 pub(crate) fn execute_move(
     ecs: &SceneEcs,
@@ -116,10 +271,6 @@ pub(crate) fn execute_move(
     if path.len() < 2 {
         return Err(MoveReject::EmptyPath);
     }
-    if path.len() > MAX_MOVE_PATH {
-        return Err(MoveReject::TooLong);
-    }
-    // NaN is already caught by `is_finite()`; `<= 0.0` rejects non-positive finite values.
     if !cell.is_finite() || cell <= 0.0 {
         return Err(MoveReject::Degenerate);
     }
@@ -127,106 +278,124 @@ pub(crate) fn execute_move(
         return Err(MoveReject::Degenerate);
     }
 
-    // path[0] must equal the token's committed position. The ECS is authoritative;
-    // the client must request from the real position, not a claimed one.
+    // path[0] must equal the token's committed position. The ECS is authoritative; the
+    // client must request from the real position, not a claimed one.
     let cur = ecs.token_position(token).ok_or(MoveReject::NotAToken)?;
     if (cur.0 - path[0].0).abs() > EPS || (cur.1 - path[0].1).abs() > EPS {
         return Err(MoveReject::Degenerate);
     }
 
-    // Cell-index helper: floor-division mapping scene coords to (i, j).
+    // Subdivide into the dense ≤1-cell gate walk (§4.1/§4.3 of the design spec); identity on
+    // grid input. `None` means the walk would exceed MAX_GATE_WALK_SAMPLES — fail closed.
+    let walk = gate_walk(path, cell).ok_or(MoveReject::TooLong)?;
+    // walk.len() >= 2 always here: path.len() >= 2 is already guaranteed above, and the loop
+    // inside gate_walk appends at least one sample per authored segment.
+
     let to_cell = |p: (f64, f64)| -> (i32, i32) {
         ((p.0 / cell).floor() as i32, (p.1 / cell).floor() as i32)
     };
 
     // Whether the vision-mask check (step 2) applies for this restriction mode.
-    // `Unrestricted` skips the mask; `Visible` and `Revealed` require it.
-    // (The caller folds GM-ness into `Unrestricted`, mirroring `publish`.)
     let check_mask = !matches!(restriction, MovementRestriction::Unrestricted);
 
-    // Authoritative region field (M10g): always the full field, never filtered — this executor
-    // springs secret regions regardless of what the mover's pathfind preview could see (§6).
+    // Authoritative region field (M10g): always the full field, never filtered — this
+    // executor springs secret regions regardless of what the mover's pathfind preview
+    // could see (§6).
     let regions = ecs.region_field(scene, None);
 
-    // --- Per-step walk ---
-    // `stop_index` tracks the last successfully reached path index; starts at 0 (start cell).
-    // `stopped_early` is set when the loop breaks due to region-arrest: a region-arrest on
-    // the FINAL step sets stop_index == path.len()-1, so the index comparison alone would
-    // report truncated=false — the flag captures that case correctly.
-    let mut stop_index = 0usize;
+    // --- Per-step walk over the DENSE gate walk ---
+    let mut stop_idx = 0usize; // index into `walk`
     let mut stopped_early = false;
     let mut cost = 0.0;
-    for i in 1..path.len() {
-        let prev = path[i - 1];
-        let next = path[i];
+    // The cell already accounted for by region/cost logic. The START cell is never itself
+    // "entered" (mirrors the pre-refactor loop, which begins cost accrual at i=1 /
+    // to_cell(next)).
+    let mut last_region_cell = to_cell(walk[0].pos);
 
-        // King-step adjacency guard: each consecutive cell pair must be at most 1 apart
-        // on each axis. A jump of 2+ cells is Degenerate (fail closed), not a truncation.
-        let (pc, nc) = (to_cell(prev), to_cell(next));
-        if (pc.0 - nc.0).abs() > 1 || (pc.1 - nc.1).abs() > 1 {
-            return Err(MoveReject::Degenerate);
-        }
+    for i in 1..walk.len() {
+        let prev = walk[i - 1].pos;
+        let next = walk[i].pos;
 
-        // Step 1: wall gate — mirrors `publish` line 199: `if scene.blocks_move(...)`.
-        // Active for ALL restriction modes including Unrestricted. GMs mapped to
-        // Unrestricted above (mask-skip) still reach this gate: walls are honored for
-        // GMs by design in this executor. This intentionally diverges from `publish`'s
-        // legacy GM wall-bypass, which is to be retired — do NOT re-grant bypass here.
+        // Step 1: wall gate — unconditional, every dense sub-segment.
         if ecs.blocks_move(scene, prev, next) {
-            // Stop at prev (the last safely reached cell); truncated.
             stopped_early = true;
             break;
         }
 
-        // Step 2: vision-mask gate — mirrors `publish` lines 217-233.
-        // INVARIANT (§13): uses the SAME `supercover_cells` + `visible` set as the
-        // M10e-4 gate. `supercover_cells(prev, next, cell)` returns None on any
-        // degenerate input; we fail closed (stop at prev) consistent with `publish`'s
-        // `return Err(DataError::Forbidden)` on None.
+        // Step 2: vision-mask gate — every dense sub-segment. This density is exactly why
+        // gate_walk exists: supercover_cells is well-defined and dense enough to cover the
+        // swept footprint for an any-angle segment, not just a king step.
         if check_mask {
             let Some(cells) = supercover_cells(prev, next, cell) else {
-                // Degenerate supercover (span overflow or bad coords) → stop here.
                 stopped_early = true;
                 break;
             };
             if !cells.iter().all(|c| visible.contains(c)) {
-                // A supercover cell is not in the visible set → stop at prev.
                 stopped_early = true;
                 break;
             }
         }
 
-        // Step 3: region gate (M10g). Center-cell only (mirrors this executor's existing
-        // center-cell model — no footprint check here, unlike the router; see pathfinding.rs's
-        // `cell_enterable` doc comment for the footprint/center-cell asymmetry rationale).
-        let region_cell = to_cell(next);
-        if regions.is_impassable(region_cell) {
-            // Defense-in-depth: a well-formed path from the router already avoids impassable
-            // cells. Treated exactly like a wall — stop BEFORE entry (stop stays at `prev`).
-            stopped_early = true;
-            break;
-        }
-        cost += regions.terrain_multiplier(region_cell);
-        if regions.is_arrest(region_cell) {
-            // Arrest fires AFTER entering: stop AT `next`. A final-step arrest sets
-            // stop_index = path.len()-1 and stopped_early = true so `truncated` is correctly
-            // reported even though the index equals the last position.
-            stop_index = i;
-            stopped_early = true;
-            break;
+        // Step 3: region gate (M10g), keyed on CELL-ENTRY TRANSITIONS, not per dense sample
+        // — a continuous path subdivided into several sub-cell samples within the same cell
+        // is evaluated exactly once for that cell, matching the pre-refactor accrual count
+        // for grid input (where every authored step already crossed into a distinct new
+        // cell). Center-cell only, mirroring the pre-existing documented asymmetry against
+        // the router's footprint-aware check (see pathfinding.rs's `cell_enterable` docs).
+        //
+        // This transition-dedup relies on the router never emitting two consecutive dense
+        // samples that map to the SAME cell: true for grid A* (`pathfinding::find`) and true
+        // for `gate_walk`'s output here, since it only ever emits progressing samples along the
+        // input polyline (no stationary/duplicate cell re-visits). Unlike the pre-M10f-2
+        // king-step executor, this is no longer independently enforced by an adjacency guard —
+        // that guard used to reject a non-adjacent jump outright; this executor now subdivides
+        // instead of rejecting (see `gate_walk`), so a duplicate-cell transition would silently
+        // fall through this dedup rather than being caught by a separate check.
+        let next_cell = to_cell(next);
+        if next_cell != last_region_cell {
+            if regions.is_impassable(next_cell) {
+                stopped_early = true;
+                break;
+            }
+            cost += regions.terrain_multiplier(next_cell);
+            if regions.is_arrest(next_cell) {
+                stop_idx = i;
+                stopped_early = true;
+                break;
+            }
+            last_region_cell = next_cell;
         }
 
         // All checks passed: advance to next.
-        stop_index = i;
+        stop_idx = i;
     }
 
-    let render_path = path[0..=stop_index].to_vec();
-    // Safe: path.len() >= 2 is already guarded above, so len() - 1 never underflows.
-    // `stopped_early` captures arrest on the final step where the index comparison alone
-    // would be false (stop_index == path.len()-1 yet the move was arrested).
-    let truncated = stopped_early || stop_index < path.len() - 1;
+    // --- Coarse render_path: authored vertices fully traversed + the exact stop point ---
+    let stop_sample = walk[stop_idx];
+    let render_path = match stop_sample.authored_idx {
+        // Stop lands exactly on an authored vertex (always true for grid input, since
+        // gate_walk is identity there): the coarse path is the authored-vertex prefix,
+        // byte-identical to the pre-refactor executor.
+        Some(authored_i) => path[0..=authored_i].to_vec(),
+        // Stop lands mid-subdivision (only possible for a genuinely long/any-angle
+        // segment): the coarse path is every authored vertex fully passed, plus the exact
+        // stop point.
+        None => {
+            let last_authored = walk[0..stop_idx]
+                .iter()
+                .rev()
+                .find_map(|s| s.authored_idx)
+                .unwrap_or(0);
+            let mut rp = path[0..=last_authored].to_vec();
+            rp.push(stop_sample.pos);
+            rp
+        }
+    };
+
+    // Safe: walk.len() >= 2 is guaranteed above, so len() - 1 never underflows.
+    let truncated = stopped_early || stop_idx < walk.len() - 1;
     Ok(MoveOutcome {
-        stop: path[stop_index],
+        stop: stop_sample.pos,
         render_path,
         truncated,
         cost,
@@ -458,39 +627,73 @@ mod tests {
     }
 
     #[test]
-    fn rejects_overlong_or_nonadjacent_path() {
+    fn long_jump_is_subdivided_and_gated_not_rejected() {
+        // A >1-cell authored jump is no longer rejected outright (§4.2): it is subdivided by
+        // gate_walk and gated per crossed cell, exactly as if the client had sent the
+        // explicit intermediate waypoints. All crossed cells here are visible and
+        // wall-clear, so the jump succeeds.
         let (ecs, scene, token) = clear_scene();
-        let v: BTreeSet<(i32, i32)> = BTreeSet::new();
-        // Non-adjacent jump: (0,0)→(500,0) skips 4 cells.
-        assert!(matches!(
-            execute_move(
-                &ecs,
-                scene,
-                token,
-                &[(0.0, 0.0), (500.0, 0.0)],
-                MovementRestriction::Unrestricted,
-                &v,
-                100.0
-            ),
-            Err(MoveReject::Degenerate)
-        ));
+        let visible = visible_grid(6);
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(0.0, 0.0), (500.0, 0.0)], // 5 cells in one authored jump
+            MovementRestriction::Visible,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert_eq!(out.stop, (500.0, 0.0));
+        assert!(!out.truncated);
     }
 
     #[test]
-    fn rejects_too_long_path() {
+    fn long_jump_truncates_at_the_fog_boundary_mid_segment() {
+        // The subdivided jump crosses into an unseen cell partway through the authored
+        // segment — the executor must truncate exactly at the fog boundary (a point that is
+        // NOT an authored vertex), not admit the whole jump nor reject it outright.
+        let (ecs, scene, token) = clear_scene();
+        // Only cells (0,0),(1,0),(2,0) are visible; the 5-cell jump would reach unseen (3,0).
+        let mut visible: BTreeSet<(i32, i32)> = BTreeSet::new();
+        visible.insert((0, 0));
+        visible.insert((1, 0));
+        visible.insert((2, 0));
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(0.0, 0.0), (500.0, 0.0)],
+            MovementRestriction::Visible,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert!(out.truncated);
+        assert_eq!(
+            out.stop,
+            (200.0, 0.0),
+            "truncates entering cell (2,0), before unseen cell (3,0)"
+        );
+        assert_eq!(out.render_path, vec![(0.0, 0.0), (200.0, 0.0)]);
+    }
+
+    #[test]
+    fn rejects_path_exceeding_gate_walk_cap() {
+        // Replaces the old vertex-count TooLong check (§4.3): the DoS bound is now
+        // arc-length/gate-walk-sample based. A single segment whose Chebyshev length would
+        // require more than MAX_GATE_WALK_SAMPLES sub-steps fails closed, never truncated.
         let (ecs, scene, token) = clear_scene();
         let v: BTreeSet<(i32, i32)> = BTreeSet::new();
-        // Build a path longer than MAX_MOVE_PATH. All steps are (0,0) repeated.
-        let path: Vec<(f64, f64)> = std::iter::repeat_n((0.0, 0.0), MAX_MOVE_PATH + 1).collect();
         assert!(matches!(
             execute_move(
                 &ecs,
                 scene,
                 token,
-                &path,
+                &[(0.0, 0.0), (1.0e7, 0.0)],
                 MovementRestriction::Unrestricted,
                 &v,
-                100.0
+                1.0,
             ),
             Err(MoveReject::TooLong)
         ));
@@ -702,5 +905,603 @@ mod tests {
             (0.0, 0.0),
             "authoritative field springs the secret impassable region"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Continuous (any-angle, non-king-step) unit tests
+    //
+    // These paths are not king-step, so the frozen oracle rejects them by shape and no
+    // differential comparison is possible — pure behavioral tests against `execute_move` only.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn continuous_any_angle_path_reaches_goal_when_fully_visible() {
+        let (ecs, scene, token) = clear_scene();
+        let visible = visible_grid(4);
+        // Any-angle single segment, not axis-aligned, not diagonal-45.
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(0.0, 0.0), (350.0, 120.0)],
+            MovementRestriction::Visible,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert_eq!(out.stop, (350.0, 120.0));
+        assert!(!out.truncated);
+        assert_eq!(out.render_path, vec![(0.0, 0.0), (350.0, 120.0)]);
+    }
+
+    #[test]
+    fn continuous_path_truncates_at_a_wall_crossed_mid_segment() {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        // Vertical wall at x=250, spanning y in [-50,50] — crosses a horizontal move at y=0.
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
+                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                entity_doc(
+                    12,
+                    10,
+                    "wall",
+                    json!({
+                        "seg": { "x1": 250, "y1": -50, "x2": 250, "y2": 50 },
+                        "blocksMove": true
+                    }),
+                ),
+            ],
+            0,
+        );
+        let visible = visible_grid(5);
+        // Single authored segment far longer than 1 cell — subdivided by gate_walk into 4
+        // dense substeps of 100 units each; the wall sits inside the third substep.
+        let out = execute_move(
+            &ecs,
+            scene_id,
+            token_id,
+            &[(0.0, 0.0), (400.0, 0.0)],
+            MovementRestriction::Unrestricted,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert!(
+            out.truncated,
+            "must stop before crossing the wall mid-segment"
+        );
+        assert_eq!(
+            out.stop,
+            (200.0, 0.0),
+            "stops at the last dense sample before the wall crossing"
+        );
+    }
+
+    #[test]
+    fn continuous_path_stops_before_entering_an_impassable_region_mid_segment() {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
+                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                region_doc(12, 10, "impassable", 1.0, 300.0, -50.0, 500.0, 150.0),
+            ],
+            0,
+        );
+        let visible = visible_grid(5);
+        let out = execute_move(
+            &ecs,
+            scene_id,
+            token_id,
+            &[(0.0, 0.0), (400.0, 0.0)],
+            MovementRestriction::Unrestricted,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert!(out.truncated);
+        assert_eq!(
+            out.stop,
+            (200.0, 0.0),
+            "stops BEFORE entering impassable cell (3,0) [x=300..400)"
+        );
+    }
+
+    #[test]
+    fn continuous_path_arrest_stops_at_entry_mid_segment_not_before() {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
+                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                region_doc(12, 10, "arrest", 1.0, 300.0, -50.0, 500.0, 150.0),
+            ],
+            0,
+        );
+        let visible = visible_grid(5);
+        let out = execute_move(
+            &ecs,
+            scene_id,
+            token_id,
+            &[(0.0, 0.0), (400.0, 0.0)],
+            MovementRestriction::Unrestricted,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert!(out.truncated);
+        assert_eq!(
+            out.stop,
+            (300.0, 0.0),
+            "arrest stops AT entry into cell (3,0), not before it"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Differential parity test suite vs the frozen king-step oracle
+    // -----------------------------------------------------------------------
+
+    /// Builds a scene with an optional wall and/or region for differential-test scenarios.
+    /// `wall`: `Some((x1,y1,x2,y2))` adds a `blocksMove` wall segment.
+    /// `region`: `Some((behavior, cost, x0,y0,x1,y1))` adds a rect region.
+    /// `secret_region`: when true and `region` is `Some`, marks the region `gm_only`.
+    fn scene_with_wall_and_region(
+        wall: Option<(f64, f64, f64, f64)>,
+        region: Option<(&str, f64, f64, f64, f64, f64)>,
+        secret_region: bool,
+    ) -> (SceneEcs, Uuid, Uuid) {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let mut docs = vec![
+            entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
+            entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+        ];
+        if let Some((x1, y1, x2, y2)) = wall {
+            docs.push(entity_doc(
+                12,
+                10,
+                "wall",
+                json!({
+                    "seg": { "x1": x1, "y1": y1, "x2": x2, "y2": y2 },
+                    "blocksMove": true
+                }),
+            ));
+        }
+        if let Some((behavior, cost, x0, y0, x1, y1)) = region {
+            let mut r = region_doc(13, 10, behavior, cost, x0, y0, x1, y1);
+            if secret_region {
+                r.permissions
+                    .property_overrides
+                    .insert("/system".into(), crate::data::document::Visibility::GmOnly);
+            }
+            docs.push(r);
+        }
+        (SceneEcs::from_documents(docs, 0), scene_id, token_id)
+    }
+
+    struct ExpectedOutcome {
+        stop: (f64, f64),
+        render_path: Vec<(f64, f64)>,
+        truncated: bool,
+        cost: f64,
+    }
+
+    struct FrozenCase {
+        label: &'static str,
+        wall: Option<(f64, f64, f64, f64)>,
+        region: Option<(&'static str, f64, f64, f64, f64, f64)>,
+        secret_region: bool,
+        visible: BTreeSet<(i32, i32)>,
+        restriction: MovementRestriction,
+        path: Vec<(f64, f64)>,
+        expected: ExpectedOutcome,
+    }
+
+    /// Frozen parity fixtures (M10f-2): 10 grid-input scenarios whose expected outcomes were
+    /// independently derived and cross-checked live against the pre-M10f-2 king-step oracle
+    /// during this task, before the oracle was deleted. This is the permanent parity
+    /// regression that proves `execute_move` still agrees with the pre-refactor executor on
+    /// every grid input, now that no oracle remains to compare against at runtime.
+    #[test]
+    fn frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes() {
+        let cases = vec![
+            FrozenCase {
+                label: "clear scene, full visible, straight path",
+                wall: None,
+                region: None,
+                secret_region: false,
+                visible: visible_grid(3),
+                restriction: MovementRestriction::Visible,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 100.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                    truncated: false,
+                    cost: 2.0,
+                },
+            },
+            FrozenCase {
+                label: "clear scene, Unrestricted, empty mask",
+                wall: None,
+                region: None,
+                secret_region: false,
+                visible: BTreeSet::new(),
+                restriction: MovementRestriction::Unrestricted,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 100.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                    truncated: false,
+                    cost: 2.0,
+                },
+            },
+            FrozenCase {
+                label: "wall blocks second step, Visible",
+                wall: Some((50.0, 50.0, 150.0, 50.0)),
+                region: None,
+                secret_region: false,
+                visible: visible_grid(4),
+                restriction: MovementRestriction::Visible,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 0.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0)],
+                    truncated: true,
+                    cost: 1.0,
+                },
+            },
+            FrozenCase {
+                label: "partial mask truncates at unseen cell, Visible",
+                wall: None,
+                region: None,
+                secret_region: false,
+                visible: {
+                    let mut v = BTreeSet::new();
+                    v.insert((0, 0));
+                    v.insert((1, 0));
+                    v
+                },
+                restriction: MovementRestriction::Visible,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 0.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0)],
+                    truncated: true,
+                    cost: 1.0,
+                },
+            },
+            FrozenCase {
+                label: "full mask allowed under Revealed",
+                wall: None,
+                region: None,
+                secret_region: false,
+                visible: visible_grid(3),
+                restriction: MovementRestriction::Revealed,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 100.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                    truncated: false,
+                    cost: 2.0,
+                },
+            },
+            FrozenCase {
+                label: "impassable region stops before entry",
+                wall: None,
+                region: Some(("impassable", 1.0, 50.0, 0.0, 150.0, 100.0)),
+                secret_region: false,
+                visible: visible_grid(3),
+                restriction: MovementRestriction::Unrestricted,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (0.0, 0.0),
+                    render_path: vec![(0.0, 0.0)],
+                    truncated: true,
+                    cost: 0.0,
+                },
+            },
+            FrozenCase {
+                label: "arrest region stops at entry on final step",
+                wall: None,
+                region: Some(("arrest", 1.0, 50.0, -50.0, 150.0, 50.0)),
+                secret_region: false,
+                visible: visible_grid(3),
+                restriction: MovementRestriction::Unrestricted,
+                path: vec![(0.0, 0.0), (100.0, 0.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 0.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0)],
+                    truncated: true,
+                    cost: 1.0,
+                },
+            },
+            FrozenCase {
+                label: "terrain region accrues cost",
+                wall: None,
+                region: Some(("terrain", 2.5, 50.0, 0.0, 150.0, 100.0)),
+                secret_region: false,
+                visible: visible_grid(3),
+                restriction: MovementRestriction::Unrestricted,
+                path: vec![(0.0, 0.0), (100.0, 0.0)],
+                expected: ExpectedOutcome {
+                    stop: (100.0, 0.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 0.0)],
+                    truncated: false,
+                    cost: 2.5,
+                },
+            },
+            FrozenCase {
+                label: "authoritative field springs a secret impassable region under Visible",
+                wall: None,
+                region: Some(("impassable", 1.0, 50.0, 0.0, 150.0, 100.0)),
+                secret_region: true,
+                visible: visible_grid(3),
+                restriction: MovementRestriction::Visible,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (0.0, 0.0),
+                    render_path: vec![(0.0, 0.0)],
+                    truncated: true,
+                    cost: 0.0,
+                },
+            },
+            FrozenCase {
+                // Encodes a known, pre-existing supercover_cells defect (docs/OPEN_BUGS.md):
+                // the (200,200)->(300,100) leg has both endpoints exactly on 4-way grid-line
+                // intersections, which spuriously fails closed instead of succeeding. This is
+                // the CORRECT parity outcome (both execute_move and the removed oracle agreed
+                // on it) — if supercover_cells's corner-crossing branch is ever fixed, this
+                // case's expected values must be updated to the newly-correct (non-truncated)
+                // outcome, not treated as a parity regression.
+                label: "diagonal 3-step king path, full visible",
+                wall: None,
+                region: None,
+                secret_region: false,
+                visible: visible_grid(4),
+                restriction: MovementRestriction::Visible,
+                path: vec![(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 100.0)],
+                expected: ExpectedOutcome {
+                    stop: (200.0, 200.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 100.0), (200.0, 200.0)],
+                    truncated: true,
+                    cost: 2.0,
+                },
+            },
+        ];
+
+        for case in &cases {
+            let (ecs, scene, token) =
+                scene_with_wall_and_region(case.wall, case.region, case.secret_region);
+            let result = execute_move(
+                &ecs,
+                scene,
+                token,
+                &case.path,
+                case.restriction,
+                &case.visible,
+                100.0,
+            );
+            let actual =
+                result.unwrap_or_else(|e| panic!("{}: expected Ok, got Err({e:?})", case.label));
+            assert_eq!(actual.stop, case.expected.stop, "{}: stop", case.label);
+            assert_eq!(
+                actual.render_path, case.expected.render_path,
+                "{}: render_path",
+                case.label
+            );
+            assert_eq!(
+                actual.truncated, case.expected.truncated,
+                "{}: truncated",
+                case.label
+            );
+            assert!(
+                (actual.cost - case.expected.cost).abs() < 1e-9,
+                "{}: cost mismatch ({} vs {})",
+                case.label,
+                actual.cost,
+                case.expected.cost
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // gate_walk tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gate_walk_is_identity_on_orthogonal_grid_steps() {
+        let path = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)];
+        let walk = gate_walk(&path, 100.0).unwrap();
+        let positions: Vec<(f64, f64)> = walk.iter().map(|s| s.pos).collect();
+        assert_eq!(positions, path.to_vec());
+        let authored: Vec<Option<usize>> = walk.iter().map(|s| s.authored_idx).collect();
+        assert_eq!(authored, vec![Some(0), Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn gate_walk_is_identity_on_diagonal_grid_steps() {
+        let path = [(0.0, 0.0), (100.0, 100.0), (200.0, 200.0)];
+        let walk = gate_walk(&path, 100.0).unwrap();
+        let positions: Vec<(f64, f64)> = walk.iter().map(|s| s.pos).collect();
+        assert_eq!(positions, path.to_vec());
+    }
+
+    #[test]
+    fn gate_walk_subdivides_a_long_axis_aligned_segment_into_at_most_one_cell_steps() {
+        // (0,0) -> (400,0) at cell=100: Chebyshev length 400 -> subdivided into 4 unit steps.
+        let path = [(0.0, 0.0), (400.0, 0.0)];
+        let walk = gate_walk(&path, 100.0).unwrap();
+        assert_eq!(walk.first().unwrap().pos, (0.0, 0.0));
+        assert_eq!(walk.last().unwrap().pos, (400.0, 0.0));
+        for w in walk.windows(2) {
+            let cheby = (w[1].pos.0 - w[0].pos.0)
+                .abs()
+                .max((w[1].pos.1 - w[0].pos.1).abs());
+            assert!(
+                cheby <= 100.0 + 1e-9,
+                "step {:?}->{:?} exceeds 1 cell",
+                w[0].pos,
+                w[1].pos
+            );
+        }
+        // Only the endpoints are authored; interior samples are not.
+        assert_eq!(walk.first().unwrap().authored_idx, Some(0));
+        assert_eq!(walk.last().unwrap().authored_idx, Some(1));
+        assert!(walk[1..walk.len() - 1]
+            .iter()
+            .all(|s| s.authored_idx.is_none()));
+    }
+
+    #[test]
+    fn gate_walk_subdivides_a_long_any_angle_segment() {
+        // Continuous, non-axis-aligned: (0,0) -> (250, 90) at cell=100.
+        // Chebyshev length = max(250, 90) = 250 -> ceil(250/100) = 3 substeps.
+        let path = [(0.0, 0.0), (250.0, 90.0)];
+        let walk = gate_walk(&path, 100.0).unwrap();
+        assert_eq!(walk.len(), 4); // start + 3 substeps
+        assert_eq!(walk.last().unwrap().pos, (250.0, 90.0));
+        for w in walk.windows(2) {
+            let cheby = (w[1].pos.0 - w[0].pos.0)
+                .abs()
+                .max((w[1].pos.1 - w[0].pos.1).abs());
+            assert!(cheby <= 100.0 + 1e-9);
+        }
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_on_non_finite_coordinate() {
+        assert!(gate_walk(&[(0.0, 0.0), (f64::NAN, 0.0)], 100.0).is_none());
+        assert!(gate_walk(&[(0.0, 0.0), (f64::INFINITY, 0.0)], 100.0).is_none());
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_on_degenerate_cell() {
+        assert!(gate_walk(&[(0.0, 0.0), (100.0, 0.0)], 0.0).is_none());
+        assert!(gate_walk(&[(0.0, 0.0), (100.0, 0.0)], -1.0).is_none());
+        assert!(gate_walk(&[(0.0, 0.0), (100.0, 0.0)], f64::NAN).is_none());
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_when_over_the_sample_cap() {
+        // A single segment whose subdivision count alone exceeds the cap.
+        let path = [(0.0, 0.0), (1.0e7, 0.0)]; // cell=1.0 -> 10,000,000 substeps
+        assert!(gate_walk(&path, 1.0).is_none());
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_when_a_single_segment_lands_exactly_on_the_sample_cap() {
+        // k_f == MAX_GATE_WALK_SAMPLES exactly: the walk still needs 1 (start sample) +
+        // MAX_GATE_WALK_SAMPLES total samples, one over the cap. Must fail closed, not
+        // silently accept an off-by-one under-count.
+        let cell = 1.0;
+        let cheby = MAX_GATE_WALK_SAMPLES as f64 * cell;
+        let path = [(0.0, 0.0), (cheby, 0.0)];
+        assert!(gate_walk(&path, cell).is_none());
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_on_cumulative_cross_segment_sample_cap() {
+        // Each segment is individually well under the per-segment cap, but the summed
+        // sample count across segments exceeds MAX_GATE_WALK_SAMPLES. The pre-loop
+        // per-segment check alone would miss this; only the loop-internal running-total
+        // check (`out.len() >= MAX_GATE_WALK_SAMPLES`) catches it.
+        let cell = 1.0;
+        let seg_len = (MAX_GATE_WALK_SAMPLES / 2 + 100) as f64 * cell; // under the cap alone
+        let path = [
+            (0.0, 0.0),
+            (seg_len, 0.0),
+            (seg_len, seg_len), // second segment pushes the running total over the cap
+        ];
+        assert!(gate_walk(&path, cell).is_none());
+    }
+
+    #[test]
+    fn gate_walk_rejects_an_authored_path_longer_than_the_sample_cap_before_allocating() {
+        // Every step is a genuine 1-cell identity step (no subdivision at all), but the
+        // authored vertex count alone exceeds the cap. Must fail closed rather than
+        // pre-allocate `Vec::with_capacity(path.len())` for an arbitrarily large `path`.
+        let cell = 100.0;
+        let path: Vec<(f64, f64)> = (0..=(MAX_GATE_WALK_SAMPLES + 1))
+            .map(|i| (i as f64 * cell, 0.0))
+            .collect();
+        assert!(gate_walk(&path, cell).is_none());
+    }
+
+    #[test]
+    fn gate_walk_is_identity_on_non_round_cell_size_under_floating_point_noise() {
+        // Non-round cell (a perfectly normal GM-configured value; `scene/mod.rs` puts no
+        // round-number constraint on `cell`). A zero-tolerance `cheby <= cell` comparison
+        // spuriously subdivides some fraction of genuine single-cell steps here due to
+        // independent floating-point rounding in the two coordinate subtractions.
+        let cell = 33.33_f64;
+        for i in 0..2000u32 {
+            let base = i as f64 * cell;
+            // Orthogonal single-cell step.
+            let ortho = [(base, 0.0), (base + cell, 0.0)];
+            let walk = gate_walk(&ortho, cell).unwrap();
+            assert_eq!(
+                walk.len(),
+                2,
+                "orthogonal single-cell step at i={i} was spuriously subdivided: {walk:?}"
+            );
+            // Diagonal single-cell step.
+            let diag = [(base, base), (base + cell, base + cell)];
+            let walk = gate_walk(&diag, cell).unwrap();
+            assert_eq!(
+                walk.len(),
+                2,
+                "diagonal single-cell step at i={i} was spuriously subdivided: {walk:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_on_extreme_magnitude_coordinate_instead_of_false_identity() {
+        // Second buddy-check round on the first tolerance fix: at large enough base
+        // coordinates the magnitude-scaled tolerance can itself exceed a full cell length,
+        // silently collapsing a genuinely-multi-cell segment (cheby == cell + 1.0, which must
+        // subdivide into 2 substeps) into a false single-step identity. Reproduced directly at
+        // base=1e14, cell=33.33 by both independent reviewers (tol there is ~2.84, already far
+        // past the 1.0 excess this segment carries) — well above `MAX_GATE_WALK_COORD` (1e9), so
+        // the bound must reject it outright (fail closed) rather than let the tolerance
+        // misclassify it.
+        let cell = 33.33_f64;
+        let base = 1.0e14_f64;
+        let path = [(base, 0.0), (base + cell + 1.0, 0.0)];
+        assert!(
+            gate_walk(&path, cell).is_none(),
+            "extreme-magnitude segment must fail closed, not silently collapse to identity"
+        );
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_on_coordinate_over_the_magnitude_bound() {
+        // Direct test of the new bound itself: a coordinate just over `MAX_GATE_WALK_COORD`
+        // must be rejected even on an otherwise-trivial single-cell step (isolates the bound
+        // check from the tolerance-overshoot scenario above).
+        let cell = 100.0_f64;
+        let over = MAX_GATE_WALK_COORD + 1.0;
+        assert!(gate_walk(&[(over, 0.0), (over + cell, 0.0)], cell).is_none());
+        assert!(gate_walk(&[(0.0, over), (0.0, over + cell)], cell).is_none());
+    }
+
+    #[test]
+    fn gate_walk_accepts_coordinate_at_the_magnitude_bound() {
+        // A coordinate exactly AT `MAX_GATE_WALK_COORD` (not over it) must not be rejected by
+        // the bound check itself — confirms the comparison is strictly `>`, not `>=`.
+        let cell = 100.0_f64;
+        let at = MAX_GATE_WALK_COORD;
+        let walk = gate_walk(&[(at - cell, 0.0), (at, 0.0)], cell).unwrap();
+        assert_eq!(walk.len(), 2);
+    }
+
+    #[test]
+    fn gate_walk_on_empty_path_returns_empty() {
+        let walk = gate_walk(&[], 100.0).unwrap();
+        assert!(walk.is_empty());
     }
 }

@@ -491,10 +491,52 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > corrections applied: an invariant promoted from prose to a top-level Hard Invariants entry, an
 > unverifiable buddy-check round-count claim softened).
 >
-> Next = **M10f-2** (unify the movement executor — refactor `move_exec`'s king-step walk into an
-> arc-length-sampled polyline walk so grid A* and the navmesh router share one gate/region/arrest/
-> commit path; grid §13 parity must be proven under heavy buddy-check before continuous execution
-> is layered on top).
+> **M10f-2 DONE** (branch `m10f-2-unified-movement-executor`, commits `a343fd0..53335eb`, all
+> green, merged --no-ff to LOCAL main — merge gate = full M10f) — unifies the movement executor:
+> `move_exec` refactored from a king-step-per-authored-cell walk onto a new pure `gate_walk`
+> primitive that subdivides ANY polyline (grid A* cell-centers or any-angle continuous vertices)
+> into a dense walk where consecutive samples are ≤1 cell apart, preserving already-≤1-cell input
+> EXACTLY — identity on grid input, which is what makes grid-parity a property of the code shape
+> rather than something proven only by testing. The per-step gate (wall → vision-mask → region)
+> now runs over this dense walk instead of the raw authored path; region/cost checks are keyed on
+> CELL-ENTRY TRANSITIONS (not per dense sample) to match the pre-refactor per-step accrual exactly
+> on grid input. The old king-step adjacency guard (reject any >1-cell authored jump outright) is
+> REMOVED — a >1-cell jump is now subdivided and gated per cell instead, exactly as if the client
+> had sent the explicit intermediate waypoints (no new capability). The DoS bound moves from an
+> authored-vertex-count cap (`MAX_MOVE_PATH=256`) to a gate-walk-sample-count cap
+> (`MAX_GATE_WALK_SAMPLES=4096`) plus a coordinate-magnitude bound (`MAX_GATE_WALK_COORD=1e9`).
+> `Room::execute_move` required **zero code changes** throughout — the caller seam is unchanged,
+> proven by its full existing test suite staying green across all 6 tasks. SDD-executed (6 tasks;
+> Tasks 1, 3, 4, 5 buddy-checked per the plan's pre-authorization, Task 2/6 the standard
+> two-reviewer gate, plus a mandatory whole-branch buddy-check before the final task).
+> **Buddy-checking found and fixed 2 distinct real defects in Task 1's `gate_walk` primitive**,
+> both independently re-confirmed resolved: a zero-tolerance floating-point comparison
+> (`cheby <= cell`) that spuriously subdivided a true 1-cell grid step for non-round GM-configured
+> cell sizes (empirically reproduced: 1087/2000 spurious subdivisions at `cell=33.33`), closed by a
+> magnitude-scaled tolerance matching `supercover_cells`'s existing 64-ULP convention; and a
+> **second-order defect the first fix itself introduced** — the magnitude-scaled tolerance grew
+> unbounded with coordinate magnitude and, at extreme-but-reachable magnitudes (~3.5e13+, within
+> `navmesh.rs`'s own `MAX_NAVMESH_COORD=1e15` legitimate-input band), could silently misclassify a
+> genuinely-multi-cell segment as a single identity step — a silent gate-skip — closed by the new
+> `MAX_GATE_WALK_COORD=1e9` bound (~35,000x margin below the crossover). Task 3's refactor buddy
+> check found zero functional defects, only 3 doc-only Minors (one requiring a real severity
+> debate that converged after both reviewers independently re-verified against ground truth). The
+> mandatory whole-branch buddy-check (opus, two-reviewer) independently confirmed all 4 directed
+> risks safe with real margin (grid-input identity, cell-entry-dedup re-entry correctness, the
+> `render_path` reconstruction's edge cases, and the `TooLong` redefinition's DoS coverage) —
+> CONVERGED PASS, zero Critical/Important. **A genuinely valuable process catch during Task 6:**
+> the differential parity test's hand-derived literal for one scenario (a diagonal 3-step king
+> path) was wrong — root-caused to a real, pre-existing `supercover_cells` corner-drift (a
+> diagonal leg whose both endpoints sit exactly on 4-way grid intersections drives the
+> Amanatides-Woo corner-crossing branch to fire repeatedly and drift away from the target cell
+> before failing closed) — the implementer correctly halted rather than silently "fixing" the
+> literal, and the dispatcher + both Task 6 reviewers independently re-derived the same correction
+> from the actual geometry. Fail-closed, non-security, logged to `docs/TODO.md`. Reviewed
+> skill-update gate: `shadowcat-codebase-scene-rendering` updated + confirmed ACCURATE.
+>
+> Next = **M10f-3** (continuous execution + streamed vision — wires the now-unified executor's
+> continuous-polyline support into a real `MoveRequest`/`MoveStream` path end to end; client
+> no-snap place/move in continuous scenes).
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
