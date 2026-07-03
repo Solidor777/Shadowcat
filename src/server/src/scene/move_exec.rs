@@ -1005,6 +1005,212 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Differential parity test suite vs the frozen king-step oracle
+    // -----------------------------------------------------------------------
+
+    /// Builds a scene with an optional wall and/or region for differential-test scenarios.
+    /// `wall`: `Some((x1,y1,x2,y2))` adds a `blocksMove` wall segment.
+    /// `region`: `Some((behavior, cost, x0,y0,x1,y1))` adds a rect region.
+    /// `secret_region`: when true and `region` is `Some`, marks the region `gm_only`.
+    fn scene_with_wall_and_region(
+        wall: Option<(f64, f64, f64, f64)>,
+        region: Option<(&str, f64, f64, f64, f64, f64)>,
+        secret_region: bool,
+    ) -> (SceneEcs, Uuid, Uuid) {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let mut docs = vec![
+            entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
+            entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+        ];
+        if let Some((x1, y1, x2, y2)) = wall {
+            docs.push(entity_doc(
+                12,
+                10,
+                "wall",
+                json!({
+                    "seg": { "x1": x1, "y1": y1, "x2": x2, "y2": y2 },
+                    "blocksMove": true
+                }),
+            ));
+        }
+        if let Some((behavior, cost, x0, y0, x1, y1)) = region {
+            let mut r = region_doc(13, 10, behavior, cost, x0, y0, x1, y1);
+            if secret_region {
+                r.permissions
+                    .property_overrides
+                    .insert("/system".into(), crate::data::document::Visibility::GmOnly);
+            }
+            docs.push(r);
+        }
+        (SceneEcs::from_documents(docs, 0), scene_id, token_id)
+    }
+
+    struct DiffCase {
+        label: &'static str,
+        wall: Option<(f64, f64, f64, f64)>,
+        region: Option<(&'static str, f64, f64, f64, f64, f64)>,
+        secret_region: bool,
+        visible: BTreeSet<(i32, i32)>,
+        restriction: MovementRestriction,
+        path: Vec<(f64, f64)>,
+    }
+
+    /// Compares a refactored-executor result against the frozen oracle's, asserting the two
+    /// agree on every field (or agree that both reject with the same variant).
+    fn assert_outcomes_match(
+        label: &str,
+        new: &Result<MoveOutcome, MoveReject>,
+        oracle: &Result<MoveOutcome, MoveReject>,
+    ) {
+        match (new, oracle) {
+            (Ok(n), Ok(o)) => {
+                assert_eq!(n.stop, o.stop, "{label}: stop mismatch ({n:?} vs {o:?})");
+                assert_eq!(
+                    n.render_path, o.render_path,
+                    "{label}: render_path mismatch"
+                );
+                assert_eq!(n.truncated, o.truncated, "{label}: truncated mismatch");
+                assert!(
+                    (n.cost - o.cost).abs() < 1e-9,
+                    "{label}: cost mismatch ({} vs {})",
+                    n.cost,
+                    o.cost
+                );
+            }
+            (Err(ne), Err(oe)) => {
+                assert_eq!(ne, oe, "{label}: reject variant mismatch")
+            }
+            _ => panic!("{label}: new={new:?} oracle={oracle:?} — Ok/Err disagreement"),
+        }
+    }
+
+    #[test]
+    fn differential_parity_king_step_paths_match_oracle_across_scenarios() {
+        let cases = vec![
+            DiffCase {
+                label: "clear scene, full visible, straight path",
+                wall: None,
+                region: None,
+                secret_region: false,
+                visible: visible_grid(3),
+                restriction: MovementRestriction::Visible,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+            },
+            DiffCase {
+                label: "clear scene, Unrestricted, empty mask",
+                wall: None,
+                region: None,
+                secret_region: false,
+                visible: BTreeSet::new(),
+                restriction: MovementRestriction::Unrestricted,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+            },
+            DiffCase {
+                label: "wall blocks second step, Visible",
+                wall: Some((50.0, 50.0, 150.0, 50.0)),
+                region: None,
+                secret_region: false,
+                visible: visible_grid(4),
+                restriction: MovementRestriction::Visible,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+            },
+            DiffCase {
+                label: "partial mask truncates at unseen cell, Visible",
+                wall: None,
+                region: None,
+                secret_region: false,
+                visible: {
+                    let mut v = BTreeSet::new();
+                    v.insert((0, 0));
+                    v.insert((1, 0));
+                    v
+                },
+                restriction: MovementRestriction::Visible,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+            },
+            DiffCase {
+                label: "full mask allowed under Revealed",
+                wall: None,
+                region: None,
+                secret_region: false,
+                visible: visible_grid(3),
+                restriction: MovementRestriction::Revealed,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+            },
+            DiffCase {
+                label: "impassable region stops before entry",
+                wall: None,
+                region: Some(("impassable", 1.0, 50.0, 0.0, 150.0, 100.0)),
+                secret_region: false,
+                visible: visible_grid(3),
+                restriction: MovementRestriction::Unrestricted,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+            },
+            DiffCase {
+                label: "arrest region stops at entry on final step",
+                wall: None,
+                region: Some(("arrest", 1.0, 50.0, -50.0, 150.0, 50.0)),
+                secret_region: false,
+                visible: visible_grid(3),
+                restriction: MovementRestriction::Unrestricted,
+                path: vec![(0.0, 0.0), (100.0, 0.0)],
+            },
+            DiffCase {
+                label: "terrain region accrues cost",
+                wall: None,
+                region: Some(("terrain", 2.5, 50.0, 0.0, 150.0, 100.0)),
+                secret_region: false,
+                visible: visible_grid(3),
+                restriction: MovementRestriction::Unrestricted,
+                path: vec![(0.0, 0.0), (100.0, 0.0)],
+            },
+            DiffCase {
+                label: "authoritative field springs a secret impassable region under Visible",
+                wall: None,
+                region: Some(("impassable", 1.0, 50.0, 0.0, 150.0, 100.0)),
+                secret_region: true,
+                visible: visible_grid(3),
+                restriction: MovementRestriction::Visible,
+                path: vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+            },
+            DiffCase {
+                label: "diagonal 3-step king path, full visible",
+                wall: None,
+                region: None,
+                secret_region: false,
+                visible: visible_grid(4),
+                restriction: MovementRestriction::Visible,
+                path: vec![(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 100.0)],
+            },
+        ];
+
+        for case in &cases {
+            let (ecs, scene, token) =
+                scene_with_wall_and_region(case.wall, case.region, case.secret_region);
+            let new_result = execute_move(
+                &ecs,
+                scene,
+                token,
+                &case.path,
+                case.restriction,
+                &case.visible,
+                100.0,
+            );
+            let oracle_result = execute_move_kingstep_oracle(
+                &ecs,
+                scene,
+                token,
+                &case.path,
+                case.restriction,
+                &case.visible,
+                100.0,
+            );
+            assert_outcomes_match(case.label, &new_result, &oracle_result);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // gate_walk tests
     // -----------------------------------------------------------------------
 
