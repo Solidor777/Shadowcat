@@ -249,6 +249,42 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   engine-agnostic since M10f-2 — no `movementModel` branch anywhere in that path, so there was
   nothing engine-specific left to gate at the client. `requestRoute` (the preview path) was always
   unaffected — no grid-snap fallback, silent no-op on double-click.
+- **`snapToGrid` axis (M10f-3, `src/client/core/src/scene-docs.ts`)**: `SceneSystem.snapToGrid?:
+  boolean` — opaque `system`-body JSON, no ts-rs type (mirrors `movementModel`/`bounds`).
+  `resolveSceneSettings` resolves a DERIVED DEFAULT keyed off the already-resolved
+  `movementModel`: `sys?.snapToGrid ?? (movementModel === "continuous" ? false : true)` — an
+  explicit stored boolean (including `false`) always overrides the derived default in either
+  direction via nullish-coalescing, never a truthy check (`false` is meaningful and must
+  persist). Independent of `movementModel` (a deliberate design choice — an independent toggle
+  rather than tying no-snap directly to the movement model — though the derived default preserves
+  the original intent that a fresh continuous scene is free-form by default). **`RenderEngine.snap`
+  chokepoint (`src/client/render/src/engine.ts` + `types.ts`)**: `SceneToolHost.setSnapEnabled(enabled:
+  boolean): void` interface member; `RenderEngine` carries a private `snapEnabled = true` field and
+  gates `snap(p)`: `return this.snapEnabled ? this.grid.snap(p) : p`. This is the SINGLE
+  enforcement point — every scene tool that calls `ctx.scene.snap` (place, select-move drag,
+  measure-route waypoints, wall/region/template/draw tools) inherits the toggle automatically,
+  since they all go through the same `AppContext.scene` bridge. Snap gating is independent of grid
+  RENDERING — a snap-off scene may still display its reference grid; `setSnapEnabled` never
+  touches `redrawGrid`/grid-line drawing. **Wiring:** `SceneInteractionBridge.setSnapEnabled`
+  (`src/client/ui-kit/src/sceneInteraction.ts`) forwards to the host (no-op when detached,
+  mirroring every other bridge method). `Stage.svelte` pushes the resolved `snapToGrid` into the
+  engine unconditionally on every `onDocs` pass (`e.setSnapEnabled(settings.snapToGrid)`), placed
+  OUTSIDE the `lastGridKey` change-detection gate that exists for `setGrid`'s more expensive
+  Grid-object rebuild — a cheap flag write doesn't need that gate, and gating it behind
+  `lastGridKey` would be a real bug since that key doesn't include `snapToGrid` and would silently
+  freeze the pushed value. **Authoring:** a GM-only persistent toggle button in `ToolRail.svelte`
+  (`data-testid="snap-toggle"`), reflecting the resolved `snapToGrid` via a reactive
+  `createSubscriber`+`$derived.by` subscription to the document store (mirrors
+  `FactionsPanel`/`GameSettingsPanel`'s pattern), dispatching a `/system/snapToGrid` scene-doc
+  update on click. **Load-bearing convention for any config-doc field-toggle editor:** the
+  dispatched update's `old` field must read the RAW stored value (`scene.system?.snapToGrid ??
+  null`), NOT the resolved/defaulted value — a hardcoded `old: null` breaks after the first
+  successful write, since the server's field-level optimistic-concurrency check
+  (`Repository::apply_intent`) rejects any subsequent `Update` whose `old` doesn't match the
+  actual current stored value. This was a Critical bug caught and fixed during M10f-3 Task 5's
+  review; the SAME pre-existing bug shape was found but NOT fixed (logged to `docs/TODO.md`
+  instead, out of scope) in `GameSettingsPanel`/`FactionsPanel`/`ConditionsPanel` — always read the
+  raw stored value for `old`, never the resolved/defaulted one, in any future editor of this shape.
 - `src/server/src/scene/navmesh.rs` (M10f-1, new) — pure headless adapter around the `polyanya`
   (any-angle navmesh) + `geo`/`spade` (CDT + Minkowski buffer) crates, engine-owned geometry
   (ARCHITECTURE §6 exception). Carries **walls only** in this checkpoint — impassable/terrain
