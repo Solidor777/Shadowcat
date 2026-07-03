@@ -1,6 +1,11 @@
-//! Pure, lock-free per-path move executor (M1 server-authoritative movement).
+//! Pure, lock-free per-path move executor (M1 server-authoritative movement; engine-agnostic
+//! since M10f-2).
 //!
-//! Walks a proposed cell-path step by step, validating each step against:
+//! `execute_move` is built on `gate_walk`, which subdivides ANY input polyline — grid A*
+//! cell-center vertices ≤1 cell apart, or any-angle continuous vertices arbitrarily far apart —
+//! into a dense walk where every consecutive pair is at most one cell apart (Chebyshev),
+//! preserving already-≤1-cell segments as an identity. The per-step gate then runs over this
+//! dense walk, validating each dense sub-step against:
 //! - `blocks_move` wall geometry (M9a gate — always active),
 //! - the caller-supplied `visible` mask (M10e-4 gate — skipped for `Unrestricted`),
 //! - the region field (M10g): impassable stops before entry, arrest stops at entry, terrain
@@ -333,6 +338,15 @@ pub(crate) fn execute_move(
         // for grid input (where every authored step already crossed into a distinct new
         // cell). Center-cell only, mirroring the pre-existing documented asymmetry against
         // the router's footprint-aware check (see pathfinding.rs's `cell_enterable` docs).
+        //
+        // This transition-dedup relies on the router never emitting two consecutive dense
+        // samples that map to the SAME cell: true for grid A* (`pathfinding::find`) and true
+        // for `gate_walk`'s output here, since it only ever emits progressing samples along the
+        // input polyline (no stationary/duplicate cell re-visits). Unlike the pre-M10f-2
+        // king-step executor, this is no longer independently enforced by an adjacency guard —
+        // that guard used to reject a non-adjacent jump outright; this executor now subdivides
+        // instead of rejecting (see `gate_walk`), so a duplicate-cell transition would silently
+        // fall through this dedup rather than being caught by a separate check.
         let next_cell = to_cell(next);
         if next_cell != last_region_cell {
             if regions.is_impassable(next_cell) {
@@ -391,6 +405,7 @@ pub(crate) fn execute_move(
 ///
 /// TODO: delete once grid-input parity between the sampled executor and this oracle is proven and
 /// frozen as literal fixtures.
+
 /// DoS guard: a path longer than this is rejected outright (never truncated). Scoped to the
 /// frozen pre-M10f-2 oracle only — superseded in production by `MAX_GATE_WALK_SAMPLES`.
 #[cfg(test)]
