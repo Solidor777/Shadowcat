@@ -125,3 +125,8 @@ test("no active scene: the snap toggle does not render", () => {
   render(ToolRail, { context: setAppContextForTest({ role: "gm", documents: new DocumentStore() }) });
   expect(screen.queryByTestId("snap-toggle")).toBeNull();
 });
+
+test("a non-GM does not see the snap toggle even with an active scene", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: sceneStore() }) });
+  expect(screen.queryByTestId("snap-toggle")).toBeNull();
+});

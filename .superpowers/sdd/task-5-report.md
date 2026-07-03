@@ -133,3 +133,44 @@ pnpm --filter @shadowcat/module-scene-tools typecheck
 ```
 
 Both green.
+
+---
+
+## Whole-branch buddy-check fix
+
+**Finding:** The snap-toggle button is double-gated — an outer `{#if isGm}` AND an inner
+`{#if activeScene}`. The pre-existing "a non-GM sees no tool buttons" test renders with
+`{ role: "player" }` and no `documents` override, so `ctx.documents` defaults to an empty
+`DocumentStore()` and `activeScene` is `undefined` there — meaning the INNER gate alone hides the
+button in that test, not the `isGm` gate. A naive addition of a `snap-toggle` assertion to that
+existing test would pass vacuously: it would still pass even if `{#if isGm}` were accidentally
+deleted in a future refactor, since the inner gate would still hide the button.
+
+### Fix
+Added a NEW, separate test in `ToolRail.test.ts` that seeds a scene doc (via the existing
+`sceneStore()` fixture, making `activeScene` defined) while using `role: "player"` — isolating
+the `isGm` gate as the ONLY thing hiding the button in that test:
+
+```ts
+test("a non-GM does not see the snap toggle even with an active scene", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: sceneStore() }) });
+  expect(screen.queryByTestId("snap-toggle")).toBeNull();
+});
+```
+
+The existing "a non-GM sees no tool buttons" test was left untouched — it remains valid for its
+own stated purpose (no tool buttons render for a non-GM with no active scene), just not sufficient
+on its own to isolate the `isGm` gate specifically.
+
+### Test output
+```
+pnpm --filter @shadowcat/module-scene-tools test -- ToolRail
+ Test Files  1 passed (1)
+      Tests  10 passed (10)
+
+pnpm --filter @shadowcat/module-scene-tools typecheck
+1783079639379 START "c:\\Dev\\Shadowcat\\src\\modules\\scene-tools"
+1783079639383 COMPLETED 949 FILES 0 ERRORS 0 WARNINGS 0 FILES_WITH_PROBLEMS
+```
+
+Both green.
