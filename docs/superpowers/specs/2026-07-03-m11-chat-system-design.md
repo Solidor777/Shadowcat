@@ -41,11 +41,34 @@ same storage, validation, sequencing, and redaction as every other document.
 |-------|---------|
 | `channel` | channel key/DocId the message belongs to |
 | `user_owner` | owning user (= the doc's `owner_id`); always present |
-| `actor_owner: Option<DocId>` | optional actor attribution (origin tracking) |
+| `actor_owner: Option<ActorOwnerRef>` | optional actor attribution (origin tracking); tagged ref, linked **or** instanced (§2.1) |
 | `kind` | `Normal` \| `Emote` \| `Roll` \| `System` — subtype, orthogonal to `channel` |
 | `content` | the **sanitized canonical content model** (§4): text runs, allowed marks, links, images, roll-embeds, doc-links, preview-cards |
 | `roll: Option<RollResult>` | embedded dice result for roll messages / precomputed embeds |
 | `recipients: Option<[UserId]>` | whisper allowlist; `None` = visible per the channel's tier |
+
+### 2.1 Actor-owner reference (linked vs instanced)
+
+A chat message's actor owner may be a **linked** actor (a shared world-scoped `Actor` document) or
+an **instanced/unlinked** actor (a deep-cloned copy embedded on a token, with no standalone doc —
+see `shadowcat-codebase-actors-tokens`). One bare DocId cannot express both, so `actor_owner` is a
+tagged reference:
+
+```
+enum ActorOwnerRef {
+    Actor        { actor_id: DocId },   // linked: canonical Actor document
+    TokenInstance { token_id: DocId },  // instanced (or any token-borne) actor: resolve through the token
+}
+```
+
+- **Resolution** is via the existing read-through: `Actor` → the actor doc; `TokenInstance` →
+  `resolveTokenActor(token)` on the token's embedded copy. Both yield an `EffectiveActor` whose
+  display name comes from `actorDisplayName(a, fallback)` — so **name privacy (`setNameHidden` →
+  `/system/name` = `OwnerOrGm`) is honored per-viewer** for either kind (§4).
+- **Provenance / dangling:** an instanced actor's identity is inseparable from its token; if that
+  token is later deleted, a `TokenInstance` ref dangles. Resolution then **fails closed to the
+  redaction fallback name** — the private name is *never* snapshotted into the stored message (that
+  would bypass per-viewer redaction). A linked `Actor` ref survives independent of any token.
 
 **Permissions:**
 - Normal messages: `permissions.default = All` (owner + GM may edit/delete).
@@ -105,10 +128,12 @@ never for trust. All authority is server-side, at the ingest chokepoint before p
    ref; no execution until clicked.
 
 **Per-viewer resolution (never baked into the stored message):**
-- **Actor name** — the message stores `actor_owner` (an id); whether a viewer sees the actor's
-  *name* is resolved at egress/render via the actor name-visibility rules
-  (`shadowcat-codebase-actors-tokens` + document settings). One stored message shows the name to
-  some viewers, hides it from others.
+- **Actor name** — the message stores the `actor_owner` **ref** (§2.1), not a name. Whether a
+  viewer sees the actor's *name* is resolved at egress/render via the read-through
+  (`resolveTokenActor` / `actorDisplayName`) and the `OwnerOrGm` name-privacy tier — dispatching on
+  the ref variant (canonical actor doc vs the token's embedded copy). One stored message shows the
+  name to permitted viewers and the redaction fallback to others; a dangling `TokenInstance` ref
+  also falls back.
 - **Whisper** — the `recipients` allowlist (§3); non-recipients never receive the message.
 
 **Emote transform** — `kind: Emote` stores the verbatim remainder ("sticks out their tongue"); the
@@ -131,7 +156,9 @@ A system builder swaps the composer, the card, or both, without touching the oth
 
 **Default message-card rendering:**
 - **Header** — user owner always; actor owner shown when present *and* the viewer may see the
-  actor's name (per-viewer, §4).
+  actor's name (per-viewer, §4). When shown, the actor name links to its sheet — the canonical
+  actor sheet for an `Actor` ref, the token's instanced actor sheet for a `TokenInstance` ref —
+  permission-gated like any internal doc link below.
 - **Body** — renders the sanitized content model via components (no untrusted `innerHTML`); emotes
   italic + reversed-italic.
 - **Emoji** — universal unicode + `:shortcode:` → unicode.
@@ -187,7 +214,8 @@ Approved: server-side guarded fetcher, **default-ON**.
   (each enrichment kind, emote reversal, per-viewer name gating, roll embeds, doc-link permission
   behavior), and module-replaceability (swap composer/card via contribution and re-render).
 - **Cross-cutting:** a per-recipient redaction test proving a whisper and a hidden actor-name never
-  reach an unauthorized client.
+  reach an unauthorized client — for **both** a linked (`Actor`) and an instanced (`TokenInstance`)
+  actor owner, plus a dangling-ref (token deleted) case that fails closed to the fallback name.
 
 ## 9. Deferred (noted, not built)
 
