@@ -316,6 +316,8 @@ function seedRouteCtx(over: {
   onClearOverlay?: () => void;
   onClearMeasure?: () => void;
   tokenAt: { id: string; x: number; y: number };
+  /** Scene-level vision overrides (M10f-1: movementModel). Absent ⇒ grid-stepped default. */
+  sceneVision?: { movementModel?: "grid-stepped" | "continuous" };
 }): { ctx: ToolContext; now: FakeNow; docs: DocumentStore } {
   const docs = new DocumentStore();
   docs.applyCommand({
@@ -323,7 +325,10 @@ function seedRouteCtx(over: {
     ops: [
       {
         op: "create",
-        doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: { perCell: 5, unit: "ft" } } }, "s1"),
+        doc: buildSceneDoc("w1", {
+          grid: { kind: "square", size: 100, distance: { perCell: 5, unit: "ft" } },
+          ...(over.sceneVision ? { vision: over.sceneVision } : {}),
+        }, "s1"),
       },
       {
         op: "create",
@@ -394,6 +399,26 @@ test("double-click commits via moveRequest (animation is broadcast-driven)", asy
   await drain();
   expect(moves).toEqual([{ tokenId: "tok1", path: [[0,0],[100,0],[100,100]] }]);
   // Animation is now broadcast-driven via onMoveStream for all scene viewers.
+});
+
+test("commitRoute does nothing in a continuous-movement-model scene (double-click is a no-op)", async () => {
+  const moves: Array<{ tokenId: string; path: [number, number][] }> = [];
+  const moveRequest: ToolContext["moveRequest"] = async (_s, tokenId, path) => {
+    moves.push({ tokenId, path });
+    return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1 };
+  };
+  const { ctx, now } = seedRouteCtx({
+    pathfind: async () => ({ path: [[0, 0], [100, 0], [100, 100]] as [number, number][], cost: 2, arrested: false }),
+    moveRequest,
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+    sceneVision: { movementModel: "continuous" },
+  });
+  const tool = makeMeasureTool(ctx);
+  tool.onPointerDown({ x: 100, y: 100 }, ev()); tool.onPointerUp({ x: 100, y: 100 }, ev());
+  now.advance(100);
+  tool.onPointerDown({ x: 100, y: 100 }, ev()); tool.onPointerUp({ x: 100, y: 100 }, ev());
+  await drain();
+  expect(moves).toEqual([]);
 });
 
 test("a single click in route mode does NOT commit", async () => {
