@@ -36,6 +36,81 @@ pub(crate) const MAX_MOVE_PATH: usize = 256;
 /// a few ULPs at typical coordinate magnitudes; 1e-6 is strict but not pedantic.
 const EPS: f64 = 1e-6;
 
+/// DoS guard for `gate_walk`: a walk requiring more than this many dense samples is
+/// rejected outright, never truncated. Arc-length/cell-count based — a single continuous
+/// segment can be arbitrarily long, so an authored-vertex-count cap is not the right invariant
+/// (unlike `MAX_MOVE_PATH`, which bounds the number of AUTHORED waypoints, not dense samples).
+// Not yet consumed by `execute_move` (a later refactor wires it in); the primitive is added and
+// tested standalone first. Suppresses dead_code until that consumer lands.
+#[allow(dead_code)]
+pub(crate) const MAX_GATE_WALK_SAMPLES: usize = 4096;
+
+/// One dense sample in a `gate_walk` output: a point at most one cell from its predecessor,
+/// plus (when this sample exactly reproduces an authored input vertex) that vertex's index.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)]
+pub(crate) struct GateSample {
+    pub pos: (f64, f64),
+    /// `Some(i)` exactly when `pos == path[i]` (this sample completes an authored segment);
+    /// `None` for an interior subdivision point with no authored counterpart.
+    pub authored_idx: Option<usize>,
+}
+
+/// Subdivide `path` into dense samples that are each at most one cell apart (Chebyshev),
+/// preserving already-≤1-cell input segments EXACTLY — this makes the gate walk an IDENTITY on
+/// grid input (cell-center vertices, ≤1 cell apart on every axis including diagonals), so
+/// grid-parity is a property of the code shape rather than something proven only by testing.
+///
+/// `None` (fail-closed) on: a non-finite `path` coordinate, a non-finite or non-positive
+/// `cell`, or an emitted sample count that would exceed `MAX_GATE_WALK_SAMPLES`.
+#[allow(dead_code)]
+pub(crate) fn gate_walk(path: &[(f64, f64)], cell: f64) -> Option<Vec<GateSample>> {
+    if !cell.is_finite() || cell <= 0.0 {
+        return None;
+    }
+    if path.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+        return None;
+    }
+    if path.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let mut out = Vec::with_capacity(path.len());
+    out.push(GateSample {
+        pos: path[0],
+        authored_idx: Some(0),
+    });
+
+    for i in 1..path.len() {
+        let (px, py) = path[i - 1];
+        let (nx, ny) = path[i];
+        let cheby = (nx - px).abs().max((ny - py).abs());
+        let k_f = if cheby <= cell {
+            1.0
+        } else {
+            (cheby / cell).ceil()
+        };
+        if !k_f.is_finite() || k_f < 1.0 || k_f > MAX_GATE_WALK_SAMPLES as f64 {
+            return None;
+        }
+        let k = k_f as u64;
+        for step in 1..=k {
+            if out.len() >= MAX_GATE_WALK_SAMPLES {
+                return None;
+            }
+            let pos = if step == k {
+                (nx, ny) // exact endpoint, no float drift
+            } else {
+                let t = step as f64 / k as f64;
+                (px + t * (nx - px), py + t * (ny - py))
+            };
+            let authored_idx = if step == k { Some(i) } else { None };
+            out.push(GateSample { pos, authored_idx });
+        }
+    }
+    Some(out)
+}
+
 /// The legal outcome of an `execute_move` call.
 pub(crate) struct MoveOutcome {
     /// The path coordinate of the last successfully reached step (`path[stop_index]`).
@@ -702,5 +777,95 @@ mod tests {
             (0.0, 0.0),
             "authoritative field springs the secret impassable region"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // gate_walk tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gate_walk_is_identity_on_orthogonal_grid_steps() {
+        let path = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)];
+        let walk = gate_walk(&path, 100.0).unwrap();
+        let positions: Vec<(f64, f64)> = walk.iter().map(|s| s.pos).collect();
+        assert_eq!(positions, path.to_vec());
+        let authored: Vec<Option<usize>> = walk.iter().map(|s| s.authored_idx).collect();
+        assert_eq!(authored, vec![Some(0), Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn gate_walk_is_identity_on_diagonal_grid_steps() {
+        let path = [(0.0, 0.0), (100.0, 100.0), (200.0, 200.0)];
+        let walk = gate_walk(&path, 100.0).unwrap();
+        let positions: Vec<(f64, f64)> = walk.iter().map(|s| s.pos).collect();
+        assert_eq!(positions, path.to_vec());
+    }
+
+    #[test]
+    fn gate_walk_subdivides_a_long_axis_aligned_segment_into_at_most_one_cell_steps() {
+        // (0,0) -> (400,0) at cell=100: Chebyshev length 400 -> subdivided into 4 unit steps.
+        let path = [(0.0, 0.0), (400.0, 0.0)];
+        let walk = gate_walk(&path, 100.0).unwrap();
+        assert_eq!(walk.first().unwrap().pos, (0.0, 0.0));
+        assert_eq!(walk.last().unwrap().pos, (400.0, 0.0));
+        for w in walk.windows(2) {
+            let cheby = (w[1].pos.0 - w[0].pos.0)
+                .abs()
+                .max((w[1].pos.1 - w[0].pos.1).abs());
+            assert!(
+                cheby <= 100.0 + 1e-9,
+                "step {:?}->{:?} exceeds 1 cell",
+                w[0].pos,
+                w[1].pos
+            );
+        }
+        // Only the endpoints are authored; interior samples are not.
+        assert_eq!(walk.first().unwrap().authored_idx, Some(0));
+        assert_eq!(walk.last().unwrap().authored_idx, Some(1));
+        assert!(walk[1..walk.len() - 1]
+            .iter()
+            .all(|s| s.authored_idx.is_none()));
+    }
+
+    #[test]
+    fn gate_walk_subdivides_a_long_any_angle_segment() {
+        // Continuous, non-axis-aligned: (0,0) -> (250, 90) at cell=100.
+        // Chebyshev length = max(250, 90) = 250 -> ceil(250/100) = 3 substeps.
+        let path = [(0.0, 0.0), (250.0, 90.0)];
+        let walk = gate_walk(&path, 100.0).unwrap();
+        assert_eq!(walk.len(), 4); // start + 3 substeps
+        assert_eq!(walk.last().unwrap().pos, (250.0, 90.0));
+        for w in walk.windows(2) {
+            let cheby = (w[1].pos.0 - w[0].pos.0)
+                .abs()
+                .max((w[1].pos.1 - w[0].pos.1).abs());
+            assert!(cheby <= 100.0 + 1e-9);
+        }
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_on_non_finite_coordinate() {
+        assert!(gate_walk(&[(0.0, 0.0), (f64::NAN, 0.0)], 100.0).is_none());
+        assert!(gate_walk(&[(0.0, 0.0), (f64::INFINITY, 0.0)], 100.0).is_none());
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_on_degenerate_cell() {
+        assert!(gate_walk(&[(0.0, 0.0), (100.0, 0.0)], 0.0).is_none());
+        assert!(gate_walk(&[(0.0, 0.0), (100.0, 0.0)], -1.0).is_none());
+        assert!(gate_walk(&[(0.0, 0.0), (100.0, 0.0)], f64::NAN).is_none());
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_when_over_the_sample_cap() {
+        // A single segment whose subdivision count alone exceeds the cap.
+        let path = [(0.0, 0.0), (1.0e7, 0.0)]; // cell=1.0 -> 10,000,000 substeps
+        assert!(gate_walk(&path, 1.0).is_none());
+    }
+
+    #[test]
+    fn gate_walk_on_empty_path_returns_empty() {
+        let walk = gate_walk(&[], 100.0).unwrap();
+        assert!(walk.is_empty());
     }
 }
