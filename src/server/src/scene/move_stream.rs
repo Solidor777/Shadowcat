@@ -245,11 +245,18 @@ mod tests {
     }
 
     /// Any-angle diagonal path (non-grid-aligned vertices, no 45°/90° structure): endpoints
-    /// exact, `t_ms` strictly increasing (arc-length monotonic) — proves `sample_path` is
-    /// engine-agnostic geometry, not shaped around grid king-steps (M10f-3 §6).
+    /// close (within tolerance — matches this module's other position assertions, not
+    /// zero-tolerance), `t_ms` strictly increasing (arc-length monotonic), AND an interior
+    /// sample's position is hand-derived from the arc-length formula and checked against the
+    /// actual output — proving the diagonal segment-selection + lerp math is correct for a
+    /// genuinely any-angle segment (not just the t=0/t=1 boundary identities every
+    /// interpolation, correct or broken, satisfies). M10f-3 §6.
     #[test]
     fn diagonal_any_angle_path_samples_endpoints_with_monotonic_time() {
-        let path = vec![(0.0_f64, 0.0_f64), (137.5, 84.2), (310.0, 10.0)];
+        let p0 = (0.0_f64, 0.0_f64);
+        let p1 = (137.5_f64, 84.2_f64);
+        let p2 = (310.0_f64, 10.0_f64);
+        let path = vec![p0, p1, p2];
         let cell = 100.0_f64;
         let duration_ms = 1500.0_f64;
         let samples = sample_path(&path, cell, duration_ms);
@@ -258,13 +265,61 @@ mod tests {
         let last = samples.last().unwrap();
 
         assert!((first.t_ms - 0.0).abs() < 1e-9, "first t_ms {}", first.t_ms);
-        assert_eq!(first.pos, (0.0, 0.0), "first pos exact");
+        assert!(
+            (first.pos.0 - p0.0).abs() < 1e-9 && (first.pos.1 - p0.1).abs() < 1e-9,
+            "first pos should be {:?}, got {:?}",
+            p0,
+            first.pos
+        );
         assert!(
             (last.t_ms - duration_ms).abs() < 1e-6,
             "last t_ms {}",
             last.t_ms
         );
-        assert_eq!(last.pos, (310.0, 10.0), "last pos exact");
+        assert!(
+            (last.pos.0 - p2.0).abs() < 1e-9 && (last.pos.1 - p2.1).abs() < 1e-9,
+            "last pos should be {:?}, got {:?}",
+            p2,
+            last.pos
+        );
+
+        // Hand-derive an interior sample's expected position from the same arc-length
+        // formula `sample_path` uses (not by calling into its internals): segment lengths,
+        // target sample count `n`, then the arc-length `s_i` at index `i`, mapped onto
+        // whichever segment it falls in. `len1 = 161.2324098932966`, `len2 =
+        // 187.78149536096467`, `total_len = 349.01390525426126`; for `cell=100`,
+        // `SAMPLES_PER_CELL=3`: `density = ceil(349.0139.../100*3) = 11`, `n =
+        // 11.clamp(2, 96) = 11`. Index `i=2` gives `s_2 = 2/10*total_len ≈ 69.803`, which
+        // falls well inside segment 1 (`s_2 < len1`, and not close to the `len1` boundary —
+        // keeps the test unambiguous about which segment it exercises).
+        let len1 = (p1.0 - p0.0).hypot(p1.1 - p0.1);
+        let len2 = (p2.0 - p1.0).hypot(p2.1 - p1.1);
+        let total_len = len1 + len2;
+        let density = (total_len / cell * SAMPLES_PER_CELL)
+            .ceil()
+            .min(MAX_VISION_SAMPLES as f64) as usize;
+        let n = density.clamp(2, MAX_VISION_SAMPLES);
+        assert_eq!(samples.len(), n, "sample count should equal derived n");
+
+        let i = 2;
+        assert!(i < n - 1, "chosen index must be a genuine interior sample");
+        let s_i = (i as f64) / ((n - 1) as f64) * total_len;
+        assert!(
+            s_i < len1 * 0.9,
+            "chosen sample must fall clearly within segment 1, away from the len1 boundary"
+        );
+        let t = s_i / len1;
+        let expected_pos = (p0.0 + t * (p1.0 - p0.0), p0.1 + t * (p1.1 - p0.1));
+
+        let actual = &samples[i];
+        assert!(
+            (actual.pos.0 - expected_pos.0).abs() < 1e-9
+                && (actual.pos.1 - expected_pos.1).abs() < 1e-9,
+            "interior sample {} pos should be {:?}, got {:?}",
+            i,
+            expected_pos,
+            actual.pos
+        );
 
         for w in samples.windows(2) {
             assert!(
