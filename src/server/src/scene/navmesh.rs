@@ -60,6 +60,19 @@ use geo::Line;
 #[allow(dead_code)]
 pub(crate) const MAX_NAVMESH_OBSTACLE_SEGMENTS: usize = 5_000;
 
+/// Magnitude ceiling (scene-pixel units) for any coordinate that reaches an `f64 -> f32` cast in
+/// this module (`bounds*cell`, or a wall segment endpoint). An `f64 -> f32` cast SATURATES an
+/// out-of-range-but-finite value to `f32::INFINITY` rather than panicking or producing NaN, so
+/// `is_finite()` alone (checked upstream) never catches it — the resulting `Vec2` then reaches
+/// `polyanya::Triangulation::as_navmesh` -> `spade`'s `cdt.insert(...).unwrap()`, and `spade`
+/// 2.15.1 rejects any coordinate past `MAX_ALLOWED_VALUE = 2^201` with `Err(InsertionError::
+/// TooLarge)` which polyanya's unhandled `.unwrap()` turns into a PANIC. `1e15` is comfortably
+/// below both `f32::MAX` (~3.4e38, so the cast itself cannot saturate under this bound) and
+/// spade's `2^201` (~3.2e60) ceiling, while being generously large for any real authored scene
+/// (mirrors `regions::MAX_CELL_COORD`'s reasoning: bound the input BEFORE any downstream
+/// arithmetic/cast, not after).
+pub(crate) const MAX_NAVMESH_COORD: f64 = 1e15;
+
 /// A built, footprint-inflated navmesh for one `(scene, footprint radius)` pair. Immutable after
 /// construction — a caller-side cache rebuilds a new one on wall/bounds mutation rather than
 /// mutating this in place.
@@ -102,6 +115,12 @@ pub(crate) fn build_navmesh(
     }
     let footprint_scene = (footprint_radius_cells * cell).max(0.01);
     let (w_px, h_px) = (w * cell, h * cell);
+    // Bound the DERIVED (post-multiplication) magnitude, not just the raw inputs: `w`/`cell`
+    // individually finite-and-small can still multiply into an out-of-range product. Checked
+    // before the `as f32` cast below — see `MAX_NAVMESH_COORD`'s doc comment for why.
+    if w_px.abs() > MAX_NAVMESH_COORD || h_px.abs() > MAX_NAVMESH_COORD {
+        return None;
+    }
 
     let outer = [
         glam::Vec2::new(0.0, 0.0),
@@ -118,6 +137,18 @@ pub(crate) fn build_navmesh(
             || !seg.b.1.is_finite()
         {
             continue; // a malformed wall segment is skipped, never turned into a bogus obstacle
+        }
+        // Same saturating-cast hazard as `bounds`/`cell`, checked BEFORE `.buffer()`/`as f32`:
+        // an ordinarily-authored-looking but oversized coordinate (e.g. 1e70) is finite and would
+        // pass the check above, but saturates to `f32::INFINITY` on cast and panics inside
+        // polyanya/spade. Skip the single malformed segment, matching the non-finite branch above
+        // — a whole-build failure is not warranted for one bad wall.
+        if seg.a.0.abs() > MAX_NAVMESH_COORD
+            || seg.a.1.abs() > MAX_NAVMESH_COORD
+            || seg.b.0.abs() > MAX_NAVMESH_COORD
+            || seg.b.1.abs() > MAX_NAVMESH_COORD
+        {
+            continue;
         }
         // `blocksMove` walls have no thickness field — inflating the zero-width segment by the
         // agent's footprint radius is the correct Minkowski obstacle for a disc-footprint agent.
@@ -196,5 +227,43 @@ mod tests {
             b: (10.0, 10.0),
         }];
         assert!(build_navmesh((100.0, 100.0), 100.0, &walls, 0.4).is_some());
+    }
+
+    #[test]
+    fn oversized_but_finite_bounds_fail_closed_not_panic() {
+        // `1e40` is finite and positive (passes the pre-existing `is_finite`/`> 0.0` guards) but
+        // saturates an `f64 -> f32` cast to infinity, which would otherwise reach
+        // `polyanya::Triangulation::as_navmesh` and panic inside `spade`'s `.unwrap()`.
+        assert!(build_navmesh((1e40, 100.0), 1.0, &[], 0.4).is_none());
+        assert!(build_navmesh((100.0, 1e40), 1.0, &[], 0.4).is_none());
+    }
+
+    #[test]
+    fn oversized_derived_pixel_bounds_fail_closed() {
+        // Neither `w` nor `cell` alone is oversized, but their product (`w_px`) is — the bound
+        // must be checked on the DERIVED magnitude, not just the raw inputs.
+        assert!(build_navmesh((1e10, 100.0), 1e10, &[], 0.4).is_none());
+    }
+
+    #[test]
+    fn an_oversized_wall_segment_is_skipped_not_fatal_or_panicking() {
+        // A single wall with a coordinate of 1e70 is finite (passes the non-finite guard) but
+        // would saturate to f32::INFINITY on cast; it must be skipped like a malformed segment,
+        // while the rest of the scene's geometry (here, none) still builds a valid mesh.
+        let walls = vec![
+            Seg {
+                a: (1e70, 0.0),
+                b: (10.0, 10.0),
+            },
+            Seg {
+                a: (5.0, 5.0),
+                b: (20.0, 20.0),
+            },
+        ];
+        let mesh = build_navmesh((100.0, 100.0), 100.0, &walls, 0.4);
+        assert!(
+            mesh.is_some(),
+            "the oversized segment must be skipped, not fail the whole build"
+        );
     }
 }
