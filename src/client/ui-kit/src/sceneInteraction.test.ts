@@ -109,3 +109,13 @@ test("animateSamples forwards moverVision to the host (M2 §T6 seam)", () => {
   bridge.animateSamples("t1", samples, 1000, 0, () => 0, moverVision);
   expect(gotMoverVision).toEqual(moverVision);
 });
+
+test("setSnapEnabled forwards to the host (no-op when detached)", () => {
+  const bridge = new SceneInteractionBridge();
+  expect(() => bridge.setSnapEnabled(false)).not.toThrow(); // detached: no-op
+  const calls: boolean[] = [];
+  bridge.attach(fakeSceneHost({ setSnapEnabled: (enabled) => calls.push(enabled) }));
+  bridge.setSnapEnabled(false);
+  bridge.setSnapEnabled(true);
+  expect(calls).toEqual([false, true]);
+});
