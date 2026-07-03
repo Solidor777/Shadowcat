@@ -45,6 +45,25 @@ const EPS: f64 = 1e-6;
 #[allow(dead_code)]
 pub(crate) const MAX_GATE_WALK_SAMPLES: usize = 4096;
 
+/// Magnitude ceiling (scene units) for any `gate_walk` input path coordinate, checked
+/// structurally BEFORE the per-step tolerance arithmetic below (mirrors `navmesh::
+/// MAX_NAVMESH_COORD`'s convention: bound the input before any downstream arithmetic that is
+/// sensitive to magnitude, not after).
+///
+/// This value is deliberately much smaller than `navmesh::MAX_NAVMESH_COORD` (1e15) — the two
+/// bounds guard against DIFFERENT failure modes and neither number transfers to the other's
+/// module. `MAX_NAVMESH_COORD` guards an `f64 -> f32` cast that only saturates near `f32::MAX`
+/// (~3.4e38), so 1e15 is safe there with enormous headroom. Here, the per-step tolerance below
+/// (`tol = (2*max(|px|,|nx|,|py|,|ny|) + cell + 1) * f64::EPSILON * 64`) scales linearly with
+/// coordinate magnitude and empirically exceeds a full 1.0-unit overshoot margin once that
+/// magnitude passes roughly `3.5e13` (verified directly against this formula) — reusing `1e15` as
+/// this bound would NOT close the false-identity gap this constant exists to prevent (a segment
+/// at base magnitude `1e14`, well under `1e15`, still misclassifies). `1e9` sits comfortably
+/// below that ~3.5e13 threshold (tol stays under ~3e-5, negligible) while remaining generously
+/// large for any real authored scene (`resolve_scene`'s default bounds are `100x100` grid units;
+/// even an extreme scene would not need path coordinates near this ceiling).
+pub(crate) const MAX_GATE_WALK_COORD: f64 = 1.0e9;
+
 /// One dense sample in a `gate_walk` output: a point at most one cell from its predecessor,
 /// plus (when this sample exactly reproduces an authored input vertex) that vertex's index.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -61,16 +80,35 @@ pub(crate) struct GateSample {
 /// grid input (cell-center vertices, ≤1 cell apart on every axis including diagonals), so
 /// grid-parity is a property of the code shape rather than something proven only by testing.
 ///
-/// `None` (fail-closed) on: a non-finite `path` coordinate, a non-finite or non-positive
-/// `cell`, an authored `path` longer than `MAX_GATE_WALK_SAMPLES` (checked before any
-/// allocation — a valid walk output can never exceed the cap even in the non-subdividing
-/// case), or an emitted sample count that would exceed `MAX_GATE_WALK_SAMPLES`.
+/// `None` (fail-closed) on: a non-finite `path` coordinate, a `path` coordinate whose magnitude
+/// exceeds `MAX_GATE_WALK_COORD` (see that constant's doc comment), a non-finite or non-positive
+/// `cell`, an authored `path` longer than `MAX_GATE_WALK_SAMPLES` (checked before any allocation —
+/// a valid walk output can never exceed the cap even in the non-subdividing case), or an emitted
+/// sample count that would exceed `MAX_GATE_WALK_SAMPLES`.
+///
+/// # Coordinate bound (magnitude-independent, checked BEFORE any tolerance arithmetic)
+///
+/// The per-step Chebyshev comparison below uses a magnitude-SCALED float tolerance (built from
+/// `px`/`nx`/`py`/`ny`'s own absolute values, mirroring `supercover_cells`'s corner-test
+/// convention — see that comparison's doc comment) to absorb subtraction rounding error at
+/// ordinary grid magnitudes. That scaling is unbounded: at a large enough coordinate magnitude
+/// the tolerance itself can exceed a full cell length, which would silently misclassify a
+/// genuinely-multi-cell segment as a single identity step (a real gate-skip: a swallowed
+/// intermediate cell never gets a per-step wall/vision-mask/region check). `MAX_GATE_WALK_COORD`
+/// eliminates the failure mode categorically — inputs beyond the bound are rejected outright, so
+/// the tolerance can never reach a magnitude where this matters.
 #[allow(dead_code)]
 pub(crate) fn gate_walk(path: &[(f64, f64)], cell: f64) -> Option<Vec<GateSample>> {
     if !cell.is_finite() || cell <= 0.0 {
         return None;
     }
     if path.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+        return None;
+    }
+    if path
+        .iter()
+        .any(|p| p.0.abs() > MAX_GATE_WALK_COORD || p.1.abs() > MAX_GATE_WALK_COORD)
+    {
         return None;
     }
     if path.is_empty() {
@@ -947,6 +985,46 @@ mod tests {
                 "diagonal single-cell step at i={i} was spuriously subdivided: {walk:?}"
             );
         }
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_on_extreme_magnitude_coordinate_instead_of_false_identity() {
+        // Second buddy-check round on the first tolerance fix: at large enough base
+        // coordinates the magnitude-scaled tolerance can itself exceed a full cell length,
+        // silently collapsing a genuinely-multi-cell segment (cheby == cell + 1.0, which must
+        // subdivide into 2 substeps) into a false single-step identity. Reproduced directly at
+        // base=1e14, cell=33.33 by both independent reviewers (tol there is ~2.84, already far
+        // past the 1.0 excess this segment carries) — well above `MAX_GATE_WALK_COORD` (1e9), so
+        // the bound must reject it outright (fail closed) rather than let the tolerance
+        // misclassify it.
+        let cell = 33.33_f64;
+        let base = 1.0e14_f64;
+        let path = [(base, 0.0), (base + cell + 1.0, 0.0)];
+        assert!(
+            gate_walk(&path, cell).is_none(),
+            "extreme-magnitude segment must fail closed, not silently collapse to identity"
+        );
+    }
+
+    #[test]
+    fn gate_walk_fails_closed_on_coordinate_over_the_magnitude_bound() {
+        // Direct test of the new bound itself: a coordinate just over `MAX_GATE_WALK_COORD`
+        // must be rejected even on an otherwise-trivial single-cell step (isolates the bound
+        // check from the tolerance-overshoot scenario above).
+        let cell = 100.0_f64;
+        let over = MAX_GATE_WALK_COORD + 1.0;
+        assert!(gate_walk(&[(over, 0.0), (over + cell, 0.0)], cell).is_none());
+        assert!(gate_walk(&[(0.0, over), (0.0, over + cell)], cell).is_none());
+    }
+
+    #[test]
+    fn gate_walk_accepts_coordinate_at_the_magnitude_bound() {
+        // A coordinate exactly AT `MAX_GATE_WALK_COORD` (not over it) must not be rejected by
+        // the bound check itself — confirms the comparison is strictly `>`, not `>=`.
+        let cell = 100.0_f64;
+        let at = MAX_GATE_WALK_COORD;
+        let walk = gate_walk(&[(at - cell, 0.0), (at, 0.0)], cell).unwrap();
+        assert_eq!(walk.len(), 2);
     }
 
     #[test]
