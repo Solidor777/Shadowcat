@@ -1041,6 +1041,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn execute_move_handles_an_any_angle_weighted_continuous_polyline() {
+        // A continuous (any-angle) route whose vertices are > 1 cell apart, crossing a terrain
+        // cell (mult 3) and stopping at an arrest cell. Proves gate_walk gates + accrues
+        // terrain cost + arrests on a continuous polyline with no executor change.
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
+                entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 })),
+                region_doc(12, 10, "terrain", 3.0, 100.0, 0.0, 200.0, 100.0),
+                region_doc(13, 10, "arrest", 1.0, 300.0, 0.0, 400.0, 100.0),
+            ],
+            0,
+        );
+        let visible = visible_grid(6);
+        // Any-angle polyline: (50,50) -> (250,50) -> (350,50); the first leg is 2 cells in one hop.
+        let out = execute_move(
+            &ecs,
+            scene_id,
+            token_id,
+            &[(50.0, 50.0), (250.0, 50.0), (350.0, 50.0)],
+            MovementRestriction::Unrestricted,
+            &visible,
+            100.0,
+        )
+        .expect("executor handles the any-angle weighted polyline");
+        assert!(out.truncated, "arrest cell (3,0) truncates the move");
+        // Terrain cell (1,0) mult 3 was entered once before the arrest; cost reflects the multiplier.
+        assert!(
+            out.cost >= 3.0,
+            "terrain multiplier accrued, got {}",
+            out.cost
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Differential parity test suite vs the frozen king-step oracle
     // -----------------------------------------------------------------------

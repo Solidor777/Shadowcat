@@ -4052,6 +4052,96 @@ mod tests {
     }
 
     #[test]
+    fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_execution() {
+        // gm_only arrest region on cell (2,0) = Rect [200,0]-[300,100]. No terrain/impassable
+        // region exists, so `has_terrain_or_impassable()` is false and `pathfind` takes the PURE
+        // POLYANYA branch (`navmesh_find` -> `clip_to_visible_mask` -> `truncate_at_arrest`),
+        // distinct from the weighted-grid branch. A player's per-requester region field omits the
+        // secret region entirely, so their route preview is the full straight line with no
+        // truncation; the GM's authoritative field truncates at the arrest cell. `move_exec`
+        // always reads the authoritative field regardless of requester, so committing the
+        // player's own (untruncated) preview still arrests at the same cell.
+        let mut docs = continuous_scene_docs();
+        let mut secret = region_doc_top(12, 10, "arrest", 1.0, 200.0, 0.0, 300.0, 100.0);
+        secret
+            .permissions
+            .property_overrides
+            .insert("/system".into(), crate::data::document::Visibility::GmOnly);
+        docs.push(secret);
+        let player = Uuid::from_u128(2);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 }));
+        tok.owner = Some(player);
+        docs.push(tok);
+        let mut ecs = SceneEcs::from_documents(docs, 0);
+        ecs.set_world_settings_for_test(continuous_world_settings());
+        let scene = Uuid::from_u128(10);
+        let token = Uuid::from_u128(11);
+
+        // Player (non-GM): secret arrest is invisible to their per-requester field, so the
+        // preview is the full, untruncated straight polyanya route.
+        let p = ecs
+            .pathfind(
+                player,
+                scene,
+                (50.0, 50.0),
+                &[(450.0, 50.0)],
+                0.1,
+                false,
+                None,
+            )
+            .expect("player route");
+        assert!(
+            !p.arrested,
+            "secret arrest region does not truncate the player's own route preview"
+        );
+        assert!(
+            (p.cost - 400.0).abs() < 5.0,
+            "player route reaches the full goal (~400 Euclidean), got {}",
+            p.cost
+        );
+
+        // GM: authoritative field truncates the route at the arrest cell entry.
+        let g = ecs
+            .pathfind(
+                Uuid::from_u128(1),
+                scene,
+                (50.0, 50.0),
+                &[(450.0, 50.0)],
+                0.1,
+                true,
+                None,
+            )
+            .expect("gm route");
+        assert!(
+            g.arrested,
+            "GM sees the secret region and it truncates their route"
+        );
+
+        // `move_exec` always reads the AUTHORITATIVE field: committing the player's own
+        // (untruncated) previewed route still springs the arrest at the same cell.
+        let visible: std::collections::BTreeSet<(i32, i32)> = std::collections::BTreeSet::new();
+        let exec_out = crate::scene::move_exec::execute_move(
+            &ecs,
+            scene,
+            token,
+            &p.path,
+            MovementRestriction::Unrestricted,
+            &visible,
+            100.0,
+        )
+        .expect("move_exec handles the player's committed route");
+        assert!(
+            exec_out.truncated,
+            "the authoritative field springs the secret arrest at execution"
+        );
+        assert!(
+            exec_out.stop.0 < 400.0,
+            "execution stops before the full player-preview route length, got {:?}",
+            exec_out.stop
+        );
+    }
+
+    #[test]
     fn pathfind_grid_stepped_scene_is_byte_for_byte_unchanged() {
         // Same fixture/assertions as the existing `pathfind_gm_unconstrained_routes_without_a_mask`
         // test, proving the default (grid-stepped) dispatch branch is untouched by this checkpoint.
