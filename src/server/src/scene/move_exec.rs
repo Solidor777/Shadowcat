@@ -200,10 +200,13 @@ pub(crate) enum MoveReject {
     NotAToken,
     /// `path` has fewer than 2 points (no step to walk).
     EmptyPath,
-    /// The path's gate-walk (§4.3: arc-length/sample-count, not authored-vertex-count) would
-    /// exceed `MAX_GATE_WALK_SAMPLES` — the DoS bound. Replaces the pre-M10f-2 authored-vertex
-    /// cap: a single arbitrarily-long continuous segment is now the relevant DoS surface, not
-    /// the number of authored waypoints.
+    /// `gate_walk` returned `None`: either the path's dense walk (§4.3: arc-length/sample-count,
+    /// not authored-vertex-count) would exceed `MAX_GATE_WALK_SAMPLES` — the DoS bound, replacing
+    /// the pre-M10f-2 authored-vertex cap since a single arbitrarily-long continuous segment is
+    /// now the relevant DoS surface, not the number of authored waypoints — or a path coordinate's
+    /// magnitude exceeds `MAX_GATE_WALK_COORD` (a distinct, unreachable-in-practice degenerate
+    /// case sharing this variant rather than `Degenerate`, since both originate from the same
+    /// `gate_walk` fail-closed `None`).
     TooLong,
     /// A structural invariant was violated: non-finite coords, or `path[0]` not at the
     /// token's committed position. (Pre-M10f-2 this variant also covered a non-adjacent
