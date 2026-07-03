@@ -61,18 +61,25 @@ use geo::Line;
 pub(crate) const MAX_NAVMESH_OBSTACLE_SEGMENTS: usize = 5_000;
 
 /// Magnitude ceiling (scene-pixel units) for any coordinate that reaches an `f64 -> f32` cast in
-/// this module (derived `w_px`/`h_px` scene-pixel bounds, a raw wall-segment endpoint, or
-/// `footprint_scene` — the footprint-inflation distance passed to `line.buffer(...)`). An
+/// this module: the CONSTRUCTION-side surfaces (derived `w_px`/`h_px` scene-pixel bounds, a raw
+/// wall-segment endpoint, and `footprint_scene` — the footprint-inflation distance passed to
+/// `line.buffer(...)`), and the QUERY-side surface (`navmesh_find`'s `start`/`waypoints`). An
 /// `f64 -> f32` cast SATURATES an
 /// out-of-range-but-finite value to `f32::INFINITY` rather than panicking or producing NaN, so
-/// `is_finite()` alone (checked upstream) never catches it — the resulting `Vec2` then reaches
+/// `is_finite()` alone (checked upstream) never catches it. On the construction side the
+/// resulting `Vec2` reaches
 /// `polyanya::Triangulation::as_navmesh` -> `spade`'s `cdt.insert(...).unwrap()`, and `spade`
 /// 2.15.1 rejects any coordinate past `MAX_ALLOWED_VALUE = 2^201` with `Err(InsertionError::
 /// TooLarge)` which polyanya's unhandled `.unwrap()` turns into a PANIC. `1e15` is comfortably
 /// below both `f32::MAX` (~3.4e38, so the cast itself cannot saturate under this bound) and
 /// spade's `2^201` (~3.2e60) ceiling, while being generously large for any real authored scene
 /// (mirrors `regions::MAX_CELL_COORD`'s reasoning: bound the input BEFORE any downstream
-/// arithmetic/cast, not after).
+/// arithmetic/cast, not after). On the query side (`navmesh_find`), `start`/`waypoints` reach
+/// `Mesh::path` -> `path_on_layers` -> `get_closest_point_on_layers`, which does only bounded
+/// point-in-polygon containment checks (no `spade` triangulation call) and returns `None` for an
+/// out-of-range point rather than panicking — so this ceiling is defense-in-depth / input hygiene
+/// against untrusted wire magnitudes reaching a third-party numeric library, not a proven panic
+/// fix on that side (see `navmesh_find`'s doc comment for the empirically-verified distinction).
 pub(crate) const MAX_NAVMESH_COORD: f64 = 1e15;
 
 /// A built, footprint-inflated navmesh for one `(scene, footprint radius)` pair. Immutable after
@@ -209,11 +216,16 @@ pub(crate) fn build_navmesh(
 /// Any-angle route `start -> waypoints[0] -> ... -> waypoints[last]` over a built navmesh.
 /// Euclidean distance; concatenates per-leg polylines without a duplicated join vertex.
 /// Validation mirrors `pathfinding::find`'s `Invalid` guard: waypoints non-empty and bounded by
-/// `MAX_WAYPOINTS`, `start`/every waypoint finite AND bounded by `MAX_NAVMESH_COORD` — a
-/// `start`/waypoint value must not reach `glam::Vec2::new(x as f32, y as f32)` with an
-/// unbounded-but-finite coordinate, the SAME `f64 -> f32` saturating-cast hazard `build_navmesh`
-/// guards against (see `MAX_NAVMESH_COORD`'s doc comment): a saturated `Infinity` reaching
-/// `Mesh::path`'s internal spatial queries panics instead of failing closed. Any leg with no
+/// `MAX_WAYPOINTS`, `start`/every waypoint finite AND bounded by `MAX_NAVMESH_COORD`. Unlike
+/// `build_navmesh`'s construction-side guards (which fix a REPRODUCED `spade` panic), this
+/// magnitude bound on `start`/`waypoints` is defense-in-depth / input hygiene: an oversized-but-
+/// finite value here reaches `Mesh::path` -> `path_on_layers` -> `get_closest_point_on_layers`,
+/// which does only bounded point-in-polygon containment checks (no `spade` triangulation call) and
+/// already fails closed to `None` (this function converts that to `Err(PathFail::Unreachable)`)
+/// for an out-of-range point — empirically verified against the pinned `polyanya = "0.16.1"` by
+/// calling `Mesh::path` directly with oversized/infinite coordinates. The guard is kept anyway to
+/// bound an untrusted wire magnitude before it reaches a third-party numeric library, and gives a
+/// more precise `PathFail::Invalid` instead of an indistinguishable `Unreachable`. Any leg with no
 /// route ⇒ `Unreachable`. `arrested` is always `false` — this checkpoint's navmesh carries no
 /// region field.
 // TODO: remove once the navmesh cache/dispatch caller lands and calls this.
@@ -234,8 +246,11 @@ pub(crate) fn navmesh_find(
     if !all_finite {
         return Err(PathFail::Invalid);
     }
-    // Magnitude bound (not just finiteness) — see this function's doc comment above. Reuses
-    // `MAX_NAVMESH_COORD` rather than defining a second ceiling for the query side.
+    // Magnitude bound (not just finiteness) — defense-in-depth against an untrusted wire
+    // magnitude reaching `Mesh::path`'s third-party point-in-polygon lookup, not a proven panic
+    // fix (see this function's doc comment above for the empirically-verified distinction from
+    // `build_navmesh`'s construction-side guards). Reuses `MAX_NAVMESH_COORD` rather than
+    // defining a second ceiling for the query side.
     let in_bounds = start.0.abs() <= MAX_NAVMESH_COORD
         && start.1.abs() <= MAX_NAVMESH_COORD
         && waypoints
@@ -500,6 +515,10 @@ mod tests {
 
     #[test]
     fn multi_leg_route_concatenates_without_a_duplicated_join_vertex() {
+        // Verifies the OBSERVABLE outcome (no duplicate consecutive vertex at a leg join), not
+        // the internal skip-branch that guards against it: per the real `polyanya` source,
+        // `Path::path` never actually includes a leg's start point, so this test would pass
+        // identically even if that dedup branch were deleted.
         let nav = build_navmesh((10.0, 10.0), 100.0, &[], 0.1).unwrap();
         let outcome = navmesh_find(&nav, (50.0, 50.0), &[(500.0, 50.0), (950.0, 50.0)]).unwrap();
         // No two consecutive vertices should be exactly equal (a duplicated leg-join point).
@@ -536,11 +555,14 @@ mod tests {
     }
 
     #[test]
-    fn oversized_but_finite_start_or_waypoint_fails_closed_not_panic() {
-        // `1e40` is finite (passes `is_finite()`) but saturates an `f64 -> f32` cast to infinity,
-        // which would otherwise reach `Mesh::path`'s internal spatial queries and panic — the
-        // same cast hazard `build_navmesh`'s `MAX_NAVMESH_COORD` guards against, reachable here
-        // via `start`/`waypoints` instead of `bounds`/wall endpoints.
+    fn oversized_but_finite_start_or_waypoint_is_rejected_by_the_magnitude_guard() {
+        // `1e40` is finite (passes `is_finite()`) but exceeds `MAX_NAVMESH_COORD`. On the query
+        // side this guard is defense-in-depth, not a proven panic fix: `Mesh::path`'s
+        // point-in-polygon lookup already fails closed to `None` for an out-of-range point
+        // (verified empirically against `polyanya = "0.16.1"`, no `spade` triangulation call on
+        // this path) — without the guard this input would map to `PathFail::Unreachable` instead.
+        // The guard just gives a more precise `Invalid` and bounds an untrusted wire magnitude
+        // before it reaches a third-party numeric library.
         let nav = build_navmesh((100.0, 100.0), 100.0, &[], 0.1).unwrap();
         assert_eq!(
             navmesh_find(&nav, (1e40, 50.0), &[(90.0, 50.0)]),
