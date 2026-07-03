@@ -1083,6 +1083,18 @@ impl SceneEcs {
                     .navmesh_for(scene, footprint_radius)
                     .ok_or(pathfinding::PathFail::Unreachable)?;
                 let raw = navmesh::navmesh_find(&nav, start, waypoints)?;
+                // `raw.path.len() < 2` only when every waypoint leg collapsed to the start point
+                // (start == goal, mirroring `pathfinding::astar_leg`'s trivial-success case: a
+                // grid-stepped route to the cell you're already standing on succeeds with a
+                // single-cell, zero-cost route — see `astar_tests::
+                // start_equals_goal_is_a_single_cell_zero_cost`). `clip_to_visible_mask`'s own
+                // early return (`if outcome.path.len() < 2 { return outcome; }`) means a
+                // length-1 INPUT always passes through as a length-1 OUTPUT unchanged (nothing to
+                // truncate), so a length-1 `clipped` result can only originate from (a) this
+                // trivial case, or (b) a length-2+ raw route the mask/wall check truncated down to
+                // 1 point — a genuine rejection. Capture the flag before `raw` is consumed so both
+                // cases can be told apart afterward.
+                let raw_was_trivial = raw.path.len() < 2;
                 let clipped = navmesh::clip_to_visible_mask(
                     raw,
                     mask.as_ref(),
@@ -1090,7 +1102,7 @@ impl SceneEcs {
                     footprint_radius,
                     &walls,
                 );
-                if clipped.path.len() < 2 {
+                if clipped.path.len() < 2 && !raw_was_trivial {
                     return Err(pathfinding::PathFail::Unreachable);
                 }
                 Ok(clipped)
@@ -3691,6 +3703,50 @@ mod tests {
             "expected ~900 (Euclidean), got {}",
             outcome.cost
         );
+    }
+
+    #[test]
+    fn pathfind_continuous_start_equals_goal_is_a_single_point_zero_cost() {
+        // Mirrors `astar_tests::start_equals_goal_is_a_single_cell_zero_cost` (the grid-stepped
+        // engine's trivial-success case) for the continuous engine: routing to the point you're
+        // already standing on must succeed with a single-point, zero-cost route, not
+        // `PathFail::Unreachable`.
+        let mut ecs = SceneEcs::from_documents(
+            vec![entity_doc_top(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                        "vision": { "movementModel": "continuous" } }),
+            )],
+            0,
+        );
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "movementModel": "continuous",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        let outcome = ecs
+            .pathfind(
+                Uuid::from_u128(1),
+                Uuid::from_u128(10),
+                (50.0, 50.0),
+                &[(50.0, 50.0)],
+                0.1,
+                true, // GM: unrestricted mask
+                None,
+            )
+            .expect("start == goal must succeed, not Unreachable");
+        assert_eq!(outcome.path, vec![(50.0, 50.0)]);
+        assert_eq!(outcome.cost, 0.0);
+        assert!(!outcome.arrested);
     }
 
     #[test]
