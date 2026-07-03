@@ -1005,6 +1005,140 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Continuous (any-angle, non-king-step) unit tests
+    //
+    // These paths are not king-step, so the frozen oracle rejects them by shape and no
+    // differential comparison is possible — pure behavioral tests against `execute_move` only.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn continuous_any_angle_path_reaches_goal_when_fully_visible() {
+        let (ecs, scene, token) = clear_scene();
+        let visible = visible_grid(4);
+        // Any-angle single segment, not axis-aligned, not diagonal-45.
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(0.0, 0.0), (350.0, 120.0)],
+            MovementRestriction::Visible,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert_eq!(out.stop, (350.0, 120.0));
+        assert!(!out.truncated);
+        assert_eq!(out.render_path, vec![(0.0, 0.0), (350.0, 120.0)]);
+    }
+
+    #[test]
+    fn continuous_path_truncates_at_a_wall_crossed_mid_segment() {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        // Vertical wall at x=250, spanning y in [-50,50] — crosses a horizontal move at y=0.
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
+                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                entity_doc(
+                    12,
+                    10,
+                    "wall",
+                    json!({
+                        "seg": { "x1": 250, "y1": -50, "x2": 250, "y2": 50 },
+                        "blocksMove": true
+                    }),
+                ),
+            ],
+            0,
+        );
+        let visible = visible_grid(5);
+        // Single authored segment far longer than 1 cell — subdivided by gate_walk into 4
+        // dense substeps of 100 units each; the wall sits inside the third substep.
+        let out = execute_move(
+            &ecs,
+            scene_id,
+            token_id,
+            &[(0.0, 0.0), (400.0, 0.0)],
+            MovementRestriction::Unrestricted,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert!(
+            out.truncated,
+            "must stop before crossing the wall mid-segment"
+        );
+        assert_eq!(
+            out.stop,
+            (200.0, 0.0),
+            "stops at the last dense sample before the wall crossing"
+        );
+    }
+
+    #[test]
+    fn continuous_path_stops_before_entering_an_impassable_region_mid_segment() {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
+                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                region_doc(12, 10, "impassable", 1.0, 300.0, -50.0, 500.0, 150.0),
+            ],
+            0,
+        );
+        let visible = visible_grid(5);
+        let out = execute_move(
+            &ecs,
+            scene_id,
+            token_id,
+            &[(0.0, 0.0), (400.0, 0.0)],
+            MovementRestriction::Unrestricted,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert!(out.truncated);
+        assert_eq!(
+            out.stop,
+            (200.0, 0.0),
+            "stops BEFORE entering impassable cell (3,0) [x=300..400)"
+        );
+    }
+
+    #[test]
+    fn continuous_path_arrest_stops_at_entry_mid_segment_not_before() {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
+                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                region_doc(12, 10, "arrest", 1.0, 300.0, -50.0, 500.0, 150.0),
+            ],
+            0,
+        );
+        let visible = visible_grid(5);
+        let out = execute_move(
+            &ecs,
+            scene_id,
+            token_id,
+            &[(0.0, 0.0), (400.0, 0.0)],
+            MovementRestriction::Unrestricted,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert!(out.truncated);
+        assert_eq!(
+            out.stop,
+            (300.0, 0.0),
+            "arrest stops AT entry into cell (3,0), not before it"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Differential parity test suite vs the frozen king-step oracle
     // -----------------------------------------------------------------------
 
