@@ -117,4 +117,34 @@ describe("per-scene overrides", () => {
       { op: "update", doc_id: "scene1", changes: [{ path: "/system/bounds", old: null, new: { width: 30, height: 50 } }] },
     ]);
   });
+
+  it("setting movement model override writes to the selected scene doc", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const sel = screen.getByLabelText("gameSettings.scene.movementModel") as HTMLSelectElement;
+    await fireEvent.change(sel, { target: { value: "continuous" } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/movementModel", old: null, new: "continuous" }] },
+    ]);
+  });
+
+  it("selecting inherit on a previously-set movementModel override dispatches null to clear it", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    // Pre-populate the scene with a movementModel override already set.
+    const scene = buildSceneDoc("w1", { vision: { movementModel: "continuous" } }, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const sel = screen.getByLabelText("gameSettings.scene.movementModel") as HTMLSelectElement;
+    // The control reflects the current override ("continuous"); selecting "" clears it to null.
+    await fireEvent.change(sel, { target: { value: "" } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/movementModel", old: null, new: null }] },
+    ]);
+  });
 });

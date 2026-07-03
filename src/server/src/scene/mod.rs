@@ -7,6 +7,7 @@ pub mod lighting;
 pub(crate) mod move_exec;
 pub(crate) mod move_stream;
 pub mod movement;
+pub(crate) mod navmesh;
 pub(crate) mod pathfinding;
 pub(crate) mod regions;
 pub mod vision;
@@ -46,6 +47,25 @@ fn parse_movement_restriction(s: &str) -> MovementRestriction {
     }
 }
 
+/// Per-scene movement/pathfinding engine choice (M10f-1). Mirrors `MovementModel` in
+/// `scene-docs.ts`. `GridStepped` = the existing grid A* router; `Continuous` = the polyanya
+/// navmesh router.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MovementModel {
+    GridStepped,
+    Continuous,
+}
+
+/// Parse a movement-model string; any unknown/missing value fails closed to `GridStepped` —
+/// the pre-existing, fully-proven engine. A scene is never silently switched to the newer
+/// navmesh router without an explicit author choice.
+fn parse_movement_model(s: &str) -> MovementModel {
+    match s {
+        "continuous" => MovementModel::Continuous,
+        _ => MovementModel::GridStepped,
+    }
+}
+
 /// Fail-safe finite default scene size (grid units) when a scene has no authored `bounds`.
 /// MUST match `DEFAULT_SCENE_BOUNDS` in the client `scene-docs.ts` (client/server parity).
 pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
@@ -62,6 +82,9 @@ pub struct ResolvedScene {
     pub env_color: u32,
     pub env_intensity: f64,
     pub movement_restriction: MovementRestriction,
+    /// Per-scene/world-default pathfinding engine choice (M10f-1). `GridStepped` dispatches to
+    /// `pathfinding::find`; `Continuous` dispatches to `navmesh::navmesh_find`.
+    pub movement_model: MovementModel,
     pub partial_cell_leniency: bool,
     /// Scene dimensions (width, height) in grid units. Always finite `> 0`
     /// (default `DEFAULT_SCENE_BOUNDS_UNITS`). The M10f navmesh's outer rectangle.
@@ -182,6 +205,17 @@ pub struct SceneEcs {
     /// Point-lookup table keyed by actor doc id. Used only for `actors.get(id)` joins; must
     /// not be iterated for ordered or wire output (HashMap iteration order is non-deterministic).
     actors: HashMap<Uuid, Document>,
+    /// M10f-1 footprint-inflated navmesh cache, keyed by `(scene, quantized footprint-radius
+    /// millicells)`. `std::sync::Mutex` (not `RefCell`) + `Arc` (not `Rc`): `SceneEcs` sits behind
+    /// a `tokio::sync::RwLock` shared across connection tasks, so concurrent readers may call
+    /// `pathfind`/`navmesh_for` simultaneously — the cache needs `Sync` interior mutability.
+    /// Never held across an `.await` (lookup + build are synchronous). Quantized to the nearest
+    /// 1/1000 cell (Buddy-check finding, 2026-07-02, Important: the design spec explicitly calls
+    /// for "quantized footprintRadius" so the cache "stays bounded" given token sizes are a small
+    /// discrete set — exact f64-bit keying was an unjustified departure from that, vulnerable to
+    /// floating-point noise in a client-computed radius producing distinct bit-patterns for what
+    /// is logically the same size).
+    navmesh_cache: std::sync::Mutex<HashMap<(Uuid, i64), std::sync::Arc<navmesh::NavMesh>>>,
 }
 
 impl SceneEcs {
@@ -194,6 +228,7 @@ impl SceneEcs {
             gradation: None,
             vision_modes: None,
             actors: HashMap::new(),
+            navmesh_cache: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -283,6 +318,22 @@ impl SceneEcs {
 
     /// Reflect one already-committed authoritative op into the derived world.
     pub fn apply_op(&mut self, op: &Operation) {
+        // Determine whether this op can affect any cached navmesh's geometry (a `wall` doc's
+        // blocksMove/seg fields, or a `scene` doc's bounds) BEFORE applying it — an Update needs
+        // the existing entity's doc_type (Update never changes doc_type, so a pre-mutation lookup
+        // is safe and correct); Create/Delete carry their own doc_type directly.
+        let touches_navmesh_geometry = match op {
+            Operation::Create { doc } | Operation::Delete { doc } => {
+                matches!(doc.doc_type.as_str(), "wall" | "scene")
+            }
+            Operation::Update { doc_id, .. } => self
+                .index
+                .get(doc_id)
+                .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
+                .map(|c| matches!(c.doc.doc_type.as_str(), "wall" | "scene"))
+                .unwrap_or(false),
+        };
+
         match op {
             Operation::Create { doc } if is_scene_entity(doc) => {
                 if let Some(&e) = self.index.get(&doc.id) {
@@ -362,6 +413,14 @@ impl SceneEcs {
                 }
             }
         }
+
+        if touches_navmesh_geometry {
+            // Coarse but correct: clear every cached navmesh (all scenes), not just the one
+            // touched. Over-invalidation only costs an extra rebuild on the next query, never
+            // staleness — the safe failure direction, matching this codebase's established
+            // fail-safe-direction convention (e.g. `supercover_cells`'s over-include-on-corner).
+            self.navmesh_cache.lock().unwrap().clear();
+        }
     }
 
     /// The validated world-settings `system` body, or `None` when the doc is absent or structurally
@@ -425,6 +484,11 @@ impl SceneEcs {
             .and_then(|s| s.get("movementRestriction"))
             .and_then(|v| v.as_str())
             .unwrap_or("visible");
+        // movementModel (M10f-1): scene `vision.movementModel` ?? world ?? "grid-stepped".
+        let d_model = ws_scene
+            .and_then(|s| s.get("movementModel"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("grid-stepped");
         // partialCellLeniency: world-only (no per-scene override; mirrors `d.scene.partialCellLeniency`).
         let d_lenient = ws_scene
             .and_then(|s| s.get("partialCellLeniency"))
@@ -466,6 +530,10 @@ impl SceneEcs {
             .and_then(|s| s.pointer("/vision/movementRestriction"))
             .and_then(|v| v.as_str())
             .unwrap_or(d_move);
+        let model_str = s
+            .and_then(|s| s.pointer("/vision/movementModel"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(d_model);
 
         // Scene bounds (M10f-0): per-scene, no world default — a fixed finite fallback. A
         // non-finite or non-positive axis is degenerate for a navmesh rectangle → fail closed.
@@ -497,6 +565,7 @@ impl SceneEcs {
             env_color: parse_hex_color(env_color),
             env_intensity: env_int.clamp(0.0, 1.0),
             movement_restriction: parse_movement_restriction(move_str),
+            movement_model: parse_movement_model(model_str),
             partial_cell_leniency: d_lenient,
             bounds,
         }
@@ -881,6 +950,59 @@ impl SceneEcs {
         out
     }
 
+    /// Build-or-fetch the footprint-inflated navmesh for `(scene, footprint_radius_cells)`,
+    /// memoized in `navmesh_cache` keyed on a quantized radius (nearest 1/1000 cell — see the
+    /// field doc comment). Returns `None` when `navmesh::build_navmesh` fails closed (degenerate
+    /// bounds/cell/footprint, or an over-cap obstacle count) — callers must treat this exactly
+    /// like the grid router's `Unreachable` (no silent all-pass). A failed build is intentionally
+    /// NOT cached: caching a failure under a mutable key would either mask a later successful
+    /// build once the scene's geometry is fixed up (stale-failure, never re-attempted without an
+    /// unrelated cache-clearing mutation), or require a separate "known-bad" sentinel distinct
+    /// from "not yet built" — added complexity for no correctness gain, since a redundant re-run
+    /// of `build_navmesh` on a still-degenerate scene hits the same fail-fast validation and is
+    /// never unsafe, only wasted compute.
+    ///
+    /// Accepted tradeoff: the cache-miss path is
+    /// lock→check→unlock→build→lock→insert, not atomic under the build. Two concurrent callers
+    /// requesting the same new key can each build a redundant (but equally valid) `NavMesh` before
+    /// one wins the insert — wasted compute, never a correctness issue (both builds are pure
+    /// functions of the same inputs).
+    pub(crate) fn navmesh_for(
+        &self,
+        scene: Uuid,
+        footprint_radius_cells: f64,
+    ) -> Option<std::sync::Arc<navmesh::NavMesh>> {
+        // Validate BEFORE computing the cache key or touching the cache at all. `f64 as i64`
+        // saturates NaN to 0 and rounds a tiny negative (e.g. -0.0001) to -0, which also casts to
+        // 0 — colliding with the legitimate key for `footprint_radius_cells == 0.0`. Without this
+        // upfront guard a degenerate radius would silently hit that cached entry and return a
+        // valid-looking `Some` mesh instead of failing closed, bypassing `build_navmesh`'s own
+        // range check entirely on any call after the 0.0 radius has already been cached. Mirrors
+        // `build_navmesh`'s guard exactly so the two stay consistent.
+        if !(0.0..=crate::scene::pathfinding::MAX_FOOTPRINT_CELLS).contains(&footprint_radius_cells)
+        {
+            return None;
+        }
+        // Quantize to the nearest 1/1000 cell so floating-point noise in a client-computed radius
+        // (e.g. derived via division) collapses onto the same cache entry as the canonical value.
+        let quantized = (footprint_radius_cells * 1000.0).round() as i64;
+        let key = (scene, quantized);
+        if let Some(cached) = self.navmesh_cache.lock().unwrap().get(&key) {
+            return Some(cached.clone());
+        }
+        let bounds = self.resolve_scene(scene).bounds;
+        let cell = self
+            .scene_grid_sizes()
+            .get(&scene)
+            .copied()
+            .unwrap_or(100.0);
+        let walls = self.move_walls(scene);
+        let built = navmesh::build_navmesh(bounds, cell, &walls, footprint_radius_cells)?;
+        let arc = std::sync::Arc::new(built);
+        self.navmesh_cache.lock().unwrap().insert(key, arc.clone());
+        Some(arc)
+    }
+
     /// Plan a route for `user`'s token in `scene` (M10e-6). Reuses the M10e-4 `visible_cells`
     /// mask so the preview agrees with the movement gate (spec §13). `is_gm`/`unrestricted` ⇒
     /// no mask; `visible` ⇒ `visible_cells`; `revealed` ⇒ `visible_cells ∪ explored`. `explored`
@@ -911,12 +1033,16 @@ impl SceneEcs {
             .unwrap_or(100.0);
         let rule = self.resolved_diagonal_rule();
         let walls = self.move_walls(scene);
+        // Hoisted so `movement_model` is available to the dispatch below regardless of `is_gm`
+        // (a GM can also route on a continuous scene) — the grid branch's OWN behavior is
+        // unchanged, it just now reads `settings` from this shared binding instead of a local one.
+        let settings = self.resolve_scene(scene);
 
-        // Build the per-(user,scene) mask (None ⇒ unconstrained).
+        // Build the per-(user,scene) mask (None ⇒ unconstrained). Shared by both engines —
+        // §13/§6.3: never fork the per-cell visibility decision.
         let mask: Option<std::collections::BTreeSet<pathfinding::Cell>> = if is_gm {
             None
         } else {
-            let settings = self.resolve_scene(scene);
             match settings.movement_restriction {
                 MovementRestriction::Unrestricted => None,
                 MovementRestriction::Visible => {
@@ -932,22 +1058,56 @@ impl SceneEcs {
             }
         };
 
-        // Per-requester region field (spec §4): GM (or `is_gm`) sees the authoritative field;
-        // a non-GM requester's field silently omits any region they cannot see, so a secret
-        // region never influences their route or budget (it "springs" only at execution,
-        // `move_exec`, which always reads the authoritative field).
-        let regions = self.region_field(scene, if is_gm { None } else { Some(user) });
-
-        pathfinding::find(
-            start,
-            waypoints,
-            footprint_radius,
-            cell,
-            rule,
-            &walls,
-            mask.as_ref(),
-            Some(&regions),
-        )
+        match settings.movement_model {
+            MovementModel::GridStepped => {
+                // Per-requester region field (spec §4): GM (or `is_gm`) sees the authoritative
+                // field; a non-GM requester's field silently omits any region they cannot see, so
+                // a secret region never influences their route or budget (it "springs" only at
+                // execution, `move_exec`, which always reads the authoritative field).
+                let regions = self.region_field(scene, if is_gm { None } else { Some(user) });
+                pathfinding::find(
+                    start,
+                    waypoints,
+                    footprint_radius,
+                    cell,
+                    rule,
+                    &walls,
+                    mask.as_ref(),
+                    Some(&regions),
+                )
+            }
+            MovementModel::Continuous => {
+                // M10f-1: navmesh carries walls only (no regions yet — M10f-4); the cell-sampled
+                // post-filter is the ONLY visibility gate, reusing the same mask as the grid path.
+                let nav = self
+                    .navmesh_for(scene, footprint_radius)
+                    .ok_or(pathfinding::PathFail::Unreachable)?;
+                let raw = navmesh::navmesh_find(&nav, start, waypoints)?;
+                // `raw.path.len() < 2` only when every waypoint leg collapsed to the start point
+                // (start == goal, mirroring `pathfinding::astar_leg`'s trivial-success case: a
+                // grid-stepped route to the cell you're already standing on succeeds with a
+                // single-cell, zero-cost route — see `astar_tests::
+                // start_equals_goal_is_a_single_cell_zero_cost`). `clip_to_visible_mask`'s own
+                // early return (`if outcome.path.len() < 2 { return outcome; }`) means a
+                // length-1 INPUT always passes through as a length-1 OUTPUT unchanged (nothing to
+                // truncate), so a length-1 `clipped` result can only originate from (a) this
+                // trivial case, or (b) a length-2+ raw route the mask/wall check truncated down to
+                // 1 point — a genuine rejection. Capture the flag before `raw` is consumed so both
+                // cases can be told apart afterward.
+                let raw_was_trivial = raw.path.len() < 2;
+                let clipped = navmesh::clip_to_visible_mask(
+                    raw,
+                    mask.as_ref(),
+                    cell,
+                    footprint_radius,
+                    &walls,
+                );
+                if clipped.path.len() < 2 && !raw_was_trivial {
+                    return Err(pathfinding::PathFail::Unreachable);
+                }
+                Ok(clipped)
+            }
+        }
     }
 
     /// The composed region field for `scene`. `viewer: None` is the AUTHORITATIVE view (every
@@ -2801,6 +2961,89 @@ mod tests {
     }
 
     #[test]
+    fn resolve_scene_movement_model_defaults_to_grid_stepped() {
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        let r = ecs.resolve_scene(Uuid::from_u128(10));
+        assert_eq!(r.movement_model, MovementModel::GridStepped);
+    }
+
+    #[test]
+    fn resolve_scene_movement_model_world_override_to_continuous() {
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "continuous",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        let r = ecs.resolve_scene(Uuid::from_u128(10));
+        assert_eq!(r.movement_model, MovementModel::Continuous);
+    }
+
+    #[test]
+    fn resolve_scene_movement_model_scene_override_beats_world() {
+        let mut ecs = SceneEcs::from_documents(
+            vec![entity_doc_top(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                        "vision": { "movementModel": "continuous" } }),
+            )],
+            0,
+        );
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "grid-stepped",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        let r = ecs.resolve_scene(Uuid::from_u128(10));
+        assert_eq!(r.movement_model, MovementModel::Continuous);
+    }
+
+    #[test]
+    fn resolve_scene_movement_model_null_scene_override_inherits_world() {
+        let mut ecs = SceneEcs::from_documents(
+            vec![entity_doc_top(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                        "vision": { "movementModel": null } }),
+            )],
+            0,
+        );
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "continuous",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        let r = ecs.resolve_scene(Uuid::from_u128(10));
+        assert_eq!(r.movement_model, MovementModel::Continuous);
+    }
+
+    #[test]
     fn resolve_scene_bounds_defaults_when_absent() {
         let ecs = SceneEcs::new();
         let r = ecs.resolve_scene(Uuid::from_u128(1));
@@ -3275,6 +3518,105 @@ mod tests {
         assert_eq!((w.a, w.b), ((100.0, 0.0), (100.0, 200.0)));
     }
 
+    #[test]
+    fn navmesh_for_is_memoized_across_calls() {
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        let scene = Uuid::from_u128(10);
+        let a = ecs.navmesh_for(scene, 0.4).expect("navmesh builds");
+        let b = ecs.navmesh_for(scene, 0.4).expect("navmesh builds");
+        assert!(
+            std::sync::Arc::ptr_eq(&a, &b),
+            "same (scene, radius) must return the SAME cached Arc, not rebuild"
+        );
+    }
+
+    #[test]
+    fn navmesh_for_distinguishes_footprint_radii() {
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        let scene = Uuid::from_u128(10);
+        let a = ecs.navmesh_for(scene, 0.4).expect("navmesh builds");
+        let b = ecs.navmesh_for(scene, 0.9).expect("navmesh builds");
+        assert!(
+            !std::sync::Arc::ptr_eq(&a, &b),
+            "distinct footprint radii must get distinct cached meshes"
+        );
+    }
+
+    #[test]
+    fn navmesh_for_rejects_degenerate_radius_even_after_cache_primed_at_zero() {
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        let scene = Uuid::from_u128(10);
+        // Prime the cache at footprint_radius_cells == 0.0: quantized key (scene, 0).
+        let primed = ecs.navmesh_for(scene, 0.0);
+        assert!(
+            primed.is_some(),
+            "radius 0.0 must build and cache successfully"
+        );
+
+        // f64 as i64 saturates NaN to 0, colliding with the primed key above. Without an
+        // upfront validation guard this would return the CACHED radius-0.0 mesh instead of
+        // failing closed.
+        assert!(
+            ecs.navmesh_for(scene, f64::NAN).is_none(),
+            "NaN footprint radius must fail closed, not reuse the cached radius-0.0 mesh"
+        );
+
+        // A small negative rounds to -0 under `(x * 1000.0).round() as i64`, which also casts
+        // to the same colliding key.
+        assert!(
+            ecs.navmesh_for(scene, -0.0001).is_none(),
+            "negative footprint radius must fail closed, not reuse the cached radius-0.0 mesh"
+        );
+    }
+
+    #[test]
+    fn wall_mutation_invalidates_the_navmesh_cache() {
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
+        let scene = Uuid::from_u128(10);
+        let a = ecs.navmesh_for(scene, 0.4).expect("navmesh builds");
+        ecs.apply_op(&Operation::Create {
+            doc: entity_doc(
+                20,
+                10,
+                "wall",
+                json!({ "seg": { "x1": 10.0, "y1": 0.0, "x2": 10.0, "y2": 50.0 },
+                        "blocksMove": true, "blocksSight": false, "blocksLight": false }),
+            ),
+        });
+        let b = ecs.navmesh_for(scene, 0.4).expect("navmesh rebuilds");
+        assert!(
+            !std::sync::Arc::ptr_eq(&a, &b),
+            "adding a blocksMove wall must invalidate the cached navmesh"
+        );
+    }
+
+    #[test]
+    fn bounds_mutation_invalidates_the_navmesh_cache() {
+        let mut ecs = SceneEcs::from_documents(
+            vec![entity_doc_top(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+            )],
+            0,
+        );
+        let scene = Uuid::from_u128(10);
+        let a = ecs.navmesh_for(scene, 0.4).expect("navmesh builds");
+        ecs.apply_op(&Operation::Update {
+            doc_id: scene,
+            changes: vec![crate::data::command::FieldChange {
+                path: "/system/bounds".into(),
+                old: json!(null),
+                new: json!({ "width": 40, "height": 40 }),
+            }],
+        });
+        let b = ecs.navmesh_for(scene, 0.4).expect("navmesh rebuilds");
+        assert!(
+            !std::sync::Arc::ptr_eq(&a, &b),
+            "changing scene bounds must invalidate the cached navmesh"
+        );
+    }
+
     /// Builds a SceneEcs with one scene (id 10), one player-owned token at (50, 50), and
     /// world-settings that set `movementRestriction = "revealed"` with no placed lights (env
     /// intensity = 0). The visible mask is therefore empty; only explored memory can admit cells.
@@ -3317,6 +3659,180 @@ mod tests {
         let outcome = r.expect("GM route");
         assert!((outcome.cost - 2.0).abs() < 1e-9);
         assert_eq!(outcome.path.last(), Some(&(250.0, 50.0)));
+    }
+
+    #[test]
+    fn pathfind_dispatches_to_the_navmesh_router_for_a_continuous_scene() {
+        let mut ecs = SceneEcs::from_documents(
+            vec![entity_doc_top(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                        "vision": { "movementModel": "continuous" } }),
+            )],
+            0,
+        );
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "movementModel": "continuous",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        let outcome = ecs
+            .pathfind(
+                Uuid::from_u128(1),
+                Uuid::from_u128(10),
+                (50.0, 50.0),
+                &[(950.0, 50.0)],
+                0.1,
+                true, // GM: unrestricted mask
+                None,
+            )
+            .expect("continuous route over an open bounded scene");
+        // Euclidean straight line ≈ 900, unlike a grid diagonal-rule cost — proves the navmesh
+        // path was actually taken, not the grid router.
+        assert!(
+            (outcome.cost - 900.0).abs() < 2.0,
+            "expected ~900 (Euclidean), got {}",
+            outcome.cost
+        );
+    }
+
+    #[test]
+    fn pathfind_continuous_start_equals_goal_is_a_single_point_zero_cost() {
+        // Mirrors `astar_tests::start_equals_goal_is_a_single_cell_zero_cost` (the grid-stepped
+        // engine's trivial-success case) for the continuous engine: routing to the point you're
+        // already standing on must succeed with a single-point, zero-cost route, not
+        // `PathFail::Unreachable`.
+        let mut ecs = SceneEcs::from_documents(
+            vec![entity_doc_top(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                        "vision": { "movementModel": "continuous" } }),
+            )],
+            0,
+        );
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "movementModel": "continuous",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        let outcome = ecs
+            .pathfind(
+                Uuid::from_u128(1),
+                Uuid::from_u128(10),
+                (50.0, 50.0),
+                &[(50.0, 50.0)],
+                0.1,
+                true, // GM: unrestricted mask
+                None,
+            )
+            .expect("start == goal must succeed, not Unreachable");
+        assert_eq!(outcome.path, vec![(50.0, 50.0)]);
+        assert_eq!(outcome.cost, 0.0);
+        assert!(!outcome.arrested);
+    }
+
+    /// Mirrors `scene_with_lit_player_token` (same token/light geometry) but the scene doc
+    /// declares `vision.movementModel: "continuous"`, so the fixture drives the REAL non-GM
+    /// `visible_cells` mask through the continuous dispatch branch instead of a hand-built
+    /// `BTreeSet` test double.
+    fn scene_with_lit_player_token_continuous() -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            }),
+        );
+        let scene = entity_doc_top(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "vision": { "movementModel": "continuous" } }),
+        );
+        let ecs = SceneEcs::from_documents(vec![scene, tok, light], 0);
+        (ecs, user, scene_id)
+    }
+
+    #[test]
+    fn pathfind_continuous_nongm_route_clips_to_the_visible_mask() {
+        // System-level §13 coverage: the two existing continuous `pathfind` tests
+        // (`pathfind_dispatches_to_the_navmesh_router_for_a_continuous_scene`,
+        // `pathfind_continuous_start_equals_goal_is_a_single_point_zero_cost`) both pass
+        // `is_gm: true`, so `mask` is always `None` and `clip_to_visible_mask` runs as a pure
+        // pass-through — nothing is ever actually clipped. This test drives a non-GM request
+        // through the FULL chain (`pathfind` → dispatch → `navmesh_for` → `navmesh_find` →
+        // `clip_to_visible_mask`) with the REAL per-(user,scene) `visible_cells` mask, proving a
+        // future fork/null of the mask on the `Continuous` branch would fail this test.
+        let (ecs, user, scene) = scene_with_lit_player_token_continuous();
+        let lenient = ecs.resolve_scene(scene).partial_cell_leniency;
+        let mask = ecs.visible_cells(user, scene, lenient);
+        assert!(!mask.is_empty(), "the lit token has a non-empty mask");
+
+        // Far goal well outside the light radius (dimRadius 6 cells = 600 scene units) but still
+        // inside the scene's default 100x100-cell bounds, so navmesh construction over the
+        // bounds rect itself never fails — only the visibility clip should stop the route short.
+        let far_goal = (9500.0, 9500.0);
+        let outcome = ecs
+            .pathfind(user, scene, (50.0, 50.0), &[far_goal], 0.1, false, None)
+            .expect("clip truncates the route short of the unseen goal rather than failing outright");
+        let dist_to_goal = ((far_goal.0 - 50.0_f64).powi(2) + (far_goal.1 - 50.0_f64).powi(2)).sqrt();
+        assert!(
+            outcome.cost < dist_to_goal / 2.0,
+            "route must truncate well short of the unseen far goal: cost {} vs distance {}",
+            outcome.cost,
+            dist_to_goal
+        );
+        let (lx, ly) = *outcome.path.last().expect("non-empty truncated path");
+        let dist_from_start = ((lx - 50.0_f64).powi(2) + (ly - 50.0_f64).powi(2)).sqrt();
+        assert!(
+            dist_from_start < 700.0,
+            "truncated endpoint must stay near the lit token, got ({lx}, {ly})"
+        );
+    }
+
+    #[test]
+    fn pathfind_grid_stepped_scene_is_byte_for_byte_unchanged() {
+        // Same fixture/assertions as the existing `pathfind_gm_unconstrained_routes_without_a_mask`
+        // test, proving the default (grid-stepped) dispatch branch is untouched by this checkpoint.
+        let (ecs, _user, scene) = scene_with_lit_player_token();
+        let r = ecs.pathfind(
+            Uuid::from_u128(1),
+            scene,
+            (50.0, 50.0),
+            &[(250.0, 50.0)],
+            0.1,
+            true,
+            None,
+        );
+        let outcome = r.expect("GM route");
+        assert!(
+            (outcome.cost - 2.0).abs() < 1e-9,
+            "grid Chebyshev cost unchanged"
+        );
     }
 
     #[test]

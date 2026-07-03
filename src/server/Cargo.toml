@@ -18,6 +18,9 @@ figment = { version = "0.10", features = ["toml", "env"] }
 axum = { version = "0.8", features = ["ws", "multipart"] }
 dashmap = "6"
 hecs = "0.11"
+polyanya = { version = "0.16", default-features = false }
+geo = "0.32"
+glam = "0.30"
 futures-util = "0.3"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "request-id", "util"] }

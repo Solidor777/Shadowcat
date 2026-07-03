@@ -34,4 +34,17 @@ describe("world defaults editor", () => {
       { op: "update", doc_id: "ws1", changes: [{ path: "/system/pathfinding/diagonalRule", old: null, new: "alternating" }] },
     ]);
   });
+
+  it("changing movement model dispatches a JSON-pointer update", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws), dispatchIntent }) });
+
+    const sel = screen.getByLabelText("gameSettings.movementModel") as HTMLSelectElement;
+    await fireEvent.change(sel, { target: { value: "continuous" } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "ws1", changes: [{ path: "/system/scene/movementModel", old: null, new: "continuous" }] },
+    ]);
+  });
 });

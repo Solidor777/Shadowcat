@@ -57,6 +57,7 @@
   }
 
   const MOVEMENT = ["visible", "revealed", "unrestricted"] as const;
+  const MOVEMENT_MODEL = ["grid-stepped", "continuous"] as const;
   const LIGHTMODE = ["environmentLight", "globalIllumination"] as const;
   const DIAGONAL = ["chebyshev", "alternating", "euclidean", "manhattan"] as const;
   const EASING = ["easeInOut", "linear"] as const;
@@ -101,6 +102,14 @@
       <select aria-label="gameSettings.movementRestriction" value={wsys.scene.movementRestriction}
         onchange={(e) => set(ws.id, "/system/scene/movementRestriction", (e.currentTarget as HTMLSelectElement).value)}>
         {#each MOVEMENT as m}<option value={m}>{m}</option>{/each}
+      </select>
+    </label>
+
+    <label>
+      {ctx.t("gameSettings.movementModel")}
+      <select aria-label="gameSettings.movementModel" value={wsys.scene.movementModel}
+        onchange={(e) => set(ws.id, "/system/scene/movementModel", (e.currentTarget as HTMLSelectElement).value)}>
+        {#each MOVEMENT_MODEL as m}<option value={m}>{m}</option>{/each}
       </select>
     </label>
 
@@ -225,6 +234,19 @@
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           {#each MOVEMENT as m}<option value={m}>{m}</option>{/each}
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.movementModel")}
+        <select aria-label="gameSettings.scene.movementModel"
+          value={ssys.vision?.movementModel ?? ""}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            setScene("/system/vision/movementModel", v === "" ? null : v);
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          {#each MOVEMENT_MODEL as m}<option value={m}>{m}</option>{/each}
         </select>
       </label>
 

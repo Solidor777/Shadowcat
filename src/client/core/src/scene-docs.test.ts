@@ -92,6 +92,43 @@ describe("resolveSceneSettings", () => {
     expect(r.losRestriction).toBe(true);
     expect(r.fog).toBe(true);
   });
+
+  it("movementModel defaults to grid-stepped", () => {
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    const r = resolveSceneSettings(scene, storeWith());
+    expect(r.movementModel).toBe("grid-stepped");
+  });
+
+  it("movementModel: world override applies", () => {
+    const ws = buildWorldSettingsDoc("w1", {
+      ...DEFAULT_WORLD_SETTINGS,
+      scene: { ...DEFAULT_WORLD_SETTINGS.scene, movementModel: "continuous" },
+    }, "ws1");
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    const r = resolveSceneSettings(scene, storeWith(ws));
+    expect(r.movementModel).toBe("continuous");
+  });
+
+  it("movementModel: scene override beats world", () => {
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", {
+      vision: { movementModel: "continuous" },
+    }, "scene1");
+    const r = resolveSceneSettings(scene, storeWith(ws));
+    expect(r.movementModel).toBe("continuous");
+  });
+
+  it("movementModel: null scene override inherits world", () => {
+    const ws = buildWorldSettingsDoc("w1", {
+      ...DEFAULT_WORLD_SETTINGS,
+      scene: { ...DEFAULT_WORLD_SETTINGS.scene, movementModel: "continuous" },
+    }, "ws1");
+    const scene = buildSceneDoc("w1", {
+      vision: { movementModel: null },
+    }, "scene1");
+    const r = resolveSceneSettings(scene, storeWith(ws));
+    expect(r.movementModel).toBe("continuous");
+  });
 });
 
 const actorSys: ActorSystem = {
