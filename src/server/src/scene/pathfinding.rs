@@ -56,7 +56,7 @@ pub fn cell_center(c: Cell, cell: f64) -> vision::P {
 /// Cells whose AABB the footprint disc (center `ctr`, radius `r_scene`) overlaps. A cell overlaps
 /// the disc iff the disc center is within `r_scene` of the cell's AABB. The anchor cell is always
 /// included (a zero-radius disc overlaps exactly its own cell).
-fn footprint_cells(anchor: Cell, ctr: vision::P, r_scene: f64, cell: f64) -> Vec<Cell> {
+pub(crate) fn footprint_cells(anchor: Cell, ctr: vision::P, r_scene: f64, cell: f64) -> Vec<Cell> {
     let mut out = Vec::new();
     let i0 = ((ctr.0 - r_scene) / cell).floor() as i32;
     let i1 = ((ctr.0 + r_scene) / cell).floor() as i32;

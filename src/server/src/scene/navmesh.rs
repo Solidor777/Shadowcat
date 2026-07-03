@@ -296,6 +296,84 @@ pub(crate) fn navmesh_find(
     })
 }
 
+/// Arc-length-samples `outcome.path` and truncates it at the first sample whose chord (from the
+/// previous retained sample) either (a) touches a cell outside `mask` (footprint disc ∪ the
+/// step's supercover) or (b) crosses a `blocksMove` wall. `mask: None` skips check (a) — the
+/// SAME per-cell predicate `pathfinding::cell_enterable` applies, no forked visibility decision,
+/// so a continuous preview is fog-safe and `route ⊆ gate-allowed` holds across both engines
+/// (parent spec §6.3). Check (b) always runs, independent of `mask` — this is a router-fidelity
+/// guarantee (walls are public geometry, not a secrecy concern): the navmesh's true polyline may
+/// detour around a wall corner, but once downsampled to at most `MAX_VISION_SAMPLES` arc-length
+/// samples, a chord between two samples straddling that corner could otherwise cross the wall the
+/// true route avoided. `mask: None` and `walls: &[]` together ⇒ returned unchanged.
+///
+/// A zero/one-sample truncation (the very first sample already fails a check) yields a
+/// single-point path at `outcome.path[0]` with `cost: 0.0` — the caller is responsible for
+/// treating a degenerate result as appropriate for its context.
+// TODO: remove once the navmesh cache/dispatch caller lands and calls this.
+#[allow(dead_code)]
+pub(crate) fn clip_to_visible_mask(
+    outcome: crate::scene::pathfinding::PathOutcome,
+    mask: Option<&std::collections::BTreeSet<crate::scene::pathfinding::Cell>>,
+    cell: f64,
+    footprint_radius_cells: f64,
+    walls: &[crate::scene::vision::Seg],
+) -> crate::scene::pathfinding::PathOutcome {
+    if outcome.path.len() < 2 {
+        return outcome;
+    }
+    if mask.is_none() && walls.is_empty() {
+        return outcome;
+    }
+
+    let r_scene = footprint_radius_cells.max(0.0) * cell;
+    // Dummy duration: `sample_path` is a time/arc-length sampler shared with `MoveStream`
+    // playback; only `.pos` is used here, so the duration value is immaterial.
+    let samples = crate::scene::move_stream::sample_path(&outcome.path, cell, 1.0);
+
+    let mut truncated: Vec<(f64, f64)> = vec![samples[0].pos];
+    let mut prev = samples[0].pos;
+    for s in samples.iter().skip(1) {
+        let mask_ok = match mask {
+            None => true,
+            Some(mask) => {
+                let to_cell = (
+                    (s.pos.0 / cell).floor() as i32,
+                    (s.pos.1 / cell).floor() as i32,
+                );
+                let footprint =
+                    crate::scene::pathfinding::footprint_cells(to_cell, s.pos, r_scene, cell);
+                footprint.iter().all(|c| mask.contains(c))
+                    && match crate::scene::movement::supercover_cells(prev, s.pos, cell) {
+                        Some(cells) => cells.iter().all(|c| mask.contains(c)),
+                        None => false, // fail-closed: a degenerate/over-cap span truncates here
+                    }
+            }
+        };
+        let wall_ok = !walls
+            .iter()
+            .any(|w| crate::scene::segments_cross(prev, s.pos, w.a, w.b));
+        if !mask_ok || !wall_ok {
+            break;
+        }
+        truncated.push(s.pos);
+        prev = s.pos;
+    }
+
+    // Recompute cost as the Euclidean length of the truncated polyline (the original `cost`
+    // is only valid for the full, untruncated route).
+    let new_cost: f64 = truncated
+        .windows(2)
+        .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+        .sum();
+
+    crate::scene::pathfinding::PathOutcome {
+        path: truncated,
+        cost: new_cost,
+        arrested: outcome.arrested,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +649,124 @@ mod tests {
         assert_eq!(
             navmesh_find(&nav, (50.0, 50.0), &[(1e40, 50.0)]),
             Err(crate::scene::pathfinding::PathFail::Invalid)
+        );
+    }
+
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn clip_returns_unchanged_when_mask_is_none_and_no_walls() {
+        let outcome = crate::scene::pathfinding::PathOutcome {
+            path: vec![(50.0, 50.0), (950.0, 50.0)],
+            cost: 900.0,
+            arrested: false,
+        };
+        let clipped = clip_to_visible_mask(outcome.clone(), None, 100.0, 0.1, &[]);
+        assert_eq!(clipped.path, outcome.path);
+        assert_eq!(clipped.cost, outcome.cost);
+    }
+
+    #[test]
+    fn clip_truncates_at_the_mask_boundary() {
+        // A route from (50,50) to (950,50): only cells x=0..3 (i.e. up to x=400) are visible.
+        let mut mask = BTreeSet::new();
+        for i in 0..4 {
+            mask.insert((i, 0));
+        }
+        let outcome = crate::scene::pathfinding::PathOutcome {
+            path: vec![(50.0, 50.0), (950.0, 50.0)],
+            cost: 900.0,
+            arrested: false,
+        };
+        let clipped = clip_to_visible_mask(outcome, Some(&mask), 100.0, 0.1, &[]);
+        let last = *clipped.path.last().unwrap();
+        assert!(
+            last.0 <= 400.0 + 1e-6,
+            "route must truncate at the visible-mask boundary, last x = {}",
+            last.0
+        );
+        assert!(
+            clipped.path.len() < 2 || clipped.cost < 900.0,
+            "a truncated route must report a shorter cost than the full route"
+        );
+    }
+
+    #[test]
+    fn clip_leaves_a_fully_visible_route_untouched() {
+        let mut mask = BTreeSet::new();
+        for i in 0..10 {
+            mask.insert((i, 0));
+        }
+        let outcome = crate::scene::pathfinding::PathOutcome {
+            path: vec![(50.0, 50.0), (950.0, 50.0)],
+            cost: 900.0,
+            arrested: false,
+        };
+        let clipped = clip_to_visible_mask(outcome.clone(), Some(&mask), 100.0, 0.1, &[]);
+        let last_orig = *outcome.path.last().unwrap();
+        let last_clipped = *clipped.path.last().unwrap();
+        assert!((last_orig.0 - last_clipped.0).abs() < 1e-6);
+    }
+
+    // Design §9 requires "a goal outside the mask ⇒ Unreachable" as an exercised code path; a mask
+    // that excludes the ENTIRE corridor beyond the start cell (as opposed to a partial-route
+    // truncation to a still-substantial prefix, per `clip_truncates_at_the_mask_boundary` above)
+    // must confine the returned route to that single visible cell, never reaching the goal.
+    //
+    // NOTE: the route retains 2 points here, not 1 — `sample_path`'s arc-length sampling places
+    // >=1 intermediate sample inside a 100-unit-wide visible cell before the next sample crosses
+    // into the (excluded) neighboring cell (verified: SAMPLES_PER_CELL=3 over a 900-unit path
+    // yields ~34.6-unit sample spacing, so the second sample at x~=84.6 is still within cell
+    // (0,0)). A single-point result would require the mask's visible span to be narrower than one
+    // sample's arc-length step, which is not the case here.
+    #[test]
+    fn clip_with_a_mask_excluding_the_whole_corridor_confines_the_route_to_that_cell() {
+        let mut mask = BTreeSet::new();
+        mask.insert((0, 0)); // only the start cell is visible; the goal and everything beyond is not
+        let outcome = crate::scene::pathfinding::PathOutcome {
+            path: vec![(50.0, 50.0), (950.0, 50.0)],
+            cost: 900.0,
+            arrested: false,
+        };
+        let clipped = clip_to_visible_mask(outcome, Some(&mask), 100.0, 0.1, &[]);
+        let last = *clipped.path.last().unwrap();
+        assert!(
+            last.0 < 100.0,
+            "a route confined to a single visible cell must never leave it, last x = {}",
+            last.0
+        );
+        assert!(
+            clipped.cost < 900.0 * 0.5,
+            "a route truncated to a single visible cell must report a much shorter cost than \
+             the full 900-unit route, got {}",
+            clipped.cost
+        );
+    }
+
+    // The mask check alone does not guarantee the returned preview never crosses a WALL — a
+    // chord between two arc-length samples can cut across geometry the true navmesh polyline
+    // routed around. This is a router-fidelity issue (walls are public geometry, not a secrecy
+    // leak), but still means a returned preview could visually cross a wall. Verified independent
+    // of sample-cap spacing: any chord that geometrically crosses a `blocksMove` wall must
+    // truncate there.
+    #[test]
+    fn clip_truncates_a_chord_that_crosses_a_wall() {
+        // A wall directly bisecting the straight line from (50,50) to (950,50) at x=500.
+        let walls = vec![crate::scene::vision::Seg {
+            a: (500.0, -100.0),
+            b: (500.0, 200.0),
+        }];
+        let outcome = crate::scene::pathfinding::PathOutcome {
+            path: vec![(50.0, 50.0), (950.0, 50.0)],
+            cost: 900.0,
+            arrested: false,
+        };
+        let clipped = clip_to_visible_mask(outcome, None, 100.0, 0.1, &walls);
+        let last = *clipped.path.last().unwrap();
+        assert!(
+            last.0 <= 500.0 + 1e-6,
+            "a chord crossing a wall must truncate before the wall, last x = {}",
+            last.0
         );
     }
 }
