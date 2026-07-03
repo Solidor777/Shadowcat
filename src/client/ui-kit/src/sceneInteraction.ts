@@ -31,6 +31,10 @@ export class SceneInteractionBridge implements SceneInteraction {
     return this.#host ? this.#host.snap(p) : p;
   }
 
+  setSnapEnabled(enabled: boolean): void {
+    this.#host?.setSnapEnabled(enabled);
+  }
+
   setDraggingToken(id: string | null): void {
     this.#host?.setDraggingToken(id);
   }

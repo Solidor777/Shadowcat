@@ -117,6 +117,11 @@ export interface SceneToolHost {
   setActiveTool(tool: SceneTool | null): void;
   /** Snap a scene point to the active grid (cell/vertex). */
   snap(p: Point): Point;
+  /** Toggle the scene-level snap-to-grid axis (M10f-3 §4.2): disabled makes `snap` identity
+   * (free-form float placement/movement for a snap-off scene); grid RENDERING is unaffected —
+   * a snap-off scene may still display its reference grid. Every tool that calls `snap` via
+   * the AppContext `scene` bridge inherits this automatically. */
+  setSnapEnabled(enabled: boolean): void;
   /** Mark a token as locally dragging so its sprite snaps to the authoritative
    * transform (no tween lag) while a remote move still tweens; null clears it. */
   setDraggingToken(id: string | null): void;

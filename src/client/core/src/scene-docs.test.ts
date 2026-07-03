@@ -129,6 +129,37 @@ describe("resolveSceneSettings", () => {
     const r = resolveSceneSettings(scene, storeWith(ws));
     expect(r.movementModel).toBe("continuous");
   });
+
+  it("snapToGrid defaults to true for a grid-stepped scene", () => {
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    const r = resolveSceneSettings(scene, storeWith(scene));
+    expect(r.movementModel).toBe("grid-stepped");
+    expect(r.snapToGrid).toBe(true);
+  });
+
+  it("snapToGrid defaults to false for a continuous scene (derived default, spec §4.1)", () => {
+    const scene = buildSceneDoc("w1", { vision: { movementModel: "continuous" } }, "scene1");
+    const r = resolveSceneSettings(scene, storeWith(scene));
+    expect(r.movementModel).toBe("continuous");
+    expect(r.snapToGrid).toBe(false);
+  });
+
+  it("snapToGrid: an explicit true overrides the continuous default", () => {
+    const scene = buildSceneDoc(
+      "w1",
+      { vision: { movementModel: "continuous" }, snapToGrid: true },
+      "scene1",
+    );
+    const r = resolveSceneSettings(scene, storeWith(scene));
+    expect(r.snapToGrid).toBe(true);
+  });
+
+  it("snapToGrid: an explicit false overrides the grid-stepped default", () => {
+    const scene = buildSceneDoc("w1", { snapToGrid: false }, "scene1");
+    const r = resolveSceneSettings(scene, storeWith(scene));
+    expect(r.movementModel).toBe("grid-stepped");
+    expect(r.snapToGrid).toBe(false);
+  });
 });
 
 const actorSys: ActorSystem = {
@@ -157,6 +188,11 @@ test("buildSceneDoc honors a partial system override and an explicit id", () => 
   const doc = buildSceneDoc("w1", { grid: { kind: "hex", size: 50 } }, "scene-fixed");
   expect(doc.id).toBe("scene-fixed");
   expect(doc.system).toEqual({ grid: { kind: "hex", size: 50 }, background: null });
+});
+
+test("buildSceneDoc persists an explicit snapToGrid:false (not omitted as falsy)", () => {
+  const doc = buildSceneDoc("w1", { snapToGrid: false });
+  expect((doc.system as SceneSystem).snapToGrid).toBe(false);
 });
 
 test("buildTokenDoc parents to the scene and preserves the token system", () => {

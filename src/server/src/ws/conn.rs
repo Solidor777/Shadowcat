@@ -2040,6 +2040,90 @@ mod tests {
         }
     }
 
+    /// Same near-side/occluded clip boundary as `clip_observer_sees_near_side_prefix`, but over
+    /// a genuinely any-angle (non-axis-aligned) path — proves the M2 per-recipient egress clip
+    /// is engine-agnostic geometry, unaffected by whether the sampled polyline is grid-stepped or
+    /// continuous (M10f-3 §6). Wall at x=100 (unchanged); observer at (50,50) sees anything with
+    /// x<100 regardless of y, so the diagonal y-offsets below don't change the visibility split.
+    #[tokio::test]
+    async fn clip_observer_sees_near_side_prefix_any_angle_diagonal_path() {
+        use crate::ws::protocol::PosSample;
+
+        let wall_sys = json!({
+            "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
+            "blocksSight": true
+        });
+        let (room, _, obs_ctx, scene_id) =
+            setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
+
+        let mover_id = Uuid::from_u128(0xAABB);
+        let frame = ServerMsg::MoveStream {
+            request_id: Uuid::from_u128(1),
+            token_id: Uuid::from_u128(2),
+            mover: mover_id,
+            scene: scene_id,
+            start_server_ms: 1000.0,
+            duration_ms: 1500.0,
+            stop: [310.0, 10.0],
+            samples: vec![
+                PosSample {
+                    t_ms: 0.0,
+                    pos: [50.0, 60.0], // near side, diagonal offset — visible
+                },
+                PosSample {
+                    t_ms: 750.0,
+                    pos: [140.0, 95.0], // behind wall, diagonal — occluded
+                },
+                PosSample {
+                    t_ms: 1500.0,
+                    pos: [310.0, 10.0], // further behind wall, diagonal — occluded
+                },
+            ],
+            mover_vision: None,
+            cost: Some(3.0),
+        };
+
+        let result = clip_move_stream(&frame, &obs_ctx, &room).await;
+
+        assert!(
+            result.is_some(),
+            "partial-visibility observer must receive a clipped frame"
+        );
+        match result.unwrap() {
+            ServerMsg::MoveStream {
+                samples: s,
+                mover_vision: mv,
+                stop: out_stop,
+                duration_ms: out_duration_ms,
+                cost,
+                ..
+            } => {
+                assert_eq!(
+                    s.len(),
+                    1,
+                    "only the near-side diagonal sample is visible; got {} samples: {s:?}",
+                    s.len()
+                );
+                assert_eq!(s[0].pos, [50.0_f64, 60.0_f64]);
+                assert_eq!(mv, None, "mover_vision must be None for observers");
+                assert_eq!(
+                    out_stop,
+                    [50.0_f64, 60.0_f64],
+                    "stop clips to the last visible sample, not the true diagonal goal"
+                );
+                // Critical 2 regression: duration_ms must be clipped to the last visible
+                // sample's t_ms, NOT the true goal/full travel duration (mirrors the
+                // axis-aligned sibling `clip_observer_sees_near_side_prefix`).
+                assert!(
+                    (out_duration_ms - 0.0_f64).abs() < 1e-9,
+                    "duration_ms must be clipped to last visible sample t_ms (0 ms), got {out_duration_ms}"
+                );
+                assert_eq!(cost, None, "cost must be nulled for a clipped observer");
+            }
+            other => panic!("expected MoveStream, got {other:?}"),
+        }
+    }
+
     /// A `gm_only` (`DocRole::None`) `blocksSight` wall bounds the observer's authoritative
     /// vision identically to a normal wall — `sight_walls` is permission-blind (full wall set,
     /// M9b invariant). When the mover's entire path lies behind the secret wall, the frame is

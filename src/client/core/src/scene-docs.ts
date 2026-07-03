@@ -10,7 +10,8 @@ import type { ReadableDocuments } from "./store";
 
 export type MovementRestriction = "visible" | "revealed" | "unrestricted";
 /** Per-scene pathfinding engine choice (M10f-1). `grid-stepped` = the existing grid A* router;
- * `continuous` = the M10f polyanya navmesh router (preview only until M10f-3 ships execution). */
+ * `continuous` = the M10f polyanya navmesh router, executed end-to-end since M10f-3
+ * (server-authoritative gated movement, same as grid-stepped). */
 export type MovementModel = "grid-stepped" | "continuous";
 export type LightMode = "globalIllumination" | "environmentLight";
 export type DiagonalRule = "chebyshev" | "alternating" | "euclidean" | "manhattan";
@@ -63,6 +64,10 @@ export interface SceneSystem {
   grid: { kind: "square" | "hex"; size: number; distance?: GridDistance };
   background: string | null;
   bounds?: SceneDimensions;
+  /** Scene-level snap-to-grid toggle (M10f-3 §4.1), independent of `movementModel`. Absent ⇒
+   * derived default resolved in `resolveSceneSettings` (false for a continuous scene, true
+   * otherwise) — reading this field alone is NOT the effective value. */
+  snapToGrid?: boolean;
   vision?: SceneVisionOverrides;
   lighting?: SceneLightingOverrides;
 }
@@ -116,6 +121,10 @@ export interface ResolvedSceneSettings {
   observerVision: boolean;
   movementRestriction: MovementRestriction;
   movementModel: MovementModel;
+  /** Effective snap-to-grid axis (M10f-3 §4.1): an explicit scene value overrides in either
+   * direction (including `false`); absent falls back to a derived default keyed off the
+   * RESOLVED `movementModel` (false for continuous, true otherwise). */
+  snapToGrid: boolean;
   lightingEnabled: boolean;
   lightMode: LightMode;
   environment: EnvironmentLight;
@@ -210,6 +219,9 @@ export function buildSceneDoc(worldId: string, system: Partial<SceneSystem> = {}
     ...(system.bounds ? { bounds: system.bounds } : {}),
     ...(system.vision ? { vision: system.vision } : {}),
     ...(system.lighting ? { lighting: system.lighting } : {}),
+    // Explicit undefined-check (not a truthy check) — false is a meaningful, persistable
+    // value (M10f-3 §4.1); `system.snapToGrid ? ... : {}` would silently drop an explicit false.
+    ...(system.snapToGrid !== undefined ? { snapToGrid: system.snapToGrid } : {}),
   };
   return envelope(worldId, "scene", null, full, id);
 }
@@ -249,12 +261,17 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
   const sys = scene?.system as SceneSystem | undefined;
   const v = sys?.vision ?? {};
   const l = sys?.lighting ?? {};
+  const movementModel = v.movementModel ?? d.scene.movementModel;
   return {
     losRestriction: v.losRestriction ?? d.scene.losRestriction,
     fog: v.fog ?? d.scene.fog,
     observerVision: v.observerVision ?? d.scene.observerVision,
     movementRestriction: v.movementRestriction ?? d.scene.movementRestriction,
-    movementModel: v.movementModel ?? d.scene.movementModel,
+    movementModel,
+    // Derived default keyed off the RESOLVED movementModel (M10f-3 §4.1) — `??` only falls
+    // through on null/undefined, never on `false`, so an explicit stored boolean (including
+    // false) always overrides the derived default in either direction.
+    snapToGrid: sys?.snapToGrid ?? (movementModel === "continuous" ? false : true),
     lightingEnabled: l.enabled ?? d.scene.lightingEnabled,
     lightMode: l.mode ?? d.scene.lightMode,
     environment: l.environment ?? d.scene.environment,

@@ -68,6 +68,10 @@ export class RenderEngine implements SceneToolHost {
   private readonly lighting: Lighting;
   /** Reassignable: the active scene's grid drives snapping + lines (M8d §15). */
   private grid: Grid;
+  /** Scene-level snap-to-grid toggle (M10f-3 §4.2); default enabled. Disabled makes `snap`
+   * identity — grid RENDERING is unaffected, only the snap call chain every tool inherits
+   * via `ctx.scene.snap`. */
+  private snapEnabled = true;
   private readonly reconciler: SceneReconciler;
   private readonly tokens: TokenView;
   private readonly drawings: DrawingView;
@@ -347,7 +351,11 @@ export class RenderEngine implements SceneToolHost {
   }
 
   snap(p: Point): Point {
-    return this.grid.snap(p);
+    return this.snapEnabled ? this.grid.snap(p) : p;
+  }
+
+  setSnapEnabled(enabled: boolean): void {
+    this.snapEnabled = enabled;
   }
 
   setDraggingToken(id: string | null): void {

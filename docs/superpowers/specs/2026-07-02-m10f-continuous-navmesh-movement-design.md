@@ -318,8 +318,9 @@ prove grid parity **before** continuous is layered on top.
   king-step executor's admit/deny/arrest outcomes on grid inputs across env / global-
   illumination / darkvision / LOS+wall (mirror the M10e-4 parity suite); `route ⊆
   gate-allowed` holds for continuous.
-- Continuous execution: a continuous move into unseen space is rejected by the cell
-  gate (fail-closed); `MoveStream` samples an any-angle path correctly; observer
+- Continuous execution: a continuous move into unseen space truncates at the cell
+  gate (`stopped_early`/`truncated`, fail-closed — same mechanism as §6.2, not a
+  request-level rejection); `MoveStream` samples an any-angle path correctly; observer
   clip leak-free (reuse the M2 no-leak suite, now over any-angle paths).
 - Regions on navmesh: terrain reroutes/costs; impassable routes around; visible
   arrest truncates + sets `arrested`; **secret region absent from a player's field

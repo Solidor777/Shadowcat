@@ -401,7 +401,11 @@ test("double-click commits via moveRequest (animation is broadcast-driven)", asy
   // Animation is now broadcast-driven via onMoveStream for all scene viewers.
 });
 
-test("commitRoute does nothing in a continuous-movement-model scene (double-click is a no-op)", async () => {
+test("commitRoute fires via moveRequest in a continuous-movement-model scene (M10f-3: execution now wired end-to-end)", async () => {
+  // [[tests-yield-to-correct-code]]: this test used to assert commitRoute's continuous-scene
+  // refusal (the M10f-1 preview-only guard). M10f-2 shipped the engine-agnostic unified
+  // executor and M10f-3 removes the guard, so committing a route now proceeds identically to
+  // a grid-stepped scene — this test now asserts the move FIRES, not that it's suppressed.
   const moves: Array<{ tokenId: string; path: [number, number][] }> = [];
   const moveRequest: ToolContext["moveRequest"] = async (_s, tokenId, path) => {
     moves.push({ tokenId, path });
@@ -418,7 +422,7 @@ test("commitRoute does nothing in a continuous-movement-model scene (double-clic
   now.advance(100);
   tool.onPointerDown({ x: 100, y: 100 }, ev()); tool.onPointerUp({ x: 100, y: 100 }, ev());
   await drain();
-  expect(moves).toEqual([]);
+  expect(moves).toEqual([{ tokenId: "tok1", path: [[0, 0], [100, 0], [100, 100]] }]);
 });
 
 test("a single click in route mode does NOT commit", async () => {
