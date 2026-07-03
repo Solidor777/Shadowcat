@@ -244,6 +244,38 @@ mod tests {
         }
     }
 
+    /// Any-angle diagonal path (non-grid-aligned vertices, no 45°/90° structure): endpoints
+    /// exact, `t_ms` strictly increasing (arc-length monotonic) — proves `sample_path` is
+    /// engine-agnostic geometry, not shaped around grid king-steps (M10f-3 §6).
+    #[test]
+    fn diagonal_any_angle_path_samples_endpoints_with_monotonic_time() {
+        let path = vec![(0.0_f64, 0.0_f64), (137.5, 84.2), (310.0, 10.0)];
+        let cell = 100.0_f64;
+        let duration_ms = 1500.0_f64;
+        let samples = sample_path(&path, cell, duration_ms);
+
+        let first = &samples[0];
+        let last = samples.last().unwrap();
+
+        assert!((first.t_ms - 0.0).abs() < 1e-9, "first t_ms {}", first.t_ms);
+        assert_eq!(first.pos, (0.0, 0.0), "first pos exact");
+        assert!(
+            (last.t_ms - duration_ms).abs() < 1e-6,
+            "last t_ms {}",
+            last.t_ms
+        );
+        assert_eq!(last.pos, (310.0, 10.0), "last pos exact");
+
+        for w in samples.windows(2) {
+            assert!(
+                w[1].t_ms > w[0].t_ms,
+                "t_ms not strictly increasing: {} then {}",
+                w[0].t_ms,
+                w[1].t_ms
+            );
+        }
+    }
+
     /// A very long path (> MAX_VISION_SAMPLES/SAMPLES_PER_CELL cells) must be capped at
     /// MAX_VISION_SAMPLES with endpoints exact.
     #[test]
