@@ -42,8 +42,13 @@
   function toggleSnap(): void {
     const scene = activeScene;
     if (!scene) return;
+    // Reads the RAW stored value (not the resolved/defaulted `snapToGrid`) for optimistic-
+    // concurrency `old`: the server's field-level conflict check compares against the actual
+    // stored value at this path, which is only `null` while the field is genuinely absent.
+    // Mirrors controller.svelte.ts's sendMoves convention (`sys?.x ?? null`).
+    const rawSnap = (scene.system as { snapToGrid?: boolean } | undefined)?.snapToGrid ?? null;
     ctx.dispatchIntent([
-      { op: "update", doc_id: scene.id, changes: [{ path: "/system/snapToGrid", old: null, new: !snapToGrid }] },
+      { op: "update", doc_id: scene.id, changes: [{ path: "/system/snapToGrid", old: rawSnap, new: !snapToGrid }] },
     ]);
   }
 

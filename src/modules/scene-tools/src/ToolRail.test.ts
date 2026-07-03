@@ -94,6 +94,23 @@ test("the snap toggle reflects the resolved snapToGrid (grid-stepped default: pr
   ]);
 });
 
+test("the snap toggle sends the ACTUAL stored value as `old`, not null, when snapToGrid was already explicitly stored (regression: repeated toggles must not hit a stale optimistic-concurrency conflict)", async () => {
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm",
+      documents: sceneStore({ snapToGrid: true }),
+      dispatchIntent: (ops) => dispatched.push(ops),
+    }),
+  });
+  const toggle = screen.getByTestId("snap-toggle");
+  expect(toggle.getAttribute("aria-pressed")).toBe("true");
+  await fireEvent.click(toggle);
+  expect(dispatched.at(-1)).toEqual([
+    { op: "update", doc_id: "s1", changes: [{ path: "/system/snapToGrid", old: true, new: false }] },
+  ]);
+});
+
 test("the snap toggle reflects a continuous scene's false default", () => {
   render(ToolRail, {
     context: setAppContextForTest({
