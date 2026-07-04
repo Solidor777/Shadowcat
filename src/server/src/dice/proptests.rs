@@ -108,4 +108,63 @@ proptest! {
         prop_assert_eq!(raws2, raws);
         prop_assert_eq!(out2, base);
     }
+
+    /// d10, HighWins target >=6 vs LowWins target <=5 are mirror images
+    /// (face f maps to 11-f; f>=6  <=>  11-f<=5). Same natural faces, so the
+    /// success COUNT must match across the mirrored spec pair.
+    #[test]
+    fn direction_flip_mirrors_success_count(seed in any::<u64>(), count in 1u32..8) {
+        let hi = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count,
+                kind: DieKind::Numeric { min: 1, max: 10 },
+                modifiers: vec![],
+            }),
+            direction: Direction::HighWins,
+            mode: Mode::SuccessCount(SuccessConfig {
+                success: SuccessRule { comp: Comparator::Gte, target: 6 },
+                required_successes: None,
+                tiers: vec![],
+                crit_success: None,
+                crit_fail: None,
+            }),
+        };
+        let raws = roll(&hi, &mut NoiseRng::from_seed(seed));
+        let hi_succ = evaluate(&hi, &raws).successes.unwrap();
+        // Mirror the faces into a fresh raws and evaluate the LowWins spec.
+        let mut mirrored = raws.clone();
+        for d in mirrored.dice.iter_mut() { d.natural = 11 - d.natural; }
+        for r in mirrored.records.iter_mut() { r.value = 11 - r.value; r.natural = 11 - r.natural; }
+        let lo = RollSpec {
+            direction: Direction::LowWins,
+            mode: Mode::SuccessCount(SuccessConfig {
+                success: SuccessRule { comp: Comparator::Lte, target: 5 },
+                required_successes: None,
+                tiers: vec![],
+                crit_success: None,
+                crit_fail: None,
+            }),
+            ..hi.clone()
+        };
+        prop_assert_eq!(hi_succ, evaluate(&lo, &mirrored).successes.unwrap());
+    }
+
+    /// For a fixed `1d<sides>t<target>` expression, the `t<N>` value must reach
+    /// the mode-appropriate field regardless of the ambient `ModeKind` the
+    /// caller parses under.
+    #[test]
+    fn t_target_reaches_mode_appropriate_field(sides in 2i32..20, target in 1i32..20) {
+        use crate::dice::notation::{parse, ParseContext, ModeKind};
+        let s = format!("1d{sides}t{target}");
+        let total = parse(&s, ParseContext { mode: ModeKind::Total, direction: Direction::HighWins }).unwrap();
+        let sc = parse(&s, ParseContext { mode: ModeKind::SuccessCount, direction: Direction::HighWins }).unwrap();
+        match total.mode {
+            Mode::Total(c) => prop_assert_eq!(c.difficulty, Some(target)),
+            _ => prop_assert!(false, "expected Total mode"),
+        }
+        match sc.mode {
+            Mode::SuccessCount(c) => prop_assert_eq!(c.success.target, target),
+            _ => prop_assert!(false, "expected SuccessCount mode"),
+        }
+    }
 }
