@@ -8,9 +8,10 @@ description: "Use when touching Shadowcat's dice engine: RollSpec/Expr AST, the 
 Orientation for the server-authoritative dice engine: a pure Rust library with no wire/ws
 coupling yet. M11a shipped the core evaluator (RNG, per-group pipeline, Sum/SuccessCount modes,
 notation, recalculate). **M11b-1 shipped** the `direction` global flip, a data-carrying `Mode`,
-the shared classification layer, crit events, and unified `t<N>` notation (all detailed below).
-Still deferred: expertise DP (**M11b-2**) and labeled/custom-face dice (**M11b-3**). M11d
-(transport/wire integration) builds on all of this later.
+the shared classification layer, crit events, and unified `t<N>` notation. **M11b-2 shipped** the
+expertise-point DP allocator (buddy-checked, differential-oracle-verified) and `e<N>` notation
+(all detailed below). Still deferred: labeled/custom-face dice (**M11b-3**). M11d (transport/wire
+integration) builds on all of this later.
 
 ## Purpose
 
@@ -46,13 +47,14 @@ on.
   configs. `TotalConfig{difficulty: Option<i32>, tiers: Vec<Tier>}` — Sum and Tiered are now ONE
   mode: empty `tiers` = default pass/fail at `margin >= 0`; non-empty = a custom ladder.
   `SuccessConfig{success: SuccessRule, required_successes: Option<i32>, tiers: Vec<Tier>,
-  crit_success: Option<CritSuccess>, crit_fail: Option<CritFail>}` — `expertise: u32` is
-  deliberately absent (M11b-2). `Mode` is now **data-carrying**: `Total(TotalConfig) |
-  SuccessCount(SuccessConfig)` (replaces M11a's unit `Mode::Sum | Mode::SuccessCount`).
-  `RollSpec{expr, direction: Direction, mode: Mode}`.
+  crit_success: Option<CritSuccess>, crit_fail: Option<CritFail>, expertise: u32}` — the
+  per-roll expertise-point budget (0 = disabled). `Mode` is now **data-carrying**:
+  `Total(TotalConfig) | SuccessCount(SuccessConfig)` (replaces M11a's unit `Mode::Sum |
+  Mode::SuccessCount`). `RollSpec{expr, direction: Direction, mode: Mode}`.
 - `src/server/src/dice/outcome.rs` — `RawDie`, `RawRoll` (`dice`, `records`, `next_id`,
   `group_spans`), `DieRecord` (`id`, `group_index`, `natural`, `value`, `kept`, `exploded`,
-  `rerolled_from`, `crit_success: bool`, `crit_fail: bool`). `RollOutcome`'s final shape: `total:
+  `rerolled_from`, `crit_success: bool`, `crit_fail: bool`, `expertise: i32`). `expertise` is the
+  audit trail of points spent adjusting this die's `value` (0 if none/not applicable). `RollOutcome`'s final shape: `total:
   i64`, `records`, `successes: Option<i32>`, `pass: Option<bool>`, `margin: Option<i64>` (renamed
   + widened from M11a's `net_margin`), `tier_label: Option<String>`, `tier_value: Option<i32>`,
   `crit_successes: i32`, `crit_fails: i32`, `positive_counter: i32`, `negative_counter: i32` (all
@@ -78,6 +80,24 @@ on.
   (`reaches()` flips both comparisons under `LowWins`). Both `is_success` and `is_fail` CAN be
   `true` on the same die under an overlapping-threshold config — intentional, tested
   (`overlapping_thresholds_fire_both_crit_success_and_crit_fail`), not a bug.
+- `src/server/src/dice/eval/expertise.rs` — the value-mutating pre-pass `allocate(direction,
+  cfg: &SuccessConfig, raws: &RawRoll, records: &mut [DieRecord])`, called by
+  `eval::success::evaluate_success` only when `cfg.expertise > 0`, BEFORE base-success counting
+  (b-1's counting logic itself is unmodified/sealed). `adjust(direction, value, min, max, k)`
+  moves a face up to `k` steps toward "better," stopping at the die's better-end bound
+  (`max`/`min`) — provably preserves `adjust(_, v, _, _, 0) == v` for every `v`, INCLUDING values
+  outside `[min,max]` (a Compound die's `value > max`, a Penetrate child's `value < min`), so an
+  out-of-range face is never dragged back across a bound even at zero spend. `die_values(...) ->
+  Vec<(i32,i32)>` builds the per-die `v_i(k)` table for `k in 0..=e`: each entry is
+  `(net_i, counter_i)` from moving the face `k` steps then re-scoring via `crit::score_die` +
+  `cfg.success`. `run_dp(dies, e, better) -> (Vec<u32>, (i32,i32))` is a bounded-knapsack DP,
+  `O(N·E²)`, over an injected `better` ordering; ties break toward the SMALLEST `k` at each die,
+  and backtracking runs from the LAST die outward so points concentrate on the earliest dice
+  whenever spending is actually needed (R3 lowest-index-first). `allocate` runs `run_dp` up to
+  TWICE (R1 two-pass clamp handling): pass 1 maximizes raw lexicographic `(net, counter)`; if
+  `allow_negative` is unset and the achieved net is `< 1`, every allocation clamps to net 0 so a
+  second counter-only pass replaces it (the all-failed-region fallback). Both passes mutate only
+  the chosen dice's `value` (adjusted face) and `expertise` (points spent).
 - `src/server/src/dice/eval/sum.rs` — `evaluate_total(spec, cfg: &TotalConfig, raws) ->
   RollOutcome`: folds the AST to a total by matching `DieRecord.group_index` against an AST-order
   cursor (`fold`); **the group-boundary reconstruction is the correctness core** — a wrong
@@ -85,7 +105,9 @@ on.
   `oriented_margin` + `classify::classify`; otherwise reports a bare total (`pass`/`margin`/
   `tier_*` all `None`).
 - `src/server/src/dice/eval/success.rs` — `evaluate_success(spec, cfg: &SuccessConfig, raws) ->
-  RollOutcome`: pools **all kept records across every group** (ignores `group_index`/AST
+  RollOutcome`: if `cfg.expertise > 0`, first runs `eval::expertise::allocate` over a cloned
+  `records` to mutate chosen dice's `value`/`expertise`, THEN pools **all kept records across
+  every group** (ignores `group_index`/AST
   arithmetic entirely — the defining difference from Total mode), counts base successes against
   `cfg.success`, then folds each kept die's `crit::score_die` result into net successes and the
   positive/negative counters (counters are a SEPARATE output, never folded into `successes`). Net
@@ -110,7 +132,14 @@ on.
   `cf`; `direction` resolves `t<N>`'s comparator under SuccessCount-ambient context (`HighWins` ->
   `Gte`, `LowWins` -> `Lte` — the composer never specifies the comparator via `t`) and seeds
   `RollSpec::direction`. Under Total-ambient context, `t<N>` resolves to `TotalConfig.difficulty`
-  instead. Explicit `cs`/`cf` in the notation always forces `SuccessCount` regardless of the
+  instead. The parser's internal state (`struct P`, not `ParseContext`) also carries an
+  `expertise: Option<u32>` roll-level scratch field set by an `e<N>` token (no dedicated lexer
+  token — the alphabetic-run arm emits `Ident("e")`, the parser's `modifiers` arm reads the
+  following int, the same function that handles `kh`/`cs`/`t`); a duplicate `e<N>` is
+  `ParseError::DuplicateExpertise`. `expertise` is only consumed when the FINAL resolved mode is
+  `SuccessCount(SuccessConfig{expertise, ..})` — if the notation instead resolves to `Total`
+  (e.g. `t<N>` under Total-ambient context with no `cs`/`cf`), any parsed `e<N>` value is silently
+  dropped, never an error. Explicit `cs`/`cf` in the notation always forces `SuccessCount` regardless of the
   ambient `mode`. A `t<N>` + explicit `cs`/`cf` together is a collision —
   `ParseError::DuplicateSuccessRule` (shared parser state: `success`/`t_target` are one `RollSpec`,
   not per-`DiceGroup`). SuccessCount with NEITHER a `cs`/`cf` rule nor a `t<N>` target is a hard
@@ -162,6 +191,22 @@ on.
   construction path (M11d) bypassing the parser needs the identical guard independently.
 - **Pure library — `dice` must never depend on `ws`/`data`/`http`/`scene`.** No wire frames, no
   `#[derive(TS)]`/ts-rs bindings yet (that's M11d's job, once real consumers exist).
+- **Expertise optimizes the CLAMPED (visible) net successes, with a counter-max fallback in the
+  all-failed region.** `eval::expertise::allocate` maximizes raw lexicographic `(net, counter)`
+  first; only when that raw net is `< 1` AND `allow_negative` is unset (every allocation clamps to
+  net 0, so successes tie) does it re-run the DP with counters as the sole objective. A future
+  change must preserve this two-pass fork, not just always maximize raw net.
+- **`adjust` preserves `v_i(0) = value` for out-of-range (Compound/Penetrate) faces.** A naive
+  `clamp(value ± k, min, max)` would drag an already-out-of-range die (a Compound's `value > max`,
+  a Penetrate child's `value < min`) back across the bound even at `k = 0`; `adjust` instead moves
+  by `k.min((bound - value).max(0))`, which is a no-op whenever the die is already past its
+  better-end bound.
+- **The expertise DP allocation is deterministic and oracle-verified.** `run_dp`'s tie-break
+  (smallest `k` wins per die, backtrack from the last die) is pinned against a brute-force
+  reference (`oracle` in `expertise.rs`'s test module) over a 4000-case deterministic pseudo-random
+  corpus varying direction/target/crit config/`allow_negative`/e/n — both the objective value AND
+  the exact per-die allocation must match. Any future change to the tie-break or the DP recurrence
+  must re-run this oracle test, not just check the objective value.
 
 ## Gotchas
 
@@ -180,14 +225,21 @@ on.
   the ordinary per-die `SuccessRule` (or its M11a-era inverted-comparator `cf` approximation);
   they do NOT construct a `CritSuccess`/`CritFail` struct. Today, crit events are configurable
   only by authoring a `RollSpec`/`SuccessConfig` directly — no notation syntax exposes them yet.
-- **Expertise DP (M11b-2) is the highest-risk piece of the whole engine** — the design's own
-  standing directive is buddy-check + differential-oracle verification against a brute-force
-  reference before merge. Do not treat it as routine pipeline work when it lands.
+- **Expertise DP (M11b-2) was the highest-risk piece of the whole engine** — it shipped only after
+  buddy-check + differential-oracle verification against a brute-force reference (see the Hard
+  invariants entry above). Treat any future change to `eval/expertise.rs` as buddy-check-worthy by
+  default, same tier as `eval/groups.rs`/`eval/sum.rs`/`eval/success.rs` below.
+- **`e<N>` is roll-level and silently discarded under Total mode.** Mirrors the existing `t<N>`-
+  vs-mode gotcha: `e<N>` sets the parser's internal `struct P.expertise` scratch field, but that
+  value is only ever read into `SuccessConfig.expertise` when the resolved `Mode` is
+  `SuccessCount`. A notation string like
+  `4d6t10e3` under Total-ambient context (`t<N>` resolves to `TotalConfig.difficulty`, not a
+  success target) parses successfully and simply drops the `e3` — no `ParseError`, no warning.
 - **Buddy-check track record in this module**: all three of M11a's plan's pre-approved
   buddy-check tasks (group pipeline, group_index fold, recalculate) found and fixed real
   Critical/Important bugs — this is dense, easy-to-get-subtly-wrong pipeline logic; treat any
   future change to `eval/groups.rs`, `eval/sum.rs`, `eval/success.rs`, `eval/classify.rs`,
-  `eval/crit.rs`, or `recalc.rs` as buddy-check-worthy by default.
+  `eval/crit.rs`, `eval/expertise.rs`, or `recalc.rs` as buddy-check-worthy by default.
 
 ## Pointers
 
@@ -197,7 +249,10 @@ on.
   (this checkpoint's task-by-task plan); `docs/superpowers/plans/2026-07-03-m11a-dice-engine-core.md`
   (M11a implementation plan + Buddy-check/Model-effort directives).
 - Deferred work: `docs/TODO.md` "Server / dice (M11a)" section (dice-count cap, serde-defaults,
-  `Token` Display impl — several already marked RESOLVED as later tasks closed them). Expertise DP
-  = M11b-2 (not yet started); labeled dice + custom-face/symbolic dice = M11b-3 (not yet started).
+  `Token` Display impl — several already marked RESOLVED as later tasks closed them), plus a
+  dedicated `SuccessConfig.expertise` bounding entry (M11b-2, unbounded `E` is an `O(N·E²)`
+  DoS/wrap-around vector — deferred to the M11d untrusted-transport boundary alongside the
+  dice-count cap). Expertise DP = M11b-2 (shipped); labeled dice + custom-face/symbolic dice =
+  M11b-3 (not yet started).
 - M11 milestone context (dice + chat, parallel to the M10 movement/vision track): memory
   `m11-dice-chat-resume` in the project's auto-memory.

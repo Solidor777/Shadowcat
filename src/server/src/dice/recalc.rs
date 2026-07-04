@@ -188,6 +188,7 @@ mod tests {
                 tiers: vec![],
                 crit_success: None,
                 crit_fail: None,
+                expertise: 0,
             }),
         }
     }

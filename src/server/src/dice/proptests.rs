@@ -25,6 +25,7 @@ fn simple_pool(count: u32, sides: i32, target: i32) -> RollSpec {
             tiers: vec![],
             crit_success: None,
             crit_fail: None,
+            expertise: 0,
         }),
     }
 }
@@ -51,6 +52,7 @@ fn pool_with_modifiers(
             tiers: vec![],
             crit_success: None,
             crit_fail: None,
+            expertise: 0,
         }),
     }
 }
@@ -163,6 +165,7 @@ proptest! {
                     negative_counter: 1,
                     allow_negative: true,
                 }),
+                expertise: 0,
             }),
         };
         let raws = roll(&hi, &mut NoiseRng::from_seed(seed));
@@ -192,6 +195,7 @@ proptest! {
                     negative_counter: 1,
                     allow_negative: true,
                 }),
+                expertise: 0,
             }),
             ..hi.clone()
         };
