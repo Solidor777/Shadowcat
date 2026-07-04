@@ -4,12 +4,12 @@
 // their embedded copy. Returns null for a raw (actorless) or dangling-link token.
 import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { ActorSystem, ActorVisual, TokenOverrides, ConditionRegistrySystem, SceneSystem, VisionAssignment } from "./scene-docs";
+import type { ActorSystem, TokenVisual, TokenOverrides, ConditionRegistrySystem, SceneSystem, VisionAssignment } from "./scene-docs";
 
 export interface EffectiveActor {
   name: string;
   displayName: string;
-  visual: ActorVisual;
+  visual: TokenVisual;
   size: { w: number; h: number };
   shape: "square" | "circle";
   faction: string | null;

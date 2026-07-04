@@ -27,7 +27,7 @@ describe("resolveTokenActor", () => {
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100);
     const eff = resolveTokenActor(token, storeWith(actor));
     expect(eff?.name).toBe("Goblin");
-    expect(eff?.visual.asset).toBe("a1");
+    expect(eff?.visual.kind === "image" && eff.visual.asset).toBe("a1");
   });
 
   it("applies the per-token override whitelist over the linked actor", () => {
@@ -36,7 +36,7 @@ describe("resolveTokenActor", () => {
     (token.system as { overrides?: TokenOverrides }).overrides = { name: "Boss", visual: { kind: "image", asset: "a2" } };
     const eff = resolveTokenActor(token, storeWith(actor));
     expect(eff?.name).toBe("Boss");
-    expect(eff?.visual.asset).toBe("a2");
+    expect(eff?.visual.kind === "image" && eff.visual.asset).toBe("a2");
   });
 
   it("resolves an instanced token from its embedded copy (store-independent)", () => {

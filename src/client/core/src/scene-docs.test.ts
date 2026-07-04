@@ -1,5 +1,5 @@
 import { test, expect, describe, it } from "vitest";
-import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, type TokenSystem, type ActorSystem, type Faction, type Condition, type SceneSystem, type SceneDimensions } from "./scene-docs";
+import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, type TokenSystem, type ActorSystem, type Faction, type Condition, type SceneSystem, type SceneDimensions, type TokenVisual, type FaceVisual, type AnimatedSource } from "./scene-docs";
 import {
   buildWorldSettingsDoc, resolveSceneSettings, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
   type WireDocument,
@@ -342,5 +342,34 @@ describe("buildRegionDoc", () => {
     expect(doc.permissions.property_overrides["/system"]).toBe("gm_only");
     setRegionVisibility(doc, false);
     expect(doc.permissions.property_overrides["/system"]).toBeUndefined();
+  });
+});
+
+describe("TokenVisual union (M10h)", () => {
+  it("admits a plain image visual", () => {
+    const v: TokenVisual = { kind: "image", asset: "a1" };
+    expect(v.kind).toBe("image");
+  });
+
+  it("admits an animated visual with a frame-list source", () => {
+    const v: TokenVisual = { kind: "animated", source: { type: "frames", frames: ["a1", "a2"] }, fps: 8, loop: true };
+    expect(v).toMatchObject({ kind: "animated", fps: 8, loop: true });
+  });
+
+  it("admits an animated visual with a grid-sheet source", () => {
+    const source: AnimatedSource = { type: "sheet", asset: "sheet1", rows: 2, cols: 4, count: 7 };
+    const v: TokenVisual = { kind: "animated", source, fps: 12, loop: false };
+    expect(v.kind).toBe("animated");
+  });
+
+  it("admits a faces visual whose face values are themselves RenderVisuals (image or animated)", () => {
+    const bloodied: FaceVisual = { kind: "animated", source: { type: "frames", frames: ["b1"] }, fps: 4, loop: true };
+    const v: TokenVisual = {
+      kind: "faces",
+      faces: { normal: { kind: "image", asset: "n1" }, bloodied },
+      default: "normal",
+      faceMap: { bleeding: "bloodied" },
+    };
+    expect(Object.keys(v.faces)).toEqual(["normal", "bloodied"]);
   });
 });
