@@ -241,6 +241,7 @@ mod tests {
             dice: naturals.clone(),
             records: vec![],
             next_id: 4,
+            group_spans: vec![],
         };
         let mut rng = NoiseRng::from_seed(1);
         let recs = resolve_group(
@@ -263,6 +264,7 @@ mod tests {
             dice: naturals.clone(),
             records: vec![],
             next_id: 2,
+            group_spans: vec![],
         };
         let g = DiceGroup {
             count: 2,
@@ -286,6 +288,7 @@ mod tests {
             dice: naturals.clone(),
             records: vec![],
             next_id: 2,
+            group_spans: vec![],
         };
         let g = DiceGroup {
             count: 2,
@@ -327,6 +330,7 @@ mod tests {
             dice: naturals.clone(),
             records: vec![],
             next_id: 1,
+            group_spans: vec![],
         };
         let g = DiceGroup {
             count: 1,
@@ -364,6 +368,7 @@ mod tests {
             dice: naturals.clone(),
             records: vec![],
             next_id: 1,
+            group_spans: vec![],
         };
         let g = DiceGroup {
             count: 1,
@@ -399,6 +404,7 @@ mod tests {
             dice: naturals.clone(),
             records: vec![],
             next_id: 2,
+            group_spans: vec![],
         };
         let g = DiceGroup {
             count: 2,
@@ -430,6 +436,7 @@ mod tests {
             dice: naturals.clone(),
             records: vec![],
             next_id: 2,
+            group_spans: vec![],
         };
         let g = DiceGroup {
             count: 2,
@@ -462,6 +469,7 @@ mod tests {
             dice: naturals.clone(),
             records: vec![],
             next_id: 1,
+            group_spans: vec![],
         };
         let g = DiceGroup {
             count: 1,
@@ -498,6 +506,7 @@ mod tests {
             dice: naturals.clone(),
             records: vec![],
             next_id: 1,
+            group_spans: vec![],
         };
         let g = DiceGroup {
             count: 1,
@@ -529,6 +538,7 @@ mod tests {
             dice: naturals.clone(),
             records: vec![],
             next_id: 1,
+            group_spans: vec![],
         };
         let g = DiceGroup {
             count: 1,

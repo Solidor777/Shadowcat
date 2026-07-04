@@ -28,6 +28,7 @@ fn roll_expr(expr: &Expr, rng: &mut dyn RngSource, raws: &mut RawRoll, group_ind
                 let natural = roll_uniform(rng, min, max);
                 raws.push(group.kind.clone(), natural);
             }
+            raws.group_spans.push((start, group.count as usize));
             let naturals: Vec<RawDie> = raws.dice[start..].to_vec();
             let index = *group_index;
             *group_index += 1;

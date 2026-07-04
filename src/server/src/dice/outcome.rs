@@ -18,6 +18,12 @@ pub struct RawRoll {
     pub dice: Vec<RawDie>,
     pub records: Vec<DieRecord>,
     pub next_id: DieId,
+    /// Per-`Dice`-AST-node `(start, base_count)` into `dice`, in AST left-to-right
+    /// order. Covers ONLY the base naturals rolled for that group (explosion/
+    /// penetrate children pushed later live past the span). `recalculate` uses this
+    /// to reconstruct each group's pre-pipeline naturals exactly, excluding any
+    /// derived dice a prior roll/recalc appended.
+    pub group_spans: Vec<(usize, usize)>,
 }
 
 impl RawRoll {
