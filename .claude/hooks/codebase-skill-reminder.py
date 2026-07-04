@@ -9,6 +9,7 @@ import sys, json, os, tempfile, re
 
 # (subsystem-id, [path regexes]). Order = priority; first match wins.
 SUBSYSTEMS = [
+    ("dice",                 [r"src/server/src/dice/"]),
     ("assets",               [r"src/modules/assets/", r"src/server/src/data/asset\.rs", r"src/server/src/http/assets\.rs"]),
     ("documents-permissions", [r"src/server/src/data/", r"src/client/core/src/wire\.ts"]),
     ("actors-tokens",        [r"src/modules/actors/", r"src/modules/factions/", r"src/client/core/src/actor\.ts"]),
