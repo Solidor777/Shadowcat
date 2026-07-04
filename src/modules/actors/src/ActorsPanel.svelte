@@ -50,6 +50,13 @@
   function faceRowToVisual(f: FaceRowState): FaceVisual {
     return f.kind === "image" ? { kind: "image", asset: f.asset ?? "" } : { kind: "animated", source: animSourceToSource(f.anim), fps: f.anim.fps, loop: f.anim.loop };
   }
+  // Same completeness check the top-level image/animated branches apply to themselves,
+  // applied per-row: an incomplete row (no asset picked / no frames or sheet asset)
+  // must block the whole faces visual, not silently persist an empty asset/frame set.
+  function faceRowComplete(f: FaceRowState): boolean {
+    if (f.kind === "image") return !!f.asset;
+    return (f.anim.sourceType === "frames" && f.anim.frames.length > 0) || (f.anim.sourceType === "sheet" && !!f.anim.sheetAsset);
+  }
 
   let visualKind = $state<"image" | "faces" | "animated">("image");
   let topAnim = $state<AnimSourceState>(newAnimSourceState());
@@ -71,9 +78,16 @@
       return { kind: "animated", source: animSourceToSource(topAnim), fps: topAnim.fps, loop: topAnim.loop };
     }
     if (faceRows.length === 0 || !defaultFace || faceRows.some((f) => !f.name)) return null;
+    const names = faceRows.map((f) => f.name);
+    const uniqueNames = new Set(names);
+    if (uniqueNames.size !== names.length) return null; // duplicate face names collapse silently otherwise
+    if (faceRows.some((f) => !faceRowComplete(f))) return null;
+    if (!uniqueNames.has(defaultFace)) return null; // defaultFace must reference a current row (no stale reference)
     const faces: Record<string, FaceVisual> = {};
     for (const f of faceRows) faces[f.name] = faceRowToVisual(f);
-    const mapped = faceMapRows.filter((r) => r.conditionId && r.faceName);
+    // A stale faceMap row (faceName no longer present after a rename/removal) is dropped,
+    // not fatal — recoverable, unlike a stale defaultFace which blocks the whole save.
+    const mapped = faceMapRows.filter((r) => r.conditionId && r.faceName && uniqueNames.has(r.faceName));
     const faceMap = mapped.length > 0 ? Object.fromEntries(mapped.map((r) => [r.conditionId, r.faceName])) : undefined;
     return { kind: "faces", faces, default: defaultFace, ...(faceMap ? { faceMap } : {}) };
   }
@@ -263,7 +277,7 @@
         {@render assetPicker(anim.sheetAsset, (id: string) => (anim.sheetAsset = id))}
         <label>{t("actors.animRows")} <input type="number" min="1" step="1" bind:value={anim.rows} /></label>
         <label>{t("actors.animCols")} <input type="number" min="1" step="1" bind:value={anim.cols} /></label>
-        <label>{t("actors.animCount")} <input type="number" min="1" step="1" value={anim.count ?? ""} onchange={(e) => (anim.count = e.currentTarget.value ? Number(e.currentTarget.value) : null)} /></label>
+        <label>{t("actors.animCount")} <input type="number" min="1" step="1" value={anim.count ?? ""} onchange={(e) => (anim.count = e.currentTarget.value ? Number(e.currentTarget.value) : null)} oninput={(e) => (anim.count = e.currentTarget.value ? Number(e.currentTarget.value) : null)} /></label>
       {/if}
       <!-- value + onchange/oninput (not bind:value): bind:value on a number input reacts only to input events (see the darkvision input above); explicit handlers keep this in sync with `fireEvent.change` in tests too. -->
       <label>{t("actors.animFps")} <input type="number" min="1" step="1" aria-label={t("actors.animFps")} value={anim.fps} onchange={(e) => (anim.fps = Number(e.currentTarget.value))} oninput={(e) => (anim.fps = Number(e.currentTarget.value))} /></label>
@@ -279,7 +293,7 @@
         {#each faceRows as f, i (i)}
           <div class="face-row">
             <input placeholder={t("actors.faceName")} aria-label={t("actors.faceName")} bind:value={f.name} />
-            <select bind:value={f.kind}>
+            <select bind:value={f.kind} aria-label={t("actors.faceKind")}>
               <option value="image">{t("actors.visualKindImage")}</option>
               <option value="animated">{t("actors.visualKindAnimated")}</option>
             </select>
@@ -302,11 +316,11 @@
           <p class="hint">{t("actors.faceMapHint")}</p>
           {#each faceMapRows as r, i (i)}
             <div class="face-map-row">
-              <select bind:value={r.conditionId}>
+              <select bind:value={r.conditionId} aria-label={t("actors.faceMapCondition")}>
                 <option value="">—</option>
                 {#each conditionOptions as [id, c] (id)}<option value={id}>{c.name}</option>{/each}
               </select>
-              <select bind:value={r.faceName}>
+              <select bind:value={r.faceName} aria-label={t("actors.faceMapFace")}>
                 <option value="">—</option>
                 {#each faceRows as f, fi (fi)}<option value={f.name}>{f.name}</option>{/each}
               </select>

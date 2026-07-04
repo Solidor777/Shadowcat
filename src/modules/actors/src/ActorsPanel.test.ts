@@ -325,4 +325,60 @@ describe("ActorsPanel — visual kind editor", () => {
       visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } }, default: "normal" },
     });
   });
+
+  it("an incomplete face row (kind image, no asset picked) keeps the create button disabled", async () => {
+    const dispatchIntent = vi.fn();
+    const { listAssets } = await import("@shadowcat/core");
+    vi.mocked(listAssets).mockResolvedValue([
+      { id: "n1", world_id: "w1", original_name: "normal.png", content_type: "image/png" } as never,
+    ]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+    });
+    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "normal.png" }).length).toBeGreaterThan(0));
+    await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Goblin" } });
+    await fireEvent.change(screen.getByLabelText("actors.visualKind"), { target: { value: "faces" } });
+    await fireEvent.click(screen.getByText("actors.faceAdd"));
+    const nameInputs = screen.getAllByLabelText("actors.faceName");
+    await fireEvent.input(nameInputs[0], { target: { value: "normal" } });
+    // Leave the row on kind "image" with no asset picked, then set defaultFace.
+    await fireEvent.change(screen.getByLabelText("actors.faceDefault"), { target: { value: "normal" } });
+
+    const submitBtn = screen.getByText("actors.create");
+    expect((submitBtn as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(submitBtn);
+    expect(dispatchIntent).not.toHaveBeenCalled();
+  });
+
+  it("duplicate face-row names keep the create button disabled", async () => {
+    const dispatchIntent = vi.fn();
+    const { listAssets } = await import("@shadowcat/core");
+    vi.mocked(listAssets).mockResolvedValue([
+      { id: "n1", world_id: "w1", original_name: "normal.png", content_type: "image/png" } as never,
+      { id: "b1", world_id: "w1", original_name: "bloodied.png", content_type: "image/png" } as never,
+    ]);
+    const { container } = render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+    });
+    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "normal.png" }).length).toBeGreaterThan(0));
+    await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Goblin" } });
+    await fireEvent.change(screen.getByLabelText("actors.visualKind"), { target: { value: "faces" } });
+    await fireEvent.click(screen.getByText("actors.faceAdd"));
+    await fireEvent.click(screen.getByText("actors.faceAdd"));
+    const nameInputs = screen.getAllByLabelText("actors.faceName");
+    // Both rows get the SAME name — this must be rejected, not silently collapsed.
+    await fireEvent.input(nameInputs[0], { target: { value: "normal" } });
+    await fireEvent.input(nameInputs[1], { target: { value: "normal" } });
+    const faceRowEls = container.querySelectorAll(".face-row");
+    const normalPickBtn = within(faceRowEls[0] as HTMLElement).getByRole("button", { name: "normal.png" });
+    await fireEvent.click(normalPickBtn);
+    const bloodiedPickBtn = within(faceRowEls[1] as HTMLElement).getByRole("button", { name: "bloodied.png" });
+    await fireEvent.click(bloodiedPickBtn);
+    await fireEvent.change(screen.getByLabelText("actors.faceDefault"), { target: { value: "normal" } });
+
+    const submitBtn = screen.getByText("actors.create");
+    expect((submitBtn as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(submitBtn);
+    expect(dispatchIntent).not.toHaveBeenCalled();
+  });
 });
