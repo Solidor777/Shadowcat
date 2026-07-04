@@ -6,6 +6,8 @@
 pub mod eval;
 pub mod notation;
 pub mod outcome;
+#[cfg(test)]
+mod proptests;
 pub mod recalc;
 pub mod rng;
 pub mod spec;
