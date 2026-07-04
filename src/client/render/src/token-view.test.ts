@@ -1,4 +1,4 @@
-import { test, expect, it } from "vitest";
+import { test, expect, it, vi } from "vitest";
 import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
 import type { WireDocument, WireOperation } from "@shadowcat/core";
@@ -38,7 +38,7 @@ test("reconcile creates a token node at its center transform with the resolved u
   const backend = new MockBackend();
   store.applyCommand(cmd(1, [{ op: "create", doc: tokenDoc("t1", 100, 50, "img1") }]));
   new TokenView(store, assets, backend).reconcile();
-  expect(backend.tokens.get("t1")).toEqual({ x: 100, y: 50, w: 100, h: 100, rotation: 0, url: assets.url("img1"), borderColor: null, badges: [], shape: "square" });
+  expect(backend.tokens.get("t1")).toEqual({ x: 100, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", url: assets.url("img1") }, borderColor: null, badges: [], shape: "square" });
 });
 
 test("a moved token tweens via tick toward the new position", () => {
@@ -66,7 +66,7 @@ test("renders a linked token using the actor's visual", () => {
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 10, y: 20 }, 100, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
   new TokenView(store, assets, backend).reconcile();
-  expect(backend.tokens.get("tok1")!.url).toBe(assets.url("actorimg"));
+  expect(backend.tokens.get("tok1")!.visual).toEqual({ kind: "image", url: assets.url("actorimg") });
 });
 
 test("a deleted token doc removes its node", () => {
@@ -168,6 +168,70 @@ test("raw token keeps its own size + defaults to square", () => {
   expect(spec.w).toBe(80);
   expect(spec.h).toBe(80);
   expect(spec.shape).toBe("square");
+});
+
+test("renders an animated frame-list visual with resolved frame URLs", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const actor = buildActorDoc(
+    "w1",
+    { name: "Wisp", displayName: "Wisp", visual: { kind: "animated", source: { type: "frames", frames: ["f1", "f2"] }, fps: 6, loop: true }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, assets, backend).reconcile();
+  expect(backend.tokens.get("tok1")!.visual).toEqual({
+    kind: "animated",
+    source: { type: "frames", urls: [assets.url("f1"), assets.url("f2")] },
+    fps: 6,
+    loop: true,
+  });
+});
+
+test("renders an animated grid-sheet visual with a resolved sheet URL", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const actor = buildActorDoc(
+    "w1",
+    { name: "Torch", displayName: "Torch", visual: { kind: "animated", source: { type: "sheet", asset: "sheet1", rows: 2, cols: 4, count: 7 }, fps: 12, loop: false }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, assets, backend).reconcile();
+  expect(backend.tokens.get("tok1")!.visual).toEqual({
+    kind: "animated",
+    source: { type: "sheet", url: assets.url("sheet1"), rows: 2, cols: 4, count: 7 },
+    fps: 12,
+    loop: false,
+  });
+});
+
+test("a token whose visual fails to resolve (empty faces) is skipped, not crashed", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const actor = buildActorDoc(
+    "w1",
+    { name: "Broken", displayName: "Broken", visual: { kind: "faces", faces: {}, default: "x" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  expect(() => new TokenView(store, new AssetResolver(), backend).reconcile()).not.toThrow();
+  expect(backend.tokens.has("tok1")).toBe(false);
+});
+
+test("tick() forwards dtMs to the backend's tickTokenAnimations", () => {
+  const store = makeStoreWithToken("tok1", { x: 0, y: 0 });
+  const backend = new MockBackend();
+  const spy = vi.spyOn(backend, "tickTokenAnimations");
+  const view = new TokenView(store, new AssetResolver(), backend);
+  view.reconcile();
+  view.tick(16);
+  expect(spy).toHaveBeenCalledWith(16);
 });
 
 // ---- helpers for animation-config tests ----
