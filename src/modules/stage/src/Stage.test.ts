@@ -42,6 +42,7 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean } {
     addLayerFilter() { return () => {}; },
     setToken() {},
     removeToken() {},
+    tickTokenAnimations() {},
     setShape() {},
     removeShape() {},
     drawOverlay() {},
