@@ -1,8 +1,8 @@
 use crate::dice::notation::lexer::{lex, Token};
 use crate::dice::notation::ParseError;
 use crate::dice::spec::{
-    BinOp, Comparator, DiceGroup, DieKind, ExplodeKind, Expr, GroupModifier, Mode, RollSpec,
-    SuccessRule,
+    BinOp, Comparator, DiceGroup, DieKind, Direction, ExplodeKind, Expr, GroupModifier, Mode,
+    RollSpec, SuccessConfig, SuccessRule, TotalConfig,
 };
 
 struct P {
@@ -28,16 +28,23 @@ pub fn parse(input: &str) -> Result<RollSpec, ParseError> {
     if p.pos != p.toks.len() {
         return Err(ParseError::Trailing(format!("{:?}", p.toks[p.pos])));
     }
-    let mode = if p.success.is_some() {
-        Mode::SuccessCount
-    } else {
-        Mode::Sum
+    let mode = match p.success {
+        Some(rule) => Mode::SuccessCount(SuccessConfig {
+            success: rule,
+            required_successes: None,
+            tiers: vec![],
+            crit_success: None,
+            crit_fail: None,
+        }),
+        None => Mode::Total(TotalConfig {
+            difficulty: None,
+            tiers: vec![],
+        }),
     };
     Ok(RollSpec {
         expr,
+        direction: Direction::HighWins,
         mode,
-        success: p.success,
-        required_successes: None,
     })
 }
 
@@ -253,7 +260,7 @@ mod tests {
     #[test]
     fn parses_keep_highest_plus_const() {
         let spec = parse("4d6kh3+2").unwrap();
-        assert_eq!(spec.mode, Mode::Sum);
+        assert!(matches!(spec.mode, Mode::Total(_)));
         assert_eq!(
             spec.expr,
             Expr::Bin {
@@ -267,14 +274,16 @@ mod tests {
     #[test]
     fn parses_success_pool() {
         let spec = parse("5d10cs>=7").unwrap();
-        assert_eq!(spec.mode, Mode::SuccessCount);
-        assert_eq!(
-            spec.success,
-            Some(SuccessRule {
-                comp: Comparator::Gte,
-                target: 7
-            })
-        );
+        match &spec.mode {
+            Mode::SuccessCount(cfg) => assert_eq!(
+                cfg.success,
+                SuccessRule {
+                    comp: Comparator::Gte,
+                    target: 7
+                }
+            ),
+            other => panic!("expected SuccessCount mode, got {other:?}"),
+        }
         assert_eq!(spec.expr, dice(5, 1, 10, vec![]));
     }
 
@@ -323,7 +332,7 @@ mod tests {
 
     #[test]
     fn parses_parentheses_and_mul() {
-        assert_eq!(parse("(1d4+1)*2").unwrap().mode, Mode::Sum);
+        assert!(matches!(parse("(1d4+1)*2").unwrap().mode, Mode::Total(_)));
     }
 
     #[test]

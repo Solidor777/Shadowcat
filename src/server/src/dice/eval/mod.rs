@@ -46,9 +46,9 @@ fn roll_expr(expr: &Expr, rng: &mut dyn RngSource, raws: &mut RawRoll, group_ind
 
 /// Deterministic scoring: (spec, raws) -> outcome. Reads `raws.records`; NO randomness.
 pub fn evaluate(spec: &RollSpec, raws: &RawRoll) -> RollOutcome {
-    match spec.mode {
-        Mode::Sum => sum::evaluate_sum(spec, raws),
-        Mode::SuccessCount => success::evaluate_success(spec, raws),
+    match &spec.mode {
+        Mode::Total(cfg) => sum::evaluate_total(spec, cfg, raws),
+        Mode::SuccessCount(cfg) => success::evaluate_success(spec, cfg, raws),
     }
 }
 
@@ -56,7 +56,7 @@ pub fn evaluate(spec: &RollSpec, raws: &RawRoll) -> RollOutcome {
 mod tests {
     use super::*;
     use crate::dice::rng::NoiseRng;
-    use crate::dice::spec::{BinOp, DiceGroup, DieKind, Expr, Mode, RollSpec};
+    use crate::dice::spec::{BinOp, DiceGroup, Direction, Expr, Mode, RollSpec, TotalConfig};
 
     fn ng(count: u32, min: i32, max: i32) -> Expr {
         Expr::Dice(DiceGroup {
@@ -74,9 +74,11 @@ mod tests {
                 lhs: Box::new(ng(3, 1, 6)),
                 rhs: Box::new(ng(2, 1, 8)),
             },
-            mode: Mode::Sum,
-            success: None,
-            required_successes: None,
+            direction: Direction::HighWins,
+            mode: Mode::Total(TotalConfig {
+                difficulty: None,
+                tiers: vec![],
+            }),
         };
         let raws = roll(&spec, &mut NoiseRng::from_seed(99));
         assert_eq!(raws.records.len(), 5);
@@ -93,9 +95,11 @@ mod tests {
     fn roll_is_seed_stable() {
         let spec = RollSpec {
             expr: ng(4, 1, 20),
-            mode: Mode::Sum,
-            success: None,
-            required_successes: None,
+            direction: Direction::HighWins,
+            mode: Mode::Total(TotalConfig {
+                difficulty: None,
+                tiers: vec![],
+            }),
         };
         let a = roll(&spec, &mut NoiseRng::from_seed(5));
         let b = roll(&spec, &mut NoiseRng::from_seed(5));

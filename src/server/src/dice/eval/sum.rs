@@ -1,9 +1,10 @@
 use crate::dice::outcome::{RawRoll, RollOutcome};
-use crate::dice::spec::{BinOp, Expr, RollSpec};
+use crate::dice::spec::{BinOp, Expr, RollSpec, TotalConfig};
 
 /// Fold the AST to a total. Each `Dice` node contributes the sum of its group's kept
 /// records (matched by `group_index`); a cursor consumes groups in AST order.
-pub fn evaluate_sum(spec: &RollSpec, raws: &RawRoll) -> RollOutcome {
+/// TODO: classify `total` against `_cfg.difficulty`/`_cfg.tiers` into margin/tier fields.
+pub fn evaluate_total(spec: &RollSpec, _cfg: &TotalConfig, raws: &RawRoll) -> RollOutcome {
     let mut next_group = 0usize;
     let total = fold(&spec.expr, raws, &mut next_group);
     RollOutcome {
@@ -11,7 +12,13 @@ pub fn evaluate_sum(spec: &RollSpec, raws: &RawRoll) -> RollOutcome {
         records: raws.records.clone(),
         successes: None,
         pass: None,
-        net_margin: None,
+        margin: None,
+        tier_label: None,
+        tier_value: None,
+        crit_successes: 0,
+        crit_fails: 0,
+        positive_counter: 0,
+        negative_counter: 0,
     }
 }
 
@@ -52,7 +59,16 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
 mod tests {
     use crate::dice::eval::{evaluate, roll};
     use crate::dice::rng::NoiseRng;
-    use crate::dice::spec::{BinOp, DiceGroup, DieKind, Expr, Mode, RollSpec};
+    use crate::dice::spec::{
+        BinOp, DiceGroup, DieKind, Direction, Expr, Mode, RollSpec, TotalConfig,
+    };
+
+    fn total_mode() -> Mode {
+        Mode::Total(TotalConfig {
+            difficulty: None,
+            tiers: vec![],
+        })
+    }
 
     fn ng(count: u32, min: i32, max: i32) -> Expr {
         Expr::Dice(DiceGroup {
@@ -70,9 +86,8 @@ mod tests {
                 lhs: Box::new(ng(2, 1, 6)),
                 rhs: Box::new(Expr::Const(3)),
             },
-            mode: Mode::Sum,
-            success: None,
-            required_successes: None,
+            direction: Direction::HighWins,
+            mode: total_mode(),
         };
         let raws = roll(&spec, &mut NoiseRng::from_seed(20));
         let out = evaluate(&spec, &raws);
@@ -94,9 +109,8 @@ mod tests {
                 lhs: Box::new(ng(1, 1, 4)),
                 rhs: Box::new(Expr::Const(2)),
             },
-            mode: Mode::Sum,
-            success: None,
-            required_successes: None,
+            direction: Direction::HighWins,
+            mode: total_mode(),
         };
         let raws = roll(&spec, &mut NoiseRng::from_seed(21));
         let out = evaluate(&spec, &raws);
@@ -122,9 +136,8 @@ mod tests {
                 lhs: Box::new(ng(1, 1, 6)),
                 rhs: Box::new(ng(1, 1, 6)),
             },
-            mode: Mode::Sum,
-            success: None,
-            required_successes: None,
+            direction: Direction::HighWins,
+            mode: total_mode(),
         };
         let raws = roll(&spec, &mut NoiseRng::from_seed(22));
         let out = evaluate(&spec, &raws);
@@ -151,9 +164,8 @@ mod tests {
                 lhs: Box::new(ng(1, 1, 6)),
                 rhs: Box::new(ng(1, 1, 8)),
             },
-            mode: Mode::Sum,
-            success: None,
-            required_successes: None,
+            direction: Direction::HighWins,
+            mode: total_mode(),
         };
         let raws = roll(&spec, &mut NoiseRng::from_seed(42));
         let out = evaluate(&spec, &raws);
@@ -192,9 +204,8 @@ mod tests {
                 lhs: Box::new(Expr::Const(2)),
                 rhs: Box::new(Expr::Const(3)),
             },
-            mode: Mode::Sum,
-            success: None,
-            required_successes: None,
+            direction: Direction::HighWins,
+            mode: total_mode(),
         };
         let raws = roll(&spec, &mut NoiseRng::from_seed(1));
         assert!(raws.records.is_empty(), "no Dice nodes -> no records");

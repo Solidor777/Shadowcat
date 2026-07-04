@@ -37,6 +37,8 @@ pub fn resolve_group(
             kept: true,
             exploded: false,
             rerolled_from: None,
+            crit_success: false,
+            crit_fail: false,
         })
         .collect();
 
@@ -177,6 +179,8 @@ fn push_extra(
         kept: true,
         exploded: false,
         rerolled_from: None,
+        crit_success: false,
+        crit_fail: false,
     });
 }
 

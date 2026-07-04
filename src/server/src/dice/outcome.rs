@@ -54,18 +54,29 @@ pub struct DieRecord {
     pub kept: bool,
     pub exploded: bool,
     pub rerolled_from: Option<i32>,
+    pub crit_success: bool,
+    pub crit_fail: bool,
 }
 
-/// Fully-derived result. `total` is the primary output for Sum; in SuccessCount
-/// mode it still holds a reference kept-die sum, while `successes`/`pass`/
-/// `net_margin` (all `None` in Sum mode) carry that mode's primary output.
+/// Fully-derived result. `total` is the primary output for Total mode; in
+/// SuccessCount mode it still holds a reference kept-die sum, while
+/// `successes`/`pass`/`margin` (all `None` in Total mode with no `difficulty`)
+/// carry that mode's primary output. `tier_label`/`tier_value` classify `margin`
+/// against the spec's tier ladder; the crit/counter fields are SuccessCount-only
+/// aggregates (0 in Total mode).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollOutcome {
     pub total: i64,
     pub records: Vec<DieRecord>,
     pub successes: Option<i32>,
     pub pass: Option<bool>,
-    pub net_margin: Option<i32>,
+    pub margin: Option<i64>,
+    pub tier_label: Option<String>,
+    pub tier_value: Option<i32>,
+    pub crit_successes: i32,
+    pub crit_fails: i32,
+    pub positive_counter: i32,
+    pub negative_counter: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

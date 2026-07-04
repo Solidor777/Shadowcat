@@ -4,7 +4,8 @@ use crate::dice::eval::{evaluate, roll};
 use crate::dice::recalc::recalculate;
 use crate::dice::rng::NoiseRng;
 use crate::dice::spec::{
-    Comparator, DiceGroup, DieKind, ExplodeKind, Expr, GroupModifier, Mode, RollSpec, SuccessRule,
+    Comparator, DiceGroup, DieKind, Direction, ExplodeKind, Expr, GroupModifier, Mode, RollSpec,
+    SuccessConfig, SuccessRule,
 };
 
 fn simple_pool(count: u32, sides: i32, target: i32) -> RollSpec {
@@ -14,12 +15,17 @@ fn simple_pool(count: u32, sides: i32, target: i32) -> RollSpec {
             kind: DieKind::Numeric { min: 1, max: sides },
             modifiers: vec![],
         }),
-        mode: Mode::SuccessCount,
-        success: Some(SuccessRule {
-            comp: Comparator::Gte,
-            target,
+        direction: Direction::HighWins,
+        mode: Mode::SuccessCount(SuccessConfig {
+            success: SuccessRule {
+                comp: Comparator::Gte,
+                target,
+            },
+            required_successes: None,
+            tiers: vec![],
+            crit_success: None,
+            crit_fail: None,
         }),
-        required_successes: None,
     }
 }
 
@@ -35,12 +41,17 @@ fn pool_with_modifiers(
             kind: DieKind::Numeric { min: 1, max: sides },
             modifiers,
         }),
-        mode: Mode::SuccessCount,
-        success: Some(SuccessRule {
-            comp: Comparator::Gte,
-            target,
+        direction: Direction::HighWins,
+        mode: Mode::SuccessCount(SuccessConfig {
+            success: SuccessRule {
+                comp: Comparator::Gte,
+                target,
+            },
+            required_successes: None,
+            tiers: vec![],
+            crit_success: None,
+            crit_fail: None,
         }),
-        required_successes: None,
     }
 }
 
