@@ -1,19 +1,25 @@
 use crate::dice::eval::groups::resolve_group;
-use crate::dice::outcome::{RawDie, RawRoll};
+use crate::dice::outcome::{RawDie, RawRoll, RollOutcome};
 use crate::dice::rng::{roll_uniform, RngSource};
-use crate::dice::spec::{DieKind, Expr, RollSpec};
+use crate::dice::spec::{DieKind, Expr, Mode, RollSpec};
 
 pub mod groups;
+pub mod success;
+pub mod sum;
 
 /// Roll every die in the spec's expression, left-to-right, running each group's
 /// pipeline. The ONLY randomness step; `evaluate` reads `raws.records` deterministically.
 pub fn roll(spec: &RollSpec, rng: &mut dyn RngSource) -> RawRoll {
     let mut raws = RawRoll::default();
-    roll_expr(&spec.expr, rng, &mut raws);
+    let mut group_index = 0usize;
+    roll_expr(&spec.expr, rng, &mut raws, &mut group_index);
     raws
 }
 
-fn roll_expr(expr: &Expr, rng: &mut dyn RngSource, raws: &mut RawRoll) {
+/// `group_index` increments once per `Dice` node in AST left-to-right order —
+/// the same order `eval::sum::evaluate_sum` walks, so a `DieRecord`'s stamped
+/// `group_index` always matches the `Dice` node that produced it.
+fn roll_expr(expr: &Expr, rng: &mut dyn RngSource, raws: &mut RawRoll, group_index: &mut usize) {
     match expr {
         Expr::Dice(group) => {
             let DieKind::Numeric { min, max } = group.kind;
@@ -23,15 +29,25 @@ fn roll_expr(expr: &Expr, rng: &mut dyn RngSource, raws: &mut RawRoll) {
                 raws.push(group.kind.clone(), natural);
             }
             let naturals: Vec<RawDie> = raws.dice[start..].to_vec();
-            let recs = resolve_group(group, &naturals, rng, raws);
+            let index = *group_index;
+            *group_index += 1;
+            let recs = resolve_group(group, index, &naturals, rng, raws);
             raws.records.extend(recs);
         }
         Expr::Const(_) => {}
-        Expr::Neg(inner) => roll_expr(inner, rng, raws),
+        Expr::Neg(inner) => roll_expr(inner, rng, raws, group_index),
         Expr::Bin { lhs, rhs, .. } => {
-            roll_expr(lhs, rng, raws);
-            roll_expr(rhs, rng, raws);
+            roll_expr(lhs, rng, raws, group_index);
+            roll_expr(rhs, rng, raws, group_index);
         }
+    }
+}
+
+/// Deterministic scoring: (spec, raws) -> outcome. Reads `raws.records`; NO randomness.
+pub fn evaluate(spec: &RollSpec, raws: &RawRoll) -> RollOutcome {
+    match spec.mode {
+        Mode::Sum => sum::evaluate_sum(spec, raws),
+        Mode::SuccessCount => success::evaluate_success(spec, raws),
     }
 }
 

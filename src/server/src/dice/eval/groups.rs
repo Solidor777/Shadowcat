@@ -14,8 +14,14 @@ const CHAIN_CAP: usize = 100;
 /// apply in vec order and keep/drop can precede reroll/explode in the same group,
 /// a die already dropped by an earlier `KeepHighest`/`KeepLowest`/`DropHighest`/
 /// `DropLowest` must not be rerolled or exploded by a later modifier.
+///
+/// `group_index` identifies which `Dice` AST node this call is resolving (assigned
+/// by the caller in AST left-to-right order); it is stamped onto every `DieRecord`
+/// produced here, including exploded/penetrated children, so Sum-mode evaluation
+/// can fold per-group without positional heuristics.
 pub fn resolve_group(
     group: &DiceGroup,
+    group_index: usize,
     naturals: &[RawDie],
     rng: &mut dyn RngSource,
     raws: &mut RawRoll,
@@ -25,6 +31,7 @@ pub fn resolve_group(
         .iter()
         .map(|d| DieRecord {
             id: d.id,
+            group_index,
             natural: d.natural,
             value: d.natural,
             kept: true,
@@ -89,10 +96,24 @@ pub fn resolve_group(
                                     // scoring/display) takes the -1 penalty, and may
                                     // therefore land below `min` by design.
                                     let value = extra - 1;
-                                    push_extra(&mut recs, raws, group.kind.clone(), extra, value);
+                                    push_extra(
+                                        &mut recs,
+                                        raws,
+                                        group.kind.clone(),
+                                        group_index,
+                                        extra,
+                                        value,
+                                    );
                                 }
                                 ExplodeKind::Standard => {
-                                    push_extra(&mut recs, raws, group.kind.clone(), extra, extra);
+                                    push_extra(
+                                        &mut recs,
+                                        raws,
+                                        group.kind.clone(),
+                                        group_index,
+                                        extra,
+                                        extra,
+                                    );
                                 }
                             }
                             chain += 1;
@@ -143,12 +164,14 @@ fn push_extra(
     recs: &mut Vec<DieRecord>,
     raws: &mut RawRoll,
     kind: DieKind,
+    group_index: usize,
     natural: i32,
     value: i32,
 ) {
     let id = raws.push(kind, natural);
     recs.push(DieRecord {
         id,
+        group_index,
         natural,
         value,
         kept: true,
@@ -222,6 +245,7 @@ mod tests {
         let mut rng = NoiseRng::from_seed(1);
         let recs = resolve_group(
             &group(vec![GroupModifier::KeepHighest(3)]),
+            0,
             &naturals,
             &mut rng,
             &mut raws,
@@ -250,7 +274,7 @@ mod tests {
             }],
         };
         let mut rng = NoiseRng::from_seed(3);
-        let recs = resolve_group(&g, &naturals, &mut rng, &mut raws);
+        let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
         assert_eq!(recs[0].rerolled_from, Some(1));
         assert!((1..=6).contains(&recs[0].value));
     }
@@ -273,7 +297,7 @@ mod tests {
             }],
         };
         let mut rng = NoiseRng::from_seed(11);
-        let recs = resolve_group(&g, &naturals, &mut rng, &mut raws);
+        let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
         // Exact count, not a loose lower bound: the outer loop trigger-scans only
         // the two original dice. Die 0 (a 6) triggers; its own chain (the sole
         // mechanism extending it) rolls until a non-6 face appears. Die 1 (a 2)
@@ -318,7 +342,7 @@ mod tests {
         // demands a third scripted value and panics (exhausted) instead of
         // reaching this assertion.
         let mut rng = ScriptedRng::new(vec![face_x(6), face_x(3)]);
-        let recs = resolve_group(&g, &naturals, &mut rng, &mut raws);
+        let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
         // 1 original + 2 chained extras = 3.
         assert_eq!(recs.len(), 3);
         assert!(recs[0].exploded);
@@ -353,7 +377,7 @@ mod tests {
         // Raw roll 1 = face 6 (raw check passes, chain continues), raw roll 2 =
         // face 3 (raw check fails, chain stops).
         let mut rng = ScriptedRng::new(vec![face_x(6), face_x(3)]);
-        let recs = resolve_group(&g, &naturals, &mut rng, &mut raws);
+        let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
         // 1 original + 2 extras = 3: the chain extends past a single extra die,
         // which a decremented-value recheck against `Gte(max)` could never do.
         assert_eq!(recs.len(), 3);
@@ -389,7 +413,7 @@ mod tests {
             ],
         };
         let mut rng = NoiseRng::from_seed(5);
-        let recs = resolve_group(&g, &naturals, &mut rng, &mut raws);
+        let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
         assert!(!recs[0].kept, "die 0 should remain dropped");
         assert_eq!(
             recs[0].value, 1,
@@ -420,7 +444,7 @@ mod tests {
             ],
         };
         let mut rng = NoiseRng::from_seed(5);
-        let recs = resolve_group(&g, &naturals, &mut rng, &mut raws);
+        let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
         assert!(!recs[0].kept, "die 0 should remain dropped");
         assert!(
             !recs[0].exploded,
@@ -450,7 +474,7 @@ mod tests {
         };
         // Reroll 1: face 2 (<=2, chain continues). Reroll 2: face 5 (>2, stops).
         let mut rng = ScriptedRng::new(vec![face_x(2), face_x(5)]);
-        let recs = resolve_group(&g, &naturals, &mut rng, &mut raws);
+        let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
         assert_eq!(recs.len(), 1);
         assert_eq!(
             recs[0].value, 5,
@@ -487,7 +511,7 @@ mod tests {
         // Raw roll = face 1 (min): the raw check against Gte(6) fails, so the
         // chain stops after exactly this one extra die.
         let mut rng = ScriptedRng::new(vec![face_x(1)]);
-        let recs = resolve_group(&g, &naturals, &mut rng, &mut raws);
+        let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
         assert_eq!(recs.len(), 2);
         assert_eq!(recs[1].natural, 1, "natural preserves the true rolled face");
         assert_eq!(
