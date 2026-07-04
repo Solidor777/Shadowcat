@@ -18,7 +18,19 @@ pub enum Token {
     BangP,
 }
 
+/// Lexes dice notation into a token stream.
+///
+/// INVARIANT: `input` must be ASCII-only. Every match arm below operates on
+/// `bytes[i] as char`, which widens a raw byte to a `char` (Latin-1
+/// semantics, not UTF-8 decoding) and is only correct for single-byte code
+/// points; slicing `input` at a byte index computed this way would panic on
+/// a multi-byte UTF-8 sequence. This is enforced up front rather than relied
+/// on implicitly, so a future non-ASCII operator arm can't reintroduce a
+/// slice-at-non-char-boundary panic.
 pub fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
+    if !input.is_ascii() {
+        return Err(ParseError::Unexpected("non-ASCII input".to_string()));
+    }
     let mut out = Vec::new();
     let bytes = input.as_bytes();
     let mut i = 0;
@@ -36,7 +48,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
                     .map_err(|_| ParseError::Unexpected(input[start..i].to_string()))?;
                 out.push(Token::Int(n));
             }
-            'd' if !(i + 1 < bytes.len() && (bytes[i + 1] as char).is_ascii_alphabetic()) => {
+            'd' | 'D' if !(i + 1 < bytes.len() && (bytes[i + 1] as char).is_ascii_alphabetic()) => {
                 out.push(Token::D);
                 i += 1;
             }
@@ -145,5 +157,16 @@ mod tests {
     #[test]
     fn lex_rejects_garbage() {
         assert!(lex("4d6 @ 2").is_err());
+    }
+
+    #[test]
+    fn lex_is_case_insensitive_for_dice_operator() {
+        assert_eq!(lex("4D6KH3").unwrap(), lex("4d6kh3").unwrap());
+    }
+
+    #[test]
+    fn lex_rejects_non_ascii_input() {
+        assert!(lex("4d6café").is_err());
+        assert!(lex("4d6+€").is_err());
     }
 }
