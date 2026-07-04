@@ -240,6 +240,13 @@ route + weighted budget on a continuous scene.
   cost layers (weighted regions)" is annotated as inaccurate for 0.16.1; the
   engine-choice conclusion (adopt polyanya for continuous any-angle geometry) stands —
   only the weighting mechanism changes.
+- **§5's cost-recompute clause** ("recomputed as the Euclidean length of the smoothed
+  polyline times the per-span terrain multipliers actually traversed") was not
+  implemented as literally specified: the shipped `los_smooth` carries the
+  pre-smoothing weighted-grid `cost` through unchanged rather than replaying it per
+  span. This is the safe direction (a conservative, never-cheaper budget preview, not
+  an under-count) and is tracked as an accepted implementation-time deviation in
+  `docs/TODO.md` (the `navmesh::los_smooth` entry) rather than fixed here.
 
 ## 14. Testing
 

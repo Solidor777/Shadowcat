@@ -295,10 +295,16 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   only cell topology + the terrain multiplier come from the grid, never the world's configured
   diagonal rule), its cost is converted from CELLS to SCENE UNITS (`× cell`, matching the polyanya
   path's unit contract — the two continuous sub-paths must report cost in the same unit regardless
-  of which ran), then `navmesh::los_smooth` (new) restores any-angle geometry. **Otherwise:** the
-  unchanged pure-polyanya route (M10f-1) is now also passed through `navmesh::truncate_at_arrest`
-  (new) before `clip_to_visible_mask`. `clip_to_visible_mask` still runs on both sub-paths — the
-  secrecy boundary is unchanged, M10f-4 only changes what feeds it.
+  of which ran), then `navmesh::los_smooth` (new) restores any-angle geometry. The weighted sub-path
+  does NOT call `clip_to_visible_mask` at all — its route⊆mask/wall safety comes entirely from
+  `pathfinding::find`'s own per-cell mask gate (already fed `mask.as_ref()`) plus `los_smooth`'s
+  own mask-checking `chord_ok` guard (every cell a straightened chord enters must still be in
+  `mask`). **Otherwise:** the unchanged pure-polyanya route (M10f-1) runs `clip_to_visible_mask`
+  FIRST, then `navmesh::truncate_at_arrest` (new) on the clipped result — clip-then-truncate, so a
+  fog-truncated route can never carry a stale `arrested: true` flag past the point the fog itself
+  should have cut it. `clip_to_visible_mask` is exclusive to the pure-polyanya sub-path — the two
+  continuous sub-paths enforce the SAME mask invariant through different mechanisms, not through a
+  shared call.
   - `navmesh::los_smooth(outcome, walls, mask, field, cell, footprint_radius_cells)` — cost-guarded
     LOS string-pull smoothing for the weighted continuous path. A span `path[i]..path[j]`
     straightens only when every cell its chord enters (`footprint_cells ∪ supercover_cells`, the

@@ -4052,6 +4052,80 @@ mod tests {
     }
 
     #[test]
+    fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
+        // Whole-branch buddy-check Finding 3: the test above only drives the PURE-POLYANYA
+        // sub-path (no terrain/impassable region present, so `has_terrain_or_impassable()` is
+        // false). This test adds a terrain region so `pathfind`'s `Continuous` dispatch takes
+        // the WEIGHTED sub-path (`pathfinding::find` forced Euclidean + `navmesh::los_smooth`)
+        // for a non-GM requester under a real RESTRICTING `visible_cells` mask (default
+        // fail-closed `MovementRestriction::Visible`, same fixture as the pure-polyanya test —
+        // its default settings already yield a small, genuinely restricting mask).
+        let user = Uuid::from_u128(7);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            }),
+        );
+        let scene = entity_doc_top(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "vision": { "movementModel": "continuous" } }),
+        );
+        // Terrain mult 5 FAR outside the token's (small, default-settings) visible mask — its
+        // mere existence anywhere on the scene is what flips `has_terrain_or_impassable()` true
+        // and routes `pathfind`'s `Continuous` dispatch to the WEIGHTED sub-path; it is
+        // deliberately placed off the requester's route so this test isolates "does the weighted
+        // sub-path correctly enforce the mask" from "does terrain bend the route" (already
+        // covered by `pathfind_continuous_terrain_bends_the_route_and_costs_scene_units`).
+        let terrain = region_doc_top(12, 10, "terrain", 5.0, 5000.0, 5000.0, 5100.0, 5100.0);
+        let ecs = SceneEcs::from_documents(vec![scene, tok, light, terrain], 0);
+        let scene_id = Uuid::from_u128(10);
+        let cell = 100.0;
+
+        let lenient = ecs.resolve_scene(scene_id).partial_cell_leniency;
+        let mask = ecs.visible_cells(user, scene_id, lenient);
+        assert!(!mask.is_empty(), "the lit token has a non-empty mask");
+        assert!(
+            ecs.region_field(scene_id, Some(user))
+                .has_terrain_or_impassable(),
+            "the terrain region flips the Continuous dispatch to the weighted sub-path"
+        );
+
+        // Near goal, still within the small visible mask: the weighted route must succeed and
+        // stay entirely inside the mask (the grid A* mask check IS the enforcement mechanism for
+        // this sub-path — Finding 1 — so a route can never even be found outside the mask).
+        let near_goal = (150.0, 50.0);
+        let near = ecs
+            .pathfind(user, scene_id, (50.0, 50.0), &[near_goal], 0.1, false, None)
+            .expect("weighted route to a visible goal succeeds");
+        for &(px, py) in &near.path {
+            let c = ((px / cell).floor() as i32, (py / cell).floor() as i32);
+            assert!(
+                mask.contains(&c),
+                "weighted route point ({px},{py}) -> cell {c:?} lies outside the visible mask"
+            );
+        }
+
+        // Far goal, well outside the visible mask: the weighted grid search cannot even discover
+        // a route through the unseen cells surrounding it (the mask check is baked into the A*
+        // search itself, not a post-hoc clip), so it fails closed (`Unreachable`) rather than
+        // returning a route that threads unseen cells.
+        let far_goal = (9500.0, 9500.0);
+        let far = ecs.pathfind(user, scene_id, (50.0, 50.0), &[far_goal], 0.1, false, None);
+        assert!(
+            far.is_err(),
+            "weighted route to an unseen goal fails closed rather than routing through fog: {far:?}"
+        );
+    }
+
+    #[test]
     fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_execution() {
         // gm_only arrest region on cell (2,0) = Rect [200,0]-[300,100]. No terrain/impassable
         // region exists, so `has_terrain_or_impassable()` is false and `pathfind` takes the PURE
