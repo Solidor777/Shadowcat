@@ -49,4 +49,7 @@ pub enum ParseError {
     /// per-`DiceGroup`), so a silent last-write-wins overwrite would discard
     /// one rule with no error.
     DuplicateSuccessRule,
+    /// A second `e<N>` expertise token appeared in one roll. `expertise` is shared
+    /// roll-level parser state (one `RollSpec`), so a silent overwrite would lose one.
+    DuplicateExpertise,
 }

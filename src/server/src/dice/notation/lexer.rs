@@ -169,4 +169,21 @@ mod tests {
         assert!(lex("4d6café").is_err());
         assert!(lex("4d6+€").is_err());
     }
+
+    #[test]
+    fn lex_expertise_uses_the_identifier_arm() {
+        // `4d6e3` needs no dedicated token: the alphabetic-run arm emits Ident("e")
+        // and the digits become Int(3). The parser recognizes Ident("e") as expertise.
+        let toks = lex("4d6e3").unwrap();
+        assert_eq!(
+            toks,
+            vec![
+                Token::Int(4),
+                Token::D,
+                Token::Int(6),
+                Token::Ident("e".into()),
+                Token::Int(3),
+            ]
+        );
+    }
 }

@@ -13,6 +13,9 @@ struct P {
     /// `TotalConfig::difficulty` in Total mode, or a direction-derived
     /// `SuccessRule` in SuccessCount mode.
     t_target: Option<i32>,
+    /// Roll-level expertise budget from an `e<N>` token (design §8/R4). Shared state,
+    /// not per-`DiceGroup`; applied only when the resolved mode is SuccessCount.
+    expertise: Option<u32>,
 }
 
 /// Recursive-descent parser: `expr := term (('+'|'-') term)*`;
@@ -30,6 +33,7 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
         pos: 0,
         success: None,
         t_target: None,
+        expertise: None,
     };
     let expr = p.expr()?;
     if p.pos != p.toks.len() {
@@ -63,7 +67,7 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
             tiers: vec![],
             crit_success: None,
             crit_fail: None,
-            expertise: 0,
+            expertise: p.expertise.unwrap_or(0),
         })
     } else {
         Mode::Total(TotalConfig {
@@ -221,6 +225,13 @@ impl P {
                                 return Err(ParseError::DuplicateSuccessRule);
                             }
                             self.t_target = Some(n);
+                        }
+                        "e" => {
+                            let n = self.expect_int()?;
+                            if self.expertise.is_some() {
+                                return Err(ParseError::DuplicateExpertise);
+                            }
+                            self.expertise = Some(n as u32);
                         }
                         "cf" => {
                             // Failure-counting parsed as success on the inverted comparator
@@ -487,5 +498,43 @@ mod tests {
             },
         );
         assert!(matches!(e, Err(ParseError::Unexpected(_))));
+    }
+
+    #[test]
+    fn e_token_sets_expertise_under_successcount() {
+        let spec = parse(
+            "4d6t5e3",
+            ParseContext {
+                mode: ModeKind::SuccessCount,
+                direction: Direction::HighWins,
+            },
+        )
+        .unwrap();
+        match spec.mode {
+            Mode::SuccessCount(c) => assert_eq!(c.expertise, 3),
+            other => panic!("expected SuccessCount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn e_token_is_discarded_under_total_ambient_without_error() {
+        // R4: a stray e<N> where the mode can't use it must NOT fail the roll.
+        let spec = parse("1d20t10e3", ParseContext::default()).unwrap(); // ambient Total
+        match spec.mode {
+            Mode::Total(c) => assert_eq!(c.difficulty, Some(10)),
+            other => panic!("expected Total, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_e_token_errors() {
+        let e = parse(
+            "4d6t5e3e4",
+            ParseContext {
+                mode: ModeKind::SuccessCount,
+                direction: Direction::HighWins,
+            },
+        );
+        assert!(matches!(e, Err(ParseError::DuplicateExpertise)));
     }
 }
