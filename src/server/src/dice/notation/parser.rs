@@ -63,6 +63,7 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
             tiers: vec![],
             crit_success: None,
             crit_fail: None,
+            expertise: 0,
         })
     } else {
         Mode::Total(TotalConfig {

@@ -39,6 +39,7 @@ pub fn resolve_group(
             rerolled_from: None,
             crit_success: false,
             crit_fail: false,
+            expertise: 0,
         })
         .collect();
 
@@ -181,6 +182,7 @@ fn push_extra(
         rerolled_from: None,
         crit_success: false,
         crit_fail: false,
+        expertise: 0,
     });
 }
 

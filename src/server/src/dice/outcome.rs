@@ -59,6 +59,11 @@ pub struct DieRecord {
     pub rerolled_from: Option<i32>,
     pub crit_success: bool,
     pub crit_fail: bool,
+    /// Expertise points allocated to this die by `eval::expertise` (M11b-2);
+    /// 0 for every die when the roll has no expertise budget. Audit trail:
+    /// `value` is the post-expertise face, `natural`/base `value` the pre-expertise one.
+    #[serde(default)]
+    pub expertise: i32,
 }
 
 /// Fully-derived result. `total` is the primary output for Total mode; in

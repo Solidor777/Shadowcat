@@ -157,7 +157,10 @@ pub struct SuccessConfig {
     pub tiers: Vec<Tier>,
     pub crit_success: Option<CritSuccess>,
     pub crit_fail: Option<CritFail>,
-    // NOTE: `expertise: u32` is deliberately absent — it is M11b-2.
+    /// Expertise budget (M11b-2): points distributed across the pooled kept dice
+    /// to maximize net successes (tie-break net counters). 0 = off.
+    #[serde(default)]
+    pub expertise: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +240,7 @@ mod tests {
                     positive_counter: 1,
                 }),
                 crit_fail: None,
+                expertise: 0,
             }),
         };
         let json = serde_json::to_string(&spec).unwrap();

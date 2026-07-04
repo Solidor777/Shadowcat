@@ -100,6 +100,7 @@ mod tests {
                 tiers: vec![],
                 crit_success: None,
                 crit_fail: None,
+                expertise: 0,
             }),
         }
     }
@@ -128,6 +129,7 @@ mod tests {
                 positive_counter: 1,
             }),
             crit_fail: None,
+            expertise: 0,
         };
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
@@ -171,6 +173,7 @@ mod tests {
                     negative_counter: 1,
                     allow_negative: allow,
                 }),
+                expertise: 0,
             }),
         };
         let clamped = mk(false);
@@ -230,6 +233,7 @@ mod tests {
                 rerolled_from: None,
                 crit_success: false,
                 crit_fail: false,
+                expertise: 0,
             })
             .collect();
         raws
@@ -262,6 +266,7 @@ mod tests {
                 negative_counter: 1,
                 allow_negative: false,
             }),
+            expertise: 0,
         };
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
@@ -323,6 +328,7 @@ mod tests {
                 tiers,
                 crit_success: None,
                 crit_fail: None,
+                expertise: 0,
             }),
         };
         let out = evaluate(&spec, &roll(&spec, &mut NoiseRng::from_seed(1)));
@@ -351,6 +357,7 @@ mod tests {
                 positive_counter: 0,
             }),
             crit_fail: None,
+            expertise: 0,
         };
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
