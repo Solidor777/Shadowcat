@@ -4,3 +4,9 @@
 //! reproducible from its seed. INVARIANT: (spec, raws) fully determines the outcome.
 
 pub mod rng;
+pub mod spec;
+
+pub use spec::{
+    BinOp, Comparator, DiceGroup, DieId, DieKind, ExplodeKind, Expr, GroupModifier, Mode, RollSpec,
+    SuccessRule,
+};
