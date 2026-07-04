@@ -594,9 +594,55 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > `RenderEngine.snap`/`setSnapEnabled` chokepoint + the raw-stored-value `old` convention) +
 > confirmed ACCURATE.
 >
-> Next = **M10f-4** (regions on the navmesh — terrain cost-layer, impassable obstacle/conditional-
-> layer, arrest cell-sampled truncation, two-field secrecy split; completes the M10g navmesh
-> deferral and lights up the last engine).
+> **M10f-4 DONE** (branch `m10f-4-regions-on-navmesh`, commits `c20cffa..47419c3`, all green —
+> merge gate = full M10f) — **final checkpoint of the M10f milestone; M10f is now COMPLETE.** Wires
+> the M10g region behaviors (terrain/impassable/arrest) into the continuous engine, correcting the
+> original two-cost-backend assumption (M10-tokens §10.2/§10.3/§10.5, parent M10f spec §7): the
+> M10g per-requester `region_field(scene, viewer)` cell field is the **single weighting authority
+> for both engines** — polyanya 0.16.1 cannot bias a route by graded terrain cost
+> (crate-source-verified, not README-derived; the only cost-affecting knob, `detailed-layers`'
+> `Layer.scale`, is off in this build and semantically wrong as a per-unit multiplier anyway), so
+> the "terrain → polyanya cost-layer (Split-Mesh)" plan is struck as infeasible, not deferred.
+> `SceneEcs::pathfind`'s `Continuous` branch (`mod.rs`) now computes the per-requester
+> `region_field` once and dispatches on the new `RegionField::has_terrain_or_impassable()`
+> predicate (`regions.rs`): **terrain/impassable present** → the existing `pathfinding::find`
+> forced to `DiagonalRule::Euclidean` (continuous base metric; only cell topology + the terrain
+> multiplier come from the grid), cost converted from CELLS to SCENE UNITS (`× cell`, matching the
+> polyanya path's unit contract), then **cost-guarded LOS smoothing** (`navmesh::los_smooth`, new)
+> restores any-angle geometry — a span straightens only when every entered cell is in-mask, not
+> impassable/arrest/weighted-terrain, and crossed by no wall, with the single grid step always kept
+> unconditionally so progress is guaranteed; **otherwise** the unchanged pure-polyanya route (M10f-1)
+> now also passed through `navmesh::truncate_at_arrest` (new), an arrest post-filter using
+> cell-ENTRY-TRANSITION detection (not raw per-sample checking — the start cell is never a trigger),
+> mirroring `find`'s own arrest truncation for the walls-only path. The `GridStepped` branch is
+> completely untouched (verified byte-for-byte by a dedicated regression test throughout).
+> `move_exec::execute_move` required **zero production changes** — proven, not merely asserted, by
+> Task 5's tests: it has cell-sampled the region field for any polyline (grid or any-angle) since
+> M10f-2/3, so the weighted+smoothed continuous route feeds the same executor unchanged. Secrecy is
+> fully inherited (zero new machinery, per spec §8): the per-requester `region_field` feeds BOTH the
+> dispatch predicate and the weighted search/arrest-filter, so a secret region never influences a
+> non-GM's route/cost; the authoritative field (`move_exec` always reads `viewer: None`) springs it
+> at execution regardless of what the requester's preview showed. `MoveStream.cost` stays
+> trusted-only (`Some` for mover/GM, `None` for a clipped observer) — verified engine-agnostic by
+> Task 5, extending the M10g whole-move-scalar invariant to the continuous path. SDD-executed (6
+> tasks: 5 code/test tasks + this docs task; no buddy-checked tasks pre-authorized at the plan level
+> for this checkpoint — see the separate mandatory whole-branch buddy-check before merge). **A
+> load-bearing dispatch-predicate invariant surfaced during Task 4's review:** the dispatch
+> predicate `has_terrain_or_impassable()` MUST be evaluated against the PER-REQUESTER field
+> (`region_field(scene, Some(user))` for a non-GM), never the authoritative field — this is the
+> single mechanism preventing a secret terrain/impassable region from indirectly leaking its
+> existence via route-shape or cost even when its own geometry is never disclosed; a future refactor
+> that fed the authoritative field into the dispatch predicate while still correctly routing off the
+> per-requester field would silently reopen this leak. Reviewed skill-update gate:
+> `shadowcat-codebase-scene-rendering` updated + confirmed ACCURATE. **Push gate: full M10** — M10f
+> is complete but M10 (which also includes the parallel M10g-adjacent work) is not yet pushed to
+> origin; push happens at the M10 milestone boundary, not per-checkpoint.
+>
+> **M10f (continuous/navmesh movement) COMPLETE** — all five checkpoints (M10f-0 scene bounds,
+> M10f-1 movement-model dispatch + polyanya router, M10f-2 unified executor, M10f-3 continuous
+> execution + snap toggle, M10f-4 regions on the navmesh) shipped. Both routing engines (grid A*,
+> continuous/polyanya) now share one region-weighting authority, one gated executor, and one
+> streamed-vision secrecy clip.
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 

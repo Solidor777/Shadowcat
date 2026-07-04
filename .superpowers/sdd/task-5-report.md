@@ -1,176 +1,113 @@
-# Task 5 Report — GM tool-rail snap toggle
+# Task 5 Report — M10f-4: execution + cost-secrecy verification (tests only)
 
 **Status:** DONE
 
-**Commit:** `7e00aac` — "feat(m10f-3): add a GM tool-rail toggle authoring the scene snapToGrid axis"
+**Commit:** `47419c3` — `test(m10f-4): prove engine-agnostic executor + cost-secrecy hold for weighted continuous routes`
 
 ---
 
 ## Summary
-Implemented the GM-authored scene-level `snapToGrid` toggle in `ToolRail.svelte`, wired to
-`resolveSceneSettings(...).snapToGrid` for read and `ctx.dispatchIntent` (`/system/snapToGrid`
-update) for write, plus the new `tools.snap` locale string. Followed the brief's TDD steps
-verbatim.
+Test-only checkpoint task. Proved `move_exec`'s engine-agnostic executor correctly gates,
+accrues terrain cost, and arrests on a weighted continuous polyline with zero production
+change; confirmed the `MoveStream.cost` secrecy invariant is engine-agnostic; added an
+additional router-secrecy test (surfaced by Task 4's buddy-check) proving a `gm_only` arrest
+region on the pure-polyanya continuous path is invisible in a non-GM player's route preview
+but still springs at `move_exec` execution time.
 
 ## Files changed
-- `src/client/ui-kit/src/locales/en.ts` — added `"tools.snap": "Snap to grid",` immediately after
-  `"tools.color"`.
-- `src/modules/scene-tools/src/ToolRail.test.ts` — added `DocumentStore`/`buildSceneDoc`/
-  `WireOperation` imports from `@shadowcat/core`; added `sceneStore()` fixture + 3 new tests
-  (grid-stepped default pressed + dispatch-on-click, continuous-scene false default, no-active-
-  scene renders nothing).
-- `src/modules/scene-tools/src/ToolRail.svelte` — added `createSubscriber` + `resolveSceneSettings`/
-  `WireDocument` imports; added `subscribe`, `activeScene` (`$derived.by` over
-  `ctx.documents.query("scene")[0]`), `snapToGrid` (`$derived.by` over `resolveSceneSettings`), and
-  `toggleSnap()` (dispatches an `update` op with `path: "/system/snapToGrid", old: null, new:
-  !snapToGrid`); added the `data-testid="snap-toggle"` button to the markup, gated on
-  `{#if activeScene}`, immediately after the tool-buttons `{#each}` block and before the
-  `controller.active === "place"` branch.
+- `src/server/src/scene/move_exec.rs` — added
+  `execute_move_handles_an_any_angle_weighted_continuous_polyline` (per the brief's Step 1,
+  verbatim aside from `cargo fmt` reflow), placed just before the differential parity test
+  suite section.
+- `src/server/src/ws/conn.rs` — appended a one-line invariant comment to `clip_move_stream`'s
+  existing `cost: None` clip site (the `no-cost-leak` block already documented this invariant
+  from M10g; added the brief's exact phrasing rather than duplicating a new comment block).
+- `src/server/src/scene/mod.rs` — added
+  `pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_execution`,
+  placed alongside the existing `pathfind_continuous_*` tests (after
+  `pathfind_continuous_nongm_route_clips_to_the_visible_mask`).
 
 ## Tests added + result
-- `pnpm --filter @shadowcat/module-scene-tools test -- ToolRail`
-  - Before implementation (Step 2, red): 2 of 8 new/existing tests failed as expected
-    (`getByTestId("snap-toggle")` not found).
-  - After implementation (Step 4, green): **8/8 passed.**
-- Full package gate (Step 5):
-  - `pnpm --filter @shadowcat/module-scene-tools typecheck` — 0 errors, 0 warnings.
-  - `pnpm --filter @shadowcat/module-scene-tools test` — **53/53 passed** (11 test files).
-  - `pnpm --filter @shadowcat/ui-kit test` — **19/19 passed** (5 test files).
+```
+$ cd src/server && cargo test -p shadowcat execute_move_handles_an_any_angle_weighted_continuous_polyline
+test scene::move_exec::tests::execute_move_handles_an_any_angle_weighted_continuous_polyline ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 431 filtered out; finished in 0.00s
+
+$ cargo test -p shadowcat pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_execution
+test scene::tests::pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_execution ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 432 filtered out; finished in 0.01s
+```
+Both passed on the first run with **zero production code changes**, confirming the M10f-2/3
+engine-agnostic-executor and M10g region-secrecy invariants hold for this checkpoint's new
+weighted/smoothed continuous routing without further work — per the brief's halt-and-verify
+instruction, this was not "fixed" — there was nothing to fix.
+
+## Full regression suite
+```
+$ cd src/server && cargo test -p shadowcat
+test result: ok. 433 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out   (lib)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out     (main bin)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out     (test_server bin)
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out    (tests/assets.rs)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out     (tests/scene_derived.rs)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out     (tests/scene_hydration.rs)
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out     (tests/ws_convergence.rs)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out     (tests/ws_live_search.rs)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out     (doc-tests)
+```
+All green — whole suite passes. Lib test count grew 431 → 433 (the two new tests).
 
 ## Lint/format/typecheck status
-Typecheck green (svelte-check, 0 errors/warnings). No separate lint/format step was run for this
-task per the brief's Step 5 gate (typecheck + the two test suites only); no lint issues observed
-in the diff (matches existing file conventions).
+```
+$ cargo fmt      -> clean (only reflows the new test code itself)
+$ cargo clippy -- -D warnings
+    Checking shadowcat v0.1.0 (...)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.83s
+```
+No warnings.
 
 ## Deviations from the task spec
-None. Implemented the brief's Step 1-6 verbatim (locale string, test imports/fixture/tests,
-script-block edits, markup insertion, commit message).
+- Step 1's test was added exactly as specified in the brief.
+- Step 3 asked for a one-line comment "if not already present" at the `clip_move_stream` site —
+  an equivalent `no-cost-leak` invariant comment already existed there (from M10g); appended the
+  brief's exact phrasing to that existing block instead of creating a redundant second comment.
+- The additional secrecy test (surfaced by Task 4's buddy-check) was placed in
+  `src/server/src/scene/mod.rs` rather than `move_exec.rs`, per the dispatcher's explicit
+  "use your judgment" instruction. Rationale: the first half of the claim (secret arrest absent
+  from a player's route preview, present for the GM) is exclusively about `SceneEcs::pathfind`'s
+  dispatch — the router's per-requester `region_field` filtering — the exact thing every sibling
+  `pathfind_continuous_*` test in `mod.rs` already exercises. `move_exec.rs` already has its own
+  `authoritative_field_springs_a_secret_region_a_player_was_routed_through` test proving the
+  executor-side half in isolation (for `impassable`, on a king-step path). Rather than duplicate
+  that proof for `arrest` in a second file, the new test does BOTH halves in one place — router
+  preview via `pathfind`, then feeds the player's own previewed route straight into
+  `move_exec::execute_move` — because the interesting claim is the END-TO-END round trip
+  (preview hides it, commit springs it), which only `mod.rs` can express since it has direct
+  access to both `pathfind` and (via `crate::scene::move_exec::execute_move`) the executor.
+- One project-commenting-rule self-correction during drafting: an early comment draft on the new
+  `mod.rs` test referenced "Task 4's buddy-check" (process-meta); rewritten as a present-tense
+  code fact ("distinct from the weighted-grid branch") per the repo's commenting standard before
+  the edit was accepted.
 
 ## Reference-pattern verification
-The brief's mid-task note asked me to verify the `createSubscriber` + `$derived.by` pattern
-against the current codebase shape (e.g. `FactionsPanel`/`GameSettingsPanel`) before assuming it's
-accurate. Checked both:
-- `FactionsPanel.svelte`: `const subscribe = createSubscriber((update) =>
-  ctx.documents.subscribe(update));` then per-derived `subscribe()` calls inside `$derived.by`.
-- `GameSettingsPanel.svelte`: identical shape, same comment style ("Calling subscribe() inside...
-  registers a reactive dependency on the document store").
-
-Both match the brief's prescribed code exactly — no discrepancy found, no deviation needed.
+Verified the pure-polyanya-branch claim directly against `SceneEcs::pathfind`'s `Continuous`
+dispatch (`scene/mod.rs`): `RegionField::has_terrain_or_impassable()` returns `false` for a field
+containing only an `Arrest` region (checked `regions.rs`'s
+`has_terrain_or_impassable_detects_weight_but_not_arrest` test, which already documents this),
+so an arrest-only scene takes the `navmesh_find` → `clip_to_visible_mask` → `truncate_at_arrest`
+branch, not the weighted-grid-then-LOS-smoothed branch Task 4 already covered — confirming the
+new test exercises the specific engine path the dispatcher's additional requirement asked for.
 
 ## Residual risks / skill-update notes
-No seam/invariant/gotcha changes to `shadowcat-codebase-scene-rendering` — this task only adds a
-thin GM authoring UI over the already-documented `snapToGrid` resolver/data-model (Tasks 1-4,
-already merged and presumably already reflected in the skill). No new subsystem opened. Stating
-explicitly per the skill-update gate: **no skill update needed for this task.**
-
-No other residual risks identified.
+None. This task adds tests only; no seam, invariant, or gotcha changed. The
+`shadowcat-codebase-scene-rendering` skill's existing documentation of `move_exec`'s
+engine-agnostic-since-M10f-2 property and the region-secrecy two-value contract (`region_field`,
+`gm_only` springing at execution) already fully covers what these tests prove. No new subsystem
+opened. Stating explicitly per the skill-update gate: **no skill update needed for this task**
+(Task 6 is the checkpoint's designated docs/skill-update task).
 
 ---
 
 ## Commit hashes
 
-`7e00aac` (single commit; first == last for this task)
-
----
-
-## Fix round 1 — Critical finding: stale `old: null` breaks repeated toggles
-
-**Finding:** `toggleSnap()` hardcoded `old: null` in the dispatched `update` op's `FieldChange`.
-The server (`Repository::apply_intent`) enforces field-level optimistic concurrency: an `Update`
-whose `FieldChange.old` doesn't match the CURRENT stored value at that path is rejected
-(`DataError::Conflict`). Since `snapToGrid` (the RESOLVED/defaulted read) is never `null` once
-anything has been stored, but `toggleSnap` always sent `old: null`: the first click succeeds
-(path genuinely absent, `null` matches), writing e.g. `false`; every subsequent click still sends
-`old: null` against a now-present stored value — mismatch — server rejects with `Conflict`, write
-never applies, toggle silently stops working after one use.
-
-### Fix
-`src/modules/scene-tools/src/ToolRail.svelte` — `toggleSnap()` now reads the RAW stored value off
-`scene.system` (not the resolved/defaulted `snapToGrid`), falling back to `null` only when
-genuinely absent:
-
-```ts
-function toggleSnap(): void {
-  const scene = activeScene;
-  if (!scene) return;
-  const rawSnap = (scene.system as { snapToGrid?: boolean } | undefined)?.snapToGrid ?? null;
-  ctx.dispatchIntent([
-    { op: "update", doc_id: scene.id, changes: [{ path: "/system/snapToGrid", old: rawSnap, new: !snapToGrid }] },
-  ]);
-}
-```
-
-Mirrors the exact convention already used by this same file's sibling, `controller.svelte.ts`'s
-`sendMoves` (`sys?.x ?? null`).
-
-### Test update
-- `src/modules/scene-tools/src/ToolRail.test.ts` — the pre-existing "grid-stepped default:
-  pressed" test's `old: null` assertion is UNCHANGED (still correct: that fixture's scene has no
-  `snapToGrid` field set, so the field is genuinely absent and `null` is the right raw value).
-- Added a NEW regression test: "the snap toggle sends the ACTUAL stored value as `old`, not null,
-  when snapToGrid was already explicitly stored" — seeds `sceneStore({ snapToGrid: true })`,
-  clicks the toggle, and asserts the dispatched op's `old` is `true` (the actual stored value),
-  not `null`. This is the test that would have caught the Critical finding.
-
-### Second-occurrence check
-Reviewed the full Task 5 diff (`git show 7e00aac --stat`): only 3 files touched —
-`src/client/ui-kit/src/locales/en.ts` (one locale string, no op-dispatch code),
-`ToolRail.svelte` (the single `toggleSnap` function — the only occurrence), and
-`ToolRail.test.ts` (tests only). Confirmed: no second copy of the `old: null` shortcut exists
-anywhere in the Task 5 diff. (The separately-noted pre-existing occurrences in
-`GameSettingsPanel.svelte`/`FactionsPanel.svelte`/`ConditionsPanel.svelte` are out of scope for
-this fix, per instruction — not touched.)
-
-### Test output
-```
-pnpm --filter @shadowcat/module-scene-tools test -- ToolRail
- Test Files  1 passed (1)
-      Tests  9 passed (9)
-
-pnpm --filter @shadowcat/module-scene-tools typecheck
-1783074457297 START "c:\\Dev\\Shadowcat\\src\\modules\\scene-tools"
-1783074457303 COMPLETED 949 FILES 0 ERRORS 0 WARNINGS 0 FILES_WITH_PROBLEMS
-```
-
-Both green.
-
----
-
-## Whole-branch buddy-check fix
-
-**Finding:** The snap-toggle button is double-gated — an outer `{#if isGm}` AND an inner
-`{#if activeScene}`. The pre-existing "a non-GM sees no tool buttons" test renders with
-`{ role: "player" }` and no `documents` override, so `ctx.documents` defaults to an empty
-`DocumentStore()` and `activeScene` is `undefined` there — meaning the INNER gate alone hides the
-button in that test, not the `isGm` gate. A naive addition of a `snap-toggle` assertion to that
-existing test would pass vacuously: it would still pass even if `{#if isGm}` were accidentally
-deleted in a future refactor, since the inner gate would still hide the button.
-
-### Fix
-Added a NEW, separate test in `ToolRail.test.ts` that seeds a scene doc (via the existing
-`sceneStore()` fixture, making `activeScene` defined) while using `role: "player"` — isolating
-the `isGm` gate as the ONLY thing hiding the button in that test:
-
-```ts
-test("a non-GM does not see the snap toggle even with an active scene", () => {
-  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: sceneStore() }) });
-  expect(screen.queryByTestId("snap-toggle")).toBeNull();
-});
-```
-
-The existing "a non-GM sees no tool buttons" test was left untouched — it remains valid for its
-own stated purpose (no tool buttons render for a non-GM with no active scene), just not sufficient
-on its own to isolate the `isGm` gate specifically.
-
-### Test output
-```
-pnpm --filter @shadowcat/module-scene-tools test -- ToolRail
- Test Files  1 passed (1)
-      Tests  10 passed (10)
-
-pnpm --filter @shadowcat/module-scene-tools typecheck
-1783079639379 START "c:\\Dev\\Shadowcat\\src\\modules\\scene-tools"
-1783079639383 COMPLETED 949 FILES 0 ERRORS 0 WARNINGS 0 FILES_WITH_PROBLEMS
-```
-
-Both green.
+`47419c3` (single commit; first == last for this task)

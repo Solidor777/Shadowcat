@@ -755,6 +755,9 @@ async fn clip_move_stream(
         // let an observer detect/estimate hidden terrain by comparing the visible portion of
         // the move against the reported total. Mirrors `mover_vision`'s null-for-observers
         // treatment above.
+        // `cost` is a whole-move scalar: Some for mover/GM, None for a clipped observer —
+        // engine-agnostic (grid or continuous), because a continuous weighted cost may
+        // reflect gm_only terrain.
         cost: None,
     })
 }

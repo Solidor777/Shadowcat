@@ -399,9 +399,406 @@ pub(crate) fn clip_to_visible_mask(
     }
 }
 
+/// Line-of-sight smoothing (string-pull) for a WEIGHTED continuous route (M10f-4). Input is the
+/// cell-center polyline `pathfinding::find` produced over the region field; output restores
+/// any-angle geometry by straightening spans that pass ONLY through plain, visible, unobstructed
+/// cells. A span `path[i]..path[j]` (j >= i+2) is straightened only when every cell its chord
+/// enters is (a) in `mask` when `Some`, (b) crossed by no `blocksMove` wall, (c) not impassable,
+/// (d) not arrest, (e) not weighted terrain (`terrain_multiplier <= 1.0`). Conditions (c)-(e) keep
+/// smoothing away from any "special" cell, so a straightened chord can never shortcut INTO
+/// terrain/impassable/arrest the weighted search routed around or truncated at — the smoothed
+/// route's gate/secrecy/cost properties are therefore <= the grid route's. The single grid step
+/// `path[i] -> path[i+1]` is ALWAYS kept unconditionally (it already passed `find`'s per-cell
+/// gate), so progress to the goal is guaranteed and cells adjacent to special terrain stay
+/// grid-stepped. `cost` and `arrested` are carried through unchanged (the grid weighted cost is a
+/// valid, slightly-conservative budget for the straighter geometry — same preview-vs-execution
+/// divergence class already logged for the grid engine in `docs/TODO.md`). "Entered cells" = the
+/// destination footprint disc ∪ the step supercover, the SAME union `pathfinding::cell_enterable`
+/// and `clip_to_visible_mask` apply. Fail-closed on two independent levels: (1) whole-input
+/// short-circuit — `< 3` vertices, or a degenerate `cell`/`footprint_radius_cells`, returns the
+/// input unchanged; (2) per-span fallback — an over-cap/degenerate `supercover_cells` for one
+/// candidate chord fails only that chord, leaving that span at its single unconditional grid step
+/// while smoothing continues over the rest of the path.
+pub(crate) fn los_smooth(
+    outcome: crate::scene::pathfinding::PathOutcome,
+    walls: &[crate::scene::vision::Seg],
+    mask: Option<&std::collections::BTreeSet<crate::scene::pathfinding::Cell>>,
+    field: &crate::scene::regions::RegionField,
+    cell: f64,
+    footprint_radius_cells: f64,
+) -> crate::scene::pathfinding::PathOutcome {
+    use crate::scene::pathfinding::{footprint_cells, Cell};
+    if outcome.path.len() < 3
+        || !cell.is_finite()
+        || cell <= 0.0
+        || !(0.0..=crate::scene::pathfinding::MAX_FOOTPRINT_CELLS).contains(&footprint_radius_cells)
+    {
+        return outcome;
+    }
+    let r_scene = footprint_radius_cells.max(0.0) * cell;
+    let path = outcome.path.clone();
+
+    // True iff the straight chord a->b passes only through plain, visible, unobstructed cells.
+    let chord_ok = |a: (f64, f64), b: (f64, f64)| -> bool {
+        let samples = crate::scene::move_stream::sample_path(&[a, b], cell, 1.0);
+        if samples.len() < 2 {
+            // Coincident/near-coincident endpoints (`sample_path`'s `total_len < 1e-9` guard):
+            // no supercover span exists to check the chord's own cell against the region field,
+            // mask, or walls. Refuse rather than silently passing an unchecked cell.
+            return false;
+        }
+        let mut prev = samples[0].pos;
+        for s in samples.iter().skip(1) {
+            let to = (
+                (s.pos.0 / cell).floor() as i32,
+                (s.pos.1 / cell).floor() as i32,
+            );
+            let mut entered: Vec<Cell> = footprint_cells(to, s.pos, r_scene, cell);
+            match crate::scene::movement::supercover_cells(prev, s.pos, cell) {
+                Some(sc) => entered.extend(sc),
+                None => return false, // degenerate/over-cap span: fail closed (do not straighten)
+            }
+            for c in &entered {
+                if field.is_impassable(*c)
+                    || field.is_arrest(*c)
+                    || field.terrain_multiplier(*c) > 1.0
+                {
+                    return false;
+                }
+                if let Some(m) = mask {
+                    if !m.contains(c) {
+                        return false;
+                    }
+                }
+            }
+            // Wall crossing (public geometry, checked independent of mask). Skip a malformed
+            // (non-finite-endpoint) wall so one NaN wall cannot fail-open the check — mirrors
+            // `clip_to_visible_mask`.
+            if walls
+                .iter()
+                .filter(|w| {
+                    w.a.0.is_finite() && w.a.1.is_finite() && w.b.0.is_finite() && w.b.1.is_finite()
+                })
+                .any(|w| crate::scene::segments_cross(prev, s.pos, w.a, w.b))
+            {
+                return false;
+            }
+            prev = s.pos;
+        }
+        true
+    };
+
+    let n = path.len();
+    let mut smoothed: Vec<(f64, f64)> = vec![path[0]];
+    let mut i = 0usize;
+    while i < n - 1 {
+        // Keep the single grid step unconditionally; greedily extend as far as a chord stays clear.
+        let mut best = i + 1;
+        let mut j = i + 2;
+        while j < n && chord_ok(path[i], path[j]) {
+            best = j;
+            j += 1;
+        }
+        smoothed.push(path[best]);
+        i = best;
+    }
+
+    crate::scene::pathfinding::PathOutcome {
+        path: smoothed,
+        cost: outcome.cost,
+        arrested: outcome.arrested,
+    }
+}
+
+/// Truncate a continuous (polyanya) route at the first VISIBLE arrest cell TRANSITION, mirroring
+/// `pathfinding::find`'s arrest truncation (spec §5, "arrest is honest in preview") for the
+/// walls-only continuous path — which does not go through `find`. Arc-length-samples the route
+/// (`move_stream::sample_path`'s `SAMPLES_PER_CELL` density puts several consecutive samples in
+/// the same cell) and cuts at the first sample whose cell differs from the last distinct cell seen
+/// and is an arrest cell in `field` (the per-requester field, so a secret arrest is absent and
+/// never truncates a player's preview — it springs at `move_exec`). Cell-entry-transition dedup,
+/// not a raw per-sample check: the start cell is never a trigger even while several samples still
+/// sit inside it — a token already standing somewhere is not "entering" it, parity with `find`'s
+/// `.skip(1)` over CELLS. A route with no arrest transition is returned UNCHANGED (no resample).
+/// On truncation, cost is recomputed as the Euclidean length of the surviving polyline.
+pub(crate) fn truncate_at_arrest(
+    outcome: crate::scene::pathfinding::PathOutcome,
+    field: &crate::scene::regions::RegionField,
+    cell: f64,
+) -> crate::scene::pathfinding::PathOutcome {
+    if outcome.path.len() < 2 || !cell.is_finite() || cell <= 0.0 {
+        return outcome;
+    }
+    let samples = crate::scene::move_stream::sample_path(&outcome.path, cell, 1.0);
+    let to_cell = |p: (f64, f64)| -> (i32, i32) {
+        ((p.0 / cell).floor() as i32, (p.1 / cell).floor() as i32)
+    };
+    let mut prev_cell = to_cell(samples[0].pos);
+    let mut hit = None;
+    for (i, s) in samples.iter().enumerate().skip(1) {
+        let c = to_cell(s.pos);
+        if c == prev_cell {
+            continue;
+        }
+        if field.is_arrest(c) {
+            hit = Some(i);
+            break;
+        }
+        prev_cell = c;
+    }
+    let Some(end) = hit else {
+        return outcome; // no arrest cell transition on the route: unchanged
+    };
+    let kept: Vec<(f64, f64)> = samples[..=end].iter().map(|s| s.pos).collect();
+    let cost: f64 = kept
+        .windows(2)
+        .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+        .sum();
+    crate::scene::pathfinding::PathOutcome {
+        path: kept,
+        cost,
+        arrested: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::pathfinding::PathOutcome;
+    use crate::scene::regions::{RegionBehavior, RegionField, RegionShape};
+
+    fn oc(path: Vec<(f64, f64)>) -> PathOutcome {
+        PathOutcome {
+            path,
+            cost: 7.0,
+            arrested: false,
+        }
+    }
+    fn empty_field() -> RegionField {
+        RegionField::builder().build()
+    }
+    fn terrain_on(x0: f64, y0: f64, x1: f64, y1: f64, mult: f64) -> RegionField {
+        let mut b = RegionField::builder();
+        b.add(
+            &RegionShape::Rect { x0, y0, x1, y1 },
+            RegionBehavior::Terrain,
+            mult,
+            100.0,
+        );
+        b.build()
+    }
+    fn arrest_on(x0: f64, y0: f64, x1: f64, y1: f64) -> RegionField {
+        let mut b = RegionField::builder();
+        b.add(
+            &RegionShape::Rect { x0, y0, x1, y1 },
+            RegionBehavior::Arrest,
+            1.0,
+            100.0,
+        );
+        b.build()
+    }
+
+    #[test]
+    fn truncate_at_arrest_cuts_at_first_visible_arrest_cell() {
+        // Straight route (50,50)->(450,50): cells (0,0)..(4,0). Arrest on cell (2,0) = Rect
+        // [200,0]-[300,100]. Route truncates on entry to (2,0); the surviving path stays within x<=300.
+        let route = PathOutcome {
+            path: vec![(50.0, 50.0), (450.0, 50.0)],
+            cost: 400.0,
+            arrested: false,
+        };
+        let out = truncate_at_arrest(route, &arrest_on(200.0, 0.0, 300.0, 100.0), 100.0);
+        assert!(out.arrested, "arrest flag set");
+        assert!(
+            out.path.last().unwrap().0 <= 300.0 + 1e-6,
+            "truncated at/near the arrest cell entry"
+        );
+        assert!(
+            out.path.last().unwrap().0 >= 200.0,
+            "reached the arrest cell"
+        );
+    }
+
+    #[test]
+    fn truncate_at_arrest_no_arrest_is_unchanged() {
+        let route = PathOutcome {
+            path: vec![(50.0, 50.0), (450.0, 50.0)],
+            cost: 400.0,
+            arrested: false,
+        };
+        let out = truncate_at_arrest(route.clone(), &empty_field(), 100.0);
+        assert_eq!(out.path, route.path, "no arrest region: route unchanged");
+        assert!(!out.arrested);
+    }
+
+    #[test]
+    fn truncate_at_arrest_start_cell_is_not_a_trigger() {
+        // Arrest on the START cell (0,0); the token is already standing there, so it is not "entering".
+        let route = PathOutcome {
+            path: vec![(50.0, 50.0), (450.0, 50.0)],
+            cost: 400.0,
+            arrested: false,
+        };
+        let out = truncate_at_arrest(route, &arrest_on(0.0, 0.0, 100.0, 100.0), 100.0);
+        assert!(
+            out.path.last().unwrap().0 > 100.0,
+            "start-cell arrest does not immediately truncate"
+        );
+    }
+
+    // Base L-route at cell=100: right two cells then up one. Cells (0,0),(1,0),(2,0),(2,1).
+    // The straight shortcut (50,50)->(250,150) enters cell (1,1); the horizontal first leg
+    // (50,50)->(250,50) enters only row-0 cells.
+    const L_ROUTE: [(f64, f64); 3] = [(50.0, 50.0), (250.0, 50.0), (250.0, 150.0)];
+
+    #[test]
+    fn los_smooth_straightens_an_open_l_route() {
+        let out = los_smooth(oc(L_ROUTE.to_vec()), &[], None, &empty_field(), 100.0, 0.1);
+        assert_eq!(out.path.first().copied(), Some((50.0, 50.0)));
+        assert_eq!(out.path.last().copied(), Some((250.0, 150.0)));
+        assert_eq!(
+            out.path.len(),
+            2,
+            "open route straightens to a single chord"
+        );
+        assert_eq!(out.cost, 7.0, "cost carried through unchanged");
+        assert!(!out.arrested);
+    }
+
+    #[test]
+    fn los_smooth_refuses_shortcut_through_terrain() {
+        // Terrain (mult 2) on cell (1,1) = Rect [100,100]-[200,200]; the shortcut enters it.
+        let field = terrain_on(100.0, 100.0, 200.0, 200.0, 2.0);
+        let out = los_smooth(oc(L_ROUTE.to_vec()), &[], None, &field, 100.0, 0.1);
+        assert_eq!(
+            out.path,
+            L_ROUTE.to_vec(),
+            "terrain on the shortcut blocks straightening"
+        );
+    }
+
+    #[test]
+    fn los_smooth_refuses_shortcut_through_impassable() {
+        let mut b = RegionField::builder();
+        b.add(
+            &RegionShape::Rect {
+                x0: 100.0,
+                y0: 100.0,
+                x1: 200.0,
+                y1: 200.0,
+            },
+            RegionBehavior::Impassable,
+            1.0,
+            100.0,
+        );
+        let out = los_smooth(oc(L_ROUTE.to_vec()), &[], None, &b.build(), 100.0, 0.1);
+        assert_eq!(
+            out.path,
+            L_ROUTE.to_vec(),
+            "impassable on the shortcut blocks straightening"
+        );
+    }
+
+    #[test]
+    fn los_smooth_refuses_shortcut_across_a_wall() {
+        // Vertical wall x=150, y in [80,200]. Shortcut (50,50)->(250,150) crosses it at (150,100);
+        // the horizontal first leg at y=50 passes below the wall (y=50 < 80), so the middle vertex
+        // is retained.
+        let wall = Seg {
+            a: (150.0, 80.0),
+            b: (150.0, 200.0),
+        };
+        let out = los_smooth(
+            oc(L_ROUTE.to_vec()),
+            &[wall],
+            None,
+            &empty_field(),
+            100.0,
+            0.1,
+        );
+        assert_eq!(
+            out.path,
+            L_ROUTE.to_vec(),
+            "wall on the shortcut blocks straightening"
+        );
+    }
+
+    #[test]
+    fn los_smooth_refuses_shortcut_leaving_the_mask() {
+        // Mask = every cell the L-route touches, MINUS (1,1) which only the shortcut enters.
+        let mut mask: std::collections::BTreeSet<crate::scene::pathfinding::Cell> =
+            std::collections::BTreeSet::new();
+        for c in [(0, 0), (1, 0), (2, 0), (2, 1), (0, 1)] {
+            mask.insert(c);
+        }
+        let out = los_smooth(
+            oc(L_ROUTE.to_vec()),
+            &[],
+            Some(&mask),
+            &empty_field(),
+            100.0,
+            0.1,
+        );
+        assert_eq!(
+            out.path,
+            L_ROUTE.to_vec(),
+            "a shortcut cell outside the mask blocks straightening"
+        );
+    }
+
+    #[test]
+    fn los_smooth_two_point_route_is_unchanged() {
+        let out = los_smooth(
+            oc(vec![(50.0, 50.0), (250.0, 50.0)]),
+            &[],
+            None,
+            &empty_field(),
+            100.0,
+            0.1,
+        );
+        assert_eq!(out.path.len(), 2, "nothing to straighten with < 3 vertices");
+    }
+
+    #[test]
+    fn los_smooth_refuses_shortcut_with_coincident_endpoints_in_impassable_cell() {
+        // A and C are coincident (distance 0 < sample_path's 1e-9 zero-length threshold), both
+        // sitting in cell (0,0), which is entirely impassable. B is a distinct, unrelated
+        // vertex the smoothing loop should not be able to skip over. Pre-fix, `chord_ok`
+        // collapsed to a single sample and fell through to `true` without checking cell (0,0)
+        // at all; post-fix it refuses a degenerate chord outright.
+        let mut b = RegionField::builder();
+        b.add(
+            &RegionShape::Rect {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 100.0,
+                y1: 100.0,
+            },
+            RegionBehavior::Impassable,
+            1.0,
+            100.0,
+        );
+        let field = b.build();
+        let a = (50.0, 50.0);
+        let c = (50.0, 50.0);
+        let mid = (250.0, 50.0);
+        let out = los_smooth(oc(vec![a, mid, c]), &[], None, &field, 100.0, 0.1);
+        assert_eq!(
+            out.path,
+            vec![a, mid, c],
+            "a coincident-endpoint chord through an impassable cell must not be straightened"
+        );
+    }
+
+    #[test]
+    fn los_smooth_degenerate_cell_fails_closed_to_input() {
+        let out = los_smooth(oc(L_ROUTE.to_vec()), &[], None, &empty_field(), 0.0, 0.1);
+        assert_eq!(
+            out.path,
+            L_ROUTE.to_vec(),
+            "degenerate cell returns the grid route unchanged"
+        );
+    }
 
     #[test]
     fn degenerate_bounds_fail_closed() {
