@@ -4,8 +4,8 @@ use crate::dice::eval::{evaluate, roll};
 use crate::dice::recalc::recalculate;
 use crate::dice::rng::NoiseRng;
 use crate::dice::spec::{
-    Comparator, DiceGroup, DieKind, Direction, ExplodeKind, Expr, GroupModifier, Mode, RollSpec,
-    SuccessConfig, SuccessRule,
+    Comparator, CritFail, CritSuccess, DiceGroup, DieKind, Direction, ExplodeKind, Expr,
+    GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule,
 };
 
 fn simple_pool(count: u32, sides: i32, target: i32) -> RollSpec {
@@ -110,14 +110,23 @@ proptest! {
     }
 
     /// d10, HighWins target >=6 vs LowWins target <=5 are mirror images
-    /// (face f maps to 11-f; f>=6  <=>  11-f<=5). Same natural faces, so the
-    /// success COUNT must match across the mirrored spec pair.
+    /// (face f maps to `mirror(f) = die_min+die_max-f`; f>=6  <=>  mirror(f)<=5).
+    /// Same natural faces, so the success COUNT must match across the mirrored
+    /// spec pair. `crit_success`/`crit_fail` are ALSO configured (mirrored
+    /// thresholds) so this property exercises `eval::crit::reaches`'s
+    /// `HighWins`/`LowWins` match arms, not just the base comparator — a config
+    /// with both crit fields `None` short-circuits `score_die` to a no-op and
+    /// would let a swapped `reaches` match arm slip past this test undetected.
     #[test]
     fn direction_flip_mirrors_success_count(seed in any::<u64>(), count in 1u32..8) {
+        let die_min = 1i32;
+        let die_max = 10i32;
+        let mirror = |f: i32| die_min + die_max - f;
+
         let hi = RollSpec {
             expr: Expr::Dice(DiceGroup {
                 count,
-                kind: DieKind::Numeric { min: 1, max: 10 },
+                kind: DieKind::Numeric { min: die_min, max: die_max },
                 modifiers: vec![],
             }),
             direction: Direction::HighWins,
@@ -125,28 +134,57 @@ proptest! {
                 success: SuccessRule { comp: Comparator::Gte, target: 6 },
                 required_successes: None,
                 tiers: vec![],
-                crit_success: None,
-                crit_fail: None,
+                // Fires at the max face (HighWins: value >= threshold).
+                crit_success: Some(CritSuccess {
+                    threshold: die_max,
+                    extra_successes: 2,
+                    positive_counter: 1,
+                }),
+                // Fires at the min face (HighWins: value <= threshold).
+                crit_fail: Some(CritFail {
+                    threshold: die_min,
+                    lost: 1,
+                    negative_counter: 1,
+                    allow_negative: true,
+                }),
             }),
         };
         let raws = roll(&hi, &mut NoiseRng::from_seed(seed));
-        let hi_succ = evaluate(&hi, &raws).successes.unwrap();
+        let hi_out = evaluate(&hi, &raws);
         // Mirror the faces into a fresh raws and evaluate the LowWins spec.
         let mut mirrored = raws.clone();
-        for d in mirrored.dice.iter_mut() { d.natural = 11 - d.natural; }
-        for r in mirrored.records.iter_mut() { r.value = 11 - r.value; r.natural = 11 - r.natural; }
+        for d in mirrored.dice.iter_mut() { d.natural = mirror(d.natural); }
+        for r in mirrored.records.iter_mut() { r.value = mirror(r.value); r.natural = mirror(r.natural); }
         let lo = RollSpec {
             direction: Direction::LowWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule { comp: Comparator::Lte, target: 5 },
+                success: SuccessRule { comp: Comparator::Lte, target: mirror(6) },
                 required_successes: None,
                 tiers: vec![],
-                crit_success: None,
-                crit_fail: None,
+                // Mirror of hi's crit_success threshold (die_max -> mirror(die_max) == die_min);
+                // LowWins fires at value <= threshold.
+                crit_success: Some(CritSuccess {
+                    threshold: mirror(die_max),
+                    extra_successes: 2,
+                    positive_counter: 1,
+                }),
+                // Mirror of hi's crit_fail threshold (die_min -> mirror(die_min) == die_max);
+                // LowWins fires at value >= threshold.
+                crit_fail: Some(CritFail {
+                    threshold: mirror(die_min),
+                    lost: 1,
+                    negative_counter: 1,
+                    allow_negative: true,
+                }),
             }),
             ..hi.clone()
         };
-        prop_assert_eq!(hi_succ, evaluate(&lo, &mirrored).successes.unwrap());
+        let lo_out = evaluate(&lo, &mirrored);
+        prop_assert_eq!(hi_out.successes.unwrap(), lo_out.successes.unwrap());
+        prop_assert_eq!(hi_out.crit_successes, lo_out.crit_successes);
+        prop_assert_eq!(hi_out.crit_fails, lo_out.crit_fails);
+        prop_assert_eq!(hi_out.positive_counter, lo_out.positive_counter);
+        prop_assert_eq!(hi_out.negative_counter, lo_out.negative_counter);
     }
 
     /// For a fixed `1d<sides>t<target>` expression, the `t<N>` value must reach
