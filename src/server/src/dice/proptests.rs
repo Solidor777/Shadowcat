@@ -112,11 +112,24 @@ proptest! {
     /// d10, HighWins target >=6 vs LowWins target <=5 are mirror images
     /// (face f maps to `mirror(f) = die_min+die_max-f`; f>=6  <=>  mirror(f)<=5).
     /// Same natural faces, so the success COUNT must match across the mirrored
-    /// spec pair. `crit_success`/`crit_fail` are ALSO configured (mirrored
-    /// thresholds) so this property exercises `eval::crit::reaches`'s
-    /// `HighWins`/`LowWins` match arms, not just the base comparator — a config
-    /// with both crit fields `None` short-circuits `score_die` to a no-op and
-    /// would let a swapped `reaches` match arm slip past this test undetected.
+    /// spec pair. `crit_success`/`crit_fail` are ALSO configured (mirrored,
+    /// INTERIOR thresholds — `die_max-2`/`die_min+2`, not the die's own extremes)
+    /// so this property exercises `eval::crit::reaches` with a genuinely partial
+    /// (non-tautological) predicate over the domain: a config with both crit
+    /// fields `None` short-circuits `score_die` to a no-op, and a threshold pinned
+    /// to the die's exact min/max degenerates `>=`/`<=` to "always true" over
+    /// `1..=die_max`, silently passing even under a broken `reaches`.
+    ///
+    /// NOTE: because this property mirrors BOTH the direction and the die values
+    /// together, it is structurally insensitive to a *coordinated* swap of the
+    /// `HighWins`/`LowWins` arms in `reaches` (mirroring the value exactly
+    /// compensates for mirroring the direction, for any threshold — verified by
+    /// hand-enumeration over the full `1..=10` domain). That specific mutation is
+    /// caught instead by `eval::crit::tests::crit_success_at_or_above_threshold_highwins`
+    /// and `crit_thresholds_flip_under_lowwins`, which pin exact per-direction
+    /// behavior without mirroring. This property's crit coverage is for
+    /// non-coordinated regressions (e.g. an off-by-one threshold, a single-arm
+    /// typo, or a counter/extra-successes field wired to the wrong branch).
     #[test]
     fn direction_flip_mirrors_success_count(seed in any::<u64>(), count in 1u32..8) {
         let die_min = 1i32;
@@ -134,15 +147,18 @@ proptest! {
                 success: SuccessRule { comp: Comparator::Gte, target: 6 },
                 required_successes: None,
                 tiers: vec![],
-                // Fires at the max face (HighWins: value >= threshold).
+                // Interior threshold (not the die's own extreme): HighWins fires at
+                // value >= threshold, and >= die_max-2 is a genuinely partial subset
+                // of the domain (unlike >= die_max, which collapses to a single face
+                // and, under a swapped comparator, to "always true" over 1..=die_max).
                 crit_success: Some(CritSuccess {
-                    threshold: die_max,
+                    threshold: die_max - 2,
                     extra_successes: 2,
                     positive_counter: 1,
                 }),
-                // Fires at the min face (HighWins: value <= threshold).
+                // Interior threshold: HighWins fires at value <= threshold.
                 crit_fail: Some(CritFail {
-                    threshold: die_min,
+                    threshold: die_min + 2,
                     lost: 1,
                     negative_counter: 1,
                     allow_negative: true,
@@ -161,17 +177,17 @@ proptest! {
                 success: SuccessRule { comp: Comparator::Lte, target: mirror(6) },
                 required_successes: None,
                 tiers: vec![],
-                // Mirror of hi's crit_success threshold (die_max -> mirror(die_max) == die_min);
-                // LowWins fires at value <= threshold.
+                // Mirror of hi's (interior) crit_success threshold; LowWins fires at
+                // value <= threshold.
                 crit_success: Some(CritSuccess {
-                    threshold: mirror(die_max),
+                    threshold: mirror(die_max - 2),
                     extra_successes: 2,
                     positive_counter: 1,
                 }),
-                // Mirror of hi's crit_fail threshold (die_min -> mirror(die_min) == die_max);
-                // LowWins fires at value >= threshold.
+                // Mirror of hi's (interior) crit_fail threshold; LowWins fires at
+                // value >= threshold.
                 crit_fail: Some(CritFail {
-                    threshold: mirror(die_min),
+                    threshold: mirror(die_min + 2),
                     lost: 1,
                     negative_counter: 1,
                     allow_negative: true,
