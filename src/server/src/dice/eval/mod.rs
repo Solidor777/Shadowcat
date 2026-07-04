@@ -3,6 +3,7 @@ use crate::dice::outcome::{RawDie, RawRoll, RollOutcome};
 use crate::dice::rng::{roll_uniform, RngSource};
 use crate::dice::spec::{DieKind, Expr, Mode, RollSpec};
 
+pub mod classify;
 pub mod groups;
 pub mod success;
 pub mod sum;

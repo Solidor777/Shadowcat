@@ -2,19 +2,29 @@ use crate::dice::outcome::{RawRoll, RollOutcome};
 use crate::dice::spec::{BinOp, Expr, RollSpec, TotalConfig};
 
 /// Fold the AST to a total. Each `Dice` node contributes the sum of its group's kept
-/// records (matched by `group_index`); a cursor consumes groups in AST order.
-/// TODO: classify `total` against `_cfg.difficulty`/`_cfg.tiers` into margin/tier fields.
-pub fn evaluate_total(spec: &RollSpec, _cfg: &TotalConfig, raws: &RawRoll) -> RollOutcome {
+/// records (matched by `group_index`); a cursor consumes groups in AST order. If
+/// `cfg.difficulty` is set, classifies `total` (oriented by `spec.direction`) against
+/// `cfg.tiers` into `margin`/`pass`/`tier_label`/`tier_value`; otherwise reports a bare total.
+pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> RollOutcome {
     let mut next_group = 0usize;
     let total = fold(&spec.expr, raws, &mut next_group);
+    let (pass, margin, tier_label, tier_value) = match cfg.difficulty {
+        None => (None, None, None, None),
+        Some(diff) => {
+            let m =
+                crate::dice::eval::classify::oriented_margin(spec.direction, total, diff as i64);
+            let c = crate::dice::eval::classify::classify(m, &cfg.tiers);
+            (c.pass, Some(m), c.tier_label, c.tier_value)
+        }
+    };
     RollOutcome {
         total,
         records: raws.records.clone(),
         successes: None,
-        pass: None,
-        margin: None,
-        tier_label: None,
-        tier_value: None,
+        pass,
+        margin,
+        tier_label,
+        tier_value,
         crit_successes: 0,
         crit_fails: 0,
         positive_counter: 0,
@@ -60,7 +70,7 @@ mod tests {
     use crate::dice::eval::{evaluate, roll};
     use crate::dice::rng::NoiseRng;
     use crate::dice::spec::{
-        BinOp, DiceGroup, DieKind, Direction, Expr, Mode, RollSpec, TotalConfig,
+        BinOp, DiceGroup, DieKind, Direction, Expr, Mode, RollSpec, Tier, TotalConfig,
     };
 
     fn total_mode() -> Mode {
@@ -211,5 +221,73 @@ mod tests {
         assert!(raws.records.is_empty(), "no Dice nodes -> no records");
         let out = evaluate(&spec, &raws);
         assert_eq!(out.total, 5);
+    }
+
+    #[test]
+    fn total_no_difficulty_reports_bare_total() {
+        let spec = RollSpec {
+            expr: Expr::Const(12),
+            direction: Direction::HighWins,
+            mode: Mode::Total(TotalConfig {
+                difficulty: None,
+                tiers: vec![],
+            }),
+        };
+        let raws = roll(&spec, &mut NoiseRng::from_seed(7));
+        let out = evaluate(&spec, &raws);
+        assert!(out.pass.is_none());
+        assert!(out.tier_label.is_none());
+        assert!(out.margin.is_none());
+    }
+
+    #[test]
+    fn total_with_difficulty_sets_pass_by_direction() {
+        let spec_hi = RollSpec {
+            expr: Expr::Const(12),
+            direction: Direction::HighWins,
+            mode: Mode::Total(TotalConfig {
+                difficulty: Some(10),
+                tiers: vec![],
+            }),
+        };
+        let raws = roll(&spec_hi, &mut NoiseRng::from_seed(1));
+        let out = evaluate(&spec_hi, &raws);
+        assert_eq!(out.margin, Some(2));
+        assert_eq!(out.pass, Some(true)); // 12 >= 10
+
+        let spec_lo = RollSpec {
+            direction: Direction::LowWins,
+            ..spec_hi.clone()
+        };
+        let out_lo = evaluate(&spec_lo, &roll(&spec_lo, &mut NoiseRng::from_seed(1)));
+        assert_eq!(out_lo.margin, Some(-2)); // roll-under: 12 vs 10 -> 10-12
+        assert_eq!(out_lo.pass, Some(false));
+    }
+
+    #[test]
+    fn total_with_ladder_reports_tier() {
+        let tiers = vec![
+            Tier {
+                margin_offset: 0,
+                label: Some("hit".into()),
+                tier_value: Some(1),
+            },
+            Tier {
+                margin_offset: 5,
+                label: Some("crit".into()),
+                tier_value: Some(2),
+            },
+        ];
+        let spec = RollSpec {
+            expr: Expr::Const(17),
+            direction: Direction::HighWins,
+            mode: Mode::Total(TotalConfig {
+                difficulty: Some(10),
+                tiers,
+            }),
+        };
+        let out = evaluate(&spec, &roll(&spec, &mut NoiseRng::from_seed(1)));
+        assert_eq!(out.tier_value, Some(2)); // margin 7 -> highest rung <= 7 is offset 5
+        assert!(out.pass.is_none());
     }
 }
