@@ -45,14 +45,23 @@ export interface TokenTransform {
   rotation: number;
 }
 
-/** A resolved token render node: transform + size + resolved image URL + faction border + footprint shape. */
+/** Asset UUIDs already resolved to serve URLs by the AssetResolver (M10h) — the backend never
+ * resolves asset ids itself, mirroring today's `assets.url(...)` call in `token-view.ts`. */
+export type ResolvedAnimatedSource =
+  | { type: "frames"; urls: string[] }
+  | { type: "sheet"; url: string; rows: number; cols: number; count?: number };
+
+/** A resolved token render node: transform + size + resolved visual + faction border + footprint shape. */
 export interface TokenNodeSpec {
   x: number;
   y: number;
   w: number;
   h: number;
   rotation: number;
-  url: string;
+  /** The resolved, already-URL'd visual to draw (M10h: image, or a tick-driven animation). */
+  visual:
+    | { kind: "image"; url: string }
+    | { kind: "animated"; source: ResolvedAnimatedSource; fps: number; loop: boolean };
   /** Faction border color (0xRRGGBB), or null for no border. */
   borderColor: number | null;
   /** Condition marker glyphs (emoji), rendered as upright chips along the token's top edge. */
