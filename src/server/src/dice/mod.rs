@@ -3,9 +3,11 @@
 //! (deterministic). Randomness is a stateless noise function, so any roll is
 //! reproducible from its seed. INVARIANT: (spec, raws) fully determines the outcome.
 
+pub mod outcome;
 pub mod rng;
 pub mod spec;
 
+pub use outcome::{DieRecord, RawDie, RawRoll, RollOutcome, RollResult};
 pub use spec::{
     BinOp, Comparator, DiceGroup, DieId, DieKind, ExplodeKind, Expr, GroupModifier, Mode, RollSpec,
     SuccessRule,
