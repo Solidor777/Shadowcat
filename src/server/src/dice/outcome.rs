@@ -50,8 +50,9 @@ pub struct DieRecord {
     pub rerolled_from: Option<i32>,
 }
 
-/// Fully-derived result. `total` for Sum; `successes`/`pass`/`net_margin` for
-/// SuccessCount (all `None` in the other mode where inapplicable).
+/// Fully-derived result. `total` is the primary output for Sum; in SuccessCount
+/// mode it still holds a reference kept-die sum, while `successes`/`pass`/
+/// `net_margin` (all `None` in Sum mode) carry that mode's primary output.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollOutcome {
     pub total: i64,
