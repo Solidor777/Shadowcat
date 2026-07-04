@@ -47,7 +47,9 @@ pub fn score_die(direction: Direction, value: i32, cfg: &SuccessConfig) -> DieCr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dice::spec::{Comparator, CritFail, CritSuccess, Direction, SuccessConfig, SuccessRule};
+    use crate::dice::spec::{
+        Comparator, CritFail, CritSuccess, Direction, SuccessConfig, SuccessRule,
+    };
 
     fn cfg(cs: Option<CritSuccess>, cf: Option<CritFail>) -> SuccessConfig {
         SuccessConfig {
