@@ -132,9 +132,10 @@ on.
   `cf`; `direction` resolves `t<N>`'s comparator under SuccessCount-ambient context (`HighWins` ->
   `Gte`, `LowWins` -> `Lte` — the composer never specifies the comparator via `t`) and seeds
   `RollSpec::direction`. Under Total-ambient context, `t<N>` resolves to `TotalConfig.difficulty`
-  instead. `ParseContext` also carries an `expertise: Option<u32>` roll-level scratch field set by
-  an `e<N>` token (no dedicated lexer token — the alphabetic-run arm emits `Ident("e")`, the
-  parser's `factor` arm reads the following int); a duplicate `e<N>` is
+  instead. The parser's internal state (`struct P`, not `ParseContext`) also carries an
+  `expertise: Option<u32>` roll-level scratch field set by an `e<N>` token (no dedicated lexer
+  token — the alphabetic-run arm emits `Ident("e")`, the parser's `modifiers` arm reads the
+  following int, the same function that handles `kh`/`cs`/`t`); a duplicate `e<N>` is
   `ParseError::DuplicateExpertise`. `expertise` is only consumed when the FINAL resolved mode is
   `SuccessCount(SuccessConfig{expertise, ..})` — if the notation instead resolves to `Total`
   (e.g. `t<N>` under Total-ambient context with no `cs`/`cf`), any parsed `e<N>` value is silently
@@ -229,8 +230,9 @@ on.
   invariants entry above). Treat any future change to `eval/expertise.rs` as buddy-check-worthy by
   default, same tier as `eval/groups.rs`/`eval/sum.rs`/`eval/success.rs` below.
 - **`e<N>` is roll-level and silently discarded under Total mode.** Mirrors the existing `t<N>`-
-  vs-mode gotcha: `e<N>` sets `ParseContext::expertise`, but that value is only ever read into
-  `SuccessConfig.expertise` when the resolved `Mode` is `SuccessCount`. A notation string like
+  vs-mode gotcha: `e<N>` sets the parser's internal `struct P.expertise` scratch field, but that
+  value is only ever read into `SuccessConfig.expertise` when the resolved `Mode` is
+  `SuccessCount`. A notation string like
   `4d6t10e3` under Total-ambient context (`t<N>` resolves to `TotalConfig.difficulty`, not a
   success target) parses successfully and simply drops the `e3` — no `ParseError`, no warning.
 - **Buddy-check track record in this module**: all three of M11a's plan's pre-approved
