@@ -41,31 +41,45 @@ impl RawRoll {
 /// chained (non-`once`) reroll — NOT necessarily the original natural roll; see
 /// `natural` for that. Penetrate-produced records may fall outside `[min, max]` by
 /// design (each successive extra die is reduced by 1, so a natural-min roll stores
-/// a value one below `min`).
+/// a value one below `min`). `crit_success`/`crit_fail` are independent flags set
+/// by `eval::success::evaluate_success` via `eval::crit::score_die`; BOTH can be
+/// `true` on the same die under an overlapping-threshold `SuccessConfig` — see
+/// `crit::score_die`'s doc comment for the rationale.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DieRecord {
     pub id: DieId,
     /// Index of the `Dice` AST node that produced this die, in left-to-right walk
-    /// order. Lets Sum-mode fold per-group without positional heuristics over a
-    /// flattened record list (`eval::sum::evaluate_sum`).
+    /// order. Lets Total-mode fold per-group without positional heuristics over a
+    /// flattened record list (`eval::sum::evaluate_total`).
     pub group_index: usize,
     pub natural: i32,
     pub value: i32,
     pub kept: bool,
     pub exploded: bool,
     pub rerolled_from: Option<i32>,
+    pub crit_success: bool,
+    pub crit_fail: bool,
 }
 
-/// Fully-derived result. `total` is the primary output for Sum; in SuccessCount
-/// mode it still holds a reference kept-die sum, while `successes`/`pass`/
-/// `net_margin` (all `None` in Sum mode) carry that mode's primary output.
+/// Fully-derived result. `total` is the primary output for Total mode; in
+/// SuccessCount mode it still holds a reference kept-die sum, while
+/// `successes`/`pass`/`margin` (all `None` in Total mode with no `difficulty`)
+/// carry that mode's primary output. `tier_label`/`tier_value` classify `margin`
+/// against the spec's tier ladder; the crit/counter fields are SuccessCount-only
+/// aggregates (0 in Total mode).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollOutcome {
     pub total: i64,
     pub records: Vec<DieRecord>,
     pub successes: Option<i32>,
     pub pass: Option<bool>,
-    pub net_margin: Option<i32>,
+    pub margin: Option<i64>,
+    pub tier_label: Option<String>,
+    pub tier_value: Option<i32>,
+    pub crit_successes: i32,
+    pub crit_fails: i32,
+    pub positive_counter: i32,
+    pub negative_counter: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

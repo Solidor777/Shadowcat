@@ -90,12 +90,6 @@ pub enum Expr {
     Neg(Box<Expr>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Mode {
-    Sum,
-    SuccessCount,
-}
-
 /// SuccessCount dimension 1: the per-die target a die must satisfy to score a success.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuccessRule {
@@ -103,15 +97,81 @@ pub struct SuccessRule {
     pub target: i32,
 }
 
+/// Which end of a margin/comparison is "better". `HighWins` (default): a higher
+/// total/success-count beats a lower one. `LowWins`: the inverse (e.g. roll-under
+/// systems). Global to the spec — orients every margin/tier/crit computation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Direction {
+    #[default]
+    HighWins,
+    LowWins,
+}
+
+/// One rung of a classification ladder, evaluated on an oriented margin
+/// (higher = better). `margin_offset` is the threshold the margin must reach.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tier {
+    pub margin_offset: i32,
+    pub label: Option<String>,
+    pub tier_value: Option<i32>,
+}
+
+/// A crit-success event (SuccessCount mode). Fires when a kept die's value
+/// reaches `threshold` (direction-aware). Adds `extra_successes` beyond the
+/// die's base success and `positive_counter` to the positive tally.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CritSuccess {
+    pub threshold: i32,
+    pub extra_successes: i32,
+    pub positive_counter: i32,
+}
+
+/// A crit-fail event (SuccessCount mode). Fires when a kept die's value
+/// reaches `threshold` (direction-aware). Subtracts `lost` from net successes
+/// (clamped at 0 unless `allow_negative`) and adds `negative_counter`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CritFail {
+    pub threshold: i32,
+    pub lost: i32,
+    pub negative_counter: i32,
+    pub allow_negative: bool,
+}
+
+/// Total-mode config: fold the expression to a total, optionally classify it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TotalConfig {
+    /// Margin reference; `None` => report the bare total, no classification.
+    pub difficulty: Option<i32>,
+    /// Ladder over `margin = oriented(total, difficulty)`. Empty => default 2-rung pass/fail.
+    pub tiers: Vec<Tier>,
+}
+
+/// SuccessCount-mode config: count net successes across the pooled kept dice.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SuccessConfig {
+    /// Per-die target (comparator + threshold) — REQUIRED in this mode.
+    pub success: SuccessRule,
+    /// Margin reference; `None` => report the bare success count.
+    pub required_successes: Option<i32>,
+    /// Ladder over `margin = net_successes - required_successes`. Empty => default 2-rung.
+    pub tiers: Vec<Tier>,
+    pub crit_success: Option<CritSuccess>,
+    pub crit_fail: Option<CritFail>,
+    // NOTE: `expertise: u32` is deliberately absent — it is M11b-2.
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Mode {
+    Total(TotalConfig),
+    SuccessCount(SuccessConfig),
+}
+
 /// Canonical roll parameters. Notation parses INTO this; recalculation re-runs it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollSpec {
     pub expr: Expr,
+    pub direction: Direction,
     pub mode: Mode,
-    /// Required when `mode == SuccessCount`.
-    pub success: Option<SuccessRule>,
-    /// SuccessCount dimension 2 (optional): successes needed for an overall pass.
-    pub required_successes: Option<i32>,
 }
 
 #[cfg(test)]
@@ -141,12 +201,45 @@ mod tests {
                 })),
                 rhs: Box::new(Expr::Const(3)),
             },
-            mode: Mode::Sum,
-            success: None,
-            required_successes: None,
+            direction: Direction::HighWins,
+            mode: Mode::Total(TotalConfig {
+                difficulty: None,
+                tiers: vec![],
+            }),
         };
         let json = serde_json::to_string(&spec).unwrap();
-        let back: RollSpec = serde_json::from_str(&json).unwrap();
-        assert_eq!(spec, back);
+        assert_eq!(spec, serde_json::from_str::<RollSpec>(&json).unwrap());
+    }
+
+    #[test]
+    fn success_config_serde_round_trips() {
+        let spec = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count: 5,
+                kind: DieKind::Numeric { min: 1, max: 10 },
+                modifiers: vec![],
+            }),
+            direction: Direction::LowWins,
+            mode: Mode::SuccessCount(SuccessConfig {
+                success: SuccessRule {
+                    comp: Comparator::Lte,
+                    target: 4,
+                },
+                required_successes: Some(2),
+                tiers: vec![Tier {
+                    margin_offset: 2,
+                    label: Some("Great".into()),
+                    tier_value: Some(1),
+                }],
+                crit_success: Some(CritSuccess {
+                    threshold: 1,
+                    extra_successes: 1,
+                    positive_counter: 1,
+                }),
+                crit_fail: None,
+            }),
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert_eq!(spec, serde_json::from_str::<RollSpec>(&json).unwrap());
     }
 }

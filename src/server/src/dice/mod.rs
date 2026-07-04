@@ -13,10 +13,10 @@ pub mod rng;
 pub mod spec;
 
 pub use eval::{evaluate, roll};
-pub use notation::parse;
+pub use notation::{parse, ModeKind, ParseContext};
 pub use outcome::{DieRecord, RawDie, RawRoll, RollOutcome, RollResult};
 pub use recalc::{recalculate, RecalcOp};
 pub use spec::{
-    BinOp, Comparator, DiceGroup, DieId, DieKind, ExplodeKind, Expr, GroupModifier, Mode, RollSpec,
-    SuccessRule,
+    BinOp, Comparator, CritFail, CritSuccess, DiceGroup, DieId, DieKind, Direction, ExplodeKind,
+    Expr, GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule, Tier, TotalConfig,
 };

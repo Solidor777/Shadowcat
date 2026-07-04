@@ -126,8 +126,8 @@ mod tests {
     use crate::dice::eval::{evaluate, roll};
     use crate::dice::rng::NoiseRng;
     use crate::dice::spec::{
-        Comparator, DiceGroup, DieKind, ExplodeKind, Expr, GroupModifier, Mode, RollSpec,
-        SuccessRule,
+        Comparator, DiceGroup, DieKind, Direction, ExplodeKind, Expr, GroupModifier, Mode,
+        RollSpec, SuccessConfig, SuccessRule, TotalConfig,
     };
 
     /// Test-only deterministic `RngSource`: replays a scripted sequence of
@@ -178,12 +178,17 @@ mod tests {
                 kind: DieKind::Numeric { min: 1, max: 10 },
                 modifiers: vec![],
             }),
-            mode: Mode::SuccessCount,
-            success: Some(SuccessRule {
-                comp: Comparator::Gte,
-                target: 7,
+            direction: Direction::HighWins,
+            mode: Mode::SuccessCount(SuccessConfig {
+                success: SuccessRule {
+                    comp: Comparator::Gte,
+                    target: 7,
+                },
+                required_successes: None,
+                tiers: vec![],
+                crit_success: None,
+                crit_fail: None,
             }),
-            required_successes: None,
         }
     }
 
@@ -252,9 +257,11 @@ mod tests {
         };
         let spec = RollSpec {
             expr: Expr::Dice(group.clone()),
-            mode: Mode::Sum,
-            success: None,
-            required_successes: None,
+            direction: Direction::HighWins,
+            mode: Mode::Total(TotalConfig {
+                difficulty: None,
+                tiers: vec![],
+            }),
         };
         // die 0 = 3 (below the Gte(6) trigger, target of the op below); die 1 = 6
         // (at the trigger, and NEVER named by any op in these tests).
@@ -341,9 +348,11 @@ mod tests {
         };
         let spec = RollSpec {
             expr: Expr::Dice(group.clone()),
-            mode: Mode::Sum,
-            success: None,
-            required_successes: None,
+            direction: Direction::HighWins,
+            mode: Mode::Total(TotalConfig {
+                difficulty: None,
+                tiers: vec![],
+            }),
         };
         // die 0 = 5 (above the Lte(2) trigger; target of a ReplaceDie op below,
         // which draws no rng, so it never perturbs die 1's draws). die 1 = 1

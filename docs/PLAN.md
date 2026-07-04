@@ -741,7 +741,21 @@ Decomposed **M11a–d**:
 > events, Tiered mode, labeled/custom-face dice, `direction`) are genuinely absent, not
 > half-built. New `shadowcat-codebase-dice` skill created + confirmed ACCURATE by
 > `shadowcat-spec-reviewer`. **M11a — Dice engine core:** server-authoritative Rust evaluator over a declarative struct-canonical `RollSpec`; seeded-noise RNG (deterministic, no `rand`); rpg-dice-roller-superset notation; Sum + SuccessCount modes; `roll`/`evaluate`/`recalculate`; pure library (tests only). Plan: [`superpowers/plans/2026-07-03-m11a-dice-engine-core.md`](superpowers/plans/2026-07-03-m11a-dice-engine-core.md).
-- **M11b — System rules:** the nine declarative rules — expertise DP (provably-optimal, lexicographic), crit events + counters, Tiered mode + ladders, labeled dice, custom-face dice, `direction` global flip; global `direction`/`difficulty` read by all modes (difficulty is two-dimensional in SuccessCount).
+- **M11b — System rules**, decomposed into checkpoints:
+  > **M11b-1 DONE** (branch `m11-dice-and-chat`) — globals + shared classification + crit events:
+  > `direction: Direction` (`HighWins`/`LowWins`) global flip on `RollSpec`; `Mode` made
+  > data-carrying (`Total(TotalConfig) | SuccessCount(SuccessConfig)`, unifying Sum and Tiered into
+  > one mode with an optional custom ladder); the shared `eval::classify::{classify,
+  > oriented_margin}` layer used by both modes (`oriented_margin` Total-only, SuccessCount's margin
+  > deliberately not direction-flipped); crit events (`eval::crit::score_die`, net-success
+  > clamp-at-zero unless `allow_negative`, counters as a separate output from successes,
+  > overlapping crit-success/crit-fail intentionally both-fireable); unified `t<N>` notation +
+  > ambient `ParseContext` (mode/direction-derived comparator). Plan:
+  > [`superpowers/plans/2026-07-04-m11b-1-globals-classification-crit.md`](superpowers/plans/2026-07-04-m11b-1-globals-classification-crit.md).
+  > Expertise DP (M11b-2) and labeled/custom-face dice (M11b-3) not yet started.
+  Spec: [`superpowers/specs/2026-07-04-m11b-system-rules-design.md`](superpowers/specs/2026-07-04-m11b-system-rules-design.md).
+  - **M11b-2 — Expertise DP:** provably-optimal, lexicographic dynamic-programming solve. Highest-risk piece of the engine; standing buddy-check + differential-oracle directive.
+  - **M11b-3 — Labeled + custom-face dice:** labeled dice, custom-face (symbolic) dice.
 - **M11c — Chat core (headless):** messages as sequenced documents on the per-recipient redaction path; module-seeded channels; server-authoritative input→sanitization pipeline (structured safe content model); new fail-closed whisper recipient-allowlist tier; user + optional actor owner (linked or instanced).
 - **M11d — Default display modules:** independently-replaceable composer + message-card contribution modules; text enrichment (Markdown/HTML/images/links/emails, GM-gated, no embedded CSS); emotes; roll integration; internal doc links; SSRF-guarded server-side link previews.
 
