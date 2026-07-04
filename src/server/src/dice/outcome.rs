@@ -41,7 +41,10 @@ impl RawRoll {
 /// chained (non-`once`) reroll — NOT necessarily the original natural roll; see
 /// `natural` for that. Penetrate-produced records may fall outside `[min, max]` by
 /// design (each successive extra die is reduced by 1, so a natural-min roll stores
-/// a value one below `min`).
+/// a value one below `min`). `crit_success`/`crit_fail` are independent flags set
+/// by `eval::success::evaluate_success` via `eval::crit::score_die`; BOTH can be
+/// `true` on the same die under an overlapping-threshold `SuccessConfig` — see
+/// `crit::score_die`'s doc comment for the rationale.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DieRecord {
     pub id: DieId,

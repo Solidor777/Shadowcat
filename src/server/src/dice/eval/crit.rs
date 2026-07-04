@@ -108,4 +108,30 @@ mod tests {
         let f = score_die(Direction::HighWins, 1, &c);
         assert!(f.is_fail && f.lost == 1 && f.negative_counter == 1);
     }
+
+    #[test]
+    fn overlapping_thresholds_fire_both_crit_success_and_crit_fail() {
+        // cs fires at value >= 5; cf fires at value <= 10 (HighWins). Overlap
+        // region [5, 10] intentionally lets a single die satisfy both — the
+        // caller (evaluate_success) folds both deltas. Pinning this contract.
+        let c = cfg(
+            Some(CritSuccess {
+                threshold: 5,
+                extra_successes: 2,
+                positive_counter: 1,
+            }),
+            Some(CritFail {
+                threshold: 10,
+                lost: 1,
+                negative_counter: 1,
+                allow_negative: false,
+            }),
+        );
+        let both = score_die(Direction::HighWins, 7, &c);
+        assert!(both.is_success && both.is_fail);
+        assert_eq!(both.extra_successes, 2);
+        assert_eq!(both.lost, 1);
+        assert_eq!(both.positive_counter, 1);
+        assert_eq!(both.negative_counter, 1);
+    }
 }
