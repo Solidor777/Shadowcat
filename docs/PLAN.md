@@ -198,7 +198,9 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > world/scene deletion, `tower_sessions` sweep.
 
 ### M10 · Tokens
-> **In progress.** Cross-cutting spec `superpowers/specs/2026-06-24-m10-tokens-design.md`
+> **COMPLETE** — the built scope shipped through M10h; the two remaining visual-polish
+> checkpoints, M10i (`generated`) and M10j (`fx` + emotes), are **deferred to Phase 2** by user
+> decision (their seams already exist — see the M10h block below). Cross-cutting spec `superpowers/specs/2026-06-24-m10-tokens-design.md`
 > (decisions locked), decomposed into 10 checkpoints **M10a–j** across 4 phases
 > (plan per checkpoint; `/clear` between). **M10a DONE** (merged --no-ff to LOCAL main,
 > NOT pushed — push gate = full M10): the game `Actor` doc + **linked** (`actor_id` +
@@ -685,11 +687,26 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > `shadowcat-codebase-scene-rendering` updated; `shadowcat-spec-reviewer` found and this fix
 > corrected 3 real drifts (`RenderVisual`'s image variant missing its `asset` field name,
 > `TokenVisual`'s `faces.default` wrongly marked optional, and this entry's premature "confirmed
-> ACCURATE" claim predating the actual review) before confirming ACCURATE. **Push gate: full
-> M10** — not yet pushed to origin. **M10 remaining: M10i (`generated`
-> parametric token visual) and M10j (`fx` + emotes) still open before the full-M10 push gate.**
+> ACCURATE" claim predating the actual review) before confirming ACCURATE. **M10h merged --no-ff
+> and PUSHED to origin/main (`50df79f`, 2026-07-04, by explicit user override of the standing
+> full-M10 push gate).**
+>
+> **M10 CONCLUDED here (2026-07-04, user decision): the two remaining visual-polish checkpoints —
+> M10i (`generated` parametric token visual) and M10j (`fx` + emotes) — are DEFERRED to Phase 2
+> (token enrichment), not built. Their seams already exist and need no preparatory code:** the
+> `RenderVisual` discriminated union is additive and fails closed on unknown kinds, so a future
+> `{kind:"generated"}` is forward-compatible (`resolveTokenVisual` renders nothing rather than
+> crashing on an old client); every token has been a Pixi `Container` (`node.visualContainer`)
+> since M10h, so a per-token `.filters` attach point is one additive method beyond the existing
+> per-layer `addLayerFilter` (`fx`); and the `broadcast_aux`/`ScenePing` aux-frame pattern is the
+> direct template for a new transient `emote` frame (emotes). **Note on `generated`'s intended
+> meaning** (user-clarified at deferral time): a *compositor that frames existing actor art into a
+> token* — decorative border + shape-crop + background, distinct from the dynamic faction ring —
+> NOT the parent spec's literal "shapes/initials for artless actors" reading.
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
-- Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
+- Realizes the token-visual architecture seeded in M8 on top of M8d's sprite/tween/ticker
+  foundation: **multi-face + animated visuals SHIPPED** (M10h); **procedurally-generated visuals,
+  per-token fx, and emotes DEFERRED to Phase 2** (seams in place).
 
 ### M11 · Dice + chat
 - From-scratch dice engine (notation, modifiers, advantage/disadvantage, DCs, success counting, tiers); hook integration; sequenced results.
@@ -705,7 +722,7 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 **▶ Dogfood alpha gate** — backups (M12.5) must exist before real worlds accrue.
 
 ## Phase 2 — Full table
-Combat tracker (initiative, hidden combatants, turn-event triggers; depends on M11 dice) → real asset pipeline (chunked upload, image conversion, tags, derived tags) + asset browser (regex / tag / dir search, preview / rename / move / tag) + bulk import/export → layout / theming completion (drag-resize, pop-out, multi / user themes, module styling modes) → vision / lighting / movement completion (photometric, darkvision / tremorsense / height; **per-actor/faction movement exemptions — flying/incorporeal ignore difficult terrain, deferred from M10g; needs movement-type tags on actors**) → token enrichment (aura / light / sound / VFX emitters, **trigger regions — mechanical/trigger effects built on the M10g region primitive: damage, condition application, scripted triggers on enter/arrest**, token-art) → rollable tables (on the dice engine + document model), rich-text notes (on the document model), chat media linking (images; YouTube as thumbnail + external link only — no IFrame / Data API) → full default module suite → search consolidated into one milestone (single backend; no three-backend split).
+Combat tracker (initiative, hidden combatants, turn-event triggers; depends on M11 dice) → real asset pipeline (chunked upload, image conversion, tags, derived tags) + asset browser (regex / tag / dir search, preview / rename / move / tag) + bulk import/export → layout / theming completion (drag-resize, pop-out, multi / user themes, module styling modes) → vision / lighting / movement completion (photometric, darkvision / tremorsense / height; **per-actor/faction movement exemptions — flying/incorporeal ignore difficult terrain, deferred from M10g; needs movement-type tags on actors**) → token enrichment (aura / light / sound / VFX emitters, **trigger regions — mechanical/trigger effects built on the M10g region primitive: damage, condition application, scripted triggers on enter/arrest**, token-art, **generated token visuals (deferred from M10i) — a parametric compositor that frames existing actor art into a token: decorative border + shape-crop mask + background, distinct from the dynamic faction ring; a new additive `{kind:"generated"}` on the M10h `RenderVisual` union**, **per-token built-in fx (deferred from M10j) — condition-driven tint / desaturate / highlight + selection/faction/target highlight via a per-token Pixi `.filters` attach point on the M10h token `Container`; custom shader-filter seam stays Phase 3 VFX**, **emote / reaction overlays (deferred from M10j) — transient overlay above the token via a new ping-style `emote` aux frame + fading child**) → rollable tables (on the dice engine + document model), rich-text notes (on the document model), chat media linking (images; YouTube as thumbnail + external link only — no IFrame / Data API) → full default module suite → search consolidated into one milestone (single backend; no three-backend split).
 
 ## Phase 3 — Atmosphere
 Audio (mixer, channels, playlists, world-clock sync; then spatial + wall occlusion; transcode via `symphonia` + `opus`/`vorbis_rs`) → VFX (sprite effects, concurrent SFX) → multi-level maps + portals → 3D dice (decide the rendering context up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer) → Discord audio-ducking module (OS audio-session monitoring — PipeWire / WASAPI / CoreAudio — never the proprietary Discord Game SDK; requires a dependency / licensing review before integration).

@@ -361,6 +361,14 @@ linear (a → b/c → d → e → f → g → h → i → j).
 - Weighted-region **boundary-exact** (Snell) pathfinding; weighted *continuous* beyond
   Split-Mesh cost-layers.
 - Footprint-aware **movement-blocking** (M10 blocking stays center-based, M9).
+- **`generated` (M10i) + `fx`/emotes (M10j) — DEFERRED to Phase 2 (token enrichment); user
+  decision 2026-07-04.** M10 concluded after M10h (faces + animated). Not built; seams already
+  exist and need no preparatory code (additive fail-closed `RenderVisual` union for `generated`;
+  per-token `Container.filters` since the M10h Container migration for `fx`; the
+  `broadcast_aux`/`ScenePing` aux-frame pattern as the template for a new transient `emote` frame).
+  **`generated` re-scoped at deferral time** from §11's "parametric shapes/initials for artless
+  actors" to a *compositor that frames existing actor art into a token* (decorative border +
+  shape-crop mask + background, distinct from the dynamic faction ring).
 - Custom **per-token shader** fx (Phase-3 VFX); aura/light/sound/VFX **emitters**, trigger
   regions, token-art enrichment (Phase 2).
 - The 3-way pull/push **merge engine** for instanced-token re-sync (data model only).
