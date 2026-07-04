@@ -23,8 +23,9 @@ pub fn oriented_margin(direction: Direction, scalar: i64, reference: i64) -> i64
 /// (`pass = margin >= 0`). Non-empty => the highest rung with `margin_offset <=
 /// margin`; if none match (margin below the floor), fail closed to the lowest
 /// rung. Order-independent (no sorted precondition). Well-formed ladders use
-/// unique `margin_offset`s; a duplicate offset ties on `max_by_key`/
-/// `min_by_key`'s last-element semantics, so which duplicate wins depends on
+/// unique `margin_offset`s; a duplicate offset ties on `max_by_key`'s
+/// last-equally-extreme-element / `min_by_key`'s first-equally-extreme-element
+/// semantics, so which duplicate wins depends on
 /// caller-supplied vec order.
 pub fn classify(margin: i64, tiers: &[Tier]) -> Classification {
     if tiers.is_empty() {

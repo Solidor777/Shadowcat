@@ -67,3 +67,11 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - Dice notation: extended math functions (floor/ceil/round/abs/min/max) are not yet
   parsed. M11a covers dice + arithmetic +-*/() + keep/drop/explode/reroll + cs/cf. Add
   as the notation grammar grows with system demand.
+- TODO: `eval::classify::classify`'s ladder lookup (`Vec<Tier>`) has no construction-time
+  validation that `margin_offset` values are unique — a malformed ladder with a duplicate
+  offset ties on `max_by_key`/`min_by_key`'s caller-order-dependent semantics (documented in
+  `classify.rs`'s doc comment), so which duplicate wins depends on vec order rather than being
+  deterministic. Not reachable today (M11b-1 authors `Tier` lists directly, no untrusted
+  construction path exists yet); add a uniqueness/sortedness guard when M11d wires a
+  wire-facing `RollSpec`/`Tier` construction path, mirroring the existing `sides >= 1` and
+  `#[serde(default)]` guards already tracked above. (Surfaced by the M11b-1 whole-branch review.)
