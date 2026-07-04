@@ -489,6 +489,37 @@ mod tests {
     }
 
     #[test]
+    fn group_index_propagates_to_every_record_including_exploded_children() {
+        // Non-zero group_index (2): proves the parameter reaches EVERY returned
+        // record — both the initial per-natural map and every extra die pushed
+        // via `push_extra` during the explosion chain — not just the naturals.
+        let naturals = vec![d6(0, 6)];
+        let mut raws = RawRoll {
+            dice: naturals.clone(),
+            records: vec![],
+            next_id: 1,
+        };
+        let g = DiceGroup {
+            count: 1,
+            kind: DieKind::Numeric { min: 1, max: 6 },
+            modifiers: vec![GroupModifier::Explode {
+                kind: ExplodeKind::Standard,
+                comp: Comparator::Gte,
+                target: 6,
+            }],
+        };
+        // Chain roll 1 = face 6 (continues), chain roll 2 = face 3 (stops):
+        // forces exactly one exploded child in addition to the original die.
+        let mut rng = ScriptedRng::new(vec![face_x(6), face_x(3)]);
+        let recs = resolve_group(&g, 2, &naturals, &mut rng, &mut raws);
+        assert_eq!(recs.len(), 3, "1 original + 2 chained extras");
+        assert!(
+            recs.iter().all(|r| r.group_index == 2),
+            "group_index must propagate to the original AND every exploded child record"
+        );
+    }
+
+    #[test]
     fn penetrate_can_produce_a_value_below_min() {
         // Penetrate's -1 penalty is a deliberate house-rule departure from the
         // implicit [min, max] assumption. A natural-min extra die (face 1 on a
