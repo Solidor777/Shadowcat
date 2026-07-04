@@ -27,14 +27,16 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   - `TokenOverrides` whitelist includes `shape` (alongside `name`, `visual`, `size`) — a per-token
     `"square" | "circle"` override applied on top of the actor's own shape field.
   - **Token visual union (M10h, replaces the old flat `ActorVisual`):** `RenderVisual = {kind:
-    "image", url} | {kind:"animated", source: AnimatedSource, fps, loop}` — the only two kinds the
+    "image", asset} | {kind:"animated", source: AnimatedSource, fps, loop}` — the only two kinds the
     render layer ever draws. `AnimatedSource = {type:"frames", frames: string[]} | {type:"sheet",
     asset, rows, cols, count?}` (asset ids pre-resolution; resolved to URLs at the render boundary,
     see `resolveTokenVisual` below and `TokenNodeSpec.visual` in `shadowcat-codebase-scene-rendering`).
     `FaceVisual = RenderVisual` — **a face is itself a `RenderVisual`, never nested** (deliberately
     no `{kind:"faces"}` inside a face; an animated face falls out of the same boundary with no
     separate mechanism). `TokenVisual = RenderVisual | {kind:"faces", faces: Record<string,
-    FaceVisual>, default?: string, faceMap?: Record<string,string>}` — `ActorSystem.visual` and
+    FaceVisual>, default: string, faceMap?: Record<string,string>}` — `default` is REQUIRED (no
+    `?`), per `scene-docs.ts:181`; `ActorsPanel.buildVisual()` always supplies it and nulls the
+    whole visual if unset. `ActorSystem.visual` and
     `TokenOverrides.visual` both carry `TokenVisual` (a token can override the actor's whole visual,
     faces-union included). `TokenSystem.face?: string` — the per-token ACTIVE face selection; only
     meaningful when the effective visual resolves to `"faces"`, ignored otherwise; token-local

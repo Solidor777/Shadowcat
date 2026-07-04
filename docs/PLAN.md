@@ -648,10 +648,11 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > animated token visuals; purely client-side, no server/ts-rs change** (the `system`-body visual
 > data is opaque client-owned JSON, same convention as `movementModel`/`bounds`/`snapToGrid`).
 > Spec: `docs/superpowers/specs/2026-07-03-m10h-faces-animated-design.md`. Replaces the old flat
-> `ActorVisual` with a discriminated union: `RenderVisual = {kind:"image"} | {kind:"animated",
+> `ActorVisual` with a discriminated union: `RenderVisual = {kind:"image", asset} | {kind:"animated",
 > source: AnimatedSource, fps, loop}` (the two kinds the render layer ever draws); `FaceVisual =
 > RenderVisual` (a face is never itself nested `{kind:"faces"}` — no faces-of-faces); `TokenVisual
-> = RenderVisual | {kind:"faces", faces, default?, faceMap?}`; new per-token `token.system.face?`
+> = RenderVisual | {kind:"faces", faces, default, faceMap?}` (`default` is required, no `?`); new
+> per-token `token.system.face?`
 > active-face selector (token-local, not part of `overrides` — selects INTO the actor's faces map
 > rather than overriding actor data). New render-boundary resolver `resolveTokenVisual(token,
 > store, eff?)` (sibling to `resolveTokenActor`/`resolveTokenBox`/`resolveConditions`) applies
@@ -676,11 +677,16 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > animated) in the actor-creation form with full per-face-row/name-uniqueness/`defaultFace`
 > validation, plus a separate per-token face-swap palette (reading raw `token.system.face` for
 > `old`, mirroring the M10f-3 `snapToGrid` raw-`old` convention). A Playwright e2e test proves an
-> animated (frame-list) actor authors and places on canvas without error; the full 10-test e2e
-> suite passes, confirming the Container migration didn't regress prior scene-tools/token behavior.
-> SDD-executed (9 code/test tasks + this docs task). Reviewed skill-update gate:
-> `shadowcat-codebase-actors-tokens` + `shadowcat-codebase-scene-rendering` updated + confirmed
-> ACCURATE. **Push gate: full M10** — not yet pushed to origin. **M10 remaining: M10i (`generated`
+> animated (frame-list) actor authors and places on canvas without error; `stage.spec.ts` (the
+> relevant token/scene-tools e2e coverage) totals 8 tests (7 pre-existing + 1 new), all passing,
+> confirming the Container migration didn't regress prior scene-tools/token behavior (the full
+> e2e directory across all spec files totals 10). SDD-executed (9 code/test tasks + this docs
+> task). Reviewed skill-update gate: `shadowcat-codebase-actors-tokens` +
+> `shadowcat-codebase-scene-rendering` updated; `shadowcat-spec-reviewer` found and this fix
+> corrected 3 real drifts (`RenderVisual`'s image variant missing its `asset` field name,
+> `TokenVisual`'s `faces.default` wrongly marked optional, and this entry's premature "confirmed
+> ACCURATE" claim predating the actual review) before confirming ACCURATE. **Push gate: full
+> M10** — not yet pushed to origin. **M10 remaining: M10i (`generated`
 > parametric token visual) and M10j (`fx` + emotes) still open before the full-M10 push gate.**
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
