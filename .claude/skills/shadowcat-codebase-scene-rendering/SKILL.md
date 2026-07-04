@@ -285,6 +285,53 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   review; the SAME pre-existing bug shape was found but NOT fixed (logged to `docs/TODO.md`
   instead, out of scope) in `GameSettingsPanel`/`FactionsPanel`/`ConditionsPanel` — always read the
   raw stored value for `old`, never the resolved/defaulted one, in any future editor of this shape.
+- **Regions on the continuous engine (M10f-4, final M10f checkpoint).** `SceneEcs::pathfind`'s
+  `Continuous` branch (`mod.rs`) computes the per-requester `region_field` once (same call the
+  `GridStepped` branch already made — the `GridStepped` branch itself is completely untouched by
+  M10f-4) and dispatches on `RegionField::has_terrain_or_impassable()` (`regions.rs`: true iff any
+  cell is `impassable` or `terrain` with `multiplier > 1.0`; arrest-only fields do NOT trigger this
+  — arrest needs only a post-filter, not route-bending). **Terrain/impassable present:** the
+  existing `pathfinding::find` runs forced to `DiagonalRule::Euclidean` (continuous base metric —
+  only cell topology + the terrain multiplier come from the grid, never the world's configured
+  diagonal rule), its cost is converted from CELLS to SCENE UNITS (`× cell`, matching the polyanya
+  path's unit contract — the two continuous sub-paths must report cost in the same unit regardless
+  of which ran), then `navmesh::los_smooth` (new) restores any-angle geometry. **Otherwise:** the
+  unchanged pure-polyanya route (M10f-1) is now also passed through `navmesh::truncate_at_arrest`
+  (new) before `clip_to_visible_mask`. `clip_to_visible_mask` still runs on both sub-paths — the
+  secrecy boundary is unchanged, M10f-4 only changes what feeds it.
+  - `navmesh::los_smooth(outcome, walls, mask, field, cell, footprint_radius_cells)` — cost-guarded
+    LOS string-pull smoothing for the weighted continuous path. A span `path[i]..path[j]`
+    straightens only when every cell its chord enters (`footprint_cells ∪ supercover_cells`, the
+    SAME union `cell_enterable`/`clip_to_visible_mask` use) is in `mask` (when `Some`), not
+    impassable, not arrest, and not weighted terrain (`terrain_multiplier > 1.0`), and the chord
+    crosses no `blocksMove` wall — so a straightened chord can never shortcut INTO terrain/
+    impassable/arrest the weighted search deliberately routed around or truncated at. **The single
+    grid step `path[i] -> path[i+1]` is ALWAYS kept unconditionally** (it already passed `find`'s
+    per-cell gate), guaranteeing goal progress even when nothing else can straighten. Fail-closed on
+    two levels: a whole-input short-circuit (`<3` vertices, degenerate `cell`/`footprint_radius_cells`)
+    returns the input unchanged; a per-span fallback (an over-cap/degenerate `supercover_cells` for
+    one candidate chord) fails only that chord, leaving it at its single grid step while smoothing
+    continues over the rest of the path. `cost`/`arrested` are carried through UNCHANGED (not
+    recomputed) — the pre-smoothing weighted grid cost is a conservative (never-cheaper) budget for
+    the straighter geometry, the same preview-vs-execution divergence class as the pre-existing
+    `MoveOutcome.cost`/router-cost TODO (an exact per-span smoothed cost is deferred, `docs/TODO.md`).
+  - `navmesh::truncate_at_arrest(outcome, field, cell)` — arrest post-filter for the pure-polyanya
+    continuous path (which never runs through `find`, so needs its own arrest truncation, mirroring
+    `find`'s M10g arrest logic for the walls-only route). Arc-length-samples the route
+    (`move_stream::sample_path`) and cuts at the first sample whose cell **differs from the last
+    distinct cell seen** and is `field.is_arrest(...)` — **cell-ENTRY-TRANSITION detection, not raw
+    per-sample checking**: the start cell is never a trigger even while several samples still sit
+    inside it (a token already standing somewhere is not "entering" it), matching `find`'s
+    `.skip(1)`-over-cells convention. A route with no arrest transition is returned UNCHANGED (no
+    resample, no cost recompute). On truncation, `cost` is recomputed as the Euclidean length of the
+    surviving polyline and `arrested: true` is set.
+  - **Both `los_smooth` and `truncate_at_arrest` are called with the PER-REQUESTER `region_field`**
+    (`region_field(scene, if is_gm { None } else { Some(user) })`, computed once in `pathfind` and
+    reused for the dispatch predicate too) — a secret region is absent from a non-GM's route/cost
+    exactly as on the grid engine; `move_exec` alone reads the authoritative field and springs any
+    secret region at execution. `move_exec`/`gate_walk` required **zero production changes** for
+    M10f-4 — proven, not merely asserted, since M10f-2/3: it already cell-samples the region field
+    for any polyline, grid or any-angle.
 - `src/server/src/scene/navmesh.rs` (M10f-1, new) — pure headless adapter around the `polyanya`
   (any-angle navmesh) + `geo`/`spade` (CDT + Minkowski buffer) crates, engine-owned geometry
   (ARCHITECTURE §6 exception). Carries **walls only** in this checkpoint — impassable/terrain
@@ -534,7 +581,34 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   narrow a player's route/preview but can never appear to them where it wouldn't to the GM, and it
   always still applies at `move_exec` regardless of what the router showed. Reuses the EXACT same
   `resolve_access`/`property_overrides["/system"]` mechanism as ordinary document egress — no new
-  secrecy machinery was introduced for regions (spec §3).
+  secrecy machinery was introduced for regions (spec §3). **Fixture-construction precision (test/
+  brief authoring convention):** the correct way to mark a region `gm_only` in a test fixture is
+  `doc.permissions.property_overrides.insert("/system".into(), Visibility::GmOnly)` — matching
+  `region_field`'s actual read (`doc.permissions.property_overrides.get("/system")`, default
+  `Visibility::All`, `mod.rs`). Setting `permissions.default = Access::None` instead does NOT gate
+  `region_field`'s per-requester filter at all (that field only reads the `/system`
+  `property_overrides` entry) — a brief/test author who reaches for `permissions.default` here will
+  write a region that still weights a non-GM's route (M10f-4 Task 4 brief slip, caught before
+  merge).
+- **The continuous-engine dispatch predicate MUST read the PER-REQUESTER region field, never the
+  authoritative one (M10f-4).** `has_terrain_or_impassable()` is evaluated against `region_field(
+  scene, Some(user))` for a non-GM — this is the single mechanism preventing a secret
+  terrain/impassable region from indirectly leaking its own existence via route-shape or reported
+  cost even though its geometry is never disclosed. A future refactor that fed the authoritative
+  field into ONLY the dispatch predicate, while still correctly routing/costing off the
+  per-requester field, would silently reopen this leak (dispatching to the weighted path at all is
+  itself a signal a secret region exists). Caught during Task 4's review — treat as load-bearing,
+  not incidental.
+- **Polyanya does not weight — the M10g cell `region_field` is the universal weighting overlay for
+  BOTH engines (M10f-4).** Polyanya 0.16.1's only cost-affecting knob is the
+  `detailed-layers`-gated `Layer.scale` (a per-layer coordinate transform, `instance.rs`) — off in
+  this build's `default-features = false` config and semantically wrong as a per-unit cost
+  multiplier even if enabled (crate-source-verified, not README-derived). A continuous route that
+  needs weighting is therefore computed by the SAME `pathfinding::find` the grid engine uses
+  (forced `DiagonalRule::Euclidean`), never by a polyanya cost-layer/`blocked_layers` mechanism —
+  those polyanya features remain available but are deliberately UNUSED for regions in this
+  codebase. Do not "improve" continuous weighting by reaching for polyanya's own layer API; the
+  cell field is the one and only weighting authority for every routing engine this project has.
 - **A whole-region-scalar disclosed on `MoveStream` must default to trusted-recipient-only, not
   broadcast-by-default.** `PathResult.arrested: bool` is always disclosed (no secrecy concern — it
   only tells the requester their OWN already-visible route is truncating). `MoveStream.cost:
@@ -614,7 +688,11 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   executor, the differential-oracle parity-proof-then-delete strategy);
   `docs/superpowers/plans/2026-07-02-m10f-2-unified-movement-executor.md` (M10f-2 implementation
   plan + its buddy-check history, incl. the gate_walk floating-point tolerance bugs and the
-  Task-6 fixture-derivation error that surfaced the `supercover_cells` corner-drift gotcha above).
+  Task-6 fixture-derivation error that surfaced the `supercover_cells` corner-drift gotcha above);
+  `docs/superpowers/specs/2026-07-03-m10f-4-regions-on-navmesh-design.md` (M10f-4 checkpoint
+  design — final M10f checkpoint; the polyanya-cannot-weight crate-source verification §2.2, the
+  weighted-grid-reuse-then-smooth decision §4.1, the LOS-smoothing cost-guard §5);
+  `docs/superpowers/plans/2026-07-03-m10f-4-regions-on-navmesh.md` (M10f-4 implementation plan).
 - Relationships:
   `graphify query "scene ECS derived read-model vision fog stage pixi render tokens regions"`.
 - History/decisions: [[m8-brainstorm]], [[m8d-2-scene-tools]], [[m9-progress]],

@@ -194,7 +194,7 @@ this mirrors M9's server-authoritative geometry.
 | movement model | engine | distance | weighting | footprint |
 |---|---|---|---|---|
 | **grid-stepped** (snap; D&D/PF) | **grid A\*** (king-moves) | configurable diagonal rule | **per-cell cost (exact)** | clearance grid |
-| **continuous** (gridless/wargame) | **`vleue/polyanya`** crate | Euclidean | cost-layers (Split-Mesh; cosmetic boundary approx) | obstacle inflation |
+| **continuous** (gridless/wargame) | **`vleue/polyanya`** crate | Euclidean | ~~cost-layers (Split-Mesh; cosmetic boundary approx)~~ **STRUCK (M10f-4, crate-source-verified against 0.16.1: polyanya cannot weight) — replaced by the shared M10g cell field + `find(Euclidean)` + cost-guarded LOS smoothing** | obstacle inflation |
 
 - **Grid A\* (hand-rolled, M10e):** king-moves; cells passable per M9's `blocks_move`
   segment test; **configurable diagonal-cost rule** (a world config-doc setting):
@@ -207,8 +207,14 @@ this mirrors M9's server-authoritative geometry.
 - **Polyanya (`vleue/polyanya`, M10f):** MIT/Apache, Bevy-free (deps: glam, hashbrown,
   smallvec, spade, geo, bvh2d), ~6.5K Rust SLoC, actively maintained (v0.16.1). Builds
   the navmesh **from edges+obstacles** (CDT via `spade`) and runs the any-angle search;
-  **built-in cost layers** (weighted regions), **conditional layers** (dynamic hazard
-  toggling), **overlapping layers** (future multi-level maps). We write the adapter
+  ~~**built-in cost layers** (weighted regions),~~ **STRUCK (M10f-4 design spec §2.2,
+  verified against actual `polyanya-0.16.1` crate source, not the README): the only
+  cost-affecting knob is the `detailed-layers`-gated `Layer.scale`, a per-layer
+  coordinate transform — off in this build's `default-features = false` config and
+  semantically wrong as a per-unit cost multiplier even if enabled. Weighting for both
+  engines is instead the shared M10g cell `region_field`.** **conditional layers**
+  (dynamic hazard toggling), **overlapping layers** (future multi-level maps) remain
+  available but deliberately unused for regions (M10f-4 §2.2). We write the adapter
   (scene walls → `Triangulation`; query → path; footprint via inflation), not the
   algorithm. **Caveats (validate in the plan):** meshes are static after construction →
   rebuild on wall/terrain change (same trigger as M9 vision re-derive); adds `geo`+`spade`
@@ -222,11 +228,19 @@ this mirrors M9's server-authoritative geometry.
 
 - **`region` doc_type** (parent_id = scene; new `SceneEcs` component): `system` =
   `{ shape, cost: number | "impassable" }`. A GM **paint/place tool** authors them.
-- Wired into both engines: **per-cell cost** (grid A\*) and **cost-layers** (Polyanya).
-  **Hazards** = an impassable region or a toggled conditional layer — satisfying "avoid
-  certain paths entirely when they become hazardous" without weighting math.
-- Weighting is exact on the grid (per-cell) and approximate-but-cosmetic on the navmesh
-  (Split-Mesh boundary refraction — the Weighted Region Problem; visually fine for a VTT).
+- ~~Wired into both engines: **per-cell cost** (grid A\*) and **cost-layers** (Polyanya).~~
+  **STRUCK (M10f-4): polyanya cost-layers are infeasible in 0.16.1 (crate-source-verified,
+  §10.2 above). Both engines instead share ONE weighting authority — the M10g per-cell
+  `region_field` — with the continuous engine routing terrain/impassable through the
+  existing weighted grid A\* (forced Euclidean) then cost-guard LOS-smoothing back to
+  any-angle geometry.** **Hazards** = an impassable region or a toggled conditional layer —
+  satisfying "avoid certain paths entirely when they become hazardous" without weighting math.
+- ~~Weighting is exact on the grid (per-cell) and approximate-but-cosmetic on the navmesh
+  (Split-Mesh boundary refraction — the Weighted Region Problem; visually fine for a VTT).~~
+  **STRUCK — see above; weighting is exact-on-the-grid for BOTH engines now (the continuous
+  engine's search runs over the same per-cell field), with LOS smoothing (not Split-Mesh
+  refraction) as the any-angle restoration step, cost-guarded so it never shortcuts into
+  costlier terrain the weighted search routed around.**
 
 ### 10.4 Client
 
@@ -236,6 +250,12 @@ correlated request; the move itself remains an optimistic document intent gated 
 M9 server block.
 
 ### 10.5 Engine-choice rationale (Polyanya vs A\*+funnel) — recorded
+
+> **M10f-4 correction:** the premise below that Polyanya has "built-in cost layers
+> (weighted regions)" is **inaccurate for 0.16.1** (crate-source-verified, §10.2 above) —
+> struck. The engine-choice **conclusion** (adopt polyanya for continuous any-angle
+> geometry) stands unchanged; only the weighting mechanism changes (shared M10g cell
+> field + weighted grid A* + LOS smoothing, not a polyanya cost-layer).
 
 The common anti-Polyanya argument (e.g. Recast/Detour A\* + funnel string-pulling) is
 driven by AAA action-game requirements **Shadowcat does not have**, so it does not

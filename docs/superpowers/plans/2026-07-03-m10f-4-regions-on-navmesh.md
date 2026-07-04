@@ -20,7 +20,9 @@
 
 ## Model/Effort directives
 
-Per explicit user direction (2026-07-03): **write and execute this plan mainline on the current session model (Opus 4.8, effort high) — no model switch, no `sdd-plan-writer` dispatch.** This overrides the default "recommend dispatching a plan-writer subagent." Execution tier for implementer subagents (if Subagent-Driven is chosen at handoff) follows the project default (`shadowcat-coder` at `effort: medium`, escalating to `-opus` on BLOCKED); the two-reviewer gate uses `shadowcat-spec-reviewer` + `shadowcat-code-reviewer` at `effort: high`.
+Per explicit user direction (2026-07-03): **write this plan mainline on the current session model (Opus 4.8, effort high) — no model switch, no `sdd-plan-writer` dispatch.** This overrides the default "recommend dispatching a plan-writer subagent."
+
+**Dispatcher tier (2026-07-03, execution phase):** per explicit user direction ("you are now the dispatcher"), the SDD loop runs **mainline in this session** (not delegated to `sdd-dispatcher`), on whatever model/effort the session is currently set to (switched to Sonnet 5 / effort medium at the start of execution). Implementer subagents = `shadowcat-coder` (sonnet, effort medium), escalating to `shadowcat-coder-opus` on BLOCKED, per project default. Per-task reviewer pair = `shadowcat-spec-reviewer` + `shadowcat-code-reviewer` (sonnet, effort high), escalating to their `-opus` twins if findings read shallow/uncertain.
 
 ## Buddy-check directives
 
