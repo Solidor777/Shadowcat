@@ -31,7 +31,11 @@ impl RawRoll {
 }
 
 /// A die's contribution after the pipeline. `value` = post-modifier face; `kept` =
-/// survived keep/drop; `rerolled_from` = prior natural if this replaced a reroll.
+/// survived keep/drop. `rerolled_from` holds the immediately-preceding value for a
+/// chained (non-`once`) reroll — NOT necessarily the original natural roll; see
+/// `natural` for that. Penetrate-produced records may fall outside `[min, max]` by
+/// design (each successive extra die is reduced by 1, so a natural-min roll stores
+/// a value one below `min`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DieRecord {
     pub id: DieId,
