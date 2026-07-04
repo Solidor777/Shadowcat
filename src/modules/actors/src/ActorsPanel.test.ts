@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildActorDoc, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildActorDoc, buildTokenFromActor, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { TokenSelection } from "@shadowcat/ui-kit";
 import ActorsPanel from "./ActorsPanel.svelte";
 
 // Suppress listAssets fetch: ActorsPanel calls listAssets($effect) which hits /api/... in jsdom.
@@ -380,5 +381,52 @@ describe("ActorsPanel — visual kind editor", () => {
     expect((submitBtn as HTMLButtonElement).disabled).toBe(true);
     await fireEvent.click(submitBtn);
     expect(dispatchIntent).not.toHaveBeenCalled();
+  });
+});
+
+describe("ActorsPanel — per-token face swap", () => {
+  function facesActor(): WireDocument {
+    return buildActorDoc(
+      "w1",
+      { name: "Goblin", displayName: "Goblin", visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } }, default: "normal" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+      "act1",
+    );
+  }
+
+  it("shows no face palette when no token is selected", async () => {
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(facesActor()), dispatchIntent: vi.fn(), tokenSelection: new TokenSelection(), canEdit: () => true }),
+    });
+    expect(screen.queryByText("actors.faceSwapHint")).toBeNull();
+  });
+
+  it("shows the face palette for a selected token whose visual is 'faces', not for a plain image token", async () => {
+    const actor = facesActor();
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    const store = storeWith(actor, token);
+    const tokenSelection = new TokenSelection();
+    tokenSelection.set(["tok1"]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent: vi.fn(), tokenSelection, canEdit: () => true }),
+    });
+    expect(screen.getByText("actors.faceSwapHint")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "normal" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "bloodied" })).toBeTruthy();
+  });
+
+  it("clicking a face dispatches a /system/face update reading the raw stored value for `old`", async () => {
+    const dispatchIntent = vi.fn();
+    const actor = facesActor();
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    const store = storeWith(actor, token);
+    const tokenSelection = new TokenSelection();
+    tokenSelection.set(["tok1"]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent, tokenSelection, canEdit: () => true }),
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "bloodied" }));
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "tok1", changes: [{ path: "/system/face", old: null, new: "bloodied" }] },
+    ]);
   });
 });

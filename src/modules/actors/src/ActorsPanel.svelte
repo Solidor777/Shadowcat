@@ -70,6 +70,40 @@
     return Object.entries(reg?.conditions ?? {});
   });
 
+  /** The single selected token, if any — drives the per-token face-swap palette below. */
+  const selectedFaceToken = $derived.by((): WireDocument | null => {
+    subscribe();
+    const ids = ctx.tokenSelection.ids;
+    if (ids.size === 0) return null;
+    return ctx.documents.query("token").find((t) => ids.has(t.id)) ?? null;
+  });
+
+  /** The actor's declared faces map, if the selected token's actor visual is `faces` — drives
+   * whether the palette shows at all (a plain image/animated token has nothing to swap). */
+  const selectedFaceNames = $derived.by((): string[] => {
+    subscribe();
+    const tok = selectedFaceToken;
+    if (!tok) return [];
+    const linkedActorId = (tok.system as { actor_id?: string | null } | undefined)?.actor_id;
+    const actorDoc = linkedActorId ? ctx.documents.get(linkedActorId) : tok.embedded?.actor?.[0];
+    const visual = (actorDoc?.system as { visual?: TokenVisual } | undefined)?.visual;
+    return visual?.kind === "faces" ? Object.keys(visual.faces) : [];
+  });
+
+  /** Reads the RAW currently-stored face (never a resolved/defaulted value) — this is the
+   * required `old` for the `/system/face` Update below; the server's field-level optimistic-
+   * concurrency check rejects any Update whose `old` doesn't match the actual stored value. */
+  function currentFace(tok: WireDocument): string | null {
+    return (tok.system as { face?: string } | undefined)?.face ?? null;
+  }
+
+  function swapFace(faceName: string): void {
+    const tok = selectedFaceToken;
+    if (!tok || !ctx.canEdit(tok, "/system/face")) return;
+    const old = currentFace(tok);
+    ctx.dispatchIntent([{ op: "update", doc_id: tok.id, changes: [{ path: "/system/face", old, new: faceName }] }]);
+  }
+
   function buildVisual(): TokenVisual | null {
     if (visualKind === "image") return assetId ? { kind: "image", asset: assetId } : null;
     if (visualKind === "animated") {
@@ -156,6 +190,14 @@
 
 <section class="actors">
   <h3>{t("actors.title")}</h3>
+  {#if selectedFaceToken && selectedFaceNames.length > 0}
+    <p class="hint">{t("actors.faceSwapHint")}</p>
+    <div class="face-palette">
+      {#each selectedFaceNames as name (name)}
+        <button type="button" class:active={currentFace(selectedFaceToken) === name} onclick={() => swapFace(name)}>{name}</button>
+      {/each}
+    </div>
+  {/if}
   <ul class="list">
     {#each actorDocs as a (a.id)}
       <li>
