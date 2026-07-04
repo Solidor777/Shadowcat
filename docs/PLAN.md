@@ -643,6 +643,45 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > execution + snap toggle, M10f-4 regions on the navmesh) shipped. Both routing engines (grid A*,
 > continuous/polyanya) now share one region-weighting authority, one gated executor, and one
 > streamed-vision secrecy clip.
+>
+> **M10h DONE** (branch `m10h-faces-animated`, commits `5214892..a577570`, all green) — **faces +
+> animated token visuals; purely client-side, no server/ts-rs change** (the `system`-body visual
+> data is opaque client-owned JSON, same convention as `movementModel`/`bounds`/`snapToGrid`).
+> Spec: `docs/superpowers/specs/2026-07-03-m10h-faces-animated-design.md`. Replaces the old flat
+> `ActorVisual` with a discriminated union: `RenderVisual = {kind:"image"} | {kind:"animated",
+> source: AnimatedSource, fps, loop}` (the two kinds the render layer ever draws); `FaceVisual =
+> RenderVisual` (a face is never itself nested `{kind:"faces"}` — no faces-of-faces); `TokenVisual
+> = RenderVisual | {kind:"faces", faces, default?, faceMap?}`; new per-token `token.system.face?`
+> active-face selector (token-local, not part of `overrides` — selects INTO the actor's faces map
+> rather than overriding actor data). New render-boundary resolver `resolveTokenVisual(token,
+> store, eff?)` (sibling to `resolveTokenActor`/`resolveTokenBox`/`resolveConditions`) applies
+> precedence manual `token.system.face` > first `faceMap` match against the token's raw
+> `conditions[]` (array order) > `default` > first key, and fails closed (`null`) on an empty
+> `faces` map, a malformed `AnimatedSource`, or a resolved kind outside `image`/`animated`. New
+> pure `computeAnimatedFrame` (`token-animation.ts`, mirrors the `fog-blend.ts` extraction
+> precedent — `pixi-backend.ts` has no jsdom GL context) drives tick-based `AnimatedSprite`
+> playback via the new `DisplayBackend.tickTokenAnimations(dtMs)` seam, called from
+> `TokenView.tick` alongside the existing tween ticker. `TokenNodeSpec.visual` becomes a
+> discriminated union (`{kind:"image",url} | {kind:"animated",source: ResolvedAnimatedSource,fps,
+> loop}`), asset ids resolved to URLs by `TokenView.toSpec`'s `resolveSource` via `AssetResolver`.
+> `PixiBackend` migrated from a bare `Sprite`-per-token + three separately-tracked sibling Maps to
+> a `Map<string,TokenNode>` Container structure (`container` outer/non-rotating, holds upright
+> badges directly; `visualContainer` inner, rotates the art + border together). **Real bug found +
+> fixed in review:** the async texture/frame-load completion guards originally checked only
+> `sourceKey` string equality, unsafe once `replaceVisualChild` could recreate a token's visual
+> object multiple times in rapid succession (an A→B→A visual-cycling scenario could let a stale
+> promise write into an already-`.destroy()`'d Pixi object) — fixed by also requiring object
+> identity (`node.visual === sprite`), now a load-bearing invariant for this async-completion
+> pattern generally. Authoring UI in `ActorsPanel.svelte`: a visual-kind editor (image/faces/
+> animated) in the actor-creation form with full per-face-row/name-uniqueness/`defaultFace`
+> validation, plus a separate per-token face-swap palette (reading raw `token.system.face` for
+> `old`, mirroring the M10f-3 `snapToGrid` raw-`old` convention). A Playwright e2e test proves an
+> animated (frame-list) actor authors and places on canvas without error; the full 10-test e2e
+> suite passes, confirming the Container migration didn't regress prior scene-tools/token behavior.
+> SDD-executed (9 code/test tasks + this docs task). Reviewed skill-update gate:
+> `shadowcat-codebase-actors-tokens` + `shadowcat-codebase-scene-rendering` updated + confirmed
+> ACCURATE. **Push gate: full M10** — not yet pushed to origin. **M10 remaining: M10i (`generated`
+> parametric token visual) and M10j (`fx` + emotes) still open before the full-M10 push gate.**
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 

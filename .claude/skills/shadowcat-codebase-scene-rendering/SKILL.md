@@ -424,6 +424,44 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `camera.ts`, `grid.ts`, `token-view.ts` + `token-animator.ts` (tween),
   `wall-view.ts`, `drawing-view.ts`, `template-view.ts`, `ping-view.ts`. Modules draw through the
   render-layer API; the canvas host is not replaceable.
+- **Token visual rendering (M10h — faces + animated token visuals).**
+  `src/client/render/src/token-animation.ts` — `computeAnimatedFrame(elapsedMs, fps, frameCount,
+  loop) -> number`, pure tick-driven frame-index math (extracted for the same reason as
+  `fog-blend.ts`: `pixi-backend.ts` is Playwright-only, no jsdom GL context, so frame-selection logic
+  needs to live somewhere unit-testable). `loop:true` wraps arbitrarily-large `elapsedMs`;
+  `loop:false` clamps to the final frame (a one-shot animation holds, never re-wraps); degenerate
+  input (`frameCount<=0`, non-finite `elapsedMs`/`fps`, `fps<=0`) fails closed to frame 0.
+  `TokenNodeSpec.visual` (`types.ts`) is now a discriminated union: `{kind:"image", url} |
+  {kind:"animated", source: ResolvedAnimatedSource, fps, loop}` (replaces the old flat `.url`
+  field) — `ResolvedAnimatedSource = {type:"frames", urls:string[]} | {type:"sheet", url, rows,
+  cols, count?}`, already asset-id-resolved to serve URLs by `AssetResolver` (the backend never
+  resolves asset ids itself). `DisplayBackend.tickTokenAnimations(dtMs): void` — the new per-frame
+  animation-advance seam, called once per frame alongside `startTicker`; `MockBackend`'s
+  implementation is an intentional no-op (frame-advance state lives only in `PixiBackend`'s real
+  `AnimatedSprite`s). `TokenView.tick(dtMs)` calls both `this.animator.tick(dtMs)` (transform tween,
+  unchanged) AND `this.backend.tickTokenAnimations(dtMs)` (new). `TokenView.toSpec` resolves a
+  token's visual via `resolveTokenVisual` (see `shadowcat-codebase-actors-tokens`) then a private
+  `resolveSource` maps `AnimatedSource` → `ResolvedAnimatedSource` through `AssetResolver`.
+  **`PixiBackend`'s Container-per-token structure** (`pixi-backend.ts`, migrated off a bare
+  `Sprite`-per-token + three separately-tracked sibling Maps): one `TokenNode` per token —
+  `container` (outer, does NOT rotate, positioned at the token center; `badges` are its DIRECT
+  children so condition-marker glyphs stay upright regardless of token facing) →
+  `visualContainer` (inner, rotates with the token via `.angle = spec.rotation`) → holds `visual`
+  (a `Sprite` or `AnimatedSprite`) + `border` (`Graphics`) as siblings. `AnimatedSprite` playback is
+  entirely tick-driven: `autoUpdate = false` (never Pixi's own shared ticker), frame index advanced
+  in `tickTokenAnimations` via `computeAnimatedFrame`. `node.sourceKey` short-circuits a re-push
+  with an unchanged visual (a tweening token's transform-only updates never touch the visual/sprite
+  object). **Load-bearing invariant — guard async texture/frame-load completions on OBJECT
+  IDENTITY, not just a string/key match:** `replaceVisualChild` can recreate a token's `visual`
+  object (image↔animated kind-swap, or a rapid A→B→A visual-cycling sequence), so an in-flight
+  texture/frame-load promise's completion callback MUST check `node.visual === sprite` (the exact
+  object captured at load-start) in addition to `sourceKey`/`id` equality — a key-only check lets a
+  stale promise write into an already-`.destroy()`'d Pixi object once the visual has been recreated
+  more than once while the load was in flight. The animated branch's `replaceVisualChild` call is
+  ALSO conditional (`if (!(node.visual instanceof AnimatedSprite))`), mirroring the image branch, to
+  reduce how often the object gets recreated in the first place. Any future code touching this
+  async-completion pattern (anywhere a display object can be replaced mid-flight) must follow the
+  same object-identity-guard shape — a real bug of this exact kind was found and fixed during M10h.
 - `src/client/render/src/engine.ts` (M2) — `visionSweeps: Map<tokenId, {samples, elapsed,
   durationMs}>` drives the mover's fog sweep during `MoveStream` playback (keyed per token — unions
   concurrent sweeps' visible sets rather than clobbering). `animateSamples(id, samples, durationMs,
@@ -698,8 +736,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `docs/superpowers/specs/2026-07-03-m10f-4-regions-on-navmesh-design.md` (M10f-4 checkpoint
   design — final M10f checkpoint; the polyanya-cannot-weight crate-source verification §2.2, the
   weighted-grid-reuse-then-smooth decision §4.1, the LOS-smoothing cost-guard §5);
-  `docs/superpowers/plans/2026-07-03-m10f-4-regions-on-navmesh.md` (M10f-4 implementation plan).
+  `docs/superpowers/plans/2026-07-03-m10f-4-regions-on-navmesh.md` (M10f-4 implementation plan);
+  `docs/superpowers/specs/2026-07-03-m10h-faces-animated-design.md` (M10h faces + animated token
+  visuals — client-only, the Container-per-token migration + `tickTokenAnimations` seam).
 - Relationships:
-  `graphify query "scene ECS derived read-model vision fog stage pixi render tokens regions"`.
+  `graphify query "scene ECS derived read-model vision fog stage pixi render tokens regions faces animated"`.
 - History/decisions: [[m8-brainstorm]], [[m8d-2-scene-tools]], [[m9-progress]],
   [[server-authoritative-movement-rule]], [[m10-pathfinding-architecture]].
