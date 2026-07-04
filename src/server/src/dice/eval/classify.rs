@@ -22,7 +22,10 @@ pub fn oriented_margin(direction: Direction, scalar: i64, reference: i64) -> i64
 /// Classify `margin` against `tiers`. Empty ladder => default 2-rung pass/fail
 /// (`pass = margin >= 0`). Non-empty => the highest rung with `margin_offset <=
 /// margin`; if none match (margin below the floor), fail closed to the lowest
-/// rung. Order-independent (no sorted precondition).
+/// rung. Order-independent (no sorted precondition). Well-formed ladders use
+/// unique `margin_offset`s; a duplicate offset ties on `max_by_key`/
+/// `min_by_key`'s last-element semantics, so which duplicate wins depends on
+/// caller-supplied vec order.
 pub fn classify(margin: i64, tiers: &[Tier]) -> Classification {
     if tiers.is_empty() {
         return Classification {
@@ -47,7 +50,6 @@ pub fn classify(margin: i64, tiers: &[Tier]) -> Classification {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dice::spec::{Direction, Tier};
 
     #[test]
     fn empty_ladder_is_pass_fail_at_zero_margin() {

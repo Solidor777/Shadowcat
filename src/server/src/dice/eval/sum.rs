@@ -1,3 +1,4 @@
+use crate::dice::eval::classify;
 use crate::dice::outcome::{RawRoll, RollOutcome};
 use crate::dice::spec::{BinOp, Expr, RollSpec, TotalConfig};
 
@@ -11,9 +12,8 @@ pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> Rol
     let (pass, margin, tier_label, tier_value) = match cfg.difficulty {
         None => (None, None, None, None),
         Some(diff) => {
-            let m =
-                crate::dice::eval::classify::oriented_margin(spec.direction, total, diff as i64);
-            let c = crate::dice::eval::classify::classify(m, &cfg.tiers);
+            let m = classify::oriented_margin(spec.direction, total, diff as i64);
+            let c = classify::classify(m, &cfg.tiers);
             (c.pass, Some(m), c.tier_label, c.tier_value)
         }
     };
