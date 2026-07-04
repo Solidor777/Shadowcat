@@ -1,3 +1,4 @@
+use crate::dice::eval::classify;
 use crate::dice::eval::crit;
 use crate::dice::outcome::{RawRoll, RollOutcome};
 use crate::dice::spec::{RollSpec, SuccessConfig};
@@ -8,9 +9,10 @@ use crate::dice::spec::{RollSpec, SuccessConfig};
 /// SuccessCount mode ignores the AST arithmetic. Net successes clamp at 0 unless
 /// `cfg.crit_fail.allow_negative` opts out of the clamp.
 ///
-/// TODO: replace this inline pass/margin computation with `eval::classify` once
-/// `required_successes`/`tiers` classification lands; it must operate over `net`
-/// (not the pre-crit base count).
+/// `required_successes`/`tiers` classify over `net - req` via the shared
+/// `eval::classify`. Unlike Total mode, this margin is NOT run through
+/// `oriented_margin`/direction: more successes is always better, and `direction`
+/// was already applied per-die inside `crit::score_die`.
 pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) -> RollOutcome {
     let mut records = raws.records.clone();
     let mut base = 0i32;
@@ -47,9 +49,14 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         .filter(|r| r.kept)
         .map(|r| r.value as i64)
         .sum();
-    let (pass, margin) = match cfg.required_successes {
-        Some(req) => (Some(net >= req), Some((net - req) as i64)),
-        None => (None, None),
+    let (pass, margin, tier_label, tier_value) = match cfg.required_successes {
+        None => (None, None, None, None),
+        Some(req) => {
+            // Direction is NOT applied here: more successes is always better.
+            let m = (net - req) as i64;
+            let c = classify::classify(m, &cfg.tiers);
+            (c.pass, Some(m), c.tier_label, c.tier_value)
+        }
     };
     RollOutcome {
         total,
@@ -57,8 +64,8 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         successes: Some(net),
         pass,
         margin,
-        tier_label: None,
-        tier_value: None,
+        tier_label,
+        tier_value,
         crit_successes: crit_s,
         crit_fails: crit_f,
         positive_counter: pos,
@@ -69,7 +76,7 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dice::eval::roll;
+    use crate::dice::eval::{evaluate, roll};
     use crate::dice::outcome::DieRecord;
     use crate::dice::rng::NoiseRng;
     use crate::dice::spec::{
@@ -281,6 +288,47 @@ mod tests {
         assert!(out.records[0].crit_success && out.records[0].crit_fail);
         assert!(out.records[1].crit_success && !out.records[1].crit_fail);
         assert!(!out.records[2].crit_success && out.records[2].crit_fail);
+    }
+
+    #[test]
+    fn successcount_tier_over_net_margin() {
+        use crate::dice::spec::Tier;
+        // required 1, tiers: offset 0 = "success", offset 2 = "success+2 extra".
+        let tiers = vec![
+            Tier {
+                margin_offset: 0,
+                label: Some("success".into()),
+                tier_value: Some(1),
+            },
+            Tier {
+                margin_offset: 2,
+                label: Some("great".into()),
+                tier_value: Some(2),
+            },
+        ];
+        // 3 dice all min=max=10, target>=7 -> 3 successes, required 1 -> margin 2 -> "great".
+        let spec = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count: 3,
+                kind: DieKind::Numeric { min: 10, max: 10 },
+                modifiers: vec![],
+            }),
+            direction: Direction::HighWins,
+            mode: Mode::SuccessCount(SuccessConfig {
+                success: SuccessRule {
+                    comp: Comparator::Gte,
+                    target: 7,
+                },
+                required_successes: Some(1),
+                tiers,
+                crit_success: None,
+                crit_fail: None,
+            }),
+        };
+        let out = evaluate(&spec, &roll(&spec, &mut NoiseRng::from_seed(1)));
+        assert_eq!(out.margin, Some(2));
+        assert_eq!(out.tier_value, Some(2));
+        assert!(out.pass.is_none(), "custom ladder reports tier, not pass");
     }
 
     #[test]
