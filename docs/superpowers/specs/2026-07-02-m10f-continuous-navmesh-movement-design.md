@@ -205,11 +205,16 @@ Reuses the M10g composed region field + the two-field secrecy split
 (`region_field(scene, viewer)`; `viewer: None` = authoritative, `Some(user)` =
 per-requester visible). Mapping to the navmesh:
 
-- **terrain** (cost ≥ 1) → polyanya **cost-layer** (Split-Mesh boundary refraction —
+- **terrain** (cost ≥ 1) → ~~polyanya **cost-layer** (Split-Mesh boundary refraction —
   the Weighted Region Problem; approximate-but-cosmetic, visually fine for a
-  human-previewed VTT path, per parent §10.5). Built from the **per-requester
-  visible** field for the router/budget; a secret terrain region never inflates a
-  player's cost.
+  human-previewed VTT path, per parent §10.5).~~ **STRUCK (M10f-4 design spec §2.2,
+  crate-source-verified against `polyanya-0.16.1`): polyanya cannot bias a route by
+  graded terrain cost.** Replaced by the shared M10g cell `region_field` as the
+  single weighting authority for both engines: a terrain/impassable-bearing route is
+  computed by the existing weighted grid A* (`pathfinding::find`, forced to
+  `DiagonalRule::Euclidean`) then cost-guard LOS-smoothed back to any-angle geometry.
+  Built from the **per-requester visible** field for the router/budget; a secret
+  terrain region never inflates a player's cost.
 - **impassable** → navmesh **obstacle** (mesh hole) when authoritative; for the
   per-requester router, an impassable region the requester cannot see is **absent**
   (routed straight through) and sprung at execution by the authoritative field —
@@ -318,8 +323,9 @@ prove grid parity **before** continuous is layered on top.
   king-step executor's admit/deny/arrest outcomes on grid inputs across env / global-
   illumination / darkvision / LOS+wall (mirror the M10e-4 parity suite); `route ⊆
   gate-allowed` holds for continuous.
-- Continuous execution: a continuous move into unseen space is rejected by the cell
-  gate (fail-closed); `MoveStream` samples an any-angle path correctly; observer
+- Continuous execution: a continuous move into unseen space truncates at the cell
+  gate (`stopped_early`/`truncated`, fail-closed — same mechanism as §6.2, not a
+  request-level rejection); `MoveStream` samples an any-angle path correctly; observer
   clip leak-free (reuse the M2 no-leak suite, now over any-angle paths).
 - Regions on navmesh: terrain reroutes/costs; impassable routes around; visible
   arrest truncates + sets `arrested`; **secret region absent from a player's field

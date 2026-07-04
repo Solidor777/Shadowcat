@@ -366,11 +366,11 @@ test("reconcileNow re-resolves token images (AssetChanged path)", () => {
     } }],
   });
   engine.start();
-  const before = backend.tokens.get("t1")!.url;
+  const before = backend.tokens.get("t1")!.visual;
   assets.onAssetChanged({ uuid: "i1", op: "replaced" }); // cache-bust, no store change
   engine.reconcileNow();
-  expect(backend.tokens.get("t1")!.url).not.toBe(before);
-  expect(backend.tokens.get("t1")!.url).toBe(assets.url("i1"));
+  expect(backend.tokens.get("t1")!.visual).not.toEqual(before);
+  expect((backend.tokens.get("t1")!.visual as { kind: "image"; url: string }).url).toBe(assets.url("i1"));
 });
 
 test("addPing renders an expanding ring driven by the ticker", () => {
@@ -419,6 +419,15 @@ test("snap delegates to the active grid; setGrid changes it", () => {
   expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 });
   engine.setGrid({ kind: "square", size: 50 });
   expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 125, y: 175 });
+});
+
+test("setSnapEnabled(false) makes snap identity; true restores the active grid's snap", () => {
+  const { engine } = makeEngine(); // square / 100
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 }); // default: enabled
+  engine.setSnapEnabled(false);
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 140, y: 160 }); // identity
+  engine.setSnapEnabled(true);
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 }); // restored
 });
 
 test("a second pointer mid-gesture is ignored (single-pointer dispatch)", () => {

@@ -10,7 +10,8 @@ import type { ReadableDocuments } from "./store";
 
 export type MovementRestriction = "visible" | "revealed" | "unrestricted";
 /** Per-scene pathfinding engine choice (M10f-1). `grid-stepped` = the existing grid A* router;
- * `continuous` = the M10f polyanya navmesh router (preview only until M10f-3 ships execution). */
+ * `continuous` = the M10f polyanya navmesh router, executed end-to-end since M10f-3
+ * (server-authoritative gated movement, same as grid-stepped). */
 export type MovementModel = "grid-stepped" | "continuous";
 export type LightMode = "globalIllumination" | "environmentLight";
 export type DiagonalRule = "chebyshev" | "alternating" | "euclidean" | "manhattan";
@@ -63,6 +64,10 @@ export interface SceneSystem {
   grid: { kind: "square" | "hex"; size: number; distance?: GridDistance };
   background: string | null;
   bounds?: SceneDimensions;
+  /** Scene-level snap-to-grid toggle (M10f-3 §4.1), independent of `movementModel`. Absent ⇒
+   * derived default resolved in `resolveSceneSettings` (false for a continuous scene, true
+   * otherwise) — reading this field alone is NOT the effective value. */
+  snapToGrid?: boolean;
   vision?: SceneVisionOverrides;
   lighting?: SceneLightingOverrides;
 }
@@ -116,6 +121,10 @@ export interface ResolvedSceneSettings {
   observerVision: boolean;
   movementRestriction: MovementRestriction;
   movementModel: MovementModel;
+  /** Effective snap-to-grid axis (M10f-3 §4.1): an explicit scene value overrides in either
+   * direction (including `false`); absent falls back to a derived default keyed off the
+   * RESOLVED `movementModel` (false for continuous, true otherwise). */
+  snapToGrid: boolean;
   lightingEnabled: boolean;
   lightMode: LightMode;
   environment: EnvironmentLight;
@@ -127,7 +136,7 @@ export interface ResolvedSceneSettings {
 }
 
 /** A token's transform + visual (M8d §4). `(x,y)` is the token CENTER. `visual` is the
- * forward-looking seam — only `kind:"image"` ships in M8d. */
+ * forward-looking seam (M10h: image, animated, or multi-face union — see `TokenVisual`). */
 export interface TokenSystem {
   x: number;
   y: number;
@@ -135,19 +144,45 @@ export interface TokenSystem {
   h: number;
   rotation: number;
   /** Set on raw (actorless) tokens; actor-backed tokens resolve their visual via the actor. */
-  visual?: { kind: "image"; asset: string };
+  visual?: TokenVisual;
   /** Linked token: the shared actor's id (null/absent ⇒ instanced, see `embedded.actor`). */
   actor_id?: string | null;
   /** Linked-only per-token override whitelist (see {@link TokenOverrides}). */
   overrides?: TokenOverrides;
+  /** Active face name when the effective visual is a `faces` union member (M10h); token-local
+   * always (not part of `overrides` — it selects INTO the actor's faces map, not an override
+   * of actor-data). Ignored when the effective visual isn't `faces`. */
+  face?: string;
 }
 
-/** An actor's appearance + defaults (M10a). Stats/sheet are M12; this is only what backs a
- * token. The server is structural-only — this `system` shape is the client's interpretation. */
-export interface ActorVisual {
-  kind: "image";
-  asset: string;
-}
+/** The two kinds the render layer actually draws — the render/resolution boundary (M10h). */
+export type RenderVisual =
+  | { kind: "image"; asset: string }
+  | { kind: "animated"; source: AnimatedSource; fps: number; loop: boolean };
+
+/** An animated visual's frame source: an ordered list of individually-uploaded assets, or one
+ * grid-sliced sheet asset. No packed-atlas-JSON format yet (M10h design spec §7). */
+export type AnimatedSource =
+  | { type: "frames"; frames: string[] }
+  | { type: "sheet"; asset: string; rows: number; cols: number; count?: number };
+
+/** A face's own visual. Deliberately never itself `{kind:"faces"}` — no nesting — so an animated
+ * face falls out of the same RenderVisual boundary with no separate mechanism. */
+export type FaceVisual = RenderVisual;
+
+/** An actor's (or a linked token's override) declared visual: a plain RenderVisual, or a
+ * multi-face union resolved per-token by `resolveTokenVisual` (M10h). Client-owned, opaque
+ * `system`-body JSON — no ts-rs type, no server change (mirrors `movementModel`/`bounds`). */
+export type TokenVisual =
+  | RenderVisual
+  | {
+      kind: "faces";
+      faces: Record<string, FaceVisual>;
+      default: string;
+      /** Optional conditionId -> face name map; the first match (in the token's effective
+       * `conditions[]` order) wins over `default`, but never over a manual `token.system.face`. */
+      faceMap?: Record<string, string>;
+    };
 
 /** A per-actor or per-token vision assignment: which mode (by id) + effective range in grid cells.
  * References a VisionMode in the world's vision-modes registry by id. */
@@ -156,7 +191,7 @@ export interface VisionAssignment { mode: string; range: number; }
 export interface ActorSystem {
   name: string;
   displayName: string;
-  visual: ActorVisual;
+  visual: TokenVisual;
   size: { w: number; h: number };
   shape: "square" | "circle";
   faction: string | null;
@@ -170,7 +205,7 @@ export interface ActorSystem {
 /** The per-token override whitelist for a linked token (M10a; shape added M10d). */
 export interface TokenOverrides {
   name?: string;
-  visual?: ActorVisual;
+  visual?: TokenVisual;
   size?: { w: number; h: number };
   shape?: "square" | "circle";
   /** Per-token vision override: replaces the actor's vision[] entirely when present. */
@@ -210,6 +245,9 @@ export function buildSceneDoc(worldId: string, system: Partial<SceneSystem> = {}
     ...(system.bounds ? { bounds: system.bounds } : {}),
     ...(system.vision ? { vision: system.vision } : {}),
     ...(system.lighting ? { lighting: system.lighting } : {}),
+    // Explicit undefined-check (not a truthy check) — false is a meaningful, persistable
+    // value (M10f-3 §4.1); `system.snapToGrid ? ... : {}` would silently drop an explicit false.
+    ...(system.snapToGrid !== undefined ? { snapToGrid: system.snapToGrid } : {}),
   };
   return envelope(worldId, "scene", null, full, id);
 }
@@ -249,12 +287,17 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
   const sys = scene?.system as SceneSystem | undefined;
   const v = sys?.vision ?? {};
   const l = sys?.lighting ?? {};
+  const movementModel = v.movementModel ?? d.scene.movementModel;
   return {
     losRestriction: v.losRestriction ?? d.scene.losRestriction,
     fog: v.fog ?? d.scene.fog,
     observerVision: v.observerVision ?? d.scene.observerVision,
     movementRestriction: v.movementRestriction ?? d.scene.movementRestriction,
-    movementModel: v.movementModel ?? d.scene.movementModel,
+    movementModel,
+    // Derived default keyed off the RESOLVED movementModel (M10f-3 §4.1) — `??` only falls
+    // through on null/undefined, never on `false`, so an explicit stored boolean (including
+    // false) always overrides the derived default in either direction.
+    snapToGrid: sys?.snapToGrid ?? (movementModel === "continuous" ? false : true),
     lightingEnabled: l.enabled ?? d.scene.lightingEnabled,
     lightMode: l.mode ?? d.scene.lightMode,
     environment: l.environment ?? d.scene.environment,

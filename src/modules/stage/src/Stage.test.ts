@@ -2,6 +2,7 @@ import { test, expect, vi } from "vitest";
 import { render } from "@testing-library/svelte";
 import Stage from "./Stage.svelte";
 import type { DisplayBackend } from "@shadowcat/render";
+import { RenderEngine } from "@shadowcat/render";
 import type { ReadableDocuments } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 
@@ -11,6 +12,18 @@ const OWNER = "11111111-2222-3333-4444-555555555555";
 function tokenDocs(): ReadableDocuments {
   return {
     query: (t: string) => (t === "token" ? [{ id: "tok", doc_type: "token", owner: OWNER }] : []),
+    get: () => undefined,
+    subscribe: () => () => {},
+    snapshot: () => [],
+    appliedSeq: 0,
+  } as unknown as ReadableDocuments;
+}
+
+/** A documents view exposing a single scene doc with the given `system` body (M10f-3 snap
+ * wiring: `resolveSceneSettings` reads it via `documents.query("scene")[0]`). */
+function sceneDocs(system: Record<string, unknown>): ReadableDocuments {
+  return {
+    query: (t: string) => (t === "scene" ? [{ id: "s1", doc_type: "scene", system }] : []),
     get: () => undefined,
     subscribe: () => () => {},
     snapshot: () => [],
@@ -29,6 +42,7 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean } {
     addLayerFilter() { return () => {}; },
     setToken() {},
     removeToken() {},
+    tickTokenAnimations() {},
     setShape() {},
     removeShape() {},
     drawOverlay() {},
@@ -87,4 +101,32 @@ test("see-as picker falls back to the short id for an unknown owner", async () =
     }),
   });
   await vi.waitFor(() => expect(getByText(`See as ${OWNER.slice(0, 8)}`)).toBeTruthy());
+});
+
+test("pushes the resolved snapToGrid to the engine (grid-stepped scene: default true)", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  const spy = vi.spyOn(RenderEngine.prototype, "setSnapEnabled");
+  render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: sceneDocs({ grid: { kind: "square", size: 100 } }),
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  await vi.waitFor(() => expect(spy).toHaveBeenCalledWith(true));
+  spy.mockRestore();
+});
+
+test("pushes the resolved snapToGrid to the engine (continuous scene: default false)", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  const spy = vi.spyOn(RenderEngine.prototype, "setSnapEnabled");
+  render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: sceneDocs({ grid: { kind: "square", size: 100 }, vision: { movementModel: "continuous" } }),
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  await vi.waitFor(() => expect(spy).toHaveBeenCalledWith(false));
+  spy.mockRestore();
 });

@@ -2122,4 +2122,185 @@ mod room_tests {
         );
         assert_eq!(h.committed_pos(h.token_id).await, res.stop);
     }
+
+    /// Identical to `movement_scene`, but the scene doc's `system.vision.movementModel` is
+    /// explicitly `"continuous"` (M10f-3 §6): proves `execute_move` gates an any-angle route
+    /// from a scene genuinely marked continuous, not just incidentally sent a diagonal path.
+    /// Functionally inert on the server today — `execute_move` has no `movementModel` branch
+    /// (engine-agnostic since M10f-2); this mirrors `movement_scene`'s body (this file's
+    /// established per-scenario-helper convention) with one added JSON key.
+    async fn movement_scene_continuous(restriction: &str, with_light: bool) -> MovementHandle {
+        use serde_json::json;
+
+        let (repo, world_id, gm) = repo_with_world().await;
+        let p = repo
+            .create_user(
+                "player_continuous",
+                None,
+                crate::auth::role::ServerRole::User,
+                0,
+            )
+            .await
+            .unwrap();
+        repo.add_member(world_id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let (scene_id, token_id, ws_id, light_id) = (
+            Uuid::from_u128(0xC047_0000),
+            Uuid::from_u128(0xC047_0001),
+            Uuid::from_u128(0xC047_0002),
+            Uuid::from_u128(0xC047_0003),
+        );
+
+        let mut ws = wdoc(world_id, ws_id, "world-settings");
+        ws.owner = Some(gm.user_id);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#000000", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": restriction,
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        room.publish(&repo, &gm, vec![Operation::Create { doc: ws }], 0)
+            .await
+            .unwrap();
+
+        // Only structural difference from `movement_scene`: declares `vision.movementModel` on
+        // the scene doc. Inert server-side today — execute_move has no movementModel branch.
+        let mut scene = wdoc(world_id, scene_id, "scene");
+        scene.owner = Some(gm.user_id);
+        scene.system = json!({
+            "grid": { "kind": "square", "size": 100 },
+            "vision": { "movementModel": "continuous" }
+        });
+        room.publish(&repo, &gm, vec![Operation::Create { doc: scene }], 0)
+            .await
+            .unwrap();
+
+        let mut token = wdoc(world_id, token_id, "token");
+        token.parent_id = Some(scene_id);
+        token.owner = Some(p);
+        // Required for the player to have write permission on the token's /system/x,y fields
+        // at commit time (mirrors every sibling helper — movement_scene et al.); `owner` alone
+        // does not grant the per-doc write permission apply_intent checks.
+        token
+            .permissions
+            .users
+            .insert(p, crate::data::document::DocRole::Owner);
+        token.system = json!({ "x": 50.0, "y": 50.0 });
+        room.publish(&repo, &gm, vec![Operation::Create { doc: token }], 0)
+            .await
+            .unwrap();
+
+        if with_light {
+            // Bright boundary = 1.5 * 100 = 150 world units; dim boundary = 3.0 * 100 = 300.
+            let mut light = wdoc(world_id, light_id, "light");
+            light.parent_id = Some(scene_id);
+            light.owner = Some(gm.user_id);
+            light.system = json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true
+            });
+            room.publish(&repo, &gm, vec![Operation::Create { doc: light }], 0)
+                .await
+                .unwrap();
+        }
+
+        MovementHandle {
+            room,
+            repo,
+            gm,
+            player,
+            world_id,
+            scene_id,
+            token_id,
+            start: (50.0, 50.0),
+            lit_goal: (50.0, 150.0),
+            adj: (150.0, 50.0),
+            adj2: (250.0, 50.0),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_move_continuous_any_angle_route_commits_atomically() {
+        // Proves the M10f-2 unified sampled executor gates a genuinely any-angle
+        // (non-grid-aligned) polyline exactly like a grid path — no movementModel branch
+        // anywhere on this path (M10f-3 §3.2). Goal (110,130) is a 3-4-5 triangle scaled ×20
+        // from start (50,50): distance = sqrt(60²+80²) = 100 wu, safely inside the light's
+        // 150 wu bright radius (50 wu margin) and not a grid cell-center (cell centers sit
+        // at 50 + 100k on each axis).
+        let h = movement_scene_continuous("visible", /*with_light=*/ true).await;
+        let goal = (110.0, 130.0);
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                vec![h.start, goal],
+                now_millis(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.stop, goal, "any-angle move commits at the exact goal");
+        assert_eq!(h.committed_pos(h.token_id).await, res.stop);
+    }
+
+    #[tokio::test]
+    async fn execute_move_continuous_truncates_before_entering_unseen_space() {
+        // `execute_move`'s per-cell gate TRUNCATES a route at the last visible sample rather
+        // than rejecting the whole request outright (`DataError::Forbidden` is reserved for
+        // structural failures — unknown token / TooLong / Degenerate — and the moving-lock
+        // check; a genuine cell-gate stop is `Ok` with a partial `stop`, exactly like the
+        // sibling wall-truncation test `execute_move_truncates_at_a_wall_atomically`). This
+        // proves the cell-sampled gate applies to any-angle paths, not just grid ones, and
+        // still commits atomically at the truncation point rather than silently reaching a
+        // goal in unseen territory.
+        //
+        // Goal (650,850) is a 3-4-5 triangle scaled ×200 from start (50,50): distance =
+        // sqrt(600²+800²) = 1000 wu. `gate_walk` subdivides this into 8 dense ≤1-cell samples
+        // (cheby = max(600,800) = 800 wu ⇒ k = ceil(800/100) = 8). Sample 1, (125,150), lands
+        // in cell (1,1) — inside the ~100wu (1-cell) `VISION_BOUND_MARGIN` scan box around the
+        // colocated token/light viewpoint (50,50), so it is visible. Sample 2, (200,250), lands
+        // in cell (2,2), outside that scan box — not in the mask — so the walk truncates there,
+        // leaving the token at sample 1's exact position.
+        let h = movement_scene_continuous("visible", /*with_light=*/ true).await;
+        let goal = (650.0, 850.0);
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                vec![h.start, goal],
+                now_millis(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.stop,
+            (125.0, 150.0),
+            "cell-gate truncates the route at the last visible sample, short of the goal"
+        );
+        assert_ne!(
+            res.stop, goal,
+            "must not silently reach a goal in unseen space"
+        );
+        assert_eq!(h.committed_pos(h.token_id).await, res.stop);
+    }
 }

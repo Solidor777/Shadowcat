@@ -113,6 +113,10 @@
           lastGridKey = key;
           e.setGrid(spec);
         }
+        // Snap-to-grid is per-scene (M10f-3 §4.2-4.3). Pushed unconditionally each pass — a
+        // cheap flag assignment (unlike setGrid's Grid rebuild or setAnimation's config
+        // object), so no change-detection gate is needed here.
+        e.setSnapEnabled(settings.snapToGrid);
         // Animation config is world-scoped (world-settings.animation); only push to the
         // engine on change so a token drag does not re-push config each frame.
         const anim = settings.animation;

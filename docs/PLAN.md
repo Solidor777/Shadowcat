@@ -198,7 +198,9 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > world/scene deletion, `tower_sessions` sweep.
 
 ### M10 · Tokens
-> **In progress.** Cross-cutting spec `superpowers/specs/2026-06-24-m10-tokens-design.md`
+> **COMPLETE** — the built scope shipped through M10h; the two remaining visual-polish
+> checkpoints, M10i (`generated`) and M10j (`fx` + emotes), are **deferred to Phase 2** by user
+> decision (their seams already exist — see the M10h block below). Cross-cutting spec `superpowers/specs/2026-06-24-m10-tokens-design.md`
 > (decisions locked), decomposed into 10 checkpoints **M10a–j** across 4 phases
 > (plan per checkpoint; `/clear` between). **M10a DONE** (merged --no-ff to LOCAL main,
 > NOT pushed — push gate = full M10): the game `Actor` doc + **linked** (`actor_id` +
@@ -491,12 +493,220 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > corrections applied: an invariant promoted from prose to a top-level Hard Invariants entry, an
 > unverifiable buddy-check round-count claim softened).
 >
-> Next = **M10f-2** (unify the movement executor — refactor `move_exec`'s king-step walk into an
-> arc-length-sampled polyline walk so grid A* and the navmesh router share one gate/region/arrest/
-> commit path; grid §13 parity must be proven under heavy buddy-check before continuous execution
-> is layered on top).
+> **M10f-2 DONE** (branch `m10f-2-unified-movement-executor`, commits `a343fd0..53335eb`, all
+> green, merged --no-ff to LOCAL main — merge gate = full M10f) — unifies the movement executor:
+> `move_exec` refactored from a king-step-per-authored-cell walk onto a new pure `gate_walk`
+> primitive that subdivides ANY polyline (grid A* cell-centers or any-angle continuous vertices)
+> into a dense walk where consecutive samples are ≤1 cell apart, preserving already-≤1-cell input
+> EXACTLY — identity on grid input, which is what makes grid-parity a property of the code shape
+> rather than something proven only by testing. The per-step gate (wall → vision-mask → region)
+> now runs over this dense walk instead of the raw authored path; region/cost checks are keyed on
+> CELL-ENTRY TRANSITIONS (not per dense sample) to match the pre-refactor per-step accrual exactly
+> on grid input. The old king-step adjacency guard (reject any >1-cell authored jump outright) is
+> REMOVED — a >1-cell jump is now subdivided and gated per cell instead, exactly as if the client
+> had sent the explicit intermediate waypoints (no new capability). The DoS bound moves from an
+> authored-vertex-count cap (`MAX_MOVE_PATH=256`) to a gate-walk-sample-count cap
+> (`MAX_GATE_WALK_SAMPLES=4096`) plus a coordinate-magnitude bound (`MAX_GATE_WALK_COORD=1e9`).
+> `Room::execute_move` required **zero code changes** throughout — the caller seam is unchanged,
+> proven by its full existing test suite staying green across all 6 tasks. SDD-executed (6 tasks;
+> Tasks 1, 3, 4, 5 buddy-checked per the plan's pre-authorization, Task 2/6 the standard
+> two-reviewer gate, plus a mandatory whole-branch buddy-check before the final task).
+> **Buddy-checking found and fixed 2 distinct real defects in Task 1's `gate_walk` primitive**,
+> both independently re-confirmed resolved: a zero-tolerance floating-point comparison
+> (`cheby <= cell`) that spuriously subdivided a true 1-cell grid step for non-round GM-configured
+> cell sizes (empirically reproduced: 1087/2000 spurious subdivisions at `cell=33.33`), closed by a
+> magnitude-scaled tolerance matching `supercover_cells`'s existing 64-ULP convention; and a
+> **second-order defect the first fix itself introduced** — the magnitude-scaled tolerance grew
+> unbounded with coordinate magnitude and, at extreme-but-reachable magnitudes (~3.5e13+, within
+> `navmesh.rs`'s own `MAX_NAVMESH_COORD=1e15` legitimate-input band), could silently misclassify a
+> genuinely-multi-cell segment as a single identity step — a silent gate-skip — closed by the new
+> `MAX_GATE_WALK_COORD=1e9` bound (~35,000x margin below the crossover). Task 3's refactor buddy
+> check found zero functional defects, only 3 doc-only Minors (one requiring a real severity
+> debate that converged after both reviewers independently re-verified against ground truth). The
+> mandatory whole-branch buddy-check (opus, two-reviewer) independently confirmed all 4 directed
+> risks safe with real margin (grid-input identity, cell-entry-dedup re-entry correctness, the
+> `render_path` reconstruction's edge cases, and the `TooLong` redefinition's DoS coverage) —
+> CONVERGED PASS, zero Critical/Important. **A genuinely valuable process catch during Task 6:**
+> the differential parity test's hand-derived literal for one scenario (a diagonal 3-step king
+> path) was wrong — root-caused to a real, pre-existing `supercover_cells` corner-drift (a
+> diagonal leg whose both endpoints sit exactly on 4-way grid intersections drives the
+> Amanatides-Woo corner-crossing branch to fire repeatedly and drift away from the target cell
+> before failing closed) — the implementer correctly halted rather than silently "fixing" the
+> literal, and the dispatcher + both Task 6 reviewers independently re-derived the same correction
+> from the actual geometry. Fail-closed, non-security, logged to `docs/TODO.md`. Reviewed
+> skill-update gate: `shadowcat-codebase-scene-rendering` updated + confirmed ACCURATE.
+>
+> **M10f-3 DONE** (branch `m10f-3-continuous-execution-snap-toggle`, commits `eb2cea9..f6571ca`,
+> all green, merge gate = full M10f) — a client-weighted checkpoint: unlocks server-authoritative
+> continuous (any-angle) movement execution and adds an independent scene-level `snapToGrid`
+> authoring axis. **The server needed ZERO production code changes** — `Room::execute_move`,
+> `move_exec::execute_move`/`gate_walk`, `move_stream::sample_path`, and the M2 `clip_move_stream`
+> egress clip have had NO `movementModel` branch anywhere since M10f-2, so the entire move-
+> execution/streaming/secrecy-clip path already gated, executed, and clipped any polyline (grid or
+> any-angle) correctly. The only thing blocking continuous execution was a client-side refusal:
+> `controller.svelte.ts`'s `commitRoute` removed its M10f-1 preview-only early-return, so committing
+> a route now proceeds identically for grid-stepped and continuous scenes. M10f-3's own server work
+> is therefore TEST-ONLY (Tasks 7-9): new `Room::execute_move`/`sample_path`/`clip_move_stream`
+> coverage empirically proving the already-engine-agnostic path handles any-angle geometry. New
+> **`snapToGrid`** scene axis (`scene-docs.ts`, opaque `system`-body JSON, no ts-rs type): a
+> `resolveSceneSettings`-derived default keyed off `movementModel` (`false` for continuous, `true`
+> otherwise, unless explicitly overridden in either direction — nullish-coalescing, never a truthy
+> check), enforced at a SINGLE chokepoint (`RenderEngine.snap`, gated by a new
+> `SceneToolHost.setSnapEnabled` seam forwarded through `SceneInteractionBridge` and pushed
+> unconditionally from `Stage.svelte`'s existing per-pass scene-settings effect) that every scene
+> tool inherits automatically via `ctx.scene.snap`; authored via a new GM-only tool-rail toggle
+> button. SDD-executed (9 tasks; Tasks 6-9 buddy-checked per the plan's pre-authorization, Tasks
+> 1-5 the standard two-reviewer gate, plus a mandatory whole-branch buddy-check before merge).
+> **Task 5 review caught a real Critical**: the tool-rail toggle hardcoded `old: null` in its
+> dispatched scene-doc update, so the server's field-level optimistic-concurrency check
+> (`Repository::apply_intent`) rejected every click after the first (the actual stored value is no
+> longer `null`/absent once written once) — the toggle silently stopped working after one use per
+> scene per session; fixed by reading the RAW stored value for `old` (mirroring the existing
+> `sendMoves` convention), with a new regression test confirmed genuinely discriminating (would
+> have failed pre-fix) by the reviewer. The SAME pre-existing bug shape was found (not introduced)
+> in `GameSettingsPanel`/`FactionsPanel`/`ConditionsPanel` — logged to `docs/TODO.md` rather than
+> fixed (out of scope), per this project's bug/TODO segregation discipline. **Buddy-checking on
+> Tasks 6-9 was genuinely valuable, not rubber-stamped:** Task 6's reviewers independently verified
+> the central safety claim (no `movementModel` branch anywhere in the execution chain) directly
+> against server source rather than trusting the diff, and both independently found a distinct
+> stale-doc Minor the other missed (both conceded + fixed). Task 7's brief itself assumed the
+> wrong server behavior (`Err(Forbidden)` for a cell-gate rejection) — the implementer discovered
+> `execute_move` actually TRUNCATES (never errors) for a wall/mask/region violation, matching the
+> same class of "brief literal wrong, halt and verify against real geometry" precedent as M10f-2
+> Task 6; both reviewers independently re-verified this from source and confirmed the rewritten
+> test is a faithful, non-weakened proof, then jointly caught and fixed a stale "Forbidden" wording
+> bug surviving in TWO approved design docs. Task 8's buddy check caught a genuinely load-bearing
+> gap: the test asserted only angle-independent properties (monotonic time, trivial boundary
+> positions) and never checked any INTERIOR sample's position, so it would not have caught a real
+> diagonal-interpolation bug; one reviewer's specific supporting claim (a differing binary-search
+> branch pattern between the new and sibling tests) was directly disproven by the other via
+> simulation before the fix was scoped, then BOTH reviewers independently re-derived the fix's hand-
+> computed interior-sample arithmetic from scratch and matched it bit-for-bit. Task 9's buddy check
+> caught the sibling-parity gap for `duration_ms` (disagreed on severity, agreed on the fix
+> regardless) plus converged 4 other Minors to no-action after real geometric re-derivation. The
+> mandatory whole-branch buddy-check (opus, two-reviewer) traced all 3 directed risks against
+> actual current source and confirmed clean — CONVERGED PASS, zero Critical/Important code defects
+> — with one Agreed Minor (non-GM invisibility of the snap toggle untested) whose OWN proposed
+> naive fix was caught as vacuous mid-debate (the existing non-GM test's fixture has no active
+> scene, so a different gate already hides the button regardless of the `isGm` check) and correctly
+> replaced with a genuinely isolating test before the fix was dispatched. Deviation from parent
+> spec §9 recorded: §9 tied "no snap" to `movementModel`; this checkpoint supersedes that with an
+> independent scene-level toggle (the derived default preserves §9's original intent). Reviewed
+> skill-update gate: `shadowcat-codebase-scene-rendering` updated (the `snapToGrid` axis + the
+> `RenderEngine.snap`/`setSnapEnabled` chokepoint + the raw-stored-value `old` convention) +
+> confirmed ACCURATE.
+>
+> **M10f-4 DONE** (branch `m10f-4-regions-on-navmesh`, commits `c20cffa..47419c3`, all green —
+> merge gate = full M10f) — **final checkpoint of the M10f milestone; M10f is now COMPLETE.** Wires
+> the M10g region behaviors (terrain/impassable/arrest) into the continuous engine, correcting the
+> original two-cost-backend assumption (M10-tokens §10.2/§10.3/§10.5, parent M10f spec §7): the
+> M10g per-requester `region_field(scene, viewer)` cell field is the **single weighting authority
+> for both engines** — polyanya 0.16.1 cannot bias a route by graded terrain cost
+> (crate-source-verified, not README-derived; the only cost-affecting knob, `detailed-layers`'
+> `Layer.scale`, is off in this build and semantically wrong as a per-unit multiplier anyway), so
+> the "terrain → polyanya cost-layer (Split-Mesh)" plan is struck as infeasible, not deferred.
+> `SceneEcs::pathfind`'s `Continuous` branch (`mod.rs`) now computes the per-requester
+> `region_field` once and dispatches on the new `RegionField::has_terrain_or_impassable()`
+> predicate (`regions.rs`): **terrain/impassable present** → the existing `pathfinding::find`
+> forced to `DiagonalRule::Euclidean` (continuous base metric; only cell topology + the terrain
+> multiplier come from the grid), cost converted from CELLS to SCENE UNITS (`× cell`, matching the
+> polyanya path's unit contract), then **cost-guarded LOS smoothing** (`navmesh::los_smooth`, new)
+> restores any-angle geometry — a span straightens only when every entered cell is in-mask, not
+> impassable/arrest/weighted-terrain, and crossed by no wall, with the single grid step always kept
+> unconditionally so progress is guaranteed; **otherwise** the unchanged pure-polyanya route (M10f-1)
+> now also passed through `navmesh::truncate_at_arrest` (new), an arrest post-filter using
+> cell-ENTRY-TRANSITION detection (not raw per-sample checking — the start cell is never a trigger),
+> mirroring `find`'s own arrest truncation for the walls-only path. The `GridStepped` branch is
+> completely untouched (verified byte-for-byte by a dedicated regression test throughout).
+> `move_exec::execute_move` required **zero production changes** — proven, not merely asserted, by
+> Task 5's tests: it has cell-sampled the region field for any polyline (grid or any-angle) since
+> M10f-2/3, so the weighted+smoothed continuous route feeds the same executor unchanged. Secrecy is
+> fully inherited (zero new machinery, per spec §8): the per-requester `region_field` feeds BOTH the
+> dispatch predicate and the weighted search/arrest-filter, so a secret region never influences a
+> non-GM's route/cost; the authoritative field (`move_exec` always reads `viewer: None`) springs it
+> at execution regardless of what the requester's preview showed. `MoveStream.cost` stays
+> trusted-only (`Some` for mover/GM, `None` for a clipped observer) — verified engine-agnostic by
+> Task 5, extending the M10g whole-move-scalar invariant to the continuous path. SDD-executed (6
+> tasks: 5 code/test tasks + this docs task; no buddy-checked tasks pre-authorized at the plan level
+> for this checkpoint — see the separate mandatory whole-branch buddy-check before merge). **A
+> load-bearing dispatch-predicate invariant surfaced during Task 4's review:** the dispatch
+> predicate `has_terrain_or_impassable()` MUST be evaluated against the PER-REQUESTER field
+> (`region_field(scene, Some(user))` for a non-GM), never the authoritative field — this is the
+> single mechanism preventing a secret terrain/impassable region from indirectly leaking its
+> existence via route-shape or cost even when its own geometry is never disclosed; a future refactor
+> that fed the authoritative field into the dispatch predicate while still correctly routing off the
+> per-requester field would silently reopen this leak. Reviewed skill-update gate:
+> `shadowcat-codebase-scene-rendering` updated + confirmed ACCURATE. **Push gate: full M10** — M10f
+> is complete but M10 (which also includes the parallel M10g-adjacent work) is not yet pushed to
+> origin; push happens at the M10 milestone boundary, not per-checkpoint.
+>
+> **M10f (continuous/navmesh movement) COMPLETE** — all five checkpoints (M10f-0 scene bounds,
+> M10f-1 movement-model dispatch + polyanya router, M10f-2 unified executor, M10f-3 continuous
+> execution + snap toggle, M10f-4 regions on the navmesh) shipped. Both routing engines (grid A*,
+> continuous/polyanya) now share one region-weighting authority, one gated executor, and one
+> streamed-vision secrecy clip.
+>
+> **M10h DONE** (branch `m10h-faces-animated`, commits `5214892..a577570`, all green) — **faces +
+> animated token visuals; purely client-side, no server/ts-rs change** (the `system`-body visual
+> data is opaque client-owned JSON, same convention as `movementModel`/`bounds`/`snapToGrid`).
+> Spec: `docs/superpowers/specs/2026-07-03-m10h-faces-animated-design.md`. Replaces the old flat
+> `ActorVisual` with a discriminated union: `RenderVisual = {kind:"image", asset} | {kind:"animated",
+> source: AnimatedSource, fps, loop}` (the two kinds the render layer ever draws); `FaceVisual =
+> RenderVisual` (a face is never itself nested `{kind:"faces"}` — no faces-of-faces); `TokenVisual
+> = RenderVisual | {kind:"faces", faces, default, faceMap?}` (`default` is required, no `?`); new
+> per-token `token.system.face?`
+> active-face selector (token-local, not part of `overrides` — selects INTO the actor's faces map
+> rather than overriding actor data). New render-boundary resolver `resolveTokenVisual(token,
+> store, eff?)` (sibling to `resolveTokenActor`/`resolveTokenBox`/`resolveConditions`) applies
+> precedence manual `token.system.face` > first `faceMap` match against the token's raw
+> `conditions[]` (array order) > `default` > first key, and fails closed (`null`) on an empty
+> `faces` map, a malformed `AnimatedSource`, or a resolved kind outside `image`/`animated`. New
+> pure `computeAnimatedFrame` (`token-animation.ts`, mirrors the `fog-blend.ts` extraction
+> precedent — `pixi-backend.ts` has no jsdom GL context) drives tick-based `AnimatedSprite`
+> playback via the new `DisplayBackend.tickTokenAnimations(dtMs)` seam, called from
+> `TokenView.tick` alongside the existing tween ticker. `TokenNodeSpec.visual` becomes a
+> discriminated union (`{kind:"image",url} | {kind:"animated",source: ResolvedAnimatedSource,fps,
+> loop}`), asset ids resolved to URLs by `TokenView.toSpec`'s `resolveSource` via `AssetResolver`.
+> `PixiBackend` migrated from a bare `Sprite`-per-token + three separately-tracked sibling Maps to
+> a `Map<string,TokenNode>` Container structure (`container` outer/non-rotating, holds upright
+> badges directly; `visualContainer` inner, rotates the art + border together). **Real bug found +
+> fixed in review:** the async texture/frame-load completion guards originally checked only
+> `sourceKey` string equality, unsafe once `replaceVisualChild` could recreate a token's visual
+> object multiple times in rapid succession (an A→B→A visual-cycling scenario could let a stale
+> promise write into an already-`.destroy()`'d Pixi object) — fixed by also requiring object
+> identity (`node.visual === sprite`), now a load-bearing invariant for this async-completion
+> pattern generally. Authoring UI in `ActorsPanel.svelte`: a visual-kind editor (image/faces/
+> animated) in the actor-creation form with full per-face-row/name-uniqueness/`defaultFace`
+> validation, plus a separate per-token face-swap palette (reading raw `token.system.face` for
+> `old`, mirroring the M10f-3 `snapToGrid` raw-`old` convention). A Playwright e2e test proves an
+> animated (frame-list) actor authors and places on canvas without error; `stage.spec.ts` (the
+> relevant token/scene-tools e2e coverage) totals 8 tests (7 pre-existing + 1 new), all passing,
+> confirming the Container migration didn't regress prior scene-tools/token behavior (the full
+> e2e directory across all spec files totals 10). SDD-executed (9 code/test tasks + this docs
+> task). Reviewed skill-update gate: `shadowcat-codebase-actors-tokens` +
+> `shadowcat-codebase-scene-rendering` updated; `shadowcat-spec-reviewer` found and this fix
+> corrected 3 real drifts (`RenderVisual`'s image variant missing its `asset` field name,
+> `TokenVisual`'s `faces.default` wrongly marked optional, and this entry's premature "confirmed
+> ACCURATE" claim predating the actual review) before confirming ACCURATE. **M10h merged --no-ff
+> and PUSHED to origin/main (`50df79f`, 2026-07-04, by explicit user override of the standing
+> full-M10 push gate).**
+>
+> **M10 CONCLUDED here (2026-07-04, user decision): the two remaining visual-polish checkpoints —
+> M10i (`generated` parametric token visual) and M10j (`fx` + emotes) — are DEFERRED to Phase 2
+> (token enrichment), not built. Their seams already exist and need no preparatory code:** the
+> `RenderVisual` discriminated union is additive and fails closed on unknown kinds, so a future
+> `{kind:"generated"}` is forward-compatible (`resolveTokenVisual` renders nothing rather than
+> crashing on an old client); every token has been a Pixi `Container` (`node.visualContainer`)
+> since M10h, so a per-token `.filters` attach point is one additive method beyond the existing
+> per-layer `addLayerFilter` (`fx`); and the `broadcast_aux`/`ScenePing` aux-frame pattern is the
+> direct template for a new transient `emote` frame (emotes). **Note on `generated`'s intended
+> meaning** (user-clarified at deferral time): a *compositor that frames existing actor art into a
+> token* — decorative border + shape-crop + background, distinct from the dynamic faction ring —
+> NOT the parent spec's literal "shapes/initials for artless actors" reading.
 - Actor-linked tokens; shapes; instanced / unique modes; A* pathfinding with waypoints; status conditions; factions.
-- Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
+- Realizes the token-visual architecture seeded in M8 on top of M8d's sprite/tween/ticker
+  foundation: **multi-face + animated visuals SHIPPED** (M10h); **procedurally-generated visuals,
+  per-token fx, and emotes DEFERRED to Phase 2** (seams in place).
 
 ### M11 · Dice + chat
 Two subsystems (dice → chat; chat's roll integration depends on dice). Specs:
@@ -518,7 +728,7 @@ Decomposed **M11a–d**:
 **▶ Dogfood alpha gate** — backups (M12.5) must exist before real worlds accrue.
 
 ## Phase 2 — Full table
-Combat tracker (initiative, hidden combatants, turn-event triggers; depends on M11 dice) → real asset pipeline (chunked upload, image conversion, tags, derived tags) + asset browser (regex / tag / dir search, preview / rename / move / tag) + bulk import/export → layout / theming completion (drag-resize, pop-out, multi / user themes, module styling modes) → vision / lighting / movement completion (photometric, darkvision / tremorsense / height; **per-actor/faction movement exemptions — flying/incorporeal ignore difficult terrain, deferred from M10g; needs movement-type tags on actors**) → token enrichment (aura / light / sound / VFX emitters, **trigger regions — mechanical/trigger effects built on the M10g region primitive: damage, condition application, scripted triggers on enter/arrest**, token-art) → rollable tables (on the dice engine + document model), rich-text notes (on the document model), chat media linking (images; YouTube as thumbnail + external link only — no IFrame / Data API) → full default module suite → search consolidated into one milestone (single backend; no three-backend split).
+Combat tracker (initiative, hidden combatants, turn-event triggers; depends on M11 dice) → real asset pipeline (chunked upload, image conversion, tags, derived tags) + asset browser (regex / tag / dir search, preview / rename / move / tag) + bulk import/export → layout / theming completion (drag-resize, pop-out, multi / user themes, module styling modes) → vision / lighting / movement completion (photometric, darkvision / tremorsense / height; **per-actor/faction movement exemptions — flying/incorporeal ignore difficult terrain, deferred from M10g; needs movement-type tags on actors**) → token enrichment (aura / light / sound / VFX emitters, **trigger regions — mechanical/trigger effects built on the M10g region primitive: damage, condition application, scripted triggers on enter/arrest**, token-art, **generated token visuals (deferred from M10i) — a parametric compositor that frames existing actor art into a token: decorative border + shape-crop mask + background, distinct from the dynamic faction ring; a new additive `{kind:"generated"}` on the M10h `RenderVisual` union**, **per-token built-in fx (deferred from M10j) — condition-driven tint / desaturate / highlight + selection/faction/target highlight via a per-token Pixi `.filters` attach point on the M10h token `Container`; custom shader-filter seam stays Phase 3 VFX**, **emote / reaction overlays (deferred from M10j) — transient overlay above the token via a new ping-style `emote` aux frame + fading child**) → rollable tables (on the dice engine + document model), rich-text notes (on the document model), chat media linking (images; YouTube as thumbnail + external link only — no IFrame / Data API) → full default module suite → search consolidated into one milestone (single backend; no three-backend split).
 
 ## Phase 3 — Atmosphere
 Audio (mixer, channels, playlists, world-clock sync; then spatial + wall occlusion; transcode via `symphonia` + `opus`/`vorbis_rs`) → VFX (sprite effects, concurrent SFX) → multi-level maps + portals → 3D dice (decide the rendering context up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer) → Discord audio-ducking module (OS audio-session monitoring — PipeWire / WASAPI / CoreAudio — never the proprietary Discord Game SDK; requires a dependency / licensing review before integration).

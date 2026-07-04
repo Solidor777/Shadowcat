@@ -1077,35 +1077,69 @@ impl SceneEcs {
                 )
             }
             MovementModel::Continuous => {
-                // M10f-1: navmesh carries walls only (no regions yet — M10f-4); the cell-sampled
-                // post-filter is the ONLY visibility gate, reusing the same mask as the grid path.
-                let nav = self
-                    .navmesh_for(scene, footprint_radius)
-                    .ok_or(pathfinding::PathFail::Unreachable)?;
-                let raw = navmesh::navmesh_find(&nav, start, waypoints)?;
-                // `raw.path.len() < 2` only when every waypoint leg collapsed to the start point
-                // (start == goal, mirroring `pathfinding::astar_leg`'s trivial-success case: a
-                // grid-stepped route to the cell you're already standing on succeeds with a
-                // single-cell, zero-cost route — see `astar_tests::
-                // start_equals_goal_is_a_single_cell_zero_cost`). `clip_to_visible_mask`'s own
-                // early return (`if outcome.path.len() < 2 { return outcome; }`) means a
-                // length-1 INPUT always passes through as a length-1 OUTPUT unchanged (nothing to
-                // truncate), so a length-1 `clipped` result can only originate from (a) this
-                // trivial case, or (b) a length-2+ raw route the mask/wall check truncated down to
-                // 1 point — a genuine rejection. Capture the flag before `raw` is consumed so both
-                // cases can be told apart afterward.
-                let raw_was_trivial = raw.path.len() < 2;
-                let clipped = navmesh::clip_to_visible_mask(
-                    raw,
-                    mask.as_ref(),
-                    cell,
-                    footprint_radius,
-                    &walls,
-                );
-                if clipped.path.len() < 2 && !raw_was_trivial {
-                    return Err(pathfinding::PathFail::Unreachable);
+                // M10f-4: the per-requester region field is the SINGLE weighting authority for the
+                // continuous engine too (polyanya cannot weight — design spec §2). Terrain or
+                // impassable present ⇒ route via the weighted grid A* forced to Euclidean
+                // (continuous base metric), then LOS-smooth back to any-angle geometry. Otherwise
+                // the unchanged pure polyanya route + an arrest post-filter. Arrest applies on both
+                // paths. The per-requester field omits any region a non-GM cannot see (secret
+                // regions spring only at `move_exec`).
+                let regions = self.region_field(scene, if is_gm { None } else { Some(user) });
+                if regions.has_terrain_or_impassable() {
+                    let weighted = pathfinding::find(
+                        start,
+                        waypoints,
+                        footprint_radius,
+                        cell,
+                        pathfinding::DiagonalRule::Euclidean,
+                        &walls,
+                        mask.as_ref(),
+                        Some(&regions),
+                    )?;
+                    // `find` reports cost in CELLS; the continuous engine reports SCENE UNITS
+                    // (parity with the polyanya path below). Convert before smoothing carries it
+                    // through.
+                    let weighted = pathfinding::PathOutcome {
+                        cost: weighted.cost * cell,
+                        ..weighted
+                    };
+                    Ok(navmesh::los_smooth(
+                        weighted,
+                        &walls,
+                        mask.as_ref(),
+                        &regions,
+                        cell,
+                        footprint_radius,
+                    ))
+                } else {
+                    let nav = self
+                        .navmesh_for(scene, footprint_radius)
+                        .ok_or(pathfinding::PathFail::Unreachable)?;
+                    let raw = navmesh::navmesh_find(&nav, start, waypoints)?;
+                    // `raw.path.len() < 2` only when every waypoint leg collapsed to the start
+                    // point (start == goal, mirroring `pathfinding::astar_leg`'s trivial-success
+                    // case: a grid-stepped route to the cell you're already standing on succeeds
+                    // with a single-cell, zero-cost route — see `astar_tests::
+                    // start_equals_goal_is_a_single_cell_zero_cost`). `clip_to_visible_mask`'s own
+                    // early return (`if outcome.path.len() < 2 { return outcome; }`) means a
+                    // length-1 INPUT always passes through as a length-1 OUTPUT unchanged (nothing
+                    // to truncate), so a length-1 `clipped` result can only originate from (a) this
+                    // trivial case, or (b) a length-2+ raw route the mask/wall check truncated down
+                    // to 1 point — a genuine rejection. Capture the flag before `raw` is consumed
+                    // so both cases can be told apart afterward.
+                    let raw_was_trivial = raw.path.len() < 2;
+                    let clipped = navmesh::clip_to_visible_mask(
+                        raw,
+                        mask.as_ref(),
+                        cell,
+                        footprint_radius,
+                        &walls,
+                    );
+                    if clipped.path.len() < 2 && !raw_was_trivial {
+                        return Err(pathfinding::PathFail::Unreachable);
+                    }
+                    Ok(navmesh::truncate_at_arrest(clipped, &regions, cell))
                 }
-                Ok(clipped)
             }
         }
     }
@@ -3777,6 +3811,206 @@ mod tests {
         (ecs, user, scene_id)
     }
 
+    fn continuous_scene_docs() -> Vec<crate::data::document::Document> {
+        vec![entity_doc_top(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "vision": { "movementModel": "continuous" } }),
+        )]
+    }
+
+    fn continuous_world_settings() -> serde_json::Value {
+        json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "movementModel": "continuous",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn region_doc_top(
+        id: u128,
+        parent: u128,
+        behavior: &str,
+        cost: f64,
+        x0: f64,
+        y0: f64,
+        x1: f64,
+        y1: f64,
+    ) -> Document {
+        entity_doc(
+            id,
+            parent,
+            "region",
+            json!({ "shape": { "kind": "rect", "points": [x0, y0, x1, y1] },
+                    "behavior": behavior, "cost": cost, "enabled": true }),
+        )
+    }
+
+    #[test]
+    fn pathfind_continuous_terrain_bends_the_route_and_costs_scene_units() {
+        // Continuous scene, terrain mult 5 on cell (1,0) = Rect [100,0]-[200,100] between start and
+        // goal. The weighted grid route (forced Euclidean) detours through row 1 (2 diagonal steps,
+        // ~2*sqrt(2) cells => *cell = ~283 scene units) instead of straight through the mult-5 cell
+        // (would be 1+5 = 6 cells => 600 scene units). Proves terrain BENDS the continuous route and
+        // that cost is in scene units.
+        let mut docs = continuous_scene_docs();
+        docs.push(region_doc_top(
+            12, 10, "terrain", 5.0, 100.0, 0.0, 200.0, 100.0,
+        ));
+        let mut ecs = SceneEcs::from_documents(docs, 0);
+        ecs.set_world_settings_for_test(continuous_world_settings());
+        let out = ecs
+            .pathfind(
+                Uuid::from_u128(1),
+                Uuid::from_u128(10),
+                (50.0, 50.0),
+                &[(250.0, 50.0)],
+                0.1,
+                true,
+                None,
+            )
+            .expect("weighted continuous route");
+        assert!(
+            out.cost < 400.0,
+            "detour taken (scene units ~283), got {}",
+            out.cost
+        );
+        assert!(
+            out.cost > 150.0,
+            "cost is scene units, not cells, got {}",
+            out.cost
+        );
+        assert!(
+            out.path.iter().any(|p| p.1 > 90.0),
+            "route bends off the y=50 line to avoid the terrain: {:?}",
+            out.path
+        );
+    }
+
+    #[test]
+    fn pathfind_continuous_no_region_is_a_straight_polyanya_route() {
+        // Same scene WITHOUT a region: the pure polyanya path is taken — a straight 200px route.
+        let mut ecs = SceneEcs::from_documents(continuous_scene_docs(), 0);
+        ecs.set_world_settings_for_test(continuous_world_settings());
+        let out = ecs
+            .pathfind(
+                Uuid::from_u128(1),
+                Uuid::from_u128(10),
+                (50.0, 50.0),
+                &[(250.0, 50.0)],
+                0.1,
+                true,
+                None,
+            )
+            .expect("polyanya route");
+        assert!(
+            (out.cost - 200.0).abs() < 3.0,
+            "straight Euclidean ~200, got {}",
+            out.cost
+        );
+    }
+
+    #[test]
+    fn pathfind_continuous_impassable_routes_around() {
+        // Impassable wall-of-cells on column 1 (Rect [100,0]-[200,300]) blocks the straight line;
+        // the weighted route must detour and still reach the goal.
+        let mut docs = continuous_scene_docs();
+        docs.push(region_doc_top(
+            12,
+            10,
+            "impassable",
+            1.0,
+            100.0,
+            0.0,
+            200.0,
+            300.0,
+        ));
+        let mut ecs = SceneEcs::from_documents(docs, 0);
+        ecs.set_world_settings_for_test(continuous_world_settings());
+        let out = ecs
+            .pathfind(
+                Uuid::from_u128(1),
+                Uuid::from_u128(10),
+                (50.0, 50.0),
+                &[(250.0, 350.0)],
+                0.1,
+                true,
+                None,
+            )
+            .expect("route around impassable");
+        // No route point falls inside an impassable cell (column 1, y in [0,300)).
+        assert!(
+            !out.path
+                .iter()
+                .any(|p| p.0 >= 100.0 && p.0 < 200.0 && p.1 >= 0.0 && p.1 < 300.0),
+            "route threads no impassable cell: {:?}",
+            out.path
+        );
+    }
+
+    #[test]
+    fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() {
+        // gm_only terrain (mult 5) on cell (1,0). A player (non-GM) never sees it: their route is
+        // the straight polyanya line (no bend, ~200 scene units). The GM's route bends (weighted).
+        let mut docs = continuous_scene_docs();
+        let mut secret = region_doc_top(12, 10, "terrain", 5.0, 100.0, 0.0, 200.0, 100.0);
+        // Mark the region gm_only via the SAME `/system` property-visibility override
+        // `region_field`'s per-requester filter checks (`move_exec.rs` uses the identical
+        // convention for its own gm_only region fixtures).
+        secret
+            .permissions
+            .property_overrides
+            .insert("/system".into(), crate::data::document::Visibility::GmOnly);
+        docs.push(secret);
+        let mut ecs = SceneEcs::from_documents(docs, 0);
+        ecs.set_world_settings_for_test(continuous_world_settings());
+        let player = Uuid::from_u128(2);
+        // Player (non-GM, unrestricted movement => no mask): secret terrain absent => straight route.
+        let p = ecs
+            .pathfind(
+                player,
+                Uuid::from_u128(10),
+                (50.0, 50.0),
+                &[(250.0, 50.0)],
+                0.1,
+                false,
+                None,
+            )
+            .expect("player route");
+        assert!(
+            (p.cost - 200.0).abs() < 5.0,
+            "secret terrain does not bend the player route, got {}",
+            p.cost
+        );
+        // GM sees the authoritative field => bends.
+        let g = ecs
+            .pathfind(
+                Uuid::from_u128(1),
+                Uuid::from_u128(10),
+                (50.0, 50.0),
+                &[(250.0, 50.0)],
+                0.1,
+                true,
+                None,
+            )
+            .expect("gm route");
+        assert!(
+            g.cost < 400.0 && g.cost > 150.0,
+            "GM route is weighted, got {}",
+            g.cost
+        );
+    }
+
     #[test]
     fn pathfind_continuous_nongm_route_clips_to_the_visible_mask() {
         // System-level §13 coverage: the two existing continuous `pathfind` tests
@@ -3798,8 +4032,11 @@ mod tests {
         let far_goal = (9500.0, 9500.0);
         let outcome = ecs
             .pathfind(user, scene, (50.0, 50.0), &[far_goal], 0.1, false, None)
-            .expect("clip truncates the route short of the unseen goal rather than failing outright");
-        let dist_to_goal = ((far_goal.0 - 50.0_f64).powi(2) + (far_goal.1 - 50.0_f64).powi(2)).sqrt();
+            .expect(
+                "clip truncates the route short of the unseen goal rather than failing outright",
+            );
+        let dist_to_goal =
+            ((far_goal.0 - 50.0_f64).powi(2) + (far_goal.1 - 50.0_f64).powi(2)).sqrt();
         assert!(
             outcome.cost < dist_to_goal / 2.0,
             "route must truncate well short of the unseen far goal: cost {} vs distance {}",
@@ -3811,6 +4048,170 @@ mod tests {
         assert!(
             dist_from_start < 700.0,
             "truncated endpoint must stay near the lit token, got ({lx}, {ly})"
+        );
+    }
+
+    #[test]
+    fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
+        // Whole-branch buddy-check Finding 3: the test above only drives the PURE-POLYANYA
+        // sub-path (no terrain/impassable region present, so `has_terrain_or_impassable()` is
+        // false). This test adds a terrain region so `pathfind`'s `Continuous` dispatch takes
+        // the WEIGHTED sub-path (`pathfinding::find` forced Euclidean + `navmesh::los_smooth`)
+        // for a non-GM requester under a real RESTRICTING `visible_cells` mask (default
+        // fail-closed `MovementRestriction::Visible`, same fixture as the pure-polyanya test —
+        // its default settings already yield a small, genuinely restricting mask).
+        let user = Uuid::from_u128(7);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        tok.owner = Some(user);
+        let light = entity_doc(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            }),
+        );
+        let scene = entity_doc_top(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "vision": { "movementModel": "continuous" } }),
+        );
+        // Terrain mult 5 FAR outside the token's (small, default-settings) visible mask — its
+        // mere existence anywhere on the scene is what flips `has_terrain_or_impassable()` true
+        // and routes `pathfind`'s `Continuous` dispatch to the WEIGHTED sub-path; it is
+        // deliberately placed off the requester's route so this test isolates "does the weighted
+        // sub-path correctly enforce the mask" from "does terrain bend the route" (already
+        // covered by `pathfind_continuous_terrain_bends_the_route_and_costs_scene_units`).
+        let terrain = region_doc_top(12, 10, "terrain", 5.0, 5000.0, 5000.0, 5100.0, 5100.0);
+        let ecs = SceneEcs::from_documents(vec![scene, tok, light, terrain], 0);
+        let scene_id = Uuid::from_u128(10);
+        let cell = 100.0;
+
+        let lenient = ecs.resolve_scene(scene_id).partial_cell_leniency;
+        let mask = ecs.visible_cells(user, scene_id, lenient);
+        assert!(!mask.is_empty(), "the lit token has a non-empty mask");
+        assert!(
+            ecs.region_field(scene_id, Some(user))
+                .has_terrain_or_impassable(),
+            "the terrain region flips the Continuous dispatch to the weighted sub-path"
+        );
+
+        // Near goal, still within the small visible mask: the weighted route must succeed and
+        // stay entirely inside the mask (the grid A* mask check IS the enforcement mechanism for
+        // this sub-path — Finding 1 — so a route can never even be found outside the mask).
+        let near_goal = (150.0, 50.0);
+        let near = ecs
+            .pathfind(user, scene_id, (50.0, 50.0), &[near_goal], 0.1, false, None)
+            .expect("weighted route to a visible goal succeeds");
+        for &(px, py) in &near.path {
+            let c = ((px / cell).floor() as i32, (py / cell).floor() as i32);
+            assert!(
+                mask.contains(&c),
+                "weighted route point ({px},{py}) -> cell {c:?} lies outside the visible mask"
+            );
+        }
+
+        // Far goal, well outside the visible mask: the weighted grid search cannot even discover
+        // a route through the unseen cells surrounding it (the mask check is baked into the A*
+        // search itself, not a post-hoc clip), so it fails closed (`Unreachable`) rather than
+        // returning a route that threads unseen cells.
+        let far_goal = (9500.0, 9500.0);
+        let far = ecs.pathfind(user, scene_id, (50.0, 50.0), &[far_goal], 0.1, false, None);
+        assert!(
+            far.is_err(),
+            "weighted route to an unseen goal fails closed rather than routing through fog: {far:?}"
+        );
+    }
+
+    #[test]
+    fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_execution() {
+        // gm_only arrest region on cell (2,0) = Rect [200,0]-[300,100]. No terrain/impassable
+        // region exists, so `has_terrain_or_impassable()` is false and `pathfind` takes the PURE
+        // POLYANYA branch (`navmesh_find` -> `clip_to_visible_mask` -> `truncate_at_arrest`),
+        // distinct from the weighted-grid branch. A player's per-requester region field omits the
+        // secret region entirely, so their route preview is the full straight line with no
+        // truncation; the GM's authoritative field truncates at the arrest cell. `move_exec`
+        // always reads the authoritative field regardless of requester, so committing the
+        // player's own (untruncated) preview still arrests at the same cell.
+        let mut docs = continuous_scene_docs();
+        let mut secret = region_doc_top(12, 10, "arrest", 1.0, 200.0, 0.0, 300.0, 100.0);
+        secret
+            .permissions
+            .property_overrides
+            .insert("/system".into(), crate::data::document::Visibility::GmOnly);
+        docs.push(secret);
+        let player = Uuid::from_u128(2);
+        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 }));
+        tok.owner = Some(player);
+        docs.push(tok);
+        let mut ecs = SceneEcs::from_documents(docs, 0);
+        ecs.set_world_settings_for_test(continuous_world_settings());
+        let scene = Uuid::from_u128(10);
+        let token = Uuid::from_u128(11);
+
+        // Player (non-GM): secret arrest is invisible to their per-requester field, so the
+        // preview is the full, untruncated straight polyanya route.
+        let p = ecs
+            .pathfind(
+                player,
+                scene,
+                (50.0, 50.0),
+                &[(450.0, 50.0)],
+                0.1,
+                false,
+                None,
+            )
+            .expect("player route");
+        assert!(
+            !p.arrested,
+            "secret arrest region does not truncate the player's own route preview"
+        );
+        assert!(
+            (p.cost - 400.0).abs() < 5.0,
+            "player route reaches the full goal (~400 Euclidean), got {}",
+            p.cost
+        );
+
+        // GM: authoritative field truncates the route at the arrest cell entry.
+        let g = ecs
+            .pathfind(
+                Uuid::from_u128(1),
+                scene,
+                (50.0, 50.0),
+                &[(450.0, 50.0)],
+                0.1,
+                true,
+                None,
+            )
+            .expect("gm route");
+        assert!(
+            g.arrested,
+            "GM sees the secret region and it truncates their route"
+        );
+
+        // `move_exec` always reads the AUTHORITATIVE field: committing the player's own
+        // (untruncated) previewed route still springs the arrest at the same cell.
+        let visible: std::collections::BTreeSet<(i32, i32)> = std::collections::BTreeSet::new();
+        let exec_out = crate::scene::move_exec::execute_move(
+            &ecs,
+            scene,
+            token,
+            &p.path,
+            MovementRestriction::Unrestricted,
+            &visible,
+            100.0,
+        )
+        .expect("move_exec handles the player's committed route");
+        assert!(
+            exec_out.truncated,
+            "the authoritative field springs the secret arrest at execution"
+        );
+        assert!(
+            exec_out.stop.0 < 400.0,
+            "execution stops before the full player-preview route length, got {:?}",
+            exec_out.stop
         );
     }
 

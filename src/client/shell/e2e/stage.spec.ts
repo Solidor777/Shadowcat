@@ -77,6 +77,57 @@ test("place a token via the tool rail, then drag it", async ({ page }) => {
   await expect(host).toHaveAttribute("data-token-count", "1");
 });
 
+test("author an animated (frame-list) actor token; it places without error", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Username").fill("ops");
+  await page.getByLabel("Password").fill("pw-boot");
+  await page.getByRole("button", { name: "Log in" }).click();
+  await page.getByLabel("New world name").fill("Animated Actor World");
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = page.locator(".stage-host");
+  await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  // Upload two frames for the animated actor.
+  await page
+    .getByTestId("asset-upload")
+    .setInputFiles({ name: "f1.png", mimeType: "image/png", buffer: PNG_1X1 });
+  await page
+    .getByTestId("asset-upload")
+    .setInputFiles({ name: "f2.png", mimeType: "image/png", buffer: PNG_1X1 });
+  await expect(page.getByTestId("asset-tile")).toHaveCount(2);
+
+  // ActorsPanel's asset picker list is fetched once at mount and has no live-refresh
+  // hook for newly-created assets (only replace/delete broadcast an AssetChanged);
+  // leave and re-enter the same world so the panel remounts and its picker sees the
+  // frames just uploaded — an already-exercised, unmodified product path (test 1
+  // above already proves leave/re-enter works).
+  await page.getByRole("button", { name: /leave world/i }).click();
+  await page.getByRole("button", { name: /Animated Actor World/ }).click();
+  await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  // Author an animated (frame-list) actor via the Actors panel. Scoped to `.actors`
+  // (ActorsPanel's root section) since the Factions/Conditions panels reuse the same
+  // "Name" label text — an unscoped locator would be ambiguous.
+  const actorsPanel = page.locator(".actors");
+  await actorsPanel.getByPlaceholder("Name", { exact: true }).fill("Wisp");
+  await actorsPanel.getByLabel("Visual").selectOption("animated");
+  await actorsPanel.getByRole("button", { name: "f1.png" }).click();
+  await actorsPanel.getByRole("button", { name: "f2.png" }).click();
+  await actorsPanel.getByLabel("Frames per second").fill("10");
+  await actorsPanel.getByRole("button", { name: "Create actor" }).click();
+
+  // Select the actor, then activate the place tool and click the canvas — mirrors
+  // the existing token-placement flow. `makePlaceTool` gives a selected actor
+  // precedence over a raw asset (controller.svelte.ts), so no asset picker is needed.
+  await actorsPanel.getByRole("button", { name: "Wisp", exact: true }).click();
+  await page.getByTestId("tool-place").click();
+  const canvas = page.getByTestId("stage-canvas");
+  const box = (await canvas.boundingBox())!;
+  await canvas.click({ position: { x: box.width / 2, y: box.height / 2 } });
+  await expect(host).toHaveAttribute("data-token-count", "1", { timeout: 15_000 });
+});
+
 test("draw a freehand stroke via the tool rail; the drawing renders", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("Username").fill("ops");

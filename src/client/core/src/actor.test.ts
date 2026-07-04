@@ -2,7 +2,8 @@ import { describe, it, expect, test } from "vitest";
 import { DocumentStore, type ReadableDocuments } from "./store";
 import type { WireDocument } from "./wire";
 import { buildActorDoc, buildSceneDoc, buildTokenDoc, buildTokenFromActor, buildConditionRegistryDoc, type ActorSystem, type TokenOverrides } from "./scene-docs";
-import { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, footprintRadius } from "./actor";
+import { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, footprintRadius, resolveTokenVisual } from "./actor";
+import type { TokenVisual } from "./scene-docs";
 
 const sys: ActorSystem = {
   name: "Goblin",
@@ -27,7 +28,7 @@ describe("resolveTokenActor", () => {
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100);
     const eff = resolveTokenActor(token, storeWith(actor));
     expect(eff?.name).toBe("Goblin");
-    expect(eff?.visual.asset).toBe("a1");
+    expect(eff?.visual.kind === "image" && eff.visual.asset).toBe("a1");
   });
 
   it("applies the per-token override whitelist over the linked actor", () => {
@@ -36,7 +37,7 @@ describe("resolveTokenActor", () => {
     (token.system as { overrides?: TokenOverrides }).overrides = { name: "Boss", visual: { kind: "image", asset: "a2" } };
     const eff = resolveTokenActor(token, storeWith(actor));
     expect(eff?.name).toBe("Boss");
-    expect(eff?.visual.asset).toBe("a2");
+    expect(eff?.visual.kind === "image" && eff.visual.asset).toBe("a2");
   });
 
   it("resolves an instanced token from its embedded copy (store-independent)", () => {
@@ -189,4 +190,105 @@ it("per-token override replaces actor vision modes", () => {
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100);
   (token.system as { overrides?: { vision?: { mode: string; range: number }[] } }).overrides = { vision: [{ mode: "darkvision", range: 6 }] };
   expect(resolveTokenActor(token, storeWith(actor))?.visionModes).toEqual([{ mode: "darkvision", range: 6 }]);
+});
+
+describe("resolveTokenVisual", () => {
+  function actorWith(visual: TokenVisual, extra: Partial<{ conditions: string[] }> = {}) {
+    return buildActorDoc("w1", { ...sys, visual, conditions: extra.conditions ?? [] }, "act1");
+  }
+
+  function setFace(token: WireDocument, face: string): void {
+    (token.system as { face?: string }).face = face;
+  }
+
+  it("passes an image visual through unchanged", () => {
+    const actor = actorWith({ kind: "image", asset: "a1" });
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toEqual({ kind: "image", asset: "a1" });
+  });
+
+  it("passes an animated visual through unchanged", () => {
+    const animated: TokenVisual = { kind: "animated", source: { type: "frames", frames: ["a1", "a2"] }, fps: 8, loop: true };
+    const actor = actorWith(animated);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toEqual(animated);
+  });
+
+  it("resolves faces to the manual token.system.face over the default", () => {
+    const actor = actorWith({
+      kind: "faces",
+      faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } },
+      default: "normal",
+    });
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    setFace(token, "bloodied");
+    expect(resolveTokenVisual(token, storeWith(actor))).toEqual({ kind: "image", asset: "b1" });
+  });
+
+  it("resolves an animated face — proves faces are not restricted to images", () => {
+    const bloodied: TokenVisual = { kind: "animated", source: { type: "frames", frames: ["b1"] }, fps: 4, loop: true };
+    const actor = actorWith({
+      kind: "faces",
+      faces: { normal: { kind: "image", asset: "n1" }, bloodied },
+      default: "normal",
+    });
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    setFace(token, "bloodied");
+    expect(resolveTokenVisual(token, storeWith(actor))).toEqual(bloodied);
+  });
+
+  it("falls back to a faceMap match when no manual face is set", () => {
+    const actor = actorWith(
+      {
+        kind: "faces",
+        faces: { normal: { kind: "image", asset: "n1" }, bleeding: { kind: "image", asset: "bl1" } },
+        default: "normal",
+        faceMap: { poisoned: "bleeding" },
+      },
+      { conditions: ["poisoned"] },
+    );
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toEqual({ kind: "image", asset: "bl1" });
+  });
+
+  it("falls back to default when neither manual face nor faceMap matches", () => {
+    const actor = actorWith({
+      kind: "faces",
+      faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } },
+      default: "normal",
+    });
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toEqual({ kind: "image", asset: "n1" });
+  });
+
+  it("fails closed to the first face key when default itself is invalid", () => {
+    const actor = actorWith({ kind: "faces", faces: { onlyOne: { kind: "image", asset: "o1" } }, default: "missing" });
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toEqual({ kind: "image", asset: "o1" });
+  });
+
+  it("fails closed to null when the faces map is empty", () => {
+    const actor = actorWith({ kind: "faces", faces: {}, default: "x" });
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
+  it("fails closed on a malformed AnimatedSource (non-positive rows/cols)", () => {
+    const actor = actorWith({ kind: "animated", source: { type: "sheet", asset: "s1", rows: 0, cols: 4 }, fps: 8, loop: true });
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
+  it("fails closed on a malformed AnimatedSource (empty frame list)", () => {
+    const actor = actorWith({ kind: "animated", source: { type: "frames", frames: [] }, fps: 8, loop: true });
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
+  it("fails closed on a malformed nested faces value (defense in depth against garbled wire data)", () => {
+    const nested = { kind: "faces", faces: {}, default: "x" } as unknown as { kind: "image"; asset: string };
+    const actor = actorWith({ kind: "faces", faces: { bad: nested }, default: "bad" });
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
 });

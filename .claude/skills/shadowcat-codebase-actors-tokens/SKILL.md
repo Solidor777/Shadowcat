@@ -20,12 +20,28 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 ## Key files & seams
 
 - `src/client/core/src/scene-docs.ts` — builders + types (all re-exported from `core/index.ts`):
-  - `buildActorDoc(worldId, system, id?)`, `ActorSystem`, `ActorVisual`.
+  - `buildActorDoc(worldId, system, id?)`, `ActorSystem`.
   - `buildTokenFromActor(worldId, sceneId, actor, "link"|"instance", pos, size, id?)` — link mode
     sets `token.system.actor_id` + `overrides`; instance mode embeds an independent (deep-cloned)
     copy with `source` provenance.
   - `TokenOverrides` whitelist includes `shape` (alongside `name`, `visual`, `size`) — a per-token
     `"square" | "circle"` override applied on top of the actor's own shape field.
+  - **Token visual union (M10h, replaces the old flat `ActorVisual`):** `RenderVisual = {kind:
+    "image", asset} | {kind:"animated", source: AnimatedSource, fps, loop}` — the only two kinds the
+    render layer ever draws. `AnimatedSource = {type:"frames", frames: string[]} | {type:"sheet",
+    asset, rows, cols, count?}` (asset ids pre-resolution; resolved to URLs at the render boundary,
+    see `resolveTokenVisual` below and `TokenNodeSpec.visual` in `shadowcat-codebase-scene-rendering`).
+    `FaceVisual = RenderVisual` — **a face is itself a `RenderVisual`, never nested** (deliberately
+    no `{kind:"faces"}` inside a face; an animated face falls out of the same boundary with no
+    separate mechanism). `TokenVisual = RenderVisual | {kind:"faces", faces: Record<string,
+    FaceVisual>, default: string, faceMap?: Record<string,string>}` — `default` is REQUIRED (no
+    `?`), per `scene-docs.ts:181`; `ActorsPanel.buildVisual()` always supplies it and nulls the
+    whole visual if unset. `ActorSystem.visual` and
+    `TokenOverrides.visual` both carry `TokenVisual` (a token can override the actor's whole visual,
+    faces-union included). `TokenSystem.face?: string` — the per-token ACTIVE face selection; only
+    meaningful when the effective visual resolves to `"faces"`, ignored otherwise; token-local
+    always (deliberately NOT part of `overrides` — it selects INTO the actor's faces map rather than
+    overriding actor data).
   - `VisionAssignment { mode, range }` (mode = a `vision-modes` registry id, range in grid cells);
     `ActorSystem.vision?` + `TokenOverrides.vision?` carry `VisionAssignment[]` (M10e-1).
   - `setNameHidden(doc, hidden)` — sets/clears the `OwnerOrGm` override on `/system/name`.
@@ -50,10 +66,40 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   for the M10e+ pathfinder: circle = `max(w,h)/2`, square = half-diagonal (`√(w²+h²)/2`); both in
   grid-cell units. `EffectiveActor.visionModes: VisionAssignment[]` — projected by `project()` as
   `overrides?.vision ?? base.vision ?? []` (per-token override **replaces** actor base, not merged).
+  **`resolveTokenVisual(token, store, eff?) -> RenderVisual | null` (M10h)** — the render-boundary
+  visual resolver, sibling to `resolveTokenActor`/`resolveTokenBox`/`resolveConditions`. Reads
+  `actor?.visual ?? token.system.visual` (the projected `EffectiveActor.visual` — an
+  actor-override-then-base precedence identical to every other overridable field — falling back to
+  a raw token's own `system.visual` when there's no actor at all); when that resolves to
+  `{kind:"faces"}`, applies precedence **manual `token.system.face` (if it names an existing face) >
+  first `faceMap` entry matching an id in the token's RAW `EffectiveActor.conditions[]`, in array
+  order (NOT `resolveConditions`'s enriched `{id,name,icon}` — the raw id list) > `default` (if it
+  names an existing face) > first object key > `null` if `faces` is empty**. Fails closed
+  (`null`) on: no visual at all; a `"faces"` visual with zero entries; a resolved face/visual whose
+  `kind` isn't `"image"`/`"animated"` (defense against a malformed nested `faces`-within-`faces`
+  value, which the type system forbids but a hand-edited/legacy doc could still contain); and a
+  malformed `AnimatedSource` (`isValidAnimated`: non-finite/`<=0` `fps`, an empty `frames` array, or
+  a non-positive/non-integer `rows`/`cols` for a `sheet` source). Optional pre-resolved `eff` avoids
+  a second `resolveTokenActor` call, mirroring `resolveTokenBox`'s convention.
 - `src/modules/actors/{ActorsPanel.svelte,index.ts}` — create/list/pick actors; hide-name control;
   faction assignment; shape (`square`/`circle`) + size (fractional grid-cells) editing in the
   create form and in the per-row GM inline editor; darkvision range authoring (create + per-row),
-  writing `system.vision: [{ mode: "darkvision", range }]` (omitted when range 0).
+  writing `system.vision: [{ mode: "darkvision", range }]` (omitted when range 0). **Visual
+  authoring (M10h):** a visual-kind editor (image / faces / animated) in the actor-creation form;
+  `buildVisual()` validates per-kind completeness for EVERY face row (an image row needs `asset`; an
+  animated row needs non-empty `frames` or a chosen `sheetAsset` — a failing row nulls the WHOLE
+  `faces` visual, disabling submit), face-row name uniqueness (a duplicate name nulls the visual),
+  and that `defaultFace` names an existing row (else nulls the visual); a stale `faceMapRows` entry
+  referencing a since-renamed/removed face is silently DROPPED rather than failing the whole visual.
+  A separate per-TOKEN face-swap palette (distinct from the per-actor creation-form editor) shows
+  only when the selected token's effective visual (via `resolveTokenActor`, the canonical
+  read-through — **still the load-bearing entry point for token/actor resolution, unchanged by
+  M10h**) is `"faces"`; clicking a face name dispatches a `/system/face` update on the TOKEN doc.
+  **Load-bearing convention: the dispatched update's `old` reads the RAW stored `token.system.face`**
+  (never a resolved/defaulted value) — the same raw-`old` convention already established for other
+  config-doc field-toggle editors in this codebase (e.g. the M10f-3 `snapToGrid` toggle) — a
+  resolved/defaulted `old` would mismatch the server's field-level optimistic-concurrency check
+  after the first successful write.
 - `src/modules/factions/{FactionsPanel.svelte,index.ts}` — GM editor + idempotent seed of the
   faction registry; faction-colored token border + select-by-faction.
 - `src/modules/conditions/{ConditionsPanel.svelte,index.ts}` — GM editor + idempotent emoji seed
@@ -87,14 +133,17 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 - **Linked vs instanced provenance diverges**: a linked token reflects later actor edits; an
   instanced copy is frozen at placement. Instanced re-sync against the source is deferred
   [[document-inheritance-merge-model]].
-- **Tokens are Container sprites behind a `TokenVisual` source abstraction** (static images ship
-  first; multi-face/animated/procedural later) — don't bind rendering to raw image URLs
-  [[token-architecture-forward-looking]].
+- **Tokens are Container sprites behind a `TokenVisual` source abstraction — image, animated, and
+  multi-face (`"faces"`) visuals all SHIPPED in M10h.** `generated` (procedural) and `fx`/emotes
+  remain forward-looking (M10i/M10j) [[token-architecture-forward-looking]]. Don't bind rendering
+  to raw image URLs or assume a token has exactly one static image — always resolve through
+  `resolveTokenVisual`, never read `actor.visual`/`token.system.visual` directly.
 
 ## Pointers
 
 - Rationale: the M10 tokens design spec under `docs/superpowers/specs/` (`*-m10-tokens-design.md`);
+  `docs/superpowers/specs/2026-07-03-m10h-faces-animated-design.md` (faces + animated visuals);
   data-model context in `docs/design/M2-data-foundation.md`.
 - Relationships:
-  `graphify query "actor token linked instanced resolveTokenActor EffectiveActor faction"`.
-- Forward-looking visual pipeline: [[token-architecture-forward-looking]].
+  `graphify query "actor token linked instanced resolveTokenActor EffectiveActor faction visual face"`.
+- Forward-looking visual pipeline (generated/fx/emotes still open): [[token-architecture-forward-looking]].

@@ -6,6 +6,7 @@ export function fakeSceneHost(over: Partial<SceneToolHost> = {}): SceneToolHost 
   return {
     setActiveTool: () => {},
     snap: (p: Point) => p,
+    setSnapEnabled: () => {},
     setDraggingToken: () => {},
     previewOverlay: () => {},
     clearOverlay: () => {},

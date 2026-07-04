@@ -4,12 +4,12 @@
 // their embedded copy. Returns null for a raw (actorless) or dangling-link token.
 import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { ActorSystem, ActorVisual, TokenOverrides, ConditionRegistrySystem, SceneSystem, VisionAssignment } from "./scene-docs";
+import type { ActorSystem, TokenVisual, TokenOverrides, ConditionRegistrySystem, SceneSystem, VisionAssignment, RenderVisual, FaceVisual } from "./scene-docs";
 
 export interface EffectiveActor {
   name: string;
   displayName: string;
-  visual: ActorVisual;
+  visual: TokenVisual;
   size: { w: number; h: number };
   shape: "square" | "circle";
   faction: string | null;
@@ -135,4 +135,53 @@ export function resolveTokenBox(token: WireDocument, store: ReadableDocuments, e
 export function footprintRadius(eff: Pick<EffectiveActor, "shape" | "size">): number {
   const { w, h } = eff.size;
   return eff.shape === "circle" ? Math.max(w, h) / 2 : Math.hypot(w, h) / 2;
+}
+
+/** Resolve a `faces` visual to the active face's RenderVisual. Precedence: a valid manual
+ * `token.system.face` > the first `faceMap` entry whose condition id is in `conditions` (in
+ * `conditions` array order — a v1 simplification, no severity ranking across simultaneously
+ * active conditions) > `default` > the first key of `faces` (fail-closed continuation, never a
+ * missing-visual null while any face exists). Returns null only when `faces` is empty. */
+function resolveFace(
+  visual: Extract<TokenVisual, { kind: "faces" }>,
+  manualFace: string | undefined,
+  conditions: string[],
+): FaceVisual | null {
+  const names = Object.keys(visual.faces);
+  if (names.length === 0) return null;
+  if (manualFace && visual.faces[manualFace]) return visual.faces[manualFace];
+  if (visual.faceMap) {
+    for (const id of conditions) {
+      const name = visual.faceMap[id];
+      if (name && visual.faces[name]) return visual.faces[name];
+    }
+  }
+  if (visual.default && visual.faces[visual.default]) return visual.faces[visual.default];
+  return visual.faces[names[0]];
+}
+
+function isValidAnimated(v: Extract<RenderVisual, { kind: "animated" }>): boolean {
+  if (!Number.isFinite(v.fps) || v.fps <= 0) return false;
+  if (v.source.type === "frames") return v.source.frames.length > 0;
+  return Number.isInteger(v.source.rows) && v.source.rows > 0 && Number.isInteger(v.source.cols) && v.source.cols > 0;
+}
+
+/** The render boundary: resolves a token's `TokenVisual` (image, animated, or faces) down to a
+ * plain `RenderVisual` (image or animated) — the only two kinds the render layer ever draws.
+ * Fail-closed to `null` on any malformed/unknown shape; never throws. Pass a pre-resolved `eff`
+ * to avoid a second `resolveTokenActor` call; omit to resolve internally. */
+export function resolveTokenVisual(
+  token: WireDocument,
+  store: ReadableDocuments,
+  eff?: EffectiveActor | null,
+): RenderVisual | null {
+  const actor = eff === undefined ? resolveTokenActor(token, store) : eff;
+  const sys = token.system as { visual?: TokenVisual; face?: string } | undefined;
+  const visual = actor?.visual ?? sys?.visual;
+  if (!visual) return null;
+  const resolved = visual.kind === "faces" ? resolveFace(visual, sys?.face, actor?.conditions ?? []) : visual;
+  if (!resolved) return null;
+  if (resolved.kind !== "image" && resolved.kind !== "animated") return null;
+  if (resolved.kind === "animated" && !isValidAnimated(resolved)) return null;
+  return resolved;
 }

@@ -48,29 +48,70 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (`light_illumination`), `cell_illumination` (max-compose env + lights, `blocksLight` occlusion via
   `point_in_poly`). Clean-room. Non-finite/empty inputs fail closed (under-reveal).
 - `src/server/src/scene/move_exec.rs` — pure, lock-free `execute_move(ecs, scene, token, path,
-  restriction, visible, cell) -> Result<MoveOutcome, MoveReject>` (M1 server-authoritative movement):
-  walks the path step by step — (1) wall gate (`blocks_move`, all modes incl. GM), (2) vision-mask
-  gate (`supercover_cells` + `visible` membership, skipped for `Unrestricted`), (3) region gate
-  (M10g — see below). Returns `stop` + `render_path` (legal prefix) + `truncated` + `cost`.
-  `MAX_MOVE_PATH=256` DoS guard. `MoveReject` variants: `NotAToken`, `EmptyPath`, `TooLong`,
-  `Degenerate` (non-finite coords / bad start / non-adjacent king-step).
-  **Region gate (M10g, step 3):** always reads `ecs.region_field(scene, None)` — the AUTHORITATIVE
-  field, computed once before the walk loop begins (never per-step, never filtered) — so a
-  `gm_only` secret region "springs" on execution even for a mover whose own route preview couldn't
-  see it. Center-cell only (`to_cell(next)`; no footprint check) — a documented asymmetry against
-  the router's footprint-aware `cell_enterable` (router stricter, executor looser), but `route ⊆
-  gate-allowed` still holds because the router's mask predicate is already a superset (see the
-  pathfinder invariant below). Impassable stops BEFORE entry into the cell (like a wall — `stop`
-  lands on the prior cell); arrest stops AT entry (the cell is entered, then the walk halts — a
-  final-step arrest still sets `truncated: true` even though `stop_index == path.len()-1`).
-  `MoveOutcome.cost` accumulates `regions.terrain_multiplier(region_cell)` per step (1.0 outside any
-  terrain region) — center-cell-only, terrain-only; it does NOT apply the diagonal-rule step-cost
-  factor (`sc` — 1.0/2.0/√2/alternating) that `pathfinding.rs`'s router applies. **Known, logged
+  restriction, visible, cell) -> Result<MoveOutcome, MoveReject>` (M1 server-authoritative
+  movement; **engine-agnostic since M10f-2**): `path` may be ANY polyline — grid A* cell-center
+  vertices ≤1 cell apart, or any-angle continuous vertices arbitrarily far apart. `gate_walk`
+  (M10f-2, new pure primitive, same file) subdivides it into a DENSE walk where every consecutive
+  sample is ≤1 cell apart (Chebyshev), preserving already-≤1-cell input segments EXACTLY —
+  identity on grid input (cell-center vertices, ≤1 cell apart on every axis incl. diagonals). This
+  identity property is what makes grid-parity a property of the code shape rather than something
+  proven only by testing; empirically, a temporary `execute_move_kingstep_oracle` (a frozen,
+  `#[cfg(test)]`-only verbatim copy of the pre-M10f-2 king-step executor) was added, used to
+  prove parity across 10 scenarios, then DELETED once those cases were frozen as literal
+  fixtures — a second permanent executor would reintroduce exactly the fork this refactor exists
+  to avoid. The frozen fixture test,
+  `frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes`, is now the permanent
+  regression proof. The per-step gate — (1) wall gate (`blocks_move`, all modes incl. GM), (2)
+  vision-mask gate (`supercover_cells` + `visible` membership, skipped for `Unrestricted`), (3)
+  region gate (M10g — see below) — runs over this DENSE walk, not the raw authored path; the
+  coarse `render_path` returned to the caller is reconstructed as either the authored-vertex
+  prefix (when the stop lands exactly on an authored vertex — always true for grid input) or the
+  authored-prefix + the exact stop point (when the stop lands mid-subdivision — only possible for
+  a genuinely long/any-angle continuous segment). **Guard relaxation (M10f-2):** the pre-M10f-2
+  king-step adjacency guard (reject any >1-cell authored jump as `Degenerate`) is REMOVED — a
+  >1-cell jump is now subdivided and gated per cell instead, exactly as if the client had sent the
+  explicit intermediate waypoints (no new capability; security lives entirely in the per-cell
+  gate, never the shape check). **DoS bound (M10f-2):** `MAX_GATE_WALK_SAMPLES=4096` (dense
+  sample count, arc-length-based) + `MAX_GATE_WALK_COORD=1e9` (a coordinate-magnitude bound inside
+  `gate_walk` itself, closing a false-identity failure mode where the identity-comparison's
+  magnitude-scaled floating-point tolerance could otherwise grow large enough at extreme
+  coordinates to silently misclassify a genuinely-multi-cell segment as identity — buddy-check
+  caught this as a second-order defect introduced by the FIRST fix for a related zero-tolerance
+  identity bug at non-round `cell` sizes) REPLACE the pre-M10f-2 `MAX_MOVE_PATH=256`
+  authored-vertex-count cap; `MoveReject::TooLong` now reflects `gate_walk`'s `None` (either
+  cap), not vertex count. `MoveReject` variants: `NotAToken`, `EmptyPath`, `TooLong` (as above),
+  `Degenerate` (non-finite coords / bad start — no longer covers non-adjacent king-step, which is
+  now subdivided-and-gated rather than rejected). **Region gate (M10g, step 3):** always reads
+  `ecs.region_field(scene, None)` — the AUTHORITATIVE field, computed once before the walk loop
+  begins (never per-step, never filtered) — so a `gm_only` secret region "springs" on execution
+  even for a mover whose own route preview couldn't see it. Center-cell only (`to_cell(next)`; no
+  footprint check) — a documented asymmetry against the router's footprint-aware
+  `cell_enterable` (router stricter, executor looser), but `route ⊆ gate-allowed` still holds
+  because the router's mask predicate is already a superset (see the pathfinder invariant below).
+  **Keyed on CELL-ENTRY TRANSITIONS (M10f-2), not per dense sample:** a continuous path subdivided
+  into several sub-cell samples within the same cell is evaluated exactly once for that cell,
+  matching the pre-M10f-2 per-authored-step accrual count on grid input (where every step already
+  crossed into a distinct new cell); a non-consecutive re-entry into a previously-visited cell (A
+  → B → A) still re-evaluates correctly since the dedup only compares against the IMMEDIATELY
+  prior cell, never a stale earlier value. Impassable stops BEFORE entry into the cell (like a
+  wall — `stop` lands on the prior cell); arrest stops AT entry (the cell is entered, then the
+  walk halts — a final-step arrest still sets `truncated: true` even though `stop_index ==
+  path.len()-1`). `MoveOutcome.cost` accumulates `regions.terrain_multiplier(region_cell)` per
+  cell-entry (1.0 outside any terrain region — this is a per-step-distance BASELINE, not merely
+  additive terrain weighting; a plain grid move with no regions at all still accrues `1.0` per
+  step) — center-cell-only, terrain-only; it does NOT apply the diagonal-rule step-cost factor
+  (`sc` — 1.0/2.0/√2/alternating) that `pathfinding.rs`'s router applies. **Known, logged
   inconsistency (`docs/TODO.md`):** the two `cost` values are numerically comparable only under
   Chebyshev (where the diagonal step cost is 1.0); under any other diagonal rule they diverge. This
   is a deliberate v1 scoping decision (M10g Task 7), not a bug — nothing currently consumes or
   compares the two costs together. Resolve before any per-turn movement-budget system consumes
-  either `MoveOutcome.cost` or `MoveStream.cost`.
+  either `MoveOutcome.cost` or `MoveStream.cost`. **Gotcha (M10f-2):** `supercover_cells` can
+  fail-closed (return `None`, rejecting an otherwise-legal move) on a diagonal king-step whose leg
+  endpoints BOTH sit exactly on 4-way grid-line intersections — the Amanatides-Woo corner-crossing
+  branch fires repeatedly and drifts away from the target cell before `MAX_MOVE_CELLS` catches it;
+  fails closed (safe), never opens a forbidden move, but rejects a move a player might reasonably
+  expect to succeed (logged `docs/TODO.md`, discovered via an M10f-2 Task 6 fixture-derivation
+  error that surfaced it).
 - `src/server/src/scene/mod.rs` — adds `SceneEcs::token_position(token) -> Option<(f64,f64)>` and
   `SceneEcs::resolved_animation_speed() -> f64` (`pub(crate)` seams; the latter sits alongside
   `resolved_diagonal_rule`, sources `world_settings.animation`, defaults to 6 cells/sec).
@@ -199,11 +240,104 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   mask ONCE, above the dispatch, and pass the SAME reference into whichever engine runs — never
   forked (mirrors the pathfinder's own §13 invariant, generalized to a second engine). Client:
   `movementModel` world-default + scene-override editor in `GameSettingsPanel.svelte` (mirrors the
-  `movementRestriction` editor exactly); the measure-tool's `commitRoute` (`controller.svelte.ts`)
-  refuses to send a `moveRequest` when the active scene's `movementModel` is `"continuous"` (checked
-  via `resolveSceneSettings`) — **continuous scenes get router + preview only; move EXECUTION does
-  not exist yet** (homed to a later checkpoint). `requestRoute` (the preview path) is unaffected —
-  no grid-snap fallback, silent no-op on double-click.
+  `movementRestriction` editor exactly). **M10f-1 shipped router + preview only**: the measure-tool's
+  `commitRoute` (`controller.svelte.ts`) refused to send a `moveRequest` when the active scene's
+  `movementModel` was `"continuous"`, by design for that checkpoint. **M10f-3 lifted that
+  restriction** — `commitRoute` no longer branches on `movementModel` at all; committing a route
+  proceeds identically for grid-stepped and continuous scenes. This is possible because the server
+  move-execution path (`execute_move`/`gate_walk`/`sample_path`/the M2 egress clip) has been fully
+  engine-agnostic since M10f-2 — no `movementModel` branch anywhere in that path, so there was
+  nothing engine-specific left to gate at the client. `requestRoute` (the preview path) was always
+  unaffected — no grid-snap fallback, silent no-op on double-click.
+- **`snapToGrid` axis (M10f-3, `src/client/core/src/scene-docs.ts`)**: `SceneSystem.snapToGrid?:
+  boolean` — opaque `system`-body JSON, no ts-rs type (mirrors `movementModel`/`bounds`).
+  `resolveSceneSettings` resolves a DERIVED DEFAULT keyed off the already-resolved
+  `movementModel`: `sys?.snapToGrid ?? (movementModel === "continuous" ? false : true)` — an
+  explicit stored boolean (including `false`) always overrides the derived default in either
+  direction via nullish-coalescing, never a truthy check (`false` is meaningful and must
+  persist). Independent of `movementModel` (a deliberate design choice — an independent toggle
+  rather than tying no-snap directly to the movement model — though the derived default preserves
+  the original intent that a fresh continuous scene is free-form by default). **`RenderEngine.snap`
+  chokepoint (`src/client/render/src/engine.ts` + `types.ts`)**: `SceneToolHost.setSnapEnabled(enabled:
+  boolean): void` interface member; `RenderEngine` carries a private `snapEnabled = true` field and
+  gates `snap(p)`: `return this.snapEnabled ? this.grid.snap(p) : p`. This is the SINGLE
+  enforcement point — every scene tool that calls `ctx.scene.snap` (place, select-move drag,
+  measure-route waypoints, wall/region/template/draw tools) inherits the toggle automatically,
+  since they all go through the same `AppContext.scene` bridge. Snap gating is independent of grid
+  RENDERING — a snap-off scene may still display its reference grid; `setSnapEnabled` never
+  touches `redrawGrid`/grid-line drawing. **Wiring:** `SceneInteractionBridge.setSnapEnabled`
+  (`src/client/ui-kit/src/sceneInteraction.ts`) forwards to the host (no-op when detached,
+  mirroring every other bridge method). `Stage.svelte` pushes the resolved `snapToGrid` into the
+  engine unconditionally on every `onDocs` pass (`e.setSnapEnabled(settings.snapToGrid)`), placed
+  OUTSIDE the `lastGridKey` change-detection gate that exists for `setGrid`'s more expensive
+  Grid-object rebuild — a cheap flag write doesn't need that gate, and gating it behind
+  `lastGridKey` would be a real bug since that key doesn't include `snapToGrid` and would silently
+  freeze the pushed value. **Authoring:** a GM-only persistent toggle button in `ToolRail.svelte`
+  (`data-testid="snap-toggle"`), reflecting the resolved `snapToGrid` via a reactive
+  `createSubscriber`+`$derived.by` subscription to the document store (mirrors
+  `FactionsPanel`/`GameSettingsPanel`'s pattern), dispatching a `/system/snapToGrid` scene-doc
+  update on click. **Load-bearing convention for any config-doc field-toggle editor:** the
+  dispatched update's `old` field must read the RAW stored value (`scene.system?.snapToGrid ??
+  null`), NOT the resolved/defaulted value — a hardcoded `old: null` breaks after the first
+  successful write, since the server's field-level optimistic-concurrency check
+  (`Repository::apply_intent`) rejects any subsequent `Update` whose `old` doesn't match the
+  actual current stored value. This was a Critical bug caught and fixed during M10f-3 Task 5's
+  review; the SAME pre-existing bug shape was found but NOT fixed (logged to `docs/TODO.md`
+  instead, out of scope) in `GameSettingsPanel`/`FactionsPanel`/`ConditionsPanel` — always read the
+  raw stored value for `old`, never the resolved/defaulted one, in any future editor of this shape.
+- **Regions on the continuous engine (M10f-4, final M10f checkpoint).** `SceneEcs::pathfind`'s
+  `Continuous` branch (`mod.rs`) computes the per-requester `region_field` once (same call the
+  `GridStepped` branch already made — the `GridStepped` branch itself is completely untouched by
+  M10f-4) and dispatches on `RegionField::has_terrain_or_impassable()` (`regions.rs`: true iff any
+  cell is `impassable` or `terrain` with `multiplier > 1.0`; arrest-only fields do NOT trigger this
+  — arrest needs only a post-filter, not route-bending). **Terrain/impassable present:** the
+  existing `pathfinding::find` runs forced to `DiagonalRule::Euclidean` (continuous base metric —
+  only cell topology + the terrain multiplier come from the grid, never the world's configured
+  diagonal rule), its cost is converted from CELLS to SCENE UNITS (`× cell`, matching the polyanya
+  path's unit contract — the two continuous sub-paths must report cost in the same unit regardless
+  of which ran), then `navmesh::los_smooth` (new) restores any-angle geometry. The weighted sub-path
+  does NOT call `clip_to_visible_mask` at all — its route⊆mask/wall safety comes entirely from
+  `pathfinding::find`'s own per-cell mask gate (already fed `mask.as_ref()`) plus `los_smooth`'s
+  own mask-checking `chord_ok` guard (every cell a straightened chord enters must still be in
+  `mask`). **Otherwise:** the unchanged pure-polyanya route (M10f-1) runs `clip_to_visible_mask`
+  FIRST, then `navmesh::truncate_at_arrest` (new) on the clipped result — clip-then-truncate, so a
+  fog-truncated route can never carry a stale `arrested: true` flag past the point the fog itself
+  should have cut it. `clip_to_visible_mask` is exclusive to the pure-polyanya sub-path — the two
+  continuous sub-paths enforce the SAME mask invariant through different mechanisms, not through a
+  shared call.
+  - `navmesh::los_smooth(outcome, walls, mask, field, cell, footprint_radius_cells)` — cost-guarded
+    LOS string-pull smoothing for the weighted continuous path. A span `path[i]..path[j]`
+    straightens only when every cell its chord enters (`footprint_cells ∪ supercover_cells`, the
+    SAME union `cell_enterable`/`clip_to_visible_mask` use) is in `mask` (when `Some`), not
+    impassable, not arrest, and not weighted terrain (`terrain_multiplier > 1.0`), and the chord
+    crosses no `blocksMove` wall — so a straightened chord can never shortcut INTO terrain/
+    impassable/arrest the weighted search deliberately routed around or truncated at. **The single
+    grid step `path[i] -> path[i+1]` is ALWAYS kept unconditionally** (it already passed `find`'s
+    per-cell gate), guaranteeing goal progress even when nothing else can straighten. Fail-closed on
+    two levels: a whole-input short-circuit (`<3` vertices, degenerate `cell`/`footprint_radius_cells`)
+    returns the input unchanged; a per-span fallback (an over-cap/degenerate `supercover_cells` for
+    one candidate chord) fails only that chord, leaving it at its single grid step while smoothing
+    continues over the rest of the path. `cost`/`arrested` are carried through UNCHANGED (not
+    recomputed) — the pre-smoothing weighted grid cost is a conservative (never-cheaper) budget for
+    the straighter geometry, the same preview-vs-execution divergence class as the pre-existing
+    `MoveOutcome.cost`/router-cost TODO (an exact per-span smoothed cost is deferred, `docs/TODO.md`).
+  - `navmesh::truncate_at_arrest(outcome, field, cell)` — arrest post-filter for the pure-polyanya
+    continuous path (which never runs through `find`, so needs its own arrest truncation, mirroring
+    `find`'s M10g arrest logic for the walls-only route). Arc-length-samples the route
+    (`move_stream::sample_path`) and cuts at the first sample whose cell **differs from the last
+    distinct cell seen** and is `field.is_arrest(...)` — **cell-ENTRY-TRANSITION detection, not raw
+    per-sample checking**: the start cell is never a trigger even while several samples still sit
+    inside it (a token already standing somewhere is not "entering" it), matching `find`'s
+    `.skip(1)`-over-cells convention. A route with no arrest transition is returned UNCHANGED (no
+    resample, no cost recompute). On truncation, `cost` is recomputed as the Euclidean length of the
+    surviving polyline and `arrested: true` is set.
+  - **Both `los_smooth` and `truncate_at_arrest` are called with the PER-REQUESTER `region_field`**
+    (`region_field(scene, if is_gm { None } else { Some(user) })`, computed once in `pathfind` and
+    reused for the dispatch predicate too) — a secret region is absent from a non-GM's route/cost
+    exactly as on the grid engine; `move_exec` alone reads the authoritative field and springs any
+    secret region at execution. `move_exec`/`gate_walk` required **zero production changes** for
+    M10f-4 — proven, not merely asserted, since M10f-2/3: it already cell-samples the region field
+    for any polyline, grid or any-angle.
 - `src/server/src/scene/navmesh.rs` (M10f-1, new) — pure headless adapter around the `polyanya`
   (any-angle navmesh) + `geo`/`spade` (CDT + Minkowski buffer) crates, engine-owned geometry
   (ARCHITECTURE §6 exception). Carries **walls only** in this checkpoint — impassable/terrain
@@ -290,6 +424,44 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `camera.ts`, `grid.ts`, `token-view.ts` + `token-animator.ts` (tween),
   `wall-view.ts`, `drawing-view.ts`, `template-view.ts`, `ping-view.ts`. Modules draw through the
   render-layer API; the canvas host is not replaceable.
+- **Token visual rendering (M10h — faces + animated token visuals).**
+  `src/client/render/src/token-animation.ts` — `computeAnimatedFrame(elapsedMs, fps, frameCount,
+  loop) -> number`, pure tick-driven frame-index math (extracted for the same reason as
+  `fog-blend.ts`: `pixi-backend.ts` is Playwright-only, no jsdom GL context, so frame-selection logic
+  needs to live somewhere unit-testable). `loop:true` wraps arbitrarily-large `elapsedMs`;
+  `loop:false` clamps to the final frame (a one-shot animation holds, never re-wraps); degenerate
+  input (`frameCount<=0`, non-finite `elapsedMs`/`fps`, `fps<=0`) fails closed to frame 0.
+  `TokenNodeSpec.visual` (`types.ts`) is now a discriminated union: `{kind:"image", url} |
+  {kind:"animated", source: ResolvedAnimatedSource, fps, loop}` (replaces the old flat `.url`
+  field) — `ResolvedAnimatedSource = {type:"frames", urls:string[]} | {type:"sheet", url, rows,
+  cols, count?}`, already asset-id-resolved to serve URLs by `AssetResolver` (the backend never
+  resolves asset ids itself). `DisplayBackend.tickTokenAnimations(dtMs): void` — the new per-frame
+  animation-advance seam, called once per frame alongside `startTicker`; `MockBackend`'s
+  implementation is an intentional no-op (frame-advance state lives only in `PixiBackend`'s real
+  `AnimatedSprite`s). `TokenView.tick(dtMs)` calls both `this.animator.tick(dtMs)` (transform tween,
+  unchanged) AND `this.backend.tickTokenAnimations(dtMs)` (new). `TokenView.toSpec` resolves a
+  token's visual via `resolveTokenVisual` (see `shadowcat-codebase-actors-tokens`) then a private
+  `resolveSource` maps `AnimatedSource` → `ResolvedAnimatedSource` through `AssetResolver`.
+  **`PixiBackend`'s Container-per-token structure** (`pixi-backend.ts`, migrated off a bare
+  `Sprite`-per-token + three separately-tracked sibling Maps): one `TokenNode` per token —
+  `container` (outer, does NOT rotate, positioned at the token center; `badges` are its DIRECT
+  children so condition-marker glyphs stay upright regardless of token facing) →
+  `visualContainer` (inner, rotates with the token via `.angle = spec.rotation`) → holds `visual`
+  (a `Sprite` or `AnimatedSprite`) + `border` (`Graphics`) as siblings. `AnimatedSprite` playback is
+  entirely tick-driven: `autoUpdate = false` (never Pixi's own shared ticker), frame index advanced
+  in `tickTokenAnimations` via `computeAnimatedFrame`. `node.sourceKey` short-circuits a re-push
+  with an unchanged visual (a tweening token's transform-only updates never touch the visual/sprite
+  object). **Load-bearing invariant — guard async texture/frame-load completions on OBJECT
+  IDENTITY, not just a string/key match:** `replaceVisualChild` can recreate a token's `visual`
+  object (image↔animated kind-swap, or a rapid A→B→A visual-cycling sequence), so an in-flight
+  texture/frame-load promise's completion callback MUST check `node.visual === sprite` (the exact
+  object captured at load-start) in addition to `sourceKey`/`id` equality — a key-only check lets a
+  stale promise write into an already-`.destroy()`'d Pixi object once the visual has been recreated
+  more than once while the load was in flight. The animated branch's `replaceVisualChild` call is
+  ALSO conditional (`if (!(node.visual instanceof AnimatedSprite))`), mirroring the image branch, to
+  reduce how often the object gets recreated in the first place. Any future code touching this
+  async-completion pattern (anywhere a display object can be replaced mid-flight) must follow the
+  same object-identity-guard shape — a real bug of this exact kind was found and fixed during M10h.
 - `src/client/render/src/engine.ts` (M2) — `visionSweeps: Map<tokenId, {samples, elapsed,
   durationMs}>` drives the mover's fog sweep during `MoveStream` playback (keyed per token — unions
   concurrent sweeps' visible sets rather than clobbering). `animateSamples(id, samples, durationMs,
@@ -414,8 +586,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - **M1 executor per-cell parity (spec §13):** `execute_move` uses the SAME `blocks_move` +
   `supercover_cells` + `visible` membership as the M10e-4 `publish` move gate — per-cell decision
   parity, NO fork. A divergence between the executor and the gate equals a movement-into-fog leak.
-  The executor is additionally STRICTER on path shape (requires king-step adjacency per consecutive
-  waypoint pair; the legacy `publish` whole-segment gate does not enforce this). For `Revealed`, the
+  **(M10f-2 revision)** The executor is no longer stricter on authored path shape — the pre-M10f-2
+  king-step-adjacency requirement (reject any >1-cell authored jump) is REMOVED; `gate_walk`
+  subdivides a >1-cell jump into dense ≤1-cell samples and gates each one, so a >1-cell authored
+  jump is now admitted exactly when every crossed cell is wall-clear/visible (equivalent to the
+  client having sent the explicit intermediate waypoints, which was always legal — no new
+  capability). The `blocks_move`/`supercover_cells`/`visible` per-cell decision parity itself is
+  UNCHANGED and remains the load-bearing invariant. For `Revealed`, the
   caller MUST pass `visible_cells ∪ explored` as the `visible` argument (not raw `visible_cells`
   alone) — same union `publish` uses. Do NOT re-grant GM wall-bypass in `execute_move`: GMs are
   folded to `Unrestricted` (mask-skip) but `blocks_move` is still enforced for GMs. This
@@ -448,7 +625,34 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   narrow a player's route/preview but can never appear to them where it wouldn't to the GM, and it
   always still applies at `move_exec` regardless of what the router showed. Reuses the EXACT same
   `resolve_access`/`property_overrides["/system"]` mechanism as ordinary document egress — no new
-  secrecy machinery was introduced for regions (spec §3).
+  secrecy machinery was introduced for regions (spec §3). **Fixture-construction precision (test/
+  brief authoring convention):** the correct way to mark a region `gm_only` in a test fixture is
+  `doc.permissions.property_overrides.insert("/system".into(), Visibility::GmOnly)` — matching
+  `region_field`'s actual read (`doc.permissions.property_overrides.get("/system")`, default
+  `Visibility::All`, `mod.rs`). Setting `permissions.default = Access::None` instead does NOT gate
+  `region_field`'s per-requester filter at all (that field only reads the `/system`
+  `property_overrides` entry) — a brief/test author who reaches for `permissions.default` here will
+  write a region that still weights a non-GM's route (M10f-4 Task 4 brief slip, caught before
+  merge).
+- **The continuous-engine dispatch predicate MUST read the PER-REQUESTER region field, never the
+  authoritative one (M10f-4).** `has_terrain_or_impassable()` is evaluated against `region_field(
+  scene, Some(user))` for a non-GM — this is the single mechanism preventing a secret
+  terrain/impassable region from indirectly leaking its own existence via route-shape or reported
+  cost even though its geometry is never disclosed. A future refactor that fed the authoritative
+  field into ONLY the dispatch predicate, while still correctly routing/costing off the
+  per-requester field, would silently reopen this leak (dispatching to the weighted path at all is
+  itself a signal a secret region exists). Caught during Task 4's review — treat as load-bearing,
+  not incidental.
+- **Polyanya does not weight — the M10g cell `region_field` is the universal weighting overlay for
+  BOTH engines (M10f-4).** Polyanya 0.16.1's only cost-affecting knob is the
+  `detailed-layers`-gated `Layer.scale` (a per-layer coordinate transform, `instance.rs`) — off in
+  this build's `default-features = false` config and semantically wrong as a per-unit cost
+  multiplier even if enabled (crate-source-verified, not README-derived). A continuous route that
+  needs weighting is therefore computed by the SAME `pathfinding::find` the grid engine uses
+  (forced `DiagonalRule::Euclidean`), never by a polyanya cost-layer/`blocked_layers` mechanism —
+  those polyanya features remain available but are deliberately UNUSED for regions in this
+  codebase. Do not "improve" continuous weighting by reaching for polyanya's own layer API; the
+  cell field is the one and only weighting authority for every routing engine this project has.
 - **A whole-region-scalar disclosed on `MoveStream` must default to trusted-recipient-only, not
   broadcast-by-default.** `PathResult.arrested: bool` is always disclosed (no secrecy concern — it
   only tells the requester their OWN already-visible route is truncating). `MoveStream.cost:
@@ -499,6 +703,14 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   visibility override (only nested-property overrides existed); secret regions were the first doc
   type to exercise it, and the panic-on-strip bug was caught before it shipped. Any future doc type
   that wants whole-body secrecy (vs. per-field) must go through this same branch, not a new one.
+- **`supercover_cells` can fail-closed on a diagonal king-step whose leg endpoints BOTH sit exactly
+  on 4-way grid-line intersections** — the Amanatides-Woo corner-crossing branch fires repeatedly
+  and drifts away from the target cell until `MAX_MOVE_CELLS` catches it, returning `None` rather
+  than converging (M10f-2 discovery, via an M10f-2 Task 6 fixture-derivation error that surfaced
+  it; not a defect in M10f-2's own code — a pre-existing, already-buddy-checked property of
+  `movement.rs`). Fails closed (never opens a forbidden move) but rejects a move a player might
+  reasonably expect to succeed; logged `docs/TODO.md`, not fixed (out of scope for the checkpoint
+  that found it).
 
 ## Pointers
 
@@ -514,8 +726,20 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (M10f-1 checkpoint design — the polyanya/geo/glam crate facts, footprint-aware memoized-mesh
   decision, preview-only execution boundary); `docs/superpowers/plans/2026-07-02-m10f-1-movement-
   model-dispatch-polyanya-router.md` (M10f-1 implementation plan + its buddy-check history, incl.
-  the plan-level cache-quantization finding).
+  the plan-level cache-quantization finding);
+  `docs/superpowers/specs/2026-07-02-m10f-2-unified-movement-executor-design.md` (M10f-2
+  checkpoint design — the gate_walk subdivide-only/identity-on-grid decision, the engine-agnostic
+  executor, the differential-oracle parity-proof-then-delete strategy);
+  `docs/superpowers/plans/2026-07-02-m10f-2-unified-movement-executor.md` (M10f-2 implementation
+  plan + its buddy-check history, incl. the gate_walk floating-point tolerance bugs and the
+  Task-6 fixture-derivation error that surfaced the `supercover_cells` corner-drift gotcha above);
+  `docs/superpowers/specs/2026-07-03-m10f-4-regions-on-navmesh-design.md` (M10f-4 checkpoint
+  design — final M10f checkpoint; the polyanya-cannot-weight crate-source verification §2.2, the
+  weighted-grid-reuse-then-smooth decision §4.1, the LOS-smoothing cost-guard §5);
+  `docs/superpowers/plans/2026-07-03-m10f-4-regions-on-navmesh.md` (M10f-4 implementation plan);
+  `docs/superpowers/specs/2026-07-03-m10h-faces-animated-design.md` (M10h faces + animated token
+  visuals — client-only, the Container-per-token migration + `tickTokenAnimations` seam).
 - Relationships:
-  `graphify query "scene ECS derived read-model vision fog stage pixi render tokens regions"`.
+  `graphify query "scene ECS derived read-model vision fog stage pixi render tokens regions faces animated"`.
 - History/decisions: [[m8-brainstorm]], [[m8d-2-scene-tools]], [[m9-progress]],
   [[server-authoritative-movement-rule]], [[m10-pathfinding-architecture]].

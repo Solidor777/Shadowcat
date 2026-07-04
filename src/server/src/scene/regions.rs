@@ -201,6 +201,19 @@ impl RegionField {
             _ => 1.0,
         }
     }
+
+    /// True iff any cell is `Impassable` or weighted `Terrain` (multiplier > 1.0). The
+    /// dispatch predicate the continuous router uses to decide between the weighted grid
+    /// route (terrain/impassable present) and the pure any-angle polyanya route (neither).
+    /// Arrest is excluded: it neither bends the route nor requires route-around, so an
+    /// arrest-only scene stays on the polyanya path with an arrest post-filter.
+    pub(crate) fn has_terrain_or_impassable(&self) -> bool {
+        self.cells.values().any(|e| match e {
+            RegionEffect::Impassable => true,
+            RegionEffect::Terrain(m) => *m > 1.0,
+            RegionEffect::Arrest => false,
+        })
+    }
 }
 
 #[derive(Default)]
@@ -271,6 +284,47 @@ pub(crate) fn parse_region_shape(system: &serde_json::Value) -> Option<RegionSha
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn has_terrain_or_impassable_detects_weight_but_not_arrest() {
+        let cell = 100.0;
+        let rect = RegionShape::Rect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 100.0,
+            y1: 100.0,
+        };
+
+        let mut b = RegionField::builder();
+        b.add(&rect, RegionBehavior::Terrain, 2.0, cell);
+        assert!(
+            b.build().has_terrain_or_impassable(),
+            "terrain mult>1 counts"
+        );
+
+        let mut b = RegionField::builder();
+        b.add(&rect, RegionBehavior::Impassable, 1.0, cell);
+        assert!(b.build().has_terrain_or_impassable(), "impassable counts");
+
+        let mut b = RegionField::builder();
+        b.add(&rect, RegionBehavior::Arrest, 1.0, cell);
+        assert!(
+            !b.build().has_terrain_or_impassable(),
+            "arrest alone does not count"
+        );
+
+        let mut b = RegionField::builder();
+        b.add(&rect, RegionBehavior::Terrain, 1.0, cell);
+        assert!(
+            !b.build().has_terrain_or_impassable(),
+            "terrain mult==1 is a no-op, does not count"
+        );
+
+        assert!(
+            !RegionField::builder().build().has_terrain_or_impassable(),
+            "empty field"
+        );
+    }
 
     #[test]
     fn rect_rasterizes_covered_cell_centers() {
