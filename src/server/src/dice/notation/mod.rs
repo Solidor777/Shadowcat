@@ -28,7 +28,7 @@ impl Default for ParseContext {
     fn default() -> Self {
         ParseContext {
             mode: ModeKind::Total,
-            direction: Direction::HighWins,
+            direction: Direction::default(),
         }
     }
 }

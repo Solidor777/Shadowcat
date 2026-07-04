@@ -472,4 +472,19 @@ mod tests {
         );
         assert!(matches!(e, Err(ParseError::DuplicateSuccessRule)));
     }
+
+    #[test]
+    fn successcount_without_target_or_rule_errors() {
+        // Ambient SuccessCount with neither a cs/cf rule nor a t<N> target leaves
+        // no per-die comparator to build a SuccessRule from -- must hard-error
+        // rather than silently default (the (None, None) arm in `parse`).
+        let e = parse(
+            "5d10",
+            ParseContext {
+                mode: ModeKind::SuccessCount,
+                direction: Direction::HighWins,
+            },
+        );
+        assert!(matches!(e, Err(ParseError::Unexpected(_))));
+    }
 }
