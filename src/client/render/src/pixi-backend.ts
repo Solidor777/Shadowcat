@@ -255,19 +255,23 @@ export class PixiBackend implements DisplayBackend {
       const sprite = node.visual;
       const url = spec.visual.url;
       void Assets.load(url).then((texture) => {
-        if (this.tokens.get(id) === node && node.sourceKey === key) sprite.texture = texture;
+        if (this.tokens.get(id) === node && node.visual === sprite && node.sourceKey === key) sprite.texture = texture;
       });
     } else {
-      this.replaceVisualChild(node, new AnimatedSprite([Texture.EMPTY]));
+      // Hoist the narrowed "animated" variant into its own binding: `spec.visual` re-read inside
+      // an async closure loses the enclosing if/else narrowing (a fresh property read on a union),
+      // so a plain `spec.visual.fps` there does not typecheck without this.
+      const visual = spec.visual;
+      if (!(node.visual instanceof AnimatedSprite)) this.replaceVisualChild(node, new AnimatedSprite([Texture.EMPTY]));
       const sprite = node.visual as AnimatedSprite;
       sprite.autoUpdate = false; // driven by tickTokenAnimations, not Pixi's shared ticker
-      node.anim = { fps: spec.visual.fps, loop: spec.visual.loop, frameCount: 1, elapsedMs: 0 };
-      const source = spec.visual.source;
+      node.anim = { fps: visual.fps, loop: visual.loop, frameCount: 1, elapsedMs: 0 };
+      const source = visual.source;
       void this.loadAnimatedTextures(source).then((textures) => {
-        if (this.tokens.get(id) !== node || node.sourceKey !== key || textures.length === 0) return;
+        if (this.tokens.get(id) !== node || node.visual !== sprite || node.sourceKey !== key || textures.length === 0) return;
         sprite.textures = textures;
         sprite.gotoAndStop(0);
-        node.anim = { fps: spec.visual.kind === "animated" ? spec.visual.fps : 1, loop: spec.visual.kind === "animated" ? spec.visual.loop : false, frameCount: textures.length, elapsedMs: 0 };
+        node.anim = { fps: visual.fps, loop: visual.loop, frameCount: textures.length, elapsedMs: 0 };
       });
     }
     node.visual.width = spec.w;
