@@ -3,12 +3,20 @@ import { MockBackend } from "./index";
 
 test("MockBackend records token upserts and removals", () => {
   const b = new MockBackend();
-  b.setToken("t1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, url: "/a", borderColor: null, badges: [], shape: "square" });
-  expect(b.tokens.get("t1")).toEqual({ x: 0, y: 0, w: 100, h: 100, rotation: 0, url: "/a", borderColor: null, badges: [], shape: "square" });
-  b.setToken("t1", { x: 10, y: 0, w: 100, h: 100, rotation: 0, url: "/a", borderColor: null, badges: [], shape: "square" });
+  b.setToken("t1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", url: "/a" }, borderColor: null, badges: [], shape: "square" });
+  expect(b.tokens.get("t1")).toEqual({ x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", url: "/a" }, borderColor: null, badges: [], shape: "square" });
+  b.setToken("t1", { x: 10, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", url: "/a" }, borderColor: null, badges: [], shape: "square" });
   expect(b.tokens.get("t1")!.x).toBe(10);
   b.removeToken("t1");
   expect(b.tokens.has("t1")).toBe(false);
+});
+
+test("MockBackend records an animated token visual and accepts tickTokenAnimations calls", () => {
+  const b = new MockBackend();
+  const visual = { kind: "animated" as const, source: { type: "frames" as const, urls: ["/a", "/b"] }, fps: 8, loop: true };
+  b.setToken("t1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual, borderColor: null, badges: [], shape: "square" });
+  expect(b.tokens.get("t1")!.visual).toEqual(visual);
+  expect(() => b.tickTokenAnimations(16)).not.toThrow();
 });
 
 test("MockBackend records shape upserts/removals and the ephemeral overlay", () => {

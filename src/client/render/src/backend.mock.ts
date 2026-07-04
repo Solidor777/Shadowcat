@@ -59,6 +59,10 @@ export class MockBackend implements DisplayBackend {
   removeToken(id: string): void {
     this.tokens.delete(id);
   }
+  tickTokenAnimations(_dtMs: number): void {
+    // MockBackend records TokenNodeSpec.visual verbatim; frame-advance is real-AnimatedSprite
+    // state owned by PixiBackend only, so this is an intentional no-op in tests.
+  }
   setShape(id: string, spec: ShapeNodeSpec): void {
     this.shapes.set(id, spec);
   }

@@ -21,6 +21,8 @@
 
 Written mainline in this session (Sonnet 5, high effort) per user choice at the tier-switch checkpoint — the design was already fully locked and the decomposition below is mechanical, so a dedicated plan-writer subagent was not dispatched.
 
+**Dispatcher (SDD execution):** mainline in this session (user directive: "You are now the dispatcher") — no `sdd-dispatcher` delegation. Per project `CLAUDE.md`, the implementer/reviewer roles are the project's named agents, not the generic `sdd-*` set: implementer = `shadowcat-coder` (sonnet, effort medium; escalate to `shadowcat-coder-opus` on BLOCKED); per-task review = the `shadowcat-spec-reviewer` + `shadowcat-code-reviewer` pair (opus twins if findings read shallow/uncertain on a tough diff) run as the standard two-reviewer gate, per this plan's Global Constraints (no mandatory whole-branch buddy-check — design spec §9).
+
 ---
 
 ## Task 1: Core visual union types + per-token face field

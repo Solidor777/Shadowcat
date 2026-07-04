@@ -30,6 +30,9 @@ export interface DisplayBackend {
   setToken(id: string, spec: TokenNodeSpec): void;
   /** Remove a token render node. */
   removeToken(id: string): void;
+  /** Advance any tick-driven animated token visuals by `dtMs` (M10h). Called once per frame
+   * alongside the `startTicker` callback; a no-op backend when nothing has an `animated` visual. */
+  tickTokenAnimations(dtMs: number): void;
   /** Upsert a drawn shape node in `spec.layer` (drawings/templates reconcilers). */
   setShape(id: string, spec: ShapeNodeSpec): void;
   /** Remove a drawn shape node. */

@@ -1,7 +1,7 @@
-import { resolveTokenActor, resolveConditions, resolveTokenBox } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistrySystem } from "@shadowcat/core";
+import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistrySystem, AnimatedSource } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { TokenNodeSpec } from "./types";
+import type { TokenNodeSpec, ResolvedAnimatedSource } from "./types";
 import { parseColor } from "./geometry";
 import { TokenAnimator, type MoveSample } from "./token-animator";
 import type { EasingMode } from "./easing";
@@ -13,7 +13,6 @@ interface TokenSystem {
   w: number;
   h: number;
   rotation?: number;
-  visual?: { kind: string; asset: string };
 }
 
 /** Renders `doc_type:"token"` docs as backend token nodes, tweening transforms via a
@@ -110,6 +109,7 @@ export class TokenView {
 
   tick(dtMs: number): void {
     for (const id of this.animator.tick(dtMs)) this.push(id);
+    this.backend.tickTokenAnimations(dtMs);
   }
 
   /** Push a token to the backend with its latest visual + current (tweened) transform.
@@ -136,14 +136,22 @@ export class TokenView {
     if (t) this.backend.setToken(id, { ...spec, x: t.x, y: t.y, rotation: t.rotation });
   }
 
+  private resolveSource(source: AnimatedSource): ResolvedAnimatedSource {
+    return source.type === "frames"
+      ? { type: "frames", urls: source.frames.map((id) => this.assets.url(id)) }
+      : { type: "sheet", url: this.assets.url(source.asset), rows: source.rows, cols: source.cols, ...(source.count !== undefined ? { count: source.count } : {}) };
+  }
+
   private toSpec(doc: WireDocument): TokenNodeSpec | null {
     const s = doc.system as TokenSystem | undefined;
     if (!s) return null;
-    // Actor-backed tokens resolve their visual via the actor (+ overrides); raw tokens fall
-    // back to their own system.visual. Only image visuals render in M10a.
     const eff = resolveTokenActor(doc, this.store);
-    const visual = eff?.visual ?? s.visual;
-    if (visual?.kind !== "image") return null;
+    const visual = resolveTokenVisual(doc, this.store, eff);
+    if (!visual) return null;
+    const resolvedVisual: TokenNodeSpec["visual"] =
+      visual.kind === "image"
+        ? { kind: "image", url: this.assets.url(visual.asset) }
+        : { kind: "animated", source: this.resolveSource(visual.source), fps: visual.fps, loop: visual.loop };
     // Faction border color resolves through the world faction registry; null = no border.
     let borderColor: number | null = null;
     if (eff?.faction) {
@@ -156,7 +164,7 @@ export class TokenView {
     const box = resolveTokenBox(doc, this.store, eff);
     return {
       x: box.x, y: box.y, w: box.w, h: box.h, rotation: s.rotation ?? 0,
-      url: this.assets.url(visual.asset),
+      visual: resolvedVisual,
       borderColor,
       badges,
       shape: box.shape,

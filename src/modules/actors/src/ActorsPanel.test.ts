@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildActorDoc, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildActorDoc, buildTokenFromActor, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { TokenSelection } from "@shadowcat/ui-kit";
 import ActorsPanel from "./ActorsPanel.svelte";
 
 // Suppress listAssets fetch: ActorsPanel calls listAssets($effect) which hits /api/... in jsdom.
@@ -247,5 +248,185 @@ describe("ActorsPanel — darkvision authoring", () => {
     await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
     await fireEvent.click(screen.getByText("actors.create"));
     expect(dispatchIntent.mock.calls[0][0][0].doc.system.vision).toBeUndefined();
+  });
+});
+
+describe("ActorsPanel — visual kind editor", () => {
+  it("defaults to the image kind and creates an image visual as before", async () => {
+    const dispatchIntent = vi.fn();
+    const { listAssets } = await import("@shadowcat/core");
+    vi.mocked(listAssets).mockResolvedValue([
+      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
+    ]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+    });
+    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
+    await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Ogre" } });
+    await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
+    await fireEvent.click(screen.getByText("actors.create"));
+    const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
+    const op = ops[0] as { doc: WireDocument };
+    expect(op.doc.system).toMatchObject({ visual: { kind: "image", asset: "asset-1" } });
+  });
+
+  it("switching to the animated kind and choosing frames + fps creates an animated visual", async () => {
+    const dispatchIntent = vi.fn();
+    const { listAssets } = await import("@shadowcat/core");
+    vi.mocked(listAssets).mockResolvedValue([
+      { id: "f1", world_id: "w1", original_name: "f1.png", content_type: "image/png" } as never,
+      { id: "f2", world_id: "w1", original_name: "f2.png", content_type: "image/png" } as never,
+    ]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+    });
+    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "f1.png" }).length).toBeGreaterThan(0));
+    await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Wisp" } });
+    await fireEvent.change(screen.getByLabelText("actors.visualKind"), { target: { value: "animated" } });
+    await fireEvent.click(screen.getByRole("button", { name: "f1.png" }));
+    await fireEvent.click(screen.getByRole("button", { name: "f2.png" }));
+    await fireEvent.change(screen.getByLabelText("actors.animFps"), { target: { value: "10" } });
+    await fireEvent.click(screen.getByText("actors.create"));
+    const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
+    const op = ops[0] as { doc: WireDocument };
+    expect(op.doc.system).toMatchObject({ visual: { kind: "animated", source: { type: "frames", frames: ["f1", "f2"] }, fps: 10, loop: true } });
+  });
+
+  it("switching to the faces kind with two image faces + a default creates a faces visual", async () => {
+    const dispatchIntent = vi.fn();
+    const { listAssets } = await import("@shadowcat/core");
+    vi.mocked(listAssets).mockResolvedValue([
+      { id: "n1", world_id: "w1", original_name: "normal.png", content_type: "image/png" } as never,
+      { id: "b1", world_id: "w1", original_name: "bloodied.png", content_type: "image/png" } as never,
+    ]);
+    const { container } = render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+    });
+    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "normal.png" }).length).toBeGreaterThan(0));
+    await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Goblin" } });
+    await fireEvent.change(screen.getByLabelText("actors.visualKind"), { target: { value: "faces" } });
+    await fireEvent.click(screen.getByText("actors.faceAdd"));
+    await fireEvent.click(screen.getByText("actors.faceAdd"));
+    const nameInputs = screen.getAllByLabelText("actors.faceName");
+    await fireEvent.input(nameInputs[0], { target: { value: "normal" } });
+    await fireEvent.input(nameInputs[1], { target: { value: "bloodied" } });
+    // Each face row renders its own asset-picker instance, so scope the pick to that
+    // row's DOM subtree (`.face-row`) rather than a global getAllByRole index — a
+    // global index picks the first occurrence across ALL rows' pickers, not "this row's".
+    const faceRowEls = container.querySelectorAll(".face-row");
+    const normalPickBtn = within(faceRowEls[0] as HTMLElement).getByRole("button", { name: "normal.png" });
+    await fireEvent.click(normalPickBtn);
+    const bloodiedPickBtn = within(faceRowEls[1] as HTMLElement).getByRole("button", { name: "bloodied.png" });
+    await fireEvent.click(bloodiedPickBtn);
+    await fireEvent.change(screen.getByLabelText("actors.faceDefault"), { target: { value: "normal" } });
+    await fireEvent.click(screen.getByText("actors.create"));
+    const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
+    const op = ops[0] as { doc: WireDocument };
+    expect(op.doc.system).toMatchObject({
+      visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } }, default: "normal" },
+    });
+  });
+
+  it("an incomplete face row (kind image, no asset picked) keeps the create button disabled", async () => {
+    const dispatchIntent = vi.fn();
+    const { listAssets } = await import("@shadowcat/core");
+    vi.mocked(listAssets).mockResolvedValue([
+      { id: "n1", world_id: "w1", original_name: "normal.png", content_type: "image/png" } as never,
+    ]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+    });
+    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "normal.png" }).length).toBeGreaterThan(0));
+    await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Goblin" } });
+    await fireEvent.change(screen.getByLabelText("actors.visualKind"), { target: { value: "faces" } });
+    await fireEvent.click(screen.getByText("actors.faceAdd"));
+    const nameInputs = screen.getAllByLabelText("actors.faceName");
+    await fireEvent.input(nameInputs[0], { target: { value: "normal" } });
+    // Leave the row on kind "image" with no asset picked, then set defaultFace.
+    await fireEvent.change(screen.getByLabelText("actors.faceDefault"), { target: { value: "normal" } });
+
+    const submitBtn = screen.getByText("actors.create");
+    expect((submitBtn as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(submitBtn);
+    expect(dispatchIntent).not.toHaveBeenCalled();
+  });
+
+  it("duplicate face-row names keep the create button disabled", async () => {
+    const dispatchIntent = vi.fn();
+    const { listAssets } = await import("@shadowcat/core");
+    vi.mocked(listAssets).mockResolvedValue([
+      { id: "n1", world_id: "w1", original_name: "normal.png", content_type: "image/png" } as never,
+      { id: "b1", world_id: "w1", original_name: "bloodied.png", content_type: "image/png" } as never,
+    ]);
+    const { container } = render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+    });
+    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "normal.png" }).length).toBeGreaterThan(0));
+    await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Goblin" } });
+    await fireEvent.change(screen.getByLabelText("actors.visualKind"), { target: { value: "faces" } });
+    await fireEvent.click(screen.getByText("actors.faceAdd"));
+    await fireEvent.click(screen.getByText("actors.faceAdd"));
+    const nameInputs = screen.getAllByLabelText("actors.faceName");
+    // Both rows get the SAME name — this must be rejected, not silently collapsed.
+    await fireEvent.input(nameInputs[0], { target: { value: "normal" } });
+    await fireEvent.input(nameInputs[1], { target: { value: "normal" } });
+    const faceRowEls = container.querySelectorAll(".face-row");
+    const normalPickBtn = within(faceRowEls[0] as HTMLElement).getByRole("button", { name: "normal.png" });
+    await fireEvent.click(normalPickBtn);
+    const bloodiedPickBtn = within(faceRowEls[1] as HTMLElement).getByRole("button", { name: "bloodied.png" });
+    await fireEvent.click(bloodiedPickBtn);
+    await fireEvent.change(screen.getByLabelText("actors.faceDefault"), { target: { value: "normal" } });
+
+    const submitBtn = screen.getByText("actors.create");
+    expect((submitBtn as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(submitBtn);
+    expect(dispatchIntent).not.toHaveBeenCalled();
+  });
+});
+
+describe("ActorsPanel — per-token face swap", () => {
+  function facesActor(): WireDocument {
+    return buildActorDoc(
+      "w1",
+      { name: "Goblin", displayName: "Goblin", visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } }, default: "normal" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+      "act1",
+    );
+  }
+
+  it("shows no face palette when no token is selected", async () => {
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(facesActor()), dispatchIntent: vi.fn(), tokenSelection: new TokenSelection(), canEdit: () => true }),
+    });
+    expect(screen.queryByText("actors.faceSwapHint")).toBeNull();
+  });
+
+  it("shows the face palette for a selected token whose visual is 'faces', not for a plain image token", async () => {
+    const actor = facesActor();
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    const store = storeWith(actor, token);
+    const tokenSelection = new TokenSelection();
+    tokenSelection.set(["tok1"]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent: vi.fn(), tokenSelection, canEdit: () => true }),
+    });
+    expect(screen.getByText("actors.faceSwapHint")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "normal" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "bloodied" })).toBeTruthy();
+  });
+
+  it("clicking a face dispatches a /system/face update reading the raw stored value for `old`", async () => {
+    const dispatchIntent = vi.fn();
+    const actor = facesActor();
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    const store = storeWith(actor, token);
+    const tokenSelection = new TokenSelection();
+    tokenSelection.set(["tok1"]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent, tokenSelection, canEdit: () => true }),
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "bloodied" }));
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "tok1", changes: [{ path: "/system/face", old: null, new: "bloodied" }] },
+    ]);
   });
 });

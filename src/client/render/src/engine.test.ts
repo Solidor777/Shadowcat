@@ -366,11 +366,11 @@ test("reconcileNow re-resolves token images (AssetChanged path)", () => {
     } }],
   });
   engine.start();
-  const before = backend.tokens.get("t1")!.url;
+  const before = backend.tokens.get("t1")!.visual;
   assets.onAssetChanged({ uuid: "i1", op: "replaced" }); // cache-bust, no store change
   engine.reconcileNow();
-  expect(backend.tokens.get("t1")!.url).not.toBe(before);
-  expect(backend.tokens.get("t1")!.url).toBe(assets.url("i1"));
+  expect(backend.tokens.get("t1")!.visual).not.toEqual(before);
+  expect((backend.tokens.get("t1")!.visual as { kind: "image"; url: string }).url).toBe(assets.url("i1"));
 });
 
 test("addPing renders an expanding ring driven by the ticker", () => {

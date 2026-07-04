@@ -136,7 +136,7 @@ export interface ResolvedSceneSettings {
 }
 
 /** A token's transform + visual (M8d §4). `(x,y)` is the token CENTER. `visual` is the
- * forward-looking seam — only `kind:"image"` ships in M8d. */
+ * forward-looking seam (M10h: image, animated, or multi-face union — see `TokenVisual`). */
 export interface TokenSystem {
   x: number;
   y: number;
@@ -144,19 +144,45 @@ export interface TokenSystem {
   h: number;
   rotation: number;
   /** Set on raw (actorless) tokens; actor-backed tokens resolve their visual via the actor. */
-  visual?: { kind: "image"; asset: string };
+  visual?: TokenVisual;
   /** Linked token: the shared actor's id (null/absent ⇒ instanced, see `embedded.actor`). */
   actor_id?: string | null;
   /** Linked-only per-token override whitelist (see {@link TokenOverrides}). */
   overrides?: TokenOverrides;
+  /** Active face name when the effective visual is a `faces` union member (M10h); token-local
+   * always (not part of `overrides` — it selects INTO the actor's faces map, not an override
+   * of actor-data). Ignored when the effective visual isn't `faces`. */
+  face?: string;
 }
 
-/** An actor's appearance + defaults (M10a). Stats/sheet are M12; this is only what backs a
- * token. The server is structural-only — this `system` shape is the client's interpretation. */
-export interface ActorVisual {
-  kind: "image";
-  asset: string;
-}
+/** The two kinds the render layer actually draws — the render/resolution boundary (M10h). */
+export type RenderVisual =
+  | { kind: "image"; asset: string }
+  | { kind: "animated"; source: AnimatedSource; fps: number; loop: boolean };
+
+/** An animated visual's frame source: an ordered list of individually-uploaded assets, or one
+ * grid-sliced sheet asset. No packed-atlas-JSON format yet (M10h design spec §7). */
+export type AnimatedSource =
+  | { type: "frames"; frames: string[] }
+  | { type: "sheet"; asset: string; rows: number; cols: number; count?: number };
+
+/** A face's own visual. Deliberately never itself `{kind:"faces"}` — no nesting — so an animated
+ * face falls out of the same RenderVisual boundary with no separate mechanism. */
+export type FaceVisual = RenderVisual;
+
+/** An actor's (or a linked token's override) declared visual: a plain RenderVisual, or a
+ * multi-face union resolved per-token by `resolveTokenVisual` (M10h). Client-owned, opaque
+ * `system`-body JSON — no ts-rs type, no server change (mirrors `movementModel`/`bounds`). */
+export type TokenVisual =
+  | RenderVisual
+  | {
+      kind: "faces";
+      faces: Record<string, FaceVisual>;
+      default: string;
+      /** Optional conditionId -> face name map; the first match (in the token's effective
+       * `conditions[]` order) wins over `default`, but never over a manual `token.system.face`. */
+      faceMap?: Record<string, string>;
+    };
 
 /** A per-actor or per-token vision assignment: which mode (by id) + effective range in grid cells.
  * References a VisionMode in the world's vision-modes registry by id. */
@@ -165,7 +191,7 @@ export interface VisionAssignment { mode: string; range: number; }
 export interface ActorSystem {
   name: string;
   displayName: string;
-  visual: ActorVisual;
+  visual: TokenVisual;
   size: { w: number; h: number };
   shape: "square" | "circle";
   faction: string | null;
@@ -179,7 +205,7 @@ export interface ActorSystem {
 /** The per-token override whitelist for a linked token (M10a; shape added M10d). */
 export interface TokenOverrides {
   name?: string;
-  visual?: ActorVisual;
+  visual?: TokenVisual;
   size?: { w: number; h: number };
   shape?: "square" | "circle";
   /** Per-token vision override: replaces the actor's vision[] entirely when present. */
