@@ -2,7 +2,7 @@
   import { createSubscriber } from "svelte/reactivity";
   import type { Asset } from "@shadowcat/types";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildActorDoc, setNameHidden, actorDisplayName, listAssets, type ActorSystem, type WireDocument, type FactionRegistrySystem, type Faction, type TokenVisual, type FaceVisual, type AnimatedSource, type ConditionRegistrySystem, type Condition } from "@shadowcat/core";
+  import { buildActorDoc, setNameHidden, actorDisplayName, listAssets, resolveTokenActor, type ActorSystem, type WireDocument, type FactionRegistrySystem, type Faction, type TokenVisual, type FaceVisual, type AnimatedSource, type ConditionRegistrySystem, type Condition } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -79,15 +79,15 @@
   });
 
   /** The actor's declared faces map, if the selected token's actor visual is `faces` — drives
-   * whether the palette shows at all (a plain image/animated token has nothing to swap). */
+   * whether the palette shows at all (a plain image/animated token has nothing to swap). Routed
+   * through `resolveTokenActor`, the single read-through every token-decoration consumer uses,
+   * so a per-token `overrides.visual` is honored rather than bypassed. */
   const selectedFaceNames = $derived.by((): string[] => {
     subscribe();
     const tok = selectedFaceToken;
     if (!tok) return [];
-    const linkedActorId = (tok.system as { actor_id?: string | null } | undefined)?.actor_id;
-    const actorDoc = linkedActorId ? ctx.documents.get(linkedActorId) : tok.embedded?.actor?.[0];
-    const visual = (actorDoc?.system as { visual?: TokenVisual } | undefined)?.visual;
-    return visual?.kind === "faces" ? Object.keys(visual.faces) : [];
+    const eff = resolveTokenActor(tok, ctx.documents);
+    return eff?.visual.kind === "faces" ? Object.keys(eff.visual.faces) : [];
   });
 
   /** Reads the RAW currently-stored face (never a resolved/defaulted value) — this is the
@@ -383,6 +383,30 @@
     flex-direction: column;
     gap: var(--space-1);
     padding: var(--space-1);
+  }
+  .hint {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.85em;
+  }
+  .face-palette {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+  }
+  .face-palette button {
+    min-width: 44px;
+    min-height: 44px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--surface-raised);
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+  .face-palette button.active {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--on-accent);
   }
   .list {
     list-style: none;
