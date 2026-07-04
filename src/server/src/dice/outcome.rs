@@ -46,8 +46,8 @@ impl RawRoll {
 pub struct DieRecord {
     pub id: DieId,
     /// Index of the `Dice` AST node that produced this die, in left-to-right walk
-    /// order. Lets Sum-mode fold per-group without positional heuristics over a
-    /// flattened record list (`eval::sum::evaluate_sum`).
+    /// order. Lets Total-mode fold per-group without positional heuristics over a
+    /// flattened record list (`eval::sum::evaluate_total`).
     pub group_index: usize,
     pub natural: i32,
     pub value: i32,

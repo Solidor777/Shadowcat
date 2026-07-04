@@ -17,7 +17,7 @@ const CHAIN_CAP: usize = 100;
 ///
 /// `group_index` identifies which `Dice` AST node this call is resolving (assigned
 /// by the caller in AST left-to-right order); it is stamped onto every `DieRecord`
-/// produced here, including exploded/penetrated children, so Sum-mode evaluation
+/// produced here, including exploded/penetrated children, so Total-mode evaluation
 /// can fold per-group without positional heuristics.
 pub fn resolve_group(
     group: &DiceGroup,

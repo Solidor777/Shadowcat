@@ -17,7 +17,7 @@ pub fn roll(spec: &RollSpec, rng: &mut dyn RngSource) -> RawRoll {
 }
 
 /// `group_index` increments once per `Dice` node in AST left-to-right order —
-/// the same order `eval::sum::evaluate_sum` walks, so a `DieRecord`'s stamped
+/// the same order `eval::sum::evaluate_total` walks, so a `DieRecord`'s stamped
 /// `group_index` always matches the `Dice` node that produced it.
 fn roll_expr(expr: &Expr, rng: &mut dyn RngSource, raws: &mut RawRoll, group_index: &mut usize) {
     match expr {
