@@ -499,11 +499,17 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 - Realizes the full token-visual architecture seeded in M8 (multi-face, animated, and procedurally-generated visuals; fx; emotes) on top of M8d's sprite/tween/ticker foundation.
 
 ### M11 · Dice + chat
-- From-scratch dice engine (notation, modifiers, advantage/disadvantage, DCs, success counting, tiers); hook integration; sequenced results.
-- Chat log; whispers (user-to-user / GM-only).
+Two subsystems (dice → chat; chat's roll integration depends on dice). Specs:
+[`superpowers/specs/2026-07-03-m11-dice-engine-design.md`](superpowers/specs/2026-07-03-m11-dice-engine-design.md)
++ [`superpowers/specs/2026-07-03-m11-chat-system-design.md`](superpowers/specs/2026-07-03-m11-chat-system-design.md).
+Decomposed **M11a–d**:
+- **M11a — Dice engine core:** server-authoritative Rust evaluator over a declarative struct-canonical `RollSpec`; seeded-noise RNG (deterministic, no `rand`); rpg-dice-roller-superset notation; Sum + SuccessCount modes; `roll`/`evaluate`/`recalculate`; pure library (tests only). Plan: [`superpowers/plans/2026-07-03-m11a-dice-engine-core.md`](superpowers/plans/2026-07-03-m11a-dice-engine-core.md).
+- **M11b — System rules:** the nine declarative rules — expertise DP (provably-optimal, lexicographic), crit events + counters, Tiered mode + ladders, labeled dice, custom-face dice, `direction` global flip; global `direction`/`difficulty` read by all modes (difficulty is two-dimensional in SuccessCount).
+- **M11c — Chat core (headless):** messages as sequenced documents on the per-recipient redaction path; module-seeded channels; server-authoritative input→sanitization pipeline (structured safe content model); new fail-closed whisper recipient-allowlist tier; user + optional actor owner (linked or instanced).
+- **M11d — Default display modules:** independently-replaceable composer + message-card contribution modules; text enrichment (Markdown/HTML/images/links/emails, GM-gated, no embedded CSS); emotes; roll integration; internal doc links; SSRF-guarded server-side link previews.
 
 ### M12 · Minimal default modules
-- Actor / scene browsers, generic actor / item sheets, chat panel — built against the public API, each treated as an API bug report.
+- Actor / scene browsers, generic actor / item sheets — built against the public API, each treated as an API bug report. (Chat panel superseded: the baseline chat display modules ship in **M11d**.)
 
 ### M12.5 · Backups + snapshot restore (gate precondition)
 - Basic world backup (SQLite snapshot / per-world export) + restore path; minimal manual scheduling. Distinct from Phase-4 backup *automation*.
