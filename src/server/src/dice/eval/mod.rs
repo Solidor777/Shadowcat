@@ -5,6 +5,7 @@ use crate::dice::spec::{DieKind, Expr, Mode, RollSpec};
 
 pub mod classify;
 pub mod crit;
+pub mod expertise;
 pub mod groups;
 pub mod success;
 pub mod sum;
