@@ -13,4 +13,8 @@ pub enum ParseError {
     /// constructed with a degenerate (non-positive-span) range; `rng::roll_uniform`
     /// only `debug_assert!`s that invariant, which is a no-op in release builds.
     InvalidDieSides(i32),
+    /// A second `cs`/`cf` modifier appeared anywhere in the expression. `success`
+    /// is shared parser state (one `RollSpec`, not per-`DiceGroup`), so a silent
+    /// last-write-wins overwrite would discard the first rule with no error.
+    DuplicateSuccessRule,
 }

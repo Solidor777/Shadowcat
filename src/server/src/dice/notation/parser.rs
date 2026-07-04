@@ -173,12 +173,18 @@ impl P {
                         }
                         "cs" => {
                             let (comp, target) = self.cmp_target_required()?;
+                            if self.success.is_some() {
+                                return Err(ParseError::DuplicateSuccessRule);
+                            }
                             self.success = Some(SuccessRule { comp, target });
                         }
                         "cf" => {
                             // Failure-counting parsed as success on the inverted comparator
                             // (single count path in M11a; dedicated fail-count is M11b).
                             let (comp, target) = self.cmp_target_required()?;
+                            if self.success.is_some() {
+                                return Err(ParseError::DuplicateSuccessRule);
+                            }
                             self.success = Some(SuccessRule {
                                 comp: invert(comp),
                                 target,
@@ -270,6 +276,17 @@ mod tests {
             })
         );
         assert_eq!(spec.expr, dice(5, 1, 10, vec![]));
+    }
+
+    #[test]
+    fn rejects_duplicate_success_rule_across_groups() {
+        // `success` is shared parser state (one RollSpec, not per-DiceGroup); a
+        // second cs/cf anywhere in the expression must error rather than silently
+        // overwrite the first rule (last-write-wins data loss).
+        match parse("4d6cs>=5+2d8cs>=3") {
+            Err(ParseError::DuplicateSuccessRule) => {}
+            other => panic!("expected DuplicateSuccessRule, got {other:?}"),
+        }
     }
 
     #[test]
