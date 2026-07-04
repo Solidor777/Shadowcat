@@ -752,9 +752,20 @@ Decomposed **M11a–d**:
   > overlapping crit-success/crit-fail intentionally both-fireable); unified `t<N>` notation +
   > ambient `ParseContext` (mode/direction-derived comparator). Plan:
   > [`superpowers/plans/2026-07-04-m11b-1-globals-classification-crit.md`](superpowers/plans/2026-07-04-m11b-1-globals-classification-crit.md).
-  > Expertise DP (M11b-2) and labeled/custom-face dice (M11b-3) not yet started.
+  > **M11b-2 DONE** (branch `m11b-2-expertise-dp`) — provably-optimal expertise-point DP allocator:
+  > `SuccessConfig.expertise: u32` / `DieRecord.expertise: i32`; `eval::expertise::{adjust,
+  > die_values, run_dp, allocate}` — a bounded lexicographic knapsack DP (`O(N·E²)`) maximizing the
+  > CLAMPED (visible) net successes with a counter-max fallback in the all-failed region, tie-broken
+  > deterministically (reversed-lexicographically-smallest allocation, refined during the mandatory
+  > buddy-check from the original plan's forced-full-spend characterization), wired into
+  > `evaluate_success` as a value-mutating pre-pass before the sealed M11b-1 counting logic;
+  > `e<N>` notation (roll-level, mode-lenient — silently discarded under Total, never a parse
+  > error). Mandatory brute-force differential oracle (4000-case corpus) proved DP==oracle on both
+  > objective value AND exact per-die allocation — no assertion relaxed. Design:
+  > [`superpowers/specs/2026-07-04-m11b-2-expertise-dp-design.md`](superpowers/specs/2026-07-04-m11b-2-expertise-dp-design.md).
+  > Plan: [`superpowers/plans/2026-07-04-m11b-2-expertise-dp.md`](superpowers/plans/2026-07-04-m11b-2-expertise-dp.md).
+  > Labeled/custom-face dice (M11b-3) not yet started.
   Spec: [`superpowers/specs/2026-07-04-m11b-system-rules-design.md`](superpowers/specs/2026-07-04-m11b-system-rules-design.md).
-  - **M11b-2 — Expertise DP:** provably-optimal, lexicographic dynamic-programming solve. Highest-risk piece of the engine; standing buddy-check + differential-oracle directive.
   - **M11b-3 — Labeled + custom-face dice:** labeled dice, custom-face (symbolic) dice.
 - **M11c — Chat core (headless):** messages as sequenced documents on the per-recipient redaction path; module-seeded channels; server-authoritative input→sanitization pipeline (structured safe content model); new fail-closed whisper recipient-allowlist tier; user + optional actor owner (linked or instanced).
 - **M11d — Default display modules:** independently-replaceable composer + message-card contribution modules; text enrichment (Markdown/HTML/images/links/emails, GM-gated, no embedded CSS); emotes; roll integration; internal doc links; SSRF-guarded server-side link previews.
