@@ -1,7 +1,30 @@
-import { Application, BlurFilter, Container, Graphics, RenderTexture, Sprite, Text, Assets, type Filter } from "pixi.js";
+import { Application, BlurFilter, Container, Graphics, RenderTexture, Sprite, AnimatedSprite, Texture, Rectangle, Text, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend } from "./backend";
 import type { LightingFrame } from "./lighting";
-import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point, ResolvedAnimatedSource } from "./types";
+import { computeAnimatedFrame } from "./token-animation";
+
+/** Per-token render state (M10h). `container` is the outer, non-rotating node (position = token
+ * center; badges are its direct children, so they stay upright); `visualContainer` rotates with
+ * the token and holds the art + border. `sourceKey` guards visual (re)creation against a
+ * tweening token's ~60x/s re-push with an unchanged visual. `anim` is present only while `visual`
+ * is an AnimatedSprite. */
+interface TokenNode {
+  container: Container;
+  visualContainer: Container;
+  visual: Sprite | AnimatedSprite;
+  border: Graphics;
+  badges: Text[];
+  badgeKey: string;
+  sourceKey: string | null;
+  anim: { fps: number; loop: boolean; frameCount: number; elapsedMs: number } | null;
+}
+
+/** Identity key for a `TokenNodeSpec.visual` — equal specs must produce an equal key so a
+ * tweening token's re-push (same visual, new transform) skips texture (re)loading. */
+function visualSourceKey(v: TokenNodeSpec["visual"]): string {
+  return v.kind === "image" ? `image:${v.url}` : `animated:${JSON.stringify(v.source)}:${v.fps}:${v.loop}`;
+}
 
 /** The real DisplayBackend over pixi.js v8. The only GL-touching module (kept out
  * of unit tests; covered by Playwright). Layer containers parent under one `world`
@@ -35,16 +58,7 @@ export class PixiBackend implements DisplayBackend {
    * `lighting` container, which carries a BlurFilter to soften band/edge boundaries. */
   private readonly lightingGraphics = new Graphics();
   private readonly shapes = new Map<string, Graphics>();
-  private readonly tokens = new Map<string, Sprite>();
-  /** Last-loaded image URL per token, so a tweening token doesn't reload each frame. */
-  private readonly tokenUrls = new Map<string, string>();
-  /** Faction border outline per token (absent when the token has no faction color). */
-  private readonly tokenBorders = new Map<string, Graphics>();
-  /** Condition badge glyph nodes per token (upright; absent when the token has no conditions). */
-  private readonly tokenBadges = new Map<string, Text[]>();
-  /** Last-rendered badge glyph set per token, so a tweening token (re-pushed ~60×/s with the same
-   * glyphs) repositions existing Text nodes instead of reallocating them each frame. */
-  private readonly tokenBadgeKeys = new Map<string, string>();
+  private readonly tokens = new Map<string, TokenNode>();
   private background: Sprite | null = null;
   private backgroundUrl: string | null = null;
   /** Monotonic counter disambiguating concurrent background loads. */
@@ -206,99 +220,135 @@ export class PixiBackend implements DisplayBackend {
   }
 
   setToken(id: string, spec: TokenNodeSpec): void {
-    let sprite = this.tokens.get(id);
-    if (!sprite) {
-      sprite = new Sprite();
-      sprite.anchor.set(0.5); // (x,y) is the token center
-      this.tokens.set(id, sprite);
-      this.layers.get("tokens")?.addChild(sprite);
-    }
-    sprite.position.set(spec.x, spec.y);
-    sprite.width = spec.w;
-    sprite.height = spec.h;
-    sprite.angle = spec.rotation;
-    // Faction outline: a stroked rect centered on the token, tracking its transform.
-    let border = this.tokenBorders.get(id);
-    if (spec.borderColor === null) {
-      if (border) {
-        border.destroy();
-        this.tokenBorders.delete(id);
-      }
+    let node = this.tokens.get(id);
+    if (!node) node = this.createTokenNode(id);
+    node.container.position.set(spec.x, spec.y);
+    node.visualContainer.angle = spec.rotation; // degrees; rotates art + border, not badges
+    this.updateTokenVisual(id, node, spec);
+    this.updateTokenBorder(node, spec);
+    this.updateTokenBadges(node, spec);
+  }
+
+  private createTokenNode(id: string): TokenNode {
+    const container = new Container();
+    const visualContainer = new Container();
+    const visual = new Sprite();
+    visual.anchor.set(0.5); // (x,y) is the token center
+    const border = new Graphics();
+    visualContainer.addChild(visual, border);
+    container.addChild(visualContainer);
+    this.layers.get("tokens")?.addChild(container);
+    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null };
+    this.tokens.set(id, node);
+    return node;
+  }
+
+  private updateTokenVisual(id: string, node: TokenNode, spec: TokenNodeSpec): void {
+    const key = visualSourceKey(spec.visual);
+    node.visual.width = spec.w;
+    node.visual.height = spec.h;
+    if (node.sourceKey === key) return; // unchanged visual: a tweening token's transform-only re-push
+    node.sourceKey = key;
+    if (spec.visual.kind === "image") {
+      if (node.visual instanceof AnimatedSprite) this.replaceVisualChild(node, new Sprite());
+      node.anim = null;
+      const sprite = node.visual;
+      const url = spec.visual.url;
+      void Assets.load(url).then((texture) => {
+        if (this.tokens.get(id) === node && node.sourceKey === key) sprite.texture = texture;
+      });
     } else {
-      if (!border) {
-        border = new Graphics();
-        this.tokenBorders.set(id, border);
-        this.layers.get("tokens")?.addChild(border);
-      }
-      const hw = spec.w / 2;
-      const hh = spec.h / 2;
-      border.clear();
-      if (spec.shape === "circle") {
-        border.ellipse(0, 0, hw, hh).stroke({ width: 3, color: spec.borderColor });
-      } else {
-        border.rect(-hw, -hh, spec.w, spec.h).stroke({ width: 3, color: spec.borderColor });
-      }
-      border.position.set(spec.x, spec.y);
-      border.angle = spec.rotation; // degrees, like the sprite
-    }
-    // Condition badges: upright glyph chips along the token's top edge, tracking its position
-    // (not rotation — status markers stay upright). Glyph nodes are rebuilt only when the glyph
-    // set changes; a transform-only re-push (tweening token, ~60×/s) just repositions them — the
-    // same alloc-avoidance the URL guard gives the sprite.
-    const size = Math.max(12, Math.min(spec.w, spec.h) * 0.28);
-    const place = (txt: Text, i: number): void => {
-      txt.position.set(spec.x - spec.w / 2 + size / 2 + i * (size + 2), spec.y - spec.h / 2 + size / 2);
-    };
-    const badgeKey = spec.badges.join("");
-    const existing = this.tokenBadges.get(id);
-    if (existing && this.tokenBadgeKeys.get(id) === badgeKey) {
-      existing.forEach(place); // glyphs unchanged: reposition only
-    } else {
-      if (existing) for (const b of existing) b.destroy();
-      if (spec.badges.length === 0) {
-        this.tokenBadges.delete(id);
-        this.tokenBadgeKeys.delete(id);
-      } else {
-        const nodes: Text[] = [];
-        spec.badges.forEach((glyph, i) => {
-          const txt = new Text({ text: glyph, style: { fontSize: size, fontFamily: "sans-serif" } });
-          txt.anchor.set(0.5);
-          place(txt, i);
-          this.layers.get("tokens")?.addChild(txt);
-          nodes.push(txt);
-        });
-        this.tokenBadges.set(id, nodes);
-        this.tokenBadgeKeys.set(id, badgeKey);
-      }
-    }
-    // Only (re)load on a URL change — a tweening token re-pushes ~60×/s with the same url.
-    if (this.tokenUrls.get(id) !== spec.url) {
-      this.tokenUrls.set(id, spec.url);
-      void Assets.load(spec.url).then((texture) => {
-        // Bail if the sprite was removed or re-textured while loading.
-        if (this.tokens.get(id) === sprite && this.tokenUrls.get(id) === spec.url) sprite.texture = texture;
+      this.replaceVisualChild(node, new AnimatedSprite([Texture.EMPTY]));
+      const sprite = node.visual as AnimatedSprite;
+      sprite.autoUpdate = false; // driven by tickTokenAnimations, not Pixi's shared ticker
+      node.anim = { fps: spec.visual.fps, loop: spec.visual.loop, frameCount: 1, elapsedMs: 0 };
+      const source = spec.visual.source;
+      void this.loadAnimatedTextures(source).then((textures) => {
+        if (this.tokens.get(id) !== node || node.sourceKey !== key || textures.length === 0) return;
+        sprite.textures = textures;
+        sprite.gotoAndStop(0);
+        node.anim = { fps: spec.visual.kind === "animated" ? spec.visual.fps : 1, loop: spec.visual.kind === "animated" ? spec.visual.loop : false, frameCount: textures.length, elapsedMs: 0 };
       });
     }
+    node.visual.width = spec.w;
+    node.visual.height = spec.h;
+  }
+
+  private replaceVisualChild(node: TokenNode, next: Sprite | AnimatedSprite): void {
+    next.anchor.set(0.5);
+    const i = node.visualContainer.getChildIndex(node.visual);
+    node.visualContainer.removeChild(node.visual);
+    node.visual.destroy();
+    node.visualContainer.addChildAt(next, i);
+    node.visual = next;
+  }
+
+  private async loadAnimatedTextures(source: ResolvedAnimatedSource): Promise<Texture[]> {
+    if (source.type === "frames") {
+      if (source.urls.length === 0) return [];
+      return Promise.all(source.urls.map((url) => Assets.load<Texture>(url)));
+    }
+    if (!Number.isInteger(source.rows) || source.rows <= 0 || !Number.isInteger(source.cols) || source.cols <= 0) return [];
+    const sheet = await Assets.load<Texture>(source.url);
+    const frameW = sheet.width / source.cols;
+    const frameH = sheet.height / source.rows;
+    const total = source.count !== undefined ? Math.min(source.count, source.rows * source.cols) : source.rows * source.cols;
+    const frames: Texture[] = [];
+    for (let i = 0; i < total; i++) {
+      const col = i % source.cols;
+      const row = Math.floor(i / source.cols);
+      frames.push(new Texture({ source: sheet.source, frame: new Rectangle(col * frameW, row * frameH, frameW, frameH) }));
+    }
+    return frames;
+  }
+
+  private updateTokenBorder(node: TokenNode, spec: TokenNodeSpec): void {
+    const hw = spec.w / 2;
+    const hh = spec.h / 2;
+    node.border.clear();
+    if (spec.borderColor === null) return;
+    if (spec.shape === "circle") node.border.ellipse(0, 0, hw, hh).stroke({ width: 3, color: spec.borderColor });
+    else node.border.rect(-hw, -hh, spec.w, spec.h).stroke({ width: 3, color: spec.borderColor });
+  }
+
+  private updateTokenBadges(node: TokenNode, spec: TokenNodeSpec): void {
+    // Upright glyph chips along the token's top edge, relative to the (non-rotating) outer
+    // container's own origin — badges are its direct children, so they stay upright automatically
+    // when visualContainer (the sibling holding the rotating art+border) rotates.
+    const size = Math.max(12, Math.min(spec.w, spec.h) * 0.28);
+    const place = (txt: Text, i: number): void => {
+      txt.position.set(-spec.w / 2 + size / 2 + i * (size + 2), -spec.h / 2 + size / 2);
+    };
+    const badgeKey = spec.badges.join("");
+    if (node.badgeKey === badgeKey) {
+      node.badges.forEach(place);
+      return;
+    }
+    for (const b of node.badges) b.destroy();
+    node.badgeKey = badgeKey;
+    node.badges = spec.badges.map((glyph, i) => {
+      const txt = new Text({ text: glyph, style: { fontSize: size, fontFamily: "sans-serif" } });
+      txt.anchor.set(0.5);
+      place(txt, i);
+      node.container.addChild(txt);
+      return txt;
+    });
   }
 
   removeToken(id: string): void {
-    const sprite = this.tokens.get(id);
-    if (sprite) {
-      sprite.destroy();
-      this.tokens.delete(id);
-      this.tokenUrls.delete(id);
+    const node = this.tokens.get(id);
+    if (!node) return;
+    node.container.destroy({ children: true });
+    this.tokens.delete(id);
+  }
+
+  tickTokenAnimations(dtMs: number): void {
+    for (const node of this.tokens.values()) {
+      if (!node.anim || !(node.visual instanceof AnimatedSprite)) continue;
+      node.anim.elapsedMs += dtMs;
+      const frame = computeAnimatedFrame(node.anim.elapsedMs, node.anim.fps, node.anim.frameCount, node.anim.loop);
+      if (node.visual.currentFrame !== frame) node.visual.gotoAndStop(frame);
     }
-    const border = this.tokenBorders.get(id);
-    if (border) {
-      border.destroy();
-      this.tokenBorders.delete(id);
-    }
-    const badges = this.tokenBadges.get(id);
-    if (badges) {
-      for (const b of badges) b.destroy();
-      this.tokenBadges.delete(id);
-    }
-    this.tokenBadgeKeys.delete(id);
   }
 
   setShape(id: string, spec: ShapeNodeSpec): void {
