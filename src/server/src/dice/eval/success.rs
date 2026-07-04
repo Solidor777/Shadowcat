@@ -1,5 +1,6 @@
 use crate::dice::eval::classify;
 use crate::dice::eval::crit;
+use crate::dice::eval::expertise;
 use crate::dice::outcome::{RawRoll, RollOutcome};
 use crate::dice::spec::{RollSpec, SuccessConfig};
 
@@ -15,6 +16,9 @@ use crate::dice::spec::{RollSpec, SuccessConfig};
 /// was already applied per-die inside `crit::score_die`.
 pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) -> RollOutcome {
     let mut records = raws.records.clone();
+    if cfg.expertise > 0 {
+        expertise::allocate(spec.direction, cfg, raws, &mut records);
+    }
     let mut base = 0i32;
     let (mut extra, mut lost) = (0i32, 0i32);
     let (mut pos, mut neg) = (0i32, 0i32);
@@ -218,13 +222,22 @@ mod tests {
     }
 
     /// Builds a `RawRoll` whose `records` are hand-set (not RNG-derived) so the
-    /// pool-level test can pin exact per-die values.
+    /// pool-level test can pin exact per-die values. `raws.dice` is populated in
+    /// lockstep (`DieKind::Numeric { min: 1, max: 6 }`) so `expertise::allocate`'s
+    /// `DieId -> (min, max)` bounds lookup resolves for every record.
     fn manual_raws(values: &[i32]) -> RawRoll {
+        use crate::dice::outcome::RawDie;
+        use crate::dice::spec::DieKind;
         let mut raws = RawRoll::default();
-        raws.records = values
-            .iter()
-            .map(|&v| DieRecord {
-                id: raws.dice.len() as DieId,
+        for (i, &v) in values.iter().enumerate() {
+            let id = i as DieId;
+            raws.dice.push(RawDie {
+                id,
+                kind: DieKind::Numeric { min: 1, max: 6 },
+                natural: v,
+            });
+            raws.records.push(DieRecord {
+                id,
                 group_index: 0,
                 natural: v,
                 value: v,
@@ -234,8 +247,9 @@ mod tests {
                 crit_success: false,
                 crit_fail: false,
                 expertise: 0,
-            })
-            .collect();
+            });
+        }
+        raws.next_id = values.len() as DieId;
         raws
     }
 
@@ -374,5 +388,143 @@ mod tests {
         assert_eq!(out.successes, Some(6));
         assert_eq!(out.pass, Some(true));
         assert_eq!(out.margin, Some(3));
+    }
+
+    #[test]
+    fn expertise_lifts_success_count_through_the_full_evaluate_path() {
+        // 3 dice all at face 4 (min=max forces it), target >=5, expertise 2.
+        // Optimal: two dice -> 5 => 2 successes. Runs through evaluate(), not allocate directly.
+        let spec = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count: 3,
+                kind: DieKind::Numeric { min: 1, max: 6 },
+                modifiers: vec![],
+            }),
+            direction: Direction::HighWins,
+            mode: Mode::SuccessCount(SuccessConfig {
+                success: SuccessRule {
+                    comp: Comparator::Gte,
+                    target: 5,
+                },
+                required_successes: None,
+                tiers: vec![],
+                crit_success: None,
+                crit_fail: None,
+                expertise: 2,
+            }),
+        };
+        // manual_raws pins the faces to 4 so the allocation is determinate.
+        let raws = manual_raws(&[4, 4, 4]);
+        let out = evaluate_success(&spec, cfg_of(&spec), &raws);
+        assert_eq!(out.successes, Some(2));
+        // Audit trail: two dice show +1 expertise and an adjusted value of 5.
+        let bumped: Vec<&DieRecord> = out.records.iter().filter(|r| r.expertise == 1).collect();
+        assert_eq!(bumped.len(), 2);
+        assert!(bumped.iter().all(|r| r.value == 5));
+    }
+
+    #[test]
+    fn expertise_can_push_net_across_a_required_successes_tier() {
+        use crate::dice::spec::Tier;
+        // required 1; tier at offset 1 = "great". 2 dice at 4, target >=5, expertise 2
+        // -> 2 successes -> margin (2-1)=1 -> "great". Without expertise: 0 successes.
+        let spec = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count: 2,
+                kind: DieKind::Numeric { min: 1, max: 6 },
+                modifiers: vec![],
+            }),
+            direction: Direction::HighWins,
+            mode: Mode::SuccessCount(SuccessConfig {
+                success: SuccessRule {
+                    comp: Comparator::Gte,
+                    target: 5,
+                },
+                required_successes: Some(1),
+                tiers: vec![
+                    Tier {
+                        margin_offset: 0,
+                        label: Some("ok".into()),
+                        tier_value: Some(1),
+                    },
+                    Tier {
+                        margin_offset: 1,
+                        label: Some("great".into()),
+                        tier_value: Some(2),
+                    },
+                ],
+                crit_success: None,
+                crit_fail: None,
+                expertise: 2,
+            }),
+        };
+        let raws = manual_raws(&[4, 4]);
+        let out = evaluate_success(&spec, cfg_of(&spec), &raws);
+        assert_eq!(out.successes, Some(2));
+        assert_eq!(out.margin, Some(1));
+        assert_eq!(out.tier_value, Some(2));
+    }
+
+    #[test]
+    fn expertise_direction_mirror_symmetry() {
+        use crate::dice::spec::CritSuccess;
+        // Mirror property (design §4/§8): flip direction + mirror every face
+        // (f -> min+max-f) + mirror the success target and crit threshold -> identical
+        // net successes and counters.
+        let hi_cfg = SuccessConfig {
+            success: SuccessRule {
+                comp: Comparator::Gte,
+                target: 5,
+            },
+            required_successes: None,
+            tiers: vec![],
+            crit_success: Some(CritSuccess {
+                threshold: 6,
+                extra_successes: 1,
+                positive_counter: 1,
+            }),
+            crit_fail: None,
+            expertise: 3,
+        };
+        let hi = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count: 4,
+                kind: DieKind::Numeric { min: 1, max: 6 },
+                modifiers: vec![],
+            }),
+            direction: Direction::HighWins,
+            mode: Mode::SuccessCount(hi_cfg.clone()),
+        };
+        // Mirror faces about (min+max)=7: 2->5, 4->3, 5->2, 1->6.
+        let hi_raws = manual_raws(&[2, 4, 5, 1]);
+        let hi_out = evaluate_success(&hi, cfg_of(&hi), &hi_raws);
+
+        let lo_cfg = SuccessConfig {
+            success: SuccessRule {
+                comp: Comparator::Lte,
+                target: 2,
+            }, // 7 - 5
+            crit_success: Some(CritSuccess {
+                threshold: 1,
+                extra_successes: 1,
+                positive_counter: 1,
+            }), // 7 - 6
+            ..hi_cfg
+        };
+        let lo = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count: 4,
+                kind: DieKind::Numeric { min: 1, max: 6 },
+                modifiers: vec![],
+            }),
+            direction: Direction::LowWins,
+            mode: Mode::SuccessCount(lo_cfg),
+        };
+        let lo_raws = manual_raws(&[5, 3, 2, 6]); // 7 - each hi face
+        let lo_out = evaluate_success(&lo, cfg_of(&lo), &lo_raws);
+
+        assert_eq!(hi_out.successes, lo_out.successes);
+        assert_eq!(hi_out.positive_counter, lo_out.positive_counter);
+        assert_eq!(hi_out.negative_counter, lo_out.negative_counter);
     }
 }
