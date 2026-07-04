@@ -28,8 +28,12 @@ impl NoiseRng {
         NoiseRng { seed, index: 0 }
     }
 
-    /// Derive a value at an explicit index without advancing — for position-based
-    /// per-die derivation (e.g. recalculation of a specific die).
+    /// Pure, deterministic function of `(seed, index)` — for schemes that derive a die
+    /// directly by explicit index, never through a stateful `next_u32()` sequence.
+    /// WARNING: does NOT reproduce the k-th draw of a `next_u32()`/`roll_uniform()`
+    /// sequence once any rejection has occurred — `roll_uniform`'s rejection-sampling
+    /// loop can consume more than one `next_u32()` call per logical draw, so a rejected
+    /// draw shifts every later die's true noise-index away from its ordinal position.
     pub fn at(seed: u64, index: u64) -> u64 {
         noise(seed, index)
     }
@@ -52,7 +56,15 @@ pub fn roll_uniform(rng: &mut dyn RngSource, min: i32, max: i32) -> i32 {
     if span == 1 {
         return min;
     }
+    if span == 1u64 << 32 {
+        // Full u32 range: every possible `x` is a valid draw, no rejection needed
+        // (and `span as u32` would truncate to 0, making the modulo below panic).
+        return min.wrapping_add(rng.next_u32() as i32);
+    }
     let span32 = span as u32;
+    // Conservative rejection threshold: drops the entire top residue class rather than
+    // computing the tightest exact bound for power-of-two spans. Not a bug — uniformity
+    // holds either way, this just rejects marginally more than the minimum necessary.
     let limit = u32::MAX - (u32::MAX % span32);
     loop {
         let x = rng.next_u32();
@@ -97,6 +109,17 @@ mod tests {
     fn roll_uniform_degenerate_range() {
         let mut r = NoiseRng::from_seed(1);
         assert_eq!(roll_uniform(&mut r, 5, 5), 5);
+    }
+
+    #[test]
+    fn roll_uniform_full_u32_span_does_not_panic() {
+        // span = i32::MAX - i32::MIN + 1 == 2^32; truncating to u32 would be 0 and
+        // panic on `u32::MAX % span32`. Just assert no panic across many calls —
+        // `(min..=max).contains` is trivially true for the full i32 range.
+        let mut r = NoiseRng::from_seed(99);
+        for _ in 0..500 {
+            let _ = roll_uniform(&mut r, i32::MIN, i32::MAX);
+        }
     }
 
     #[test]
