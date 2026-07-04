@@ -8,6 +8,7 @@ pub mod outcome;
 pub mod rng;
 pub mod spec;
 
+pub use eval::roll;
 pub use outcome::{DieRecord, RawDie, RawRoll, RollOutcome, RollResult};
 pub use spec::{
     BinOp, Comparator, DiceGroup, DieId, DieKind, ExplodeKind, Expr, GroupModifier, Mode, RollSpec,
