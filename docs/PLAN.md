@@ -713,7 +713,34 @@ Two subsystems (dice → chat; chat's roll integration depends on dice). Specs:
 [`superpowers/specs/2026-07-03-m11-dice-engine-design.md`](superpowers/specs/2026-07-03-m11-dice-engine-design.md)
 + [`superpowers/specs/2026-07-03-m11-chat-system-design.md`](superpowers/specs/2026-07-03-m11-chat-system-design.md).
 Decomposed **M11a–d**:
-- **M11a — Dice engine core:** server-authoritative Rust evaluator over a declarative struct-canonical `RollSpec`; seeded-noise RNG (deterministic, no `rand`); rpg-dice-roller-superset notation; Sum + SuccessCount modes; `roll`/`evaluate`/`recalculate`; pure library (tests only). Plan: [`superpowers/plans/2026-07-03-m11a-dice-engine-core.md`](superpowers/plans/2026-07-03-m11a-dice-engine-core.md).
+> **M11a DONE** (branch `m11-dice-and-chat`, 11 SDD tasks + a codebase-skill gate, all green) —
+> the pure-Rust dice engine at `src/server/src/dice/`: hand-rolled seeded-noise RNG (SplitMix64,
+> no `rand` dependency — user preference for determinism-by-construction), `RollSpec`/`Expr` AST,
+> `roll`/`evaluate`/`recalculate`, Sum + SuccessCount modes, and a recursive-descent notation
+> parser (`4d6kh3+2` style). **Purely additive, zero server/ws/data coupling** — no wire frames,
+> no ts-rs bindings (M11a/b stay pure; wire integration is M11d). **3 pre-approved buddy-checks
+> (Tasks 4/6/10) each found and fixed real Critical/Important bugs** — this milestone is further
+> evidence that pre-authorizing buddy-check on dense pipeline/algorithmic-core code pays for
+> itself: Task 4 (group pipeline) caught an outer-loop explosion double-trigger causing unbounded
+> dice growth (empirically reproduced at 41GB memory) + a Penetrate retrigger-on-decremented-value
+> bug that silently truncated Penetrate chains to length 1 + a `kept`-flag bypass letting a
+> Drop-then-Reroll sequence mutate an already-dropped die; Task 6 (`group_index` Sum-mode fold)
+> caught two test-coverage gaps on the plan's own flagged "group-boundary reconstruction is the
+> correctness core" risk (a commutative-op multi-group test that couldn't detect a mis-assignment;
+> missing coverage for `group_index` propagating through exploded/penetrated children); Task 10
+> (`recalculate`, "the highest-consequence correctness path in M11a") confirmed the
+> untouched-sibling-derived-tail-changes-across-recalc behavior was correctly designed per the
+> approved plan but had ZERO test coverage, closed with 3 pinning tests. Two more Important bugs
+> caught in single-reviewer passes: Task 8's lexer didn't lex uppercase `D` as the dice operator
+> (case-inconsistent with the rest of the lexer) and had an unenforced (accidentally-safe)
+> ASCII-only assumption; Task 9's parser silently overwrote a duplicate `cs`/`cf` success rule
+> instead of erroring. **Mandatory whole-branch final review: Approved, zero Critical/Important**
+> — confirmed all six fix rounds compose correctly through the single shared `resolve_group` entry
+> point (used by both `roll` and `recalculate`'s `rederive`), full `dice::` suite green (51 tests),
+> pure-library/determinism invariants held, and the plan's M11b deferrals (expertise DP, crit
+> events, Tiered mode, labeled/custom-face dice, `direction`) are genuinely absent, not
+> half-built. New `shadowcat-codebase-dice` skill created + confirmed ACCURATE by
+> `shadowcat-spec-reviewer`. **M11a — Dice engine core:** server-authoritative Rust evaluator over a declarative struct-canonical `RollSpec`; seeded-noise RNG (deterministic, no `rand`); rpg-dice-roller-superset notation; Sum + SuccessCount modes; `roll`/`evaluate`/`recalculate`; pure library (tests only). Plan: [`superpowers/plans/2026-07-03-m11a-dice-engine-core.md`](superpowers/plans/2026-07-03-m11a-dice-engine-core.md).
 - **M11b — System rules:** the nine declarative rules — expertise DP (provably-optimal, lexicographic), crit events + counters, Tiered mode + ladders, labeled dice, custom-face dice, `direction` global flip; global `direction`/`difficulty` read by all modes (difficulty is two-dimensional in SuccessCount).
 - **M11c — Chat core (headless):** messages as sequenced documents on the per-recipient redaction path; module-seeded channels; server-authoritative input→sanitization pipeline (structured safe content model); new fail-closed whisper recipient-allowlist tier; user + optional actor owner (linked or instanced).
 - **M11d — Default display modules:** independently-replaceable composer + message-card contribution modules; text enrichment (Markdown/HTML/images/links/emails, GM-gated, no embedded CSS); emotes; roll integration; internal doc links; SSRF-guarded server-side link previews.
