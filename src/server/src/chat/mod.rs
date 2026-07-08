@@ -439,4 +439,58 @@ mod tests {
             Err(SendMessageError::TooLong)
         ));
     }
+
+    /// A message doc built via `build_message_doc` and committed via
+    /// `apply_intent` under the posting Player's own ctx (the same write
+    /// `handle_send_message` performs) is found by ANOTHER world member's
+    /// `repo.search` — the message rides the existing search index with no
+    /// message-specific indexing code, and its body text surfaces in the
+    /// snippet.
+    #[tokio::test]
+    async fn posted_message_is_searchable_by_members() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let other = r
+            .create_user("ot", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        r.add_member(w.id, other, WorldRole::Player).await.unwrap();
+        let pl_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let ot_ctx = PermissionContext {
+            user_id: other,
+            world_role: WorldRole::Player,
+        };
+
+        let doc = build_message_doc(
+            w.id,
+            player,
+            "all".into(),
+            None,
+            plain_text_content("banshee wail"),
+            1,
+        );
+        r.apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc }], 1)
+            .await
+            .unwrap();
+
+        let page = r.search(&ot_ctx, w.id, "banshee", 10, None).await.unwrap();
+        assert_eq!(page.hits.len(), 1, "another member finds the message");
+        assert!(page.hits[0].snippet.to_lowercase().contains("banshee"));
+    }
 }
