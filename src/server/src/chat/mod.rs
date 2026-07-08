@@ -38,6 +38,26 @@ pub enum MessageKind {
     System,
 }
 
+/// One piece of a message's sanitized content model. Serialized into the
+/// message's opaque `system` body (no ts-rs — M11d declares its own Zod mirror).
+/// Extensible: later checkpoints add the variants they produce (c-3 marks/links/
+/// images, c-4 preview cards, M11d roll embeds).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Segment {
+    /// Literal text. Rendered as a DOM text node by the client (never innerHTML),
+    /// so any markup it contains is inert.
+    Text { text: String },
+}
+
+/// The c-1 producer: wrap raw input as a single literal-text segment. Rich
+/// producers (markdown/HTML) are added in c-3, feeding this same content model.
+pub fn plain_text_content(raw: &str) -> Vec<Segment> {
+    vec![Segment::Text {
+        text: raw.to_string(),
+    }]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,6 +86,31 @@ mod tests {
         assert_eq!(
             serde_json::to_value(MessageKind::System).unwrap(),
             serde_json::json!("system")
+        );
+    }
+
+    #[test]
+    fn plain_text_produces_single_text_segment() {
+        let segs = plain_text_content("hello <b>world</b>");
+        assert_eq!(
+            segs,
+            vec![Segment::Text {
+                text: "hello <b>world</b>".into()
+            }]
+        );
+        // Producer stores raw text verbatim; markup is inert data, rendered as text (M11d).
+        let j = serde_json::to_value(&segs[0]).unwrap();
+        assert_eq!(j["kind"], "text");
+        assert_eq!(j["text"], "hello <b>world</b>");
+    }
+
+    #[test]
+    fn plain_text_empty_is_empty_segment() {
+        assert_eq!(
+            plain_text_content(""),
+            vec![Segment::Text {
+                text: String::new()
+            }]
         );
     }
 }
