@@ -6,6 +6,19 @@ use crate::dice::spec::{DiceGroup, DieKind, ExplodeKind, GroupModifier};
 /// comparator is always true (e.g. explode on `>=1`).
 const CHAIN_CAP: usize = 100;
 
+/// Look up a die's post-index value/symbols. `Numeric` dice pass their natural
+/// straight through (no faces table). A `Faces` die's `natural` is a face
+/// INDEX; a `None`-value face contributes `0` numerically.
+fn face_value_and_symbols(kind: &DieKind, natural: i32) -> (i32, Vec<crate::dice::spec::Symbol>) {
+    match kind {
+        DieKind::Numeric { .. } => (natural, vec![]),
+        DieKind::Faces { faces } => {
+            let face = &faces[natural as usize];
+            (face.value.unwrap_or(0), face.symbols.clone())
+        }
+    }
+}
+
 /// Resolve one group's dice: apply modifiers in order, returning per-die records.
 /// Reroll/explode mutate the die set (new dice allocated via `raws`); keep/drop only
 /// flip `kept`. All rolled dice stay in the returned vec (dropped dice for display).
@@ -26,32 +39,36 @@ pub fn resolve_group(
     rng: &mut dyn RngSource,
     raws: &mut RawRoll,
 ) -> Vec<DieRecord> {
-    let (min, max) = match group.kind {
-        DieKind::Numeric { min, max } => (min, max),
-        DieKind::Faces { .. } => {
-            unreachable!("Faces dice not yet wired into resolve_group (M11b-3 Task 6)")
-        }
-    };
     let mut recs: Vec<DieRecord> = naturals
         .iter()
-        .map(|d| DieRecord {
-            id: d.id,
-            group_index,
-            natural: d.natural,
-            value: d.natural,
-            kept: true,
-            exploded: false,
-            rerolled_from: None,
-            crit_success: false,
-            crit_fail: false,
-            expertise: 0,
-            label: group.label.clone(),
+        .map(|d| {
+            let (value, symbols) = face_value_and_symbols(&group.kind, d.natural);
+            DieRecord {
+                id: d.id,
+                group_index,
+                natural: d.natural,
+                value,
+                kept: true,
+                exploded: false,
+                rerolled_from: None,
+                crit_success: false,
+                crit_fail: false,
+                expertise: 0,
+                label: group.label.clone(),
+                symbols,
+            }
         })
         .collect();
 
     for m in &group.modifiers {
         match m {
             GroupModifier::Reroll { comp, target, once } => {
+                let (min, max) = match group.kind {
+                    DieKind::Numeric { min, max } => (min, max),
+                    DieKind::Faces { .. } => {
+                        unreachable!("Faces dice not yet wired into resolve_group (M11b-3 Task 6)")
+                    }
+                };
                 for r in recs.iter_mut() {
                     // Dropped dice are not live participants in later modifiers.
                     if !r.kept {
@@ -69,6 +86,12 @@ pub fn resolve_group(
                 }
             }
             GroupModifier::Explode { kind, comp, target } => {
+                let (min, max) = match group.kind {
+                    DieKind::Numeric { min, max } => (min, max),
+                    DieKind::Faces { .. } => {
+                        unreachable!("Faces dice not yet wired into resolve_group (M11b-3 Task 6)")
+                    }
+                };
                 // Snapshot the pool length before this pass: the outer loop only
                 // trigger-scans dice that existed when the modifier started. The
                 // inner chain loop below is the SOLE mechanism that extends any
@@ -193,6 +216,7 @@ fn push_extra(
         crit_fail: false,
         expertise: 0,
         label,
+        symbols: vec![],
     });
 }
 
@@ -582,6 +606,80 @@ mod tests {
             recs.iter().all(|r| r.label.as_deref() == Some("Hope")),
             "label must propagate to the original AND every exploded child record"
         );
+    }
+
+    fn faces_group(faces: Vec<crate::dice::spec::Face>, count: u32) -> DiceGroup {
+        DiceGroup {
+            count,
+            kind: DieKind::Faces { faces },
+            modifiers: vec![],
+            label: None,
+        }
+    }
+
+    #[test]
+    fn faces_die_derives_value_and_symbols_from_index() {
+        use crate::dice::spec::Face;
+        let faces = vec![
+            Face {
+                value: Some(1),
+                symbols: vec!["blank".into()],
+            },
+            Face {
+                value: Some(3),
+                symbols: vec!["success".into(), "triumph".into()],
+            },
+        ];
+        // natural = 1 selects faces[1].
+        let naturals = vec![RawDie {
+            id: 0,
+            kind: DieKind::Faces {
+                faces: faces.clone(),
+            },
+            natural: 1,
+        }];
+        let mut raws = RawRoll {
+            dice: naturals.clone(),
+            records: vec![],
+            next_id: 1,
+            group_spans: vec![],
+        };
+        let mut rng = NoiseRng::from_seed(1);
+        let recs = resolve_group(&faces_group(faces, 1), 0, &naturals, &mut rng, &mut raws);
+        assert_eq!(recs[0].value, 3);
+        assert_eq!(
+            recs[0].symbols,
+            vec!["success".to_string(), "triumph".to_string()]
+        );
+    }
+
+    #[test]
+    fn faces_die_none_value_face_contributes_zero() {
+        use crate::dice::spec::Face;
+        let faces = vec![Face {
+            value: None,
+            symbols: vec!["blank".into()],
+        }];
+        let naturals = vec![RawDie {
+            id: 0,
+            kind: DieKind::Faces {
+                faces: faces.clone(),
+            },
+            natural: 0,
+        }];
+        let mut raws = RawRoll {
+            dice: naturals.clone(),
+            records: vec![],
+            next_id: 1,
+            group_spans: vec![],
+        };
+        let mut rng = NoiseRng::from_seed(1);
+        let recs = resolve_group(&faces_group(faces, 1), 0, &naturals, &mut rng, &mut raws);
+        assert_eq!(
+            recs[0].value, 0,
+            "a None-value face contributes 0 numerically"
+        );
+        assert_eq!(recs[0].symbols, vec!["blank".to_string()]);
     }
 
     #[test]

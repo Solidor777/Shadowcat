@@ -251,6 +251,7 @@ mod tests {
                 crit_fail: false,
                 expertise: 0,
                 label: None,
+                symbols: vec![],
             });
         }
         raws.next_id = values.len() as DieId;

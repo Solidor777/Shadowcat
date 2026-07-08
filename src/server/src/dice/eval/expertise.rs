@@ -314,6 +314,7 @@ mod tests {
                 crit_success: false,
                 crit_fail: false,
                 expertise: 0,
+                symbols: vec![],
             });
         }
         raws.next_id = values.len() as DieId;

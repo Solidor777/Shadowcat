@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::dice::spec::{DieId, DieKind, RollSpec};
+use crate::dice::spec::{DieId, DieKind, RollSpec, Symbol};
 
 /// A single die's natural (RNG) result — the only nondeterministic artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +68,9 @@ pub struct DieRecord {
     /// group is unlabeled. Read by `RollOutcome::by_label`/`compare_labels`.
     #[serde(default)]
     pub label: Option<String>,
+    /// Resolved symbols for a `Faces` die's drawn face (M11b-3); empty for `Numeric`.
+    #[serde(default)]
+    pub symbols: Vec<Symbol>,
 }
 
 /// Fully-derived result. `total` is the primary output for Total mode; in
@@ -154,6 +157,7 @@ mod tests {
             crit_fail: false,
             expertise: 0,
             label: Some(label.to_string()),
+            symbols: vec![],
         }
     }
 

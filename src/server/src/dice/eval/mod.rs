@@ -25,15 +25,12 @@ pub fn roll(spec: &RollSpec, rng: &mut dyn RngSource) -> RawRoll {
 fn roll_expr(expr: &Expr, rng: &mut dyn RngSource, raws: &mut RawRoll, group_index: &mut usize) {
     match expr {
         Expr::Dice(group) => {
-            let (min, max) = match group.kind {
-                DieKind::Numeric { min, max } => (min, max),
-                DieKind::Faces { .. } => {
-                    unreachable!("Faces dice not yet wired into roll_expr (M11b-3 Task 5)")
-                }
-            };
             let start = raws.dice.len();
             for _ in 0..group.count {
-                let natural = roll_uniform(rng, min, max);
+                let natural = match &group.kind {
+                    DieKind::Numeric { min, max } => roll_uniform(rng, *min, *max),
+                    DieKind::Faces { faces } => roll_uniform(rng, 0, faces.len() as i32 - 1),
+                };
                 raws.push(group.kind.clone(), natural);
             }
             raws.group_spans.push((start, group.count as usize));

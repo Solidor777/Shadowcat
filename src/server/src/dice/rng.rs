@@ -123,6 +123,16 @@ mod tests {
     }
 
     #[test]
+    fn roll_uniform_over_face_index_range_stays_in_bounds() {
+        // A 3-face die draws an index in 0..=2 via the same roll_uniform used for Numeric.
+        let mut r = NoiseRng::from_seed(3);
+        for _ in 0..500 {
+            let idx = roll_uniform(&mut r, 0, 2);
+            assert!((0..=2).contains(&idx));
+        }
+    }
+
+    #[test]
     fn at_is_positionally_stable() {
         assert_eq!(NoiseRng::at(123, 4), NoiseRng::at(123, 4));
         assert_ne!(NoiseRng::at(123, 4), NoiseRng::at(123, 5));
