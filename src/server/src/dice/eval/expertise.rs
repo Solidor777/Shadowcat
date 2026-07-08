@@ -155,6 +155,30 @@ pub fn allocate(
     if kept.is_empty() {
         return;
     }
+    // Fixed net contribution from kept dice EXCLUDED from adjustment (Faces
+    // dice): their success/crit score is identical under every allocation, so
+    // it's a constant term missing from the DP's own `net` (computed only over
+    // `dies`, the adjustable Numeric subset). The branch below decides whether
+    // the TRUE pool-wide clamped total can reach >= 1 — that decision needs
+    // this constant folded in, or a nonzero fixed delta (e.g. a Faces die
+    // hitting `crit_fail` via `HasSymbol`) silently answers a different
+    // question than `evaluate_success` will actually score. `fixed` does NOT
+    // need to feed into the DP's own per-allocation comparisons: it's the same
+    // additive constant across every candidate allocation, so it never changes
+    // which allocation is argmax within either pass — only the pass-choice
+    // threshold cares about its absolute value.
+    let fixed: i32 = records
+        .iter()
+        .filter(|r| r.kept && !bounds.contains_key(&r.id))
+        .map(|r| {
+            let base_success = match &cfg.success {
+                SuccessRule::Numeric { comp, target } => comp.test(r.value, *target),
+                SuccessRule::HasSymbol(s) => r.symbols.contains(s),
+            };
+            let dc = crit::score_die(direction, r.value, &r.symbols, cfg);
+            i32::from(base_success) + dc.extra_successes - dc.lost
+        })
+        .sum();
     let dies: Vec<Vec<(i32, i32)>> = kept
         .iter()
         .map(|&idx| {
@@ -170,7 +194,7 @@ pub fn allocate(
         .as_ref()
         .map(|c| c.allow_negative)
         .unwrap_or(false);
-    let alloc = if allow_neg || net >= 1 {
+    let alloc = if allow_neg || net + fixed >= 1 {
         lex_alloc
     } else {
         // All-failed region: successes all clamp to 0; maximize counters only.
@@ -661,6 +685,100 @@ mod tests {
             "the Numeric die gets the point instead"
         );
         assert_eq!(records[1].value, 5);
+    }
+
+    #[test]
+    fn allocate_accounts_for_fixed_contribution_from_excluded_faces_dice() {
+        use crate::dice::spec::{CritFail, CritSuccess, CritTrigger, Face};
+        // A kept Faces die's success/crit score never changes under any
+        // allocation (it is excluded from `dies`), so it is a FIXED additive
+        // term on the true pool-wide net. The branch's "can the true net
+        // reach >= 1" check must include that fixed term — using only the
+        // DP's own Numeric-only partial net answers a different question
+        // whenever the fixed term is nonzero.
+        //
+        // Setup: base target (>=6) is unreachable by any die here, so base is
+        // always 0. crit_success (AtLeast(3), +5 counter, no extra successes)
+        // fires for a Numeric die at value >= 3. The Faces die carries symbol
+        // "doom", firing crit_fail (HasSymbol("doom"), lost 5) unconditionally
+        // — a fixed -5 no allocation can change. True net is therefore -5 or
+        // -4 under every allocation (always < 1, clamps to 0), so the correct
+        // objective is pure counter-maximization: die A (value 5) already
+        // satisfies AtLeast(3) at k=0, so spending the point there changes
+        // nothing; die B (value 2) does not yet satisfy it, so the point must
+        // go to die B (2 -> 3) to cross the threshold and add +5 counter.
+        let faces = vec![Face {
+            value: Some(0),
+            symbols: vec!["doom".to_string()],
+        }];
+        let c = SuccessConfig {
+            success: SuccessRule::Numeric {
+                comp: Comparator::Gte,
+                target: 6,
+            },
+            required_successes: None,
+            tiers: vec![],
+            crit_success: Some(CritSuccess {
+                trigger: CritTrigger::AtLeast(3),
+                extra_successes: 0,
+                positive_counter: 5,
+            }),
+            crit_fail: Some(CritFail {
+                trigger: CritTrigger::HasSymbol("doom".to_string()),
+                lost: 5,
+                negative_counter: 0,
+                allow_negative: false,
+            }),
+            expertise: 1,
+        };
+        let mut raws = RawRoll::default();
+        let faces_id = raws.push(
+            DieKind::Faces {
+                faces: faces.clone(),
+            },
+            0,
+        );
+        let a_id = raws.push(DieKind::Numeric { min: 1, max: 6 }, 5);
+        let b_id = raws.push(DieKind::Numeric { min: 1, max: 6 }, 2);
+        let mk = |id: DieId, natural: i32, value: i32, symbols: Vec<&str>| DieRecord {
+            id,
+            group_index: 0,
+            natural,
+            value,
+            kept: true,
+            exploded: false,
+            rerolled_from: None,
+            crit_success: false,
+            crit_fail: false,
+            expertise: 0,
+            label: None,
+            symbols: symbols.into_iter().map(String::from).collect(),
+        };
+        let mut records = vec![
+            mk(faces_id, 0, 0, vec!["doom"]),
+            mk(a_id, 5, 5, vec![]),
+            mk(b_id, 2, 2, vec![]),
+        ];
+        allocate(Direction::HighWins, &c, &raws, &mut records);
+
+        assert_eq!(
+            records[1].expertise, 0,
+            "die A (already past its crit threshold at k=0) gets nothing"
+        );
+        assert_eq!(
+            records[2].expertise, 1,
+            "die B gets the point to cross its own crit threshold"
+        );
+        assert_eq!(records[2].value, 3);
+
+        // Cross-check against the true pool-wide score (matches evaluate_success's
+        // own scoring exactly, including the Faces die's fixed contribution).
+        let (net, counter) = score_pool(Direction::HighWins, &c, &records);
+        assert_eq!(
+            net, 0,
+            "base is unreachable and the Faces die's crit_fail clamps net to 0 either way"
+        );
+        assert_eq!(counter, 10, "the true optimum spends the point on die B");
     }
 
     #[test]
