@@ -91,6 +91,33 @@ pub struct RollOutcome {
     pub negative_counter: i32,
 }
 
+impl RollOutcome {
+    /// All records (kept and dropped) carrying `label`, in roll order.
+    pub fn by_label(&self, label: &str) -> Vec<&DieRecord> {
+        self.records
+            .iter()
+            .filter(|r| r.label.as_deref() == Some(label))
+            .collect()
+    }
+
+    /// Compares two labels by the sum of their KEPT records' `value`s.
+    /// `None` if either label has no records, or either label's records are
+    /// unordered (a symbolic group with no numeric value — M11b-3 §9).
+    /// Direction-independent: purely "which summed higher."
+    pub fn compare_labels(&self, a: &str, b: &str) -> Option<std::cmp::Ordering> {
+        let sum_of = |label: &str| -> Option<i64> {
+            let recs = self.by_label(label);
+            if recs.is_empty() {
+                return None;
+            }
+            Some(recs.iter().filter(|r| r.kept).map(|r| r.value as i64).sum())
+        };
+        let sa = sum_of(a)?;
+        let sb = sum_of(b)?;
+        Some(sa.cmp(&sb))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollResult {
     pub spec: RollSpec,
@@ -112,5 +139,71 @@ mod tests {
         assert_eq!(b, 1);
         assert_eq!(r.dice.len(), 2);
         assert_eq!(r.dice[0].natural, 4);
+    }
+
+    fn labeled_record(label: &str, value: i32, kept: bool) -> DieRecord {
+        DieRecord {
+            id: 0,
+            group_index: 0,
+            natural: value,
+            value,
+            kept,
+            exploded: false,
+            rerolled_from: None,
+            crit_success: false,
+            crit_fail: false,
+            expertise: 0,
+            label: Some(label.to_string()),
+        }
+    }
+
+    #[test]
+    fn by_label_collects_only_matching_records() {
+        let out = RollOutcome {
+            total: 0,
+            records: vec![
+                labeled_record("Hope", 5, true),
+                labeled_record("Fear", 3, true),
+                labeled_record("Hope", 2, true),
+            ],
+            successes: None,
+            pass: None,
+            margin: None,
+            tier_label: None,
+            tier_value: None,
+            crit_successes: 0,
+            crit_fails: 0,
+            positive_counter: 0,
+            negative_counter: 0,
+        };
+        let hope: Vec<i32> = out.by_label("Hope").iter().map(|r| r.value).collect();
+        assert_eq!(hope, vec![5, 2]);
+        assert!(out.by_label("Nope").is_empty());
+    }
+
+    #[test]
+    fn compare_labels_orders_by_sum_of_kept_values() {
+        use std::cmp::Ordering;
+        let out = RollOutcome {
+            total: 0,
+            records: vec![
+                labeled_record("Hope", 5, true),
+                labeled_record("Hope", 1, false), // dropped: excluded from the sum
+                labeled_record("Fear", 3, true),
+            ],
+            successes: None,
+            pass: None,
+            margin: None,
+            tier_label: None,
+            tier_value: None,
+            crit_successes: 0,
+            crit_fails: 0,
+            positive_counter: 0,
+            negative_counter: 0,
+        };
+        // Hope kept-sum = 5, Fear kept-sum = 3 -> Hope > Fear.
+        assert_eq!(out.compare_labels("Hope", "Fear"), Some(Ordering::Greater));
+        assert_eq!(out.compare_labels("Fear", "Hope"), Some(Ordering::Less));
+        assert_eq!(out.compare_labels("Hope", "Missing"), None);
     }
 }
