@@ -56,4 +56,8 @@ pub enum ParseError {
     EmptyLabel,
     /// A `[` was never closed by a matching `]` before the input ended.
     UnterminatedLabel,
+    /// A `[...]` label contained a byte that is neither ASCII-printable nor a space
+    /// (e.g. a C0 control byte or DEL) — design §3.1 restricts a label's charset to
+    /// ASCII printable characters (plus space) except `]`.
+    InvalidLabelChar,
 }

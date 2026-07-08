@@ -88,6 +88,10 @@ pub fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
                 let start = i + 1;
                 let mut j = start;
                 while j < bytes.len() && bytes[j] as char != ']' {
+                    let b = bytes[j];
+                    if !(b.is_ascii_graphic() || b == b' ') {
+                        return Err(ParseError::InvalidLabelChar);
+                    }
                     j += 1;
                 }
                 if j >= bytes.len() {
@@ -241,6 +245,36 @@ mod tests {
                 Token::D,
                 Token::Int(12),
                 Token::Label("Hope".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_label_rejects_control_byte() {
+        assert!(matches!(
+            lex("1d12[Hi\x01Bye]"),
+            Err(ParseError::InvalidLabelChar)
+        ));
+    }
+
+    #[test]
+    fn lex_label_rejects_del_byte() {
+        assert!(matches!(
+            lex("1d12[Hi\x7FBye]"),
+            Err(ParseError::InvalidLabelChar)
+        ));
+    }
+
+    #[test]
+    fn lex_label_allows_internal_space() {
+        let toks = lex("1d12[Hope Fear]").unwrap();
+        assert_eq!(
+            toks,
+            vec![
+                Token::Int(1),
+                Token::D,
+                Token::Int(12),
+                Token::Label("Hope Fear".to_string())
             ]
         );
     }
