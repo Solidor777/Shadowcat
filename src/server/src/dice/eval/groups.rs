@@ -119,6 +119,17 @@ pub fn resolve_group(
                                 break;
                             }
                             let extra = redraw(rng);
+                            // Derive the die's actual configured value at this draw
+                            // BEFORE branching: for `Numeric`, `face_value_and_symbols`
+                            // is a pure pass-through (`derived_value == extra`), so
+                            // every retrigger/Numeric-arm behavior below is byte-for-
+                            // byte identical to testing `extra` directly. For an
+                            // ordered `Faces` die, `extra` is a face INDEX — testing
+                            // the comparator against the index instead of the die's
+                            // configured value would silently misfire whenever face
+                            // value doesn't track index order.
+                            let (derived_value, symbols) =
+                                face_value_and_symbols(&group.kind, extra);
                             match kind {
                                 ExplodeKind::Compound
                                     if matches!(group.kind, DieKind::Numeric { .. }) =>
@@ -129,15 +140,16 @@ pub fn resolve_group(
                                     if matches!(group.kind, DieKind::Numeric { .. }) =>
                                 {
                                     // Penetrate: the chain-continuation recheck below
-                                    // uses the RAW roll `extra` (mirroring Compound),
-                                    // not the decremented value — otherwise a
-                                    // `Gte(max)` chain could never extend past one
-                                    // extra die, since `max - 1` never satisfies
-                                    // `Gte(max)` even when the die keeps rolling max.
-                                    // `natural` records the true RNG face for the
-                                    // audit trail; only the stored `value` (used for
-                                    // scoring/display) takes the -1 penalty, and may
-                                    // therefore land below `min` by design.
+                                    // uses the RAW roll `extra` (== `derived_value` for
+                                    // `Numeric`, mirroring Compound), not the
+                                    // decremented value — otherwise a `Gte(max)` chain
+                                    // could never extend past one extra die, since
+                                    // `max - 1` never satisfies `Gte(max)` even when
+                                    // the die keeps rolling max. `natural` records the
+                                    // true RNG face for the audit trail; only the
+                                    // stored `value` (used for scoring/display) takes
+                                    // the -1 penalty, and may therefore land below
+                                    // `min` by design.
                                     let value = extra - 1;
                                     push_extra(
                                         &mut recs,
@@ -153,15 +165,13 @@ pub fn resolve_group(
                                     // Standard explode (or Compound/Penetrate on an
                                     // ordered Faces die, where "add"/"−1" have no
                                     // defined meaning): push a fresh die at the
-                                    // drawn index, deriving value/symbols from it.
-                                    let (value, symbols) =
-                                        face_value_and_symbols(&group.kind, extra);
+                                    // drawn index, using the already-derived value/symbols.
                                     let id = raws.push(group.kind.clone(), extra);
                                     recs.push(DieRecord {
                                         id,
                                         group_index,
                                         natural: extra,
-                                        value,
+                                        value: derived_value,
                                         kept: true,
                                         exploded: false,
                                         rerolled_from: None,
@@ -174,8 +184,10 @@ pub fn resolve_group(
                                 }
                             }
                             chain += 1;
-                            // Re-check the trigger on the fresh (raw) face.
-                            if !comp.test(extra, *target) {
+                            // Re-check the trigger on the fresh face's DERIVED value
+                            // (identical to the raw face for `Numeric`; the die's
+                            // actual configured value at the drawn index for `Faces`).
+                            if !comp.test(derived_value, *target) {
                                 break;
                             }
                         }
@@ -841,5 +853,60 @@ mod tests {
             vec![6],
             "ordered Faces group ranks exactly like Numeric"
         );
+    }
+
+    #[test]
+    fn explode_retrigger_uses_derived_value_not_raw_index_for_ordered_faces() {
+        use crate::dice::spec::Face;
+        // Faces where index does NOT track value monotonically: index 0 ->
+        // value 6, index 1 -> value 1. A retrigger check against the raw
+        // drawn INDEX (instead of the die's derived value) would test
+        // `comp.test(0, 6)` on the first extra draw and wrongly stop the
+        // chain, even though the die's actual configured value (6) satisfies
+        // `Gte(6)` and the chain must continue.
+        let faces = vec![
+            Face {
+                value: Some(6),
+                symbols: vec![],
+            },
+            Face {
+                value: Some(1),
+                symbols: vec![],
+            },
+        ];
+        let naturals = vec![RawDie {
+            id: 0,
+            kind: DieKind::Faces {
+                faces: faces.clone(),
+            },
+            natural: 0, // value 6, triggers Gte(6)
+        }];
+        let mut raws = RawRoll {
+            dice: naturals.clone(),
+            records: vec![],
+            next_id: 1,
+            group_spans: vec![],
+        };
+        let g = DiceGroup {
+            count: 1,
+            kind: DieKind::Faces { faces },
+            modifiers: vec![GroupModifier::Explode {
+                kind: ExplodeKind::Standard,
+                comp: Comparator::Gte,
+                target: 6,
+            }],
+            label: None,
+        };
+        // Chain roll 1 draws index 0 (derived value 6 -> must retrigger).
+        // Chain roll 2 draws index 1 (derived value 1 -> stops).
+        let mut rng = ScriptedRng::new(vec![0, 1]);
+        let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
+        assert_eq!(
+            recs.len(),
+            3,
+            "chain must continue based on the die's derived value, not the raw drawn index"
+        );
+        assert_eq!(recs[1].value, 6);
+        assert_eq!(recs[2].value, 1);
     }
 }
