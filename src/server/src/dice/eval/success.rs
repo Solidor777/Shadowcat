@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::dice::eval::classify;
 use crate::dice::eval::crit;
 use crate::dice::eval::expertise;
@@ -23,7 +25,11 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
     let (mut extra, mut lost) = (0i32, 0i32);
     let (mut pos, mut neg) = (0i32, 0i32);
     let (mut crit_s, mut crit_f) = (0i32, 0i32);
+    let mut symbol_counts: BTreeMap<crate::dice::spec::Symbol, i32> = BTreeMap::new();
     for r in records.iter_mut().filter(|r| r.kept) {
+        for s in &r.symbols {
+            *symbol_counts.entry(s.clone()).or_insert(0) += 1;
+        }
         let base_success = match &cfg.success {
             SuccessRule::Numeric { comp, target } => comp.test(r.value, *target),
             SuccessRule::HasSymbol(s) => r.symbols.contains(s),
@@ -78,6 +84,7 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         crit_fails: crit_f,
         positive_counter: pos,
         negative_counter: neg,
+        symbol_counts,
     }
 }
 
@@ -605,6 +612,78 @@ mod tests {
             out.successes,
             Some(2),
             "2 of 3 dice show the triumph symbol"
+        );
+    }
+
+    #[test]
+    fn symbol_counts_tallies_kept_dice_unconditionally() {
+        use crate::dice::spec::Face;
+        // Numeric success rule (not HasSymbol) — symbol_counts must STILL populate,
+        // independent of which SuccessRule variant is active.
+        let faces = vec![
+            Face {
+                value: Some(0),
+                symbols: vec!["advantage".into()],
+            },
+            Face {
+                value: Some(1),
+                symbols: vec!["triumph".into(), "advantage".into()],
+            },
+        ];
+        let spec = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count: 2,
+                kind: DieKind::Faces {
+                    faces: faces.clone(),
+                },
+                modifiers: vec![],
+                label: None,
+            }),
+            direction: Direction::HighWins,
+            mode: Mode::SuccessCount(SuccessConfig {
+                success: SuccessRule::Numeric {
+                    comp: Comparator::Gte,
+                    target: 100,
+                }, // never fires
+                required_successes: None,
+                tiers: vec![],
+                crit_success: None,
+                crit_fail: None,
+                expertise: 0,
+            }),
+        };
+        let mut raws = RawRoll::default();
+        raws.push(
+            DieKind::Faces {
+                faces: faces.clone(),
+            },
+            0,
+        );
+        raws.push(
+            DieKind::Faces {
+                faces: faces.clone(),
+            },
+            1,
+        );
+        let recs = crate::dice::eval::groups::resolve_group(
+            match &spec.expr {
+                Expr::Dice(g) => g,
+                _ => unreachable!(),
+            },
+            0,
+            &raws.dice.clone(),
+            &mut NoiseRng::from_seed(1),
+            &mut raws,
+        );
+        raws.records = recs;
+        raws.group_spans = vec![(0, 2)];
+        let out = evaluate(&spec, &raws);
+        assert_eq!(out.symbol_counts.get("advantage"), Some(&2));
+        assert_eq!(out.symbol_counts.get("triumph"), Some(&1));
+        assert_eq!(
+            out.successes,
+            Some(0),
+            "numeric rule never fires — sanity check"
         );
     }
 

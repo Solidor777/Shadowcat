@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::dice::spec::{DieId, DieKind, RollSpec, Symbol};
@@ -92,6 +94,10 @@ pub struct RollOutcome {
     pub crit_fails: i32,
     pub positive_counter: i32,
     pub negative_counter: i32,
+    /// Per-symbol tallies over KEPT dice, computed unconditionally (independent
+    /// of `SuccessRule`'s variant). Deterministic iteration order (`BTreeMap`).
+    #[serde(default)]
+    pub symbol_counts: BTreeMap<Symbol, i32>,
 }
 
 impl RollOutcome {
@@ -179,6 +185,7 @@ mod tests {
             crit_fails: 0,
             positive_counter: 0,
             negative_counter: 0,
+            symbol_counts: Default::default(),
         };
         let hope: Vec<i32> = out.by_label("Hope").iter().map(|r| r.value).collect();
         assert_eq!(hope, vec![5, 2]);
@@ -204,6 +211,7 @@ mod tests {
             crit_fails: 0,
             positive_counter: 0,
             negative_counter: 0,
+            symbol_counts: Default::default(),
         };
         // Hope kept-sum = 5, Fear kept-sum = 3 -> Hope > Fear.
         assert_eq!(out.compare_labels("Hope", "Fear"), Some(Ordering::Greater));

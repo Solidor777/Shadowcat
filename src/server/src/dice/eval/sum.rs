@@ -29,6 +29,7 @@ pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> Rol
         crit_fails: 0,
         positive_counter: 0,
         negative_counter: 0,
+        symbol_counts: Default::default(),
     }
 }
 
