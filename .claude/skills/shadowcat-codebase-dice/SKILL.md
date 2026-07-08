@@ -72,21 +72,30 @@ on.
 - `src/server/src/dice/outcome.rs` — `RawDie`, `RawRoll` (`dice`, `records`, `next_id`,
   `group_spans`), `DieRecord` (`id`, `group_index`, `natural`, `value`, `kept`, `exploded`,
   `rerolled_from`, `crit_success: bool`, `crit_fail: bool`, `expertise: i32`, `label:
-  Option<String>`, `symbols: Vec<Symbol>`). `expertise` is the audit trail of points spent
-  adjusting this die's `value` (0 if none/not applicable). `label` (M11b-3) is copied from the
-  producing `DiceGroup.label`, `None` if unlabeled. `symbols` (M11b-3) is the resolved symbols for
-  a `Faces` die's drawn face; always empty for `Numeric`. `RollOutcome`'s final shape: `total:
-  i64`, `records`, `successes: Option<i32>`, `pass: Option<bool>`, `margin: Option<i64>` (renamed
-  + widened from M11a's `net_margin`), `tier_label: Option<String>`, `tier_value: Option<i32>`,
-  `crit_successes: i32`, `crit_fails: i32`, `positive_counter: i32`, `negative_counter: i32`,
-  `symbol_counts: BTreeMap<Symbol, i32>` (M11b-3 — per-symbol tallies over KEPT dice, computed
-  UNCONDITIONALLY inside `evaluate_success`'s per-die loop regardless of which `SuccessRule`
-  variant is active; empty in Total mode) (all 0/None/empty in Total mode with no `difficulty`, or
-  in SuccessCount with no crit config). `RollOutcome::by_label(&self, label: &str) -> Vec<&DieRecord>`
-  (M11b-3) returns all records — kept AND dropped — carrying that label, in roll order.
+  Option<String>`, `symbols: Vec<Symbol>`, `ordered: bool`). `expertise` is the audit trail of
+  points spent adjusting this die's `value` (0 if none/not applicable). `label` (M11b-3) is copied
+  from the producing `DiceGroup.label`, `None` if unlabeled. `symbols` (M11b-3) is the resolved
+  symbols for a `Faces` die's drawn face; always empty for `Numeric`. `ordered` (M11b-3, added in a
+  post-ship final-review fix) is a per-record snapshot of the producing group's
+  `DieKind::is_ordered()` at construction time, stamped at every `DieRecord` construction site
+  (mirrors `label`/`symbols` propagation exactly, including exploded/penetrated children); `#[serde
+  (default = "default_ordered")]` defaults deserialized/legacy records to `true`. It exists solely
+  so `compare_labels` can detect an unordered (symbolic) label — this can NOT be inferred from
+  `value` alone, since a genuine ordered value of `0` is indistinguishable from an unordered die's
+  derived-`0` fallback. `RollOutcome`'s final shape: `total: i64`, `records`, `successes:
+  Option<i32>`, `pass: Option<bool>`, `margin: Option<i64>` (renamed + widened from M11a's
+  `net_margin`), `tier_label: Option<String>`, `tier_value: Option<i32>`, `crit_successes: i32`,
+  `crit_fails: i32`, `positive_counter: i32`, `negative_counter: i32`, `symbol_counts:
+  BTreeMap<Symbol, i32>` (M11b-3 — per-symbol tallies over KEPT dice, computed UNCONDITIONALLY
+  inside `evaluate_success`'s per-die loop regardless of which `SuccessRule` variant is active;
+  empty in Total mode) (all 0/None/empty in Total mode with no `difficulty`, or in SuccessCount
+  with no crit config). `RollOutcome::by_label(&self, label: &str) -> Vec<&DieRecord>` (M11b-3)
+  returns all records — kept AND dropped — carrying that label, in roll order.
   `RollOutcome::compare_labels(&self, a, b) -> Option<Ordering>` (M11b-3) compares two labels by
-  the sum of their KEPT records' `value`s; `None` iff either label has zero matching records at all
-  (an all-dropped label still yields `Some(0)`, since the sum-of-kept is simply empty, not missing).
+  the sum of their KEPT records' `value`s; `None` iff either label has zero matching records at
+  all, OR either label's matching records include ANY with `ordered: false` (a mixed
+  ordered+unordered pool under one label also has no well-defined sum) — an all-dropped-but-
+  ordered label still yields `Some(0)`, since the sum-of-kept is simply empty, not missing.
   `RollResult`.
 - `src/server/src/dice/eval/groups.rs` — `resolve_group(group, group_index, naturals, rng, raws)
   -> Vec<DieRecord>`: the per-group pipeline (reroll → explode → keep/drop, in modifier-Vec
@@ -104,8 +113,11 @@ on.
   die's DERIVED value (via `face_value_and_symbols`), never the raw redrawn index/face — for
   `Numeric` this is identical to the raw face (a pure pass-through), but for an ordered `Faces` die
   whose index doesn't track value monotonically, checking the raw index would misfire (fixed
-  during Task 6, a real bug). `push_extra` is the single construction site for a Standard-exploded/
-  penetrated child `DieRecord`. `CHAIN_CAP = 100` bounds chained explosions/rerolls per die.
+  during Task 6, a real bug). `push_extra` is the single construction site for a Penetrate child
+  `DieRecord` (takes an `ordered: bool` param — reached only from the Numeric-guarded Penetrate
+  arm, always `true`); the inlined Standard-explode/Faces-fallback arm (reached only inside the
+  `!ordered { continue }`-gated modifier loop, so always `true` too) constructs its own `DieRecord`
+  directly. `CHAIN_CAP = 100` bounds chained explosions/rerolls per die.
 - `src/server/src/dice/eval/mod.rs` — `roll(spec, rng) -> RawRoll` (walks `Expr` left-to-right,
   the ONLY randomness entry point) and `evaluate(spec, raws) -> RollOutcome` (dispatches
   `Mode::Total(cfg)` → `sum::evaluate_total`, `Mode::SuccessCount(cfg)` →
@@ -277,6 +289,16 @@ on.
   penetrated children) with the CALLER-SUPPLIED `group_index`** — `eval::sum::fold`'s per-group
   folding depends on every record in a group carrying that group's own index, never a stale/wrong
   one.
+- **`compare_labels` must treat ANY unordered record under a label as making that label's sum
+  undefined** (`DieRecord.ordered: bool`, M11b-3) — checking only `recs.is_empty()` (the absent
+  case) is insufficient; an unordered symbolic label's records derive `value` via
+  `face_value_and_symbols`'s `unwrap_or(0)`, so omitting the ordered check silently returns
+  `Some(0)`/`Some(sum)` instead of `None` for the exact Daggerheart Hope/Fear headline case the
+  design doc calls out. A label spanning multiple `DiceGroup`s where even one group is unordered
+  must also yield `None` for that label (a partial pool with any unordered member has no
+  well-defined sum) — this was a real gap that shipped past Task 2 (written before Task 6
+  introduced `is_ordered`) and was caught only by the whole-branch final review, not any
+  per-task check.
 - **`recalculate` targets ONLY base naturals (via `group_spans`), never explosion/penetrate
   children** — a `RecalcOp` naming a non-base id silently no-ops (documented on `RecalcOp`, not an
   error). **`recalculate` is NOT a no-op-diff snapshot for a group with an Explode/Reroll
@@ -350,10 +372,11 @@ on.
   reaching `roll_uniform(rng, 0, faces.len() as i32 - 1)` computes a degenerate zero/negative span;
   no notation path constructs `Faces` today (M11b-3 is struct-only for face-lists), so this is not
   reachable yet — logged in `docs/TODO.md` as an M11d untrusted-wire-boundary enforcement point.
-- **`compare_labels` returns `Some(0)`, not `None`, for an all-dropped label.** `None` means the
-  label has ZERO matching records at all; a label whose records all exist but are all `kept: false`
-  still sums to `0` over an empty kept-subset, which is `Some(0)` — distinct from "label doesn't
-  exist."
+- **`compare_labels` returns `Some(0)`, not `None`, for an all-dropped-but-ordered label.** `None`
+  means the label has ZERO matching records at all, OR at least one matching record is unordered
+  (see the Hard invariants entry above); a label whose records all exist, are all ordered, but are
+  all `kept: false` still sums to `0` over an empty kept-subset, which is `Some(0)` — distinct from
+  "label doesn't exist" or "label is unordered."
 
 ## Pointers
 
