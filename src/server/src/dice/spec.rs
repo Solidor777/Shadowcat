@@ -191,22 +191,32 @@ pub struct Tier {
     pub tier_value: Option<i32>,
 }
 
-/// A crit-success event (SuccessCount mode). Fires when a kept die's value
-/// reaches `threshold` (direction-aware). Adds `extra_successes` beyond the
-/// die's base success and `positive_counter` to the positive tally.
+/// What makes a die's crit event fire. `AtLeast` is direction-aware (flips
+/// under `LowWins`, exactly as the old bare `threshold: i32` did). `HasSymbol`
+/// is direction-INSENSITIVE — a symbol is present or absent, there is no
+/// "better end" to flip.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CritTrigger {
+    AtLeast(i32),
+    HasSymbol(Symbol),
+}
+
+/// A crit-success event (SuccessCount mode). Fires when a kept die's value or
+/// symbols satisfy `trigger`. Adds `extra_successes` beyond the die's base
+/// success and `positive_counter` to the positive tally.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CritSuccess {
-    pub threshold: i32,
+    pub trigger: CritTrigger,
     pub extra_successes: i32,
     pub positive_counter: i32,
 }
 
-/// A crit-fail event (SuccessCount mode). Fires when a kept die's value
-/// reaches `threshold` (direction-aware). Subtracts `lost` from net successes
-/// (clamped at 0 unless `allow_negative`) and adds `negative_counter`.
+/// A crit-fail event (SuccessCount mode). Fires when a kept die's value or
+/// symbols satisfy `trigger`. Subtracts `lost` from net successes (clamped at
+/// 0 unless `allow_negative`) and adds `negative_counter`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CritFail {
-    pub threshold: i32,
+    pub trigger: CritTrigger,
     pub lost: i32,
     pub negative_counter: i32,
     pub allow_negative: bool,
@@ -400,7 +410,7 @@ mod tests {
                     tier_value: Some(1),
                 }],
                 crit_success: Some(CritSuccess {
-                    threshold: 1,
+                    trigger: CritTrigger::AtLeast(1),
                     extra_successes: 1,
                     positive_counter: 1,
                 }),

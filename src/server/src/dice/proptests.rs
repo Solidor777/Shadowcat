@@ -4,8 +4,8 @@ use crate::dice::eval::{evaluate, roll};
 use crate::dice::recalc::recalculate;
 use crate::dice::rng::NoiseRng;
 use crate::dice::spec::{
-    Comparator, CritFail, CritSuccess, DiceGroup, DieKind, Direction, ExplodeKind, Expr,
-    GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule,
+    Comparator, CritFail, CritSuccess, CritTrigger, DiceGroup, DieKind, Direction, ExplodeKind,
+    Expr, GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule,
 };
 
 fn simple_pool(count: u32, sides: i32, target: i32) -> RollSpec {
@@ -157,13 +157,13 @@ proptest! {
                 // of the domain (unlike >= die_max, which collapses to a single face
                 // and, under a swapped comparator, to "always true" over 1..=die_max).
                 crit_success: Some(CritSuccess {
-                    threshold: die_max - 2,
+                    trigger: CritTrigger::AtLeast(die_max - 2),
                     extra_successes: 2,
                     positive_counter: 1,
                 }),
                 // Interior threshold: HighWins fires at value <= threshold.
                 crit_fail: Some(CritFail {
-                    threshold: die_min + 2,
+                    trigger: CritTrigger::AtLeast(die_min + 2),
                     lost: 1,
                     negative_counter: 1,
                     allow_negative: true,
@@ -186,14 +186,14 @@ proptest! {
                 // Mirror of hi's (interior) crit_success threshold; LowWins fires at
                 // value <= threshold.
                 crit_success: Some(CritSuccess {
-                    threshold: mirror(die_max - 2),
+                    trigger: CritTrigger::AtLeast(mirror(die_max - 2)),
                     extra_successes: 2,
                     positive_counter: 1,
                 }),
                 // Mirror of hi's (interior) crit_fail threshold; LowWins fires at
                 // value >= threshold.
                 crit_fail: Some(CritFail {
-                    threshold: mirror(die_min + 2),
+                    trigger: CritTrigger::AtLeast(mirror(die_min + 2)),
                     lost: 1,
                     negative_counter: 1,
                     allow_negative: true,

@@ -46,7 +46,10 @@ fn die_values(
                 SuccessRule::HasSymbol(_) => false,
             };
             let base = i32::from(base_success);
-            let dc = crit::score_die(direction, f, cfg);
+            // die_values only ever runs over Numeric dice (see the
+            // SuccessRule::HasSymbol arm above); a Numeric die never carries
+            // symbols, so an empty slice is exact here, not a placeholder.
+            let dc = crit::score_die(direction, f, &[], cfg);
             (
                 base + dc.extra_successes - dc.lost,
                 dc.positive_counter - dc.negative_counter,
@@ -187,7 +190,7 @@ pub fn allocate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dice::spec::{Comparator, CritFail, CritSuccess, SuccessRule};
+    use crate::dice::spec::{Comparator, CritFail, CritSuccess, CritTrigger, SuccessRule};
 
     #[test]
     fn adjust_preserves_value_at_zero_points_for_all_ranges() {
@@ -248,7 +251,7 @@ mod tests {
         // crit_success at 6: +2 extra successes, +1 positive counter.
         let c = cfg(
             Some(CritSuccess {
-                threshold: 6,
+                trigger: CritTrigger::AtLeast(6),
                 extra_successes: 2,
                 positive_counter: 1,
             }),
@@ -337,7 +340,7 @@ mod tests {
                 SuccessRule::HasSymbol(s) => r.symbols.contains(s),
             };
             base += i32::from(base_success);
-            let dc = crit::score_die(direction, r.value, cfg);
+            let dc = crit::score_die(direction, r.value, &r.symbols, cfg);
             extra += dc.extra_successes;
             lost += dc.lost;
             pos += dc.positive_counter;
@@ -395,12 +398,12 @@ mod tests {
             required_successes: None,
             tiers: vec![],
             crit_success: Some(CritSuccess {
-                threshold: 6,
+                trigger: CritTrigger::AtLeast(6),
                 extra_successes: 0,
                 positive_counter: 1,
             }),
             crit_fail: Some(CritFail {
-                threshold: 1,
+                trigger: CritTrigger::AtLeast(1),
                 lost: 1,
                 negative_counter: 1,
                 allow_negative: false,
@@ -519,7 +522,7 @@ mod tests {
             let target = pick(min, max);
             let cs = if pick(0, 1) == 0 {
                 Some(CritSuccess {
-                    threshold: pick(min, max),
+                    trigger: CritTrigger::AtLeast(pick(min, max)),
                     extra_successes: pick(-1, 3), // include a perverse negative
                     positive_counter: pick(-2, 2),
                 })
@@ -528,7 +531,7 @@ mod tests {
             };
             let cf = if pick(0, 1) == 0 {
                 Some(CritFail {
-                    threshold: pick(min, max),
+                    trigger: CritTrigger::AtLeast(pick(min, max)),
                     lost: pick(-1, 3),
                     negative_counter: pick(-2, 2),
                     allow_negative: pick(0, 1) == 0,
@@ -591,7 +594,7 @@ mod tests {
         // is limited, but never exceeded).
         let mut c = cfg(
             Some(CritSuccess {
-                threshold: 6,
+                trigger: CritTrigger::AtLeast(6),
                 extra_successes: 1,
                 positive_counter: 0,
             }),
