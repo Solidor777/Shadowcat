@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::dice::eval::crit;
 use crate::dice::outcome::{DieRecord, RawRoll};
-use crate::dice::spec::{DieId, DieKind, Direction, SuccessConfig};
+use crate::dice::spec::{DieId, DieKind, Direction, SuccessConfig, SuccessRule};
 
 /// Move `value` toward "better" (higher under `HighWins`, lower under `LowWins`)
 /// by up to `k` steps, stopping at the die's better-end face (`max` / `min`).
@@ -38,8 +38,18 @@ fn die_values(
     (0..=e)
         .map(|k| {
             let f = adjust(direction, value, min, max, k);
-            let base = i32::from(cfg.success.comp.test(f, cfg.success.target));
-            let dc = crit::score_die(direction, f, cfg);
+            let base_success = match &cfg.success {
+                SuccessRule::Numeric { comp, target } => comp.test(f, *target),
+                // die_values only ever runs over Numeric dice (expertise excludes
+                // Faces dice entirely); moving a Numeric face never changes symbols,
+                // so a HasSymbol rule can never fire here — exists only for exhaustiveness.
+                SuccessRule::HasSymbol(_) => false,
+            };
+            let base = i32::from(base_success);
+            // die_values only ever runs over Numeric dice (see the
+            // SuccessRule::HasSymbol arm above); a Numeric die never carries
+            // symbols, so an empty slice is exact here, not a placeholder.
+            let dc = crit::score_die(direction, f, &[], cfg);
             (
                 base + dc.extra_successes - dc.lost,
                 dc.positive_counter - dc.negative_counter,
@@ -122,25 +132,46 @@ pub fn allocate(
     if e == 0 {
         return;
     }
-    // Bounds per die: every record id maps to a RawDie carrying its Numeric kind.
+    // Bounds per die: only Numeric dice have a defined [min,max] adjust range.
     let bounds: HashMap<DieId, (i32, i32)> = raws
         .dice
         .iter()
-        .map(|d| {
-            let DieKind::Numeric { min, max } = d.kind;
-            (d.id, (min, max))
+        .filter_map(|d| match d.kind {
+            DieKind::Numeric { min, max } => Some((d.id, (min, max))),
+            DieKind::Faces { .. } => None,
         })
         .collect();
-    // Contributing dice = the pooled kept dice, in record order.
+    // Contributing dice = the pooled kept NUMERIC dice, in record order.
+    // A Faces die (ordered or not) is excluded: `adjust`'s "+1 toward better
+    // within [min,max]" has no defined meaning over an arbitrary face-list —
+    // there is no contiguous numeric range to move within, and mutating
+    // `value` to a non-face integer would desync the die's `symbols`.
     let kept: Vec<usize> = records
         .iter()
         .enumerate()
-        .filter(|(_, r)| r.kept)
+        .filter(|(_, r)| r.kept && bounds.contains_key(&r.id))
         .map(|(i, _)| i)
         .collect();
     if kept.is_empty() {
         return;
     }
+    // Fixed net contribution from kept dice EXCLUDED from adjustment (Faces
+    // dice): their success/crit score is identical under every allocation, so
+    // it's a constant term missing from the DP's own `net` (computed only over
+    // `dies`, the adjustable Numeric subset). The branch below decides whether
+    // the TRUE pool-wide clamped total can reach >= 1 — that decision needs
+    // this constant folded in, or a nonzero fixed delta (e.g. a Faces die
+    // hitting `crit_fail` via `HasSymbol`) silently answers a different
+    // question than `evaluate_success` will actually score. `fixed` does NOT
+    // need to feed into the DP's own per-allocation comparisons: it's the same
+    // additive constant across every candidate allocation, so it never changes
+    // which allocation is argmax within either pass — only the pass-choice
+    // threshold cares about its absolute value.
+    let fixed: i32 = records
+        .iter()
+        .filter(|r| r.kept && !bounds.contains_key(&r.id))
+        .map(|r| crit::score_die_net(direction, cfg, r.value, &r.symbols).net())
+        .sum();
     let dies: Vec<Vec<(i32, i32)>> = kept
         .iter()
         .map(|&idx| {
@@ -156,7 +187,7 @@ pub fn allocate(
         .as_ref()
         .map(|c| c.allow_negative)
         .unwrap_or(false);
-    let alloc = if allow_neg || net >= 1 {
+    let alloc = if allow_neg || net + fixed >= 1 {
         lex_alloc
     } else {
         // All-failed region: successes all clamp to 0; maximize counters only.
@@ -175,7 +206,7 @@ pub fn allocate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dice::spec::{Comparator, CritFail, CritSuccess, SuccessRule};
+    use crate::dice::spec::{Comparator, CritFail, CritSuccess, CritTrigger, SuccessRule};
 
     #[test]
     fn adjust_preserves_value_at_zero_points_for_all_ranges() {
@@ -209,7 +240,7 @@ mod tests {
 
     fn cfg(cs: Option<CritSuccess>, cf: Option<CritFail>) -> SuccessConfig {
         SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target: 5,
             },
@@ -236,7 +267,7 @@ mod tests {
         // crit_success at 6: +2 extra successes, +1 positive counter.
         let c = cfg(
             Some(CritSuccess {
-                threshold: 6,
+                trigger: CritTrigger::AtLeast(6),
                 extra_successes: 2,
                 positive_counter: 1,
             }),
@@ -252,7 +283,7 @@ mod tests {
     fn die_values_lowwins_moves_toward_low_target() {
         // LowWins, success at <=2 (comp set by caller/parse). face 4 -> down.
         let mut c = cfg(None, None);
-        c.success = SuccessRule {
+        c.success = SuccessRule::Numeric {
             comp: Comparator::Lte,
             target: 2,
         };
@@ -298,6 +329,7 @@ mod tests {
                 natural: v,
             });
             raws.records.push(DieRecord {
+                label: None,
                 id,
                 group_index: 0,
                 natural: v,
@@ -308,6 +340,8 @@ mod tests {
                 crit_success: false,
                 crit_fail: false,
                 expertise: 0,
+                symbols: vec![],
+                ordered: true,
             });
         }
         raws.next_id = values.len() as DieId;
@@ -316,16 +350,13 @@ mod tests {
 
     /// Re-score a pool exactly as `evaluate_success` will: clamped net + counters.
     fn score_pool(direction: Direction, cfg: &SuccessConfig, records: &[DieRecord]) -> (i32, i32) {
-        let (mut base, mut extra, mut lost, mut pos, mut neg) = (0, 0, 0, 0, 0);
+        let (mut raw, mut pos, mut neg) = (0, 0, 0);
         for r in records.iter().filter(|r| r.kept) {
-            base += i32::from(cfg.success.comp.test(r.value, cfg.success.target));
-            let dc = crit::score_die(direction, r.value, cfg);
-            extra += dc.extra_successes;
-            lost += dc.lost;
-            pos += dc.positive_counter;
-            neg += dc.negative_counter;
+            let scored = crit::score_die_net(direction, cfg, r.value, &r.symbols);
+            raw += scored.net();
+            pos += scored.crit.positive_counter;
+            neg += scored.crit.negative_counter;
         }
-        let raw = base + extra - lost;
         let allow_neg = cfg
             .crit_fail
             .as_ref()
@@ -370,19 +401,19 @@ mod tests {
         // at face 1; crit_success at 6 (extra_successes 0, positive_counter 1) fires at
         // face 6. Budget 10 affords moving BOTH dice from face 1 to face 6 (5 points each).
         let c = SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target: 100,
             },
             required_successes: None,
             tiers: vec![],
             crit_success: Some(CritSuccess {
-                threshold: 6,
+                trigger: CritTrigger::AtLeast(6),
                 extra_successes: 0,
                 positive_counter: 1,
             }),
             crit_fail: Some(CritFail {
-                threshold: 1,
+                trigger: CritTrigger::AtLeast(1),
                 lost: 1,
                 negative_counter: 1,
                 allow_negative: false,
@@ -501,7 +532,7 @@ mod tests {
             let target = pick(min, max);
             let cs = if pick(0, 1) == 0 {
                 Some(CritSuccess {
-                    threshold: pick(min, max),
+                    trigger: CritTrigger::AtLeast(pick(min, max)),
                     extra_successes: pick(-1, 3), // include a perverse negative
                     positive_counter: pick(-2, 2),
                 })
@@ -510,7 +541,7 @@ mod tests {
             };
             let cf = if pick(0, 1) == 0 {
                 Some(CritFail {
-                    threshold: pick(min, max),
+                    trigger: CritTrigger::AtLeast(pick(min, max)),
                     lost: pick(-1, 3),
                     negative_counter: pick(-2, 2),
                     allow_negative: pick(0, 1) == 0,
@@ -519,7 +550,7 @@ mod tests {
                 None
             };
             let cfg = SuccessConfig {
-                success: SuccessRule { comp, target },
+                success: SuccessRule::Numeric { comp, target },
                 required_successes: None,
                 tiers: vec![],
                 crit_success: cs,
@@ -533,7 +564,12 @@ mod tests {
                 .dice
                 .iter()
                 .map(|d| {
-                    let DieKind::Numeric { min, max } = d.kind;
+                    let (min, max) = match d.kind {
+                        DieKind::Numeric { min, max } => (min, max),
+                        DieKind::Faces { .. } => {
+                            unreachable!("oracle corpus only constructs Numeric dice")
+                        }
+                    };
                     (d.id, (min, max))
                 })
                 .collect();
@@ -562,13 +598,187 @@ mod tests {
     }
 
     #[test]
+    fn expertise_never_allocates_to_an_ordered_faces_die() {
+        use crate::dice::spec::Face;
+        // One ordered Faces die (ranked, all-valued) + one Numeric die, both at a
+        // value that COULD reach the target with 1 expertise point. Budget 1 point
+        // total: it must land on the Numeric die, never the Faces die.
+        let faces = vec![
+            Face {
+                value: Some(4),
+                symbols: vec![],
+            },
+            Face {
+                value: Some(5),
+                symbols: vec![],
+            },
+        ];
+        let c = SuccessConfig {
+            success: SuccessRule::Numeric {
+                comp: Comparator::Gte,
+                target: 5,
+            },
+            required_successes: None,
+            tiers: vec![],
+            crit_success: None,
+            crit_fail: None,
+            expertise: 1,
+        };
+        let mut raws = RawRoll::default();
+        let faces_id = raws.push(
+            DieKind::Faces {
+                faces: faces.clone(),
+            },
+            0,
+        ); // value 4, one step from 5
+        let numeric_id = raws.push(DieKind::Numeric { min: 1, max: 6 }, 4); // value 4, one step from 5
+        let mut records = vec![
+            DieRecord {
+                id: faces_id,
+                group_index: 0,
+                natural: 0,
+                value: 4,
+                kept: true,
+                exploded: false,
+                rerolled_from: None,
+                crit_success: false,
+                crit_fail: false,
+                expertise: 0,
+                label: None,
+                symbols: vec![],
+                ordered: true,
+            },
+            DieRecord {
+                id: numeric_id,
+                group_index: 0,
+                natural: 4,
+                value: 4,
+                kept: true,
+                exploded: false,
+                rerolled_from: None,
+                crit_success: false,
+                crit_fail: false,
+                expertise: 0,
+                label: None,
+                symbols: vec![],
+                ordered: true,
+            },
+        ];
+        allocate(Direction::HighWins, &c, &raws, &mut records);
+        assert_eq!(
+            records[0].expertise, 0,
+            "ordered Faces die must never receive expertise points"
+        );
+        assert_eq!(
+            records[1].expertise, 1,
+            "the Numeric die gets the point instead"
+        );
+        assert_eq!(records[1].value, 5);
+    }
+
+    #[test]
+    fn allocate_accounts_for_fixed_contribution_from_excluded_faces_dice() {
+        use crate::dice::spec::{CritFail, CritSuccess, CritTrigger, Face};
+        // A kept Faces die's success/crit score never changes under any
+        // allocation (it is excluded from `dies`), so it is a FIXED additive
+        // term on the true pool-wide net. The branch's "can the true net
+        // reach >= 1" check must include that fixed term — using only the
+        // DP's own Numeric-only partial net answers a different question
+        // whenever the fixed term is nonzero.
+        //
+        // Setup: base target (>=6) is unreachable by any die here, so base is
+        // always 0. crit_success (AtLeast(3), +5 counter, no extra successes)
+        // fires for a Numeric die at value >= 3. The Faces die carries symbol
+        // "doom", firing crit_fail (HasSymbol("doom"), lost 5) unconditionally
+        // — a fixed -5 no allocation can change. True net is therefore -5 or
+        // -4 under every allocation (always < 1, clamps to 0), so the correct
+        // objective is pure counter-maximization: die A (value 5) already
+        // satisfies AtLeast(3) at k=0, so spending the point there changes
+        // nothing; die B (value 2) does not yet satisfy it, so the point must
+        // go to die B (2 -> 3) to cross the threshold and add +5 counter.
+        let faces = vec![Face {
+            value: Some(0),
+            symbols: vec!["doom".to_string()],
+        }];
+        let c = SuccessConfig {
+            success: SuccessRule::Numeric {
+                comp: Comparator::Gte,
+                target: 6,
+            },
+            required_successes: None,
+            tiers: vec![],
+            crit_success: Some(CritSuccess {
+                trigger: CritTrigger::AtLeast(3),
+                extra_successes: 0,
+                positive_counter: 5,
+            }),
+            crit_fail: Some(CritFail {
+                trigger: CritTrigger::HasSymbol("doom".to_string()),
+                lost: 5,
+                negative_counter: 0,
+                allow_negative: false,
+            }),
+            expertise: 1,
+        };
+        let mut raws = RawRoll::default();
+        let faces_id = raws.push(
+            DieKind::Faces {
+                faces: faces.clone(),
+            },
+            0,
+        );
+        let a_id = raws.push(DieKind::Numeric { min: 1, max: 6 }, 5);
+        let b_id = raws.push(DieKind::Numeric { min: 1, max: 6 }, 2);
+        let mk = |id: DieId, natural: i32, value: i32, symbols: Vec<&str>| DieRecord {
+            id,
+            group_index: 0,
+            natural,
+            value,
+            kept: true,
+            exploded: false,
+            rerolled_from: None,
+            crit_success: false,
+            crit_fail: false,
+            expertise: 0,
+            label: None,
+            symbols: symbols.into_iter().map(String::from).collect(),
+            ordered: true,
+        };
+        let mut records = vec![
+            mk(faces_id, 0, 0, vec!["doom"]),
+            mk(a_id, 5, 5, vec![]),
+            mk(b_id, 2, 2, vec![]),
+        ];
+        allocate(Direction::HighWins, &c, &raws, &mut records);
+
+        assert_eq!(
+            records[1].expertise, 0,
+            "die A (already past its crit threshold at k=0) gets nothing"
+        );
+        assert_eq!(
+            records[2].expertise, 1,
+            "die B gets the point to cross its own crit threshold"
+        );
+        assert_eq!(records[2].value, 3);
+
+        // Cross-check against the true pool-wide score (matches evaluate_success's
+        // own scoring exactly, including the Faces die's fixed contribution).
+        let (net, counter) = score_pool(Direction::HighWins, &c, &records);
+        assert_eq!(
+            net, 0,
+            "base is unreachable and the Faces die's crit_fail clamps net to 0 either way"
+        );
+        assert_eq!(counter, 10, "the true optimum spends the point on die B");
+    }
+
+    #[test]
     fn expertise_result_is_between_greedy_and_max_bounds() {
         // Sanity bounds: optimal net >= the no-expertise net, and <= the net with every
         // die individually maxed toward better (an unreachable upper bound when budget
         // is limited, but never exceeded).
         let mut c = cfg(
             Some(CritSuccess {
-                threshold: 6,
+                trigger: CritTrigger::AtLeast(6),
                 extra_successes: 1,
                 positive_counter: 0,
             }),

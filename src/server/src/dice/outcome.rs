@@ -1,6 +1,8 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
-use crate::dice::spec::{DieId, DieKind, RollSpec};
+use crate::dice::spec::{DieId, DieKind, RollSpec, Symbol};
 
 /// A single die's natural (RNG) result — the only nondeterministic artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +66,28 @@ pub struct DieRecord {
     /// `value` is the post-expertise face, `natural`/base `value` the pre-expertise one.
     #[serde(default)]
     pub expertise: i32,
+    /// Tag copied from the producing `DiceGroup.label` (M11b-3); `None` if the
+    /// group is unlabeled. Read by `RollOutcome::by_label`/`compare_labels`.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Resolved symbols for a `Faces` die's drawn face (M11b-3); empty for `Numeric`.
+    #[serde(default)]
+    pub symbols: Vec<Symbol>,
+    /// Whether the producing group's `DieKind` was ordered (`DieKind::is_ordered`) at
+    /// construction time (M11b-3). `Numeric` is always `true`; a `Faces` die is `true`
+    /// only if every face in its group had `value: Some`. `compare_labels` uses this to
+    /// detect an unordered (symbolic) label — it cannot be inferred from `value` alone,
+    /// since a genuine ordered value of `0` is indistinguishable from an unordered
+    /// die's default-`0` fallback.
+    #[serde(default = "default_ordered")]
+    pub ordered: bool,
+}
+
+/// `serde(default)` fallback for `ordered`: pre-M11b-3 records (and any deserialized
+/// data predating this field) had no unordered dice at all, so `true` preserves their
+/// prior (fully-ordered) behavior.
+fn default_ordered() -> bool {
+    true
 }
 
 /// Fully-derived result. `total` is the primary output for Total mode; in
@@ -85,6 +109,37 @@ pub struct RollOutcome {
     pub crit_fails: i32,
     pub positive_counter: i32,
     pub negative_counter: i32,
+    /// Per-symbol tallies over KEPT dice, computed unconditionally (independent
+    /// of `SuccessRule`'s variant). Deterministic iteration order (`BTreeMap`).
+    #[serde(default)]
+    pub symbol_counts: BTreeMap<Symbol, i32>,
+}
+
+impl RollOutcome {
+    /// All records (kept and dropped) carrying `label`, in roll order.
+    pub fn by_label(&self, label: &str) -> Vec<&DieRecord> {
+        self.records
+            .iter()
+            .filter(|r| r.label.as_deref() == Some(label))
+            .collect()
+    }
+
+    /// Compares two labels by the sum of their KEPT records' `value`s.
+    /// `None` if either label has no records, or either label's records are
+    /// unordered (a symbolic group with no numeric value — M11b-3 §9).
+    /// Direction-independent: purely "which summed higher."
+    pub fn compare_labels(&self, a: &str, b: &str) -> Option<std::cmp::Ordering> {
+        let sum_of = |label: &str| -> Option<i64> {
+            let recs = self.by_label(label);
+            if recs.is_empty() || recs.iter().any(|r| !r.ordered) {
+                return None;
+            }
+            Some(recs.iter().filter(|r| r.kept).map(|r| r.value as i64).sum())
+        };
+        let sa = sum_of(a)?;
+        let sb = sum_of(b)?;
+        Some(sa.cmp(&sb))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,5 +163,130 @@ mod tests {
         assert_eq!(b, 1);
         assert_eq!(r.dice.len(), 2);
         assert_eq!(r.dice[0].natural, 4);
+    }
+
+    fn labeled_record(label: &str, value: i32, kept: bool) -> DieRecord {
+        labeled_record_ordered(label, value, kept, true)
+    }
+
+    fn labeled_record_ordered(label: &str, value: i32, kept: bool, ordered: bool) -> DieRecord {
+        DieRecord {
+            id: 0,
+            group_index: 0,
+            natural: value,
+            value,
+            kept,
+            exploded: false,
+            rerolled_from: None,
+            crit_success: false,
+            crit_fail: false,
+            expertise: 0,
+            label: Some(label.to_string()),
+            symbols: vec![],
+            ordered,
+        }
+    }
+
+    #[test]
+    fn by_label_collects_only_matching_records() {
+        let out = RollOutcome {
+            total: 0,
+            records: vec![
+                labeled_record("Hope", 5, true),
+                labeled_record("Fear", 3, true),
+                labeled_record("Hope", 2, true),
+            ],
+            successes: None,
+            pass: None,
+            margin: None,
+            tier_label: None,
+            tier_value: None,
+            crit_successes: 0,
+            crit_fails: 0,
+            positive_counter: 0,
+            negative_counter: 0,
+            symbol_counts: Default::default(),
+        };
+        let hope: Vec<i32> = out.by_label("Hope").iter().map(|r| r.value).collect();
+        assert_eq!(hope, vec![5, 2]);
+        assert!(out.by_label("Nope").is_empty());
+    }
+
+    #[test]
+    fn compare_labels_orders_by_sum_of_kept_values() {
+        use std::cmp::Ordering;
+        let out = RollOutcome {
+            total: 0,
+            records: vec![
+                labeled_record("Hope", 5, true),
+                labeled_record("Hope", 1, false), // dropped: excluded from the sum
+                labeled_record("Fear", 3, true),
+            ],
+            successes: None,
+            pass: None,
+            margin: None,
+            tier_label: None,
+            tier_value: None,
+            crit_successes: 0,
+            crit_fails: 0,
+            positive_counter: 0,
+            negative_counter: 0,
+            symbol_counts: Default::default(),
+        };
+        // Hope kept-sum = 5, Fear kept-sum = 3 -> Hope > Fear.
+        assert_eq!(out.compare_labels("Hope", "Fear"), Some(Ordering::Greater));
+        assert_eq!(out.compare_labels("Fear", "Hope"), Some(Ordering::Less));
+        assert_eq!(out.compare_labels("Hope", "Missing"), None);
+    }
+
+    #[test]
+    fn compare_labels_returns_none_when_either_label_is_unordered() {
+        // "Fear" is a symbolic (unordered) label — its records carry `ordered: false`,
+        // the exact Daggerheart Hope/Fear headline case (design doc §3/§5): an
+        // unordered label has no well-defined sum, so `compare_labels` must return
+        // `None`, not `Some(0)` from summing derived-0 `value`s.
+        let out = RollOutcome {
+            total: 0,
+            records: vec![
+                labeled_record_ordered("Hope", 5, true, true),
+                labeled_record_ordered("Fear", 0, true, false),
+            ],
+            successes: None,
+            pass: None,
+            margin: None,
+            tier_label: None,
+            tier_value: None,
+            crit_successes: 0,
+            crit_fails: 0,
+            positive_counter: 0,
+            negative_counter: 0,
+            symbol_counts: Default::default(),
+        };
+        assert_eq!(out.compare_labels("Hope", "Fear"), None);
+        assert_eq!(out.compare_labels("Fear", "Hope"), None);
+    }
+
+    #[test]
+    fn compare_labels_returns_none_when_label_mixes_ordered_and_unordered_groups() {
+        // A label spanning two DiceGroups, one ordered and one unordered: a partial
+        // pool with any unordered member has no well-defined sum either.
+        let out = RollOutcome {
+            total: 0,
+            records: vec![
+                labeled_record_ordered("Mixed", 5, true, true),
+                labeled_record_ordered("Mixed", 0, true, false),
+            ],
+            successes: None,
+            pass: None,
+            margin: None,
+            tier_label: None,
+            tier_value: None,
+            crit_successes: 0,
+            crit_fails: 0,
+            positive_counter: 0,
+            negative_counter: 0,
+            symbol_counts: Default::default(),
+        };
+        assert_eq!(out.compare_labels("Mixed", "Mixed"), None);
     }
 }

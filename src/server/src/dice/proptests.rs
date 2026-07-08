@@ -4,20 +4,21 @@ use crate::dice::eval::{evaluate, roll};
 use crate::dice::recalc::recalculate;
 use crate::dice::rng::NoiseRng;
 use crate::dice::spec::{
-    Comparator, CritFail, CritSuccess, DiceGroup, DieKind, Direction, ExplodeKind, Expr,
-    GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule,
+    Comparator, CritFail, CritSuccess, CritTrigger, DiceGroup, DieKind, Direction, ExplodeKind,
+    Expr, Face, GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule,
 };
 
 fn simple_pool(count: u32, sides: i32, target: i32) -> RollSpec {
     RollSpec {
         expr: Expr::Dice(DiceGroup {
+            label: None,
             count,
             kind: DieKind::Numeric { min: 1, max: sides },
             modifiers: vec![],
         }),
         direction: Direction::HighWins,
         mode: Mode::SuccessCount(SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target,
             },
@@ -38,13 +39,14 @@ fn pool_with_modifiers(
 ) -> RollSpec {
     RollSpec {
         expr: Expr::Dice(DiceGroup {
+            label: None,
             count,
             kind: DieKind::Numeric { min: 1, max: sides },
             modifiers,
         }),
         direction: Direction::HighWins,
         mode: Mode::SuccessCount(SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target,
             },
@@ -140,13 +142,14 @@ proptest! {
 
         let hi = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count,
                 kind: DieKind::Numeric { min: die_min, max: die_max },
                 modifiers: vec![],
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule { comp: Comparator::Gte, target: 6 },
+                success: SuccessRule::Numeric { comp: Comparator::Gte, target: 6 },
                 required_successes: None,
                 tiers: vec![],
                 // Interior threshold (not the die's own extreme): HighWins fires at
@@ -154,13 +157,13 @@ proptest! {
                 // of the domain (unlike >= die_max, which collapses to a single face
                 // and, under a swapped comparator, to "always true" over 1..=die_max).
                 crit_success: Some(CritSuccess {
-                    threshold: die_max - 2,
+                    trigger: CritTrigger::AtLeast(die_max - 2),
                     extra_successes: 2,
                     positive_counter: 1,
                 }),
                 // Interior threshold: HighWins fires at value <= threshold.
                 crit_fail: Some(CritFail {
-                    threshold: die_min + 2,
+                    trigger: CritTrigger::AtLeast(die_min + 2),
                     lost: 1,
                     negative_counter: 1,
                     allow_negative: true,
@@ -177,20 +180,20 @@ proptest! {
         let lo = RollSpec {
             direction: Direction::LowWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule { comp: Comparator::Lte, target: mirror(6) },
+                success: SuccessRule::Numeric { comp: Comparator::Lte, target: mirror(6) },
                 required_successes: None,
                 tiers: vec![],
                 // Mirror of hi's (interior) crit_success threshold; LowWins fires at
                 // value <= threshold.
                 crit_success: Some(CritSuccess {
-                    threshold: mirror(die_max - 2),
+                    trigger: CritTrigger::AtLeast(mirror(die_max - 2)),
                     extra_successes: 2,
                     positive_counter: 1,
                 }),
                 // Mirror of hi's (interior) crit_fail threshold; LowWins fires at
                 // value >= threshold.
                 crit_fail: Some(CritFail {
-                    threshold: mirror(die_min + 2),
+                    trigger: CritTrigger::AtLeast(mirror(die_min + 2)),
                     lost: 1,
                     negative_counter: 1,
                     allow_negative: true,
@@ -221,8 +224,44 @@ proptest! {
             _ => prop_assert!(false, "expected Total mode"),
         }
         match sc.mode {
-            Mode::SuccessCount(c) => prop_assert_eq!(c.success.target, target),
+            Mode::SuccessCount(c) => match c.success {
+                SuccessRule::Numeric { target: t, .. } => prop_assert_eq!(t, target),
+                SuccessRule::HasSymbol(_) => prop_assert!(false, "expected a Numeric success rule"),
+            },
             _ => prop_assert!(false, "expected SuccessCount mode"),
         }
+    }
+
+    /// A labeled, symbolic (unordered) pool: evaluate must still be a pure
+    /// function of (spec, raws), exactly like the existing
+    /// `evaluate_is_deterministic` property for Numeric pools.
+    #[test]
+    fn labeled_symbolic_pool_evaluate_is_deterministic(seed in any::<u64>(), count in 1u32..8) {
+        let faces = vec![
+            Face { value: None, symbols: vec!["success".into()] },
+            Face { value: None, symbols: vec!["blank".into()] },
+        ];
+        let spec = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count,
+                kind: DieKind::Faces { faces },
+                modifiers: vec![],
+                label: Some("Pool".to_string()),
+            }),
+            direction: Direction::HighWins,
+            mode: Mode::SuccessCount(SuccessConfig {
+                success: SuccessRule::HasSymbol("success".to_string()),
+                required_successes: None,
+                tiers: vec![],
+                crit_success: None,
+                crit_fail: None,
+                expertise: 0,
+            }),
+        };
+        let raws = roll(&spec, &mut NoiseRng::from_seed(seed));
+        prop_assert_eq!(evaluate(&spec, &raws), evaluate(&spec, &raws));
+        // A None-valued face contributes 0 to `total`; an all-symbolic pool has no
+        // rankable value, so `total` is always 0 regardless of dice count or roll.
+        prop_assert_eq!(evaluate(&spec, &raws).total, 0);
     }
 }

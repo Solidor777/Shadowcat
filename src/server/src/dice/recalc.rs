@@ -49,8 +49,12 @@ pub fn recalculate(
                 for g in groups.iter_mut() {
                     for d in g.iter_mut() {
                         if ids.contains(&d.id) {
-                            let DieKind::Numeric { min, max } = d.kind;
-                            d.natural = roll_uniform(rng, min, max);
+                            d.natural = match &d.kind {
+                                DieKind::Numeric { min, max } => roll_uniform(rng, *min, *max),
+                                DieKind::Faces { faces } => {
+                                    roll_uniform(rng, 0, faces.len() as i32 - 1)
+                                }
+                            };
                         }
                     }
                 }
@@ -174,13 +178,14 @@ mod tests {
     fn pool(count: u32) -> RollSpec {
         RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count,
                 kind: DieKind::Numeric { min: 1, max: 10 },
                 modifiers: vec![],
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 7,
                 },
@@ -191,6 +196,58 @@ mod tests {
                 expertise: 0,
             }),
         }
+    }
+
+    #[test]
+    fn reroll_dice_redraws_a_fresh_index_for_a_faces_die() {
+        use crate::dice::spec::Face;
+        let faces = vec![
+            Face {
+                value: Some(1),
+                symbols: vec![],
+            },
+            Face {
+                value: Some(6),
+                symbols: vec![],
+            },
+        ];
+        let group = DiceGroup {
+            count: 1,
+            kind: DieKind::Faces {
+                faces: faces.clone(),
+            },
+            modifiers: vec![],
+            label: None,
+        };
+        let spec = RollSpec {
+            expr: Expr::Dice(group.clone()),
+            direction: Direction::HighWins,
+            mode: Mode::Total(TotalConfig {
+                difficulty: None,
+                tiers: vec![],
+            }),
+        };
+        let naturals = vec![RawDie {
+            id: 0,
+            kind: DieKind::Faces {
+                faces: faces.clone(),
+            },
+            natural: 0,
+        }];
+        let raws = RawRoll {
+            dice: naturals.clone(),
+            records: vec![],
+            next_id: 1,
+            group_spans: vec![(0, 1)],
+        };
+        // ScriptedRng forces roll_uniform(rng, 0, 1) to draw index 1 (face value 6).
+        let mut rng = ScriptedRng::new(vec![1]);
+        let (raws2, out2) = recalculate(&spec, &raws, &[RecalcOp::RerollDice(vec![0])], &mut rng);
+        assert_eq!(raws2.dice[0].natural, 1, "reroll drew face index 1");
+        assert_eq!(
+            out2.total, 6,
+            "re-derived value reflects the new face's numeric value"
+        );
     }
 
     #[test]
@@ -248,6 +305,7 @@ mod tests {
     /// named but independently satisfies the Explode trigger on every resolution.
     fn explode_spec_and_raws() -> (RollSpec, RawRoll) {
         let group = DiceGroup {
+            label: None,
             count: 2,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: vec![GroupModifier::Explode {
@@ -339,6 +397,7 @@ mod tests {
     /// independently satisfies the chain-continuing Reroll trigger.
     fn reroll_spec_and_raws() -> (RollSpec, RawRoll) {
         let group = DiceGroup {
+            label: None,
             count: 2,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: vec![GroupModifier::Reroll {

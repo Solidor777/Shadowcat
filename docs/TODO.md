@@ -85,3 +85,17 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   construction path exists yet); add a uniqueness/sortedness guard when M11d wires a
   wire-facing `RollSpec`/`Tier` construction path, mirroring the existing `sides >= 1` and
   `#[serde(default)]` guards already tracked above. (Surfaced by the M11b-1 whole-branch review.)
+- TODO: `DieKind::Faces` (M11b-3) has two unguarded panic surfaces, mirroring the existing
+  `min > max` / dice-count-cap gaps above — `DieKind::validate()` (which rejects an empty
+  `faces` list) is never called from any production code path, only from `spec.rs`'s own unit
+  tests. (1) An empty-`faces` `Faces` die reaching `roll_uniform(rng, 0, faces.len() as i32 - 1)`
+  (`eval::mod::roll_expr`) computes a degenerate `span == 0`, causing an unconditional
+  divide-by-zero panic (`u32::MAX % span32`), not a silent underflow. (2) An out-of-range
+  `natural` reaching `face_value_and_symbols`'s `faces[natural as usize]` (`eval::groups`)
+  panics via index-out-of-bounds — concretely reachable via `recalc::RecalcOp::ReplaceDie`,
+  which (unlike `RerollDice`) has no `Faces`-vs-`Numeric` gate at all and will happily write an
+  arbitrary `natural` onto a `Faces` die's base record. Neither is reachable from untrusted input
+  today (no notation path constructs `Faces` yet — M11b-3 is struct-only for face-lists); both
+  resolve together at the same M11d untrusted-wire boundary that already needs to call
+  `DieKind::validate()` on any wire-constructed `RollSpec`, alongside the `sides >= 1` /
+  dice-count-cap guards above. (Surfaced by the M11b-3 Task 5 code review.)

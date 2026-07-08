@@ -29,6 +29,7 @@ pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> Rol
         crit_fails: 0,
         positive_counter: 0,
         negative_counter: 0,
+        symbol_counts: Default::default(),
     }
 }
 
@@ -82,6 +83,7 @@ mod tests {
 
     fn ng(count: u32, min: i32, max: i32) -> Expr {
         Expr::Dice(DiceGroup {
+            label: None,
             count,
             kind: DieKind::Numeric { min, max },
             modifiers: vec![],
@@ -289,5 +291,28 @@ mod tests {
         let out = evaluate(&spec, &roll(&spec, &mut NoiseRng::from_seed(1)));
         assert_eq!(out.tier_value, Some(2)); // margin 7 -> highest rung <= 7 is offset 5
         assert!(out.pass.is_none());
+    }
+
+    #[test]
+    fn unordered_faces_die_contributes_zero_to_total() {
+        use crate::dice::spec::{DiceGroup, DieKind, Face};
+        let spec = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count: 1,
+                kind: DieKind::Faces {
+                    faces: vec![Face {
+                        value: None,
+                        symbols: vec!["x".into()],
+                    }],
+                },
+                modifiers: vec![],
+                label: None,
+            }),
+            direction: Direction::HighWins,
+            mode: total_mode(),
+        };
+        let raws = roll(&spec, &mut NoiseRng::from_seed(1));
+        let out = evaluate(&spec, &raws);
+        assert_eq!(out.total, 0);
     }
 }

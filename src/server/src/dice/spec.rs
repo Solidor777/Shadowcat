@@ -3,18 +3,75 @@ use serde::{Deserialize, Serialize};
 /// Stable identity of a rolled die within one roll; lets `recalculate` target a subset.
 pub type DieId = u32;
 
-/// A die's face space. M11a: numeric only; M11b adds `Faces` for custom-symbol dice.
+/// A single face of a `DieKind::Faces` die. `value` is `Some` for a face that
+/// participates numerically (ordering, totals); `None` for a face whose only
+/// payload is `symbols`. A `Faces` die is "ordered" (see `eval::classify` /
+/// `is_ordered`, M11b-3 §9) iff EVERY face has `value: Some`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Face {
+    pub value: Option<i32>,
+    pub symbols: Vec<Symbol>,
+}
+
+/// An opaque tag on a `Face`; the system assigns meaning (e.g. Genesys "triumph").
+pub type Symbol = String;
+
+/// A die's face space. `Numeric`: an ordered inclusive range. `Faces`: an
+/// explicit, possibly-unordered, possibly-symbolic list (M11b-3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DieKind {
     Numeric { min: i32, max: i32 },
+    Faces { faces: Vec<Face> },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Construction-time validation error for a `DieKind`. `Numeric` has no
+/// invalid state representable by this type (`sides >= 1` is enforced by the
+/// notation parser's `ParseError::InvalidDieSides`, since only the notation
+/// path constructs `Numeric` from untrusted input today).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DieKindError {
+    /// `Faces { faces: [] }` — `roll_uniform(0, faces.len() - 1)` requires a
+    /// non-degenerate range; `roll_uniform` only `debug_assert!`s this (a
+    /// no-op in release). No notation path constructs `Faces` today (M11b-3
+    /// is struct-only for face-lists); this becomes the enforcement point at
+    /// M11d's untrusted-wire boundary.
+    EmptyFaces,
+}
+
+impl DieKind {
+    pub fn validate(&self) -> Result<(), DieKindError> {
+        match self {
+            DieKind::Numeric { .. } => Ok(()),
+            DieKind::Faces { faces } => {
+                if faces.is_empty() {
+                    Err(DieKindError::EmptyFaces)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    /// A die participates in value-based operations (fold-into-total, keep/drop,
+    /// comparator explode/reroll) iff its faces have a defined ordering.
+    /// `Numeric` is always ordered. `Faces` is ordered iff EVERY face has
+    /// `value: Some` — a single unordered face makes the whole die unrankable
+    /// against a valued sibling (M11b-3 §9/design decision).
+    pub fn is_ordered(&self) -> bool {
+        match self {
+            DieKind::Numeric { .. } => true,
+            DieKind::Faces { faces } => faces.iter().all(|f| f.value.is_some()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Comparator {
     Eq,
     Ne,
     Gt,
     Lt,
+    #[default]
     Gte,
     Lte,
 }
@@ -66,6 +123,11 @@ pub struct DiceGroup {
     pub kind: DieKind,
     /// Applied in vec order: reroll/explode alter the die set, keep/drop select from it.
     pub modifiers: Vec<GroupModifier>,
+    /// Optional tag propagated onto every `DieRecord` this group produces
+    /// (including exploded/penetrated children). Orthogonal to mode.
+    /// `RollOutcome::by_label`/`compare_labels` read this. `None` = unlabeled.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,11 +152,24 @@ pub enum Expr {
     Neg(Box<Expr>),
 }
 
-/// SuccessCount dimension 1: the per-die target a die must satisfy to score a success.
+/// SuccessCount dimension 1: the per-die predicate a die must satisfy to score
+/// a success. Defaults to `Numeric` (comp: Gte, target: 0) so any `Default`- or
+/// serde-defaulted `SuccessConfig` never silently becomes symbol-driven.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SuccessRule {
-    pub comp: Comparator,
-    pub target: i32,
+pub enum SuccessRule {
+    Numeric { comp: Comparator, target: i32 },
+    HasSymbol(Symbol),
+}
+
+impl Default for SuccessRule {
+    // `#[derive(Default)]`'s `#[default]` attribute only supports a unit
+    // (fieldless) enum variant; `Numeric` carries fields, so this is hand-written.
+    fn default() -> Self {
+        SuccessRule::Numeric {
+            comp: Comparator::default(),
+            target: 0,
+        }
+    }
 }
 
 /// Which end of a margin/comparison is "better". `HighWins` (default): a higher
@@ -116,22 +191,32 @@ pub struct Tier {
     pub tier_value: Option<i32>,
 }
 
-/// A crit-success event (SuccessCount mode). Fires when a kept die's value
-/// reaches `threshold` (direction-aware). Adds `extra_successes` beyond the
-/// die's base success and `positive_counter` to the positive tally.
+/// What makes a die's crit event fire. `AtLeast` is direction-aware (flips
+/// under `LowWins`, exactly as the old bare `threshold: i32` did). `HasSymbol`
+/// is direction-INSENSITIVE — a symbol is present or absent, there is no
+/// "better end" to flip.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CritTrigger {
+    AtLeast(i32),
+    HasSymbol(Symbol),
+}
+
+/// A crit-success event (SuccessCount mode). Fires when a kept die's value or
+/// symbols satisfy `trigger`. Adds `extra_successes` beyond the die's base
+/// success and `positive_counter` to the positive tally.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CritSuccess {
-    pub threshold: i32,
+    pub trigger: CritTrigger,
     pub extra_successes: i32,
     pub positive_counter: i32,
 }
 
-/// A crit-fail event (SuccessCount mode). Fires when a kept die's value
-/// reaches `threshold` (direction-aware). Subtracts `lost` from net successes
-/// (clamped at 0 unless `allow_negative`) and adds `negative_counter`.
+/// A crit-fail event (SuccessCount mode). Fires when a kept die's value or
+/// symbols satisfy `trigger`. Subtracts `lost` from net successes (clamped at
+/// 0 unless `allow_negative`) and adds `negative_counter`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CritFail {
-    pub threshold: i32,
+    pub trigger: CritTrigger,
     pub lost: i32,
     pub negative_counter: i32,
     pub allow_negative: bool,
@@ -198,6 +283,7 @@ mod tests {
             expr: Expr::Bin {
                 op: BinOp::Add,
                 lhs: Box::new(Expr::Dice(DiceGroup {
+                    label: None,
                     count: 2,
                     kind: DieKind::Numeric { min: 1, max: 6 },
                     modifiers: vec![],
@@ -215,16 +301,105 @@ mod tests {
     }
 
     #[test]
+    fn success_rule_defaults_to_numeric() {
+        assert_eq!(
+            SuccessRule::default(),
+            SuccessRule::Numeric {
+                comp: Comparator::Gte,
+                target: 0
+            }
+        );
+    }
+
+    #[test]
+    fn comparator_defaults_to_gte() {
+        assert_eq!(Comparator::default(), Comparator::Gte);
+    }
+
+    #[test]
+    fn faces_die_validate_rejects_empty_face_list() {
+        let kind = DieKind::Faces { faces: vec![] };
+        assert!(matches!(kind.validate(), Err(DieKindError::EmptyFaces)));
+    }
+
+    #[test]
+    fn faces_die_validate_accepts_nonempty_face_list() {
+        let kind = DieKind::Faces {
+            faces: vec![Face {
+                value: Some(1),
+                symbols: vec![],
+            }],
+        };
+        assert!(kind.validate().is_ok());
+    }
+
+    #[test]
+    fn numeric_die_validate_is_always_ok() {
+        assert!(DieKind::Numeric { min: 1, max: 6 }.validate().is_ok());
+    }
+
+    #[test]
+    fn numeric_is_always_ordered() {
+        assert!(DieKind::Numeric { min: 1, max: 6 }.is_ordered());
+    }
+
+    #[test]
+    fn faces_all_valued_is_ordered() {
+        let kind = DieKind::Faces {
+            faces: vec![
+                Face {
+                    value: Some(1),
+                    symbols: vec![],
+                },
+                Face {
+                    value: Some(2),
+                    symbols: vec!["x".into()],
+                },
+            ],
+        };
+        assert!(kind.is_ordered());
+    }
+
+    #[test]
+    fn faces_any_none_value_is_unordered() {
+        let kind = DieKind::Faces {
+            faces: vec![
+                Face {
+                    value: Some(1),
+                    symbols: vec![],
+                },
+                Face {
+                    value: None,
+                    symbols: vec!["blank".into()],
+                },
+            ],
+        };
+        assert!(!kind.is_ordered());
+    }
+
+    #[test]
+    fn faces_all_none_value_is_unordered() {
+        let kind = DieKind::Faces {
+            faces: vec![Face {
+                value: None,
+                symbols: vec!["x".into()],
+            }],
+        };
+        assert!(!kind.is_ordered());
+    }
+
+    #[test]
     fn success_config_serde_round_trips() {
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 5,
                 kind: DieKind::Numeric { min: 1, max: 10 },
                 modifiers: vec![],
             }),
             direction: Direction::LowWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Lte,
                     target: 4,
                 },
@@ -235,7 +410,7 @@ mod tests {
                     tier_value: Some(1),
                 }],
                 crit_success: Some(CritSuccess {
-                    threshold: 1,
+                    trigger: CritTrigger::AtLeast(1),
                     extra_successes: 1,
                     positive_counter: 1,
                 }),

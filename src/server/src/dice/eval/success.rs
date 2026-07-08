@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::dice::eval::classify;
 use crate::dice::eval::crit;
 use crate::dice::eval::expertise;
@@ -19,15 +21,17 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
     if cfg.expertise > 0 {
         expertise::allocate(spec.direction, cfg, raws, &mut records);
     }
-    let mut base = 0i32;
-    let (mut extra, mut lost) = (0i32, 0i32);
+    let mut raw_net = 0i32;
     let (mut pos, mut neg) = (0i32, 0i32);
     let (mut crit_s, mut crit_f) = (0i32, 0i32);
+    let mut symbol_counts: BTreeMap<crate::dice::spec::Symbol, i32> = BTreeMap::new();
     for r in records.iter_mut().filter(|r| r.kept) {
-        if cfg.success.comp.test(r.value, cfg.success.target) {
-            base += 1;
+        for s in &r.symbols {
+            *symbol_counts.entry(s.clone()).or_insert(0) += 1;
         }
-        let dc = crit::score_die(spec.direction, r.value, cfg);
+        let scored = crit::score_die_net(spec.direction, cfg, r.value, &r.symbols);
+        raw_net += scored.net();
+        let dc = scored.crit;
         r.crit_success = dc.is_success;
         r.crit_fail = dc.is_fail;
         if dc.is_success {
@@ -36,12 +40,9 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         if dc.is_fail {
             crit_f += 1;
         }
-        extra += dc.extra_successes;
-        lost += dc.lost;
         pos += dc.positive_counter;
         neg += dc.negative_counter;
     }
-    let raw_net = base + extra - lost;
     let allow_neg = cfg
         .crit_fail
         .as_ref()
@@ -74,6 +75,7 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         crit_fails: crit_f,
         positive_counter: pos,
         negative_counter: neg,
+        symbol_counts,
     }
 }
 
@@ -81,7 +83,7 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
 mod tests {
     use super::*;
     use crate::dice::eval::{evaluate, roll};
-    use crate::dice::outcome::DieRecord;
+    use crate::dice::outcome::{DieRecord, RawRoll};
     use crate::dice::rng::NoiseRng;
     use crate::dice::spec::{
         Comparator, DiceGroup, DieId, DieKind, Direction, Expr, Mode, RollSpec, SuccessRule,
@@ -90,13 +92,14 @@ mod tests {
     fn pool(count: u32) -> RollSpec {
         RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count,
                 kind: DieKind::Numeric { min: 1, max: 10 },
                 modifiers: vec![],
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 7,
                 },
@@ -118,17 +121,17 @@ mod tests {
 
     #[test]
     fn crit_success_adds_extra_and_counter() {
-        use crate::dice::spec::CritSuccess;
+        use crate::dice::spec::{CritSuccess, CritTrigger};
         // 1d10 with target>=7, crit_success at 10 (+1 extra, +1 pos counter).
         let cfg = SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target: 7,
             },
             required_successes: None,
             tiers: vec![],
             crit_success: Some(CritSuccess {
-                threshold: 10,
+                trigger: CritTrigger::AtLeast(10),
                 extra_successes: 1,
                 positive_counter: 1,
             }),
@@ -137,6 +140,7 @@ mod tests {
         };
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 1,
                 kind: DieKind::Numeric { min: 10, max: 10 },
                 modifiers: vec![],
@@ -154,17 +158,18 @@ mod tests {
 
     #[test]
     fn crit_fail_clamps_net_at_zero_unless_allowed() {
-        use crate::dice::spec::CritFail;
+        use crate::dice::spec::{CritFail, CritTrigger};
         // Single die at min=max=1: base success fails, crit_fail loses 1.
         let mk = |allow: bool| RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 1,
                 kind: DieKind::Numeric { min: 1, max: 1 },
                 modifiers: vec![],
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 7,
                 },
@@ -172,7 +177,7 @@ mod tests {
                 tiers: vec![],
                 crit_success: None,
                 crit_fail: Some(CritFail {
-                    threshold: 1,
+                    trigger: CritTrigger::AtLeast(1),
                     lost: 1,
                     negative_counter: 1,
                     allow_negative: allow,
@@ -247,6 +252,9 @@ mod tests {
                 crit_success: false,
                 crit_fail: false,
                 expertise: 0,
+                label: None,
+                symbols: vec![],
+                ordered: true,
             });
         }
         raws.next_id = values.len() as DieId;
@@ -255,7 +263,7 @@ mod tests {
 
     #[test]
     fn overlapping_crit_thresholds_fold_correctly_at_pool_level() {
-        use crate::dice::spec::{CritFail, CritSuccess};
+        use crate::dice::spec::{CritFail, CritSuccess, CritTrigger};
 
         // cs fires at value >= 5 (+2 extra, +1 pos counter each).
         // cf fires at value <= 10 (-1 lost, +1 neg counter each), not allow_negative.
@@ -263,19 +271,19 @@ mod tests {
         // die1 = 15 -> only cs fires (cf requires <= 10).
         // die2 = 2  -> only cf fires (cs requires >= 5).
         let cfg = SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target: 6,
             },
             required_successes: None,
             tiers: vec![],
             crit_success: Some(CritSuccess {
-                threshold: 5,
+                trigger: CritTrigger::AtLeast(5),
                 extra_successes: 2,
                 positive_counter: 1,
             }),
             crit_fail: Some(CritFail {
-                threshold: 10,
+                trigger: CritTrigger::AtLeast(10),
                 lost: 1,
                 negative_counter: 1,
                 allow_negative: false,
@@ -284,6 +292,7 @@ mod tests {
         };
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 3,
                 kind: DieKind::Numeric { min: 1, max: 20 },
                 modifiers: vec![],
@@ -328,13 +337,14 @@ mod tests {
         // 3 dice all min=max=10, target>=7 -> 3 successes, required 1 -> margin 2 -> "great".
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 3,
                 kind: DieKind::Numeric { min: 10, max: 10 },
                 modifiers: vec![],
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 7,
                 },
@@ -353,20 +363,20 @@ mod tests {
 
     #[test]
     fn required_successes_pass_margin_use_net_not_base() {
-        use crate::dice::spec::CritSuccess;
+        use crate::dice::spec::{CritSuccess, CritTrigger};
         // Active crit config: die0/die1 = 10 both hit cs (+2 extra each), no crit_fail.
         // base successes (>= 6) = 2; net = base(2) + extra(4) = 6.
         // If pass/margin were computed over `base` instead of `net`, pass would be
         // false (2 >= 3) and margin would be -1, diverging from the correct (true, 3).
         let cfg = SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target: 6,
             },
             required_successes: Some(3),
             tiers: vec![],
             crit_success: Some(CritSuccess {
-                threshold: 10,
+                trigger: CritTrigger::AtLeast(10),
                 extra_successes: 2,
                 positive_counter: 0,
             }),
@@ -375,6 +385,7 @@ mod tests {
         };
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 3,
                 kind: DieKind::Numeric { min: 1, max: 20 },
                 modifiers: vec![],
@@ -396,13 +407,14 @@ mod tests {
         // Optimal: two dice -> 5 => 2 successes. Runs through evaluate(), not allocate directly.
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 3,
                 kind: DieKind::Numeric { min: 1, max: 6 },
                 modifiers: vec![],
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 5,
                 },
@@ -430,13 +442,14 @@ mod tests {
         // -> 2 successes -> margin (2-1)=1 -> "great". Without expertise: 0 successes.
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 2,
                 kind: DieKind::Numeric { min: 1, max: 6 },
                 modifiers: vec![],
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 5,
                 },
@@ -467,19 +480,19 @@ mod tests {
 
     #[test]
     fn expertise_direction_mirror_symmetry() {
-        use crate::dice::spec::CritSuccess;
+        use crate::dice::spec::{CritSuccess, CritTrigger};
         // Mirror property (design §4/§8): flip direction + mirror every face
         // (f -> min+max-f) + mirror the success target and crit threshold -> identical
         // net successes and counters.
         let hi_cfg = SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target: 5,
             },
             required_successes: None,
             tiers: vec![],
             crit_success: Some(CritSuccess {
-                threshold: 6,
+                trigger: CritTrigger::AtLeast(6),
                 extra_successes: 1,
                 positive_counter: 1,
             }),
@@ -488,6 +501,7 @@ mod tests {
         };
         let hi = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 4,
                 kind: DieKind::Numeric { min: 1, max: 6 },
                 modifiers: vec![],
@@ -500,12 +514,12 @@ mod tests {
         let hi_out = evaluate_success(&hi, cfg_of(&hi), &hi_raws);
 
         let lo_cfg = SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Lte,
                 target: 2,
             }, // 7 - 5
             crit_success: Some(CritSuccess {
-                threshold: 1,
+                trigger: CritTrigger::AtLeast(1),
                 extra_successes: 1,
                 positive_counter: 1,
             }), // 7 - 6
@@ -513,6 +527,7 @@ mod tests {
         };
         let lo = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 4,
                 kind: DieKind::Numeric { min: 1, max: 6 },
                 modifiers: vec![],
@@ -526,5 +541,204 @@ mod tests {
         assert_eq!(hi_out.successes, lo_out.successes);
         assert_eq!(hi_out.positive_counter, lo_out.positive_counter);
         assert_eq!(hi_out.negative_counter, lo_out.negative_counter);
+    }
+
+    #[test]
+    fn has_symbol_success_rule_feeds_net_successes_through_evaluate() {
+        use crate::dice::spec::Face;
+        // 3 dice, each a 2-face symbolic die: face 0 = "blank", face 1 = "triumph".
+        // Success rule: HasSymbol("triumph"). Force naturals 1,1,0 (2 triumphs, 1 blank).
+        let faces = vec![
+            Face {
+                value: Some(0),
+                symbols: vec!["blank".into()],
+            },
+            Face {
+                value: Some(1),
+                symbols: vec!["triumph".into()],
+            },
+        ];
+        let spec = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count: 3,
+                kind: DieKind::Faces {
+                    faces: faces.clone(),
+                },
+                modifiers: vec![],
+                label: None,
+            }),
+            direction: Direction::HighWins,
+            mode: Mode::SuccessCount(SuccessConfig {
+                success: SuccessRule::HasSymbol("triumph".to_string()),
+                required_successes: None,
+                tiers: vec![],
+                crit_success: None,
+                crit_fail: None,
+                expertise: 0,
+            }),
+        };
+        // Build raws directly (bypassing RNG) with naturals selecting faces 1,1,0.
+        let mut raws = RawRoll::default();
+        for &idx in &[1i32, 1, 0] {
+            raws.push(
+                DieKind::Faces {
+                    faces: faces.clone(),
+                },
+                idx,
+            );
+        }
+        let recs = crate::dice::eval::groups::resolve_group(
+            match &spec.expr {
+                Expr::Dice(g) => g,
+                _ => unreachable!(),
+            },
+            0,
+            &raws.dice.clone(),
+            &mut NoiseRng::from_seed(1),
+            &mut raws,
+        );
+        raws.records = recs;
+        raws.group_spans = vec![(0, 3)];
+        let out = evaluate(&spec, &raws);
+        assert_eq!(
+            out.successes,
+            Some(2),
+            "2 of 3 dice show the triumph symbol"
+        );
+    }
+
+    #[test]
+    fn symbol_counts_tallies_kept_dice_unconditionally() {
+        use crate::dice::spec::Face;
+        // Numeric success rule (not HasSymbol) — symbol_counts must STILL populate,
+        // independent of which SuccessRule variant is active.
+        let faces = vec![
+            Face {
+                value: Some(0),
+                symbols: vec!["advantage".into()],
+            },
+            Face {
+                value: Some(1),
+                symbols: vec!["triumph".into(), "advantage".into()],
+            },
+        ];
+        let spec = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count: 2,
+                kind: DieKind::Faces {
+                    faces: faces.clone(),
+                },
+                modifiers: vec![],
+                label: None,
+            }),
+            direction: Direction::HighWins,
+            mode: Mode::SuccessCount(SuccessConfig {
+                success: SuccessRule::Numeric {
+                    comp: Comparator::Gte,
+                    target: 100,
+                }, // never fires
+                required_successes: None,
+                tiers: vec![],
+                crit_success: None,
+                crit_fail: None,
+                expertise: 0,
+            }),
+        };
+        let mut raws = RawRoll::default();
+        raws.push(
+            DieKind::Faces {
+                faces: faces.clone(),
+            },
+            0,
+        );
+        raws.push(
+            DieKind::Faces {
+                faces: faces.clone(),
+            },
+            1,
+        );
+        let recs = crate::dice::eval::groups::resolve_group(
+            match &spec.expr {
+                Expr::Dice(g) => g,
+                _ => unreachable!(),
+            },
+            0,
+            &raws.dice.clone(),
+            &mut NoiseRng::from_seed(1),
+            &mut raws,
+        );
+        raws.records = recs;
+        raws.group_spans = vec![(0, 2)];
+        let out = evaluate(&spec, &raws);
+        assert_eq!(out.symbol_counts.get("advantage"), Some(&2));
+        assert_eq!(out.symbol_counts.get("triumph"), Some(&1));
+        assert_eq!(
+            out.successes,
+            Some(0),
+            "numeric rule never fires — sanity check"
+        );
+    }
+
+    #[test]
+    fn triumph_symbol_crit_adds_success_and_positive_counter_end_to_end() {
+        use crate::dice::spec::{CritSuccess, CritTrigger, Face};
+        let faces = vec![
+            Face {
+                value: Some(0),
+                symbols: vec!["blank".into()],
+            },
+            Face {
+                value: Some(1),
+                symbols: vec!["triumph".into()],
+            },
+        ];
+        let cfg = SuccessConfig {
+            success: SuccessRule::HasSymbol("triumph".to_string()),
+            required_successes: None,
+            tiers: vec![],
+            crit_success: Some(CritSuccess {
+                trigger: CritTrigger::HasSymbol("triumph".to_string()),
+                extra_successes: 1,
+                positive_counter: 1,
+            }),
+            crit_fail: None,
+            expertise: 0,
+        };
+        let spec = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count: 1,
+                kind: DieKind::Faces {
+                    faces: faces.clone(),
+                },
+                modifiers: vec![],
+                label: None,
+            }),
+            direction: Direction::HighWins,
+            mode: Mode::SuccessCount(cfg),
+        };
+        let mut raws = RawRoll::default();
+        raws.push(
+            DieKind::Faces {
+                faces: faces.clone(),
+            },
+            1,
+        ); // draws the "triumph" face
+        let recs = crate::dice::eval::groups::resolve_group(
+            match &spec.expr {
+                Expr::Dice(g) => g,
+                _ => unreachable!(),
+            },
+            0,
+            &raws.dice.clone(),
+            &mut NoiseRng::from_seed(1),
+            &mut raws,
+        );
+        raws.records = recs;
+        raws.group_spans = vec![(0, 1)];
+        let out = evaluate(&spec, &raws);
+        // base success (HasSymbol) = 1, crit extra = 1 -> net 2.
+        assert_eq!(out.successes, Some(2));
+        assert_eq!(out.positive_counter, 1);
+        assert_eq!(out.crit_successes, 1);
     }
 }

@@ -48,7 +48,7 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
         let rule = match (p.success, p.t_target) {
             (Some(_), Some(_)) => return Err(ParseError::DuplicateSuccessRule),
             (Some(r), None) => r,
-            (None, Some(t)) => SuccessRule {
+            (None, Some(t)) => SuccessRule::Numeric {
                 comp: match ctx.direction {
                     Direction::HighWins => Comparator::Gte,
                     Direction::LowWins => Comparator::Lte,
@@ -167,7 +167,16 @@ impl P {
                         return Err(ParseError::InvalidDieSides(sides));
                     }
                     let modifiers = self.modifiers(sides)?;
+                    let label = if let Some(Token::Label(_)) = self.peek() {
+                        match self.bump() {
+                            Some(Token::Label(l)) => Some(l),
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        None
+                    };
                     Ok(Expr::Dice(DiceGroup {
+                        label,
                         count: n as u32,
                         kind: DieKind::Numeric { min: 1, max: sides },
                         modifiers,
@@ -217,7 +226,7 @@ impl P {
                             if self.success.is_some() {
                                 return Err(ParseError::DuplicateSuccessRule);
                             }
-                            self.success = Some(SuccessRule { comp, target });
+                            self.success = Some(SuccessRule::Numeric { comp, target });
                         }
                         "t" => {
                             let n = self.expect_int()?;
@@ -240,7 +249,7 @@ impl P {
                             if self.success.is_some() {
                                 return Err(ParseError::DuplicateSuccessRule);
                             }
-                            self.success = Some(SuccessRule {
+                            self.success = Some(SuccessRule::Numeric {
                                 comp: invert(comp),
                                 target,
                             });
@@ -299,6 +308,7 @@ mod tests {
 
     fn dice(count: u32, min: i32, max: i32, mods: Vec<GroupModifier>) -> Expr {
         Expr::Dice(DiceGroup {
+            label: None,
             count,
             kind: DieKind::Numeric { min, max },
             modifiers: mods,
@@ -325,7 +335,7 @@ mod tests {
         match &spec.mode {
             Mode::SuccessCount(cfg) => assert_eq!(
                 cfg.success,
-                SuccessRule {
+                SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 7
                 }
@@ -433,7 +443,7 @@ mod tests {
         match hi.mode {
             Mode::SuccessCount(c) => assert_eq!(
                 c.success,
-                SuccessRule {
+                SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 7
                 }
@@ -451,7 +461,7 @@ mod tests {
         match lo.mode {
             Mode::SuccessCount(c) => assert_eq!(
                 c.success,
-                SuccessRule {
+                SuccessRule::Numeric {
                     comp: Comparator::Lte,
                     target: 7
                 }
@@ -536,5 +546,38 @@ mod tests {
             },
         );
         assert!(matches!(e, Err(ParseError::DuplicateExpertise)));
+    }
+
+    #[test]
+    fn parses_label_onto_dice_group() {
+        let spec = parse("1d12[Hope]", ParseContext::default()).unwrap();
+        match spec.expr {
+            Expr::Dice(g) => assert_eq!(g.label, Some("Hope".to_string())),
+            _ => panic!("expected dice"),
+        }
+    }
+
+    #[test]
+    fn parses_two_labeled_groups() {
+        let spec = parse("1d12[Hope] + 1d12[Fear]", ParseContext::default()).unwrap();
+        match spec.expr {
+            Expr::Bin { lhs, rhs, .. } => {
+                match *lhs {
+                    Expr::Dice(g) => assert_eq!(g.label, Some("Hope".to_string())),
+                    _ => panic!("expected dice lhs"),
+                }
+                match *rhs {
+                    Expr::Dice(g) => assert_eq!(g.label, Some("Fear".to_string())),
+                    _ => panic!("expected dice rhs"),
+                }
+            }
+            _ => panic!("expected Bin"),
+        }
+    }
+
+    #[test]
+    fn duplicate_labels_across_groups_are_not_an_error() {
+        // Two groups intentionally sharing a label pool under by_label — not a parse error.
+        assert!(parse("1d6[Pool] + 1d6[Pool]", ParseContext::default()).is_ok());
     }
 }
