@@ -17,8 +17,13 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::data::command::Operation;
+use crate::data::command::{Command, Operation};
 use crate::data::document::{DocRole, Document, PermissionSet, Scope};
+use crate::data::membership::PermissionContext;
+use crate::data::repository::Repository;
+use crate::data::DataError;
+use crate::ws::room::Room;
+use crate::ws::PingRateLimiter;
 
 /// Top-level doc_type for chat messages.
 pub const MESSAGE_DOC_TYPE: &str = "message";
@@ -138,6 +143,60 @@ pub fn build_message_doc(
         created_at: now,
         updated_at: now,
     }
+}
+
+/// Max characters accepted for a single message's raw content (pre-producer).
+pub const MAX_MESSAGE_CHARS: usize = 4096;
+
+/// Why `handle_send_message` refused to ingest a `SendMessage` frame.
+#[derive(Debug)]
+pub enum SendMessageError {
+    /// Content is empty after trimming whitespace.
+    Empty,
+    /// Content exceeds `MAX_MESSAGE_CHARS`.
+    TooLong,
+    /// The user's per-minute flood budget is exhausted.
+    RateLimited,
+    /// The authoritative write (`Room::publish`) failed.
+    Data(DataError),
+}
+
+/// Server-authoritative message ingest: flood-limit, validate, CONSTRUCT the
+/// message doc, and publish it via the authoritative path. The sole message-
+/// authoring entry point (see module-level INVARIANT comment) — a client can
+/// only ever reach a stored `message` doc through this function.
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_send_message(
+    room: &Room,
+    repo: &dyn Repository,
+    ctx: &PermissionContext,
+    rate: &PingRateLimiter,
+    channel: String,
+    content: String,
+    actor_owner: Option<ActorOwnerRef>,
+    now: i64,
+    budget_per_min: usize,
+) -> Result<Command, SendMessageError> {
+    if content.trim().is_empty() {
+        return Err(SendMessageError::Empty);
+    }
+    if content.chars().count() > MAX_MESSAGE_CHARS {
+        return Err(SendMessageError::TooLong);
+    }
+    if !rate.check(ctx.user_id, now, budget_per_min) {
+        return Err(SendMessageError::RateLimited);
+    }
+    let doc = build_message_doc(
+        room.world_id,
+        ctx.user_id,
+        channel,
+        actor_owner,
+        plain_text_content(&content),
+        now,
+    );
+    room.publish(repo, ctx, vec![Operation::Create { doc }], now)
+        .await
+        .map_err(SendMessageError::Data)
 }
 
 #[cfg(test)]
@@ -279,5 +338,105 @@ mod tests {
             Operation::Create { doc: note },
             Operation::Create { doc: msg },
         ]));
+    }
+
+    #[tokio::test]
+    async fn handle_send_message_publishes_and_broadcasts() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let (mut rx, _current) = room.subscribe();
+        let rate = PingRateLimiter::new();
+
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "hello".into(),
+            None,
+            100,
+            30,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cmd.seq, 1);
+        let got = rx.recv().await.unwrap();
+        assert_eq!(got.event_seq(), Some(1));
+
+        // Rate limit: exhaust the budget then expect RateLimited.
+        let rate2 = PingRateLimiter::new();
+        for _ in 0..2 {
+            let _ = handle_send_message(
+                &room,
+                &repo,
+                &ctx,
+                &rate2,
+                "all".into(),
+                "x".into(),
+                None,
+                100,
+                2,
+            )
+            .await;
+        }
+        let err = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate2,
+            "all".into(),
+            "x".into(),
+            None,
+            100,
+            2,
+        )
+        .await;
+        assert!(matches!(err, Err(SendMessageError::RateLimited)));
+
+        // Empty + too-long rejected before any publish.
+        assert!(matches!(
+            handle_send_message(
+                &room,
+                &repo,
+                &ctx,
+                &rate,
+                "all".into(),
+                "".into(),
+                None,
+                100,
+                30
+            )
+            .await,
+            Err(SendMessageError::Empty)
+        ));
+        let long = "a".repeat(MAX_MESSAGE_CHARS + 1);
+        assert!(matches!(
+            handle_send_message(&room, &repo, &ctx, &rate, "all".into(), long, None, 100, 30).await,
+            Err(SendMessageError::TooLong)
+        ));
     }
 }

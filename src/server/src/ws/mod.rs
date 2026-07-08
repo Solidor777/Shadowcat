@@ -47,6 +47,8 @@ pub struct WsState {
     pub rooms: Arc<RoomRegistry>,
     /// Per-user ping budget (shared across a user's connections).
     pub ping_rate: Arc<PingRateLimiter>,
+    /// Per-user chat flood budget (shared across a user's connections).
+    pub message_rate: Arc<PingRateLimiter>,
 }
 
 impl WsState {
@@ -54,6 +56,7 @@ impl WsState {
         Self {
             rooms: Arc::new(RoomRegistry::new()),
             ping_rate: Arc::new(PingRateLimiter::new()),
+            message_rate: Arc::new(PingRateLimiter::new()),
         }
     }
 
@@ -63,6 +66,7 @@ impl WsState {
         Self {
             rooms: Arc::new(RoomRegistry::with_capacity(capacity)),
             ping_rate: Arc::new(PingRateLimiter::new()),
+            message_rate: Arc::new(PingRateLimiter::new()),
         }
     }
 }
