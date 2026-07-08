@@ -931,7 +931,19 @@ impl Repository for SqliteRepository {
                     // capability; any other actor's WorldRole must hold core:create
                     // for this doc type. Create has no document, so this rides
                     // WorldRole (role_caps), not the per-document DocRole.
+                    //
+                    // Baseline chat-posting right (design M11c-1, Seam B): a Player
+                    // may author a `message`, exempt from the otherwise-GM-only
+                    // core:create gate. The WRITE_FIELDS floor check above still
+                    // applies (author must own the doc), and `doc.owner` records the
+                    // real poster. Server authority is preserved by the ingress guard
+                    // (`chat::ops_target_message`), which is the ONLY reason a message
+                    // reaches here: clients cannot author messages; only the
+                    // SendMessage handler can.
+                    let is_baseline_message = doc.doc_type == crate::chat::MESSAGE_DOC_TYPE
+                        && ctx.world_role == WorldRole::Player;
                     if ctx.world_role != WorldRole::Gm
+                        && !is_baseline_message
                         && !world_defaults.role_has(ctx.world_role, &doc.doc_type, cap::CREATE)
                     {
                         tracing::debug!(
@@ -2722,6 +2734,77 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, DataError::Forbidden));
+    }
+
+    #[tokio::test]
+    async fn player_may_create_message_but_not_other_types() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        let pl_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // A server-shaped message doc (author owns it) — Player create allowed.
+        let msg = crate::chat::build_message_doc(
+            w.id,
+            player,
+            "all".into(),
+            None,
+            crate::chat::plain_text_content("hi"),
+            1,
+        );
+        r.apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
+            .await
+            .expect("player may post a message");
+
+        // A non-message doc the player owns — still denied (core:create GM-only).
+        let mut other = crate::chat::build_message_doc(w.id, player, "all".into(), None, vec![], 2);
+        other.doc_type = "note".into();
+        let err = r
+            .apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc: other }], 2)
+            .await;
+        assert!(
+            matches!(err, Err(DataError::Forbidden)),
+            "non-message create must stay GM-gated"
+        );
+    }
+
+    #[tokio::test]
+    async fn spectator_may_not_create_message() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let spec = r
+            .create_user("sp", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, spec, WorldRole::Spectator)
+            .await
+            .unwrap();
+        let sp_ctx = PermissionContext {
+            user_id: spec,
+            world_role: WorldRole::Spectator,
+        };
+        let msg = crate::chat::build_message_doc(w.id, spec, "all".into(), None, vec![], 1);
+        let err = r
+            .apply_intent(&sp_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
+            .await;
+        assert!(matches!(err, Err(DataError::Forbidden)));
     }
 
     #[tokio::test]
