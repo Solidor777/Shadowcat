@@ -245,6 +245,18 @@ async fn handle_socket(
                 match frame {
                     Message::Text(t) => match serde_json::from_str::<ClientMsg>(t.as_str()) {
                         Ok(ClientMsg::Intent { intent_id, ops }) => {
+                            // Messages are server-authored via SendMessage only;
+                            // a client-authored message op is always rejected here,
+                            // never reaching apply_intent.
+                            if crate::chat::ops_target_message(&ops) {
+                                let _ = etx
+                                    .send(Egress::Frame(Arc::new(ServerMsg::Reject {
+                                        intent_id,
+                                        reason: RejectReason::Forbidden,
+                                    })))
+                                    .await;
+                                continue;
+                            }
                             // Success is confirmed by the broadcast echo of the
                             // authored Event; only a rejection is sent directly.
                             match room.publish(repo.as_ref(), &ctx, ops, now_millis()).await {

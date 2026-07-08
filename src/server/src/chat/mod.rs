@@ -12,10 +12,27 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::data::command::Operation;
 use crate::data::document::{DocRole, Document, PermissionSet, Scope};
 
 /// Top-level doc_type for chat messages.
 pub const MESSAGE_DOC_TYPE: &str = "message";
+
+/// True if any op authors a `message` doc via the generic document path.
+/// Clients must NOT author messages (only `handle_send_message` may); the WS
+/// `Intent` and HTTP write paths reject ops for which this is true, keeping
+/// message ingest server-authoritative.
+///
+/// `Operation::Update` carries no `doc_type` (just `doc_id` + field changes),
+/// so it cannot be classified here; message edits are out of c-1 scope
+/// entirely (deferred to the c-3+ sanitizing edit path) and are rejected at
+/// a higher layer once that path exists.
+pub fn ops_target_message(ops: &[Operation]) -> bool {
+    ops.iter().any(|op| match op {
+        Operation::Create { doc } | Operation::Delete { doc } => doc.doc_type == MESSAGE_DOC_TYPE,
+        Operation::Update { .. } => false,
+    })
+}
 
 /// Attribution of a message to an actor: a linked canonical `Actor` document,
 /// or an instanced actor resolved through its token. Carried on the
@@ -120,6 +137,7 @@ pub fn build_message_doc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::command::Operation;
     use crate::data::document::{DocRole, Scope};
     use uuid::Uuid;
 
@@ -200,5 +218,32 @@ mod tests {
         assert_eq!(sys.channel, "all");
         assert_eq!(sys.kind, MessageKind::Normal);
         assert_eq!(sys.content, vec![Segment::Text { text: "hi".into() }]);
+    }
+
+    #[test]
+    fn ops_target_message_detects_message_create_and_update() {
+        let msg = build_message_doc(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            "all".into(),
+            None,
+            vec![],
+            0,
+        );
+        assert!(ops_target_message(&[Operation::Create {
+            doc: msg.clone()
+        }]));
+        assert!(ops_target_message(&[Operation::Delete { doc: msg }]));
+
+        let mut note = build_message_doc(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            "all".into(),
+            None,
+            vec![],
+            0,
+        );
+        note.doc_type = "note".into();
+        assert!(!ops_target_message(&[Operation::Create { doc: note }]));
     }
 }

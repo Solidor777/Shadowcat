@@ -237,6 +237,11 @@ async fn write_ops(
         .repo
         .permission_context(world, user.id, user.role)
         .await?;
+    // Messages are server-authored via SendMessage only (chat/mod.rs); reject
+    // any client-authored message op before it reaches apply_intent.
+    if crate::chat::ops_target_message(&ops) {
+        return Err(AppError::Forbidden);
+    }
     let room = state
         .ws
         .rooms
