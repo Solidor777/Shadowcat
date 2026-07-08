@@ -5,7 +5,7 @@ use crate::dice::recalc::recalculate;
 use crate::dice::rng::NoiseRng;
 use crate::dice::spec::{
     Comparator, CritFail, CritSuccess, CritTrigger, DiceGroup, DieKind, Direction, ExplodeKind,
-    Expr, GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule,
+    Expr, Face, GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule,
 };
 
 fn simple_pool(count: u32, sides: i32, target: i32) -> RollSpec {
@@ -230,5 +230,38 @@ proptest! {
             },
             _ => prop_assert!(false, "expected SuccessCount mode"),
         }
+    }
+
+    /// A labeled, symbolic (unordered) pool: evaluate must still be a pure
+    /// function of (spec, raws), exactly like the existing
+    /// `evaluate_is_deterministic` property for Numeric pools.
+    #[test]
+    fn labeled_symbolic_pool_evaluate_is_deterministic(seed in any::<u64>(), count in 1u32..8) {
+        let faces = vec![
+            Face { value: None, symbols: vec!["success".into()] },
+            Face { value: None, symbols: vec!["blank".into()] },
+        ];
+        let spec = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count,
+                kind: DieKind::Faces { faces },
+                modifiers: vec![],
+                label: Some("Pool".to_string()),
+            }),
+            direction: Direction::HighWins,
+            mode: Mode::SuccessCount(SuccessConfig {
+                success: SuccessRule::HasSymbol("success".to_string()),
+                required_successes: None,
+                tiers: vec![],
+                crit_success: None,
+                crit_fail: None,
+                expertise: 0,
+            }),
+        };
+        let raws = roll(&spec, &mut NoiseRng::from_seed(seed));
+        prop_assert_eq!(evaluate(&spec, &raws), evaluate(&spec, &raws));
+        // A None-valued face contributes 0 to `total`; an all-symbolic pool has no
+        // rankable value, so `total` is always 0 regardless of dice count or roll.
+        prop_assert_eq!(evaluate(&spec, &raws).total, 0);
     }
 }
