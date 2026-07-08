@@ -170,14 +170,7 @@ pub fn allocate(
     let fixed: i32 = records
         .iter()
         .filter(|r| r.kept && !bounds.contains_key(&r.id))
-        .map(|r| {
-            let base_success = match &cfg.success {
-                SuccessRule::Numeric { comp, target } => comp.test(r.value, *target),
-                SuccessRule::HasSymbol(s) => r.symbols.contains(s),
-            };
-            let dc = crit::score_die(direction, r.value, &r.symbols, cfg);
-            i32::from(base_success) + dc.extra_successes - dc.lost
-        })
+        .map(|r| crit::score_die_net(direction, cfg, r.value, &r.symbols).net())
         .sum();
     let dies: Vec<Vec<(i32, i32)>> = kept
         .iter()
@@ -356,20 +349,13 @@ mod tests {
 
     /// Re-score a pool exactly as `evaluate_success` will: clamped net + counters.
     fn score_pool(direction: Direction, cfg: &SuccessConfig, records: &[DieRecord]) -> (i32, i32) {
-        let (mut base, mut extra, mut lost, mut pos, mut neg) = (0, 0, 0, 0, 0);
+        let (mut raw, mut pos, mut neg) = (0, 0, 0);
         for r in records.iter().filter(|r| r.kept) {
-            let base_success = match &cfg.success {
-                SuccessRule::Numeric { comp, target } => comp.test(r.value, *target),
-                SuccessRule::HasSymbol(s) => r.symbols.contains(s),
-            };
-            base += i32::from(base_success);
-            let dc = crit::score_die(direction, r.value, &r.symbols, cfg);
-            extra += dc.extra_successes;
-            lost += dc.lost;
-            pos += dc.positive_counter;
-            neg += dc.negative_counter;
+            let scored = crit::score_die_net(direction, cfg, r.value, &r.symbols);
+            raw += scored.net();
+            pos += scored.crit.positive_counter;
+            neg += scored.crit.negative_counter;
         }
-        let raw = base + extra - lost;
         let allow_neg = cfg
             .crit_fail
             .as_ref()

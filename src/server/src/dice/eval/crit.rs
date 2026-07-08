@@ -1,4 +1,4 @@
-use crate::dice::spec::{CritTrigger, Direction, SuccessConfig, Symbol};
+use crate::dice::spec::{CritTrigger, Direction, SuccessConfig, SuccessRule, Symbol};
 
 /// Per-die crit scoring result. `is_success`/`is_fail` gate whether the die's
 /// threshold fired; the remaining fields are the deltas the caller folds into
@@ -58,6 +58,42 @@ pub fn score_die(
         }
     }
     out
+}
+
+/// One kept die's base-success bit plus its `score_die` crit result — every
+/// caller that needs BOTH (whether a die counts as a base success, and its
+/// crit deltas/counters/flags) shares this single computation instead of
+/// re-matching `cfg.success` and re-deriving the net formula independently.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DieScore {
+    pub base_success: bool,
+    pub crit: DieCrit,
+}
+
+impl DieScore {
+    /// This die's net success delta: base (0/1) + crit extra − crit lost.
+    pub fn net(&self) -> i32 {
+        i32::from(self.base_success) + self.crit.extra_successes - self.crit.lost
+    }
+}
+
+/// Scores one kept die's base-success test (`cfg.success`) and crit result
+/// (`score_die`) together — the shared computation behind every net-successes
+/// and counter aggregation over a pool of kept dice.
+pub fn score_die_net(
+    direction: Direction,
+    cfg: &SuccessConfig,
+    value: i32,
+    symbols: &[Symbol],
+) -> DieScore {
+    let base_success = match &cfg.success {
+        SuccessRule::Numeric { comp, target } => comp.test(value, *target),
+        SuccessRule::HasSymbol(s) => symbols.contains(s),
+    };
+    DieScore {
+        base_success,
+        crit: score_die(direction, value, symbols, cfg),
+    }
 }
 
 #[cfg(test)]

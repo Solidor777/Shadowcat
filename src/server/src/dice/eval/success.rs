@@ -4,7 +4,7 @@ use crate::dice::eval::classify;
 use crate::dice::eval::crit;
 use crate::dice::eval::expertise;
 use crate::dice::outcome::{RawRoll, RollOutcome};
-use crate::dice::spec::{RollSpec, SuccessConfig, SuccessRule};
+use crate::dice::spec::{RollSpec, SuccessConfig};
 
 /// Pool aggregation: count kept dice satisfying `cfg.success`, then fold each kept
 /// die's crit event (`cfg.crit_success`/`cfg.crit_fail`) into net successes and the
@@ -21,8 +21,7 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
     if cfg.expertise > 0 {
         expertise::allocate(spec.direction, cfg, raws, &mut records);
     }
-    let mut base = 0i32;
-    let (mut extra, mut lost) = (0i32, 0i32);
+    let mut raw_net = 0i32;
     let (mut pos, mut neg) = (0i32, 0i32);
     let (mut crit_s, mut crit_f) = (0i32, 0i32);
     let mut symbol_counts: BTreeMap<crate::dice::spec::Symbol, i32> = BTreeMap::new();
@@ -30,14 +29,9 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         for s in &r.symbols {
             *symbol_counts.entry(s.clone()).or_insert(0) += 1;
         }
-        let base_success = match &cfg.success {
-            SuccessRule::Numeric { comp, target } => comp.test(r.value, *target),
-            SuccessRule::HasSymbol(s) => r.symbols.contains(s),
-        };
-        if base_success {
-            base += 1;
-        }
-        let dc = crit::score_die(spec.direction, r.value, &r.symbols, cfg);
+        let scored = crit::score_die_net(spec.direction, cfg, r.value, &r.symbols);
+        raw_net += scored.net();
+        let dc = scored.crit;
         r.crit_success = dc.is_success;
         r.crit_fail = dc.is_fail;
         if dc.is_success {
@@ -46,12 +40,9 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         if dc.is_fail {
             crit_f += 1;
         }
-        extra += dc.extra_successes;
-        lost += dc.lost;
         pos += dc.positive_counter;
         neg += dc.negative_counter;
     }
-    let raw_net = base + extra - lost;
     let allow_neg = cfg
         .crit_fail
         .as_ref()
