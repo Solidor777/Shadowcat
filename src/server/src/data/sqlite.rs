@@ -936,11 +936,15 @@ impl Repository for SqliteRepository {
                     // exempt from the otherwise-GM-only core:create gate. The
                     // WRITE_FIELDS floor above still applies, and the extra
                     // `doc.owner == Some(ctx.user_id)` clause below ties the message
-                    // to its poster. INVARIANT this exemption relies on: a `message`
-                    // Create reaches `apply_intent` ONLY via the server-side
-                    // message-send handler; the WS/HTTP client-intent ingress rejects
-                    // any client-authored `message` op. Do not weaken that ingress
-                    // rejection without revisiting this exemption.
+                    // to its poster. REQUIRED PRECONDITION for soundness: the
+                    // WS/HTTP client-intent ingress MUST reject any client-authored
+                    // `message` op, so that a `message` Create reaches `apply_intent`
+                    // only from the server-side message-send handler (which builds a
+                    // sanitized doc). Without that ingress rejection this exemption
+                    // lets a Player create a self-owned `message` with an arbitrary
+                    // body (forged `actor_owner`/`kind`) via a raw `Intent`; do not
+                    // rely on this exemption until that rejection is in place, and do
+                    // not weaken it thereafter.
                     let is_baseline_message = doc.doc_type == crate::chat::MESSAGE_DOC_TYPE
                         && ctx.world_role == WorldRole::Player
                         && doc.owner == Some(ctx.user_id);
