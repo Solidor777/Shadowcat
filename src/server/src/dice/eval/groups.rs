@@ -60,15 +60,25 @@ pub fn resolve_group(
         })
         .collect();
 
+    // Redraw a fresh face for the current DieKind: a numeric value for `Numeric`,
+    // a face INDEX for `Faces` (the caller must re-derive value/symbols from it
+    // via `face_value_and_symbols`).
+    let redraw = |rng: &mut dyn RngSource| -> i32 {
+        match &group.kind {
+            DieKind::Numeric { min, max } => roll_uniform(rng, *min, *max),
+            DieKind::Faces { faces } => roll_uniform(rng, 0, faces.len() as i32 - 1),
+        }
+    };
+
+    let ordered = group.kind.is_ordered();
     for m in &group.modifiers {
+        if !ordered {
+            // Unordered Faces dice have no rankable value — every value-reading
+            // modifier (reroll/explode-by-comparator, keep/drop) is a no-op.
+            continue;
+        }
         match m {
             GroupModifier::Reroll { comp, target, once } => {
-                let (min, max) = match group.kind {
-                    DieKind::Numeric { min, max } => (min, max),
-                    DieKind::Faces { .. } => {
-                        unreachable!("Faces dice not yet wired into resolve_group (M11b-3 Task 6)")
-                    }
-                };
                 for r in recs.iter_mut() {
                     // Dropped dice are not live participants in later modifiers.
                     if !r.kept {
@@ -77,7 +87,10 @@ pub fn resolve_group(
                     let mut chain = 0;
                     while comp.test(r.value, *target) && chain < CHAIN_CAP {
                         r.rerolled_from = Some(r.value);
-                        r.value = roll_uniform(rng, min, max);
+                        let drawn = redraw(rng);
+                        let (value, symbols) = face_value_and_symbols(&group.kind, drawn);
+                        r.value = value;
+                        r.symbols = symbols;
                         chain += 1;
                         if *once {
                             break;
@@ -86,12 +99,6 @@ pub fn resolve_group(
                 }
             }
             GroupModifier::Explode { kind, comp, target } => {
-                let (min, max) = match group.kind {
-                    DieKind::Numeric { min, max } => (min, max),
-                    DieKind::Faces { .. } => {
-                        unreachable!("Faces dice not yet wired into resolve_group (M11b-3 Task 6)")
-                    }
-                };
                 // Snapshot the pool length before this pass: the outer loop only
                 // trigger-scans dice that existed when the modifier started. The
                 // inner chain loop below is the SOLE mechanism that extends any
@@ -111,12 +118,16 @@ pub fn resolve_group(
                             if chain >= CHAIN_CAP {
                                 break;
                             }
-                            let extra = roll_uniform(rng, min, max);
+                            let extra = redraw(rng);
                             match kind {
-                                ExplodeKind::Compound => {
+                                ExplodeKind::Compound
+                                    if matches!(group.kind, DieKind::Numeric { .. }) =>
+                                {
                                     recs[i].value += extra;
                                 }
-                                ExplodeKind::Penetrate => {
+                                ExplodeKind::Penetrate
+                                    if matches!(group.kind, DieKind::Numeric { .. }) =>
+                                {
                                     // Penetrate: the chain-continuation recheck below
                                     // uses the RAW roll `extra` (mirroring Compound),
                                     // not the decremented value — otherwise a
@@ -138,16 +149,28 @@ pub fn resolve_group(
                                         value,
                                     );
                                 }
-                                ExplodeKind::Standard => {
-                                    push_extra(
-                                        &mut recs,
-                                        raws,
-                                        group.kind.clone(),
+                                _ => {
+                                    // Standard explode (or Compound/Penetrate on an
+                                    // ordered Faces die, where "add"/"−1" have no
+                                    // defined meaning): push a fresh die at the
+                                    // drawn index, deriving value/symbols from it.
+                                    let (value, symbols) =
+                                        face_value_and_symbols(&group.kind, extra);
+                                    let id = raws.push(group.kind.clone(), extra);
+                                    recs.push(DieRecord {
+                                        id,
                                         group_index,
-                                        group.label.clone(),
-                                        extra,
-                                        extra,
-                                    );
+                                        natural: extra,
+                                        value,
+                                        kept: true,
+                                        exploded: false,
+                                        rerolled_from: None,
+                                        crit_success: false,
+                                        crit_fail: false,
+                                        expertise: 0,
+                                        label: group.label.clone(),
+                                        symbols,
+                                    });
                                 }
                             }
                             chain += 1;
@@ -713,6 +736,110 @@ mod tests {
         assert_eq!(
             recs[1].value, 0,
             "Penetrate's -1 penalty may land below min by design"
+        );
+    }
+
+    #[test]
+    fn unordered_faces_die_is_skipped_by_keep_highest() {
+        use crate::dice::spec::Face;
+        // Two unordered faces dice (value: None) mixed conceptually with keep-highest —
+        // since ALL dice in this group are the same DieKind, this test exercises the
+        // group-level gate: an unordered Faces group's keep/drop modifier must be a
+        // no-op (every die stays kept), not a ranking-by-value(0) accident.
+        let faces = vec![
+            Face {
+                value: None,
+                symbols: vec!["a".into()],
+            },
+            Face {
+                value: None,
+                symbols: vec!["b".into()],
+            },
+        ];
+        let naturals = vec![
+            RawDie {
+                id: 0,
+                kind: DieKind::Faces {
+                    faces: faces.clone(),
+                },
+                natural: 0,
+            },
+            RawDie {
+                id: 1,
+                kind: DieKind::Faces {
+                    faces: faces.clone(),
+                },
+                natural: 1,
+            },
+        ];
+        let mut raws = RawRoll {
+            dice: naturals.clone(),
+            records: vec![],
+            next_id: 2,
+            group_spans: vec![],
+        };
+        let g = DiceGroup {
+            count: 2,
+            kind: DieKind::Faces { faces },
+            modifiers: vec![GroupModifier::KeepHighest(1)],
+            label: None,
+        };
+        let mut rng = NoiseRng::from_seed(1);
+        let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
+        assert!(
+            recs.iter().all(|r| r.kept),
+            "unordered Faces group must skip keep/drop entirely"
+        );
+    }
+
+    #[test]
+    fn ordered_faces_die_participates_in_keep_highest_like_numeric() {
+        use crate::dice::spec::Face;
+        let faces = vec![
+            Face {
+                value: Some(1),
+                symbols: vec![],
+            },
+            Face {
+                value: Some(6),
+                symbols: vec![],
+            },
+        ];
+        let naturals = vec![
+            RawDie {
+                id: 0,
+                kind: DieKind::Faces {
+                    faces: faces.clone(),
+                },
+                natural: 0,
+            }, // value 1
+            RawDie {
+                id: 1,
+                kind: DieKind::Faces {
+                    faces: faces.clone(),
+                },
+                natural: 1,
+            }, // value 6
+        ];
+        let mut raws = RawRoll {
+            dice: naturals.clone(),
+            records: vec![],
+            next_id: 2,
+            group_spans: vec![],
+        };
+        let g = DiceGroup {
+            count: 2,
+            kind: DieKind::Faces { faces },
+            modifiers: vec![GroupModifier::KeepHighest(1)],
+            label: None,
+        };
+        let mut rng = NoiseRng::from_seed(1);
+        let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
+        let kept: Vec<i32> = recs.iter().filter(|r| r.kept).map(|r| r.value).collect();
+        assert_eq!(
+            kept,
+            vec![6],
+            "ordered Faces group ranks exactly like Numeric"
         );
     }
 }
