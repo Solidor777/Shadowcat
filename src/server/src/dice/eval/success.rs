@@ -85,7 +85,7 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
 mod tests {
     use super::*;
     use crate::dice::eval::{evaluate, roll};
-    use crate::dice::outcome::DieRecord;
+    use crate::dice::outcome::{DieRecord, RawRoll};
     use crate::dice::rng::NoiseRng;
     use crate::dice::spec::{
         Comparator, DiceGroup, DieId, DieKind, Direction, Expr, Mode, RollSpec, SuccessRule,
@@ -542,5 +542,69 @@ mod tests {
         assert_eq!(hi_out.successes, lo_out.successes);
         assert_eq!(hi_out.positive_counter, lo_out.positive_counter);
         assert_eq!(hi_out.negative_counter, lo_out.negative_counter);
+    }
+
+    #[test]
+    fn has_symbol_success_rule_feeds_net_successes_through_evaluate() {
+        use crate::dice::spec::Face;
+        // 3 dice, each a 2-face symbolic die: face 0 = "blank", face 1 = "triumph".
+        // Success rule: HasSymbol("triumph"). Force naturals 1,1,0 (2 triumphs, 1 blank).
+        let faces = vec![
+            Face {
+                value: Some(0),
+                symbols: vec!["blank".into()],
+            },
+            Face {
+                value: Some(1),
+                symbols: vec!["triumph".into()],
+            },
+        ];
+        let spec = RollSpec {
+            expr: Expr::Dice(DiceGroup {
+                count: 3,
+                kind: DieKind::Faces {
+                    faces: faces.clone(),
+                },
+                modifiers: vec![],
+                label: None,
+            }),
+            direction: Direction::HighWins,
+            mode: Mode::SuccessCount(SuccessConfig {
+                success: SuccessRule::HasSymbol("triumph".to_string()),
+                required_successes: None,
+                tiers: vec![],
+                crit_success: None,
+                crit_fail: None,
+                expertise: 0,
+            }),
+        };
+        // Build raws directly (bypassing RNG) with naturals selecting faces 1,1,0.
+        let mut raws = RawRoll::default();
+        for &idx in &[1i32, 1, 0] {
+            raws.push(
+                DieKind::Faces {
+                    faces: faces.clone(),
+                },
+                idx,
+            );
+        }
+        let recs = crate::dice::eval::groups::resolve_group(
+            match &spec.expr {
+                Expr::Dice(g) => g,
+                _ => unreachable!(),
+            },
+            0,
+            &raws.dice.clone(),
+            &mut NoiseRng::from_seed(1),
+            &mut raws,
+        );
+        raws.records = recs;
+        raws.group_spans = vec![(0, 3)];
+        let out = evaluate(&spec, &raws);
+        assert_eq!(
+            out.successes,
+            Some(2),
+            "2 of 3 dice show the triumph symbol"
+        );
     }
 }
