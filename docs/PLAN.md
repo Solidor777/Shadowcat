@@ -764,9 +764,29 @@ Decomposed **M11a–d**:
   > objective value AND exact per-die allocation — no assertion relaxed. Design:
   > [`superpowers/specs/2026-07-04-m11b-2-expertise-dp-design.md`](superpowers/specs/2026-07-04-m11b-2-expertise-dp-design.md).
   > Plan: [`superpowers/plans/2026-07-04-m11b-2-expertise-dp.md`](superpowers/plans/2026-07-04-m11b-2-expertise-dp.md).
-  > Labeled/custom-face dice (M11b-3) not yet started.
+  > **M11b-3 DONE** (branch `m11b-3-labeled-custom-face-dice`, 13 SDD tasks + a codebase-skill gate,
+  > all green) — labeled dice (`DiceGroup.label`/`DieRecord.label`, propagated through
+  > `resolve_group`/exploded children; `RollOutcome::by_label`/`compare_labels`; `[label]` notation,
+  > case-preserving, ASCII-printable-except-`]` charset) + custom-face (symbolic) dice
+  > (`DieKind::Faces{faces: Vec<Face>}`, `Face{value: Option<i32>, symbols: Vec<Symbol>}`, RNG draws
+  > a face INDEX; `DieKind::is_ordered()` gates `resolve_group`'s entire modifier loop fail-closed
+  > for any group with an unordered face; `Compound`/`Penetrate` explode restricted to `Numeric`
+  > only, an ordered `Faces` die falls through to Standard-style push) + `SuccessRule`/`CritTrigger`
+  > promoted to enums (`Numeric`/`HasSymbol` success rule; `AtLeast`/`HasSymbol` crit trigger,
+  > `HasSymbol` direction-insensitive) + unconditional `symbol_counts` + expertise restricted to
+  > `Numeric` dice, folding any excluded `Faces` die's fixed contribution into the two-pass
+  > clamp-decision threshold. **Mandatory buddy-check (Task 9, reopening the sealed M11b-1
+  > crit-scoring path for `CritTrigger`)** converged clean; **two independent single-reviewer
+  > passes each found and fixed a real bug**: Task 6 (Explode retrigger on an ordered `Faces` die
+  > must test the die's derived value, not the raw drawn index — the raw-index check would silently
+  > misfire whenever face value doesn't track index order) and Task 11 (expertise's all-failed-region
+  > branch check omitted a fixed contribution from an excluded kept `Faces` die, answering a
+  > different question than `evaluate_success` would actually score). Design:
+  > [`superpowers/specs/2026-07-07-m11b-3-labeled-custom-face-dice-design.md`](superpowers/specs/2026-07-07-m11b-3-labeled-custom-face-dice-design.md).
+  > Plan: [`superpowers/plans/2026-07-07-m11b-3-labeled-custom-face-dice.md`](superpowers/plans/2026-07-07-m11b-3-labeled-custom-face-dice.md).
+  > **M11b is now fully DONE** (M11a + M11b-1 + M11b-2 + M11b-3). `shadowcat-codebase-dice` skill
+  > updated + confirmed ACCURATE by `shadowcat-spec-reviewer`.
   Spec: [`superpowers/specs/2026-07-04-m11b-system-rules-design.md`](superpowers/specs/2026-07-04-m11b-system-rules-design.md).
-  - **M11b-3 — Labeled + custom-face dice:** labeled dice, custom-face (symbolic) dice.
 - **M11c — Chat core (headless):** messages as sequenced documents on the per-recipient redaction path; module-seeded channels; server-authoritative input→sanitization pipeline (structured safe content model); new fail-closed whisper recipient-allowlist tier; user + optional actor owner (linked or instanced).
 - **M11d — Default display modules:** independently-replaceable composer + message-card contribution modules; text enrichment (Markdown/HTML/images/links/emails, GM-gated, no embedded CSS); emotes; roll integration; internal doc links; SSRF-guarded server-side link previews.
 
