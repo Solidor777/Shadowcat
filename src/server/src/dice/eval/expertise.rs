@@ -341,6 +341,7 @@ mod tests {
                 crit_fail: false,
                 expertise: 0,
                 symbols: vec![],
+                ordered: true,
             });
         }
         raws.next_id = values.len() as DieId;
@@ -645,6 +646,7 @@ mod tests {
                 expertise: 0,
                 label: None,
                 symbols: vec![],
+                ordered: true,
             },
             DieRecord {
                 id: numeric_id,
@@ -659,6 +661,7 @@ mod tests {
                 expertise: 0,
                 label: None,
                 symbols: vec![],
+                ordered: true,
             },
         ];
         allocate(Direction::HighWins, &c, &raws, &mut records);
@@ -739,6 +742,7 @@ mod tests {
             expertise: 0,
             label: None,
             symbols: symbols.into_iter().map(String::from).collect(),
+            ordered: true,
         };
         let mut records = vec![
             mk(faces_id, 0, 0, vec!["doom"]),

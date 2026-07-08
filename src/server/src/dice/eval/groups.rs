@@ -39,6 +39,7 @@ pub fn resolve_group(
     rng: &mut dyn RngSource,
     raws: &mut RawRoll,
 ) -> Vec<DieRecord> {
+    let ordered = group.kind.is_ordered();
     let mut recs: Vec<DieRecord> = naturals
         .iter()
         .map(|d| {
@@ -56,6 +57,7 @@ pub fn resolve_group(
                 expertise: 0,
                 label: group.label.clone(),
                 symbols,
+                ordered,
             }
         })
         .collect();
@@ -70,7 +72,6 @@ pub fn resolve_group(
         }
     };
 
-    let ordered = group.kind.is_ordered();
     for m in &group.modifiers {
         if !ordered {
             // Unordered Faces dice have no rankable value — every value-reading
@@ -159,6 +160,8 @@ pub fn resolve_group(
                                         group.label.clone(),
                                         extra,
                                         value,
+                                        // Reached only in the Numeric-guarded Penetrate arm.
+                                        true,
                                     );
                                 }
                                 _ => {
@@ -180,6 +183,9 @@ pub fn resolve_group(
                                         expertise: 0,
                                         label: group.label.clone(),
                                         symbols,
+                                        // Reached only inside the `!ordered { continue }`-gated
+                                        // modifier loop, so the producing group is always ordered.
+                                        ordered: true,
                                     });
                                 }
                             }
@@ -229,6 +235,7 @@ fn keep(recs: &mut [DieRecord], n: usize, highest: bool, keep_selected: bool) {
 /// Push one exploded/penetrated extra die into both the raw log and the per-die
 /// record vec. `natural` is the true RNG face; `value` is the post-modifier
 /// stored value, which for Penetrate differs from `natural` by the -1 penalty.
+#[allow(clippy::too_many_arguments)]
 fn push_extra(
     recs: &mut Vec<DieRecord>,
     raws: &mut RawRoll,
@@ -237,6 +244,7 @@ fn push_extra(
     label: Option<String>,
     natural: i32,
     value: i32,
+    ordered: bool,
 ) {
     let id = raws.push(kind, natural);
     recs.push(DieRecord {
@@ -252,6 +260,7 @@ fn push_extra(
         expertise: 0,
         label,
         symbols: vec![],
+        ordered,
     });
 }
 
