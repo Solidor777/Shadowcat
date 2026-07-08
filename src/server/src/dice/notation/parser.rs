@@ -48,7 +48,7 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
         let rule = match (p.success, p.t_target) {
             (Some(_), Some(_)) => return Err(ParseError::DuplicateSuccessRule),
             (Some(r), None) => r,
-            (None, Some(t)) => SuccessRule {
+            (None, Some(t)) => SuccessRule::Numeric {
                 comp: match ctx.direction {
                     Direction::HighWins => Comparator::Gte,
                     Direction::LowWins => Comparator::Lte,
@@ -226,7 +226,7 @@ impl P {
                             if self.success.is_some() {
                                 return Err(ParseError::DuplicateSuccessRule);
                             }
-                            self.success = Some(SuccessRule { comp, target });
+                            self.success = Some(SuccessRule::Numeric { comp, target });
                         }
                         "t" => {
                             let n = self.expect_int()?;
@@ -249,7 +249,7 @@ impl P {
                             if self.success.is_some() {
                                 return Err(ParseError::DuplicateSuccessRule);
                             }
-                            self.success = Some(SuccessRule {
+                            self.success = Some(SuccessRule::Numeric {
                                 comp: invert(comp),
                                 target,
                             });
@@ -335,7 +335,7 @@ mod tests {
         match &spec.mode {
             Mode::SuccessCount(cfg) => assert_eq!(
                 cfg.success,
-                SuccessRule {
+                SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 7
                 }
@@ -443,7 +443,7 @@ mod tests {
         match hi.mode {
             Mode::SuccessCount(c) => assert_eq!(
                 c.success,
-                SuccessRule {
+                SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 7
                 }
@@ -461,7 +461,7 @@ mod tests {
         match lo.mode {
             Mode::SuccessCount(c) => assert_eq!(
                 c.success,
-                SuccessRule {
+                SuccessRule::Numeric {
                     comp: Comparator::Lte,
                     target: 7
                 }

@@ -65,12 +65,13 @@ impl DieKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Comparator {
     Eq,
     Ne,
     Gt,
     Lt,
+    #[default]
     Gte,
     Lte,
 }
@@ -151,11 +152,24 @@ pub enum Expr {
     Neg(Box<Expr>),
 }
 
-/// SuccessCount dimension 1: the per-die target a die must satisfy to score a success.
+/// SuccessCount dimension 1: the per-die predicate a die must satisfy to score
+/// a success. Defaults to `Numeric` (comp: Gte, target: 0) so any `Default`- or
+/// serde-defaulted `SuccessConfig` never silently becomes symbol-driven.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SuccessRule {
-    pub comp: Comparator,
-    pub target: i32,
+pub enum SuccessRule {
+    Numeric { comp: Comparator, target: i32 },
+    HasSymbol(Symbol),
+}
+
+impl Default for SuccessRule {
+    // `#[derive(Default)]`'s `#[default]` attribute only supports a unit
+    // (fieldless) enum variant; `Numeric` carries fields, so this is hand-written.
+    fn default() -> Self {
+        SuccessRule::Numeric {
+            comp: Comparator::default(),
+            target: 0,
+        }
+    }
 }
 
 /// Which end of a margin/comparison is "better". `HighWins` (default): a higher
@@ -277,6 +291,22 @@ mod tests {
     }
 
     #[test]
+    fn success_rule_defaults_to_numeric() {
+        assert_eq!(
+            SuccessRule::default(),
+            SuccessRule::Numeric {
+                comp: Comparator::Gte,
+                target: 0
+            }
+        );
+    }
+
+    #[test]
+    fn comparator_defaults_to_gte() {
+        assert_eq!(Comparator::default(), Comparator::Gte);
+    }
+
+    #[test]
     fn faces_die_validate_rejects_empty_face_list() {
         let kind = DieKind::Faces { faces: vec![] };
         assert!(matches!(kind.validate(), Err(DieKindError::EmptyFaces)));
@@ -359,7 +389,7 @@ mod tests {
             }),
             direction: Direction::LowWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Lte,
                     target: 4,
                 },

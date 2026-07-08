@@ -2,7 +2,7 @@ use crate::dice::eval::classify;
 use crate::dice::eval::crit;
 use crate::dice::eval::expertise;
 use crate::dice::outcome::{RawRoll, RollOutcome};
-use crate::dice::spec::{RollSpec, SuccessConfig};
+use crate::dice::spec::{RollSpec, SuccessConfig, SuccessRule};
 
 /// Pool aggregation: count kept dice satisfying `cfg.success`, then fold each kept
 /// die's crit event (`cfg.crit_success`/`cfg.crit_fail`) into net successes and the
@@ -24,7 +24,11 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
     let (mut pos, mut neg) = (0i32, 0i32);
     let (mut crit_s, mut crit_f) = (0i32, 0i32);
     for r in records.iter_mut().filter(|r| r.kept) {
-        if cfg.success.comp.test(r.value, cfg.success.target) {
+        let base_success = match &cfg.success {
+            SuccessRule::Numeric { comp, target } => comp.test(r.value, *target),
+            SuccessRule::HasSymbol(s) => r.symbols.contains(s),
+        };
+        if base_success {
             base += 1;
         }
         let dc = crit::score_die(spec.direction, r.value, cfg);
@@ -97,7 +101,7 @@ mod tests {
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 7,
                 },
@@ -122,7 +126,7 @@ mod tests {
         use crate::dice::spec::CritSuccess;
         // 1d10 with target>=7, crit_success at 10 (+1 extra, +1 pos counter).
         let cfg = SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target: 7,
             },
@@ -167,7 +171,7 @@ mod tests {
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 7,
                 },
@@ -268,7 +272,7 @@ mod tests {
         // die1 = 15 -> only cs fires (cf requires <= 10).
         // die2 = 2  -> only cf fires (cs requires >= 5).
         let cfg = SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target: 6,
             },
@@ -341,7 +345,7 @@ mod tests {
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 7,
                 },
@@ -366,7 +370,7 @@ mod tests {
         // If pass/margin were computed over `base` instead of `net`, pass would be
         // false (2 >= 3) and margin would be -1, diverging from the correct (true, 3).
         let cfg = SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target: 6,
             },
@@ -411,7 +415,7 @@ mod tests {
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 5,
                 },
@@ -446,7 +450,7 @@ mod tests {
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 5,
                 },
@@ -482,7 +486,7 @@ mod tests {
         // (f -> min+max-f) + mirror the success target and crit threshold -> identical
         // net successes and counters.
         let hi_cfg = SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target: 5,
             },
@@ -511,7 +515,7 @@ mod tests {
         let hi_out = evaluate_success(&hi, cfg_of(&hi), &hi_raws);
 
         let lo_cfg = SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Lte,
                 target: 2,
             }, // 7 - 5

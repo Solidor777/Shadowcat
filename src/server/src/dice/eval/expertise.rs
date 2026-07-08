@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::dice::eval::crit;
 use crate::dice::outcome::{DieRecord, RawRoll};
-use crate::dice::spec::{DieId, DieKind, Direction, SuccessConfig};
+use crate::dice::spec::{DieId, DieKind, Direction, SuccessConfig, SuccessRule};
 
 /// Move `value` toward "better" (higher under `HighWins`, lower under `LowWins`)
 /// by up to `k` steps, stopping at the die's better-end face (`max` / `min`).
@@ -38,7 +38,14 @@ fn die_values(
     (0..=e)
         .map(|k| {
             let f = adjust(direction, value, min, max, k);
-            let base = i32::from(cfg.success.comp.test(f, cfg.success.target));
+            let base_success = match &cfg.success {
+                SuccessRule::Numeric { comp, target } => comp.test(f, *target),
+                // die_values only ever runs over Numeric dice (expertise excludes
+                // Faces dice entirely); moving a Numeric face never changes symbols,
+                // so a HasSymbol rule can never fire here — exists only for exhaustiveness.
+                SuccessRule::HasSymbol(_) => false,
+            };
+            let base = i32::from(base_success);
             let dc = crit::score_die(direction, f, cfg);
             (
                 base + dc.extra_successes - dc.lost,
@@ -214,7 +221,7 @@ mod tests {
 
     fn cfg(cs: Option<CritSuccess>, cf: Option<CritFail>) -> SuccessConfig {
         SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target: 5,
             },
@@ -257,7 +264,7 @@ mod tests {
     fn die_values_lowwins_moves_toward_low_target() {
         // LowWins, success at <=2 (comp set by caller/parse). face 4 -> down.
         let mut c = cfg(None, None);
-        c.success = SuccessRule {
+        c.success = SuccessRule::Numeric {
             comp: Comparator::Lte,
             target: 2,
         };
@@ -325,7 +332,11 @@ mod tests {
     fn score_pool(direction: Direction, cfg: &SuccessConfig, records: &[DieRecord]) -> (i32, i32) {
         let (mut base, mut extra, mut lost, mut pos, mut neg) = (0, 0, 0, 0, 0);
         for r in records.iter().filter(|r| r.kept) {
-            base += i32::from(cfg.success.comp.test(r.value, cfg.success.target));
+            let base_success = match &cfg.success {
+                SuccessRule::Numeric { comp, target } => comp.test(r.value, *target),
+                SuccessRule::HasSymbol(s) => r.symbols.contains(s),
+            };
+            base += i32::from(base_success);
             let dc = crit::score_die(direction, r.value, cfg);
             extra += dc.extra_successes;
             lost += dc.lost;
@@ -377,7 +388,7 @@ mod tests {
         // at face 1; crit_success at 6 (extra_successes 0, positive_counter 1) fires at
         // face 6. Budget 10 affords moving BOTH dice from face 1 to face 6 (5 points each).
         let c = SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target: 100,
             },
@@ -526,7 +537,7 @@ mod tests {
                 None
             };
             let cfg = SuccessConfig {
-                success: SuccessRule { comp, target },
+                success: SuccessRule::Numeric { comp, target },
                 required_successes: None,
                 tiers: vec![],
                 crit_success: cs,

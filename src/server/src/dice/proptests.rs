@@ -18,7 +18,7 @@ fn simple_pool(count: u32, sides: i32, target: i32) -> RollSpec {
         }),
         direction: Direction::HighWins,
         mode: Mode::SuccessCount(SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target,
             },
@@ -46,7 +46,7 @@ fn pool_with_modifiers(
         }),
         direction: Direction::HighWins,
         mode: Mode::SuccessCount(SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target,
             },
@@ -149,7 +149,7 @@ proptest! {
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule { comp: Comparator::Gte, target: 6 },
+                success: SuccessRule::Numeric { comp: Comparator::Gte, target: 6 },
                 required_successes: None,
                 tiers: vec![],
                 // Interior threshold (not the die's own extreme): HighWins fires at
@@ -180,7 +180,7 @@ proptest! {
         let lo = RollSpec {
             direction: Direction::LowWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule { comp: Comparator::Lte, target: mirror(6) },
+                success: SuccessRule::Numeric { comp: Comparator::Lte, target: mirror(6) },
                 required_successes: None,
                 tiers: vec![],
                 // Mirror of hi's (interior) crit_success threshold; LowWins fires at
@@ -224,7 +224,10 @@ proptest! {
             _ => prop_assert!(false, "expected Total mode"),
         }
         match sc.mode {
-            Mode::SuccessCount(c) => prop_assert_eq!(c.success.target, target),
+            Mode::SuccessCount(c) => match c.success {
+                SuccessRule::Numeric { target: t, .. } => prop_assert_eq!(t, target),
+                SuccessRule::HasSymbol(_) => prop_assert!(false, "expected a Numeric success rule"),
+            },
             _ => prop_assert!(false, "expected SuccessCount mode"),
         }
     }

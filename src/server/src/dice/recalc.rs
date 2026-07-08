@@ -186,7 +186,7 @@ mod tests {
             }),
             direction: Direction::HighWins,
             mode: Mode::SuccessCount(SuccessConfig {
-                success: SuccessRule {
+                success: SuccessRule::Numeric {
                     comp: Comparator::Gte,
                     target: 7,
                 },

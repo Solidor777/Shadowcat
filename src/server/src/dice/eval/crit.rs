@@ -53,7 +53,7 @@ mod tests {
 
     fn cfg(cs: Option<CritSuccess>, cf: Option<CritFail>) -> SuccessConfig {
         SuccessConfig {
-            success: SuccessRule {
+            success: SuccessRule::Numeric {
                 comp: Comparator::Gte,
                 target: 7,
             },
