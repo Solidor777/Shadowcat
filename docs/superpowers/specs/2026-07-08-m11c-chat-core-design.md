@@ -45,10 +45,13 @@ These refine the parent spec; they are design decisions, not open questions.
 ### 2.1 Content-model boundary (c-1 defines the type + server ingest; c-3 enriches the producer)
 The safe content model is a `Segment` list, defined **server-side (Rust `serde`, no `TS` derive)** and
 serialized into the message's opaque `system` body. Under the layered decomposition:
-- **c-1 defines the `Segment` type taxonomy** (text-run, mark, link, image, roll-embed, doc-link,
-  preview-card) **and the server-authoritative ingest spine** (`SendMessage` intent → server builds the
-  message `Document`) with a **trivial plain-text producer** (escape → single text-run), so c-1
-  round-trips a real, server-constructed message end-to-end through the Event/redaction/search path.
+- **c-1 defines the `Segment` enum with only the `Text` variant it produces** (extensible — each later
+  checkpoint adds the variants it produces: c-3 mark/link/image, c-4 preview-card, M11d roll-embed;
+  speculative fields for unbuilt producers are YAGNI) **and the server-authoritative ingest spine**
+  (`SendMessage` intent → server builds the message `Document`) with a **trivial plain-text producer**
+  (raw → single text-run; safety is a *rendering* property — M11d renders `Text` as a DOM text node,
+  never `innerHTML` — so the producer does not escape), so c-1 round-trips a real, server-constructed
+  message end-to-end through the Event/redaction/search path.
 - **c-3 enriches the producer** — the `ammonia` / `pulldown-cmark` sanitizer, GM content-policy
   toggles, and command parser feeding the **same** c-1 ingest path (no new frame, no client-create path
   to remove).
