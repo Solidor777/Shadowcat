@@ -932,16 +932,18 @@ impl Repository for SqliteRepository {
                     // for this doc type. Create has no document, so this rides
                     // WorldRole (role_caps), not the per-document DocRole.
                     //
-                    // Baseline chat-posting right (design M11c-1, Seam B): a Player
-                    // may author a `message`, exempt from the otherwise-GM-only
-                    // core:create gate. The WRITE_FIELDS floor check above still
-                    // applies (author must own the doc), and `doc.owner` records the
-                    // real poster. Server authority is preserved by the ingress guard
-                    // (`chat::ops_target_message`), which is the ONLY reason a message
-                    // reaches here: clients cannot author messages; only the
-                    // SendMessage handler can.
+                    // Baseline chat-posting right: a Player may author a `message`,
+                    // exempt from the otherwise-GM-only core:create gate. The
+                    // WRITE_FIELDS floor above still applies, and the extra
+                    // `doc.owner == Some(ctx.user_id)` clause below ties the message
+                    // to its poster. INVARIANT this exemption relies on: a `message`
+                    // Create reaches `apply_intent` ONLY via the server-side
+                    // message-send handler; the WS/HTTP client-intent ingress rejects
+                    // any client-authored `message` op. Do not weaken that ingress
+                    // rejection without revisiting this exemption.
                     let is_baseline_message = doc.doc_type == crate::chat::MESSAGE_DOC_TYPE
-                        && ctx.world_role == WorldRole::Player;
+                        && ctx.world_role == WorldRole::Player
+                        && doc.owner == Some(ctx.user_id);
                     if ctx.world_role != WorldRole::Gm
                         && !is_baseline_message
                         && !world_defaults.role_has(ctx.world_role, &doc.doc_type, cap::CREATE)
@@ -2805,6 +2807,54 @@ mod tests {
             .apply_intent(&sp_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
             .await;
         assert!(matches!(err, Err(DataError::Forbidden)));
+    }
+
+    #[tokio::test]
+    async fn player_may_not_forge_message_owner_via_baseline_exemption() {
+        use crate::data::document::DocRole;
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl2", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let other = r
+            .create_user("other", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        let pl_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // Build a server-shaped message doc for `player`, then forge its owner to
+        // `other` while keeping `player`'s Owner grant in permissions.users (so the
+        // WRITE_FIELDS floor would otherwise pass). The baseline exemption must not
+        // fire for a non-self-owned message.
+        let mut msg = crate::chat::build_message_doc(
+            w.id,
+            player,
+            "all".into(),
+            None,
+            crate::chat::plain_text_content("hi"),
+            1,
+        );
+        msg.owner = Some(other);
+        msg.permissions.users.insert(player, DocRole::Owner);
+
+        let err = r
+            .apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
+            .await;
+        assert!(
+            matches!(err, Err(DataError::Forbidden)),
+            "forged owner must not benefit from the baseline message-create exemption"
+        );
     }
 
     #[tokio::test]
