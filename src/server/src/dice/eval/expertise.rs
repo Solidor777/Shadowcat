@@ -127,7 +127,12 @@ pub fn allocate(
         .dice
         .iter()
         .map(|d| {
-            let DieKind::Numeric { min, max } = d.kind;
+            let (min, max) = match d.kind {
+                DieKind::Numeric { min, max } => (min, max),
+                DieKind::Faces { .. } => {
+                    unreachable!("Faces dice excluded from expertise (M11b-3 Task 10)")
+                }
+            };
             (d.id, (min, max))
         })
         .collect();
@@ -534,7 +539,12 @@ mod tests {
                 .dice
                 .iter()
                 .map(|d| {
-                    let DieKind::Numeric { min, max } = d.kind;
+                    let (min, max) = match d.kind {
+                        DieKind::Numeric { min, max } => (min, max),
+                        DieKind::Faces { .. } => {
+                            unreachable!("oracle corpus only constructs Numeric dice")
+                        }
+                    };
                     (d.id, (min, max))
                 })
                 .collect();

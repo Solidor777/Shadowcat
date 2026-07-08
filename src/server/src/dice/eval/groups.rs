@@ -26,7 +26,12 @@ pub fn resolve_group(
     rng: &mut dyn RngSource,
     raws: &mut RawRoll,
 ) -> Vec<DieRecord> {
-    let DieKind::Numeric { min, max } = group.kind;
+    let (min, max) = match group.kind {
+        DieKind::Numeric { min, max } => (min, max),
+        DieKind::Faces { .. } => {
+            unreachable!("Faces dice not yet wired into resolve_group (M11b-3 Task 6)")
+        }
+    };
     let mut recs: Vec<DieRecord> = naturals
         .iter()
         .map(|d| DieRecord {

@@ -49,7 +49,12 @@ pub fn recalculate(
                 for g in groups.iter_mut() {
                     for d in g.iter_mut() {
                         if ids.contains(&d.id) {
-                            let DieKind::Numeric { min, max } = d.kind;
+                            let (min, max) = match d.kind {
+                                DieKind::Numeric { min, max } => (min, max),
+                                DieKind::Faces { .. } => {
+                                    unreachable!("Faces recalc not yet wired (M11b-3 Task 11)")
+                                }
+                            };
                             d.natural = roll_uniform(rng, min, max);
                         }
                     }

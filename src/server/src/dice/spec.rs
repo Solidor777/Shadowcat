@@ -3,10 +3,54 @@ use serde::{Deserialize, Serialize};
 /// Stable identity of a rolled die within one roll; lets `recalculate` target a subset.
 pub type DieId = u32;
 
-/// A die's face space. M11a: numeric only; M11b adds `Faces` for custom-symbol dice.
+/// A single face of a `DieKind::Faces` die. `value` is `Some` for a face that
+/// participates numerically (ordering, totals); `None` for a face whose only
+/// payload is `symbols`. A `Faces` die is "ordered" (see `eval::classify` /
+/// `is_ordered`, M11b-3 §9) iff EVERY face has `value: Some`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Face {
+    pub value: Option<i32>,
+    pub symbols: Vec<Symbol>,
+}
+
+/// An opaque tag on a `Face`; the system assigns meaning (e.g. Genesys "triumph").
+pub type Symbol = String;
+
+/// A die's face space. `Numeric`: an ordered inclusive range. `Faces`: an
+/// explicit, possibly-unordered, possibly-symbolic list (M11b-3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DieKind {
     Numeric { min: i32, max: i32 },
+    Faces { faces: Vec<Face> },
+}
+
+/// Construction-time validation error for a `DieKind`. `Numeric` has no
+/// invalid state representable by this type (`sides >= 1` is enforced by the
+/// notation parser's `ParseError::InvalidDieSides`, since only the notation
+/// path constructs `Numeric` from untrusted input today).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DieKindError {
+    /// `Faces { faces: [] }` — `roll_uniform(0, faces.len() - 1)` requires a
+    /// non-degenerate range; `roll_uniform` only `debug_assert!`s this (a
+    /// no-op in release). No notation path constructs `Faces` today (M11b-3
+    /// is struct-only for face-lists); this becomes the enforcement point at
+    /// M11d's untrusted-wire boundary.
+    EmptyFaces,
+}
+
+impl DieKind {
+    pub fn validate(&self) -> Result<(), DieKindError> {
+        match self {
+            DieKind::Numeric { .. } => Ok(()),
+            DieKind::Faces { faces } => {
+                if faces.is_empty() {
+                    Err(DieKindError::EmptyFaces)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +262,28 @@ mod tests {
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert_eq!(spec, serde_json::from_str::<RollSpec>(&json).unwrap());
+    }
+
+    #[test]
+    fn faces_die_validate_rejects_empty_face_list() {
+        let kind = DieKind::Faces { faces: vec![] };
+        assert!(matches!(kind.validate(), Err(DieKindError::EmptyFaces)));
+    }
+
+    #[test]
+    fn faces_die_validate_accepts_nonempty_face_list() {
+        let kind = DieKind::Faces {
+            faces: vec![Face {
+                value: Some(1),
+                symbols: vec![],
+            }],
+        };
+        assert!(kind.validate().is_ok());
+    }
+
+    #[test]
+    fn numeric_die_validate_is_always_ok() {
+        assert!(DieKind::Numeric { min: 1, max: 6 }.validate().is_ok());
     }
 
     #[test]
