@@ -761,11 +761,9 @@ mod tests {
         parent: u128,
         behavior: &str,
         cost: f64,
-        x0: f64,
-        y0: f64,
-        x1: f64,
-        y1: f64,
+        rect: (f64, f64, f64, f64),
     ) -> crate::data::document::Document {
+        let (x0, y0, x1, y1) = rect;
         entity_doc(
             id,
             parent,
@@ -787,7 +785,7 @@ mod tests {
             vec![
                 entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
                 entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
-                region_doc(12, 10, "impassable", 1.0, 50.0, 0.0, 150.0, 100.0),
+                region_doc(12, 10, "impassable", 1.0, (50.0, 0.0, 150.0, 100.0)),
             ],
             0,
         );
@@ -818,7 +816,7 @@ mod tests {
             vec![
                 entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
                 entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
-                region_doc(12, 10, "arrest", 1.0, 50.0, -50.0, 150.0, 50.0),
+                region_doc(12, 10, "arrest", 1.0, (50.0, -50.0, 150.0, 50.0)),
             ],
             0,
         );
@@ -852,7 +850,7 @@ mod tests {
             vec![
                 entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
                 entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
-                region_doc(12, 10, "terrain", 2.5, 50.0, 0.0, 150.0, 100.0),
+                region_doc(12, 10, "terrain", 2.5, (50.0, 0.0, 150.0, 100.0)),
             ],
             0,
         );
@@ -876,7 +874,7 @@ mod tests {
         // authoritative field, spec §6), even though a player's pathfind field never saw it.
         let scene_id = Uuid::from_u128(10);
         let token_id = Uuid::from_u128(11);
-        let mut secret = region_doc(12, 10, "impassable", 1.0, 50.0, 0.0, 150.0, 100.0);
+        let mut secret = region_doc(12, 10, "impassable", 1.0, (50.0, 0.0, 150.0, 100.0));
         secret
             .permissions
             .property_overrides
@@ -987,7 +985,7 @@ mod tests {
             vec![
                 entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
                 entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
-                region_doc(12, 10, "impassable", 1.0, 300.0, -50.0, 500.0, 150.0),
+                region_doc(12, 10, "impassable", 1.0, (300.0, -50.0, 500.0, 150.0)),
             ],
             0,
         );
@@ -1018,7 +1016,7 @@ mod tests {
             vec![
                 entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
                 entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
-                region_doc(12, 10, "arrest", 1.0, 300.0, -50.0, 500.0, 150.0),
+                region_doc(12, 10, "arrest", 1.0, (300.0, -50.0, 500.0, 150.0)),
             ],
             0,
         );
@@ -1052,8 +1050,8 @@ mod tests {
             vec![
                 entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
                 entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 })),
-                region_doc(12, 10, "terrain", 3.0, 100.0, 0.0, 200.0, 100.0),
-                region_doc(13, 10, "arrest", 1.0, 300.0, 0.0, 400.0, 100.0),
+                region_doc(12, 10, "terrain", 3.0, (100.0, 0.0, 200.0, 100.0)),
+                region_doc(13, 10, "arrest", 1.0, (300.0, 0.0, 400.0, 100.0)),
             ],
             0,
         );
@@ -1109,7 +1107,7 @@ mod tests {
             ));
         }
         if let Some((behavior, cost, x0, y0, x1, y1)) = region {
-            let mut r = region_doc(13, 10, behavior, cost, x0, y0, x1, y1);
+            let mut r = region_doc(13, 10, behavior, cost, (x0, y0, x1, y1));
             if secret_region {
                 r.permissions
                     .property_overrides
