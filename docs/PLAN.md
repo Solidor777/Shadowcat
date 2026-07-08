@@ -776,16 +776,18 @@ Decomposed **M11a–d**:
   > `HasSymbol` direction-insensitive) + unconditional `symbol_counts` + expertise restricted to
   > `Numeric` dice, folding any excluded `Faces` die's fixed contribution into the two-pass
   > clamp-decision threshold. **Mandatory buddy-check (Task 9, reopening the sealed M11b-1
-  > crit-scoring path for `CritTrigger`)** converged clean; **two independent single-reviewer
-  > passes each found and fixed a real bug**: Task 6 (Explode retrigger on an ordered `Faces` die
-  > must test the die's derived value, not the raw drawn index — the raw-index check would silently
-  > misfire whenever face value doesn't track index order) and Task 11 (expertise's all-failed-region
-  > branch check omitted a fixed contribution from an excluded kept `Faces` die, answering a
-  > different question than `evaluate_success` would actually score). Design:
+  > crit-scoring path for `CritTrigger`)** converged clean; two more real bugs surfaced and were
+  > fixed within their own tasks: Task 6 (Explode retrigger on an ordered `Faces` die must test the
+  > die's derived value, not the raw drawn index — the raw-index check would silently misfire
+  > whenever face value doesn't track index order), found in the implementer's own self-review and
+  > confirmed fixed by both task-scoped reviewers; and Task 11 (expertise's all-failed-region branch
+  > check omitted a fixed contribution from an excluded kept `Faces` die, answering a different
+  > question than `evaluate_success` would actually score), found by the single-reviewer spec pass.
+  > Design:
   > [`superpowers/specs/2026-07-07-m11b-3-labeled-custom-face-dice-design.md`](superpowers/specs/2026-07-07-m11b-3-labeled-custom-face-dice-design.md).
   > Plan: [`superpowers/plans/2026-07-07-m11b-3-labeled-custom-face-dice.md`](superpowers/plans/2026-07-07-m11b-3-labeled-custom-face-dice.md).
   > **M11b is now fully DONE** (M11a + M11b-1 + M11b-2 + M11b-3). `shadowcat-codebase-dice` skill
-  > updated + confirmed ACCURATE by `shadowcat-spec-reviewer`.
+  > updated for M11b-3, reviewed by `shadowcat-spec-reviewer` per the reviewed skill-update gate.
   Spec: [`superpowers/specs/2026-07-04-m11b-system-rules-design.md`](superpowers/specs/2026-07-04-m11b-system-rules-design.md).
 - **M11c — Chat core (headless):** messages as sequenced documents on the per-recipient redaction path; module-seeded channels; server-authoritative input→sanitization pipeline (structured safe content model); new fail-closed whisper recipient-allowlist tier; user + optional actor owner (linked or instanced).
 - **M11d — Default display modules:** independently-replaceable composer + message-card contribution modules; text enrichment (Markdown/HTML/images/links/emails, GM-gated, no embedded CSS); emotes; roll integration; internal doc links; SSRF-guarded server-side link previews.
