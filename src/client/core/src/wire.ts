@@ -1,7 +1,8 @@
 // Runtime validation for the WebSocket wire protocol. The compile-time wire
 // types come from `@shadowcat/types` (ts-rs output); these Zod schemas validate
-// inbound server frames at the trust boundary. `wire.test.ts` guards them
-// against drift from the Rust types.
+// inbound server frames at the trust boundary, plus outbound client-frame
+// schemas (e.g. `SendMessageSchema`) that callers may opt to validate before
+// sending. `wire.test.ts` guards them against drift from the Rust types.
 //
 // i64/u32 fields arrive as JSON numbers and are modeled as `number` (seq and
 // millisecond timestamps stay well within 2^53). ts-rs types i64 as `bigint`;

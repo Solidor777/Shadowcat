@@ -148,12 +148,19 @@ pub fn build_message_doc(
 /// Max characters accepted for a single message's raw content (pre-producer).
 pub const MAX_MESSAGE_CHARS: usize = 4096;
 
+/// Max characters accepted for a message's `channel` name. Otherwise `channel`
+/// is unbounded save for the 256 KB whole-document size cap.
+pub const MAX_CHANNEL_CHARS: usize = 128;
+
 /// Why `handle_send_message` refused to ingest a `SendMessage` frame.
 #[derive(Debug)]
 pub enum SendMessageError {
-    /// Content is empty after trimming whitespace.
+    /// Content is empty after trimming whitespace, or `channel` is empty
+    /// after trimming whitespace.
     Empty,
-    /// Content exceeds `MAX_MESSAGE_CHARS`.
+    /// Content exceeds `MAX_MESSAGE_CHARS`, or `channel` exceeds
+    /// `MAX_CHANNEL_CHARS`. Reused for both — the surface stays minimal since
+    /// neither the caller nor the wire protocol distinguishes which field.
     TooLong,
     /// The user's per-minute flood budget is exhausted.
     RateLimited,
@@ -181,6 +188,12 @@ pub async fn handle_send_message(
         return Err(SendMessageError::Empty);
     }
     if content.chars().count() > MAX_MESSAGE_CHARS {
+        return Err(SendMessageError::TooLong);
+    }
+    if channel.trim().is_empty() {
+        return Err(SendMessageError::Empty);
+    }
+    if channel.chars().count() > MAX_CHANNEL_CHARS {
         return Err(SendMessageError::TooLong);
     }
     if !rate.check(ctx.user_id, now, budget_per_min) {
@@ -438,6 +451,45 @@ mod tests {
             handle_send_message(&room, &repo, &ctx, &rate, "all".into(), long, None, 100, 30).await,
             Err(SendMessageError::TooLong)
         ));
+
+        // Empty/over-long channel rejected before any publish; seq unchanged.
+        let seq_before = room.subscribe().1;
+        assert!(matches!(
+            handle_send_message(
+                &room,
+                &repo,
+                &ctx,
+                &rate,
+                "".into(),
+                "hi".into(),
+                None,
+                100,
+                30
+            )
+            .await,
+            Err(SendMessageError::Empty)
+        ));
+        let long_channel = "c".repeat(MAX_CHANNEL_CHARS + 1);
+        assert!(matches!(
+            handle_send_message(
+                &room,
+                &repo,
+                &ctx,
+                &rate,
+                long_channel,
+                "hi".into(),
+                None,
+                100,
+                30
+            )
+            .await,
+            Err(SendMessageError::TooLong)
+        ));
+        assert_eq!(
+            room.subscribe().1,
+            seq_before,
+            "rejected channel must not publish"
+        );
     }
 
     /// A message doc built via `build_message_doc` and committed via
