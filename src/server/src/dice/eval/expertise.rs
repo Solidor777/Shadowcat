@@ -132,25 +132,24 @@ pub fn allocate(
     if e == 0 {
         return;
     }
-    // Bounds per die: every record id maps to a RawDie carrying its Numeric kind.
+    // Bounds per die: only Numeric dice have a defined [min,max] adjust range.
     let bounds: HashMap<DieId, (i32, i32)> = raws
         .dice
         .iter()
-        .map(|d| {
-            let (min, max) = match d.kind {
-                DieKind::Numeric { min, max } => (min, max),
-                DieKind::Faces { .. } => {
-                    unreachable!("Faces dice excluded from expertise (M11b-3 Task 10)")
-                }
-            };
-            (d.id, (min, max))
+        .filter_map(|d| match d.kind {
+            DieKind::Numeric { min, max } => Some((d.id, (min, max))),
+            DieKind::Faces { .. } => None,
         })
         .collect();
-    // Contributing dice = the pooled kept dice, in record order.
+    // Contributing dice = the pooled kept NUMERIC dice, in record order.
+    // A Faces die (ordered or not) is excluded: `adjust`'s "+1 toward better
+    // within [min,max]" has no defined meaning over an arbitrary face-list —
+    // there is no contiguous numeric range to move within, and mutating
+    // `value` to a non-face integer would desync the die's `symbols`.
     let kept: Vec<usize> = records
         .iter()
         .enumerate()
-        .filter(|(_, r)| r.kept)
+        .filter(|(_, r)| r.kept && bounds.contains_key(&r.id))
         .map(|(i, _)| i)
         .collect();
     if kept.is_empty() {
@@ -585,6 +584,83 @@ mod tests {
                 "allocation mismatch: cfg={cfg:?} values={values:?}"
             );
         }
+    }
+
+    #[test]
+    fn expertise_never_allocates_to_an_ordered_faces_die() {
+        use crate::dice::spec::Face;
+        // One ordered Faces die (ranked, all-valued) + one Numeric die, both at a
+        // value that COULD reach the target with 1 expertise point. Budget 1 point
+        // total: it must land on the Numeric die, never the Faces die.
+        let faces = vec![
+            Face {
+                value: Some(4),
+                symbols: vec![],
+            },
+            Face {
+                value: Some(5),
+                symbols: vec![],
+            },
+        ];
+        let c = SuccessConfig {
+            success: SuccessRule::Numeric {
+                comp: Comparator::Gte,
+                target: 5,
+            },
+            required_successes: None,
+            tiers: vec![],
+            crit_success: None,
+            crit_fail: None,
+            expertise: 1,
+        };
+        let mut raws = RawRoll::default();
+        let faces_id = raws.push(
+            DieKind::Faces {
+                faces: faces.clone(),
+            },
+            0,
+        ); // value 4, one step from 5
+        let numeric_id = raws.push(DieKind::Numeric { min: 1, max: 6 }, 4); // value 4, one step from 5
+        let mut records = vec![
+            DieRecord {
+                id: faces_id,
+                group_index: 0,
+                natural: 0,
+                value: 4,
+                kept: true,
+                exploded: false,
+                rerolled_from: None,
+                crit_success: false,
+                crit_fail: false,
+                expertise: 0,
+                label: None,
+                symbols: vec![],
+            },
+            DieRecord {
+                id: numeric_id,
+                group_index: 0,
+                natural: 4,
+                value: 4,
+                kept: true,
+                exploded: false,
+                rerolled_from: None,
+                crit_success: false,
+                crit_fail: false,
+                expertise: 0,
+                label: None,
+                symbols: vec![],
+            },
+        ];
+        allocate(Direction::HighWins, &c, &raws, &mut records);
+        assert_eq!(
+            records[0].expertise, 0,
+            "ordered Faces die must never receive expertise points"
+        );
+        assert_eq!(
+            records[1].expertise, 1,
+            "the Numeric die gets the point instead"
+        );
+        assert_eq!(records[1].value, 5);
     }
 
     #[test]
