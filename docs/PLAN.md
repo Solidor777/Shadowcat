@@ -789,7 +789,29 @@ Decomposed **M11a–d**:
   > **M11b is now fully DONE** (M11a + M11b-1 + M11b-2 + M11b-3). `shadowcat-codebase-dice` skill
   > updated for M11b-3, reviewed by `shadowcat-spec-reviewer` per the reviewed skill-update gate.
   Spec: [`superpowers/specs/2026-07-04-m11b-system-rules-design.md`](superpowers/specs/2026-07-04-m11b-system-rules-design.md).
-- **M11c — Chat core (headless):** messages as sequenced documents on the per-recipient redaction path; module-seeded channels; server-authoritative input→sanitization pipeline (structured safe content model); new fail-closed whisper recipient-allowlist tier; user + optional actor owner (linked or instanced).
+- **M11c — Chat core (headless)**, decomposed into checkpoints:
+  > **M11c-1 DONE** (branch `m11c-1-message-model`) — message model + server-authoritative
+  > ingest + delivery: a chat message is an ordinary sequenced `Document` (`doc_type: "message"`)
+  > riding the existing Event/redaction/search path with zero message-specific plumbing in any of
+  > those subsystems. `MessageSystem{channel, user_owner, actor_owner, kind, content}` body;
+  > `Segment` content model (`Text`-only in c-1, tagged enum, opaque JSON, deliberately NOT
+  > ts-rs-exported — the client mirrors it independently in Zod later, M11d); `ActorOwnerRef`
+  > (`Actor`/`TokenInstance`) is the SOLE chat type with a ts-rs binding, carried on the
+  > `SendMessage` wire frame. `chat::handle_send_message` → `chat::build_message_doc` →
+  > `Room::publish` is the SOLE authoring path for a stored message doc — the client never
+  > constructs one, only sends `ClientMsg::SendMessage`; validates empty/`MAX_MESSAGE_CHARS=4096`/
+  > a per-user-per-minute flood budget (`PingRateLimiter`) before publishing. Authz is a COUPLED
+  > two-chokepoint seam: (1) a Player-baseline `core:create` exemption in `apply_intent`
+  > (`sqlite.rs`) lets a Player create a message doc only when self-owned, made sound ONLY because
+  > (2) `chat::ops_target_message` rejects any client-authored `message` Create/Delete at BOTH the
+  > WS `Intent` and HTTP `write_ops` ingress boundaries before that exemption is ever reached —
+  > weakening either chokepoint alone reopens forgery. A third, independent chokepoint
+  > blanket-rejects every client `Update` against a stored `message` doc in `apply_intent`
+  > (keyed on the STORED doc_type, since `Update` carries none), even the owning Player's own
+  > message — a deliberate placeholder pending c-3's validated edit path. `shadowcat-codebase-chat`
+  > skill created + reviewed by `shadowcat-spec-reviewer` per the reviewed skill-update gate.
+  > **M11c-2 (whisper allowlist) is next.**
+  Design: [`superpowers/specs/2026-07-08-m11c-chat-core-design.md`](superpowers/specs/2026-07-08-m11c-chat-core-design.md).
 - **M11d — Default display modules:** independently-replaceable composer + message-card contribution modules; text enrichment (Markdown/HTML/images/links/emails, GM-gated, no embedded CSS); emotes; roll integration; internal doc links; SSRF-guarded server-side link previews.
 
 ### M12 · Minimal default modules

@@ -1,7 +1,8 @@
 // Runtime validation for the WebSocket wire protocol. The compile-time wire
 // types come from `@shadowcat/types` (ts-rs output); these Zod schemas validate
-// inbound server frames at the trust boundary. `wire.test.ts` guards them
-// against drift from the Rust types.
+// inbound server frames at the trust boundary, plus outbound client-frame
+// schemas (e.g. `SendMessageSchema`) that callers may opt to validate before
+// sending. `wire.test.ts` guards them against drift from the Rust types.
 //
 // i64/u32 fields arrive as JSON numbers and are modeled as `number` (seq and
 // millisecond timestamps stay well within 2^53). ts-rs types i64 as `bigint`;
@@ -24,6 +25,13 @@ export const WsErrorCodeSchema = z.enum([
   "forbidden",
   "internal",
 ]);
+
+/** Mirrors `crate::chat::ActorOwnerRef` (chat message attribution). */
+export const ActorOwnerRefSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("actor"), actor_id: z.string() }),
+  z.object({ kind: z.literal("token_instance"), token_id: z.string() }),
+]);
+export type WireActorOwnerRef = z.infer<typeof ActorOwnerRefSchema>;
 
 export const ScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("compendium"), pack: z.string() }),
@@ -301,7 +309,26 @@ export type ClientMsg =
       scene: string;
       token_id: string;
       path: [number, number][];
+    }
+  | {
+      type: "send_message";
+      channel: string;
+      content: string;
+      actor_owner: WireActorOwnerRef | null;
     };
+
+/**
+ * Standalone Zod mirror of the `send_message` `ClientMsg` variant. `ClientMsg`
+ * itself is a plain TS type (outgoing frames are not runtime-validated); this
+ * schema exists for callers that construct/validate a `SendMessage` frame
+ * before it is JSON.stringify'd onto the wire.
+ */
+export const SendMessageSchema = z.object({
+  type: z.literal("send_message"),
+  channel: z.string(),
+  content: z.string(),
+  actor_owner: ActorOwnerRefSchema.nullable(),
+});
 
 /** Parse + validate an inbound text frame; `null` on malformed/unknown input. */
 export function parseServerMsg(text: string): ServerMsg | null {

@@ -931,7 +931,25 @@ impl Repository for SqliteRepository {
                     // capability; any other actor's WorldRole must hold core:create
                     // for this doc type. Create has no document, so this rides
                     // WorldRole (role_caps), not the per-document DocRole.
+                    //
+                    // Baseline chat-posting right: a Player may author a `message`,
+                    // exempt from the otherwise-GM-only core:create gate. The
+                    // WRITE_FIELDS floor above still applies, and the extra
+                    // `doc.owner == Some(ctx.user_id)` clause below ties the message
+                    // to its poster. REQUIRED PRECONDITION for soundness: the
+                    // WS/HTTP client-intent ingress MUST reject any client-authored
+                    // `message` op, so that a `message` Create reaches `apply_intent`
+                    // only from the server-side message-send handler (which builds a
+                    // sanitized doc). Without that ingress rejection this exemption
+                    // lets a Player create a self-owned `message` with an arbitrary
+                    // body (forged `actor_owner`/`kind`) via a raw `Intent`; do not
+                    // rely on this exemption until that rejection is in place, and do
+                    // not weaken it thereafter.
+                    let is_baseline_message = doc.doc_type == crate::chat::MESSAGE_DOC_TYPE
+                        && ctx.world_role == WorldRole::Player
+                        && doc.owner == Some(ctx.user_id);
                     if ctx.world_role != WorldRole::Gm
+                        && !is_baseline_message
                         && !world_defaults.role_has(ctx.world_role, &doc.doc_type, cap::CREATE)
                     {
                         tracing::debug!(
@@ -988,6 +1006,19 @@ impl Repository for SqliteRepository {
                         .await?
                         .ok_or_else(|| DataError::Conflict(format!("document {doc_id} missing")))?;
                     check_command_scope(&cur, world_id)?;
+                    // Message docs are server-authored and immutable to clients
+                    // in this checkpoint: `Update` carries no `doc_type` for
+                    // `ops_target_message` to classify, so it is instead
+                    // rejected here against the authoritative STORED doc_type
+                    // (never a client-supplied one). Without this, an owning
+                    // Player's `DocRole::Owner` grants WRITE_FIELDS on their
+                    // own message, letting a raw Update forge `kind`/
+                    // `user_owner`/`channel` or rewrite `content` unsanitized.
+                    // A validated, sanitizing edit flow introduced later
+                    // replaces this blanket rejection.
+                    if cur.doc_type == crate::chat::MESSAGE_DOC_TYPE {
+                        return Err(DataError::Forbidden);
+                    }
                     let access = resolve_access_world(
                         ctx.user_id,
                         ctx.world_role,
@@ -2722,6 +2753,183 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, DataError::Forbidden));
+    }
+
+    #[tokio::test]
+    async fn player_may_create_message_but_not_other_types() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        let pl_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // A server-shaped message doc (author owns it) — Player create allowed.
+        let msg = crate::chat::build_message_doc(
+            w.id,
+            player,
+            "all".into(),
+            None,
+            crate::chat::plain_text_content("hi"),
+            1,
+        );
+        r.apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
+            .await
+            .expect("player may post a message");
+
+        // A non-message doc the player owns — still denied (core:create GM-only).
+        let mut other = crate::chat::build_message_doc(w.id, player, "all".into(), None, vec![], 2);
+        other.doc_type = "note".into();
+        let err = r
+            .apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc: other }], 2)
+            .await;
+        assert!(
+            matches!(err, Err(DataError::Forbidden)),
+            "non-message create must stay GM-gated"
+        );
+    }
+
+    #[tokio::test]
+    async fn spectator_may_not_create_message() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let spec = r
+            .create_user("sp", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, spec, WorldRole::Spectator)
+            .await
+            .unwrap();
+        let sp_ctx = PermissionContext {
+            user_id: spec,
+            world_role: WorldRole::Spectator,
+        };
+        let msg = crate::chat::build_message_doc(w.id, spec, "all".into(), None, vec![], 1);
+        let err = r
+            .apply_intent(&sp_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
+            .await;
+        assert!(matches!(err, Err(DataError::Forbidden)));
+    }
+
+    #[tokio::test]
+    async fn player_may_not_forge_message_owner_via_baseline_exemption() {
+        use crate::data::document::DocRole;
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl2", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let other = r
+            .create_user("other", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        let pl_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // Build a server-shaped message doc for `player`, then forge its owner to
+        // `other` while keeping `player`'s Owner grant in permissions.users (so the
+        // WRITE_FIELDS floor would otherwise pass). The baseline exemption must not
+        // fire for a non-self-owned message.
+        let mut msg = crate::chat::build_message_doc(
+            w.id,
+            player,
+            "all".into(),
+            None,
+            crate::chat::plain_text_content("hi"),
+            1,
+        );
+        msg.owner = Some(other);
+        msg.permissions.users.insert(player, DocRole::Owner);
+
+        let err = r
+            .apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
+            .await;
+        assert!(
+            matches!(err, Err(DataError::Forbidden)),
+            "forged owner must not benefit from the baseline message-create exemption"
+        );
+    }
+
+    #[tokio::test]
+    async fn player_may_not_update_own_message() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl3", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        let pl_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // Player posts a legitimate message via the baseline create exemption.
+        let msg = crate::chat::build_message_doc(
+            w.id,
+            player,
+            "all".into(),
+            None,
+            crate::chat::plain_text_content("hi"),
+            1,
+        );
+        let msg_id = msg.id;
+        r.apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
+            .await
+            .expect("player may post a message");
+
+        // The owning Player's DocRole::Owner grants WRITE_FIELDS on their own
+        // message (satisfied without the fix), so this Update would otherwise
+        // let them forge `kind`/`content` post-hoc. Must be rejected outright:
+        // c-1 has no legitimate message-edit path.
+        let err = r
+            .apply_intent(
+                &pl_ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id: msg_id,
+                    changes: vec![FieldChange {
+                        path: "/system/kind".into(),
+                        old: serde_json::json!("normal"),
+                        new: serde_json::json!("system"),
+                    }],
+                }],
+                2,
+            )
+            .await;
+        assert!(
+            matches!(err, Err(DataError::Forbidden)),
+            "message docs must be immutable to clients via Update"
+        );
     }
 
     #[tokio::test]

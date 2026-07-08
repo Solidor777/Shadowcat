@@ -74,6 +74,8 @@ const MAX_SUBSCRIPTIONS: usize = 16;
 const MAX_SCENE_SUBSCRIPTIONS: usize = 16;
 /// Coalescing window: a burst of Events triggers at most one re-run per window.
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
+/// Per-user chat flood budget: messages allowed per trailing 60s window.
+const MESSAGE_RATE_PER_MIN: usize = 30;
 
 /// A live search subscription's stored state.
 struct Sub {
@@ -237,6 +239,8 @@ async fn handle_socket(
     // Ingress: parse client frames, forward intents to egress / publish.
     // Per-user ping budget (shared across this user's connections; survives reconnect).
     let ping_rate = state.ws.ping_rate.clone();
+    // Per-user chat flood budget (shared across this user's connections).
+    let message_rate = state.ws.message_rate.clone();
     loop {
         tokio::select! {
             _ = &mut egress => break,
@@ -245,6 +249,18 @@ async fn handle_socket(
                 match frame {
                     Message::Text(t) => match serde_json::from_str::<ClientMsg>(t.as_str()) {
                         Ok(ClientMsg::Intent { intent_id, ops }) => {
+                            // Messages are server-authored via SendMessage only;
+                            // a client-authored message op is always rejected here,
+                            // never reaching apply_intent.
+                            if crate::chat::ops_target_message(&ops) {
+                                let _ = etx
+                                    .send(Egress::Frame(Arc::new(ServerMsg::Reject {
+                                        intent_id,
+                                        reason: RejectReason::Forbidden,
+                                    })))
+                                    .await;
+                                continue;
+                            }
                             // Success is confirmed by the broadcast echo of the
                             // authored Event; only a rejection is sent directly.
                             match room.publish(repo.as_ref(), &ctx, ops, now_millis()).await {
@@ -361,6 +377,28 @@ async fn handle_socket(
                                 if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
                                     break;
                                 }
+                            }
+                        }
+                        Ok(ClientMsg::SendMessage { channel, content, actor_owner }) => {
+                            // Server-authoritative chat ingest: flood-limit, validate, CONSTRUCT
+                            // the message doc, and publish. Success is confirmed by the broadcast
+                            // echo of the authored Event (like Intent); a `SendMessage` frame
+                            // carries no intent_id, so a rejection has no matching frame to
+                            // correlate a Reject to and is logged only.
+                            if let Err(e) = crate::chat::handle_send_message(
+                                &room,
+                                repo.as_ref(),
+                                &ctx,
+                                &message_rate,
+                                channel,
+                                content,
+                                actor_owner,
+                                now_millis(),
+                                MESSAGE_RATE_PER_MIN,
+                            )
+                            .await
+                            {
+                                tracing::debug!(world = %world_id, user = %user_id, ?e, "message rejected");
                             }
                         }
                         Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius }) => {

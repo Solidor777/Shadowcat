@@ -9,6 +9,7 @@ import {
   RejectReasonSchema,
   ResyncSourceSchema,
   WsErrorCodeSchema,
+  SendMessageSchema,
   type ServerMsg,
   type ClientMsg,
   type WireOperation,
@@ -295,5 +296,21 @@ describe("parseServerMsg", () => {
       if (tokenOp.op === "create") expect(tokenOp.doc.parent_id).toBe("scene-1");
       if (sceneOp.op === "create") expect(sceneOp.doc.parent_id).toBeNull();
     }
+  });
+});
+
+describe("SendMessageSchema", () => {
+  it("parses a send_message frame + actor_owner ref", () => {
+    expect(
+      SendMessageSchema.parse({
+        type: "send_message",
+        channel: "all",
+        content: "hi",
+        actor_owner: {
+          kind: "actor",
+          actor_id: "00000000-0000-0000-0000-000000000001",
+        },
+      }).actor_owner?.kind,
+    ).toBe("actor");
   });
 });
