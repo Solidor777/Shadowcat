@@ -3,8 +3,13 @@
 //! Messages are ordinary sequenced `Document`s with an opaque `system` body
 //! (this module's `MessageSystem`), authored ONLY by the server from a
 //! `SendMessage` intent — never built by a client. INVARIANT: a `message`
-//! doc_type reaches `apply_intent` only via `handle_send_message`; the ingress
-//! guard (`ops_target_message`) rejects any client-authored message op.
+//! doc_type reaches `apply_intent` only via `handle_send_message`. Two
+//! chokepoints jointly enforce this: the ingress guard (`ops_target_message`)
+//! rejects any client-authored `message` Create/Delete op at the WS/HTTP
+//! boundary; `apply_intent`'s `Update` branch separately rejects every
+//! `Update` targeting a stored `message` doc (Updates carry no `doc_type`, so
+//! they cannot be classified by `ops_target_message` and must be blocked
+//! against the authoritative stored document instead).
 
 use std::collections::BTreeMap;
 
@@ -24,9 +29,10 @@ pub const MESSAGE_DOC_TYPE: &str = "message";
 /// message ingest server-authoritative.
 ///
 /// `Operation::Update` carries no `doc_type` (just `doc_id` + field changes),
-/// so it cannot be classified here; message edits are out of c-1 scope
-/// entirely (deferred to the c-3+ sanitizing edit path) and are rejected at
-/// a higher layer once that path exists.
+/// so it cannot be classified here; every `Update` targeting a stored
+/// `message` doc is instead rejected in `apply_intent`'s `Update` branch
+/// (classified there against the authoritative stored `doc_type`), since c-1
+/// has no legitimate message-edit path.
 pub fn ops_target_message(ops: &[Operation]) -> bool {
     ops.iter().any(|op| match op {
         Operation::Create { doc } | Operation::Delete { doc } => doc.doc_type == MESSAGE_DOC_TYPE,
@@ -245,5 +251,33 @@ mod tests {
         );
         note.doc_type = "note".into();
         assert!(!ops_target_message(&[Operation::Create { doc: note }]));
+    }
+
+    #[test]
+    fn ops_target_message_detects_message_in_mixed_batch() {
+        // A batch with one innocuous non-message op followed by a message
+        // Create must still trip the guard: `.any()` must not short-circuit
+        // on the first (non-matching) op.
+        let mut note = build_message_doc(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            "all".into(),
+            None,
+            vec![],
+            0,
+        );
+        note.doc_type = "note".into();
+        let msg = build_message_doc(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            "all".into(),
+            None,
+            vec![],
+            0,
+        );
+        assert!(ops_target_message(&[
+            Operation::Create { doc: note },
+            Operation::Create { doc: msg },
+        ]));
     }
 }

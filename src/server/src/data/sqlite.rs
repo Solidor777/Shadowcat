@@ -1006,6 +1006,19 @@ impl Repository for SqliteRepository {
                         .await?
                         .ok_or_else(|| DataError::Conflict(format!("document {doc_id} missing")))?;
                     check_command_scope(&cur, world_id)?;
+                    // Message docs are server-authored and immutable to clients
+                    // in this checkpoint: `Update` carries no `doc_type` for
+                    // `ops_target_message` to classify, so it is instead
+                    // rejected here against the authoritative STORED doc_type
+                    // (never a client-supplied one). Without this, an owning
+                    // Player's `DocRole::Owner` grants WRITE_FIELDS on their
+                    // own message, letting a raw Update forge `kind`/
+                    // `user_owner`/`channel` or rewrite `content` unsanitized.
+                    // A validated, sanitizing edit flow introduced later
+                    // replaces this blanket rejection.
+                    if cur.doc_type == crate::chat::MESSAGE_DOC_TYPE {
+                        return Err(DataError::Forbidden);
+                    }
                     let access = resolve_access_world(
                         ctx.user_id,
                         ctx.world_role,
@@ -2858,6 +2871,64 @@ mod tests {
         assert!(
             matches!(err, Err(DataError::Forbidden)),
             "forged owner must not benefit from the baseline message-create exemption"
+        );
+    }
+
+    #[tokio::test]
+    async fn player_may_not_update_own_message() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl3", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        let pl_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // Player posts a legitimate message via the baseline create exemption.
+        let msg = crate::chat::build_message_doc(
+            w.id,
+            player,
+            "all".into(),
+            None,
+            crate::chat::plain_text_content("hi"),
+            1,
+        );
+        let msg_id = msg.id;
+        r.apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
+            .await
+            .expect("player may post a message");
+
+        // The owning Player's DocRole::Owner grants WRITE_FIELDS on their own
+        // message (satisfied without the fix), so this Update would otherwise
+        // let them forge `kind`/`content` post-hoc. Must be rejected outright:
+        // c-1 has no legitimate message-edit path.
+        let err = r
+            .apply_intent(
+                &pl_ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id: msg_id,
+                    changes: vec![FieldChange {
+                        path: "/system/kind".into(),
+                        old: serde_json::json!("normal"),
+                        new: serde_json::json!("system"),
+                    }],
+                }],
+                2,
+            )
+            .await;
+        assert!(
+            matches!(err, Err(DataError::Forbidden)),
+            "message docs must be immutable to clients via Update"
         );
     }
 
