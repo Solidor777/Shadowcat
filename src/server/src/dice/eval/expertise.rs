@@ -298,6 +298,7 @@ mod tests {
                 natural: v,
             });
             raws.records.push(DieRecord {
+                label: None,
                 id,
                 group_index: 0,
                 natural: v,

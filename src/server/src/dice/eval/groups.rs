@@ -40,6 +40,7 @@ pub fn resolve_group(
             crit_success: false,
             crit_fail: false,
             expertise: 0,
+            label: group.label.clone(),
         })
         .collect();
 
@@ -104,6 +105,7 @@ pub fn resolve_group(
                                         raws,
                                         group.kind.clone(),
                                         group_index,
+                                        group.label.clone(),
                                         extra,
                                         value,
                                     );
@@ -114,6 +116,7 @@ pub fn resolve_group(
                                         raws,
                                         group.kind.clone(),
                                         group_index,
+                                        group.label.clone(),
                                         extra,
                                         extra,
                                     );
@@ -168,6 +171,7 @@ fn push_extra(
     raws: &mut RawRoll,
     kind: DieKind,
     group_index: usize,
+    label: Option<String>,
     natural: i32,
     value: i32,
 ) {
@@ -183,6 +187,7 @@ fn push_extra(
         crit_success: false,
         crit_fail: false,
         expertise: 0,
+        label,
     });
 }
 
@@ -203,6 +208,7 @@ mod tests {
 
     fn group(mods: Vec<GroupModifier>) -> DiceGroup {
         DiceGroup {
+            label: None,
             count: 4,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: mods,
@@ -273,6 +279,7 @@ mod tests {
             group_spans: vec![],
         };
         let g = DiceGroup {
+            label: None,
             count: 2,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: vec![GroupModifier::Reroll {
@@ -297,6 +304,7 @@ mod tests {
             group_spans: vec![],
         };
         let g = DiceGroup {
+            label: None,
             count: 2,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: vec![GroupModifier::Explode {
@@ -339,6 +347,7 @@ mod tests {
             group_spans: vec![],
         };
         let g = DiceGroup {
+            label: None,
             count: 1,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: vec![GroupModifier::Explode {
@@ -377,6 +386,7 @@ mod tests {
             group_spans: vec![],
         };
         let g = DiceGroup {
+            label: None,
             count: 1,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: vec![GroupModifier::Explode {
@@ -413,6 +423,7 @@ mod tests {
             group_spans: vec![],
         };
         let g = DiceGroup {
+            label: None,
             count: 2,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: vec![
@@ -445,6 +456,7 @@ mod tests {
             group_spans: vec![],
         };
         let g = DiceGroup {
+            label: None,
             count: 2,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: vec![
@@ -478,6 +490,7 @@ mod tests {
             group_spans: vec![],
         };
         let g = DiceGroup {
+            label: None,
             count: 1,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: vec![GroupModifier::Reroll {
@@ -515,6 +528,7 @@ mod tests {
             group_spans: vec![],
         };
         let g = DiceGroup {
+            label: None,
             count: 1,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: vec![GroupModifier::Explode {
@@ -535,6 +549,37 @@ mod tests {
     }
 
     #[test]
+    fn label_propagates_to_every_record_including_exploded_children() {
+        // Same fixture shape as the group_index propagation test: a single die at
+        // max that explodes once, so the label must reach BOTH the original
+        // record and the pushed exploded child.
+        let naturals = vec![d6(0, 6)];
+        let mut raws = RawRoll {
+            dice: naturals.clone(),
+            records: vec![],
+            next_id: 1,
+            group_spans: vec![],
+        };
+        let g = DiceGroup {
+            count: 1,
+            kind: DieKind::Numeric { min: 1, max: 6 },
+            modifiers: vec![GroupModifier::Explode {
+                kind: ExplodeKind::Standard,
+                comp: Comparator::Gte,
+                target: 6,
+            }],
+            label: Some("Hope".to_string()),
+        };
+        let mut rng = ScriptedRng::new(vec![face_x(6), face_x(3)]);
+        let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
+        assert_eq!(recs.len(), 3, "1 original + 2 chained extras");
+        assert!(
+            recs.iter().all(|r| r.label.as_deref() == Some("Hope")),
+            "label must propagate to the original AND every exploded child record"
+        );
+    }
+
+    #[test]
     fn penetrate_can_produce_a_value_below_min() {
         // Penetrate's -1 penalty is a deliberate house-rule departure from the
         // implicit [min, max] assumption. A natural-min extra die (face 1 on a
@@ -547,6 +592,7 @@ mod tests {
             group_spans: vec![],
         };
         let g = DiceGroup {
+            label: None,
             count: 1,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: vec![GroupModifier::Explode {

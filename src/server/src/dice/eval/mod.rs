@@ -63,6 +63,7 @@ mod tests {
 
     fn ng(count: u32, min: i32, max: i32) -> Expr {
         Expr::Dice(DiceGroup {
+            label: None,
             count,
             kind: DieKind::Numeric { min, max },
             modifiers: vec![],

@@ -64,6 +64,10 @@ pub struct DieRecord {
     /// `value` is the post-expertise face, `natural`/base `value` the pre-expertise one.
     #[serde(default)]
     pub expertise: i32,
+    /// Tag copied from the producing `DiceGroup.label` (M11b-3); `None` if the
+    /// group is unlabeled. Read by `RollOutcome::by_label`/`compare_labels`.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 /// Fully-derived result. `total` is the primary output for Total mode; in

@@ -11,6 +11,7 @@ use crate::dice::spec::{
 fn simple_pool(count: u32, sides: i32, target: i32) -> RollSpec {
     RollSpec {
         expr: Expr::Dice(DiceGroup {
+            label: None,
             count,
             kind: DieKind::Numeric { min: 1, max: sides },
             modifiers: vec![],
@@ -38,6 +39,7 @@ fn pool_with_modifiers(
 ) -> RollSpec {
     RollSpec {
         expr: Expr::Dice(DiceGroup {
+            label: None,
             count,
             kind: DieKind::Numeric { min: 1, max: sides },
             modifiers,
@@ -140,6 +142,7 @@ proptest! {
 
         let hi = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count,
                 kind: DieKind::Numeric { min: die_min, max: die_max },
                 modifiers: vec![],

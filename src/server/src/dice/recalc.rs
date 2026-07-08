@@ -174,6 +174,7 @@ mod tests {
     fn pool(count: u32) -> RollSpec {
         RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count,
                 kind: DieKind::Numeric { min: 1, max: 10 },
                 modifiers: vec![],
@@ -248,6 +249,7 @@ mod tests {
     /// named but independently satisfies the Explode trigger on every resolution.
     fn explode_spec_and_raws() -> (RollSpec, RawRoll) {
         let group = DiceGroup {
+            label: None,
             count: 2,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: vec![GroupModifier::Explode {
@@ -339,6 +341,7 @@ mod tests {
     /// independently satisfies the chain-continuing Reroll trigger.
     fn reroll_spec_and_raws() -> (RollSpec, RawRoll) {
         let group = DiceGroup {
+            label: None,
             count: 2,
             kind: DieKind::Numeric { min: 1, max: 6 },
             modifiers: vec![GroupModifier::Reroll {

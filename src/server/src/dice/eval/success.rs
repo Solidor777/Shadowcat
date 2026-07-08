@@ -90,6 +90,7 @@ mod tests {
     fn pool(count: u32) -> RollSpec {
         RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count,
                 kind: DieKind::Numeric { min: 1, max: 10 },
                 modifiers: vec![],
@@ -137,6 +138,7 @@ mod tests {
         };
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 1,
                 kind: DieKind::Numeric { min: 10, max: 10 },
                 modifiers: vec![],
@@ -158,6 +160,7 @@ mod tests {
         // Single die at min=max=1: base success fails, crit_fail loses 1.
         let mk = |allow: bool| RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 1,
                 kind: DieKind::Numeric { min: 1, max: 1 },
                 modifiers: vec![],
@@ -247,6 +250,7 @@ mod tests {
                 crit_success: false,
                 crit_fail: false,
                 expertise: 0,
+                label: None,
             });
         }
         raws.next_id = values.len() as DieId;
@@ -284,6 +288,7 @@ mod tests {
         };
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 3,
                 kind: DieKind::Numeric { min: 1, max: 20 },
                 modifiers: vec![],
@@ -328,6 +333,7 @@ mod tests {
         // 3 dice all min=max=10, target>=7 -> 3 successes, required 1 -> margin 2 -> "great".
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 3,
                 kind: DieKind::Numeric { min: 10, max: 10 },
                 modifiers: vec![],
@@ -375,6 +381,7 @@ mod tests {
         };
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 3,
                 kind: DieKind::Numeric { min: 1, max: 20 },
                 modifiers: vec![],
@@ -396,6 +403,7 @@ mod tests {
         // Optimal: two dice -> 5 => 2 successes. Runs through evaluate(), not allocate directly.
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 3,
                 kind: DieKind::Numeric { min: 1, max: 6 },
                 modifiers: vec![],
@@ -430,6 +438,7 @@ mod tests {
         // -> 2 successes -> margin (2-1)=1 -> "great". Without expertise: 0 successes.
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 2,
                 kind: DieKind::Numeric { min: 1, max: 6 },
                 modifiers: vec![],
@@ -488,6 +497,7 @@ mod tests {
         };
         let hi = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 4,
                 kind: DieKind::Numeric { min: 1, max: 6 },
                 modifiers: vec![],
@@ -513,6 +523,7 @@ mod tests {
         };
         let lo = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 4,
                 kind: DieKind::Numeric { min: 1, max: 6 },
                 modifiers: vec![],

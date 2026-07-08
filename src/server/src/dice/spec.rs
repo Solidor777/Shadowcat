@@ -66,6 +66,11 @@ pub struct DiceGroup {
     pub kind: DieKind,
     /// Applied in vec order: reroll/explode alter the die set, keep/drop select from it.
     pub modifiers: Vec<GroupModifier>,
+    /// Optional tag propagated onto every `DieRecord` this group produces
+    /// (including exploded/penetrated children). Orthogonal to mode.
+    /// `RollOutcome::by_label`/`compare_labels` read this. `None` = unlabeled.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +203,7 @@ mod tests {
             expr: Expr::Bin {
                 op: BinOp::Add,
                 lhs: Box::new(Expr::Dice(DiceGroup {
+                    label: None,
                     count: 2,
                     kind: DieKind::Numeric { min: 1, max: 6 },
                     modifiers: vec![],
@@ -218,6 +224,7 @@ mod tests {
     fn success_config_serde_round_trips() {
         let spec = RollSpec {
             expr: Expr::Dice(DiceGroup {
+                label: None,
                 count: 5,
                 kind: DieKind::Numeric { min: 1, max: 10 },
                 modifiers: vec![],

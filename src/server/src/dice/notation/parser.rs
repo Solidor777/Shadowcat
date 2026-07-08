@@ -168,6 +168,7 @@ impl P {
                     }
                     let modifiers = self.modifiers(sides)?;
                     Ok(Expr::Dice(DiceGroup {
+                        label: None,
                         count: n as u32,
                         kind: DieKind::Numeric { min: 1, max: sides },
                         modifiers,
@@ -299,6 +300,7 @@ mod tests {
 
     fn dice(count: u32, min: i32, max: i32, mods: Vec<GroupModifier>) -> Expr {
         Expr::Dice(DiceGroup {
+            label: None,
             count,
             kind: DieKind::Numeric { min, max },
             modifiers: mods,
