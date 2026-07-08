@@ -363,6 +363,12 @@ async fn handle_socket(
                                 }
                             }
                         }
+                        Ok(ClientMsg::SendMessage { .. }) => {
+                            // TODO: wire chat ingest (server-authoritative construction via
+                            // build_message_doc + publish) in a follow-up chat-core task.
+                            // The frame is defined now so client + protocol land together;
+                            // no ingest handler exists yet, so no-op (never authors a doc).
+                        }
                         Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius }) => {
                             // One-shot pathfinding: resolve GM status, fetch explored off the lock for
                             // non-GM Revealed, call SceneEcs::pathfind, reply to this connection only.

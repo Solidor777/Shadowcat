@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::chat::ActorOwnerRef;
 use crate::data::command::{Command, Operation};
 use crate::data::search::SearchHit;
 
@@ -85,6 +86,15 @@ pub enum ClientMsg {
         /// Ordered cell-center scene points: start … goal (inclusive). Type is `[f64; 2]` not a
         /// tuple so the TS binding emits `[number, number][]` (array literal, not tuple object).
         path: Vec<[f64; 2]>,
+    },
+    /// Author a chat message. The server sanitizes `content` and CONSTRUCTS the
+    /// stored message doc (server-authoritative ingest). The sole message-
+    /// authoring path — a client `Create` of a `message` doc is rejected.
+    SendMessage {
+        channel: String,
+        content: String,
+        #[serde(default)]
+        actor_owner: Option<ActorOwnerRef>,
     },
 }
 
@@ -620,6 +630,24 @@ mod protocol_tests {
                 );
             }
             _ => panic!("expected MoveStream"),
+        }
+    }
+
+    #[test]
+    fn send_message_frame_parses() {
+        let raw = r#"{"type":"send_message","channel":"all","content":"hi","actor_owner":null}"#;
+        let msg: ClientMsg = serde_json::from_str(raw).unwrap();
+        match msg {
+            ClientMsg::SendMessage {
+                channel,
+                content,
+                actor_owner,
+            } => {
+                assert_eq!(channel, "all");
+                assert_eq!(content, "hi");
+                assert!(actor_owner.is_none());
+            }
+            _ => panic!("wrong variant"),
         }
     }
 

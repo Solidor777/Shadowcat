@@ -25,6 +25,13 @@ export const WsErrorCodeSchema = z.enum([
   "internal",
 ]);
 
+/** Mirrors `crate::chat::ActorOwnerRef` (chat message attribution). */
+export const ActorOwnerRefSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("actor"), actor_id: z.string() }),
+  z.object({ kind: z.literal("token_instance"), token_id: z.string() }),
+]);
+export type WireActorOwnerRef = z.infer<typeof ActorOwnerRefSchema>;
+
 export const ScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("compendium"), pack: z.string() }),
   z.object({ kind: z.literal("world"), world_id: z.string() }),
@@ -301,7 +308,26 @@ export type ClientMsg =
       scene: string;
       token_id: string;
       path: [number, number][];
+    }
+  | {
+      type: "send_message";
+      channel: string;
+      content: string;
+      actor_owner: WireActorOwnerRef | null;
     };
+
+/**
+ * Standalone Zod mirror of the `send_message` `ClientMsg` variant. `ClientMsg`
+ * itself is a plain TS type (outgoing frames are not runtime-validated); this
+ * schema exists for callers that construct/validate a `SendMessage` frame
+ * before it is JSON.stringify'd onto the wire.
+ */
+export const SendMessageSchema = z.object({
+  type: z.literal("send_message"),
+  channel: z.string(),
+  content: z.string(),
+  actor_owner: ActorOwnerRefSchema.nullable(),
+});
 
 /** Parse + validate an inbound text frame; `null` on malformed/unknown input. */
 export function parseServerMsg(text: string): ServerMsg | null {
