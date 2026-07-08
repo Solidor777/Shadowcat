@@ -52,4 +52,8 @@ pub enum ParseError {
     /// A second `e<N>` expertise token appeared in one roll. `expertise` is shared
     /// roll-level parser state (one `RollSpec`), so a silent overwrite would lose one.
     DuplicateExpertise,
+    /// A `[...]` label was empty after trimming whitespace (e.g. `1d12[]` or `1d12[ ]`).
+    EmptyLabel,
+    /// A `[` was never closed by a matching `]` before the input ended.
+    UnterminatedLabel,
 }

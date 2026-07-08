@@ -16,6 +16,7 @@ pub enum Token {
     Bang,
     BangBang,
     BangP,
+    Label(String),
 }
 
 /// Lexes dice notation into a token stream.
@@ -82,6 +83,22 @@ pub fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
             ')' => {
                 out.push(Token::RParen);
                 i += 1;
+            }
+            '[' => {
+                let start = i + 1;
+                let mut j = start;
+                while j < bytes.len() && bytes[j] as char != ']' {
+                    j += 1;
+                }
+                if j >= bytes.len() {
+                    return Err(ParseError::UnterminatedLabel);
+                }
+                let raw = input[start..j].trim();
+                if raw.is_empty() {
+                    return Err(ParseError::EmptyLabel);
+                }
+                out.push(Token::Label(raw.to_string()));
+                i = j + 1; // skip past the ']'
             }
             '!' => {
                 if input[i..].starts_with("!!") {
@@ -183,6 +200,47 @@ mod tests {
                 Token::Int(6),
                 Token::Ident("e".into()),
                 Token::Int(3),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_label_brackets_preserve_case() {
+        let toks = lex("1d12[Hope]").unwrap();
+        assert_eq!(
+            toks,
+            vec![
+                Token::Int(1),
+                Token::D,
+                Token::Int(12),
+                Token::Label("Hope".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_label_rejects_empty() {
+        assert!(matches!(lex("1d12[]"), Err(ParseError::EmptyLabel)));
+    }
+
+    #[test]
+    fn lex_label_rejects_unterminated() {
+        assert!(matches!(
+            lex("1d12[Hope"),
+            Err(ParseError::UnterminatedLabel)
+        ));
+    }
+
+    #[test]
+    fn lex_label_trims_surrounding_whitespace() {
+        let toks = lex("1d12[ Hope ]").unwrap();
+        assert_eq!(
+            toks,
+            vec![
+                Token::Int(1),
+                Token::D,
+                Token::Int(12),
+                Token::Label("Hope".to_string())
             ]
         );
     }

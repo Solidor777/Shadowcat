@@ -167,8 +167,16 @@ impl P {
                         return Err(ParseError::InvalidDieSides(sides));
                     }
                     let modifiers = self.modifiers(sides)?;
+                    let label = if let Some(Token::Label(_)) = self.peek() {
+                        match self.bump() {
+                            Some(Token::Label(l)) => Some(l),
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        None
+                    };
                     Ok(Expr::Dice(DiceGroup {
-                        label: None,
+                        label,
                         count: n as u32,
                         kind: DieKind::Numeric { min: 1, max: sides },
                         modifiers,
@@ -538,5 +546,38 @@ mod tests {
             },
         );
         assert!(matches!(e, Err(ParseError::DuplicateExpertise)));
+    }
+
+    #[test]
+    fn parses_label_onto_dice_group() {
+        let spec = parse("1d12[Hope]", ParseContext::default()).unwrap();
+        match spec.expr {
+            Expr::Dice(g) => assert_eq!(g.label, Some("Hope".to_string())),
+            _ => panic!("expected dice"),
+        }
+    }
+
+    #[test]
+    fn parses_two_labeled_groups() {
+        let spec = parse("1d12[Hope] + 1d12[Fear]", ParseContext::default()).unwrap();
+        match spec.expr {
+            Expr::Bin { lhs, rhs, .. } => {
+                match *lhs {
+                    Expr::Dice(g) => assert_eq!(g.label, Some("Hope".to_string())),
+                    _ => panic!("expected dice lhs"),
+                }
+                match *rhs {
+                    Expr::Dice(g) => assert_eq!(g.label, Some("Fear".to_string())),
+                    _ => panic!("expected dice rhs"),
+                }
+            }
+            _ => panic!("expected Bin"),
+        }
+    }
+
+    #[test]
+    fn duplicate_labels_across_groups_are_not_an_error() {
+        // Two groups intentionally sharing a label pool under by_label — not a parse error.
+        assert!(parse("1d6[Pool] + 1d6[Pool]", ParseContext::default()).is_ok());
     }
 }
