@@ -81,7 +81,7 @@ source of truth. The ones agents break most:
 - CI builds the client **before** `cargo` (embed ordering) across the three-OS matrix.
 
 **Subsystem skills:** `documents-permissions`, `actors-tokens`, `scene-rendering`,
-`realtime-sync`, `client-shell`, `assets`, `dice` (all `shadowcat-codebase-*`).
+`realtime-sync`, `client-shell`, `assets`, `dice`, `chat` (all `shadowcat-codebase-*`).
 
 ## Maintaining this skill family
 
