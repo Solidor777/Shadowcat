@@ -810,13 +810,28 @@ Decomposed **M11a–d**:
   > (keyed on the STORED doc_type, since `Update` carries none), even the owning Player's own
   > message — a deliberate placeholder pending c-3's validated edit path. `shadowcat-codebase-chat`
   > skill created + reviewed by `shadowcat-spec-reviewer` per the reviewed skill-update gate.
-  > **M11c-2 (restricted-audience messaging — whisper + GM-only channel) is next**, design widened
-  > from a plain whisper allowlist during brainstorming: adds `PermissionSet.gm_role:
-  > Option<DocRole>` (default `None`, zero behavior change elsewhere) so `resolve_access`'s GM
-  > short-circuit becomes conditional per-document, reusing the M10g `default: DocRole::None`
-  > whole-doc-suppression precedent for both a sender-picked whisper recipient list (GM excluded
-  > unless named) and a dynamically-resolved GM-only channel (any current GM sees it, no frozen
-  > roster) — zero changes needed to any of the four egress call sites.
+  > **M11c-2 DONE** (branch `m11c-2-restricted-audience-messaging`) — restricted-audience
+  > messaging (whisper + GM-only channel), design widened from a plain whisper allowlist during
+  > brainstorming: adds `PermissionSet.gm_role: Option<DocRole>` (default `None`, zero behavior
+  > change elsewhere) as the single new permission primitive — `resolve_access`/
+  > `resolve_access_world`'s GM short-circuit becomes conditional per-document, reusing the M10g
+  > `default: DocRole::None` whole-doc-suppression precedent. A new `chat::Audience` enum
+  > (`Public`/`Whisper`/`GmOnly`) maps to `PermissionSet` exactly: `Public` leaves `gm_role: None`
+  > (ordinary GM-sees-everything); `Whisper` sets `default: None` + `users` listing only the
+  > sender and named recipients, and — the key rule — a whisper excludes the GM by default,
+  > included only if a GM is explicitly named as a recipient (no silent GM eavesdrop on a
+  > player-to-player whisper); `GmOnly` sets `default: None` + `gm_role: Some(Owner)`, which
+  > dynamically includes whatever user currently holds the GM role rather than a frozen roster —
+  > a GM promotion/demotion immediately grants/revokes backlog access with no re-authoring of past
+  > messages. Recipient validation is fail-closed: an unknown/malformed recipient rejects the
+  > whole `SendMessage` (via `Repository::member_role`), and a self-recipient cannot downgrade the
+  > sender's own `Owner` role. Ten integration tests (`chat_audience.rs`) prove whisper and
+  > GM-only-channel visibility on every egress path (broadcast, resync/load, search) including
+  > dynamic promotion/demotion, with zero changes needed to any of the four egress call sites.
+  > `shadowcat-codebase-chat` and `shadowcat-codebase-documents-permissions` skills updated +
+  > reviewed by `shadowcat-spec-reviewer` per the reviewed skill-update gate.
+  > **M11c-3 (sanitizer + command parser + a validated, sanitizing edit path) is next** —
+  > replaces the c-1 blanket rejection of client Updates to a stored message doc.
   > Design: [`superpowers/specs/2026-07-08-m11c-2-whisper-allowlist-design.md`](superpowers/specs/2026-07-08-m11c-2-whisper-allowlist-design.md).
   Design: [`superpowers/specs/2026-07-08-m11c-chat-core-design.md`](superpowers/specs/2026-07-08-m11c-chat-core-design.md).
 - **M11d — Default display modules:** independently-replaceable composer + message-card contribution modules; text enrichment (Markdown/HTML/images/links/emails, GM-gated, no embedded CSS); emotes; roll integration; internal doc links; SSRF-guarded server-side link previews.
