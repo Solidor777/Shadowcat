@@ -185,6 +185,16 @@ pub struct PermissionSet {
     pub property_overrides: BTreeMap<String, Visibility>,
     #[serde(default)]
     pub capabilities: CapabilityGrants,
+    /// When `Some(role)`, a `WorldRole::Gm` actor's access to THIS document is
+    /// capped like any other actor's — resolved via the same per-document
+    /// `users`/role-floor logic, seeded with `role` as their fallback instead
+    /// of the unconditional GM short-circuit. `None` (the default for every
+    /// document type that predates this field) preserves the GM's usual
+    /// unconditional `all: true` access. Lets a document (e.g. a chat whisper
+    /// or a GM-only channel message) restrict even the GM unless explicitly
+    /// granted — see `permission::resolve_access`.
+    #[serde(default)]
+    pub gm_role: Option<DocRole>,
 }
 
 /// The persisted document: typed envelope around an opaque `system` body.

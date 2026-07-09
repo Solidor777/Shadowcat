@@ -136,25 +136,50 @@ fn role_floor(role: DocRole) -> BTreeSet<String> {
     s
 }
 
-/// Resolve a user's effective capabilities on a document. A world GM (or server
-/// admin, which resolves to GM) holds every capability. Otherwise the user's
-/// `DocRole` (per-user, else the document default) seeds a built-in floor that
-/// the document's additive grants (`by_role`, `by_user`) widen.
-pub fn resolve_access(user: Uuid, world_role: WorldRole, doc: &Document) -> Access {
+/// The document-level role this actor effectively holds, or `None` when they
+/// hold the unconditional GM/admin all-access short-circuit — no single role
+/// applies, because every capability is granted regardless. Shared by
+/// `resolve_access` (which turns this into an `Access`) and
+/// `resolve_access_world` (which needs the SAME effective role to layer
+/// world-default grants consistently — recomputing it independently from
+/// `doc.permissions.default` would silently diverge for a GM whose access is
+/// capped via `gm_role`).
+fn effective_role(user: Uuid, world_role: WorldRole, doc: &Document) -> Option<DocRole> {
     if world_role == WorldRole::Gm {
+        let fallback = doc.permissions.gm_role?;
+        return Some(
+            doc.permissions
+                .users
+                .get(&user)
+                .copied()
+                .unwrap_or(fallback),
+        );
+    }
+    Some(
+        doc.permissions
+            .users
+            .get(&user)
+            .copied()
+            .unwrap_or(doc.permissions.default),
+    )
+}
+
+/// Resolve a user's effective capabilities on a document. A world GM (or
+/// server admin, which resolves to GM) holds every capability UNLESS the
+/// document's `gm_role` caps them to an ordinary per-document role (see
+/// `effective_role`) — used by restricted-audience chat messages. Otherwise
+/// the user's `DocRole` (per-user, else the document default) seeds a
+/// built-in floor that the document's additive grants (`by_role`, `by_user`)
+/// widen.
+pub fn resolve_access(user: Uuid, world_role: WorldRole, doc: &Document) -> Access {
+    let Some(role) = effective_role(user, world_role, doc) else {
         return Access {
             caps: BTreeSet::new(),
             all: true,
             see_gm_only: true,
             is_owner: true,
         };
-    }
-    let role = doc
-        .permissions
-        .users
-        .get(&user)
-        .copied()
-        .unwrap_or(doc.permissions.default);
+    };
     let mut caps = role_floor(role);
     if let Some(extra) = doc.permissions.capabilities.by_role.get(&role) {
         caps.extend(extra.iter().cloned());
@@ -165,15 +190,21 @@ pub fn resolve_access(user: Uuid, world_role: WorldRole, doc: &Document) -> Acce
     Access {
         caps,
         all: false,
-        see_gm_only: false,
+        // A GM capped via `gm_role` remains the GM for property-tier
+        // (`GmOnly`/`OwnerOrGm`) visibility purposes even though their
+        // whole-document READ is now floor-gated like anyone else's.
+        see_gm_only: world_role == WorldRole::Gm,
         is_owner: doc.owner == Some(user),
     }
 }
 
-/// `resolve_access` plus a world's default capability grants, layered additively
-/// on top of the per-document resolution (GM is unaffected — already holds all).
+/// `resolve_access` plus a world's default capability grants, layered
+/// additively on top of the per-document resolution (unaffected when
+/// `resolve_access` already returned the unconditional GM short-circuit).
 /// World defaults let a deployment grant, e.g., every Owner in a world
-/// `core:manage_embedded` without editing each document.
+/// `core:manage_embedded` without editing each document. Uses the SAME
+/// `effective_role` as `resolve_access` — including a `gm_role`-capped GM's
+/// fallback role — so a world-level grant for that role also applies to them.
 pub fn resolve_access_world(
     user: Uuid,
     world_role: WorldRole,
@@ -184,12 +215,8 @@ pub fn resolve_access_world(
     if access.all {
         return access;
     }
-    let role = doc
-        .permissions
-        .users
-        .get(&user)
-        .copied()
-        .unwrap_or(doc.permissions.default);
+    let role = effective_role(user, world_role, doc)
+        .expect("access.all was false, so effective_role returned Some (see resolve_access)");
     if let Some(extra) = world_grants.by_role.get(&role) {
         access.caps.extend(extra.iter().cloned());
     }
@@ -1288,6 +1315,113 @@ mod tests {
             panic!("expected Update");
         };
         assert_eq!(changes.len(), 3);
+    }
+
+    #[test]
+    fn gm_role_none_excludes_gm_unless_individually_granted() {
+        let owner = Uuid::from_u128(1);
+        let gm = Uuid::from_u128(2);
+        let mut perms = PermissionSet {
+            default: DocRole::None,
+            gm_role: Some(DocRole::None),
+            ..Default::default()
+        };
+        perms.users.insert(owner, DocRole::Owner);
+        let d = doc(perms, serde_json::json!({}));
+
+        // A GM not individually listed gets nothing — gm_role caps them like any other actor.
+        let a_gm = resolve_access(gm, WorldRole::Gm, &d);
+        assert!(
+            !a_gm.has(cap::READ),
+            "unlisted GM must not read a gm_role:None document"
+        );
+        assert!(
+            !a_gm.all,
+            "gm_role:Some(_) must not grant the unconditional short-circuit"
+        );
+
+        // The owner is unaffected.
+        let a_owner = resolve_access(owner, WorldRole::Player, &d);
+        assert!(a_owner.has(cap::READ));
+    }
+
+    #[test]
+    fn gm_role_none_admits_a_gm_individually_listed() {
+        let owner = Uuid::from_u128(1);
+        let gm = Uuid::from_u128(2);
+        let mut perms = PermissionSet {
+            default: DocRole::None,
+            gm_role: Some(DocRole::None),
+            ..Default::default()
+        };
+        perms.users.insert(owner, DocRole::Owner);
+        perms.users.insert(gm, DocRole::Observer); // e.g. a whisper naming the GM
+        let d = doc(perms, serde_json::json!({}));
+
+        let a_gm = resolve_access(gm, WorldRole::Gm, &d);
+        assert!(
+            a_gm.has(cap::READ),
+            "a GM individually listed in `users` must read despite gm_role:None"
+        );
+        assert!(
+            !a_gm.all,
+            "still not the unconditional short-circuit — just an ordinary Observer grant"
+        );
+    }
+
+    #[test]
+    fn gm_role_observer_grants_any_gm_without_explicit_listing() {
+        let owner = Uuid::from_u128(1);
+        let gm = Uuid::from_u128(2);
+        let stranger = Uuid::from_u128(3);
+        let mut perms = PermissionSet {
+            default: DocRole::None,
+            gm_role: Some(DocRole::Observer),
+            ..Default::default()
+        };
+        perms.users.insert(owner, DocRole::Owner);
+        let d = doc(perms, serde_json::json!({}));
+
+        // Any GM reads, even without being individually listed (dynamic resolution).
+        let a_gm = resolve_access(gm, WorldRole::Gm, &d);
+        assert!(a_gm.has(cap::READ));
+        assert!(a_gm.see_gm_only, "still a GM for property-tier purposes");
+
+        // A non-owner, non-GM Player reads nothing.
+        let a_stranger = resolve_access(stranger, WorldRole::Player, &d);
+        assert!(!a_stranger.has(cap::READ));
+    }
+
+    #[test]
+    fn resolve_access_world_layers_world_grants_using_the_gm_role_fallback() {
+        use crate::data::document::CapabilityGrants;
+        let owner = Uuid::from_u128(1);
+        let gm = Uuid::from_u128(2);
+        let mut perms = PermissionSet {
+            default: DocRole::None,
+            gm_role: Some(DocRole::Observer),
+            ..Default::default()
+        };
+        perms.users.insert(owner, DocRole::Owner);
+        let d = doc(perms, serde_json::json!({}));
+
+        let mut world_grants = CapabilityGrants::default();
+        world_grants
+            .by_role
+            .entry(DocRole::Observer)
+            .or_default()
+            .insert("dnd5e:extra".to_string());
+
+        // A GM not individually listed still resolves via the gm_role (Observer)
+        // fallback, so world-level Observer grants must layer on top of it too —
+        // not just `doc.permissions.default` (None here, which carries no such
+        // grant). Proves resolve_access_world uses the SAME effective role as
+        // resolve_access rather than recomputing it independently.
+        let a_gm = resolve_access_world(gm, WorldRole::Gm, &d, &world_grants);
+        assert!(
+            a_gm.has("dnd5e:extra"),
+            "world grant for the gm_role fallback role must apply"
+        );
     }
 
     #[tokio::test]

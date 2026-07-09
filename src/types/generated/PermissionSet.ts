@@ -7,4 +7,15 @@ import type { Visibility } from "./Visibility";
  * Document-level permissions: default role, per-user overrides, property-level
  * visibility keyed by JSON pointer, and additive capability grants.
  */
-export type PermissionSet = { default: DocRole, users: { [key in string]: DocRole }, property_overrides: { [key in string]: Visibility }, capabilities: CapabilityGrants, };
+export type PermissionSet = { default: DocRole, users: { [key in string]: DocRole }, property_overrides: { [key in string]: Visibility }, capabilities: CapabilityGrants, 
+/**
+ * When `Some(role)`, a `WorldRole::Gm` actor's access to THIS document is
+ * capped like any other actor's — resolved via the same per-document
+ * `users`/role-floor logic, seeded with `role` as their fallback instead
+ * of the unconditional GM short-circuit. `None` (the default for every
+ * document type that predates this field) preserves the GM's usual
+ * unconditional `all: true` access. Lets a document (e.g. a chat whisper
+ * or a GM-only channel message) restrict even the GM unless explicitly
+ * granted — see `permission::resolve_access`.
+ */
+gm_role: DocRole | null, };
