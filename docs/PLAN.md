@@ -820,7 +820,7 @@ Decomposed **M11a–d**:
   > (ordinary GM-sees-everything); `Whisper` sets `default: None` + `users` listing only the
   > sender and named recipients, and — the key rule — a whisper excludes the GM by default,
   > included only if a GM is explicitly named as a recipient (no silent GM eavesdrop on a
-  > player-to-player whisper); `GmOnly` sets `default: None` + `gm_role: Some(Owner)`, which
+  > player-to-player whisper); `GmOnly` sets `default: None` + `gm_role: Some(DocRole::Observer)`, which
   > dynamically includes whatever user currently holds the GM role rather than a frozen roster —
   > a GM promotion/demotion immediately grants/revokes backlog access with no re-authoring of past
   > messages. Recipient validation is fail-closed: an unknown/malformed recipient rejects the
