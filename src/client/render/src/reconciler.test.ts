@@ -11,7 +11,7 @@ function sceneDoc(background: string | null): WireDocument {
     schema_version: 1,
     source: null,
     owner: null,
-    permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+    permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
     embedded: {},
     parent_id: null,
     system: background === null ? {} : { background },

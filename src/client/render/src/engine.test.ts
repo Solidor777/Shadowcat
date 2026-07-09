@@ -16,7 +16,7 @@ function tokenCmd(seq: number, id: string, x: number): { seq: number; world_id: 
     seq, world_id: "w1", author: "a", ts: 0,
     ops: [{ op: "create", doc: {
       id, scope: { kind: "world", world_id: "w1" }, doc_type: "token", schema_version: 1,
-      source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {}, parent_id: "s1", system: { x, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "i1" } }, created_at: 0, updated_at: 0,
     } }],
   };
@@ -49,7 +49,7 @@ test("a store change triggers a re-reconcile", () => {
     ops: [{ op: "create", doc: {
       id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene",
       schema_version: 1, source: null, owner: null,
-      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {}, parent_id: null, system: { background: "u1" }, created_at: 0, updated_at: 0,
     } }],
   });
@@ -66,7 +66,7 @@ test("reconcileNow re-resolves the background after an asset rev bump", () => {
     ops: [{ op: "create", doc: {
       id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene",
       schema_version: 1, source: null, owner: null,
-      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {}, parent_id: null, system: { background: "u1" }, created_at: 0, updated_at: 0,
     } }],
   });
@@ -92,7 +92,7 @@ test("destroy unsubscribes (no reconcile after destroy) and destroys the backend
     ops: [{ op: "create", doc: {
       id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene",
       schema_version: 1, source: null, owner: null,
-      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {}, parent_id: null, system: { background: "u1" }, created_at: 0, updated_at: 0,
     } }],
   });
@@ -121,7 +121,7 @@ function sceneCmd(seq: number, id: string): { seq: number; world_id: string; aut
     seq, world_id: "w1", author: "a", ts: 0,
     ops: [{ op: "create", doc: {
       id, scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1,
-      source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {}, parent_id: null, system: {}, created_at: 0, updated_at: 0,
     } }],
   };
@@ -274,7 +274,7 @@ test("subscribeScene: a frame above the watermark defers until the store advance
     seq: 5, world_id: "w1", author: "a", ts: 0,
     ops: [{ op: "create", doc: {
       id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1,
-      source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {}, parent_id: null, system: {}, created_at: 0, updated_at: 0,
     } }],
   });
@@ -309,7 +309,7 @@ test("a lower-seq derived frame never supersedes a higher-seq pending one (lates
     seq, world_id: "w1", author: "a", ts: 0,
     ops: [{ op: "create" as const, doc: {
       id: `d${seq}`, scope: { kind: "world" as const, world_id: "w1" }, doc_type: "scene", schema_version: 1,
-      source: null, owner: null, permissions: { default: "observer" as const, users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      source: null, owner: null, permissions: { default: "observer" as const, users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {}, parent_id: null, system: {}, created_at: 0, updated_at: 0,
     } }],
   });
@@ -344,7 +344,7 @@ test("start renders existing token docs and re-reconciles on store change", () =
     seq: 1, world_id: "w1", author: "a", ts: 0,
     ops: [{ op: "create", doc: {
       id: "t1", scope: { kind: "world", world_id: "w1" }, doc_type: "token", schema_version: 1,
-      source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {}, parent_id: null, system: { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "i1" } }, created_at: 0, updated_at: 0,
     } }],
   });
@@ -361,7 +361,7 @@ test("reconcileNow re-resolves token images (AssetChanged path)", () => {
     seq: 1, world_id: "w1", author: "a", ts: 0,
     ops: [{ op: "create", doc: {
       id: "t1", scope: { kind: "world", world_id: "w1" }, doc_type: "token", schema_version: 1,
-      source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {}, parent_id: null, system: { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "i1" } }, created_at: 0, updated_at: 0,
     } }],
   });
@@ -473,7 +473,7 @@ test("renders documents from an optimistic source (predicted, unconfirmed)", () 
   // A predicted create with no authoritative command behind it must still render.
   oc.applyIntent("i1", [{ op: "create", doc: {
     id: "t1", scope: { kind: "world", world_id: "w1" }, doc_type: "token", schema_version: 1,
-    source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+    source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
     embedded: {}, parent_id: "s1", system: { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "i1" } }, created_at: 0, updated_at: 0,
   } }]);
   expect(backend.tokens.has("t1")).toBe(true);
@@ -486,8 +486,8 @@ test("start renders existing drawing and template docs", () => {
   store.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
     ops: [
-      { op: "create", doc: { id: "d1", scope: { kind: "world", world_id: "w1" }, doc_type: "drawing", schema_version: 1, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } }, embedded: {}, parent_id: "s1", system: { shape: { kind: "freehand", points: [0, 0, 5, 5] }, stroke: { color: "#fff", width: 1 }, fill: null }, created_at: 0, updated_at: 0 } },
-      { op: "create", doc: { id: "tm1", scope: { kind: "world", world_id: "w1" }, doc_type: "template", schema_version: 1, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } }, embedded: {}, parent_id: "s1", system: { shape: { kind: "circle", x: 0, y: 0, size: 10, direction: 0 }, color: "#3388ff" }, created_at: 0, updated_at: 0 } },
+      { op: "create", doc: { id: "d1", scope: { kind: "world", world_id: "w1" }, doc_type: "drawing", schema_version: 1, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null }, embedded: {}, parent_id: "s1", system: { shape: { kind: "freehand", points: [0, 0, 5, 5] }, stroke: { color: "#fff", width: 1 }, fill: null }, created_at: 0, updated_at: 0 } },
+      { op: "create", doc: { id: "tm1", scope: { kind: "world", world_id: "w1" }, doc_type: "template", schema_version: 1, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null }, embedded: {}, parent_id: "s1", system: { shape: { kind: "circle", x: 0, y: 0, size: 10, direction: 0 }, color: "#3388ff" }, created_at: 0, updated_at: 0 } },
     ],
   });
   engine.start();
@@ -501,7 +501,7 @@ test("start renders existing wall docs into the walls layer", () => {
   const engine = new RenderEngine({ store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 } });
   store.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
-    ops: [{ op: "create", doc: { id: "wl1", scope: { kind: "world", world_id: "w1" }, doc_type: "wall", schema_version: 1, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } }, embedded: {}, parent_id: "s1", system: { seg: { x1: 0, y1: 0, x2: 50, y2: 50 }, blocksSight: true, blocksMove: true }, created_at: 0, updated_at: 0 } }],
+    ops: [{ op: "create", doc: { id: "wl1", scope: { kind: "world", world_id: "w1" }, doc_type: "wall", schema_version: 1, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null }, embedded: {}, parent_id: "s1", system: { seg: { x1: 0, y1: 0, x2: 50, y2: 50 }, blocksSight: true, blocksMove: true }, created_at: 0, updated_at: 0 } }],
   });
   engine.start();
   expect(backend.shapes.get("wl1")?.layer).toBe("walls");
@@ -572,7 +572,7 @@ test("applying a derived frame drives the lighting overlay; GM clears it", () =>
     ops: [{ op: "create", doc: {
       id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1,
       source: null, owner: null,
-      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {}, parent_id: null, system: { grid: { kind: "square", size: 100 } }, created_at: 0, updated_at: 0,
     } }],
   });
@@ -607,7 +607,7 @@ test("lighting is applied eagerly on a deferred fog frame; fog flush does not re
     ops: [{ op: "create", doc: {
       id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1,
       source: null, owner: null,
-      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {}, parent_id: null, system: { grid: { kind: "square", size: 100 } }, created_at: 0, updated_at: 0,
     } }],
   });
@@ -629,7 +629,7 @@ test("lighting is applied eagerly on a deferred fog frame; fog flush does not re
     ops: [{ op: "create", doc: {
       id: "d5", scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1,
       source: null, owner: null,
-      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {}, parent_id: null, system: {}, created_at: 0, updated_at: 0,
     } }],
   });
@@ -877,7 +877,7 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
     ops: [{ op: "create", doc: {
       id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1,
       source: null, owner: null,
-      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {}, parent_id: null, system: { grid: { kind: "square", size: 100 } }, created_at: 0, updated_at: 0,
     } }],
   });

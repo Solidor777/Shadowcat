@@ -6,7 +6,7 @@ function wallDoc(id: string, seg: { x1: number; y1: number; x2: number; y2: numb
   return {
     id, scope: { kind: "world", world_id: "w1" }, doc_type: "wall", schema_version: 1,
     source: null, owner: null,
-    permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+    permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
     embedded: {}, parent_id: "s1",
     system: { seg, blocksSight: true, blocksMove: true },
     created_at: 0, updated_at: 0,
