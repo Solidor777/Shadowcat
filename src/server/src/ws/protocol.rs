@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::chat::ActorOwnerRef;
+use crate::chat::{ActorOwnerRef, Audience};
 use crate::data::command::{Command, Operation};
 use crate::data::search::SearchHit;
 
@@ -95,6 +95,8 @@ pub enum ClientMsg {
         content: String,
         #[serde(default)]
         actor_owner: Option<ActorOwnerRef>,
+        #[serde(default)]
+        audience: Audience,
     },
 }
 
@@ -642,10 +644,45 @@ mod protocol_tests {
                 channel,
                 content,
                 actor_owner,
+                audience,
             } => {
                 assert_eq!(channel, "all");
                 assert_eq!(content, "hi");
                 assert!(actor_owner.is_none());
+                assert_eq!(
+                    audience,
+                    crate::chat::Audience::Public,
+                    "omitted audience defaults to Public"
+                );
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn send_message_frame_parses_whisper_audience() {
+        let raw = r#"{"type":"send_message","channel":"all","content":"psst","actor_owner":null,"audience":{"kind":"whisper","recipients":["00000000-0000-0000-0000-000000000001"]}}"#;
+        let msg: ClientMsg = serde_json::from_str(raw).unwrap();
+        match msg {
+            ClientMsg::SendMessage { audience, .. } => {
+                assert_eq!(
+                    audience,
+                    crate::chat::Audience::Whisper {
+                        recipients: vec![Uuid::from_u128(1)]
+                    }
+                );
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn send_message_frame_parses_gm_only_audience() {
+        let raw = r#"{"type":"send_message","channel":"gm","content":"for your eyes only","actor_owner":null,"audience":{"kind":"gm_only"}}"#;
+        let msg: ClientMsg = serde_json::from_str(raw).unwrap();
+        match msg {
+            ClientMsg::SendMessage { audience, .. } => {
+                assert_eq!(audience, crate::chat::Audience::GmOnly);
             }
             _ => panic!("wrong variant"),
         }
