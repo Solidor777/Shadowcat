@@ -25,6 +25,7 @@
 ## Model/Effort directives
 
 - **Plan authored mainline** in this session (user directive: "You write the plan" / "like I said, you" — declined `sdd-plan-writer-*` dispatch), at the session's current model/effort (no `/model` or `/effort` switch was requested).
+- **Dispatcher: this session runs the loop mainline** (user directive: "you are the dispatcher" — declined `sdd-dispatcher` sub-delegation).
 - **Execution:** subagent-driven-development. Implementation via `shadowcat-coder` (sonnet, effort medium); each task reviewed by the `shadowcat-spec-reviewer` + `shadowcat-code-reviewer` two-reviewer gate (effort high). Escalate a blocked task to `shadowcat-coder-opus`; escalate a shallow/uncertain review to the `-opus` reviewer twin.
 
 ## Buddy-check directives
