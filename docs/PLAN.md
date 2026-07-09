@@ -810,7 +810,14 @@ Decomposed **M11a–d**:
   > (keyed on the STORED doc_type, since `Update` carries none), even the owning Player's own
   > message — a deliberate placeholder pending c-3's validated edit path. `shadowcat-codebase-chat`
   > skill created + reviewed by `shadowcat-spec-reviewer` per the reviewed skill-update gate.
-  > **M11c-2 (whisper allowlist) is next.**
+  > **M11c-2 (restricted-audience messaging — whisper + GM-only channel) is next**, design widened
+  > from a plain whisper allowlist during brainstorming: adds `PermissionSet.gm_role:
+  > Option<DocRole>` (default `None`, zero behavior change elsewhere) so `resolve_access`'s GM
+  > short-circuit becomes conditional per-document, reusing the M10g `default: DocRole::None`
+  > whole-doc-suppression precedent for both a sender-picked whisper recipient list (GM excluded
+  > unless named) and a dynamically-resolved GM-only channel (any current GM sees it, no frozen
+  > roster) — zero changes needed to any of the four egress call sites.
+  > Design: [`superpowers/specs/2026-07-08-m11c-2-whisper-allowlist-design.md`](superpowers/specs/2026-07-08-m11c-2-whisper-allowlist-design.md).
   Design: [`superpowers/specs/2026-07-08-m11c-chat-core-design.md`](superpowers/specs/2026-07-08-m11c-chat-core-design.md).
 - **M11d — Default display modules:** independently-replaceable composer + message-card contribution modules; text enrichment (Markdown/HTML/images/links/emails, GM-gated, no embedded CSS); emotes; roll integration; internal doc links; SSRF-guarded server-side link previews.
 
