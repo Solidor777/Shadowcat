@@ -89,10 +89,15 @@ pub fn declared_caps_for_document<'a>(
 }
 
 /// A user's effective capabilities on a document. `all` is the GM/admin
-/// short-circuit (holds every capability); `caps` is the resolved set for a
-/// non-GM. `see_gm_only` drives `GmOnly` redaction; `is_owner` additionally
-/// admits the `OwnerOrGm` tier (a player still sees their own hidden PC's name)
-/// WITHOUT widening to `GmOnly`.
+/// unconditional short-circuit (holds every capability); when the document
+/// caps the GM via `gm_role`, that GM resolves `caps`/`all` like any other
+/// actor through the same role-floor logic (`all: false`, a real populated
+/// `caps` set), so `caps` is not exclusively "for a non-GM". `see_gm_only`
+/// drives `GmOnly` redaction and stays `true` for any `WorldRole::Gm` actor
+/// regardless of `gm_role` — property-tier visibility is unaffected by the
+/// whole-document capability cap. `is_owner` additionally admits the
+/// `OwnerOrGm` tier (a player still sees their own hidden PC's name) WITHOUT
+/// widening to `GmOnly`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Access {
     pub caps: BTreeSet<String>,
@@ -1318,7 +1323,7 @@ mod tests {
     }
 
     #[test]
-    fn gm_role_none_excludes_gm_unless_individually_granted() {
+    fn gm_role_denies_gm_unless_individually_granted() {
         let owner = Uuid::from_u128(1);
         let gm = Uuid::from_u128(2);
         let mut perms = PermissionSet {
@@ -1346,7 +1351,7 @@ mod tests {
     }
 
     #[test]
-    fn gm_role_none_admits_a_gm_individually_listed() {
+    fn gm_role_denies_but_admits_a_gm_individually_listed() {
         let owner = Uuid::from_u128(1);
         let gm = Uuid::from_u128(2);
         let mut perms = PermissionSet {
@@ -1366,6 +1371,26 @@ mod tests {
         assert!(
             !a_gm.all,
             "still not the unconditional short-circuit — just an ordinary Observer grant"
+        );
+    }
+
+    #[test]
+    fn gm_role_option_none_default_preserves_unconditional_gm_access() {
+        let owner = Uuid::from_u128(1);
+        let gm = Uuid::from_u128(2);
+        let mut perms = PermissionSet {
+            default: DocRole::None,
+            gm_role: None, // the field's actual default — Option::None, not Some(DocRole::None)
+            ..Default::default()
+        };
+        perms.users.insert(owner, DocRole::Owner);
+        let d = doc(perms, serde_json::json!({}));
+
+        let a_gm = resolve_access(gm, WorldRole::Gm, &d);
+        assert!(
+            a_gm.all,
+            "gm_role: None (the default) must preserve the unconditional GM short-circuit \
+             even when the document's own default/users would otherwise deny access"
         );
     }
 
