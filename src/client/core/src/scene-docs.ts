@@ -214,7 +214,15 @@ export interface TokenOverrides {
 
 /** Visible-to-all defaults; the server normalizes permissions per the creator's role. */
 function defaultPermissions(): WireDocument["permissions"] {
-  return { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } };
+  return {
+    default: "observer",
+    users: {},
+    property_overrides: {},
+    capabilities: { by_role: {}, by_user: {} },
+    // `null` preserves the GM's unconditional access — matches the server-side
+    // default for every document type that predates this field.
+    gm_role: null,
+  };
 }
 
 function envelope(worldId: string, docType: string, parentId: string | null, system: unknown, id?: string): WireDocument {

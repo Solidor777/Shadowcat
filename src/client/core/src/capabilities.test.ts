@@ -10,6 +10,7 @@ function perms(p: Partial<WireDocument["permissions"]>): WireDocument["permissio
     users: {},
     property_overrides: {},
     capabilities: { by_role: {}, by_user: {} },
+    gm_role: null,
     ...p,
   };
 }

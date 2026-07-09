@@ -32,6 +32,7 @@ function createOp(id: string): WireOperation {
         users: {},
         property_overrides: {},
         capabilities: { by_role: {}, by_user: {} },
+        gm_role: null,
       },
       embedded: {},
       parent_id: null,

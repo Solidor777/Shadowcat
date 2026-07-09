@@ -13,6 +13,7 @@ import {
   type ServerMsg,
   type ClientMsg,
   type WireOperation,
+  type WireAudience,
 } from "./wire";
 
 // Drift guard. Exact field-by-field type equality fights Zod's inference
@@ -267,7 +268,7 @@ describe("parseServerMsg", () => {
       schema_version: 1,
       source: null,
       owner: null,
-      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} } },
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {},
       parent_id,
       system: { x: 0, y: 0 },
@@ -299,6 +300,12 @@ describe("parseServerMsg", () => {
   });
 });
 
+describe("wire drift guard — Audience", () => {
+  it("Audience kind tags", () => {
+    expectTypeOf<WireAudience["kind"]>().toEqualTypeOf<Ts.Audience["kind"]>();
+  });
+});
+
 describe("SendMessageSchema", () => {
   it("parses a send_message frame + actor_owner ref", () => {
     expect(
@@ -312,5 +319,43 @@ describe("SendMessageSchema", () => {
         },
       }).actor_owner?.kind,
     ).toBe("actor");
+  });
+
+  it("defaults audience to public when omitted", () => {
+    const parsed = SendMessageSchema.parse({
+      type: "send_message",
+      channel: "all",
+      content: "hi",
+      actor_owner: null,
+    });
+    expect(parsed.audience).toEqual({ kind: "public" });
+  });
+
+  it("parses a whisper audience with recipients", () => {
+    const parsed = SendMessageSchema.parse({
+      type: "send_message",
+      channel: "whispers",
+      content: "psst",
+      actor_owner: null,
+      audience: {
+        kind: "whisper",
+        recipients: ["00000000-0000-0000-0000-000000000001"],
+      },
+    });
+    expect(parsed.audience).toEqual({
+      kind: "whisper",
+      recipients: ["00000000-0000-0000-0000-000000000001"],
+    });
+  });
+
+  it("parses a gm_only audience", () => {
+    const parsed = SendMessageSchema.parse({
+      type: "send_message",
+      channel: "gm",
+      content: "for your eyes only",
+      actor_owner: null,
+      audience: { kind: "gm_only" },
+    });
+    expect(parsed.audience).toEqual({ kind: "gm_only" });
   });
 });

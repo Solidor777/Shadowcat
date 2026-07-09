@@ -33,6 +33,14 @@ export const ActorOwnerRefSchema = z.discriminatedUnion("kind", [
 ]);
 export type WireActorOwnerRef = z.infer<typeof ActorOwnerRefSchema>;
 
+/** Mirrors `crate::chat::Audience` (chat message readership). */
+export const AudienceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("public") }),
+  z.object({ kind: z.literal("whisper"), recipients: z.array(z.string()) }),
+  z.object({ kind: z.literal("gm_only") }),
+]);
+export type WireAudience = z.infer<typeof AudienceSchema>;
+
 export const ScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("compendium"), pack: z.string() }),
   z.object({ kind: z.literal("world"), world_id: z.string() }),
@@ -75,6 +83,7 @@ export const PermissionSetSchema = z.object({
   users: z.record(DocRoleSchema),
   property_overrides: z.record(VisibilitySchema),
   capabilities: CapabilityGrantsSchema,
+  gm_role: DocRoleSchema.nullable(),
 });
 
 /** The validated document shape (`bigint` i64 fields modeled as `number`). */
@@ -315,6 +324,7 @@ export type ClientMsg =
       channel: string;
       content: string;
       actor_owner: WireActorOwnerRef | null;
+      audience: WireAudience;
     };
 
 /**
@@ -328,6 +338,7 @@ export const SendMessageSchema = z.object({
   channel: z.string(),
   content: z.string(),
   actor_owner: ActorOwnerRefSchema.nullable(),
+  audience: AudienceSchema.default({ kind: "public" }),
 });
 
 /** Parse + validate an inbound text frame; `null` on malformed/unknown input. */
