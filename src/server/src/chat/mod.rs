@@ -212,6 +212,9 @@ pub enum SendMessageError {
     TooLong,
     /// The user's per-minute flood budget is exhausted.
     RateLimited,
+    /// An `Audience::Whisper` recipient uuid does not belong to this world.
+    /// Fail-closed: the whole send is rejected, nothing is persisted.
+    UnknownRecipient,
     /// The authoritative write (`Room::publish`) failed.
     Data(DataError),
 }
@@ -229,6 +232,7 @@ pub async fn handle_send_message(
     channel: String,
     content: String,
     actor_owner: Option<ActorOwnerRef>,
+    audience: Audience,
     now: i64,
     budget_per_min: usize,
 ) -> Result<Command, SendMessageError> {
@@ -247,12 +251,24 @@ pub async fn handle_send_message(
     if !rate.check(ctx.user_id, now, budget_per_min) {
         return Err(SendMessageError::RateLimited);
     }
+    if let Audience::Whisper { recipients } = &audience {
+        for &r in recipients {
+            let is_member = repo
+                .member_role(room.world_id, r)
+                .await
+                .map_err(SendMessageError::Data)?
+                .is_some();
+            if !is_member {
+                return Err(SendMessageError::UnknownRecipient);
+            }
+        }
+    }
     let doc = build_message_doc(
         room.world_id,
         ctx.user_id,
         channel,
         actor_owner,
-        Audience::Public,
+        audience,
         plain_text_content(&content),
         now,
     );
@@ -545,6 +561,7 @@ mod tests {
             "all".into(),
             "hello".into(),
             None,
+            Audience::Public,
             100,
             30,
         )
@@ -565,6 +582,7 @@ mod tests {
                 "all".into(),
                 "x".into(),
                 None,
+                Audience::Public,
                 100,
                 2,
             )
@@ -578,6 +596,7 @@ mod tests {
             "all".into(),
             "x".into(),
             None,
+            Audience::Public,
             100,
             2,
         )
@@ -594,6 +613,7 @@ mod tests {
                 "all".into(),
                 "".into(),
                 None,
+                Audience::Public,
                 100,
                 30
             )
@@ -602,7 +622,19 @@ mod tests {
         ));
         let long = "a".repeat(MAX_MESSAGE_CHARS + 1);
         assert!(matches!(
-            handle_send_message(&room, &repo, &ctx, &rate, "all".into(), long, None, 100, 30).await,
+            handle_send_message(
+                &room,
+                &repo,
+                &ctx,
+                &rate,
+                "all".into(),
+                long,
+                None,
+                Audience::Public,
+                100,
+                30
+            )
+            .await,
             Err(SendMessageError::TooLong)
         ));
 
@@ -617,6 +649,7 @@ mod tests {
                 "".into(),
                 "hi".into(),
                 None,
+                Audience::Public,
                 100,
                 30
             )
@@ -633,6 +666,7 @@ mod tests {
                 long_channel,
                 "hi".into(),
                 None,
+                Audience::Public,
                 100,
                 30
             )
@@ -644,6 +678,111 @@ mod tests {
             seq_before,
             "rejected channel must not publish"
         );
+    }
+
+    #[tokio::test]
+    async fn handle_send_message_rejects_unknown_whisper_recipient() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        // A uuid that belongs to no user at all, let alone this world.
+        let foreign = Uuid::from_u128(99_999);
+        let err = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "whispers".into(),
+            "psst".into(),
+            None,
+            Audience::Whisper {
+                recipients: vec![foreign],
+            },
+            100,
+            30,
+        )
+        .await;
+        assert!(matches!(err, Err(SendMessageError::UnknownRecipient)));
+
+        // Nothing was persisted — the seq was never consumed.
+        assert!(repo.events_since(w.id, 0).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_send_message_accepts_a_whisper_to_a_real_member() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let recipient = repo
+            .create_user("re", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        repo.add_member(w.id, recipient, WorldRole::Player)
+            .await
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "whispers".into(),
+            "psst".into(),
+            None,
+            Audience::Whisper {
+                recipients: vec![recipient],
+            },
+            100,
+            30,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cmd.seq, 1);
     }
 
     /// A message doc built via `build_message_doc` and committed via
