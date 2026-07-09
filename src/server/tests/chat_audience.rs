@@ -110,10 +110,6 @@ impl Harness {
 
     /// `GET /api/worlds/{world}/documents?type=message` as `cookie` — the
     /// resync/load path a fresh connection or page load uses.
-    /// TODO: no test in this file yet exercises the HTTP resync/load egress
-    /// path directly (only broadcast and search are proven here); reserved
-    /// for a follow-up test.
-    #[allow(dead_code)]
     async fn list_messages(&self, cookie: &str) -> Vec<serde_json::Value> {
         let client = reqwest::Client::new();
         let res = client
@@ -308,6 +304,50 @@ async fn whisper_to_unknown_recipient_is_rejected_and_nothing_persists() {
         seqs.len(),
         1,
         "only the marker was persisted — the rejected whisper consumed no seq"
+    );
+}
+
+/// The recipient's own HTTP resync/load (`GET .../documents?type=message`)
+/// surfaces their whisper; a non-recipient's resync/load never surfaces it —
+/// the third egress path (alongside broadcast and search) the module doc
+/// claims coverage for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn whisper_is_hidden_from_a_non_recipients_resync_but_visible_to_the_recipient() {
+    let (h, _gm_id) = spawn().await;
+    let (_sender_id, cookie_sender) = h.add_member("sender", WorldRole::Player).await;
+    let (recipient_id, cookie_recipient) = h.add_member("recipient", WorldRole::Player).await;
+    let (_bystander_id, cookie_bystander) = h.add_member("bystander", WorldRole::Player).await;
+
+    let mut ws_sender = h.connect_with(&cookie_sender).await;
+    let mut ws_recipient = h.connect_with(&cookie_recipient).await;
+    recv_until(&mut ws_sender, "welcome").await;
+    recv_until(&mut ws_recipient, "welcome").await;
+
+    ws_sender
+        .send(send_message_frame(
+            "whispers",
+            "resync-only secret",
+            whisper_audience(&[recipient_id]),
+        ))
+        .await
+        .unwrap();
+    recv_next_message_create(&mut ws_recipient).await; // wait for delivery before resyncing
+
+    let recipient_docs = h.list_messages(&cookie_recipient).await;
+    let matching: Vec<_> = recipient_docs
+        .iter()
+        .filter(|d| d["system"]["content"][0]["text"] == "resync-only secret")
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "the recipient's own resync/load surfaces exactly their whisper"
+    );
+
+    let bystander_docs = h.list_messages(&cookie_bystander).await;
+    assert!(
+        bystander_docs.is_empty(),
+        "a non-recipient's resync/load must never surface the whisper"
     );
 }
 
