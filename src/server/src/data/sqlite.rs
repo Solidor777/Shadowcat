@@ -1295,6 +1295,13 @@ impl Repository for SqliteRepository {
         }))
     }
 
+    async fn member_role(&self, world: Uuid, user: Uuid) -> Result<Option<WorldRole>, DataError> {
+        // Delegates to the inherent method of the same name (line ~608);
+        // method resolution on a concrete `SqliteRepository` self prefers the
+        // inherent impl, so this is not infinite recursion.
+        SqliteRepository::member_role(self, world, user).await
+    }
+
     async fn world_cap_defaults(&self, world: Uuid) -> Result<WorldCapDefaults, DataError> {
         match self.get_setting(&world_caps_key(world)).await? {
             Some(json) => Ok(serde_json::from_str(&json)?),
@@ -1521,6 +1528,26 @@ mod tests {
         let w = r.create_world_owned("W", gm1, 0).await.unwrap();
         r.add_member(w.id, gm2, WorldRole::Gm).await.unwrap();
         assert!(r.remove_member(w.id, gm1).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn repository_trait_member_role_matches_inherent_method() {
+        use crate::auth::role::ServerRole;
+        use crate::data::repository::Repository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let player = r.create_user("pl", None, ServerRole::User, 0).await.unwrap();
+        let stranger = r.create_user("st", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+
+        let dyn_repo: &dyn Repository = &r;
+        assert_eq!(
+            dyn_repo.member_role(w.id, player).await.unwrap(),
+            Some(WorldRole::Player)
+        );
+        assert_eq!(dyn_repo.member_role(w.id, stranger).await.unwrap(), None);
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::data::command::{Command, UnsequencedCommand};
 use crate::data::document::{
-    CapabilityRequirement, ContractDeclaration, Document, World, WorldCapDefaults,
+    CapabilityRequirement, ContractDeclaration, Document, World, WorldCapDefaults, WorldRole,
 };
 use crate::data::DataError;
 
@@ -55,6 +55,12 @@ pub trait Repository: Send + Sync {
 
     /// Fetch a world row by id, or `None` if it does not exist.
     async fn get_world(&self, id: Uuid) -> Result<Option<World>, DataError>;
+
+    /// A user's role within `world`, or `None` if they are not a member.
+    /// Lets a `dyn Repository` caller (e.g. `chat::handle_send_message`)
+    /// validate candidate uuids — a whisper's recipients — actually belong to
+    /// the world before trusting them.
+    async fn member_role(&self, world: Uuid, user: Uuid) -> Result<Option<WorldRole>, DataError>;
 
     /// A world's default capability grants (additive over the per-document
     /// `DocRole` floor). Empty when unset.
