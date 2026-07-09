@@ -57,6 +57,28 @@ pub enum ActorOwnerRef {
     TokenInstance { token_id: Uuid },
 }
 
+/// The intended readership of a message, beyond the ordinary world-readable
+/// default. Carried on the `SendMessage` frame and stored verbatim in
+/// `MessageSystem`; drives the document's `PermissionSet` in
+/// `build_message_doc` (see that function for the exact mapping). `channel`
+/// stays a purely client-chosen label — the server never validates it or
+/// derives audience from it; a client module choosing to post into a "GM"
+/// channel is what sets `Audience::GmOnly`, not the channel string itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Audience {
+    /// Every world member may read (c-1's original, unrestricted shape).
+    #[default]
+    Public,
+    /// Only `recipients` (plus the sender) may read. The GM reads it ONLY if
+    /// their own uuid is among `recipients` — not automatically.
+    Whisper { recipients: Vec<Uuid> },
+    /// Only whoever currently holds `WorldRole::Gm` (plus the sender) may
+    /// read — resolved dynamically, not a frozen roster at send time.
+    GmOnly,
+}
+
 /// Message subtype, orthogonal to channel. Rides the opaque body (no ts-rs).
 /// c-1 only ever produces `Normal`; `Emote`/`Roll` are set by c-3's command
 /// parser, `System` by server-authored notices.
@@ -91,8 +113,7 @@ pub fn plain_text_content(raw: &str) -> Vec<Segment> {
 }
 
 /// The message document's `system` body. Opaque on the wire (no ts-rs); the
-/// client declares its own Zod mirror in M11d. `recipients` (whispers) is added
-/// in c-2.
+/// client declares its own Zod mirror in M11d.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageSystem {
     pub channel: String,
@@ -101,28 +122,54 @@ pub struct MessageSystem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_owner: Option<ActorOwnerRef>,
     pub kind: MessageKind,
+    pub audience: Audience,
     pub content: Vec<Segment>,
 }
 
-/// Server-construct a message `Document`. INVARIANT: only the server calls this
-/// (via `handle_send_message`); clients never build message docs. Sets the
-/// author as `owner` + `Owner` permission (satisfies the create WRITE_FIELDS
-/// floor) with `default = Observer` so all world members may read it.
+/// Server-construct a message `Document`. INVARIANT: only the server calls
+/// this (via `handle_send_message`); clients never build message docs.
+/// `audience` drives the document's `PermissionSet`:
+/// - `Public` — `default: Observer`, `gm_role: None` (c-1's original,
+///   world-readable shape; the GM's unconditional access is unaffected).
+/// - `Whisper { recipients }` — `default: None`, `gm_role: Some(None)` (the
+///   GM reads only if individually listed), `users` holds `owner: Owner` plus
+///   each recipient as `Observer`.
+/// - `GmOnly` — `default: None`, `gm_role: Some(Observer)` (ANY current GM
+///   reads, resolved dynamically — not a frozen roster), `users` holds only
+///   `owner: Owner`.
+///
+/// In every case `owner` is inserted into `users` LAST, so a `Whisper` that
+/// redundantly names the sender as their own recipient can never downgrade
+/// them from `Owner` to `Observer` via map-insertion order.
 pub fn build_message_doc(
     world_id: Uuid,
     user: Uuid,
     channel: String,
     actor_owner: Option<ActorOwnerRef>,
+    audience: Audience,
     content: Vec<Segment>,
     now: i64,
 ) -> Document {
-    let mut users = BTreeMap::new();
+    let (default, gm_role, mut users) = match &audience {
+        Audience::Public => (DocRole::Observer, None, BTreeMap::new()),
+        Audience::Whisper { recipients } => {
+            let mut users = BTreeMap::new();
+            for &r in recipients {
+                if r != user {
+                    users.insert(r, DocRole::Observer);
+                }
+            }
+            (DocRole::None, Some(DocRole::None), users)
+        }
+        Audience::GmOnly => (DocRole::None, Some(DocRole::Observer), BTreeMap::new()),
+    };
     users.insert(user, DocRole::Owner);
     let system = MessageSystem {
         channel,
         user_owner: user,
         actor_owner,
         kind: MessageKind::Normal,
+        audience,
         content,
     };
     Document {
@@ -133,8 +180,9 @@ pub fn build_message_doc(
         source: None,
         owner: Some(user),
         permissions: PermissionSet {
-            default: DocRole::Observer,
+            default,
             users,
+            gm_role,
             ..Default::default()
         },
         embedded: BTreeMap::new(),
@@ -204,6 +252,7 @@ pub async fn handle_send_message(
         ctx.user_id,
         channel,
         actor_owner,
+        Audience::Public,
         plain_text_content(&content),
         now,
     );
@@ -279,6 +328,7 @@ mod tests {
             user,
             "all".into(),
             None,
+            Audience::Public,
             plain_text_content("hi"),
             1234,
         );
@@ -295,6 +345,7 @@ mod tests {
         assert_eq!(sys.user_owner, user);
         assert_eq!(sys.channel, "all");
         assert_eq!(sys.kind, MessageKind::Normal);
+        assert_eq!(sys.audience, Audience::Public);
         assert_eq!(sys.content, vec![Segment::Text { text: "hi".into() }]);
     }
 
@@ -305,6 +356,7 @@ mod tests {
             Uuid::from_u128(2),
             "all".into(),
             None,
+            Audience::Public,
             vec![],
             0,
         );
@@ -318,6 +370,7 @@ mod tests {
             Uuid::from_u128(2),
             "all".into(),
             None,
+            Audience::Public,
             vec![],
             0,
         );
@@ -335,6 +388,7 @@ mod tests {
             Uuid::from_u128(2),
             "all".into(),
             None,
+            Audience::Public,
             vec![],
             0,
         );
@@ -344,6 +398,7 @@ mod tests {
             Uuid::from_u128(2),
             "all".into(),
             None,
+            Audience::Public,
             vec![],
             0,
         );
@@ -351,6 +406,105 @@ mod tests {
             Operation::Create { doc: note },
             Operation::Create { doc: msg },
         ]));
+    }
+
+    #[test]
+    fn audience_tagged_roundtrip_and_default() {
+        let w = Audience::Whisper {
+            recipients: vec![Uuid::from_u128(1)],
+        };
+        let j = serde_json::to_value(&w).unwrap();
+        assert_eq!(j["kind"], "whisper");
+        assert_eq!(w, serde_json::from_value(j).unwrap());
+        assert_eq!(
+            serde_json::to_value(Audience::GmOnly).unwrap()["kind"],
+            "gm_only"
+        );
+        assert_eq!(Audience::default(), Audience::Public);
+    }
+
+    #[test]
+    fn build_message_doc_public_matches_c1_shape() {
+        let owner = Uuid::from_u128(1);
+        let doc = build_message_doc(
+            Uuid::from_u128(9),
+            owner,
+            "all".into(),
+            None,
+            Audience::Public,
+            plain_text_content("hi"),
+            0,
+        );
+        assert_eq!(doc.permissions.default, DocRole::Observer);
+        assert_eq!(doc.permissions.gm_role, None);
+        assert_eq!(doc.permissions.users.get(&owner), Some(&DocRole::Owner));
+    }
+
+    #[test]
+    fn build_message_doc_whisper_restricts_default_and_gm() {
+        let owner = Uuid::from_u128(1);
+        let recipient = Uuid::from_u128(2);
+        let doc = build_message_doc(
+            Uuid::from_u128(9),
+            owner,
+            "whispers".into(),
+            None,
+            Audience::Whisper {
+                recipients: vec![recipient],
+            },
+            plain_text_content("psst"),
+            0,
+        );
+        assert_eq!(doc.permissions.default, DocRole::None);
+        assert_eq!(doc.permissions.gm_role, Some(DocRole::None));
+        assert_eq!(doc.permissions.users.get(&owner), Some(&DocRole::Owner));
+        assert_eq!(
+            doc.permissions.users.get(&recipient),
+            Some(&DocRole::Observer)
+        );
+    }
+
+    #[test]
+    fn build_message_doc_whisper_self_recipient_does_not_downgrade_owner() {
+        let owner = Uuid::from_u128(1);
+        let doc = build_message_doc(
+            Uuid::from_u128(9),
+            owner,
+            "whispers".into(),
+            None,
+            Audience::Whisper {
+                recipients: vec![owner],
+            },
+            plain_text_content("note to self"),
+            0,
+        );
+        assert_eq!(
+            doc.permissions.users.get(&owner),
+            Some(&DocRole::Owner),
+            "a redundant self-recipient must never downgrade the owner to Observer"
+        );
+    }
+
+    #[test]
+    fn build_message_doc_gm_only_has_no_named_recipients() {
+        let owner = Uuid::from_u128(1);
+        let doc = build_message_doc(
+            Uuid::from_u128(9),
+            owner,
+            "gm".into(),
+            None,
+            Audience::GmOnly,
+            plain_text_content("only the GM sees this"),
+            0,
+        );
+        assert_eq!(doc.permissions.default, DocRole::None);
+        assert_eq!(doc.permissions.gm_role, Some(DocRole::Observer));
+        assert_eq!(
+            doc.permissions.users.len(),
+            1,
+            "only the owner is individually listed — every GM sees it dynamically via gm_role"
+        );
+        assert_eq!(doc.permissions.users.get(&owner), Some(&DocRole::Owner));
     }
 
     #[tokio::test]
@@ -534,6 +688,7 @@ mod tests {
             player,
             "all".into(),
             None,
+            Audience::Public,
             plain_text_content("banshee wail"),
             1,
         );

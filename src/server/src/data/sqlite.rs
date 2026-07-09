@@ -2807,6 +2807,7 @@ mod tests {
             player,
             "all".into(),
             None,
+            crate::chat::Audience::Public,
             crate::chat::plain_text_content("hi"),
             1,
         );
@@ -2815,7 +2816,15 @@ mod tests {
             .expect("player may post a message");
 
         // A non-message doc the player owns — still denied (core:create GM-only).
-        let mut other = crate::chat::build_message_doc(w.id, player, "all".into(), None, vec![], 2);
+        let mut other = crate::chat::build_message_doc(
+            w.id,
+            player,
+            "all".into(),
+            None,
+            crate::chat::Audience::Public,
+            vec![],
+            2,
+        );
         other.doc_type = "note".into();
         let err = r
             .apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc: other }], 2)
@@ -2846,7 +2855,15 @@ mod tests {
             user_id: spec,
             world_role: WorldRole::Spectator,
         };
-        let msg = crate::chat::build_message_doc(w.id, spec, "all".into(), None, vec![], 1);
+        let msg = crate::chat::build_message_doc(
+            w.id,
+            spec,
+            "all".into(),
+            None,
+            crate::chat::Audience::Public,
+            vec![],
+            1,
+        );
         let err = r
             .apply_intent(&sp_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
             .await;
@@ -2886,6 +2903,7 @@ mod tests {
             player,
             "all".into(),
             None,
+            crate::chat::Audience::Public,
             crate::chat::plain_text_content("hi"),
             1,
         );
@@ -2926,6 +2944,7 @@ mod tests {
             player,
             "all".into(),
             None,
+            crate::chat::Audience::Public,
             crate::chat::plain_text_content("hi"),
             1,
         );
