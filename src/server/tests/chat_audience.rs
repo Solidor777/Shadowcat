@@ -425,3 +425,204 @@ async fn whisper_content_is_hidden_from_a_non_recipient_search() {
         "a non-recipient's search must not surface the whisper"
     );
 }
+
+/// A GM-only message is visible to the GM and invisible to a regular member
+/// — same absence-proof pattern as the whisper tests.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gm_only_channel_visible_to_gm_hidden_from_regular_member() {
+    let (h, _gm_id) = spawn().await;
+    let gm_cookie = h.login("u", "pw").await;
+    let (_a_id, cookie_a) = h.add_member("a", WorldRole::Player).await;
+    let (_b_id, cookie_b) = h.add_member("b", WorldRole::Player).await;
+
+    let mut ws_gm = h.connect_with(&gm_cookie).await;
+    let mut ws_a = h.connect_with(&cookie_a).await;
+    let mut ws_b = h.connect_with(&cookie_b).await;
+    recv_until(&mut ws_gm, "welcome").await;
+    recv_until(&mut ws_a, "welcome").await;
+    recv_until(&mut ws_b, "welcome").await;
+
+    // Any regular member may post into the GM-only channel.
+    ws_a.send(send_message_frame(
+        "gm",
+        "for the GM's eyes only",
+        serde_json::json!({ "kind": "gm_only" }),
+    ))
+    .await
+    .unwrap();
+    let gm_doc = recv_next_message_create(&mut ws_gm).await;
+    assert_eq!(
+        gm_doc["system"]["content"][0]["text"],
+        "for the GM's eyes only"
+    );
+
+    ws_a.send(send_message_frame(
+        "all",
+        "marker",
+        serde_json::json!({ "kind": "public" }),
+    ))
+    .await
+    .unwrap();
+    let b_doc = recv_next_message_create(&mut ws_b).await;
+    assert_eq!(
+        b_doc["system"]["content"][0]["text"], "marker",
+        "a regular member's first observed message-create is the PUBLIC \
+         marker — the GM-only message never reached them"
+    );
+}
+
+/// A user promoted to GM AFTER a GM-only message was sent immediately sees
+/// it on their next resync/load — proving dynamic (not frozen-roster)
+/// resolution. Uses the HTTP `GET .../documents?type=message` resync path,
+/// since this is about backlog visibility, not a live broadcast.
+///
+/// NOTE: the message here is sent by the world's EXISTING GM ("u"), not by
+/// the user being promoted — `build_message_doc` always inserts the sender
+/// as `Owner` on their own message regardless of audience or later role
+/// changes (chat/mod.rs `Audience::GmOnly` doc comment: "plus the sender"),
+/// so testing promotion against the message's own author would conflate
+/// permanent owner-access with the `gm_role`-gated dynamic mechanism this
+/// test targets.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gm_only_channel_promotion_immediately_grants_backlog_access() {
+    let (h, _gm_id) = spawn().await;
+    let gm_cookie = h.login("u", "pw").await;
+    let (co_gm_id, co_gm_cookie) = h.add_member("cogm", WorldRole::Player).await;
+
+    let mut ws_gm = h.connect_with(&gm_cookie).await;
+    recv_until(&mut ws_gm, "welcome").await;
+    ws_gm
+        .send(send_message_frame(
+            "gm",
+            "posted before promotion",
+            serde_json::json!({ "kind": "gm_only" }),
+        ))
+        .await
+        .unwrap();
+    recv_next_message_create(&mut ws_gm).await; // the sender is GM, so they see the live echo
+
+    // Before promotion: the not-yet-GM member does not see it in resync.
+    let before = h.list_messages(&co_gm_cookie).await;
+    assert!(
+        before.is_empty(),
+        "a Player who did not author the message does not read it back via \
+         resync before being promoted"
+    );
+
+    h.repo
+        .set_role(h.world, co_gm_id, WorldRole::Gm)
+        .await
+        .unwrap();
+
+    let after = h.list_messages(&co_gm_cookie).await;
+    assert_eq!(
+        after.len(),
+        1,
+        "immediately after promotion, the same cookie's next resync sees the \
+         GM-only backlog — dynamic resolution, not a frozen roster"
+    );
+    assert_eq!(
+        after[0]["system"]["content"][0]["text"],
+        "posted before promotion"
+    );
+}
+
+/// A co-GM demoted back to Player immediately loses resync access to prior
+/// GM-only messages.
+///
+/// NOTE: as above, the message is sent by the world's EXISTING GM ("u"), not
+/// by the co-GM being demoted, so the assertion actually exercises
+/// `gm_role`-gated dynamic resolution rather than the sender's permanent
+/// owner-access to their own message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gm_only_channel_demotion_immediately_revokes_backlog_access() {
+    let (h, _gm_id) = spawn().await;
+    let gm_cookie = h.login("u", "pw").await;
+    let (co_gm_id, co_gm_cookie) = h.add_member("cogm", WorldRole::Gm).await;
+
+    let mut ws_gm = h.connect_with(&gm_cookie).await;
+    recv_until(&mut ws_gm, "welcome").await;
+    ws_gm
+        .send(send_message_frame(
+            "gm",
+            "gm staff note",
+            serde_json::json!({ "kind": "gm_only" }),
+        ))
+        .await
+        .unwrap();
+    recv_next_message_create(&mut ws_gm).await; // the sender is GM, so they see the live echo
+
+    let before = h.list_messages(&co_gm_cookie).await;
+    assert_eq!(before.len(), 1, "the co-GM reads it back while still GM");
+
+    h.repo
+        .set_role(h.world, co_gm_id, WorldRole::Player)
+        .await
+        .unwrap();
+
+    let after = h.list_messages(&co_gm_cookie).await;
+    assert!(
+        after.is_empty(),
+        "immediately after demotion, the same cookie's next resync no longer \
+         sees the GM-only backlog"
+    );
+}
+
+/// Search: the GM finds a GM-only message; a regular member's search for the
+/// same unique term returns nothing.
+///
+/// NOTE: the message is sent by the GM, and the negative assertion is
+/// checked against a THIRD member who is neither the sender nor a GM — the
+/// sender always retains `Owner` access to their own message (see the two
+/// tests above), so probing "a regular member" against the sender itself
+/// would not actually exercise the `gm_role` search gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gm_only_channel_content_is_hidden_from_a_regular_members_search() {
+    let (h, _gm_id) = spawn().await;
+    let gm_cookie = h.login("u", "pw").await;
+    let (_a_id, cookie_a) = h.add_member("a", WorldRole::Player).await;
+
+    let mut ws_gm = h.connect_with(&gm_cookie).await;
+    let mut ws_a = h.connect_with(&cookie_a).await;
+    recv_until(&mut ws_gm, "welcome").await;
+    recv_until(&mut ws_a, "welcome").await;
+
+    ws_gm
+        .send(send_message_frame(
+            "gm",
+            "marmoset quokka signal",
+            serde_json::json!({ "kind": "gm_only" }),
+        ))
+        .await
+        .unwrap();
+    recv_next_message_create(&mut ws_gm).await; // wait for delivery before searching
+
+    let search = |request_id: Uuid| {
+        Message::Text(
+            serde_json::json!({
+                "type": "search",
+                "request_id": request_id,
+                "query": "marmoset",
+                "limit": 10,
+                "cursor": null,
+            })
+            .to_string(),
+        )
+    };
+
+    ws_gm.send(search(Uuid::from_u128(10))).await.unwrap();
+    let result = recv_until(&mut ws_gm, "search_result").await;
+    assert_eq!(
+        result["hits"].as_array().unwrap().len(),
+        1,
+        "the GM finds it"
+    );
+
+    ws_a.send(search(Uuid::from_u128(11))).await.unwrap();
+    let result = recv_until(&mut ws_a, "search_result").await;
+    assert_eq!(
+        result["hits"].as_array().unwrap().len(),
+        0,
+        "a regular member's search must not surface the GM-only message"
+    );
+}
