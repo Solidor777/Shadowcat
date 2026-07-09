@@ -122,6 +122,7 @@ pub struct MessageSystem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_owner: Option<ActorOwnerRef>,
     pub kind: MessageKind,
+    #[serde(default)]
     pub audience: Audience,
     pub content: Vec<Segment>,
 }
@@ -200,15 +201,24 @@ pub const MAX_MESSAGE_CHARS: usize = 4096;
 /// is unbounded save for the 256 KB whole-document size cap.
 pub const MAX_CHANNEL_CHARS: usize = 128;
 
+/// Max recipients accepted on an `Audience::Whisper`. A world's realistic
+/// member count is small; this is generous but bounded — without it, a single
+/// cheap `SendMessage` frame could force `handle_send_message` to run one
+/// sequential `repo.member_role` DB round-trip PER recipient before the
+/// message is even constructed, a resource-amplification availability risk.
+pub const MAX_WHISPER_RECIPIENTS: usize = 128;
+
 /// Why `handle_send_message` refused to ingest a `SendMessage` frame.
 #[derive(Debug)]
 pub enum SendMessageError {
     /// Content is empty after trimming whitespace, or `channel` is empty
     /// after trimming whitespace.
     Empty,
-    /// Content exceeds `MAX_MESSAGE_CHARS`, or `channel` exceeds
-    /// `MAX_CHANNEL_CHARS`. Reused for both — the surface stays minimal since
-    /// neither the caller nor the wire protocol distinguishes which field.
+    /// Content exceeds `MAX_MESSAGE_CHARS`, `channel` exceeds
+    /// `MAX_CHANNEL_CHARS`, or an `Audience::Whisper`'s `recipients` exceeds
+    /// `MAX_WHISPER_RECIPIENTS`. Reused for all three — the surface stays
+    /// minimal since neither the caller nor the wire protocol distinguishes
+    /// which field/limit was exceeded.
     TooLong,
     /// The user's per-minute flood budget is exhausted.
     RateLimited,
@@ -252,6 +262,9 @@ pub async fn handle_send_message(
         return Err(SendMessageError::RateLimited);
     }
     if let Audience::Whisper { recipients } = &audience {
+        if recipients.len() > MAX_WHISPER_RECIPIENTS {
+            return Err(SendMessageError::TooLong);
+        }
         for &r in recipients {
             let is_member = repo
                 .member_role(room.world_id, r)
@@ -777,6 +790,110 @@ mod tests {
             Audience::Whisper {
                 recipients: vec![recipient],
             },
+            100,
+            30,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cmd.seq, 1);
+    }
+
+    #[tokio::test]
+    async fn handle_send_message_rejects_oversized_whisper_recipient_list() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        // One over the cap: none of these uuids belong to this world, so if
+        // the cap check ran AFTER the per-recipient member_role loop this
+        // would instead fail with UnknownRecipient — proving the cap check
+        // runs FIRST, before any member_role query.
+        let recipients: Vec<Uuid> = (0..(MAX_WHISPER_RECIPIENTS as u128 + 1))
+            .map(Uuid::from_u128)
+            .collect();
+        let err = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "whispers".into(),
+            "psst".into(),
+            None,
+            Audience::Whisper { recipients },
+            100,
+            30,
+        )
+        .await;
+        assert!(matches!(err, Err(SendMessageError::TooLong)));
+        assert!(
+            repo.events_since(w.id, 0).await.unwrap().is_empty(),
+            "an oversized whisper must persist nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_send_message_accepts_whisper_at_exactly_the_recipient_cap() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        // Exactly at the cap, all recipients are the sender themself (a
+        // no-op member_role lookup that always succeeds) — this test proves
+        // the boundary is accepted, not just that over-the-limit is rejected.
+        let recipients: Vec<Uuid> = std::iter::repeat_n(player, MAX_WHISPER_RECIPIENTS).collect();
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "whispers".into(),
+            "psst".into(),
+            None,
+            Audience::Whisper { recipients },
             100,
             30,
         )

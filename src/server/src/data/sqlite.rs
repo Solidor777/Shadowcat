@@ -1296,9 +1296,9 @@ impl Repository for SqliteRepository {
     }
 
     async fn member_role(&self, world: Uuid, user: Uuid) -> Result<Option<WorldRole>, DataError> {
-        // Delegates to the inherent method of the same name (line ~608);
-        // method resolution on a concrete `SqliteRepository` self prefers the
-        // inherent impl, so this is not infinite recursion.
+        // Delegates to `SqliteRepository::member_role`, the inherent method of
+        // the same name; method resolution on a concrete `SqliteRepository`
+        // self prefers the inherent impl, so this is not infinite recursion.
         SqliteRepository::member_role(self, world, user).await
     }
 
@@ -1536,9 +1536,18 @@ mod tests {
         use crate::data::repository::Repository;
 
         let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
-        let gm = r.create_user("gm", None, ServerRole::User, 0).await.unwrap();
-        let player = r.create_user("pl", None, ServerRole::User, 0).await.unwrap();
-        let stranger = r.create_user("st", None, ServerRole::User, 0).await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let stranger = r
+            .create_user("st", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         r.add_member(w.id, player, WorldRole::Player).await.unwrap();
 

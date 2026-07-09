@@ -63,8 +63,10 @@ with zero message-specific plumbing in any of those subsystems.
     construction site for a stored message doc.
   - `handle_send_message(room, repo, ctx, rate, channel, content, actor_owner, audience, now,
     budget_per_min) -> Result<Command, SendMessageError>` — validates (empty/`MAX_MESSAGE_CHARS =
-    4096`/`MAX_CHANNEL_CHARS = 128`/per-user-per-minute flood budget via `PingRateLimiter`), then
-    for `Audience::Whisper` fail-closed-validates EVERY recipient uuid via
+    4096`/`MAX_CHANNEL_CHARS = 128`/per-user-per-minute flood budget via `PingRateLimiter`),
+    then for `Audience::Whisper` first rejects an oversized `recipients` list
+    (`MAX_WHISPER_RECIPIENTS = 128`, `SendMessageError::TooLong`) BEFORE any DB query, then
+    fail-closed-validates EVERY remaining recipient uuid via
     `Repository::member_role(world_id, r).await?.is_some()` — an unknown/foreign recipient rejects
     the WHOLE send (`SendMessageError::UnknownRecipient`, nothing persisted) BEFORE
     `build_message_doc` is ever called. Only after all validation passes does it call
@@ -161,6 +163,16 @@ with zero message-specific plumbing in any of those subsystems.
   `handle_send_message`** — they do not apply to any other document-write path (there isn't one
   for messages, per the invariants above, but this is a chat-specific limit, not a general
   `Document` size cap).
+- **`Audience::Whisper.recipients` is capped at `MAX_WHISPER_RECIPIENTS = 128`**, checked in
+  `handle_send_message` BEFORE the per-recipient `member_role` validation loop — an oversized list
+  is rejected (`SendMessageError::TooLong`) without running any of those DB round-trips. Without
+  this, one cheap `SendMessage` frame could force one sequential DB query per (attacker-supplied)
+  recipient.
+- **A message's sender always retains `DocRole::Owner` in `permissions.users`**, regardless of the
+  message's `Audience` or any later `gm_role`/world-role change — e.g. a Player who posts to a
+  `GmOnly` channel permanently keeps read/search access to their own message even if never
+  promoted to GM. Anyone building an edit/delete path on top of this (c-3) must not assume `Owner`
+  implies "currently privileged"; it means "originally authored."
 
 ## Pointers
 
