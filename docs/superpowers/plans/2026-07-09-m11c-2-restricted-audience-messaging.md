@@ -2099,13 +2099,13 @@ git commit -m "test(chat/m11c-2): prove GM-only channel visibility and dynamic p
 - Modify: `.claude/skills/shadowcat-codebase-chat/SKILL.md`
 - Modify: `.claude/skills/shadowcat-codebase-documents-permissions/SKILL.md`
 
-> `.claude/` is largely git-ignored; this is a working-environment + process-gate deliverable, not a committed one. Per CLAUDE.md's reviewed skill-update gate, dispatch `shadowcat-spec-reviewer` on both skill diffs to confirm they accurately capture the c-2 surface before this checkpoint is considered done.
+> **Corrected during execution:** this note originally assumed `.claude/` is largely git-ignored (copied from the c-1 plan's text). It is not — only `.claude/settings*.json` and `.claude/skills/graphify/` are ignored; `shadowcat-codebase-*` skill files are tracked and were committed for c-1 too. Commit both skill updates normally after the gate passes. Per CLAUDE.md's reviewed skill-update gate, dispatch `shadowcat-spec-reviewer` on both skill diffs to confirm they accurately capture the c-2 surface before this checkpoint is considered done.
 
 - [ ] **Step 1: Update `shadowcat-codebase-chat`.** Add/replace content so the skill captures: the `Audience` enum (`Public`/`Whisper{recipients}`/`GmOnly`) and its exact `PermissionSet` mapping table (from the design doc §2); that `channel` remains purely a client label with zero server-enforced meaning — `Audience` is the only server-enforced visibility concept; that `MessageSystem.audience` is stored verbatim; that `handle_send_message` fail-closed-validates `Whisper` recipients via `Repository::member_role` before constructing anything; and a pointer to the new `PermissionSet.gm_role` field this checkpoint added (owned by `documents-permissions`, but load-bearing here). Update the module-level "M11c-2 (whisper allowlist) is next" framing to "DONE" and describe what actually shipped, mirroring how `shadowcat-codebase-chat` already documents the c-1 surface.
 
 - [ ] **Step 2: Update `shadowcat-codebase-documents-permissions`.** Add a Hard Invariant entry (or extend the existing `can_see`/`resolve_access` one) documenting: `PermissionSet.gm_role: Option<DocRole>` makes the GM's usual unconditional `resolve_access` short-circuit conditional per-document; `None` (every pre-existing doc type) is unchanged; `Some(role)` caps the GM to the same per-document role-floor everyone else uses, via the shared `effective_role` helper — and that `resolve_access_world` deliberately reuses the SAME `effective_role` (not `doc.permissions.default`) so world-level grants layer consistently for a `gm_role`-capped GM too. Cross-reference `shadowcat-codebase-chat` as the first (and so far only) consumer.
 
-- [ ] **Step 3: Reviewed skill-update gate.** Dispatch `shadowcat-spec-reviewer` on both skill diffs; fix any inaccuracy it finds; record the PASS. (No git commit — `.claude/` is ignored.)
+- [ ] **Step 3: Reviewed skill-update gate.** Dispatch `shadowcat-spec-reviewer` on both skill diffs; fix any inaccuracy it finds; record the PASS. Commit both files (see corrected note above).
 
 ---
 
@@ -2118,7 +2118,7 @@ git commit -m "test(chat/m11c-2): prove GM-only channel visibility and dynamic p
 Run: `cargo test -p shadowcat` (all server tests) — Expected: PASS.
 Run: `cargo clippy --all-targets -- -D warnings` — Expected: clean except any pre-existing unrelated warning already tracked in `docs/TODO.md` (do not fix it here). If a NEW warning appears in touched code, fix it.
 Run: `git diff --exit-code src/types/generated` — Expected: no diff (all regenerated bindings committed in Tasks 5-6).
-Run: `pnpm --filter @shadowcat/core test && pnpm --filter @shadowcat/core exec tsc --noEmit` — Expected: PASS.
+Run: `pnpm --filter @shadowcat/core test && pnpm -r exec tsc --noEmit` — Expected: PASS. **Corrected during execution:** the original text here scoped typecheck to `@shadowcat/core` only, but `PermissionSetSchema.gm_role` becoming a required field (Task 6) breaks any OTHER package that constructs a `WireDocument`/`permissions` literal — it broke `@shadowcat/render`'s test fixtures too (fixed as a Task 6 follow-up). Verification must cover the whole monorepo (`pnpm -r exec tsc --noEmit`), not just `@shadowcat/core`.
 
 - [ ] **Step 2: Update `docs/PLAN.md`.** Record M11c-2 DONE under the M11c section: `PermissionSet.gm_role` (the single new permission primitive), the `Audience` enum and its exact mapping, GM excluded from an unnamed whisper / included dynamically for a GM-only channel, fail-closed recipient validation, and that M11c-3 (sanitizer + commands + edit path) is next.
 
