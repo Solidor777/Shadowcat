@@ -203,7 +203,11 @@ async fn whisper_reaches_only_the_named_recipient() {
     assert_eq!(recipient_doc["system"]["content"][0]["text"], "secret");
 
     ws_sender
-        .send(send_message_frame("all", "marker", serde_json::json!({ "kind": "public" })))
+        .send(send_message_frame(
+            "all",
+            "marker",
+            serde_json::json!({ "kind": "public" }),
+        ))
         .await
         .unwrap();
     let bystander_doc = recv_next_message_create(&mut ws_bystander).await;
@@ -236,9 +240,13 @@ async fn whisper_excludes_the_gm_unless_named() {
     .await
     .unwrap();
 
-    ws_a.send(send_message_frame("all", "marker", serde_json::json!({ "kind": "public" })))
-        .await
-        .unwrap();
+    ws_a.send(send_message_frame(
+        "all",
+        "marker",
+        serde_json::json!({ "kind": "public" }),
+    ))
+    .await
+    .unwrap();
     let gm_doc = recv_next_message_create(&mut ws_gm).await;
     assert_eq!(
         gm_doc["system"]["content"][0]["text"], "marker",
@@ -268,7 +276,10 @@ async fn whisper_reaches_the_gm_when_named() {
     .unwrap();
 
     let gm_doc = recv_next_message_create(&mut ws_gm).await;
-    assert_eq!(gm_doc["system"]["content"][0]["text"], "for the GM's eyes too");
+    assert_eq!(
+        gm_doc["system"]["content"][0]["text"],
+        "for the GM's eyes too"
+    );
 }
 
 /// A whisper naming a uuid that is not a world member is rejected wholesale
@@ -293,7 +304,11 @@ async fn whisper_to_unknown_recipient_is_rejected_and_nothing_persists() {
         .unwrap();
 
     ws_sender
-        .send(send_message_frame("all", "marker", serde_json::json!({ "kind": "public" })))
+        .send(send_message_frame(
+            "all",
+            "marker",
+            serde_json::json!({ "kind": "public" }),
+        ))
         .await
         .unwrap();
     let doc = recv_next_message_create(&mut ws_sender).await;
@@ -393,10 +408,7 @@ async fn whisper_content_is_hidden_from_a_non_recipient_search() {
     };
 
     let req_recipient = Uuid::from_u128(1);
-    ws_recipient
-        .send(search(req_recipient))
-        .await
-        .unwrap();
+    ws_recipient.send(search(req_recipient)).await.unwrap();
     let result = recv_until(&mut ws_recipient, "search_result").await;
     assert_eq!(
         result["hits"].as_array().unwrap().len(),
@@ -405,10 +417,7 @@ async fn whisper_content_is_hidden_from_a_non_recipient_search() {
     );
 
     let req_bystander = Uuid::from_u128(2);
-    ws_bystander
-        .send(search(req_bystander))
-        .await
-        .unwrap();
+    ws_bystander.send(search(req_bystander)).await.unwrap();
     let result = recv_until(&mut ws_bystander, "search_result").await;
     assert_eq!(
         result["hits"].as_array().unwrap().len(),
