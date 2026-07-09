@@ -18,13 +18,20 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 ## Key files & seams
 
 - `src/server/src/data/document.rs` — the `Document` envelope; `enum Visibility { All, GmOnly,
-  OwnerOrGm }` (the per-property visibility tiers).
+  OwnerOrGm }` (the per-property visibility tiers); `PermissionSet.gm_role: Option<DocRole>`
+  (`#[serde(default)]`, ts-rs exported) — see Hard Invariants below.
 - `src/server/src/data/permission.rs` — the redaction core:
   - `resolve_access(user, world_role, doc) -> Access` (and `resolve_access_world`) builds the
-    per-connection `Access { is_owner, see_gm_only, … }`.
+    per-connection `Access { caps, all, see_gm_only, is_owner }`.
+  - `effective_role(user, world_role, doc) -> Option<DocRole>` — the shared floor-resolution
+    helper both `resolve_access` and `resolve_access_world` call; `None` means the unconditional
+    GM/admin short-circuit applies (see `gm_role` invariant below), `Some(role)` means the caller
+    must resolve capabilities from that per-document role floor like any other actor.
   - `Access::can_see(v: Visibility)` is the single predicate: `GmOnly => see_gm_only`,
     `OwnerOrGm => see_gm_only || is_owner`, `All => true`.
-  - `filter_properties(doc, access)` strips hidden properties from an outgoing doc.
+  - `filter_properties(doc, access)` strips hidden **properties** from an outgoing doc — a
+    PROPERTY-visibility gate only (see Hard Invariants: it does NOT decide whole-document
+    withholding).
   - `redact_change(change, gm_only)` redacts field-level change events on the broadcast path.
 - `src/server/src/data/search.rs` — `index_content` (full) vs `index_content_public` (redacted):
   the index is **partitioned by visibility**, not redacted after the fact.
@@ -38,6 +45,45 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 - **Redaction is fail-closed and owner-aware.** `can_see` is the one chokepoint across every
   egress path; a partial-visibility tier (`OwnerOrGm`) uses a distinct flag — never overload the
   GM see-all boolean, or you leak `GmOnly` to owners [[ownerorgm-tier-no-widen]].
+- **`filter_properties` is a PROPERTY-visibility gate, NOT a whole-document READ gate.** It only
+  strips individual properties whose override is `GmOnly`; it does not withhold, and cannot be
+  used to withhold, an entire document. Whole-doc withholding is decided entirely by callers
+  checking `access.has(cap::READ)` BEFORE including the op/hit/row at all (see the
+  `filter_command`'s `Create`/`Delete`/`Update` branches, `search`'s per-hit filter, and
+  `query_documents`/`get_document`) — `filter_properties` runs only after that gate has already
+  let the doc through. Any future egress path must follow the same order: check `has(cap::READ)`
+  first, then (optionally) `filter_properties` for property redaction. Gating whole-doc delivery
+  on `see_gm_only`/GM-ness alone instead of `has(cap::READ)` would leak a `gm_role`-capped
+  document (see below) straight past its intended cap.
+- **`PermissionSet.gm_role: Option<DocRole>` makes the GM's usual unconditional access
+  conditional, per document.** `resolve_access`'s GM branch normally short-circuits to
+  `Access { all: true, see_gm_only: true, is_owner: true, caps: {} }` for every `WorldRole::Gm`
+  user, before any document-level permission is consulted — correct and load-bearing for every
+  pre-existing document type (actors, scenes, secret regions: the GM must always see a secret
+  region even though it's `default: DocRole::None`).
+  - `gm_role: None` (the field's default via `#[serde(default)]`; every document type that
+    predates this field deserializes to `None`) preserves that unconditional short-circuit
+    exactly — no behavior change for anything but the new consumer below.
+  - `gm_role: Some(role)` caps a GM to the SAME per-document role-floor resolution every other
+    actor uses: `effective_role` looks the GM up in `doc.permissions.users` first, falling back to
+    `role` (NOT `doc.permissions.default`) only if the GM isn't individually listed. This lets a
+    document deny a GM by default (`Some(DocRole::None)`) while still admitting a GM who is
+    individually granted a role in `users`, or grant EVERY current GM a role
+    (`Some(DocRole::Observer)`) without listing any of them by name — resolved fresh on every call,
+    so promotion/demotion to `WorldRole::Gm` takes effect immediately, not a frozen snapshot.
+  - `resolve_access_world` deliberately reuses this SAME `effective_role` helper (not
+    `doc.permissions.default`) to layer world-level capability grants, so a world-default grant
+    for the GM's fallback role applies consistently even when that GM is `gm_role`-capped — the
+    original (pre-refactor) sketch would have recomputed the role independently from
+    `doc.permissions.default` here and silently diverged for a capped GM; this was a real bug
+    caught before it shipped, not a hypothetical.
+  - First (and so far only) consumer: `shadowcat-codebase-chat`'s `Audience`→`PermissionSet`
+    mapping (`Whisper` sets `Some(DocRole::None)`, `GmOnly` sets `Some(DocRole::Observer)`,
+    `Public` leaves it `None`).
+  - `see_gm_only` stays `true` for any `WorldRole::Gm` actor regardless of `gm_role` capping —
+    only `all`/`caps` (whole-document READ) become floor-gated. A `gm_role`-capped GM therefore
+    still passes property-tier (`GmOnly`/`OwnerOrGm`) checks on any document they DO have READ on;
+    the cap is purely about whole-document access, not GM-ness for property visibility.
 - **The search index is visibility-partitioned.** Redacting only the returned doc leaks GM-only
   text via snippet/match/score — index public and full content separately
   [[search-index-must-be-visibility-partitioned]].
@@ -65,3 +111,5 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 - Relationships: `graphify query "document permissions redaction filter_properties can_see"`,
   `graphify path "permission.rs" "search.rs"`.
 - Deferred merge model: [[document-inheritance-merge-model]].
+- `shadowcat-codebase-chat` — the first (and so far only) consumer of `gm_role`, via its
+  `Audience` enum's `PermissionSet` mapping (see that skill's Key files & seams).

@@ -7,8 +7,11 @@ description: "Use when touching Shadowcat's chat core: the message Document mode
 
 Orientation for the server-authoritative chat system. **M11c-1 shipped**: messages are ordinary
 sequenced `Document`s (`doc_type: "message"`) riding the existing Event/redaction/search
-path — **no new transport or index code**. M11c-2 (whisper allowlist), c-3 (sanitizer + command
-parser + a validated edit path), and c-4 (link-preview fetcher) build on this later.
+path — **no new transport or index code**. **M11c-2 shipped** (restricted-audience messaging —
+whisper allowlist + a GM-only channel): a message's readership is now driven by an `Audience`
+enum mapped onto the generic `PermissionSet`/`gm_role` mechanism, still with zero
+message-specific redaction/search/broadcast code. c-3 (sanitizer + command parser + a validated
+edit path) and c-4 (link-preview fetcher) build on this later.
 
 ## Purpose
 
@@ -32,23 +35,52 @@ with zero message-specific plumbing in any of those subsystems.
   - `plain_text_content(raw) -> Vec<Segment>` — the c-1 producer, wraps raw input verbatim as one
     `Segment::Text` (no sanitization yet; the client renders it as a text node, never
     `innerHTML`, so embedded markup is inert).
-  - `MessageSystem{channel, user_owner, actor_owner, kind, content}` — the `system` body shape.
-  - `build_message_doc(...) -> Document` — constructs the whole `Document`: `owner = Some(user)`,
-    `permissions.users[user] = DocRole::Owner`, `permissions.default = DocRole::Observer` (every
-    world member can read). The SOLE construction site for a stored message doc.
-  - `handle_send_message(room, repo, ctx, rate, channel, content, actor_owner, now, budget_per_min)
-    -> Result<Command, SendMessageError>` — validates (empty/`MAX_MESSAGE_CHARS = 4096`/
-    per-user-per-minute flood budget via `PingRateLimiter`), calls `build_message_doc`, then
-    `room.publish(..., vec![Operation::Create { doc }], ...)`. **The sole message-authoring entry
-    point** — nothing else may produce a stored `message` doc.
+  - `Audience` (`Public`/`Whisper{recipients: Vec<Uuid>}`/`GmOnly`, `#[default] Public`, tagged
+    enum, ts-rs exported same as `ActorOwnerRef`) — the intended readership of a message, carried
+    on the `SendMessage` frame and stored verbatim in `MessageSystem`. This is the ONLY
+    server-enforced visibility concept for chat; `channel` is a purely client-chosen label with
+    ZERO server-enforced meaning — the server never validates or branches on it. A client module
+    choosing to post to a "GM" channel is what sets `audience: GmOnly`; the server has no concept
+    of a reserved channel name.
+  - `MessageSystem{channel, user_owner, actor_owner, kind, audience, content}` — the `system` body
+    shape; `audience` rides the opaque body verbatim, same treatment as `kind`/`actor_owner`.
+  - `build_message_doc(...) -> Document` — constructs the whole `Document`: `owner = Some(user)`;
+    `audience` maps onto `PermissionSet{default, gm_role, users}` (see
+    `shadowcat-codebase-documents-permissions` for what `gm_role` does at `resolve_access` time):
+
+    | `Audience` | `default` | `gm_role` | `users` |
+    |---|---|---|---|
+    | `Public` | `Observer` | `None` | `{owner: Owner}` — c-1's original, unrestricted shape |
+    | `Whisper{recipients}` | `None` | `Some(DocRole::None)` | `{owner: Owner, ...recipients: Observer}` |
+    | `GmOnly` | `None` | `Some(DocRole::Observer)` | `{owner: Owner}` only |
+
+    `owner` is inserted into `users` LAST in every branch, so a `Whisper` that redundantly names
+    the sender as their own recipient can never downgrade them from `Owner` to `Observer` via
+    map-insertion order. A `GmOnly` message names no GM in `users` at all — `gm_role =
+    Some(Observer)` grants it to ANY current `WorldRole::Gm`, re-resolved on every `resolve_access`
+    call (every broadcast recipient, every search hit, every page load), so GM-channel visibility
+    tracks promotion/demotion dynamically rather than a frozen roster at send time. The SOLE
+    construction site for a stored message doc.
+  - `handle_send_message(room, repo, ctx, rate, channel, content, actor_owner, audience, now,
+    budget_per_min) -> Result<Command, SendMessageError>` — validates (empty/`MAX_MESSAGE_CHARS =
+    4096`/`MAX_CHANNEL_CHARS = 128`/per-user-per-minute flood budget via `PingRateLimiter`), then
+    for `Audience::Whisper` fail-closed-validates EVERY recipient uuid via
+    `Repository::member_role(world_id, r).await?.is_some()` — an unknown/foreign recipient rejects
+    the WHOLE send (`SendMessageError::UnknownRecipient`, nothing persisted) BEFORE
+    `build_message_doc` is ever called. Only after all validation passes does it call
+    `build_message_doc`, then `room.publish(..., vec![Operation::Create { doc }], ...)`. **The sole
+    message-authoring entry point** — nothing else may produce a stored `message` doc. Posting
+    rights are unchanged from c-1 (any world member may `SendMessage`); `audience` restricts only
+    *readers*, never senders.
   - `ops_target_message(ops: &[Operation]) -> bool` — the ingress guard: `true` if any `Create`/
     `Delete` op targets a `message` doc_type. `Operation::Update` is always `false` here (an
     `Update` carries no `doc_type`, only `doc_id` + field changes) — Updates are guarded
     separately, see below.
 - `src/server/src/ws/protocol.rs` — `ClientMsg::SendMessage { channel, content, actor_owner:
-  Option<ActorOwnerRef> }` (ts-rs exported). The only client-facing way to author a message;
-  there is no `intent_id`, so a rejection has nothing to correlate a `Reject` frame to and is
-  logged only (no failure frame sent to the requester).
+  Option<ActorOwnerRef>, audience: Audience }` (ts-rs exported; `audience` is `#[serde(default)]`,
+  so an omitted field parses as `Audience::Public`). The only client-facing way to author a
+  message; there is no `intent_id`, so a rejection has nothing to correlate a `Reject` frame to
+  and is logged only (no failure frame sent to the requester).
 - `src/server/src/ws/conn.rs` — two dispatch points:
   - `ClientMsg::Intent { ops, .. }` arm: calls `chat::ops_target_message(&ops)` BEFORE
     `room.publish`; if true, sends `ServerMsg::Reject{reason: Forbidden}` and `continue`s without
@@ -90,9 +122,20 @@ with zero message-specific plumbing in any of those subsystems.
   doc_type of their own), so `ops_target_message` cannot and does not cover this case — it is a
   second, independent chokepoint, not redundant with the ingress guard.
 - **Content model is opaque and NOT ts-rs-exported** (`MessageKind`, `Segment`, `MessageSystem`)
-  — only `ActorOwnerRef` (on the wire frame) is. The client mirrors the body shape independently
-  in Zod later (M11d); a Rust-side shape change here needs a corresponding, manually-kept-in-sync
-  client mirror, not a regenerated binding.
+  — only `ActorOwnerRef` and `Audience` (both on the wire `SendMessage` frame) are. The client
+  mirrors the body shape independently in Zod later (M11d); a Rust-side shape change here needs a
+  corresponding, manually-kept-in-sync client mirror, not a regenerated binding. `PermissionSet`
+  itself IS a generic, already-mirrored envelope type — its new `gm_role` field is picked up by
+  the existing drift guard, not a message-specific mirror.
+- **A whisper hides from the GM by default; only `recipients` membership grants a GM access.**
+  There is no automatic GM see-all for `Whisper`/`GmOnly` messages — a GM must be individually
+  listed in `recipients` (for `Whisper`) or simply hold `WorldRole::Gm` at read time (for
+  `GmOnly`, via `gm_role`); a GM not covered by either sees nothing, not even that the doc exists.
+  This is a deliberate product decision (§0 of the design doc), not an oversight.
+- **Recipient validation happens BEFORE document construction, fail-closed on the whole send.**
+  `handle_send_message` checks every `Whisper` recipient against current world membership; a
+  single bad uuid rejects the entire message (no partial send, nothing persisted) — do not move
+  this check after `build_message_doc` or make it per-recipient-tolerant.
 - **Messages ride the existing Event/redaction/search machinery with zero message-specific
   code in those subsystems** — a message's visibility, per-recipient redaction, sequencing, and
   FTS5 search hit are governed entirely by the generic `Document`/`PermissionSet` rules
@@ -123,8 +166,14 @@ with zero message-specific plumbing in any of those subsystems.
 
 - Design doc: `docs/superpowers/specs/2026-07-08-m11c-chat-core-design.md` (full M11c scope:
   c-1 message core, c-2 whisper allowlist, c-3 sanitizer/commands/edit, c-4 link previews).
+- c-2 design doc: `docs/superpowers/specs/2026-07-08-m11c-2-whisper-allowlist-design.md` — the
+  `Audience`→`PermissionSet` mapping table, the GM-only-channel scope addition, and the full
+  testing strategy (per-egress-path proof, promotion/demotion dynamism, malformed-recipient
+  fail-closed case).
 - `shadowcat-codebase-documents-permissions` — the `Document`/`PermissionSet`/redaction/search
-  machinery a message rides unmodified.
+  machinery a message rides, including the `gm_role` field this checkpoint added (owned there,
+  load-bearing here — see that skill's Hard Invariants for what `Some(role)` does to
+  `resolve_access`'s GM branch).
 - `shadowcat-codebase-realtime-sync` — `Room::publish`, WS `Intent`/`SendMessage` dispatch,
   broadcast/resync, and the HTTP `write_ops` mirror guard.
 - graphify: `graphify explain "chat"` / `graphify query "how does SendMessage reach a stored
