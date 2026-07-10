@@ -50,6 +50,13 @@ two-reviewer pair), per the project CLAUDE.md multi-agent pipeline directive. `s
 `effort: medium`; both reviewers run `effort: high`; escalate to the `-opus` twins on BLOCKED or
 shallow findings.
 
+**Dispatcher choice:** at the subagent-driven-development tier-switch checkpoint, the human
+explicitly directed "You are the dispatcher now" — the loop runs **mainline in this session**
+(not delegated to `sdd-dispatcher`), consistent with `~/.claude/docs/sdd-model-effort-tiers.md`'s
+dispatcher tier being a coordination role rather than the implementer/reviewer tiers, which stay on
+the named `shadowcat-*` agents above regardless of the dispatcher's own model. Session model/effort
+were set to Sonnet 5 / medium for this dispatch role at the same time.
+
 ## Buddy-check directives
 
 This plan carries high-risk signals: an **XSS sanitizer** (Task 3/4) and an **authorization seam
