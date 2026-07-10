@@ -417,6 +417,17 @@ pub async fn handle_edit_message(
         return Err(SendMessageError::Forbidden);
     }
 
+    // A tombstoned message is, from the edit path's perspective, gone: reuse
+    // NotFound rather than adding a new variant. Without this, an owner/GM
+    // could resurrect `content` (re-indexed into FTS) on a doc whose
+    // `deleted_at` marker stays set — simultaneously "deleted" and
+    // content-bearing, defeating the soft-delete's content-clearing intent.
+    let mut sys: MessageSystem = serde_json::from_value(cur.system.clone())
+        .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
+    if sys.deleted_at.is_some() {
+        return Err(SendMessageError::NotFound);
+    }
+
     let parsed = parse_command(&content);
     // Audience is frozen on edit — a /w in an edit is rejected, not applied.
     if parsed.whisper_to.is_some() {
@@ -431,8 +442,6 @@ pub async fn handle_edit_message(
 
     // Build the revised system: new content + kind, edited_at=now; preserve
     // channel/user_owner/actor_owner/audience/deleted_at from the stored doc.
-    let mut sys: MessageSystem = serde_json::from_value(cur.system.clone())
-        .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
     sys.content = segments;
     sys.kind = parsed.kind;
     sys.edited_at = Some(now);
@@ -459,13 +468,26 @@ pub async fn handle_edit_message(
 /// an `Operation::Update` on `/system` under `WriteOrigin::ServerMessageRevision`
 /// (not a hard `Operation::Delete`) — the doc stays in the sequenced log, so
 /// resync and per-recipient redaction both continue to apply to it unchanged.
+///
+/// Rate-limited like `handle_send_message`/`handle_edit_message`: the OCC
+/// pre-image is re-read fresh from the current stored doc on every call
+/// (always matches) and `deleted_at` is re-stamped with a fresh `now` each
+/// time, so without a flood budget a single owner/GM could repeatedly
+/// `DeleteMessage` the same message — each call consuming a real seq number,
+/// broadcasting to every world member, and re-writing the FTS index — an
+/// unbounded write/broadcast amplification from one cheap authenticated frame.
 pub async fn handle_delete_message(
     room: &Room,
     repo: &dyn Repository,
     ctx: &PermissionContext,
+    rate: &PingRateLimiter,
     message_id: Uuid,
     now: i64,
+    budget_per_min: usize,
 ) -> Result<Command, SendMessageError> {
+    if !rate.check(ctx.user_id, now, budget_per_min) {
+        return Err(SendMessageError::RateLimited);
+    }
     let cur = repo
         .get_document(message_id)
         .await

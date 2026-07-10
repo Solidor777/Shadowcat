@@ -428,8 +428,10 @@ async fn handle_socket(
                                 &room,
                                 repo.as_ref(),
                                 &ctx,
+                                &message_rate,
                                 message_id,
                                 now_millis(),
+                                MESSAGE_RATE_PER_MIN,
                             )
                             .await
                             {
