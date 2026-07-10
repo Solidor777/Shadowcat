@@ -207,7 +207,11 @@ with zero message-specific plumbing in any of those subsystems.
      its owner-or-GM check. This is proven correct for BOTH edit and delete, across all three
      `Audience` variants, for both the owner and a non-addressed GM. `all: false` (not `all:
      true`) is deliberate — it authorizes writing `/system` only, not `/permissions`/`/embedded`,
-     even for this trusted origin.
+     even for this trusted origin. **Caveat:** this scoped grant does NOT auto-satisfy an
+     additive `declared_caps_for_path` world/module requirement on a message `/system`
+     (sub-)path — no first-party module declares one today (inert), but a future one would
+     silently block a GM's already-vetted moderation edit/delete; re-review this chokepoint
+     before adding such a requirement.
 
 - **`SendMessage` is the SOLE message-authoring path.** A stored `message` doc can only be
   produced by `chat::handle_send_message` → `chat::build_message_doc` → `Room::publish`. No other
