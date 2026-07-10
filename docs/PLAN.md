@@ -854,11 +854,33 @@ Decomposed **M11a–d**:
   > `{READ, WRITE_FIELDS}` access rather than re-deriving GM authority from the message's own
   > `gm_role`/`users` fields — re-derivation would incorrectly deny a non-addressed GM moderating a
   > `Whisper`/`GmOnly` message, since GM moderation authority is deliberately audience-independent.
-  > A combined buddy-check across the coupled seam (Tasks 5+7+8+9) caught and fixed two real authz
-  > bugs (a resource-amplification ordering bug in `/w` recipient-cap checking, and the initial
-  > `all: true` grant narrowed to `{READ, WRITE_FIELDS}`) before merge. `shadowcat-codebase-chat`
-  > skill updated + reviewed by `shadowcat-spec-reviewer` per the reviewed skill-update gate.
+  > **Three mandatory buddy-checks, each finding and fixing real bugs a standard single-pass
+  > review missed:** (1) the sanitizer core (Tasks 3-4) — the XSS-payload corpus proved only
+  > tag-*removal*, never proved ammonia's attribute/scheme filtering on a tag that actually
+  > survives, plus `ammonia_for` never denied protocol-relative URLs, letting a tracking pixel
+  > (`<img src="//evil.example/pixel.gif">`) bypass the scheme allowlist entirely against
+  > whispered/GM-only messages — both closed with `url_relative(Deny)` + new surviving-tag tests;
+  > (2) the coupled authz seam (Tasks 5+7+8+9, reviewed "as a unit" per the seam's own coupling) —
+  > `DeleteMessage` shipped with no rate-limit (unlike send/edit, an unbounded write/broadcast/FTS
+  > amplification vector), an edit could resurrect a soft-deleted message's content while
+  > `deleted_at` stayed set, and the exemption's initial `all: true` grant was narrowed to
+  > `{READ, WRITE_FIELDS}` (denying `/permissions`/`/embedded` even for the trusted origin) — all
+  > three fixed and re-verified; (3) the reviewed skill-update gate independently confirmed the
+  > final skill state (not an earlier pre-fix mental model) against the real merged code. A
+  > separate real bug (not buddy-check-caught, found by a task-scoped code reviewer and fixed
+  > within Task 6) was a resource-amplification ordering bug in `/w` recipient-cap checking
+  > (usernames were resolved via sequential DB round-trips BEFORE the recipient cap was checked).
+  > A final whole-branch review additionally caught stale pre-c-1-only doc comments in
+  > `chat/mod.rs` describing the old three-chokepoint invariant, corrected to the current
+  > four-chokepoint state. `shadowcat-codebase-chat` skill updated + reviewed by
+  > `shadowcat-spec-reviewer` per the reviewed skill-update gate.
   > Design: [`superpowers/specs/2026-07-09-m11c-3-sanitizer-commands-edit-design.md`](superpowers/specs/2026-07-09-m11c-3-sanitizer-commands-edit-design.md).
+  > **M11c-1/c-2/c-3 are DONE**, merged to `main`. **M11c-4 (link-preview fetcher, per the parent
+  > chat-core design's §3) has NOT been implemented.** Note: it overlaps with M11d's own listed
+  > scope below ("SSRF-guarded server-side link previews") — whether it ships as a standalone c-4
+  > checkpoint or folds into M11d's brainstorm is an open scoping question, not yet decided.
+  > **M11d (default display modules) is next**, and should resolve that question at its own
+  > brainstorm before implementation.
   Design: [`superpowers/specs/2026-07-08-m11c-chat-core-design.md`](superpowers/specs/2026-07-08-m11c-chat-core-design.md).
 - **M11d — Default display modules:** independently-replaceable composer + message-card contribution modules; text enrichment (Markdown/HTML/images/links/emails, GM-gated, no embedded CSS); emotes; roll integration; internal doc links; SSRF-guarded server-side link previews.
 
