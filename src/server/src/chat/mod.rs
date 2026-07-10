@@ -1,15 +1,21 @@
 //! Chat domain: the server-authoritative message model and ingest.
 //!
 //! Messages are ordinary sequenced `Document`s with an opaque `system` body
-//! (this module's `MessageSystem`), authored ONLY by the server from a
-//! `SendMessage` intent — never built by a client. INVARIANT: a `message`
-//! doc_type reaches `apply_intent` only via `handle_send_message`. Two
-//! chokepoints jointly enforce this: the ingress guard (`ops_target_message`)
-//! rejects any client-authored `message` Create/Delete op at the WS/HTTP
-//! boundary; `apply_intent`'s `Update` branch separately rejects every
-//! `Update` targeting a stored `message` doc (Updates carry no `doc_type`, so
-//! they cannot be classified by `ops_target_message` and must be blocked
-//! against the authoritative stored document instead).
+//! (this module's `MessageSystem`), authored and revised ONLY by the server —
+//! never built or mutated by a client directly. A `message` doc_type reaches
+//! `apply_intent` only via `handle_send_message` (Create), `handle_edit_message`,
+//! or `handle_delete_message` (both Update, the latter a soft tombstone). Four
+//! chokepoints jointly enforce this: the create-gate baseline-message exemption
+//! (`sqlite.rs`, ties a Create to its authenticated author); the ingress guard
+//! (`ops_target_message`) rejects any client-authored `message` Create/Delete op
+//! at the WS/HTTP boundary; `apply_intent`'s `Update` branch blanket-rejects
+//! every client (`WriteOrigin::Client`) Update targeting a stored `message` doc
+//! (Updates carry no `doc_type`, so they cannot be classified by
+//! `ops_target_message` and must be blocked against the authoritative stored
+//! document instead), exempting ONLY `WriteOrigin::ServerMessageRevision` — a
+//! marker no wire frame can set, produced solely by `handle_edit_message`/
+//! `handle_delete_message` after their own owner-or-GM check — and granting it a
+//! scoped `Access` (`READ`+`WRITE_FIELDS` only, never `/permissions`/`/embedded`).
 
 use std::collections::BTreeMap;
 
@@ -41,10 +47,13 @@ pub const MESSAGE_DOC_TYPE: &str = "message";
 /// message ingest server-authoritative.
 ///
 /// `Operation::Update` carries no `doc_type` (just `doc_id` + field changes),
-/// so it cannot be classified here; every `Update` targeting a stored
-/// `message` doc is instead rejected in `apply_intent`'s `Update` branch
-/// (classified there against the authoritative stored `doc_type`), since c-1
-/// has no legitimate message-edit path.
+/// so it cannot be classified here; every `WriteOrigin::Client` `Update`
+/// targeting a stored `message` doc is instead rejected in `apply_intent`'s
+/// `Update` branch (classified there against the authoritative stored
+/// `doc_type`). That branch exempts ONLY `WriteOrigin::ServerMessageRevision`
+/// — the legitimate message-edit/-delete path introduced in c-3
+/// (`handle_edit_message`/`handle_delete_message`), unreachable from any
+/// client transport.
 pub fn ops_target_message(ops: &[Operation]) -> bool {
     ops.iter().any(|op| match op {
         Operation::Create { doc } | Operation::Delete { doc } => doc.doc_type == MESSAGE_DOC_TYPE,
