@@ -72,6 +72,14 @@ fn ammonia_for(policy: &ChatContentPolicy) -> ammonia::Builder<'static> {
     for tag in b.clone_tags() {
         b.rm_tag_attributes(tag, std::iter::once("style"));
     }
+    // ammonia's default `UrlRelative::PassThrough` lets a schemeless,
+    // protocol-relative URL (`//evil.example/pixel.gif`) through unfiltered
+    // -- `url_schemes` below never sees it (there is no scheme to check).
+    // Against Shadowcat's whispered/GM-only messages this is a live privacy
+    // leak: a smuggled tracking pixel fires for every restricted-audience
+    // recipient. Deny relative URLs outright; only the http/https(/mailto)
+    // absolute schemes below are ever permitted.
+    b.url_relative(ammonia::UrlRelative::Deny);
     if !policy.images {
         b.rm_tags(std::iter::once("img"));
     }
@@ -106,6 +114,22 @@ mod tests {
     fn html_on() -> ChatContentPolicy {
         ChatContentPolicy {
             html: true,
+            ..off()
+        }
+    }
+
+    fn hyperlinks_on() -> ChatContentPolicy {
+        ChatContentPolicy {
+            html: true,
+            hyperlinks: true,
+            ..off()
+        }
+    }
+
+    fn images_on() -> ChatContentPolicy {
+        ChatContentPolicy {
+            html: true,
+            images: true,
             ..off()
         }
     }
@@ -191,6 +215,15 @@ mod tests {
         );
     }
 
+    /// NOT a general-purpose HTML liveness parser. Sound only when `html` is
+    /// already ammonia-cleaned (or fully HTML-escaped) output, where every
+    /// surviving raw `<`/`>` genuinely delimits a real tag boundary; a
+    /// pre-sanitization string could contain a literal `&gt;` *inside* a
+    /// quoted attribute value and cause a false "not live" verdict. Use
+    /// direct substring/exact-output assertions instead when a needle could
+    /// legitimately appear inside quoted attribute text (see the
+    /// `surviving_*`/`protocol_relative_url_is_denied` tests above).
+    ///
     /// True if `needle` occurs inside a LIVE (unescaped) HTML tag in `html` —
     /// i.e. after the nearest preceding raw `<` that has no `>` between it
     /// and `needle`'s position. An occurrence that is only ever raw text
@@ -213,6 +246,81 @@ mod tests {
             search_from = pos + needle.len().max(1);
         }
         false
+    }
+
+    /// Proves attribute-stripping / URL-scheme filtering, not just tag
+    /// removal: `hyperlinks: true` lets `<a>` SURVIVE ammonia's tag
+    /// whitelist, so this actually exercises the `javascript:` scheme
+    /// rejection and `onclick` attribute stripping rather than relying on
+    /// `rm_tags("a")` to remove the whole carrier tag.
+    #[test]
+    fn surviving_anchor_strips_js_scheme_and_event_handler() {
+        let out = render(&sanitize(
+            r#"<a href="javascript:alert(1)" onclick="evil()">x</a>"#,
+            &hyperlinks_on(),
+        ));
+        assert!(out.contains("x"), "anchor text content lost: {out}");
+        assert!(out.contains("<a"), "anchor tag did not survive: {out}");
+        assert!(!out.contains("javascript:"), "js url survived: {out}");
+        assert!(!out.contains("onclick"), "event handler survived: {out}");
+    }
+
+    /// Same proof for `<img>`: `images: true` lets the tag survive, so the
+    /// `javascript:`/`data:text/html` scheme rejection is what must do the
+    /// work, not tag removal.
+    #[test]
+    fn surviving_img_strips_dangerous_schemes() {
+        for src in [
+            "javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+        ] {
+            let out = render(&sanitize(&format!(r#"<img src="{src}">"#), &images_on()));
+            assert!(!out.contains("javascript:"), "js url survived: {out}");
+            assert!(
+                !out.contains("data:text/html"),
+                "data:text/html url survived: {out}"
+            );
+        }
+    }
+
+    /// Same proof for a generic surviving tag's event-handler attribute
+    /// (not URL-scheme-specific): `<b>` is in ammonia's default whitelist
+    /// under `html_on()`, so it survives; `onclick` must still be stripped.
+    #[test]
+    fn surviving_bold_tag_strips_event_handler() {
+        let out = render(&sanitize(r#"<b onclick="alert(1)">bold</b>"#, &html_on()));
+        assert!(out.contains("bold"), "bold text content lost: {out}");
+        assert!(!out.contains("onclick"), "event handler survived: {out}");
+    }
+
+    /// Protocol-relative URLs (`//host/path`) have no scheme at all, so
+    /// ammonia's `url_schemes` allowlist never sees them — they are governed
+    /// solely by `url_relative`, which defaults to `PassThrough` (lets them
+    /// through unchanged). `ammonia_for` must set `UrlRelative::Deny` or a
+    /// smuggled `<img src="//evil.example/pixel.gif">` in a whispered/
+    /// GM-only message becomes a tracking pixel that fires for every
+    /// recipient. Assert the relative URL does not survive (either the
+    /// attribute or the whole tag is dropped — assert what ammonia actually
+    /// does, not an assumption).
+    #[test]
+    fn protocol_relative_url_is_denied() {
+        let out = render(&sanitize(
+            r#"<img src="//evil.example/pixel.gif">"#,
+            &images_on(),
+        ));
+        assert!(
+            !out.contains("//evil.example"),
+            "protocol-relative url survived: {out}"
+        );
+
+        let out = render(&sanitize(
+            r#"<a href="//evil.example">x</a>"#,
+            &hyperlinks_on(),
+        ));
+        assert!(
+            !out.contains("//evil.example"),
+            "protocol-relative url survived: {out}"
+        );
     }
 
     /// Known XSS vectors, each asserted neutral under BOTH `md()` and
