@@ -102,6 +102,10 @@ pub enum Segment {
     /// Literal text. Rendered as a DOM text node by the client (never innerHTML),
     /// so any markup it contains is inert.
     Text { text: String },
+    /// A run of ammonia-sanitized HTML (safe by construction; the client renders
+    /// it via innerHTML). Produced only by `sanitize` (chat/sanitize.rs).
+    Html { sanitized_html: String },
+    // Reserved, produced later: RollEmbed (M11d), PreviewCard (c-4), DocLink (M11d).
 }
 
 /// The c-1 producer: wrap raw input as a single literal-text segment. Rich
@@ -125,6 +129,15 @@ pub struct MessageSystem {
     #[serde(default)]
     pub audience: Audience,
     pub content: Vec<Segment>,
+    /// Set when the message has been edited (c-3's edit path). Absent (not
+    /// `null`) on the wire for an unedited message, so a stored c-1 message
+    /// with no marker still round-trips unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<i64>,
+    /// Set when the message has been soft-deleted (c-3's delete path). Absent
+    /// (not `null`) on the wire for a live message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<i64>,
 }
 
 /// Server-construct a message `Document`. INVARIANT: only the server calls
@@ -142,12 +155,14 @@ pub struct MessageSystem {
 /// In every case `owner` is inserted into `users` LAST, so a `Whisper` that
 /// redundantly names the sender as their own recipient can never downgrade
 /// them from `Owner` to `Observer` via map-insertion order.
+#[allow(clippy::too_many_arguments)]
 pub fn build_message_doc(
     world_id: Uuid,
     user: Uuid,
     channel: String,
     actor_owner: Option<ActorOwnerRef>,
     audience: Audience,
+    kind: MessageKind,
     content: Vec<Segment>,
     now: i64,
 ) -> Document {
@@ -169,9 +184,11 @@ pub fn build_message_doc(
         channel,
         user_owner: user,
         actor_owner,
-        kind: MessageKind::Normal,
+        kind,
         audience,
         content,
+        edited_at: None,
+        deleted_at: None,
     };
     Document {
         id: Uuid::new_v4(),
@@ -282,6 +299,7 @@ pub async fn handle_send_message(
         channel,
         actor_owner,
         audience,
+        MessageKind::Normal,
         plain_text_content(&content),
         now,
     );
@@ -296,6 +314,58 @@ mod tests {
     use crate::data::command::Operation;
     use crate::data::document::{DocRole, Scope};
     use uuid::Uuid;
+
+    #[test]
+    fn html_segment_tagged_roundtrip() {
+        let s = Segment::Html {
+            sanitized_html: "<em>hi</em>".into(),
+        };
+        let j = serde_json::to_value(&s).unwrap();
+        assert_eq!(j["kind"], "html");
+        assert_eq!(j["sanitized_html"], "<em>hi</em>");
+        assert_eq!(s, serde_json::from_value(j).unwrap());
+    }
+
+    #[test]
+    fn message_system_omits_absent_edit_delete_markers() {
+        let sys = MessageSystem {
+            channel: "all".into(),
+            user_owner: Uuid::from_u128(1),
+            actor_owner: None,
+            kind: MessageKind::Normal,
+            audience: Audience::Public,
+            content: plain_text_content("hi"),
+            edited_at: None,
+            deleted_at: None,
+        };
+        let j = serde_json::to_value(&sys).unwrap();
+        assert!(
+            j.get("edited_at").is_none(),
+            "None edited_at must not serialize"
+        );
+        assert!(
+            j.get("deleted_at").is_none(),
+            "None deleted_at must not serialize"
+        );
+        // Round-trips (a stored c-1 message with no markers deserializes unchanged).
+        assert_eq!(sys, serde_json::from_value(j).unwrap());
+    }
+
+    #[test]
+    fn build_message_doc_threads_kind() {
+        let doc = build_message_doc(
+            Uuid::from_u128(10),
+            Uuid::from_u128(20),
+            "all".into(),
+            None,
+            Audience::Public,
+            MessageKind::Emote,
+            plain_text_content("waves"),
+            1,
+        );
+        let sys: MessageSystem = serde_json::from_value(doc.system).unwrap();
+        assert_eq!(sys.kind, MessageKind::Emote);
+    }
 
     #[test]
     fn actor_owner_ref_tagged_roundtrip() {
@@ -358,6 +428,7 @@ mod tests {
             "all".into(),
             None,
             Audience::Public,
+            MessageKind::Normal,
             plain_text_content("hi"),
             1234,
         );
@@ -386,6 +457,7 @@ mod tests {
             "all".into(),
             None,
             Audience::Public,
+            MessageKind::Normal,
             vec![],
             0,
         );
@@ -400,6 +472,7 @@ mod tests {
             "all".into(),
             None,
             Audience::Public,
+            MessageKind::Normal,
             vec![],
             0,
         );
@@ -418,6 +491,7 @@ mod tests {
             "all".into(),
             None,
             Audience::Public,
+            MessageKind::Normal,
             vec![],
             0,
         );
@@ -428,6 +502,7 @@ mod tests {
             "all".into(),
             None,
             Audience::Public,
+            MessageKind::Normal,
             vec![],
             0,
         );
@@ -461,6 +536,7 @@ mod tests {
             "all".into(),
             None,
             Audience::Public,
+            MessageKind::Normal,
             plain_text_content("hi"),
             0,
         );
@@ -481,6 +557,7 @@ mod tests {
             Audience::Whisper {
                 recipients: vec![recipient],
             },
+            MessageKind::Normal,
             plain_text_content("psst"),
             0,
         );
@@ -504,6 +581,7 @@ mod tests {
             Audience::Whisper {
                 recipients: vec![owner],
             },
+            MessageKind::Normal,
             plain_text_content("note to self"),
             0,
         );
@@ -523,6 +601,7 @@ mod tests {
             "gm".into(),
             None,
             Audience::GmOnly,
+            MessageKind::Normal,
             plain_text_content("only the GM sees this"),
             0,
         );
@@ -945,6 +1024,7 @@ mod tests {
             "all".into(),
             None,
             Audience::Public,
+            MessageKind::Normal,
             plain_text_content("banshee wail"),
             1,
         );

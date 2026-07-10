@@ -2817,6 +2817,7 @@ mod tests {
             "all".into(),
             None,
             crate::chat::Audience::Public,
+            crate::chat::MessageKind::Normal,
             crate::chat::plain_text_content("hi"),
             1,
         );
@@ -2831,6 +2832,7 @@ mod tests {
             "all".into(),
             None,
             crate::chat::Audience::Public,
+            crate::chat::MessageKind::Normal,
             vec![],
             2,
         );
@@ -2870,6 +2872,7 @@ mod tests {
             "all".into(),
             None,
             crate::chat::Audience::Public,
+            crate::chat::MessageKind::Normal,
             vec![],
             1,
         );
@@ -2913,6 +2916,7 @@ mod tests {
             "all".into(),
             None,
             crate::chat::Audience::Public,
+            crate::chat::MessageKind::Normal,
             crate::chat::plain_text_content("hi"),
             1,
         );
@@ -2954,6 +2958,7 @@ mod tests {
             "all".into(),
             None,
             crate::chat::Audience::Public,
+            crate::chat::MessageKind::Normal,
             crate::chat::plain_text_content("hi"),
             1,
         );
