@@ -1054,22 +1054,37 @@ impl Repository for SqliteRepository {
                     // resolves them to `DocRole::Observer`, READ-only) — not
                     // the server's own moderation capability. The handler
                     // that produced this `ServerMessageRevision` write
-                    // (`handle_edit_message`/a future delete handler) already
+                    // (`handle_edit_message`/`handle_delete_message`) already
                     // independently vetted owner-or-GM authority before ever
                     // reaching here, so re-deriving capability from the
                     // document's own permission fields for THIS specific
                     // origin+doc_type pair would incorrectly re-restrict a
                     // GM's moderation edit/delete of a restricted-audience
-                    // message. Grant the same unconditional short-circuit
-                    // `resolve_access` uses for the GM/admin all-access case,
-                    // scoped EXACTLY to this pairing; every other doc_type or
-                    // origin still resolves access normally below.
+                    // message. PRESUPPOSITION: this branch trusts that the
+                    // calling handler has ALREADY performed an owner-or-GM
+                    // check before setting `WriteOrigin::ServerMessageRevision`
+                    // — the storage layer does not re-derive that decision,
+                    // it only authorizes the write's SHAPE. Any future
+                    // `ServerMessageRevision` construction site must be
+                    // reviewed against this invariant.
+                    //
+                    // Grant only READ + WRITE_FIELDS (never `all: true`) —
+                    // both existing handlers construct a single `/system`
+                    // FieldChange and never touch `/permissions` or
+                    // `/embedded`, so the exemption is scoped to exactly what
+                    // it is used for. This still authorizes the GM-not-
+                    // addressed moderation edit/delete of `/system` while
+                    // denying `/permissions`/`/embedded` writes by
+                    // construction, closing the gap even for a hypothetical
+                    // future `ServerMessageRevision` caller with a broader op.
                     let access = if cur.doc_type == crate::chat::MESSAGE_DOC_TYPE
                         && origin == WriteOrigin::ServerMessageRevision
                     {
                         Access {
-                            caps: std::collections::BTreeSet::new(),
-                            all: true,
+                            caps: [cap::READ.to_string(), cap::WRITE_FIELDS.to_string()]
+                                .into_iter()
+                                .collect(),
+                            all: false,
                             see_gm_only: true,
                             is_owner: true,
                         }
