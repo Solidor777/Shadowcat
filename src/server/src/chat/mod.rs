@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+mod sanitize;
 mod settings;
+pub use sanitize::sanitize;
 pub use settings::{resolve_content_policy, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE};
 
 use crate::data::command::{Command, Operation};
