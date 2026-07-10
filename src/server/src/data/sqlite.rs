@@ -1077,6 +1077,15 @@ impl Repository for SqliteRepository {
                     // denying `/permissions`/`/embedded` writes by
                     // construction, closing the gap even for a hypothetical
                     // future `ServerMessageRevision` caller with a broader op.
+                    // CAVEAT: unlike the prior unconditional `all: true`, this
+                    // concrete cap set does NOT auto-satisfy an ADDITIVE
+                    // `declared_caps_for_path` world/module requirement on a
+                    // message `/system` (sub-)path (checked further below).
+                    // No first-party module declares one today, so this is
+                    // inert; if one is ever added for `doc_type: "message"`,
+                    // it would block a GM's already-vetted moderation write —
+                    // review this branch again before adding such a
+                    // requirement.
                     let access = if cur.doc_type == crate::chat::MESSAGE_DOC_TYPE
                         && origin == WriteOrigin::ServerMessageRevision
                     {
