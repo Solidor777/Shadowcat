@@ -97,9 +97,7 @@ message remains an ordinary `Document`.
 ```rust
 pub enum Segment {
     Text { text: String },                       // c-1: literal, rendered as a DOM text node
-    Html { sanitized_html: String },             // c-3: ammonia-guaranteed-safe inline formatting
-    Link { href: String, text: String },         // c-3: typed hyperlink (scheme-checked)
-    Image { src: String, alt: String },          // c-3: typed image (scheme + content-type checked)
+    Html { sanitized_html: String },             // c-3: ammonia-guaranteed-safe formatted run
     // reserved, produced later — declared as they land, not before:
     //   RollEmbed { .. }    (M11d — dice execution)
     //   PreviewCard { .. }  (c-4 — link previews)
@@ -107,23 +105,30 @@ pub enum Segment {
 }
 ```
 
-**Why sanitized-HTML runs rather than a fully structured mark/link AST:** the hard requirement is
-that typed embeds (`RollEmbed`, `PreviewCard`, `DocLink`, `Image`, `Link`) interleave with text and
-render specially — that forces a top-level typed segment list regardless. Within that list, inline
-formatting (bold/italic/code/inline links) is carried as `ammonia`-sanitized HTML strings rather
-than reconstructed into a bespoke AST. This trusts the sanitizer exactly once, at the boundary,
-instead of adding a second structure-reconstruction parse over already-sanitized HTML (more code,
-and more — not less — surface). Rendering `Html { sanitized_html }` via `innerHTML` is the
+**Why sanitized-HTML runs, and why links/images stay INSIDE them (plan-time refinement).** The
+brainstorm framing listed typed `Link`/`Image` segments for c-3. Deriving those, however, means
+DOM-walking `ammonia`'s sanitized HTML back into a typed AST — precisely the "re-parse sanitized
+HTML" this design's D3 principle rejects. The consistent resolution: **c-3's only new `Segment`
+variant is `Html`.** Hyperlinks (`<a>`), images (`<img>`), and autolinked emails (`mailto:`) remain
+*inside* the `ammonia`-sanitized `Html` run — their scheme and image content-type/extension
+constraints are enforced by `ammonia`'s URL-scheme allowlist and attribute filters, not by a
+post-sanitize re-parse. This trusts the sanitizer exactly once, at the boundary. No functional loss:
+rendering (lazy-load, click-to-expand, permission-gated doc-links) is M11d's concern, and the typed
+`Link`/`Image`/`DocLink`/`PreviewCard` variants are reserved for when a later checkpoint genuinely
+needs a representation that plain sanitized HTML *cannot* express (a dice widget, a fetched preview
+card, an internal doc reference). Rendering `Html { sanitized_html }` via `innerHTML` is the
 *intended* use of a sanitizer; the c-1 "never innerHTML" phrasing is about **untrusted** HTML, and
 `ammonia` output is trusted by construction.
 
-**Producer split (which segment a source yields):**
-- Markdown block/inline formatting (when the Markdown toggle is on) → `pulldown-cmark` → rendered to
-  HTML → `ammonia`-sanitized → `Html` runs; images/links it emits become typed `Image`/`Link`
-  segments (extracted so they render specially and get scheme/content-type checks).
-- Raw HTML the author typed (when the HTML toggle is on) → `ammonia`-sanitized → `Html` runs (with
-  the same `Image`/`Link` extraction).
-- Everything is `Text` when all toggles are off (fail-closed baseline == c-1 behavior).
+**Producer matrix (which segment a source yields), driven by the policy toggles:**
+- All toggles off → `vec![Text { text: raw }]` (fail-closed baseline, identical to c-1 behavior).
+- Markdown on → `pulldown-cmark` renders Markdown to an HTML string → `ammonia`-sanitized → one
+  `Html` run. When the HTML toggle is OFF, raw HTML the author embedded in their Markdown is escaped
+  (`pulldown-cmark`'s raw-HTML passthrough disabled) so only Markdown-generated tags survive.
+- HTML on (Markdown off) → the raw input is `ammonia`-sanitized directly → one `Html` run.
+- `images` / `hyperlinks` / `emails` toggles add `<img>` / `<a href=http(s)>` / `mailto:` to the
+  `ammonia` allowlist respectively; when a toggle is off, that element/scheme is stripped (tag
+  removed or unwrapped to its text). CSS is *always* stripped regardless of toggles.
 
 ## 3. `chat-settings` config Document (D2)
 
@@ -169,34 +174,40 @@ edit path, §5), producing a `ParsedCommand`:
 
 ```rust
 struct ParsedCommand {
-    kind: MessageKind,             // Normal | Emote | Roll  (never System — see below)
-    audience: Option<Audience>,    // Some(..) only when a /w command was present
-    body: String,                  // content with the command token stripped
+    kind: MessageKind,               // Normal | Emote | Roll  (never System — see below)
+    whisper_to: Option<Vec<String>>, // Some(raw @usernames) only when a /w command was present
+    body: String,                    // content with the command token + recipient list stripped
 }
 ```
+
+`parse_command` is **pure** (no repo, no async): it returns the raw `@username` strings, not
+resolved UUIDs. Username→UUID resolution and the `Audience::Whisper` construction happen in the
+async caller (`handle_send_message` / `handle_edit_message`), which has the `repo`. This keeps the
+parser trivially unit-testable and confines all roster I/O to one place.
 
 Grammar (leading-token only; a command must start the message):
 - `/me`, `/em`, `/emote` → `kind = Emote`; `body` = verbatim remainder (per-viewer name-prepend +
   italic reversal is render-time, M11d).
 - `/roll`, `/r`, and shorthand `/NdM` (e.g. `/1d6`) → `kind = Roll`; `body` = the **verbatim dice
   expression**, stored unparsed and unexecuted (M11d owns dice). c-3 does not depend on `dice/`.
-- `/w @user1 @user2 … message` → resolves each `@user` against the world roster by **username**
-  (the unique login identity — no ambiguity), producing `audience = Some(Audience::Whisper {
-  recipients })`; `body` = the message after the recipient list. `@`-prefixed tokens disambiguate
-  recipients from the body. Unknown username, or recipient count over `MAX_WHISPER_RECIPIENTS`, →
-  the whole `SendMessage`/`EditMessage` is rejected (fail-closed, symmetric with c-2's frame-path
-  recipient validation).
+- `/w @user1 @user2 … message` → `whisper_to = Some(["user1", "user2"])`, `body` = the message
+  after the recipient list. `@`-prefixed tokens disambiguate recipients from the body. The async
+  caller then resolves each `@username` against the world roster by **username** (the unique login
+  identity — no ambiguity) into `Audience::Whisper { recipients }`. Unknown username, or recipient
+  count over `MAX_WHISPER_RECIPIENTS`, → the whole `SendMessage`/`EditMessage` is rejected
+  (fail-closed, symmetric with c-2's frame-path recipient validation).
 - No leading command → `kind = Normal`, `audience = None`, `body` = the input unchanged.
 
 **`System` is never producible by a command** — it is reserved for server-authored notices, so no
 client input path can set it (D5: kind is server-authoritative, forgery-proof).
 
-**Audience reconciliation (D4):** `handle_send_message` computes the effective audience as
-`parsed.audience.unwrap_or(frame.audience)` — an explicit `/w` in content wins; otherwise the c-2
-typed frame field applies. **Both inputs funnel through the identical c-2 validation** (recipients
-are real world members, whisper cannot downgrade the sender's `Owner`, recipient cap) and the
-identical `build_message_doc` permission mapping. Nothing in c-2's frame path is walked back; `/w`
-is purely an additional front-door.
+**Audience reconciliation (D4):** `handle_send_message` computes the effective audience: if
+`parsed.whisper_to` is `Some`, it resolves those usernames into an `Audience::Whisper` and uses it;
+otherwise it uses the c-2 typed `audience` frame field. An explicit `/w` in content wins; otherwise
+the frame applies. **Both inputs funnel through the identical c-2 validation** (recipients are real
+world members, whisper cannot downgrade the sender's `Owner`, recipient cap) and the identical
+`build_message_doc` permission mapping. Nothing in c-2's frame path is walked back; `/w` is purely
+an additional front-door.
 
 Server-side username resolution is the one new roster capability: a
 `Repository::member_id_by_username(world, &str) -> Option<Uuid>` (or resolve against the existing
