@@ -237,6 +237,54 @@ async fn non_owner_non_gm_cannot_edit() {
     assert!(matches!(r, Err(SendMessageError::Forbidden)));
 }
 
+/// An already soft-deleted message cannot be edited — from the edit path's
+/// perspective a tombstone is gone, not a live message with resurrectable
+/// content. Without this check, an owner/GM could bring `content` back
+/// (re-indexed into FTS) while `deleted_at` stays set.
+#[tokio::test]
+async fn cannot_edit_already_deleted_message() {
+    let f = fixture().await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "all".into(),
+        "secret".into(),
+        None,
+        Audience::Public,
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    handle_delete_message(&f.room, &f.repo, &f.alice, &f.rate, id, 2, 60)
+        .await
+        .unwrap();
+    let r = handle_edit_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        id,
+        "resurrected".into(),
+        3,
+        60,
+    )
+    .await;
+    assert!(
+        matches!(r, Err(SendMessageError::NotFound)),
+        "editing a tombstoned message must return NotFound: {r:?}"
+    );
+    let doc = f.repo.get_document(id).await.unwrap().unwrap();
+    let sys: MessageSystem = serde_json::from_value(doc.system).unwrap();
+    assert!(
+        sys.content.is_empty(),
+        "content must stay empty — the rejected edit must not persist"
+    );
+}
+
 #[tokio::test]
 async fn gm_can_edit_players_message() {
     let f = fixture().await;
@@ -562,7 +610,7 @@ async fn owner_soft_delete_clears_content_and_keeps_doc() {
     .await
     .unwrap();
     let id = f.message_id(&sent).await;
-    handle_delete_message(&f.room, &f.repo, &f.alice, id, 2)
+    handle_delete_message(&f.room, &f.repo, &f.alice, &f.rate, id, 2, 60)
         .await
         .unwrap();
     let doc = f
@@ -595,9 +643,44 @@ async fn non_owner_non_gm_cannot_delete() {
     .unwrap();
     let id = f.message_id(&sent).await;
     assert!(matches!(
-        handle_delete_message(&f.room, &f.repo, &f.bob, id, 2).await,
+        handle_delete_message(&f.room, &f.repo, &f.bob, &f.rate, id, 2, 60).await,
         Err(SendMessageError::Forbidden)
     ));
+}
+
+/// Repeated `DeleteMessage` calls against the SAME message are rate-limited
+/// like `SendMessage`/`EditMessage` — without this, the OCC pre-image always
+/// matches the freshly stored doc and `deleted_at` is re-stamped each call,
+/// so an owner/GM could otherwise repeatedly delete one message for unbounded
+/// write/broadcast/FTS-reindex amplification from a single cheap frame.
+#[tokio::test]
+async fn repeated_delete_of_same_message_is_rate_limited() {
+    let f = fixture().await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "all".into(),
+        "secret".into(),
+        None,
+        Audience::Public,
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+
+    // A dedicated limiter with a tight budget so the SECOND delete trips it.
+    let tight_rate = PingRateLimiter::new();
+    let first = handle_delete_message(&f.room, &f.repo, &f.alice, &tight_rate, id, 2, 1).await;
+    assert!(first.is_ok(), "first delete within budget: {first:?}");
+    let second = handle_delete_message(&f.room, &f.repo, &f.alice, &tight_rate, id, 3, 1).await;
+    assert!(
+        matches!(second, Err(SendMessageError::RateLimited)),
+        "second delete of the same message must trip the flood budget: {second:?}"
+    );
 }
 
 /// Deleted doc stays IN the sequenced log — not just readable via
@@ -622,7 +705,7 @@ async fn soft_delete_leaves_doc_in_sequenced_log() {
     .await
     .unwrap();
     let id = f.message_id(&sent).await;
-    let cmd = handle_delete_message(&f.room, &f.repo, &f.alice, id, 2)
+    let cmd = handle_delete_message(&f.room, &f.repo, &f.alice, &f.rate, id, 2, 60)
         .await
         .unwrap();
     assert_eq!(cmd.seq, 2, "delete consumes the next sequence number");
@@ -655,7 +738,7 @@ async fn gm_can_delete_whisper_message_not_addressed_to_gm() {
     .await
     .unwrap();
     let id = f.message_id(&sent).await;
-    let r = handle_delete_message(&f.room, &f.repo, &f.gm, id, 2).await;
+    let r = handle_delete_message(&f.room, &f.repo, &f.gm, &f.rate, id, 2, 60).await;
     assert!(
         r.is_ok(),
         "GM moderation must override whisper audience gating: {r:?}"
@@ -687,7 +770,7 @@ async fn gm_can_delete_gm_only_message_not_individually_listed() {
     .await
     .unwrap();
     let id = f.message_id(&sent).await;
-    let r = handle_delete_message(&f.room, &f.repo, &f.gm, id, 2).await;
+    let r = handle_delete_message(&f.room, &f.repo, &f.gm, &f.rate, id, 2, 60).await;
     assert!(
         r.is_ok(),
         "GM moderation must override gm_only audience gating: {r:?}"
@@ -731,7 +814,7 @@ async fn non_recipient_still_cannot_see_deleted_whisper() {
     .await
     .unwrap();
     let id = f.message_id(&sent).await;
-    handle_delete_message(&f.room, &f.repo, &f.alice, id, 2)
+    handle_delete_message(&f.room, &f.repo, &f.alice, &f.rate, id, 2, 60)
         .await
         .unwrap();
     let doc = f.repo.get_document(id).await.unwrap().unwrap();
@@ -740,6 +823,108 @@ async fn non_recipient_still_cannot_see_deleted_whisper() {
         !access.has(cap::READ),
         "bob has no READ access on the tombstoned whisper doc"
     );
+}
+
+/// A non-recipient of a whisper must see NO trace of an EDITED (live,
+/// non-empty) message's content — distinct from
+/// `non_recipient_still_cannot_see_deleted_whisper`, whose tombstone has no
+/// content to leak in the first place, so it cannot prove real content is
+/// withheld. Drives `repo.search` (the same egress surface
+/// `posted_message_is_searchable_by_members` proves messages ride) as the
+/// non-recipient: neither the ORIGINAL nor the EDITED content text is
+/// findable — a bare `!access.has(READ)` check alone wouldn't rule out a
+/// snippet or index leak of the actual post-edit words.
+#[tokio::test]
+async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
+    let f = fixture().await;
+    let recipient = f
+        .repo
+        .create_user("carol", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    f.repo
+        .add_member(f.room.world_id, recipient, WorldRole::Player)
+        .await
+        .unwrap();
+    let non_recipient = f
+        .repo
+        .create_user("dave", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    f.repo
+        .add_member(f.room.world_id, non_recipient, WorldRole::Player)
+        .await
+        .unwrap();
+    let non_recipient_ctx = PermissionContext {
+        user_id: non_recipient,
+        world_role: WorldRole::Player,
+    };
+
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "whispers".into(),
+        "griffonroost".into(),
+        None,
+        Audience::Whisper {
+            recipients: vec![recipient],
+        },
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    let edited = handle_edit_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        id,
+        "phoenixnest".into(),
+        2,
+        60,
+    )
+    .await
+    .unwrap();
+    let sys = f.stored_message_system(&edited).await;
+    assert_eq!(
+        sys.content,
+        vec![Segment::Text {
+            text: "phoenixnest".into()
+        }],
+        "sanity: the edit actually replaced the content"
+    );
+
+    let recipient_ctx = PermissionContext {
+        user_id: recipient,
+        world_role: WorldRole::Player,
+    };
+    let recipient_hits = f
+        .repo
+        .search(&recipient_ctx, f.room.world_id, "phoenixnest", 10, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        recipient_hits.hits.len(),
+        1,
+        "sanity: the addressed recipient DOES find the edited content"
+    );
+
+    for query in ["phoenixnest", "griffonroost"] {
+        let page = f
+            .repo
+            .search(&non_recipient_ctx, f.room.world_id, query, 10, None)
+            .await
+            .unwrap();
+        assert!(
+            page.hits.is_empty(),
+            "non-recipient must find no trace of edited whisper content for query {query:?}: {:?}",
+            page.hits
+        );
+    }
 }
 
 /// Anchor proof (M11c-3, §6 coupled seam): a raw client `Intent` `Update`
@@ -778,6 +963,41 @@ async fn client_intent_update_to_message_still_forbidden() {
     let doc = f.repo.get_document(id).await.unwrap().unwrap();
     let sys: MessageSystem = serde_json::from_value(doc.system).unwrap();
     assert_eq!(sys.kind, MessageKind::Normal, "kind must be unaltered");
+}
+
+/// The `ServerMessageRevision` exemption grants only READ + WRITE_FIELDS, not
+/// `all: true` — a hypothetical future `ServerMessageRevision`-origin write
+/// targeting `/permissions` (neither `handle_edit_message` nor
+/// `handle_delete_message` ever construct such an op) must still be rejected,
+/// proving the narrowed `Access` doesn't grant `EDIT_PERMISSIONS` by accident.
+#[tokio::test]
+async fn server_message_revision_does_not_grant_permissions_write() {
+    let f = fixture().await;
+    let sent = f.send("hi").await.unwrap();
+    let id = f.message_id(&sent).await;
+    let doc = f.repo.get_document(id).await.unwrap().unwrap();
+    let op = Operation::Update {
+        doc_id: id,
+        changes: vec![FieldChange {
+            path: "/permissions/default".into(),
+            old: serde_json::to_value(doc.permissions.default).unwrap(),
+            new: serde_json::json!("owner"),
+        }],
+    };
+    let r = f
+        .repo
+        .apply_intent(
+            &f.alice,
+            f.room.world_id,
+            vec![op],
+            2,
+            WriteOrigin::ServerMessageRevision,
+        )
+        .await;
+    assert!(
+        matches!(r, Err(DataError::Forbidden)),
+        "ServerMessageRevision must not grant EDIT_PERMISSIONS: {r:?}"
+    );
 }
 
 /// Anchor proof (M11c-3, §6 coupled seam): the WS/HTTP ingress guard
