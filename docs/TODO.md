@@ -99,3 +99,12 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   resolve together at the same M11d untrusted-wire boundary that already needs to call
   `DieKind::validate()` on any wire-constructed `RollSpec`, alongside the `sides >= 1` /
   dice-count-cap guards above. (Surfaced by the M11b-3 Task 5 code review.)
+- TODO: `chat::resolve_content_policy` (M11c-3) silently takes the first of potentially many
+  `chat-settings` docs for a world (`docs.into_iter().next()`), with no construction-time
+  uniqueness guard on `CHAT_SETTINGS_DOC_TYPE`. If two ever exist, policy resolution becomes
+  order-dependent (SQL `ORDER BY id`, i.e. UUID string order, not creation order). Fail-closed
+  direction limits the blast radius (a stray doc can only *widen* enrichment, which still
+  requires GM-authored content to matter), so this is low-risk — but add a uniqueness
+  enforcement (or explicit tie-break ordering) when M11d's GM chat-settings UI gets a write
+  path, mirroring the `faction-registry`/`condition-registry` idempotent-seed pattern.
+  (Surfaced by the M11c-3 whole-branch review.)
