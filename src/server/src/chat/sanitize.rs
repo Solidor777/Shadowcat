@@ -82,6 +82,27 @@ fn ammonia_for(policy: &ChatContentPolicy) -> ammonia::Builder<'static> {
     b.url_relative(ammonia::UrlRelative::Deny);
     if !policy.images {
         b.rm_tags(std::iter::once("img"));
+    } else {
+        // Image `src` must resolve to an allowlisted raster extension
+        // (png/jpg/jpeg/webp/gif), checked on the path only (query string
+        // and fragment stripped first, so `a.exe?x=.png` cannot smuggle a
+        // fake extension past the check). `url_schemes`/`url_relative`
+        // above already constrain `src` to an absolute http(s) URL before
+        // this callback ever runs; only the raster-extension narrowing
+        // happens here. An unrecognized `src` has its ATTRIBUTE dropped
+        // (returns `None`), leaving a src-less `<img>` that ammonia then
+        // drops on its own for lacking a required attribute.
+        b.attribute_filter(|element, attribute, value| {
+            if element == "img" && attribute == "src" {
+                let lower = value.to_ascii_lowercase();
+                let path = lower.split(['?', '#']).next().unwrap_or("");
+                let ok = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+                    .iter()
+                    .any(|ext| path.ends_with(ext));
+                return if ok { Some(value.into()) } else { None };
+            }
+            Some(value.into())
+        });
     }
     if !policy.hyperlinks {
         b.rm_tags(std::iter::once("a"));
@@ -320,6 +341,125 @@ mod tests {
         assert!(
             !out.contains("//evil.example"),
             "protocol-relative url survived: {out}"
+        );
+    }
+
+    /// `images: false` (the `md()` default) must strip `<img>` entirely, not
+    /// just leave a src-less tag — proves the tag-level `rm_tags` gate (not
+    /// the content-type filter, which only runs when `images` is true).
+    #[test]
+    fn images_off_strips_img() {
+        let out = render(&sanitize("![a](https://x.example/a.png)", &md()));
+        assert!(!out.contains("<img"), "img survived with images off: {out}");
+    }
+
+    /// Image `src` must be an allowlisted raster extension: an `https` `.png`
+    /// survives with its `src` intact, but a non-image extension (`.exe`) is
+    /// rejected — either the whole `<img>` is dropped or `src` is stripped,
+    /// so this asserts on the URL's absence rather than a specific shape.
+    #[test]
+    fn images_on_allows_https_png_only() {
+        let p = ChatContentPolicy {
+            markdown: true,
+            images: true,
+            ..Default::default()
+        };
+        let ok = render(&sanitize("![a](https://x.example/a.png)", &p));
+        assert!(ok.contains("<img"), "png image dropped: {ok}");
+        assert!(
+            ok.contains("x.example/a.png"),
+            "png src not preserved: {ok}"
+        );
+        let bad = render(&sanitize("![a](https://x.example/a.exe)", &p));
+        assert!(
+            !bad.contains("x.example/a.exe"),
+            "non-image src survived: {bad}"
+        );
+    }
+
+    /// Case variation in the extension must not bypass the filter — the
+    /// filter lowercases before matching.
+    #[test]
+    fn images_on_extension_match_is_case_insensitive() {
+        let p = ChatContentPolicy {
+            markdown: true,
+            images: true,
+            ..Default::default()
+        };
+        let ok = render(&sanitize("![a](https://x.example/a.PNG)", &p));
+        assert!(ok.contains("<img"), "uppercase PNG dropped: {ok}");
+        assert!(
+            ok.contains("x.example/a.PNG"),
+            "uppercase PNG src not preserved: {ok}"
+        );
+    }
+
+    /// A query string or fragment appended after a disallowed extension must
+    /// not smuggle a fake image extension earlier in the URL past the
+    /// filter — the filter strips `?`/`#` suffixes before checking the
+    /// extension, so `a.exe?x=.png` is still rejected as `.exe`.
+    #[test]
+    fn images_on_rejects_extension_smuggled_via_query_string() {
+        let p = ChatContentPolicy {
+            markdown: true,
+            images: true,
+            ..Default::default()
+        };
+        let bad = render(&sanitize("![a](https://x.example/a.exe?x=.png)", &p));
+        assert!(
+            !bad.contains("x.example/a.exe"),
+            "smuggled extension bypassed filter: {bad}"
+        );
+    }
+
+    /// A URL with no extension at all (or no path) must be rejected, not
+    /// default-allowed.
+    #[test]
+    fn images_on_rejects_missing_extension() {
+        let p = ChatContentPolicy {
+            markdown: true,
+            images: true,
+            ..Default::default()
+        };
+        let bad = render(&sanitize("![a](https://x.example/a)", &p));
+        assert!(
+            !bad.contains("x.example/a\""),
+            "extensionless src survived: {bad}"
+        );
+    }
+
+    /// `hyperlinks: false` must unwrap the anchor to its inner text (content
+    /// preserved, tag gone) rather than leaving a dead `<a>` around.
+    #[test]
+    fn hyperlinks_off_unwraps_anchor_to_text() {
+        let out = render(&sanitize("[label](https://x.example)", &md()));
+        assert!(
+            !out.contains("<a "),
+            "anchor survived with hyperlinks off: {out}"
+        );
+        assert!(out.contains("label"), "anchor text lost: {out}");
+    }
+
+    /// `emails` toggle gates whether `mailto:` survives as a URL scheme,
+    /// independent of the `hyperlinks` toggle (already true in both cases).
+    #[test]
+    fn emails_toggle_gates_mailto() {
+        let off = ChatContentPolicy {
+            html: true,
+            hyperlinks: true,
+            ..Default::default()
+        };
+        assert!(
+            !render(&sanitize(r#"<a href="mailto:a@b.example">m</a>"#, &off)).contains("mailto:")
+        );
+        let on = ChatContentPolicy {
+            html: true,
+            hyperlinks: true,
+            emails: true,
+            ..Default::default()
+        };
+        assert!(
+            render(&sanitize(r#"<a href="mailto:a@b.example">m</a>"#, &on)).contains("mailto:")
         );
     }
 
