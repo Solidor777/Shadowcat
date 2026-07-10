@@ -84,14 +84,31 @@ fn ammonia_for(policy: &ChatContentPolicy) -> ammonia::Builder<'static> {
         b.rm_tags(std::iter::once("img"));
     } else {
         // Image `src` must resolve to an allowlisted raster extension
-        // (png/jpg/jpeg/webp/gif), checked on the path only (query string
-        // and fragment stripped first, so `a.exe?x=.png` cannot smuggle a
-        // fake extension past the check). `url_schemes`/`url_relative`
-        // above already constrain `src` to an absolute http(s) URL before
-        // this callback ever runs; only the raster-extension narrowing
-        // happens here. An unrecognized `src` has its ATTRIBUTE dropped
-        // (returns `None`), leaving a src-less `<img>` that ammonia then
-        // drops on its own for lacking a required attribute.
+        // (png/jpg/jpeg/webp/gif). The check runs over the whole
+        // query/fragment-stripped `src` string (`lower.split(['?', '#'])`
+        // only removes the trailing `?query`/`#fragment`; scheme and host
+        // are NOT stripped first), so `a.exe?x=.png` cannot smuggle a fake
+        // extension past the check, but a host that itself ends in an
+        // allowlisted extension (e.g. `https://evil.png`) would also pass —
+        // low real exploitability since image-extension strings are not
+        // delegated public TLDs, so such a host is not publicly resolvable
+        // in practice, but the filter is lexical over the string, not a
+        // parsed-URL path check. `url_schemes`/`url_relative` above already
+        // constrain `src` to an absolute http(s) URL before this callback
+        // ever runs; only the raster-extension narrowing happens here. An
+        // unrecognized `src` has its ATTRIBUTE dropped (returns `None`);
+        // ammonia has no required-attribute enforcement, so this leaves a
+        // retained `<img>` with no `src` — inert (no request ever fires),
+        // not removed.
+        //
+        // CAVEAT: this is a lexical filename-suffix heuristic, not real
+        // content-type verification. It does not close the tracking-pixel
+        // threat that motivates `url_relative(Deny)` above: a genuine
+        // external URL with an allowlisted extension (e.g.
+        // `https://evil.example/pixel.png`) still passes and beacons on
+        // every restricted-audience recipient's render. Full closure would
+        // need image-proxying or server-side content-type enforcement —
+        // out of scope for this filter; tracked as follow-up work.
         b.attribute_filter(|element, attribute, value| {
             if element == "img" && attribute == "src" {
                 let lower = value.to_ascii_lowercase();
