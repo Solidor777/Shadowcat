@@ -293,6 +293,16 @@ pub async fn handle_send_message(
     }
     // Parse leading command (server-authoritative kind; /w whisper targets).
     let parsed = parse_command(&content);
+    // Cap the RAW /w name list BEFORE resolving a single username — resolving
+    // first would run one sequential `member_id_by_username` DB round-trip per
+    // `@name` token ahead of the cap check, reproducing the exact unbounded
+    // per-recipient resource-amplification risk `MAX_WHISPER_RECIPIENTS` exists
+    // to prevent (see that constant's doc comment).
+    if let Some(names) = &parsed.whisper_to {
+        if names.len() > MAX_WHISPER_RECIPIENTS {
+            return Err(SendMessageError::TooLong);
+        }
+    }
     // Effective audience: an explicit /w wins; otherwise the c-2 frame field.
     let audience = if let Some(names) = parsed.whisper_to {
         let mut recipients = Vec::with_capacity(names.len());
@@ -313,7 +323,10 @@ pub async fn handle_send_message(
     // Re-validate the EFFECTIVE audience (whisper cap + membership) — the
     // single chokepoint covering BOTH the frame's `audience` field and a
     // content-level `/w` command, so neither front-door can bypass the cap
-    // or the fail-closed unknown-recipient rejection.
+    // or the fail-closed unknown-recipient rejection. The cap is ALSO checked
+    // above (pre-resolution) for the content-`/w` path specifically; this
+    // second check is what actually guards the frame's `audience` argument
+    // (which never runs the pre-check above) and stays authoritative for both.
     if let Audience::Whisper { recipients } = &audience {
         if recipients.len() > MAX_WHISPER_RECIPIENTS {
             return Err(SendMessageError::TooLong);
@@ -328,6 +341,13 @@ pub async fn handle_send_message(
                 return Err(SendMessageError::UnknownRecipient);
             }
         }
+    }
+    // A command that leaves no message body (e.g. `/w @alice` with no
+    // trailing text) must be rejected the same way empty raw content is —
+    // the top-level `content.trim().is_empty()` check above only guards the
+    // PRE-parse raw string, not the post-parse body.
+    if parsed.body.trim().is_empty() {
+        return Err(SendMessageError::Empty);
     }
     let policy = resolve_content_policy(repo, room.world_id).await;
     let content_segments = sanitize(&parsed.body, &policy);

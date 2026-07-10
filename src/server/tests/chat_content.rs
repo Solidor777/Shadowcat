@@ -234,3 +234,71 @@ async fn content_whisper_overrides_frame_audience() {
         "content-level /w must win over the frame's Public audience"
     );
 }
+
+/// An over-cap `/w @name...` list in the content is rejected as `TooLong`
+/// WITHOUT ever attempting to resolve a single username. None of the names
+/// here belong to any real member — if the cap were checked after (or
+/// during) username resolution, the first unresolvable name would trigger
+/// `UnknownRecipient` well before the cap could ever be reached, since the
+/// cap is only checked once the whole list has been walked. Getting
+/// `TooLong` instead proves the cap check runs first, bounding the number of
+/// `member_id_by_username` DB calls by construction.
+#[tokio::test]
+async fn content_whisper_over_cap_rejects_before_username_resolution() {
+    use shadowcat::chat::MAX_WHISPER_RECIPIENTS;
+
+    let f = Fixture::new().await;
+    let names: String = (0..(MAX_WHISPER_RECIPIENTS + 1))
+        .map(|i| format!("@no-such-user-{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let content = format!("/w {names} hi");
+    let r = f.send(&content).await;
+    assert!(matches!(r, Err(SendMessageError::TooLong)), "got {r:?}");
+    assert!(
+        f.repo
+            .events_since(f.room.world_id, 0)
+            .await
+            .unwrap()
+            .is_empty(),
+        "an over-cap whisper must persist nothing"
+    );
+}
+
+/// `/w @bob` with no trailing message text leaves `parsed.body` empty —
+/// this must be rejected the same way an empty raw `content` is, not
+/// silently persisted as a message with no content.
+#[tokio::test]
+async fn whisper_with_no_body_text_is_rejected_as_empty() {
+    let f = Fixture::new().await;
+    let r = f.send("/w @bob").await;
+    assert!(matches!(r, Err(SendMessageError::Empty)), "got {r:?}");
+    assert!(
+        f.repo
+            .events_since(f.room.world_id, 0)
+            .await
+            .unwrap()
+            .is_empty(),
+        "an empty-body whisper must persist nothing"
+    );
+}
+
+/// `/roll 2d6+3` driven through the full `handle_send_message` pipeline
+/// (not just the pure parser unit test in `commands.rs`) stores
+/// `MessageKind::Roll` with the dice expression verbatim as a literal
+/// `Segment::Text` — `Fixture::new()` seeds no `chat-settings` doc, so the
+/// default content policy (markdown/html both off) applies and the
+/// expression is never run through the markdown/HTML producer.
+#[tokio::test]
+async fn roll_command_produces_roll_kind_with_verbatim_expression() {
+    let f = Fixture::new().await;
+    let cmd = f.send("/roll 2d6+3").await.unwrap();
+    let sys = f.stored_message_system(&cmd).await;
+    assert_eq!(sys.kind, MessageKind::Roll);
+    assert_eq!(
+        sys.content,
+        vec![Segment::Text {
+            text: "2d6+3".into()
+        }]
+    );
+}
