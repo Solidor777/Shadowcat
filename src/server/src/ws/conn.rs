@@ -421,6 +421,21 @@ async fn handle_socket(
                                 tracing::debug!(world = %world_id, user = %user_id, ?e, "edit rejected");
                             }
                         }
+                        Ok(ClientMsg::DeleteMessage { message_id }) => {
+                            // Same confirm-by-broadcast-echo shape as SendMessage/EditMessage; a
+                            // rejection is logged only (no intent_id to correlate to).
+                            if let Err(e) = crate::chat::handle_delete_message(
+                                &room,
+                                repo.as_ref(),
+                                &ctx,
+                                message_id,
+                                now_millis(),
+                            )
+                            .await
+                            {
+                                tracing::debug!(world = %world_id, user = %user_id, ?e, "delete rejected");
+                            }
+                        }
                         Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius }) => {
                             // One-shot pathfinding: resolve GM status, fetch explored off the lock for
                             // non-GM Revealed, call SceneEcs::pathfind, reply to this connection only.

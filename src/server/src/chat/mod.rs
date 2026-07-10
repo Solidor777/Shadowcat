@@ -452,6 +452,54 @@ pub async fn handle_edit_message(
         .map_err(SendMessageError::Data)
 }
 
+/// Server-authoritative message soft-delete: owner-or-GM only, a pure
+/// tombstone — no command parsing or sanitization runs. Clears `content` and
+/// sets `deleted_at`; `channel`/`user_owner`/`actor_owner`/`audience`/`kind`/
+/// `edited_at` are left untouched. Like `handle_edit_message`, the write is
+/// an `Operation::Update` on `/system` under `WriteOrigin::ServerMessageRevision`
+/// (not a hard `Operation::Delete`) — the doc stays in the sequenced log, so
+/// resync and per-recipient redaction both continue to apply to it unchanged.
+pub async fn handle_delete_message(
+    room: &Room,
+    repo: &dyn Repository,
+    ctx: &PermissionContext,
+    message_id: Uuid,
+    now: i64,
+) -> Result<Command, SendMessageError> {
+    let cur = repo
+        .get_document(message_id)
+        .await
+        .map_err(SendMessageError::Data)?
+        .ok_or(SendMessageError::NotFound)?;
+    if cur.doc_type != MESSAGE_DOC_TYPE {
+        return Err(SendMessageError::NotFound);
+    }
+    // Authorize: message owner OR a GM (same rule as edit).
+    let is_gm = ctx.world_role == WorldRole::Gm;
+    if cur.owner != Some(ctx.user_id) && !is_gm {
+        return Err(SendMessageError::Forbidden);
+    }
+
+    let mut sys: MessageSystem = serde_json::from_value(cur.system.clone())
+        .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
+    sys.content = Vec::new();
+    sys.deleted_at = Some(now);
+    let new_system = serde_json::to_value(&sys)
+        .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
+
+    let op = Operation::Update {
+        doc_id: message_id,
+        changes: vec![FieldChange {
+            path: "/system".into(),
+            old: cur.system,
+            new: new_system,
+        }],
+    };
+    room.publish(repo, ctx, vec![op], now, WriteOrigin::ServerMessageRevision)
+        .await
+        .map_err(SendMessageError::Data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

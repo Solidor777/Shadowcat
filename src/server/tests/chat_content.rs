@@ -11,8 +11,8 @@
 
 use shadowcat::auth::role::ServerRole;
 use shadowcat::chat::{
-    handle_edit_message, handle_send_message, Audience, ChatContentPolicy, MessageKind,
-    MessageSystem, Segment, SendMessageError, CHAT_SETTINGS_DOC_TYPE,
+    handle_delete_message, handle_edit_message, handle_send_message, Audience, ChatContentPolicy,
+    MessageKind, MessageSystem, Segment, SendMessageError, CHAT_SETTINGS_DOC_TYPE,
 };
 use shadowcat::data::command::{Command, Operation, WriteOrigin};
 use shadowcat::data::document::{DocRole, Document, PermissionSet, Scope, WorldRole};
@@ -539,5 +539,203 @@ async fn roll_command_produces_roll_kind_with_verbatim_expression() {
         vec![Segment::Text {
             text: "2d6+3".into()
         }]
+    );
+}
+
+#[tokio::test]
+async fn owner_soft_delete_clears_content_and_keeps_doc() {
+    let f = fixture().await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "all".into(),
+        "secret".into(),
+        None,
+        Audience::Public,
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    handle_delete_message(&f.room, &f.repo, &f.alice, id, 2)
+        .await
+        .unwrap();
+    let doc = f
+        .repo
+        .get_document(id)
+        .await
+        .unwrap()
+        .expect("doc still present (tombstone)");
+    let sys: MessageSystem = serde_json::from_value(doc.system).unwrap();
+    assert!(sys.content.is_empty(), "content cleared");
+    assert_eq!(sys.deleted_at, Some(2));
+}
+
+#[tokio::test]
+async fn non_owner_non_gm_cannot_delete() {
+    let f = fixture().await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "all".into(),
+        "hi".into(),
+        None,
+        Audience::Public,
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    assert!(matches!(
+        handle_delete_message(&f.room, &f.repo, &f.bob, id, 2).await,
+        Err(SendMessageError::Forbidden)
+    ));
+}
+
+/// Deleted doc stays IN the sequenced log — not just readable via
+/// `get_document`, but present through `events_since` too, proving the
+/// tombstone did not create a sequence gap (it's an `Operation::Update`,
+/// same as an edit, not a hard `Delete`).
+#[tokio::test]
+async fn soft_delete_leaves_doc_in_sequenced_log() {
+    let f = fixture().await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "all".into(),
+        "secret".into(),
+        None,
+        Audience::Public,
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    let cmd = handle_delete_message(&f.room, &f.repo, &f.alice, id, 2)
+        .await
+        .unwrap();
+    assert_eq!(cmd.seq, 2, "delete consumes the next sequence number");
+    let events = f.repo.events_since(f.room.world_id, 0).await.unwrap();
+    assert_eq!(events.len(), 2, "both the create and the delete are logged");
+}
+
+/// A GM moderating chat must be able to delete ANY message regardless of its
+/// restricted audience, the same rule the edit path enforces — the
+/// `apply_intent` Update exemption is generic to
+/// `WriteOrigin::ServerMessageRevision`, not edit-specific. The GM here is
+/// not individually listed among the whisper's recipients (only `bob` is).
+#[tokio::test]
+async fn gm_can_delete_whisper_message_not_addressed_to_gm() {
+    let f = fixture().await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "whispers".into(),
+        "hi".into(),
+        None,
+        Audience::Whisper {
+            recipients: vec![f.bob_id],
+        },
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    let r = handle_delete_message(&f.room, &f.repo, &f.gm, id, 2).await;
+    assert!(
+        r.is_ok(),
+        "GM moderation must override whisper audience gating: {r:?}"
+    );
+    let doc = f.repo.get_document(id).await.unwrap().unwrap();
+    let sys: MessageSystem = serde_json::from_value(doc.system).unwrap();
+    assert!(sys.content.is_empty());
+    assert_eq!(sys.deleted_at, Some(2));
+}
+
+/// Same proof for `Audience::GmOnly`: a GM not individually listed in
+/// `permissions.users` (only `gm_role: Some(Observer)` grants them READ) must
+/// still be able to delete it.
+#[tokio::test]
+async fn gm_can_delete_gm_only_message_not_individually_listed() {
+    let f = fixture().await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "gm".into(),
+        "hi".into(),
+        None,
+        Audience::GmOnly,
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    let r = handle_delete_message(&f.room, &f.repo, &f.gm, id, 2).await;
+    assert!(
+        r.is_ok(),
+        "GM moderation must override gm_only audience gating: {r:?}"
+    );
+}
+
+/// A non-recipient of a whisper (`bob` was never listed; the whisper was
+/// addressed elsewhere) must see nothing about the message even after it is
+/// soft-deleted — per-recipient redaction of the tombstone is unaffected by
+/// the delete.
+#[tokio::test]
+async fn non_recipient_still_cannot_see_deleted_whisper() {
+    use shadowcat::data::permission::{cap, resolve_access};
+
+    let f = fixture().await;
+    // A distinct real user (member_id is a FK) so bob is provably never a
+    // recipient of this whisper.
+    let recipient = f
+        .repo
+        .create_user("carol", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    f.repo
+        .add_member(f.room.world_id, recipient, WorldRole::Player)
+        .await
+        .unwrap();
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "whispers".into(),
+        "hi".into(),
+        None,
+        Audience::Whisper {
+            recipients: vec![recipient],
+        },
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    handle_delete_message(&f.room, &f.repo, &f.alice, id, 2)
+        .await
+        .unwrap();
+    let doc = f.repo.get_document(id).await.unwrap().unwrap();
+    let access = resolve_access(f.bob.user_id, WorldRole::Player, &doc);
+    assert!(
+        !access.has(cap::READ),
+        "bob has no READ access on the tombstoned whisper doc"
     );
 }

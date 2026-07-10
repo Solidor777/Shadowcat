@@ -101,6 +101,9 @@ pub enum ClientMsg {
     /// Edit an existing message the requester owns (or any, if GM). The server
     /// re-runs the sanitize+command pipeline; audience/channel are frozen.
     EditMessage { message_id: Uuid, content: String },
+    /// Soft-delete a message the requester owns (or any, if GM): the doc stays
+    /// in the sequenced log as a tombstone (content cleared, deleted_at set).
+    DeleteMessage { message_id: Uuid },
 }
 
 /// Which tier served a resync.
