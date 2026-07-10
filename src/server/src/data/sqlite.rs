@@ -4,7 +4,7 @@ use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::auth::role::ServerRole;
-use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand};
+use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand, WriteOrigin};
 use crate::data::document::{
     CapabilityRequirement, ContractDeclaration, Document, Scope, World, WorldCapDefaults, WorldRole,
 };
@@ -886,6 +886,7 @@ impl Repository for SqliteRepository {
         world_id: Uuid,
         ops: Vec<Operation>,
         ts: i64,
+        origin: WriteOrigin,
     ) -> Result<Command, DataError> {
         // Load world default grants before opening the transaction: the
         // single-writer pool holds one connection, so a settings query mid-tx
@@ -1014,9 +1015,14 @@ impl Repository for SqliteRepository {
                     // Player's `DocRole::Owner` grants WRITE_FIELDS on their
                     // own message, letting a raw Update forge `kind`/
                     // `user_owner`/`channel` or rewrite `content` unsanitized.
-                    // A validated, sanitizing edit flow introduced later
-                    // replaces this blanket rejection.
-                    if cur.doc_type == crate::chat::MESSAGE_DOC_TYPE {
+                    // `WriteOrigin::ServerMessageRevision` — set ONLY by the
+                    // server edit/delete handlers, never derivable from any
+                    // wire frame — re-opens this path for their sanitized
+                    // authoritative revision; the ordinary WRITE_FIELDS/OCC
+                    // checks below still apply on top of it.
+                    if cur.doc_type == crate::chat::MESSAGE_DOC_TYPE
+                        && origin != WriteOrigin::ServerMessageRevision
+                    {
                         return Err(DataError::Forbidden);
                     }
                     let access = resolve_access_world(
@@ -1635,6 +1641,7 @@ mod tests {
                 world.id,
                 vec![Operation::Delete { doc: scene_doc }],
                 1,
+                WriteOrigin::Client,
             )
             .await
             .unwrap();
@@ -1676,7 +1683,13 @@ mod tests {
         d.scope = Scope::World { world_id: w.id };
         d.parent_id = Some(d.id); // its own parent poisons the descendant walk
         let err = r
-            .apply_intent(&ctx, w.id, vec![Operation::Create { doc: d }], 1)
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d }],
+                1,
+                WriteOrigin::Client,
+            )
             .await
             .unwrap_err();
         // OpFailed, not Forbidden: the self-parent check precedes the access check.
@@ -1721,7 +1734,13 @@ mod tests {
         child.scope = Scope::World { world_id: wa.id };
         child.parent_id = Some(parent_id);
         let err = r
-            .apply_intent(&ctx, wa.id, vec![Operation::Create { doc: child }], 1)
+            .apply_intent(
+                &ctx,
+                wa.id,
+                vec![Operation::Create { doc: child }],
+                1,
+                WriteOrigin::Client,
+            )
             .await
             .unwrap_err();
         assert!(
@@ -2077,9 +2096,15 @@ mod tests {
             user_id: gm,
             world_role: WorldRole::Gm,
         };
-        r.apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: d.clone() }], 1)
-            .await
-            .unwrap();
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: d.clone() }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         // Require dnd5e:gm_vision to write /system/vision.
         r.set_world_cap_requirements(
@@ -2110,6 +2135,7 @@ mod tests {
                 }],
             }],
             2,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -2128,6 +2154,7 @@ mod tests {
                     }],
                 }],
                 3,
+                WriteOrigin::Client,
             )
             .await;
         assert!(matches!(err, Err(DataError::Forbidden)));
@@ -2147,6 +2174,7 @@ mod tests {
                     }],
                 }],
                 3,
+                WriteOrigin::Client,
             )
             .await;
         assert!(matches!(err, Err(DataError::Forbidden)));
@@ -2164,6 +2192,7 @@ mod tests {
                 }],
             }],
             4,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -2235,6 +2264,7 @@ mod tests {
                     doc: protected.clone(),
                 }],
                 1,
+                WriteOrigin::Client,
             )
             .await;
         assert!(matches!(err, Err(DataError::Forbidden)));
@@ -2243,9 +2273,15 @@ mod tests {
         let mut plain = tests_doc(perms, serde_json::json!({ "hp": 10 }));
         plain.scope = Scope::World { world_id: w.id };
         plain.owner = Some(player);
-        r.apply_intent(&player_ctx, w.id, vec![Operation::Create { doc: plain }], 2)
-            .await
-            .unwrap();
+        r.apply_intent(
+            &player_ctx,
+            w.id,
+            vec![Operation::Create { doc: plain }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -2272,9 +2308,15 @@ mod tests {
         d.scope = Scope::World { world_id: w.id };
 
         // Create → indexed.
-        r.apply_intent(&ctx, w.id, vec![Operation::Create { doc: d.clone() }], 1)
-            .await
-            .unwrap();
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d.clone() }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
         let n: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM documents_fts WHERE documents_fts MATCH 'Goblin' AND world_id = ?",
         )
@@ -2297,6 +2339,7 @@ mod tests {
                 }],
             }],
             2,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -2315,9 +2358,15 @@ mod tests {
         assert_eq!((goblin, orc), (0, 1));
 
         // Delete → removed.
-        r.apply_intent(&ctx, w.id, vec![Operation::Delete { doc: d.clone() }], 3)
-            .await
-            .unwrap();
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Delete { doc: d.clone() }],
+            3,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
         let after: i64 = sqlx::query_scalar("SELECT count(*) FROM documents_fts WHERE doc_id = ?")
             .bind(d.id.to_string())
             .fetch_one(r.pool())
@@ -2377,6 +2426,7 @@ mod tests {
                 doc: readable.clone(),
             }],
             1,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -2387,6 +2437,7 @@ mod tests {
                 doc: secret.clone(),
             }],
             2,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -2419,6 +2470,7 @@ mod tests {
             w.id,
             vec![Operation::Create { doc: sheet.clone() }],
             3,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -2486,9 +2538,15 @@ mod tests {
                 serde_json::json!({ "name": format!("dragon {i}") }),
             );
             d.scope = Scope::World { world_id: w.id };
-            r.apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: d }], i + 1)
-                .await
-                .unwrap();
+            r.apply_intent(
+                &gm_ctx,
+                w.id,
+                vec![Operation::Create { doc: d }],
+                i + 1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
         }
 
         // Page size 2: first page returns 2 readable hits despite interleaved secrets.
@@ -2709,7 +2767,13 @@ mod tests {
         let mut doc = world_doc(1, w.id, serde_json::json!({}));
         doc.permissions.users.insert(player, DocRole::Owner);
         let err = r
-            .apply_intent(&p_ctx, w.id, vec![Operation::Create { doc }], 1)
+            .apply_intent(
+                &p_ctx,
+                w.id,
+                vec![Operation::Create { doc }],
+                1,
+                WriteOrigin::Client,
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, DataError::Forbidden));
@@ -2742,7 +2806,13 @@ mod tests {
         let mut doc = world_doc(1, w.id, serde_json::json!({}));
         doc.permissions.users.insert(player, DocRole::Owner);
         assert!(r
-            .apply_intent(&p_ctx, w.id, vec![Operation::Create { doc }], 1)
+            .apply_intent(
+                &p_ctx,
+                w.id,
+                vec![Operation::Create { doc }],
+                1,
+                WriteOrigin::Client
+            )
             .await
             .is_ok());
     }
@@ -2778,14 +2848,26 @@ mod tests {
         tok.doc_type = "token".into();
         tok.permissions.users.insert(player, DocRole::Owner);
         assert!(r
-            .apply_intent(&p_ctx, w.id, vec![Operation::Create { doc: tok }], 1)
+            .apply_intent(
+                &p_ctx,
+                w.id,
+                vec![Operation::Create { doc: tok }],
+                1,
+                WriteOrigin::Client
+            )
             .await
             .is_ok());
 
         let mut act = world_doc(2, w.id, serde_json::json!({}));
         act.permissions.users.insert(player, DocRole::Owner);
         let err = r
-            .apply_intent(&p_ctx, w.id, vec![Operation::Create { doc: act }], 2)
+            .apply_intent(
+                &p_ctx,
+                w.id,
+                vec![Operation::Create { doc: act }],
+                2,
+                WriteOrigin::Client,
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, DataError::Forbidden));
@@ -2821,9 +2903,15 @@ mod tests {
             crate::chat::plain_text_content("hi"),
             1,
         );
-        r.apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
-            .await
-            .expect("player may post a message");
+        r.apply_intent(
+            &pl_ctx,
+            w.id,
+            vec![Operation::Create { doc: msg }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .expect("player may post a message");
 
         // A non-message doc the player owns — still denied (core:create GM-only).
         let mut other = crate::chat::build_message_doc(
@@ -2838,7 +2926,13 @@ mod tests {
         );
         other.doc_type = "note".into();
         let err = r
-            .apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc: other }], 2)
+            .apply_intent(
+                &pl_ctx,
+                w.id,
+                vec![Operation::Create { doc: other }],
+                2,
+                WriteOrigin::Client,
+            )
             .await;
         assert!(
             matches!(err, Err(DataError::Forbidden)),
@@ -2877,7 +2971,13 @@ mod tests {
             1,
         );
         let err = r
-            .apply_intent(&sp_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
+            .apply_intent(
+                &sp_ctx,
+                w.id,
+                vec![Operation::Create { doc: msg }],
+                1,
+                WriteOrigin::Client,
+            )
             .await;
         assert!(matches!(err, Err(DataError::Forbidden)));
     }
@@ -2924,7 +3024,13 @@ mod tests {
         msg.permissions.users.insert(player, DocRole::Owner);
 
         let err = r
-            .apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
+            .apply_intent(
+                &pl_ctx,
+                w.id,
+                vec![Operation::Create { doc: msg }],
+                1,
+                WriteOrigin::Client,
+            )
             .await;
         assert!(
             matches!(err, Err(DataError::Forbidden)),
@@ -2963,9 +3069,15 @@ mod tests {
             1,
         );
         let msg_id = msg.id;
-        r.apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc: msg }], 1)
-            .await
-            .expect("player may post a message");
+        r.apply_intent(
+            &pl_ctx,
+            w.id,
+            vec![Operation::Create { doc: msg }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .expect("player may post a message");
 
         // The owning Player's DocRole::Owner grants WRITE_FIELDS on their own
         // message (satisfied without the fix), so this Update would otherwise
@@ -2984,11 +3096,100 @@ mod tests {
                     }],
                 }],
                 2,
+                WriteOrigin::Client,
             )
             .await;
         assert!(
             matches!(err, Err(DataError::Forbidden)),
             "message docs must be immutable to clients via Update"
+        );
+    }
+
+    /// Seeds a world + Player-owned stored message via the baseline create
+    /// exemption; returns (repo, world_id, owner_ctx, msg_id) for tests that
+    /// exercise the Update path against it.
+    async fn seed_owned_message() -> (
+        SqliteRepository,
+        Uuid,
+        crate::data::membership::PermissionContext,
+        Uuid,
+    ) {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl4", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+        let owner_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let msg = crate::chat::build_message_doc(
+            w.id,
+            player,
+            "all".into(),
+            None,
+            crate::chat::Audience::Public,
+            crate::chat::MessageKind::Normal,
+            crate::chat::plain_text_content("hi"),
+            1,
+        );
+        let msg_id = msg.id;
+        r.apply_intent(
+            &owner_ctx,
+            w.id,
+            vec![Operation::Create { doc: msg }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .expect("player may post a message");
+        (r, w.id, owner_ctx, msg_id)
+    }
+
+    #[tokio::test]
+    async fn message_update_rejected_for_client_allowed_for_server_revision() {
+        let (repo, world, owner_ctx, msg_id) = seed_owned_message().await;
+        let change = FieldChange {
+            path: "/system/content".into(),
+            old: serde_json::json!([{ "kind": "text", "text": "hi" }]),
+            new: serde_json::json!([{ "kind": "text", "text": "edited" }]),
+        };
+        let ops = || {
+            vec![Operation::Update {
+                doc_id: msg_id,
+                changes: vec![change.clone()],
+            }]
+        };
+
+        // Client origin: still blanket-rejected (c-1 invariant intact).
+        let client = repo
+            .apply_intent(&owner_ctx, world, ops(), 2, WriteOrigin::Client)
+            .await;
+        assert!(
+            matches!(client, Err(DataError::Forbidden)),
+            "client update must be forbidden"
+        );
+
+        // Server revision origin: permitted (owner holds WRITE_FIELDS via DocRole::Owner).
+        let server = repo
+            .apply_intent(
+                &owner_ctx,
+                world,
+                ops(),
+                3,
+                WriteOrigin::ServerMessageRevision,
+            )
+            .await;
+        assert!(
+            server.is_ok(),
+            "server revision update must be allowed: {server:?}"
         );
     }
 
@@ -3343,7 +3544,13 @@ mod tests {
         };
         let doc = world_doc(1, w.id, serde_json::json!({ "hp": 10 }));
         let c1 = r
-            .apply_intent(&ctx, w.id, vec![Operation::Create { doc: doc.clone() }], 1)
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: doc.clone() }],
+                1,
+                WriteOrigin::Client,
+            )
             .await
             .unwrap();
         assert_eq!(c1.seq, 1);
@@ -3361,6 +3568,7 @@ mod tests {
                     }],
                 }],
                 2,
+                WriteOrigin::Client,
             )
             .await
             .unwrap();
@@ -3379,6 +3587,7 @@ mod tests {
                     }],
                 }],
                 3,
+                WriteOrigin::Client,
             )
             .await;
         assert!(matches!(conflict, Err(DataError::Conflict(_))));
@@ -3413,6 +3622,7 @@ mod tests {
             w.id,
             vec![Operation::Create { doc: doc.clone() }],
             1,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -3435,6 +3645,7 @@ mod tests {
                     }],
                 }],
                 2,
+                WriteOrigin::Client,
             )
             .await;
         assert!(matches!(forbidden, Err(DataError::Forbidden)));
@@ -3445,7 +3656,13 @@ mod tests {
             serde_json::json!({ "blob": "x".repeat(300 * 1024) }),
         );
         let too_large = r
-            .apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: big }], 3)
+            .apply_intent(
+                &gm_ctx,
+                w.id,
+                vec![Operation::Create { doc: big }],
+                3,
+                WriteOrigin::Client,
+            )
             .await;
         assert!(matches!(too_large, Err(DataError::TooLarge(_))));
     }
@@ -3480,6 +3697,7 @@ mod tests {
             w.id,
             vec![Operation::Create { doc: doc.clone() }],
             1,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -3523,6 +3741,7 @@ mod tests {
                 serde_json::json!(5),
             )],
             2,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -3539,6 +3758,7 @@ mod tests {
                     serde_json::json!([]),
                 )],
                 3,
+                WriteOrigin::Client,
             )
             .await;
         assert!(matches!(emb, Err(DataError::Forbidden)));
@@ -3555,6 +3775,7 @@ mod tests {
                     serde_json::json!("owner"),
                 )],
                 4,
+                WriteOrigin::Client,
             )
             .await;
         assert!(matches!(acl, Err(DataError::Forbidden)));
@@ -3571,6 +3792,7 @@ mod tests {
                     serde_json::json!(player),
                 )],
                 5,
+                WriteOrigin::Client,
             )
             .await;
         assert!(matches!(env, Err(DataError::Forbidden)));
@@ -3608,6 +3830,7 @@ mod tests {
             w.id,
             vec![Operation::Create { doc: doc.clone() }],
             1,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -3627,6 +3850,7 @@ mod tests {
                 serde_json::json!([]),
             )],
             2,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -3652,14 +3876,26 @@ mod tests {
         };
         // Owner floor does not include core:delete.
         let denied = r
-            .apply_intent(&p, world, vec![Operation::Delete { doc: doc.clone() }], 2)
+            .apply_intent(
+                &p,
+                world,
+                vec![Operation::Delete { doc: doc.clone() }],
+                2,
+                WriteOrigin::Client,
+            )
             .await;
         assert!(matches!(denied, Err(DataError::Forbidden)));
         assert!(r.get_document(doc.id).await.unwrap().is_some());
         // The GM holds every capability and may delete.
-        r.apply_intent(&gm_ctx, world, vec![Operation::Delete { doc }], 2)
-            .await
-            .unwrap();
+        r.apply_intent(
+            &gm_ctx,
+            world,
+            vec![Operation::Delete { doc }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
         assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_none());
     }
 
@@ -3683,9 +3919,15 @@ mod tests {
             default: DocRole::None,
             ..Default::default()
         };
-        r.apply_intent(&ctx, w.id, vec![Operation::Create { doc: stored }], 1)
-            .await
-            .unwrap();
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: stored }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
         // A Delete carrying a forged body (same id, permissive perms, bogus
         // system) must not drive the broadcast — the stored doc wins.
         let mut forged = world_doc(1, w.id, serde_json::json!({ "secret": 999 }));
@@ -3694,7 +3936,13 @@ mod tests {
             ..Default::default()
         };
         let cmd = r
-            .apply_intent(&ctx, w.id, vec![Operation::Delete { doc: forged }], 2)
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Delete { doc: forged }],
+                2,
+                WriteOrigin::Client,
+            )
             .await
             .unwrap();
         let Operation::Delete { doc } = &cmd.ops[0] else {
@@ -3741,6 +3989,7 @@ mod tests {
             w.id,
             vec![Operation::Create { doc: doc.clone() }],
             1,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -3760,6 +4009,7 @@ mod tests {
                 serde_json::json!([]),
             )],
             2,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();

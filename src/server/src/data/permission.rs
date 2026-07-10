@@ -941,7 +941,7 @@ mod tests {
     #[tokio::test]
     async fn filter_command_strips_and_preserves_seq() {
         use crate::auth::role::ServerRole;
-        use crate::data::command::{Command, FieldChange, Operation};
+        use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
         use crate::data::membership::PermissionContext;
         use crate::data::sqlite::SqliteRepository;
 
@@ -967,9 +967,15 @@ mod tests {
         d.permissions
             .property_overrides
             .insert("/system/secret".into(), Visibility::GmOnly);
-        r.apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: d.clone() }], 1)
-            .await
-            .unwrap();
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: d.clone() }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         // An update touching both a GmOnly and a public field.
         let cmd = Command {
@@ -1020,7 +1026,7 @@ mod tests {
     #[tokio::test]
     async fn permission_tightening_retracts_now_hidden_field_for_non_owner() {
         use crate::auth::role::ServerRole;
-        use crate::data::command::{Command, FieldChange, Operation};
+        use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
         use crate::data::membership::PermissionContext;
         use crate::data::sqlite::SqliteRepository;
 
@@ -1053,9 +1059,15 @@ mod tests {
         d.permissions
             .property_overrides
             .insert("/system/name".into(), Visibility::OwnerOrGm);
-        r.apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: d.clone() }], 1)
-            .await
-            .unwrap();
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: d.clone() }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         // The broadcast Update that tightened permissions (adds the name override).
         let cmd = Command {
@@ -1111,7 +1123,7 @@ mod tests {
     #[tokio::test]
     async fn permission_tightening_retracts_embedded_owner_or_gm_for_non_owner() {
         use crate::auth::role::ServerRole;
-        use crate::data::command::{Command, FieldChange, Operation};
+        use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
         use crate::data::membership::PermissionContext;
         use crate::data::sqlite::SqliteRepository;
 
@@ -1156,6 +1168,7 @@ mod tests {
                 doc: parent.clone(),
             }],
             1,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -1218,7 +1231,7 @@ mod tests {
     #[tokio::test]
     async fn filter_command_update_redacts_embedded_child_gm_only() {
         use crate::auth::role::ServerRole;
-        use crate::data::command::{Command, FieldChange, Operation};
+        use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
         use crate::data::membership::PermissionContext;
         use crate::data::sqlite::SqliteRepository;
 
@@ -1257,6 +1270,7 @@ mod tests {
                 doc: parent.clone(),
             }],
             1,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -1452,7 +1466,7 @@ mod tests {
     #[tokio::test]
     async fn filter_command_redacts_nested_gm_only_paths() {
         use crate::auth::role::ServerRole;
-        use crate::data::command::{Command, FieldChange, Operation};
+        use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
         use crate::data::membership::PermissionContext;
         use crate::data::sqlite::SqliteRepository;
 
@@ -1486,9 +1500,15 @@ mod tests {
         d.permissions
             .property_overrides
             .insert("/system/sheet/hidden".into(), Visibility::GmOnly);
-        r.apply_intent(&gm_ctx, w.id, vec![Operation::Create { doc: d.clone() }], 1)
-            .await
-            .unwrap();
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: d.clone() }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let cmd = Command {
             seq: 2,

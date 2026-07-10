@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use crate::auth::role::ServerRole;
 use crate::auth::session::AuthUser;
+use crate::data::command::WriteOrigin;
 use crate::data::document::WorldCapDefaults;
 use crate::data::membership::PermissionContext;
 use crate::data::permission::filter_command;
@@ -263,7 +264,7 @@ async fn handle_socket(
                             }
                             // Success is confirmed by the broadcast echo of the
                             // authored Event; only a rejection is sent directly.
-                            match room.publish(repo.as_ref(), &ctx, ops, now_millis()).await {
+                            match room.publish(repo.as_ref(), &ctx, ops, now_millis(), WriteOrigin::Client).await {
                                 Ok(_cmd) => {}
                                 Err(e) => {
                                     let reason = reject_reason(&e);
@@ -1290,9 +1291,15 @@ mod tests {
                 "actor",
             );
             doc.owner = Some(author);
-            room.publish(repo.as_ref(), &ctx, vec![Operation::Create { doc }], 0)
-                .await
-                .unwrap();
+            room.publish(
+                repo.as_ref(),
+                &ctx,
+                vec![Operation::Create { doc }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
         }
 
         // Release the gate; the egress completes its pending send, then observes
@@ -1495,6 +1502,7 @@ mod tests {
             &gm_ctx,
             vec![crate::data::command::Operation::Create { doc: ws }],
             0,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -1508,6 +1516,7 @@ mod tests {
             &gm_ctx,
             vec![crate::data::command::Operation::Create { doc: scene }],
             0,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -1523,6 +1532,7 @@ mod tests {
             &gm_ctx,
             vec![crate::data::command::Operation::Create { doc: token }],
             0,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -1634,6 +1644,7 @@ mod tests {
             &gm_ctx,
             vec![crate::data::command::Operation::Create { doc: ws }],
             0,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -1647,6 +1658,7 @@ mod tests {
             &gm_ctx,
             vec![crate::data::command::Operation::Create { doc: scene }],
             0,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -1662,6 +1674,7 @@ mod tests {
             &gm_ctx,
             vec![crate::data::command::Operation::Create { doc: token }],
             0,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -1838,6 +1851,7 @@ mod tests {
             &gm_ctx,
             vec![Operation::Create { doc: scene }],
             0,
+            WriteOrigin::Client,
         )
         .await
         .unwrap();
@@ -1854,6 +1868,7 @@ mod tests {
                 &gm_ctx,
                 vec![Operation::Create { doc: tok }],
                 0,
+                WriteOrigin::Client,
             )
             .await
             .unwrap();
@@ -1875,6 +1890,7 @@ mod tests {
                 &gm_ctx,
                 vec![Operation::Create { doc: wall }],
                 0,
+                WriteOrigin::Client,
             )
             .await
             .unwrap();

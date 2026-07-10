@@ -100,6 +100,16 @@ impl Command {
     }
 }
 
+/// Who originated a write reaching `apply_intent`. A stored `message` doc's
+/// `Update` is blanket-rejected for `Client` (c-1 invariant); `ServerMessageRevision`
+/// — set ONLY by the server edit/delete handlers, never derivable from any wire
+/// frame — re-opens that path for the sanitized authoritative revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOrigin {
+    Client,
+    ServerMessageRevision,
+}
+
 /// Set `new` at JSON-pointer `pointer` in `root`, creating intermediate
 /// objects as needed. Existing array indices may be replaced; array growth
 /// and `-` append are out of scope (handled by the deferred merge engine).

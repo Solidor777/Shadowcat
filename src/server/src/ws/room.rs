@@ -10,7 +10,7 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::data::command::{Command, FieldChange, Operation};
+use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::DataError;
@@ -193,13 +193,17 @@ impl Room {
     /// per world by `publish_guard` so broadcast order equals seq order. The
     /// broadcast `Event` carries `intent_id: None`; an originator confirms its
     /// own write by receiving this echo. A rejected intent returns its
-    /// `DataError` without consuming a seq or broadcasting.
+    /// `DataError` without consuming a seq or broadcasting. `origin` is
+    /// forwarded to `apply_intent` to gate the message-Update exemption; every
+    /// caller other than the server's own edit/delete revision path passes
+    /// `WriteOrigin::Client`.
     pub async fn publish(
         &self,
         repo: &dyn Repository,
         ctx: &PermissionContext,
         ops: Vec<Operation>,
         ts: i64,
+        origin: WriteOrigin,
     ) -> Result<Command, DataError> {
         let _guard = self.publish_guard.lock().await;
         // M9a: server-authoritative movement collision (engine-owned geometry — the second
@@ -309,7 +313,7 @@ impl Room {
                 }
             }
         }
-        return self.commit_ops_locked(repo, ctx, ops, ts).await;
+        return self.commit_ops_locked(repo, ctx, ops, ts, origin).await;
     }
 
     /// Gate-free authoritative write tail: apply_intent → ECS-hydrate → ring/seq →
@@ -328,8 +332,11 @@ impl Room {
         ctx: &PermissionContext,
         ops: Vec<Operation>,
         ts: i64,
+        origin: WriteOrigin,
     ) -> Result<Command, DataError> {
-        let cmd = repo.apply_intent(ctx, self.world_id, ops, ts).await?;
+        let cmd = repo
+            .apply_intent(ctx, self.world_id, ops, ts, origin)
+            .await?;
         // Hydrate the derived ECS from the committed command while still holding
         // publish_guard (enforced by the caller), so the ECS is consistent with cmd.seq
         // before the Event (and any derived recompute keyed to that seq) is observable.
@@ -599,7 +606,8 @@ impl Room {
             ],
         }];
 
-        self.commit_ops_locked(repo, ctx, pos_ops, ts).await?;
+        self.commit_ops_locked(repo, ctx, pos_ops, ts, WriteOrigin::Client)
+            .await?;
 
         // --- Update the moving lock after a successful commit (still inside publish_guard) ---
         // Serialized by publish_guard: the check above and this insert form one atomic
@@ -893,9 +901,15 @@ mod room_tests {
         let mut scene =
             crate::data::document::tests::world_scoped_doc(world_id, Uuid::from_u128(20), "scene");
         scene.owner = Some(ctx.user_id);
-        room.publish(&repo, &ctx, vec![Operation::Create { doc: scene }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &ctx,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
         assert_eq!(room.scene().read().await.entity_count(), 1);
     }
 
@@ -943,15 +957,27 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: ws }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mut scene = wdoc(world_id, scene_id, "scene");
         scene.owner = Some(gm.user_id);
-        room.publish(&repo, &gm, vec![Operation::Create { doc: scene }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         // Token owned (writable) by the player, at (0,0).
         let mut token = wdoc(world_id, token_id, "token");
@@ -959,9 +985,15 @@ mod room_tests {
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
         token.system = json!({ "x": 0, "y": 0 });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: token }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: token }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         // A blocksMove wall on the diagonal x+y=10.
         let mut wall = wdoc(world_id, wall_id, "wall");
@@ -969,9 +1001,15 @@ mod room_tests {
         wall.owner = Some(gm.user_id);
         wall.system =
             json!({ "seg": { "x1": 0, "y1": 10, "x2": 10, "y2": 0 }, "blocksMove": true });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: wall }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: wall }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mv = |nx: i64, ny: i64, ox: i64, oy: i64| Operation::Update {
             doc_id: token_id,
@@ -1001,7 +1039,8 @@ mod room_tests {
             }],
         };
         assert!(matches!(
-            room.publish(&repo, &player, vec![whole], 0).await,
+            room.publish(&repo, &player, vec![whole], 0, WriteOrigin::Client)
+                .await,
             Err(crate::data::DataError::Forbidden)
         ));
         assert_eq!(room.current_seq(), seq_before);
@@ -1023,14 +1062,21 @@ mod room_tests {
             ],
         };
         assert!(matches!(
-            room.publish(&repo, &player, vec![dup], 0).await,
+            room.publish(&repo, &player, vec![dup], 0, WriteOrigin::Client)
+                .await,
             Err(crate::data::DataError::Forbidden)
         ));
         assert_eq!(room.current_seq(), seq_before);
 
         // Player move (0,0)->(10,10) crosses the wall → rejected before the write.
         let blocked = room
-            .publish(&repo, &player, vec![mv(10, 10, 0, 0)], 0)
+            .publish(
+                &repo,
+                &player,
+                vec![mv(10, 10, 0, 0)],
+                0,
+                WriteOrigin::Client,
+            )
             .await;
         assert!(matches!(blocked, Err(crate::data::DataError::Forbidden)));
         assert_eq!(
@@ -1041,13 +1087,13 @@ mod room_tests {
 
         // The same player move that does NOT cross is allowed (so the block above was the
         // collision gate, not an authorization failure).
-        room.publish(&repo, &player, vec![mv(1, 1, 0, 0)], 0)
+        room.publish(&repo, &player, vec![mv(1, 1, 0, 0)], 0, WriteOrigin::Client)
             .await
             .unwrap();
         assert_eq!(room.current_seq(), seq_before + 1);
 
         // A GM move across the wall bypasses the collision gate (the "ignore walls" override).
-        room.publish(&repo, &gm, vec![mv(10, 10, 1, 1)], 0)
+        room.publish(&repo, &gm, vec![mv(10, 10, 1, 1)], 0, WriteOrigin::Client)
             .await
             .unwrap();
     }
@@ -1087,7 +1133,13 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" } });
         room1
-            .publish(&repo, &gm, vec![Operation::Create { doc: ws }], 0)
+            .publish(
+                &repo,
+                &gm,
+                vec![Operation::Create { doc: ws }],
+                0,
+                WriteOrigin::Client,
+            )
             .await
             .unwrap();
 
@@ -1095,7 +1147,13 @@ mod room_tests {
         scene.owner = Some(gm.user_id);
         scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
         room1
-            .publish(&repo, &gm, vec![Operation::Create { doc: scene }], 0)
+            .publish(
+                &repo,
+                &gm,
+                vec![Operation::Create { doc: scene }],
+                0,
+                WriteOrigin::Client,
+            )
             .await
             .unwrap();
 
@@ -1105,7 +1163,13 @@ mod room_tests {
         token.permissions.users.insert(p, DocRole::Owner);
         token.system = json!({ "x": 50, "y": 50 });
         room1
-            .publish(&repo, &gm, vec![Operation::Create { doc: token }], 0)
+            .publish(
+                &repo,
+                &gm,
+                vec![Operation::Create { doc: token }],
+                0,
+                WriteOrigin::Client,
+            )
             .await
             .unwrap();
 
@@ -1117,7 +1181,13 @@ mod room_tests {
             "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
         });
         room1
-            .publish(&repo, &gm, vec![Operation::Create { doc: light }], 0)
+            .publish(
+                &repo,
+                &gm,
+                vec![Operation::Create { doc: light }],
+                0,
+                WriteOrigin::Client,
+            )
             .await
             .unwrap();
 
@@ -1153,7 +1223,10 @@ mod room_tests {
         let (mut rx, current) = room.subscribe();
         assert_eq!(current, 0);
 
-        let cmd = room.publish(&repo, &ctx, vec![], 10).await.unwrap();
+        let cmd = room
+            .publish(&repo, &ctx, vec![], 10, WriteOrigin::Client)
+            .await
+            .unwrap();
         assert_eq!(cmd.seq, 1);
         assert_eq!(room.current_seq(), 1);
 
@@ -1179,7 +1252,9 @@ mod room_tests {
         let reg = RoomRegistry::new();
         let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
         for _ in 0..3 {
-            room.publish(&repo, &ctx, vec![], 0).await.unwrap();
+            room.publish(&repo, &ctx, vec![], 0, WriteOrigin::Client)
+                .await
+                .unwrap();
         } // seq 1,2,3
 
         // hot: from_seq 2 resident in buffer
@@ -1206,7 +1281,9 @@ mod room_tests {
             let room = room.clone();
             let repo = repo.clone();
             handles.push(tokio::spawn(async move {
-                room.publish(repo.as_ref(), &ctx, vec![], 0).await.unwrap();
+                room.publish(repo.as_ref(), &ctx, vec![], 0, WriteOrigin::Client)
+                    .await
+                    .unwrap();
             }));
         }
         for h in handles {
@@ -1349,25 +1426,43 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: ws }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mut scene = wdoc(world_id, scene_id, "scene");
         scene.owner = Some(gm.user_id);
         scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: scene }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mut token = wdoc(world_id, token_id, "token");
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
         token.system = json!({ "x": 50.0, "y": 50.0 });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: token }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: token }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         if with_light {
             // Bright boundary = 1.5 * 100 = 150 world units from (50,50).
@@ -1379,9 +1474,15 @@ mod room_tests {
                 "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
                 "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true
             });
-            room.publish(&repo, &gm, vec![Operation::Create { doc: light }], 0)
-                .await
-                .unwrap();
+            room.publish(
+                &repo,
+                &gm,
+                vec![Operation::Create { doc: light }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
         }
 
         MovementHandle {
@@ -1447,25 +1548,43 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: ws }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mut scene = wdoc(world_id, scene_id, "scene");
         scene.owner = Some(gm.user_id);
         scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: scene }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mut token = wdoc(world_id, token_id, "token");
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
         token.system = json!({ "x": 50.0, "y": 50.0 });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: token }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: token }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         // Near pocket: radius 1.5 cells around (50,50) — covers cells (0,0).
         let mut l1 = wdoc(world_id, light1, "light");
@@ -1475,9 +1594,15 @@ mod room_tests {
             "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
             "brightRadius": 1.5, "dimRadius": 1.5, "enabled": true
         });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: l1 }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: l1 }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         // Far pocket: radius 1.5 cells around (950,950) — covers cell (9,9).
         // Cells 2–8 between the pockets are unlit (gap).
@@ -1488,9 +1613,15 @@ mod room_tests {
             "x": 950.0, "y": 950.0, "color": "#ffffff", "intensity": 1.0,
             "brightRadius": 1.5, "dimRadius": 1.5, "enabled": true
         });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: l2 }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: l2 }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         MovementHandle {
             room,
@@ -1558,25 +1689,43 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: ws }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mut scene = wdoc(world_id, scene_id, "scene");
         scene.owner = Some(gm.user_id);
         scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: scene }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mut token = wdoc(world_id, token_id, "token");
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
         token.system = json!({ "x": 50.0, "y": 50.0 });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: token }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: token }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         // brightRadius=1.4 cells = 140 wu. Cell (1,1) center at (150,150) is ~141.4 wu
         // away — just outside the boundary (strict rejects). Its near corner at (100,100)
@@ -1588,9 +1737,15 @@ mod room_tests {
             "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
             "brightRadius": 1.4, "dimRadius": 1.4, "enabled": true
         });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: light }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: light }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         MovementHandle {
             room,
@@ -1616,20 +1771,26 @@ mod room_tests {
         let seq0 = h.room.current_seq();
 
         let op = h.mv_to(2000.0, 2000.0).await;
-        let blocked = h.room.publish(&h.repo, &h.player, vec![op], 0).await;
+        let blocked = h
+            .room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await;
         assert!(matches!(blocked, Err(crate::data::DataError::Forbidden)));
         assert_eq!(h.room.current_seq(), seq0, "blocked move consumes no seq");
 
         let op = h.mv_to(60.0, 60.0).await;
         h.room
-            .publish(&h.repo, &h.player, vec![op], 0)
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
             .await
             .unwrap();
         assert_eq!(h.room.current_seq(), seq0 + 1);
 
         // GM bypasses the visibility gate — token is now at (60,60) in ECS.
         let op = h.mv_to(2000.0, 2000.0).await;
-        h.room.publish(&h.repo, &h.gm, vec![op], 0).await.unwrap();
+        h.room
+            .publish(&h.repo, &h.gm, vec![op], 0, WriteOrigin::Client)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1639,7 +1800,7 @@ mod room_tests {
         let h = movement_scene("unrestricted", /*with_light=*/ false).await;
         let op = h.mv_to(2000.0, 2000.0).await;
         h.room
-            .publish(&h.repo, &h.player, vec![op], 0)
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
             .await
             .unwrap();
     }
@@ -1677,13 +1838,16 @@ mod room_tests {
         // Move to center of explored cell (5,5) — allowed via explored memory.
         let op = h.mv_to(550.0, 550.0).await;
         h.room
-            .publish(&h.repo, &h.player, vec![op], 0)
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
             .await
             .unwrap();
 
         // Move from (550,550) to a never-seen, never-explored, unlit cell — forbidden.
         let op = h.mv_to(9000.0, 9000.0).await;
-        let blocked = h.room.publish(&h.repo, &h.player, vec![op], 0).await;
+        let blocked = h
+            .room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await;
         assert!(matches!(blocked, Err(crate::data::DataError::Forbidden)));
     }
 
@@ -1693,7 +1857,10 @@ mod room_tests {
         // path traverses a dark gap between the two pockets must be rejected.
         let h = movement_scene_two_lit_pockets().await;
         let op = h.mv_to(950.0, 950.0).await;
-        let blocked = h.room.publish(&h.repo, &h.player, vec![op], 0).await;
+        let blocked = h
+            .room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await;
         assert!(
             matches!(blocked, Err(crate::data::DataError::Forbidden)),
             "dark gap on the path blocks the move even when endpoint is lit"
@@ -1711,7 +1878,13 @@ mod room_tests {
         let op = lenient.mv_to_partial_cell().await;
         lenient
             .room
-            .publish(&lenient.repo, &lenient.player, vec![op], 0)
+            .publish(
+                &lenient.repo,
+                &lenient.player,
+                vec![op],
+                0,
+                WriteOrigin::Client,
+            )
             .await
             .unwrap();
 
@@ -1719,7 +1892,13 @@ mod room_tests {
         let op = strict.mv_to_partial_cell().await;
         let blocked = strict
             .room
-            .publish(&strict.repo, &strict.player, vec![op], 0)
+            .publish(
+                &strict.repo,
+                &strict.player,
+                vec![op],
+                0,
+                WriteOrigin::Client,
+            )
             .await;
         assert!(matches!(blocked, Err(crate::data::DataError::Forbidden)));
     }
@@ -1749,7 +1928,7 @@ mod room_tests {
         // Invariant: commit_ops_locked MUST NOT re-acquire publish_guard (deadlock).
         let _guard = room.publish_guard.lock().await;
         let cmd = room
-            .commit_ops_locked(&repo, &ctx, vec![op], 10)
+            .commit_ops_locked(&repo, &ctx, vec![op], 10, WriteOrigin::Client)
             .await
             .unwrap();
         drop(_guard);
@@ -1830,25 +2009,43 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: ws }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mut scene = wdoc(world_id, scene_id, "scene");
         scene.owner = Some(gm.user_id);
         scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: scene }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mut token = wdoc(world_id, token_id, "token");
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
         token.system = json!({ "x": 50.0, "y": 50.0 });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: token }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: token }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         // Horizontal wall at y=100, x ∈ [100,200]. Blocks vertical step (150,50)→(150,150).
         let mut wall = wdoc(world_id, wall_id, "wall");
@@ -1856,9 +2053,15 @@ mod room_tests {
         wall.owner = Some(gm.user_id);
         wall.system =
             json!({ "seg": { "x1": 100, "y1": 100, "x2": 200, "y2": 100 }, "blocksMove": true });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: wall }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: wall }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         MovementHandle {
             room,
@@ -2010,24 +2213,42 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" },
         });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: ws }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mut scene = wdoc(world_id, scene_id, "scene");
         scene.owner = Some(gm.user_id);
         scene.system = json!({ "grid": { "size": 100 } });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: scene }], 1)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: scene }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mut token = wdoc(world_id, token_id, "token");
         token.parent_id = Some(scene_id);
         token.owner = Some(player.user_id);
         token.system = json!({ "x": 0.0, "y": 0.0, "w": 100, "h": 100, "rotation": 0 });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: token }], 2)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: token }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mut region = wdoc(world_id, region_id, "region");
         region.parent_id = Some(scene_id);
@@ -2040,9 +2261,15 @@ mod room_tests {
             .permissions
             .property_overrides
             .insert("/system".into(), Visibility::GmOnly);
-        room.publish(&repo, &gm, vec![Operation::Create { doc: region }], 3)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: region }],
+            3,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         // The player's own pathfind field never sees this secret region — the route request
         // itself is out of scope here (the router is covered elsewhere); this test proves
@@ -2174,9 +2401,15 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: ws }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         // Only structural difference from `movement_scene`: declares `vision.movementModel` on
         // the scene doc. Inert server-side today — execute_move has no movementModel branch.
@@ -2186,9 +2419,15 @@ mod room_tests {
             "grid": { "kind": "square", "size": 100 },
             "vision": { "movementModel": "continuous" }
         });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: scene }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let mut token = wdoc(world_id, token_id, "token");
         token.parent_id = Some(scene_id);
@@ -2201,9 +2440,15 @@ mod room_tests {
             .users
             .insert(p, crate::data::document::DocRole::Owner);
         token.system = json!({ "x": 50.0, "y": 50.0 });
-        room.publish(&repo, &gm, vec![Operation::Create { doc: token }], 0)
-            .await
-            .unwrap();
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: token }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         if with_light {
             // Bright boundary = 1.5 * 100 = 150 world units; dim boundary = 3.0 * 100 = 300.
@@ -2214,9 +2459,15 @@ mod room_tests {
                 "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
                 "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true
             });
-            room.publish(&repo, &gm, vec![Operation::Create { doc: light }], 0)
-                .await
-                .unwrap();
+            room.publish(
+                &repo,
+                &gm,
+                vec![Operation::Create { doc: light }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
         }
 
         MovementHandle {

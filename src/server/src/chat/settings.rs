@@ -47,7 +47,7 @@ pub async fn resolve_content_policy(repo: &dyn Repository, world_id: Uuid) -> Ch
 mod tests {
     use super::*;
     use crate::auth::role::ServerRole;
-    use crate::data::command::Operation;
+    use crate::data::command::{Operation, WriteOrigin};
     use crate::data::document::{Document, PermissionSet, Scope, WorldRole};
     use crate::data::membership::PermissionContext;
     use crate::data::sqlite::SqliteRepository;
@@ -113,9 +113,15 @@ mod tests {
             gm,
             serde_json::json!({ "markdown": "not-a-bool" }),
         );
-        repo.apply_intent(&gm_ctx, world_id, vec![Operation::Create { doc }], 0)
-            .await
-            .unwrap();
+        repo.apply_intent(
+            &gm_ctx,
+            world_id,
+            vec![Operation::Create { doc }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             resolve_content_policy(&repo, world_id).await,
             ChatContentPolicy::default()
@@ -137,9 +143,15 @@ mod tests {
                 "hyperlinks": true, "emails": false
             }),
         );
-        repo.apply_intent(&gm_ctx, world_id, vec![Operation::Create { doc }], 0)
-            .await
-            .unwrap();
+        repo.apply_intent(
+            &gm_ctx,
+            world_id,
+            vec![Operation::Create { doc }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
         let p = resolve_content_policy(&repo, world_id).await;
         assert!(p.markdown && p.images && p.hyperlinks && !p.html && !p.emails);
     }

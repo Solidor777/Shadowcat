@@ -14,7 +14,7 @@ use crate::auth::password::{hash_password, verify_password_async};
 use crate::auth::role::ServerRole;
 use crate::auth::session::{AdminUser, AuthUser, SessionUser};
 use crate::auth::setup::{create_admin, now_millis};
-use crate::data::command::{Command, FieldChange, Operation};
+use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use crate::data::document::{
     CapabilityRequirement, Cardinality, ContractDeclaration, Document, Scope, World,
     WorldCapDefaults, WorldRole,
@@ -249,7 +249,13 @@ async fn write_ops(
         .await?
         .ok_or(AppError::NotFound)?;
     let cmd = room
-        .publish(state.repo.as_ref(), &ctx, ops, now_millis())
+        .publish(
+            state.repo.as_ref(),
+            &ctx,
+            ops,
+            now_millis(),
+            WriteOrigin::Client,
+        )
         .await?;
     let world_defaults = state.repo.world_cap_defaults(world).await?;
     let filtered = filter_command(state.repo.as_ref(), &cmd, &ctx, &world_defaults).await;

@@ -22,7 +22,7 @@ mod settings;
 pub use sanitize::sanitize;
 pub use settings::{resolve_content_policy, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE};
 
-use crate::data::command::{Command, Operation};
+use crate::data::command::{Command, Operation, WriteOrigin};
 use crate::data::document::{DocRole, Document, PermissionSet, Scope};
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
@@ -308,9 +308,15 @@ pub async fn handle_send_message(
         plain_text_content(&content),
         now,
     );
-    room.publish(repo, ctx, vec![Operation::Create { doc }], now)
-        .await
-        .map_err(SendMessageError::Data)
+    room.publish(
+        repo,
+        ctx,
+        vec![Operation::Create { doc }],
+        now,
+        WriteOrigin::Client,
+    )
+    .await
+    .map_err(SendMessageError::Data)
 }
 
 #[cfg(test)]
@@ -1033,9 +1039,15 @@ mod tests {
             plain_text_content("banshee wail"),
             1,
         );
-        r.apply_intent(&pl_ctx, w.id, vec![Operation::Create { doc }], 1)
-            .await
-            .unwrap();
+        r.apply_intent(
+            &pl_ctx,
+            w.id,
+            vec![Operation::Create { doc }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
 
         let page = r.search(&ot_ctx, w.id, "banshee", 10, None).await.unwrap();
         assert_eq!(page.hits.len(), 1, "another member finds the message");

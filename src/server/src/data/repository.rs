@@ -20,12 +20,18 @@ pub trait Repository: Send + Sync {
     /// Field-level optimistic concurrency: an `Update` whose `FieldChange.old`
     /// does not match the current stored value yields `Conflict`. A failure in
     /// the authorize phase consumes no seq (the transaction rolls back whole).
+    /// `origin` gates the message-Update exemption: a stored `message` doc's
+    /// `Update` is blanket-rejected for `WriteOrigin::Client` regardless of the
+    /// requester's own `DocRole`; only `WriteOrigin::ServerMessageRevision` —
+    /// set exclusively by the server edit/delete handlers — re-opens it, and
+    /// only for that call's sanitized authoritative revision.
     async fn apply_intent(
         &self,
         ctx: &crate::data::membership::PermissionContext,
         world_id: Uuid,
         ops: Vec<crate::data::command::Operation>,
         ts: i64,
+        origin: crate::data::command::WriteOrigin,
     ) -> Result<Command, DataError>;
 
     async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DataError>;

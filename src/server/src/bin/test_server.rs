@@ -10,7 +10,7 @@ use std::sync::Arc;
 use shadowcat::auth::password::hash_password;
 use shadowcat::auth::role::ServerRole;
 use shadowcat::config::Config;
-use shadowcat::data::command::Operation;
+use shadowcat::data::command::{Operation, WriteOrigin};
 use shadowcat::data::document::{
     CapabilityRequirement, DocRole, Document, PermissionSet, Scope, WorldRole,
 };
@@ -62,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
         world.id,
         vec![Operation::Create { doc: doc.clone() }],
         0,
+        WriteOrigin::Client,
     )
     .await?;
 
@@ -90,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
         world.id,
         vec![Operation::Create { doc: secret }],
         0,
+        WriteOrigin::Client,
     )
     .await?;
 
