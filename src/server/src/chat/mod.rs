@@ -17,8 +17,10 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+mod commands;
 mod sanitize;
 mod settings;
+pub use commands::{parse_command, ParsedCommand};
 pub use sanitize::sanitize;
 pub use settings::{resolve_content_policy, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE};
 
@@ -249,6 +251,12 @@ pub enum SendMessageError {
     UnknownRecipient,
     /// The authoritative write (`Room::publish`) failed.
     Data(DataError),
+    /// The target message does not exist (edit/delete).
+    NotFound,
+    /// The requester is neither the message owner nor a GM (edit/delete).
+    Forbidden,
+    /// An edit attempted to change audience (a `/w` inside an edit). Frozen.
+    AudienceLocked,
 }
 
 /// Server-authoritative message ingest: flood-limit, validate, CONSTRUCT the
@@ -283,6 +291,29 @@ pub async fn handle_send_message(
     if !rate.check(ctx.user_id, now, budget_per_min) {
         return Err(SendMessageError::RateLimited);
     }
+    // Parse leading command (server-authoritative kind; /w whisper targets).
+    let parsed = parse_command(&content);
+    // Effective audience: an explicit /w wins; otherwise the c-2 frame field.
+    let audience = if let Some(names) = parsed.whisper_to {
+        let mut recipients = Vec::with_capacity(names.len());
+        for name in &names {
+            match repo
+                .member_id_by_username(room.world_id, name)
+                .await
+                .map_err(SendMessageError::Data)?
+            {
+                Some(uid) => recipients.push(uid),
+                None => return Err(SendMessageError::UnknownRecipient),
+            }
+        }
+        Audience::Whisper { recipients }
+    } else {
+        audience
+    };
+    // Re-validate the EFFECTIVE audience (whisper cap + membership) — the
+    // single chokepoint covering BOTH the frame's `audience` field and a
+    // content-level `/w` command, so neither front-door can bypass the cap
+    // or the fail-closed unknown-recipient rejection.
     if let Audience::Whisper { recipients } = &audience {
         if recipients.len() > MAX_WHISPER_RECIPIENTS {
             return Err(SendMessageError::TooLong);
@@ -298,14 +329,16 @@ pub async fn handle_send_message(
             }
         }
     }
+    let policy = resolve_content_policy(repo, room.world_id).await;
+    let content_segments = sanitize(&parsed.body, &policy);
     let doc = build_message_doc(
         room.world_id,
         ctx.user_id,
         channel,
         actor_owner,
         audience,
-        MessageKind::Normal,
-        plain_text_content(&content),
+        parsed.kind,
+        content_segments,
         now,
     );
     room.publish(

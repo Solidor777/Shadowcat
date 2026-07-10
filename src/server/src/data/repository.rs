@@ -68,6 +68,14 @@ pub trait Repository: Send + Sync {
     /// the world before trusting them.
     async fn member_role(&self, world: Uuid, user: Uuid) -> Result<Option<WorldRole>, DataError>;
 
+    /// The UUID of a member of `world` whose username matches exactly, or
+    /// `None`. Used to resolve a `/w @name` whisper target server-side.
+    async fn member_id_by_username(
+        &self,
+        world: Uuid,
+        username: &str,
+    ) -> Result<Option<Uuid>, DataError>;
+
     /// A world's default capability grants (additive over the per-document
     /// `DocRole` floor). Empty when unset.
     async fn world_cap_defaults(&self, world: Uuid) -> Result<WorldCapDefaults, DataError>;

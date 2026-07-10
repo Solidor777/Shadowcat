@@ -626,6 +626,28 @@ impl SqliteRepository {
         }
     }
 
+    /// The UUID of a member of `world` whose username matches exactly, or
+    /// `None`. Mirrors `list_members`' join, scoped to one username.
+    pub async fn member_id_by_username(
+        &self,
+        world: Uuid,
+        username: &str,
+    ) -> Result<Option<Uuid>, DataError> {
+        let row = sqlx::query(
+            "SELECT m.user_id FROM world_members m JOIN users u ON u.id = m.user_id \
+             WHERE m.world_id = ? AND u.username = ?",
+        )
+        .bind(world.to_string())
+        .bind(username)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|r| {
+            Uuid::parse_str(r.get::<String, _>("user_id").as_str())
+                .map_err(|e| DataError::OpFailed(e.to_string()))
+        })
+        .transpose()
+    }
+
     /// Load a document envelope by id on an arbitrary executor (so it can run
     /// inside a transaction). Mirrors `get_document`'s row→Document mapping.
     async fn load_document<'e, E>(executor: E, id: Uuid) -> Result<Option<Document>, DataError>
@@ -1306,6 +1328,16 @@ impl Repository for SqliteRepository {
         // the same name; method resolution on a concrete `SqliteRepository`
         // self prefers the inherent impl, so this is not infinite recursion.
         SqliteRepository::member_role(self, world, user).await
+    }
+
+    async fn member_id_by_username(
+        &self,
+        world: Uuid,
+        username: &str,
+    ) -> Result<Option<Uuid>, DataError> {
+        // Delegates to the inherent method of the same name (see `member_role`
+        // above for why this is not infinite recursion).
+        SqliteRepository::member_id_by_username(self, world, username).await
     }
 
     async fn world_cap_defaults(&self, world: Uuid) -> Result<WorldCapDefaults, DataError> {
