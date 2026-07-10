@@ -98,6 +98,9 @@ pub enum ClientMsg {
         #[serde(default)]
         audience: Audience,
     },
+    /// Edit an existing message the requester owns (or any, if GM). The server
+    /// re-runs the sanitize+command pipeline; audience/channel are frozen.
+    EditMessage { message_id: Uuid, content: String },
 }
 
 /// Which tier served a resync.

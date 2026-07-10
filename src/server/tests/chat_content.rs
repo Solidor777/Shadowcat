@@ -11,8 +11,8 @@
 
 use shadowcat::auth::role::ServerRole;
 use shadowcat::chat::{
-    handle_send_message, Audience, ChatContentPolicy, MessageKind, MessageSystem, Segment,
-    SendMessageError, CHAT_SETTINGS_DOC_TYPE,
+    handle_edit_message, handle_send_message, Audience, ChatContentPolicy, MessageKind,
+    MessageSystem, Segment, SendMessageError, CHAT_SETTINGS_DOC_TYPE,
 };
 use shadowcat::data::command::{Command, Operation, WriteOrigin};
 use shadowcat::data::document::{DocRole, Document, PermissionSet, Scope, WorldRole};
@@ -31,7 +31,9 @@ struct Fixture {
     room: Arc<Room>,
     rate: PingRateLimiter,
     alice: PermissionContext,
+    bob: PermissionContext,
     bob_id: Uuid,
+    gm: PermissionContext,
 }
 
 impl Fixture {
@@ -100,21 +102,41 @@ impl Fixture {
             user_id: alice_id,
             world_role: WorldRole::Player,
         };
+        let bob = PermissionContext {
+            user_id: bob_id,
+            world_role: WorldRole::Player,
+        };
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
         Fixture {
             repo,
             room,
             rate: PingRateLimiter::new(),
             alice,
+            bob,
             bob_id,
+            gm: gm_ctx,
         }
     }
 
+    /// The `doc.id` of a `Create`d message, resolved from the returned `Command`.
+    async fn message_id(&self, cmd: &Command) -> Uuid {
+        self.stored_message_doc(cmd).await.id
+    }
+
+    /// Resolves the stored message doc from a `Command`, whether it authored a
+    /// `Create` (a fresh `SendMessage`) or an `Update` (a `handle_edit_message`
+    /// revision) — both carry the message's doc id, just in different ops.
     async fn stored_message_doc(&self, cmd: &Command) -> Document {
-        let Operation::Create { doc } = &cmd.ops[0] else {
-            panic!("expected a Create op");
+        let doc_id = match &cmd.ops[0] {
+            Operation::Create { doc } => doc.id,
+            Operation::Update { doc_id, .. } => *doc_id,
+            Operation::Delete { doc } => doc.id,
         };
         self.repo
-            .get_document(doc.id)
+            .get_document(doc_id)
             .await
             .unwrap()
             .expect("message doc persisted")
@@ -140,6 +162,141 @@ impl Fixture {
         )
         .await
     }
+}
+
+/// GM + `alice`/`bob` (Player), no `chat-settings` doc (default content policy).
+async fn fixture() -> Fixture {
+    Fixture::new().await
+}
+
+/// Same seed, with a `chat-settings` doc holding `policy`.
+async fn fixture_with_policy(policy: ChatContentPolicy) -> Fixture {
+    Fixture::with_policy(Some(policy)).await
+}
+
+#[tokio::test]
+async fn owner_can_edit_and_content_resanitizes() {
+    let f = fixture_with_policy(ChatContentPolicy {
+        markdown: true,
+        ..Default::default()
+    })
+    .await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "all".into(),
+        "first".into(),
+        None,
+        Audience::Public,
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    let edited = handle_edit_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        id,
+        "**second**".into(),
+        2,
+        60,
+    )
+    .await
+    .unwrap();
+    let sys = f.stored_message_system(&edited).await;
+    assert!(matches!(sys.content.as_slice(), [Segment::Html { .. }]));
+    assert_eq!(sys.edited_at, Some(2));
+}
+
+#[tokio::test]
+async fn non_owner_non_gm_cannot_edit() {
+    let f = fixture().await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "all".into(),
+        "hi".into(),
+        None,
+        Audience::Public,
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    let r = handle_edit_message(&f.room, &f.repo, &f.bob, &f.rate, id, "hax".into(), 2, 60).await;
+    assert!(matches!(r, Err(SendMessageError::Forbidden)));
+}
+
+#[tokio::test]
+async fn gm_can_edit_players_message() {
+    let f = fixture().await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "all".into(),
+        "hi".into(),
+        None,
+        Audience::Public,
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    assert!(handle_edit_message(
+        &f.room,
+        &f.repo,
+        &f.gm,
+        &f.rate,
+        id,
+        "moderated".into(),
+        2,
+        60
+    )
+    .await
+    .is_ok());
+}
+
+#[tokio::test]
+async fn edit_cannot_retarget_audience() {
+    let f = fixture().await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "all".into(),
+        "hi".into(),
+        None,
+        Audience::Public,
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    let r = handle_edit_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        id,
+        "/w @bob sneaky".into(),
+        2,
+        60,
+    )
+    .await;
+    assert!(matches!(r, Err(SendMessageError::AudienceLocked)));
 }
 
 #[tokio::test]

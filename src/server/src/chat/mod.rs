@@ -24,8 +24,8 @@ pub use commands::{parse_command, ParsedCommand};
 pub use sanitize::sanitize;
 pub use settings::{resolve_content_policy, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE};
 
-use crate::data::command::{Command, Operation, WriteOrigin};
-use crate::data::document::{DocRole, Document, PermissionSet, Scope};
+use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
+use crate::data::document::{DocRole, Document, PermissionSet, Scope, WorldRole};
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::DataError;
@@ -370,6 +370,86 @@ pub async fn handle_send_message(
     )
     .await
     .map_err(SendMessageError::Data)
+}
+
+/// Server-authoritative message edit: owner-or-GM only, re-runs the same
+/// command-parse + sanitize pipeline `handle_send_message` uses, and rewrites
+/// ONLY `content`/`kind`/`edited_at` on the stored `/system` body —
+/// `channel`/`user_owner`/`actor_owner`/`audience`/`deleted_at` are copied
+/// verbatim from the stored document, never re-derived from the edit request.
+/// A `/w` (or any whisper-targeting content) in the edit is rejected as
+/// `AudienceLocked` rather than silently retargeting the audience — the sole
+/// place this function may reach `Room::publish` uses
+/// `WriteOrigin::ServerMessageRevision`, the ONLY origin that re-opens the
+/// `apply_intent` Update blanket-rejection for a stored `message` doc.
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_edit_message(
+    room: &Room,
+    repo: &dyn Repository,
+    ctx: &PermissionContext,
+    rate: &PingRateLimiter,
+    message_id: Uuid,
+    content: String,
+    now: i64,
+    budget_per_min: usize,
+) -> Result<Command, SendMessageError> {
+    if content.trim().is_empty() {
+        return Err(SendMessageError::Empty);
+    }
+    if content.chars().count() > MAX_MESSAGE_CHARS {
+        return Err(SendMessageError::TooLong);
+    }
+    if !rate.check(ctx.user_id, now, budget_per_min) {
+        return Err(SendMessageError::RateLimited);
+    }
+
+    let cur = repo
+        .get_document(message_id)
+        .await
+        .map_err(SendMessageError::Data)?
+        .ok_or(SendMessageError::NotFound)?;
+    if cur.doc_type != MESSAGE_DOC_TYPE {
+        return Err(SendMessageError::NotFound);
+    }
+    // Authorize: message owner OR a GM.
+    let is_gm = ctx.world_role == WorldRole::Gm;
+    if cur.owner != Some(ctx.user_id) && !is_gm {
+        return Err(SendMessageError::Forbidden);
+    }
+
+    let parsed = parse_command(&content);
+    // Audience is frozen on edit — a /w in an edit is rejected, not applied.
+    if parsed.whisper_to.is_some() {
+        return Err(SendMessageError::AudienceLocked);
+    }
+    if parsed.body.trim().is_empty() {
+        return Err(SendMessageError::Empty);
+    }
+
+    let policy = resolve_content_policy(repo, room.world_id).await;
+    let segments = sanitize(&parsed.body, &policy);
+
+    // Build the revised system: new content + kind, edited_at=now; preserve
+    // channel/user_owner/actor_owner/audience/deleted_at from the stored doc.
+    let mut sys: MessageSystem = serde_json::from_value(cur.system.clone())
+        .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
+    sys.content = segments;
+    sys.kind = parsed.kind;
+    sys.edited_at = Some(now);
+    let new_system = serde_json::to_value(&sys)
+        .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
+
+    let op = Operation::Update {
+        doc_id: message_id,
+        changes: vec![FieldChange {
+            path: "/system".into(),
+            old: cur.system,
+            new: new_system,
+        }],
+    };
+    room.publish(repo, ctx, vec![op], now, WriteOrigin::ServerMessageRevision)
+        .await
+        .map_err(SendMessageError::Data)
 }
 
 #[cfg(test)]
