@@ -11,14 +11,16 @@
 
 use shadowcat::auth::role::ServerRole;
 use shadowcat::chat::{
-    handle_delete_message, handle_edit_message, handle_send_message, Audience, ChatContentPolicy,
-    MessageKind, MessageSystem, Segment, SendMessageError, CHAT_SETTINGS_DOC_TYPE,
+    build_message_doc, handle_delete_message, handle_edit_message, handle_send_message, Audience,
+    ChatContentPolicy, MessageKind, MessageSystem, Segment, SendMessageError,
+    CHAT_SETTINGS_DOC_TYPE,
 };
-use shadowcat::data::command::{Command, Operation, WriteOrigin};
+use shadowcat::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use shadowcat::data::document::{DocRole, Document, PermissionSet, Scope, WorldRole};
 use shadowcat::data::membership::PermissionContext;
 use shadowcat::data::repository::Repository;
 use shadowcat::data::sqlite::SqliteRepository;
+use shadowcat::data::DataError;
 use shadowcat::ws::room::Room;
 use shadowcat::ws::room::RoomRegistry;
 use shadowcat::ws::PingRateLimiter;
@@ -737,5 +739,105 @@ async fn non_recipient_still_cannot_see_deleted_whisper() {
     assert!(
         !access.has(cap::READ),
         "bob has no READ access on the tombstoned whisper doc"
+    );
+}
+
+/// Anchor proof (M11c-3, §6 coupled seam): a raw client `Intent` `Update`
+/// attempting to forge `/system/kind` on an existing, legitimately-owned
+/// message to `"system"` (impersonating a server-authored notice) is still
+/// blanket-rejected by `apply_intent`'s `Update` branch, even though the
+/// requester genuinely holds `DocRole::Owner` on the doc (which would
+/// otherwise satisfy the ordinary WRITE_FIELDS check). Distinct from
+/// `sqlite.rs`'s `message_update_rejected_for_client_allowed_for_server_revision`,
+/// which forges `/system/content` — this proves the rejection is not scoped
+/// to any one field path, closing the specific "forge kind=System" angle the
+/// task brief calls out.
+#[tokio::test]
+async fn client_intent_update_to_message_still_forbidden() {
+    let f = fixture().await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "all".into(),
+        "hi".into(),
+        None,
+        Audience::Public,
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    let op = Operation::Update {
+        doc_id: id,
+        changes: vec![FieldChange {
+            path: "/system/kind".into(),
+            old: serde_json::json!("normal"),
+            new: serde_json::json!("system"),
+        }],
+    };
+    let r = f
+        .repo
+        .apply_intent(&f.alice, f.room.world_id, vec![op], 2, WriteOrigin::Client)
+        .await;
+    assert!(
+        matches!(r, Err(DataError::Forbidden)),
+        "client forgery of kind=System must be rejected: {r:?}"
+    );
+    // Confirm the rejection actually held the line: the stored doc's kind is
+    // unchanged, not merely that the call returned an error.
+    let doc = f.repo.get_document(id).await.unwrap().unwrap();
+    let sys: MessageSystem = serde_json::from_value(doc.system).unwrap();
+    assert_eq!(sys.kind, MessageKind::Normal, "kind must be unaltered");
+}
+
+/// Anchor proof (M11c-3, §6 coupled seam): the WS/HTTP ingress guard
+/// (`ops_target_message`) is keyed purely on the op's `doc_type`, not on any
+/// content inside the payload — so an attacker cannot evade it by crafting a
+/// `Create`/`Delete` whose `system` body impersonates a server-authored
+/// notice (`kind: System`) while still targeting `doc_type: "message"`. This
+/// is a distinct angle from `chat/mod.rs`'s existing
+/// `ops_target_message_detects_message_create_and_update` (which only proves
+/// detection for an ordinary `MessageKind::Normal` doc): here the payload is
+/// deliberately forged to look server-authored, proving the guard cannot be
+/// evaded by lying about `kind` inside the `system` body — only `doc_type`
+/// (which the client cannot change without also changing what the guard
+/// matches on) determines rejection.
+#[tokio::test]
+async fn client_forged_system_kind_create_and_delete_still_blocked_at_ingress() {
+    let world = Uuid::new_v4();
+    let attacker = Uuid::new_v4();
+    let mut forged = build_message_doc(
+        world,
+        attacker,
+        "all".into(),
+        None,
+        Audience::Public,
+        MessageKind::Normal,
+        vec![],
+        0,
+    );
+    // Forge the payload to impersonate a server-authored System notice —
+    // the guard must not be fooled by this; it never inspects `system`.
+    let mut sys: serde_json::Value = forged.system.clone();
+    sys["kind"] = serde_json::json!("system");
+    forged.system = sys;
+    assert_eq!(
+        forged.doc_type,
+        shadowcat::chat::MESSAGE_DOC_TYPE,
+        "sanity: still a message doc_type"
+    );
+
+    assert!(
+        shadowcat::chat::ops_target_message(&[Operation::Create {
+            doc: forged.clone()
+        }]),
+        "forged System-kind Create must still be blocked at ingress"
+    );
+    assert!(
+        shadowcat::chat::ops_target_message(&[Operation::Delete { doc: forged }]),
+        "forged System-kind Delete must still be blocked at ingress"
     );
 }
