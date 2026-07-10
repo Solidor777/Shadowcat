@@ -830,9 +830,35 @@ Decomposed **M11a–d**:
   > dynamic promotion/demotion, with zero changes needed to any of the four egress call sites.
   > `shadowcat-codebase-chat` and `shadowcat-codebase-documents-permissions` skills updated +
   > reviewed by `shadowcat-spec-reviewer` per the reviewed skill-update gate.
-  > **M11c-3 (sanitizer + command parser + a validated, sanitizing edit path) is next** —
-  > replaces the c-1 blanket rejection of client Updates to a stored message doc.
-  > Design: [`superpowers/specs/2026-07-08-m11c-2-whisper-allowlist-design.md`](superpowers/specs/2026-07-08-m11c-2-whisper-allowlist-design.md).
+  > **M11c-3 DONE** (branch `m11c-2-restricted-audience-messaging`) — sanitizer + command parser +
+  > a validated, sanitizing edit/delete path, replacing c-1's blanket rejection of client Updates
+  > to a stored message doc. A new content-sanitization boundary (`chat::sanitize`, `ammonia` +
+  > `pulldown-cmark`, one `clean()` call per message) replaces c-1's raw-text-only model; CSS is
+  > always stripped, images/hyperlinks/emails are independently toggleable, and a new
+  > `Segment::Html` variant carries the sanitized-HTML output (inline formatting/links/images stay
+  > inside it rather than getting their own typed segments, avoiding a re-parse of already-clean
+  > HTML). A fail-closed per-world `chat-settings` policy doc (`chat::ChatContentPolicy`, all
+  > toggles default off) gates which producers run. A pure leading-command parser
+  > (`chat::parse_command`) derives `MessageKind` (`/me`/`/em`/`/emote` → Emote; `/roll`/`/r`/
+  > `/NdM` → Roll, stored unexecuted; `System` is unreachable from any parse path) and a
+  > content-level `/w` whisper target — a second front-door alongside the c-2 wire frame's
+  > `audience` field, reconciled through one shared cap/membership validation chokepoint with
+  > content taking precedence. New `ClientMsg::EditMessage`/`DeleteMessage` frames add
+  > owner-or-GM-authorized editing (re-runs the full sanitize/command pipeline; `audience` is
+  > frozen — a `/w` in edited content is rejected, not applied) and soft-tombstone deletion
+  > (clears `content`, sets `deleted_at`, doc stays in the sequenced log). The authz seam widens
+  > from two coupled chokepoints to four: a new `WriteOrigin` marker
+  > (`Client`/`ServerMessageRevision`) threads through `apply_intent`/`Room::publish`; the c-1
+  > Update blanket-rejection becomes conditional on `WriteOrigin`, exempting ONLY the edit/delete
+  > handlers' own writes (never derivable from a wire frame), which are granted a narrowly scoped
+  > `{READ, WRITE_FIELDS}` access rather than re-deriving GM authority from the message's own
+  > `gm_role`/`users` fields — re-derivation would incorrectly deny a non-addressed GM moderating a
+  > `Whisper`/`GmOnly` message, since GM moderation authority is deliberately audience-independent.
+  > A combined buddy-check across the coupled seam (Tasks 5+7+8+9) caught and fixed two real authz
+  > bugs (a resource-amplification ordering bug in `/w` recipient-cap checking, and the initial
+  > `all: true` grant narrowed to `{READ, WRITE_FIELDS}`) before merge. `shadowcat-codebase-chat`
+  > skill updated + reviewed by `shadowcat-spec-reviewer` per the reviewed skill-update gate.
+  > Design: [`superpowers/specs/2026-07-09-m11c-3-sanitizer-commands-edit-design.md`](superpowers/specs/2026-07-09-m11c-3-sanitizer-commands-edit-design.md).
   Design: [`superpowers/specs/2026-07-08-m11c-chat-core-design.md`](superpowers/specs/2026-07-08-m11c-chat-core-design.md).
 - **M11d — Default display modules:** independently-replaceable composer + message-card contribution modules; text enrichment (Markdown/HTML/images/links/emails, GM-gated, no embedded CSS); emotes; roll integration; internal doc links; SSRF-guarded server-side link previews.
 
