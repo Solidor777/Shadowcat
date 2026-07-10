@@ -267,6 +267,88 @@ async fn gm_can_edit_players_message() {
     .is_ok());
 }
 
+/// A GM moderating chat must be able to edit ANY message regardless of its
+/// restricted audience — the message's own `gm_role`/`users` fields exist to
+/// gate ordinary READ visibility for OTHER recipients, not the server's own
+/// moderation capability. Here the GM is neither the owner nor individually
+/// listed among the whisper's recipients (only `bob` is), so this proves the
+/// GM's edit authority does not depend on being an addressee.
+#[tokio::test]
+async fn gm_can_edit_whisper_message_not_addressed_to_gm() {
+    let f = fixture().await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "whispers".into(),
+        "hi".into(),
+        None,
+        Audience::Whisper {
+            recipients: vec![f.bob_id],
+        },
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    let r = handle_edit_message(
+        &f.room,
+        &f.repo,
+        &f.gm,
+        &f.rate,
+        id,
+        "moderated".into(),
+        2,
+        60,
+    )
+    .await;
+    assert!(
+        r.is_ok(),
+        "GM moderation must override whisper audience gating: {r:?}"
+    );
+}
+
+/// Same proof for `Audience::GmOnly`: the message's own `gm_role` resolves to
+/// `DocRole::Observer` (READ-only) for a GM not individually listed in
+/// `permissions.users` — the server's moderation authority must not be capped
+/// by that per-document READ floor.
+#[tokio::test]
+async fn gm_can_edit_gm_only_message_not_individually_listed() {
+    let f = fixture().await;
+    let sent = handle_send_message(
+        &f.room,
+        &f.repo,
+        &f.alice,
+        &f.rate,
+        "gm".into(),
+        "hi".into(),
+        None,
+        Audience::GmOnly,
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+    let id = f.message_id(&sent).await;
+    let r = handle_edit_message(
+        &f.room,
+        &f.repo,
+        &f.gm,
+        &f.rate,
+        id,
+        "moderated".into(),
+        2,
+        60,
+    )
+    .await;
+    assert!(
+        r.is_ok(),
+        "GM moderation must override gm_only audience gating: {r:?}"
+    );
+}
+
 #[tokio::test]
 async fn edit_cannot_retarget_audience() {
     let f = fixture().await;

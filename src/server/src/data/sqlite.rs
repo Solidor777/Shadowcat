@@ -10,7 +10,7 @@ use crate::data::document::{
 };
 use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
-    resolve_access_world,
+    resolve_access_world, Access,
 };
 use crate::data::repository::Repository;
 use crate::data::validation;
@@ -1047,12 +1047,40 @@ impl Repository for SqliteRepository {
                     {
                         return Err(DataError::Forbidden);
                     }
-                    let access = resolve_access_world(
-                        ctx.user_id,
-                        ctx.world_role,
-                        &cur,
-                        &world_defaults.grants_for(&cur.doc_type),
-                    );
+                    // A message doc's `gm_role`/`users` fields exist to gate
+                    // ordinary READ visibility for OTHER recipients (e.g. an
+                    // `Audience::Whisper` a GM isn't individually listed on
+                    // resolves them to `DocRole::None`; `Audience::GmOnly`
+                    // resolves them to `DocRole::Observer`, READ-only) — not
+                    // the server's own moderation capability. The handler
+                    // that produced this `ServerMessageRevision` write
+                    // (`handle_edit_message`/a future delete handler) already
+                    // independently vetted owner-or-GM authority before ever
+                    // reaching here, so re-deriving capability from the
+                    // document's own permission fields for THIS specific
+                    // origin+doc_type pair would incorrectly re-restrict a
+                    // GM's moderation edit/delete of a restricted-audience
+                    // message. Grant the same unconditional short-circuit
+                    // `resolve_access` uses for the GM/admin all-access case,
+                    // scoped EXACTLY to this pairing; every other doc_type or
+                    // origin still resolves access normally below.
+                    let access = if cur.doc_type == crate::chat::MESSAGE_DOC_TYPE
+                        && origin == WriteOrigin::ServerMessageRevision
+                    {
+                        Access {
+                            caps: std::collections::BTreeSet::new(),
+                            all: true,
+                            see_gm_only: true,
+                            is_owner: true,
+                        }
+                    } else {
+                        resolve_access_world(
+                            ctx.user_id,
+                            ctx.world_role,
+                            &cur,
+                            &world_defaults.grants_for(&cur.doc_type),
+                        )
+                    };
                     // Field-level OCC: every change's pre-image must equal the
                     // current value at its pointer (absent reads as Null).
                     let whole = serde_json::to_value(&cur)?;
