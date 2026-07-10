@@ -755,20 +755,7 @@ async fn non_recipient_still_cannot_see_deleted_whisper() {
 #[tokio::test]
 async fn client_intent_update_to_message_still_forbidden() {
     let f = fixture().await;
-    let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        "all".into(),
-        "hi".into(),
-        None,
-        Audience::Public,
-        1,
-        60,
-    )
-    .await
-    .unwrap();
+    let sent = f.send("hi").await.unwrap();
     let id = f.message_id(&sent).await;
     let op = Operation::Update {
         doc_id: id,
@@ -805,8 +792,8 @@ async fn client_intent_update_to_message_still_forbidden() {
 /// evaded by lying about `kind` inside the `system` body — only `doc_type`
 /// (which the client cannot change without also changing what the guard
 /// matches on) determines rejection.
-#[tokio::test]
-async fn client_forged_system_kind_create_and_delete_still_blocked_at_ingress() {
+#[test]
+fn client_forged_system_kind_create_and_delete_still_blocked_at_ingress() {
     let world = Uuid::new_v4();
     let attacker = Uuid::new_v4();
     let mut forged = build_message_doc(
