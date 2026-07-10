@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+mod settings;
+pub use settings::{resolve_content_policy, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE};
+
 use crate::data::command::{Command, Operation};
 use crate::data::document::{DocRole, Document, PermissionSet, Scope};
 use crate::data::membership::PermissionContext;
