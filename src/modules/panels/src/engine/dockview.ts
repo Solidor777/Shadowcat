@@ -7,7 +7,6 @@ import type {
   CreateComponentOptions,
   DockviewApi,
   DockviewActivePanelChangeEvent,
-  DockviewDidDropEvent,
   DockviewWillDropEvent,
   IDockviewGroupPanel,
   IContentRenderer,
@@ -92,6 +91,24 @@ function groupIdFor(zone: ZoneId, index: number, tabs: readonly string[]): strin
   return `sc-group:${tabs[0] ?? `${zone}:${index}:empty`}`;
 }
 
+/** Gesture contract: classify → veto or redispatch; dockview never self-mutates
+ * from a drop. Every will-drop wire (`#handleWillDrop`, fed by both the
+ * component-level `api.onWillDrop` and the per-group `group.model.onWillDrop`
+ * — see `#groupWillDropSubs`) either vetoes (`preventDefault()`, no further
+ * action) or, for an ALLOWED classification, ALSO `preventDefault()`s and
+ * instead emits the classified `LayoutOp` to `#opListeners`. dockview's own
+ * internal move machinery (`_onMove` → `DockviewComponent#moveGroupOrPanel`,
+ * `dockviewGroupPanelModel.ts:1804`) is consequently never reached for a
+ * completed same-instance drag: the tree is canonical, and the controller's
+ * `apply()` — driven by the op this class just emitted — is the one
+ * sanctioned mutation path back into dockview. `onDidDrop` (fired only when
+ * a drop's `PanelTransfer.viewId` does not match this instance's own
+ * `accessor.id` — i.e. a drag whose data never originated from THIS
+ * `DockviewApi`, `dockviewGroupPanelModel.ts:1747-1821`) has no wiring here:
+ * this codebase creates exactly one `DockviewApi` per `PanelHost` (no
+ * popout/multi-instance support), so no drag reaching this class can ever
+ * satisfy that mismatch — the event is unreachable for a real user gesture,
+ * not merely unhandled. */
 export class DockviewEngine implements EngineAdapter {
   #api: DockviewApi | null = null;
   #opListeners = new Set<(op: LayoutOp) => void>();
@@ -126,14 +143,15 @@ export class DockviewEngine implements EngineAdapter {
   // that optional chain is a permanent no-op — `#handleWillDrop` is
   // otherwise unreachable for any group-target drop (header, tab, or
   // content). `IDockviewGroupPanelModel.onWillDrop` (`dockviewGroupPanelModel.
-  // ts:109`) is a public event on the SAME `group.model` this class already
-  // reaches via `api.getGroup(groupId)`, fires with the identical
-  // `DockviewWillDropEvent` shape as the component-level event
-  // (`dockviewGroupPanelModel.ts:1731-1741`), and gates `_onMove`/`_onDidDrop`
-  // on `defaultPrevented` exactly like the root path (`handleDropEvent`,
-  // `dockviewGroupPanelModel.ts:1741-1811`) — so binding `#handleWillDrop`
-  // to it directly closes the group-onto-group veto bypass with the SAME
-  // classify/veto logic, no new method needed.
+  // ts:186` interface, emitter at `:274-275`) is a public event on the SAME
+  // `group.model` this class already reaches via `api.getGroup(groupId)`,
+  // fires with the identical `DockviewWillDropEvent` shape as the
+  // component-level event (`dockviewGroupPanelModel.ts:1731-1741`), and gates
+  // `_onMove`/`_onDidDrop` on `defaultPrevented` exactly like the root path
+  // (`handleDropEvent`, `dockviewGroupPanelModel.ts:1741-1811`) — so binding
+  // `#handleWillDrop` to it directly closes the group-onto-group veto bypass
+  // AND lets an ALLOWED group-target drop be intercepted-and-redispatched the
+  // same way as a root/edge drop, no new method needed.
   #groupWillDropSubs = new Map<string, { dispose(): void }>();
   // Last EMITTED px dimensions per zone/group, to skip dockview's frequent
   // sub-pixel dimension churn (every layout pass fires this event, not just
@@ -160,7 +178,6 @@ export class DockviewEngine implements EngineAdapter {
 
     this.#disposables.push(
       api.onWillDrop((event) => this.#handleWillDrop(event)),
-      api.onDidDrop((event) => this.#handleDidDrop(event)),
       api.onDidRemovePanel((panel) => this.#handleDidRemovePanel(panel)),
       api.onDidActivePanelChange((event) => this.#handleActivePanelChange(event)),
     );
@@ -239,21 +256,24 @@ export class DockviewEngine implements EngineAdapter {
     }
   }
 
-  /** W2: the drop veto. `classifyDrop` is pure/engine-free — this is the
-   * ONLY place a dockview drag event is translated into `DropSite` and fed
-   * to it. A veto calls `event.preventDefault()`, which dockview honours
-   * before performing the actual DOM move (`DockviewWillDropEvent` fires
-   * before the model applies anything and checks `defaultPrevented`).
-   * Fails CLOSED on anything this translation layer cannot classify: a null
-   * layout (pre-first-`apply()`) or a payload `#toDropSite` cannot resolve
-   * into a `DropSite` (notably a whole-GROUP transfer — `PanelTransfer`'s
-   * `panelId` is null for a titlebar drag of an entire group, per
-   * `groupDragSource.ts`) are vetoed outright rather than let through
-   * unpoliced. A whole-group drop targeting the container's TOP edge would
-   * otherwise land ABOVE the stage (W1/D4 violation) since `classifyDrop`
-   * never runs against it; vetoing the whole gesture class in v1 also means
-   * a completed group drop never needs a `LayoutOp` translation (see
-   * `#handleDidDrop`).
+  /** W2 + intercept-and-redispatch: the ONLY place a dockview drag event is
+   * translated into `DropSite` and fed to `classifyDrop` (pure/engine-free).
+   * `event.preventDefault()` is now called UNCONDITIONALLY once a layout and
+   * a classifiable site exist — for a veto, that is the whole story (dockview
+   * performs no DOM move; see the class doc comment); for an ALLOWED
+   * classification, `preventDefault()` ALSO runs (dockview must never
+   * self-mutate from this gesture), and the classified `LayoutOp` is emitted
+   * to `#opListeners` instead. The controller applies that op to the tree and
+   * re-enters through `apply()`, which is the one sanctioned mutation path
+   * back into dockview (cross-group moves: see `apply()`'s
+   * remove+re-add-under-groupId branch). Fails CLOSED on anything this
+   * translation layer cannot classify: a null layout (pre-first-`apply()`) or
+   * a payload `#toDropSite` cannot resolve into a `DropSite` (notably a
+   * whole-GROUP transfer — `PanelTransfer`'s `panelId` is null for a titlebar
+   * drag of an entire group, per `groupDragSource.ts`) are vetoed outright
+   * rather than let through unpoliced. A whole-group drop targeting the
+   * container's TOP edge would otherwise land ABOVE the stage (W1/D4
+   * violation) since `classifyDrop` never runs against it.
    *
    * Two independent wires feed this SAME method: `init()`'s `api.onWillDrop`
    * (fires only for root/edge drops — `dockviewComponent.ts`'s
@@ -263,14 +283,16 @@ export class DockviewEngine implements EngineAdapter {
    * `#groupWillDropSubs`'s doc comment for why the component-level event
    * alone does NOT cover group-target drops). Together they cover every
    * drop this engine can receive: container-edge drops via the component
-   * path, group-onto-group drops via the per-group path. */
+   * path, group-onto-group drops via the per-group path — and since BOTH
+   * now `preventDefault()` every allowed drop too, dockview's own `_onMove`/
+   * internal move machinery is never reached from either wire. */
   #handleWillDrop(event: DockviewWillDropEvent): void {
     const layout = this.#expanded;
     if (!layout) {
       event.preventDefault();
       return;
     }
-    const site = this.#toDropSite(event, event.kind);
+    const site = this.#toDropSite(event);
     if (!site) {
       // Whole-group transfers and any other unclassifiable payload shape —
       // vetoed rather than silently let through (see doc comment above).
@@ -279,45 +301,20 @@ export class DockviewEngine implements EngineAdapter {
       return;
     }
     const result = classifyDrop(site, layout);
+    event.preventDefault();
     if ("veto" in result) {
-      event.preventDefault();
       this.#logger.warn(`panels: vetoed drop (${result.reason})`, site);
-    }
-  }
-
-  /** Translates a completed drop into the `LayoutOp` the reducer needs to
-   * keep our tree in sync with what dockview just did to its own DOM. A
-   * completed drop necessarily already passed `#handleWillDrop`'s veto, so
-   * `classifyDrop` re-running here should never veto in practice — if it
-   * somehow does (a translation edge case: `DockviewDidDropEvent` carries no
-   * `kind`, unlike `DockviewWillDropEvent`, so it is approximated below),
-   * the op is dropped and logged rather than risking a stage-well-violating
-   * op reaching the reducer. */
-  #handleDidDrop(event: DockviewDidDropEvent): void {
-    if (this.#applying) return;
-    const layout = this.#expanded;
-    // A real completed drop can never reach here with a null layout:
-    // `#handleWillDrop` now `preventDefault()`s every drop in that window
-    // (see its doc comment), so dockview never lets one complete. Kept as a
-    // defense-in-depth bail, not a reachable production path.
-    if (!layout) return;
-    const site = this.#toDropSite(event, undefined);
-    if (!site) return;
-    const result = classifyDrop(site, layout);
-    if ("veto" in result) {
-      this.#logger.warn(`panels: a completed drop reclassified as a veto (${result.reason}); ignoring`, site);
       return;
     }
+    // Allowed: redispatch as our own op rather than letting dockview
+    // complete the move internally (see class doc comment).
     for (const cb of this.#opListeners) cb(result);
   }
 
-  /** Shared translator for both `onWillDrop` (has a real `kind`) and
-   * `onDidDrop` (does not — `kind` is passed as `undefined` and approximated
-   * from `position`/`group` below). */
-  #toDropSite(
-    event: DockviewWillDropEvent | DockviewDidDropEvent,
-    kind: DockviewWillDropEvent["kind"] | undefined,
-  ): DropSite | null {
+  /** Translator for `onWillDrop`'s `DropSite`. `onDidDrop` is unwired (see the
+   * class doc comment), so `kind` is always the real value dockview supplies
+   * on the will-drop event — no approximation branch is needed here anymore. */
+  #toDropSite(event: DockviewWillDropEvent): DropSite | null {
     const data = event.getData();
     const id = data?.panelId;
     // Whole-group drags (`PanelTransfer.panelId === null`, a titlebar drag of
@@ -328,8 +325,9 @@ export class DockviewEngine implements EngineAdapter {
     if (!id) return null;
     const targetGroupId = event.group?.id;
     const stageGroup = targetGroupId === STAGE_GROUP_ID;
+    const kind = event.kind;
 
-    if (kind === "edge" || (kind === undefined && !event.group)) {
+    if (kind === "edge" || !event.group) {
       return { kind: "edge", id, position: event.position, stageGroup };
     }
 
@@ -559,10 +557,14 @@ export class DockviewEngine implements EngineAdapter {
 // TODO: floating-panel position/size sync in `apply()` for an
 // ALREADY-floating panel (creation is handled; live re-drag/resize of an
 // existing floating window is not yet mirrored back into the tree).
-// TODO: `#toDropSite`'s fallback branches (target group outside our zone
-// bookkeeping; `onDidDrop`'s missing `kind`) are best-effort approximations,
-// not exhaustively verified against every dockview drag path — recommend a
-// manual browser QA pass over live drag-and-drop before shipping.
+// TODO: `#toDropSite`'s target-group-outside-our-zone-bookkeeping fallback is
+// a best-effort approximation (falls back to an edge-zone dock). The
+// intercept-and-redispatch translation mechanism itself (preventDefault +
+// emit + reconcile through `apply()`) is exercised directly by unit tests, not
+// approximated — the residual manual-QA item narrows to drop-position
+// classification fidelity for real pointer geometry (edge vs center vs
+// tab-strip index resolution against an actual drag gesture, which jsdom
+// cannot simulate) before shipping.
 // Whole-GROUP drag transfers (`PanelTransfer.panelId === null`) are vetoed
 // outright in v1 (see `#handleWillDrop`'s doc comment) for both the
 // container-edge path (component-level `api.onWillDrop`) and the

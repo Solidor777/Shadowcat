@@ -197,14 +197,25 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   panel — creation is handled (`api.addPanel({..., floating: {...}})`), but a live re-drag or
   resize of an existing floating window is not mirrored back into the tree, so the persisted
   `Rect` can drift from what the user sees.
-- TODO: `DockviewEngine#toDropSite`'s fallback branches (a drop's target group falling outside
-  the engine's own zone bookkeeping; `onDidDrop`'s translation, which has no `kind` field unlike
-  `onWillDrop` and so approximates one) are best-effort, not exhaustively verified against every
-  dockview drag path. Real drag-and-drop cannot be simulated under jsdom (no native
-  `DragEvent`/`PointerEvent` gesture), so this is untested beyond the pure `classifyDrop`
-  policy tests + programmatic-API jsdom tests (adoption, idempotence, W3 stage-restore).
-  Recommend a manual browser QA pass over live drag-and-drop (edge docks, tab-strip drops,
-  float-drags, cross-zone moves) before shipping.
+- RESOLVED (M12a Task 6 fix round 3): `DockviewEngine`'s gesture contract is now uniformly
+  "classify → veto or redispatch; dockview never self-mutates from drops" — `#handleWillDrop`
+  `preventDefault()`s an ALLOWED classification too and emits the classified `LayoutOp` itself,
+  so dockview's own internal move machinery (`_onMove`) is never reached for a completed
+  same-instance drag, and `onDidRemovePanel` can no longer see an internal-move removal outside
+  `apply()`'s `#applying` window (closing the spurious-close-op defect a real browser drag used
+  to hit). `onDidDrop`/`#handleDidDrop` are removed: `onDidDrop` only fires when a drop's
+  `PanelTransfer.viewId` doesn't match this instance's own `accessor.id`, which no drag reaching
+  this class (one `DockviewApi` per `PanelHost`, no popout/multi-instance support) can ever
+  satisfy.
+- TODO: `DockviewEngine#toDropSite`'s one remaining fallback branch (a drop's target group
+  falling outside the engine's own zone bookkeeping) is a best-effort approximation (falls back
+  to an edge-zone dock), not exhaustively verified against every dockview drag path. The
+  intercept-and-redispatch translation mechanism itself (preventDefault + emit + reconcile
+  through `apply()`) IS exercised directly by unit tests now, not approximated. Real drag-and-drop
+  still cannot be simulated under jsdom (no native `DragEvent`/`PointerEvent` gesture) — the
+  residual manual-QA item narrows to drop-position classification fidelity for real pointer
+  geometry (edge vs center vs tab-strip index resolution against an actual drag gesture) before
+  shipping.
 - TODO: `DockviewEngine.apply()`'s group-identity scheme keys a dockview group id off its
   first tab's id (`groupIdFor`), not a stable positional/structural id — reordering a group's
   first tab, or emptying then refilling a group, causes that group to be torn down and

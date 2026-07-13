@@ -326,10 +326,10 @@ test("group-onto-group: a whole-group transfer targeting an existing group's con
   expect(prevented).toBe(true);
 });
 
-test("group-onto-group: a normal single-panel drop onto an existing group's content is classified, not vetoed, via the per-group onWillDrop wire", () => {
-  // Proves the previous test isn't a blanket veto of every group-target
-  // drop — the SAME per-group wire runs the real `classifyDrop` policy and
-  // only vetoes unclassifiable payloads (e.g. whole-group transfers).
+test("group-onto-group: an ALLOWED single-panel drop onto an existing group's content is intercepted (defaultPrevented) and redispatched as exactly one dock op, via the per-group onWillDrop wire", () => {
+  // An allowed classification always calls preventDefault() too — dockview's
+  // own internal move machinery never completes the drop; the classified op
+  // is emitted to op listeners instead so the tree stays canonical.
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat", "assets"]);
@@ -339,6 +339,9 @@ test("group-onto-group: a normal single-panel drop onto an existing group's cont
   engine.apply(twoPanelLayout().expanded, new Map());
 
   const chatGroup = engine.debugApi!.getPanel("chat")!.group;
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
 
   let prevented = false;
   const event = {
@@ -359,7 +362,70 @@ test("group-onto-group: a normal single-panel drop onto an existing group's cont
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (chatGroup.model as any)._onWillDrop.fire(event);
 
-  expect(prevented).toBe(false);
+  expect(prevented).toBe(true);
+  expect(ops).toHaveLength(1);
+  expect(ops[0]).toEqual({ op: "dock", id: "assets", zone: "right", group: 0 });
+});
+
+test("root/edge: an ALLOWED edge drop is intercepted (defaultPrevented) and redispatched as exactly one dock op, via the component-level onWillDrop wire", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  engine.apply(twoPanelLayout().expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  const event = fireWillDrop(engine, { kind: "edge", position: "left", panelId: "chat" });
+
+  expect(event.defaultPrevented).toBe(true);
+  expect(ops).toHaveLength(1);
+  expect(ops[0]).toEqual({ op: "dock", id: "chat", zone: "left", group: "new" });
+});
+
+test("no spurious close op: an ALLOWED cross-group drop, applied through the reducer, never causes the moved panel's removal to also emit a close op", () => {
+  // The moved panel's group DOES change (apply()'s remove+re-add-under-groupId
+  // reconcile), but that removal runs inside apply()'s `#applying` window, so
+  // it must never surface as a user-driven close.
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat", "assets"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  let layout = twoPanelLayout();
+  engine.apply(layout.expanded, new Map());
+
+  const chatGroup = engine.debugApi!.getPanel("chat")!.group;
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  const event = {
+    kind: "content",
+    position: "center",
+    panel: undefined,
+    group: chatGroup,
+    getData: () => ({ viewId: "v", groupId: "sc-group:assets", panelId: "assets" }),
+    get defaultPrevented() {
+      return false;
+    },
+    preventDefault() {},
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (chatGroup.model as any)._onWillDrop.fire(event);
+
+  // Apply the emitted op, mirroring the real controller — this drives the
+  // reconcile that actually performs the cross-group move.
+  const dockOp = ops.find((o) => o.op === "dock");
+  expect(dockOp).toBeDefined();
+  layout = applyOp(layout, dockOp!);
+  engine.apply(layout.expanded, new Map());
+
+  expect(ops.some((o) => o.op === "close")).toBe(false);
 });
 
 test("Finding 3: a group's live dimension change emits resizeZone + resizeGroup ops with sane values", () => {
@@ -429,4 +495,26 @@ test("Finding 3: dimension changes synchronously triggered from inside apply() a
   unsub.dispose();
 
   expect(ops.filter((o) => o.op === "resizeZone" || o.op === "resizeGroup")).toHaveLength(0);
+});
+
+test("a genuine engine-side removal (outside apply()) still emits exactly one close op", () => {
+  // Not every removal is a drop: dockview's own default tab close button
+  // calls `panel.api.close()` -> `removePanel` directly, outside any
+  // `apply()` window. `#handleDidRemovePanel` must still translate that one.
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat", "assets"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  engine.apply(twoPanelLayout().expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  const assetsPanel = engine.debugApi!.getPanel("assets")!;
+  engine.debugApi!.removePanel(assetsPanel);
+
+  expect(ops.filter((o) => o.op === "close")).toHaveLength(1);
+  expect(ops.find((o) => o.op === "close")).toEqual({ op: "close", id: "assets" });
 });
