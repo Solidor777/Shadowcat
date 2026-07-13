@@ -242,6 +242,11 @@ async fn handle_socket(
     let ping_rate = state.ws.ping_rate.clone();
     // Per-user chat flood budget (shared across this user's connections).
     let message_rate = state.ws.message_rate.clone();
+    // Link-preview fetch client/cache/budget (shared across all connections
+    // and worlds — a preview's target and cached outcome are world-independent).
+    let preview_client = state.ws.link_preview_client.clone();
+    let preview_cache = state.ws.link_preview_cache.clone();
+    let preview_rate = state.ws.preview_rate.clone();
     loop {
         tokio::select! {
             _ = &mut egress => break,
@@ -391,6 +396,9 @@ async fn handle_socket(
                                 repo.as_ref(),
                                 &ctx,
                                 &message_rate,
+                                &preview_client,
+                                &preview_cache,
+                                &preview_rate,
                                 channel,
                                 content,
                                 actor_owner,
@@ -411,6 +419,9 @@ async fn handle_socket(
                                 repo.as_ref(),
                                 &ctx,
                                 &message_rate,
+                                &preview_client,
+                                &preview_cache,
+                                &preview_rate,
                                 message_id,
                                 content,
                                 now_millis(),

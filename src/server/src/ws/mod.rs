@@ -49,6 +49,18 @@ pub struct WsState {
     pub ping_rate: Arc<PingRateLimiter>,
     /// Per-user chat flood budget (shared across a user's connections).
     pub message_rate: Arc<PingRateLimiter>,
+    /// The link-preview SSRF-guarded fetch client, built ONCE via
+    /// `chat::build_link_preview_client()` (the no-flag production
+    /// constructor — never the test-only loopback-permitting one) and
+    /// shared across every connection/world; a preview's target is
+    /// world-independent.
+    pub link_preview_client: Arc<reqwest::Client>,
+    /// In-memory per-URL preview cache, shared across every
+    /// connection/world (a URL's preview is world-independent).
+    pub link_preview_cache: Arc<crate::chat::LinkPreviewCache>,
+    /// Per-user outbound-fetch budget for the link-preview fetcher (shared
+    /// across a user's connections, same shape as `message_rate`).
+    pub preview_rate: Arc<crate::chat::PreviewRateLimiter>,
 }
 
 impl WsState {
@@ -57,6 +69,9 @@ impl WsState {
             rooms: Arc::new(RoomRegistry::new()),
             ping_rate: Arc::new(PingRateLimiter::new()),
             message_rate: Arc::new(PingRateLimiter::new()),
+            link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
+            link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
+            preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),
         }
     }
 
@@ -67,6 +82,9 @@ impl WsState {
             rooms: Arc::new(RoomRegistry::with_capacity(capacity)),
             ping_rate: Arc::new(PingRateLimiter::new()),
             message_rate: Arc::new(PingRateLimiter::new()),
+            link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
+            link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
+            preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),
         }
     }
 }

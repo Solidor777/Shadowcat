@@ -6,8 +6,8 @@
 //! `chat_content.rs`'s fixture shape.
 
 use shadowcat::chat::{
-    handle_edit_message, handle_send_message, Audience, MessageKind, MessageSystem, Segment,
-    SendMessageError,
+    build_link_preview_client, handle_edit_message, handle_send_message, Audience,
+    LinkPreviewCache, MessageKind, MessageSystem, PreviewRateLimiter, Segment, SendMessageError,
 };
 use shadowcat::data::command::{Command, Operation};
 use shadowcat::data::document::{Document, WorldRole};
@@ -26,6 +26,13 @@ struct Fixture {
     repo: SqliteRepository,
     room: Arc<Room>,
     rate: PingRateLimiter,
+    // Link-preview deps: no test in this file enables `hyperlinks`, so
+    // `previews_enabled()` is always false and `enrich` never fetches — a
+    // production (non-loopback) client is safe here, it's simply never
+    // dialed.
+    preview_client: reqwest::Client,
+    preview_cache: LinkPreviewCache,
+    preview_rate: PreviewRateLimiter,
     alice: PermissionContext,
     alice_id: Uuid,
     bob_id: Uuid,
@@ -65,6 +72,9 @@ impl Fixture {
             repo,
             room,
             rate: PingRateLimiter::new(),
+            preview_client: build_link_preview_client(),
+            preview_cache: LinkPreviewCache::new(),
+            preview_rate: PreviewRateLimiter::new(),
             alice,
             alice_id,
             bob_id,
@@ -77,6 +87,9 @@ impl Fixture {
             &self.repo,
             &self.alice,
             &self.rate,
+            &self.preview_client,
+            &self.preview_cache,
+            &self.preview_rate,
             "all".into(),
             content.into(),
             None,
@@ -251,6 +264,9 @@ async fn edit_of_roll_message_is_immutable() {
         &f.repo,
         &f.alice,
         &f.rate,
+        &f.preview_client,
+        &f.preview_cache,
+        &f.preview_rate,
         id,
         "/roll 1d20".into(),
         2,
@@ -272,6 +288,9 @@ async fn edit_into_roll_is_rejected() {
         &f.repo,
         &f.alice,
         &f.rate,
+        &f.preview_client,
+        &f.preview_cache,
+        &f.preview_rate,
         id,
         "/roll 1d6".into(),
         2,
@@ -304,6 +323,9 @@ async fn edit_content_with_inline_span_stays_literal_text() {
         &f.repo,
         &f.alice,
         &f.rate,
+        &f.preview_client,
+        &f.preview_cache,
+        &f.preview_rate,
         id,
         "[[1d6]]".into(),
         2,

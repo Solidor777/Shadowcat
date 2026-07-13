@@ -15,12 +15,16 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::redirect::Policy;
 use url::{Host, Url};
+use uuid::Uuid;
+
+use super::preview_cache::{LinkPreviewCache, PreviewRateLimiter, PREVIEW_FETCH_PER_MIN};
+use super::Segment;
 
 /// A server-fetched preview. Stored verbatim by the ingest stage (a later
 /// checkpoint) as a `Segment::LinkPreview`; the client renders ONLY these
@@ -30,6 +34,136 @@ pub struct LinkPreview {
     pub url: String,
     pub title: String,
     pub description: String,
+}
+
+/// Cap on distinct URLs previewed per message (design doc §3). First-seen
+/// order, applied to the DEDUPED candidate list — a message pasting the same
+/// link four times still counts it once toward this cap.
+pub const MAX_PREVIEWS_PER_MESSAGE: usize = 3;
+
+/// Bounded scan for `href="..."`/`href='...'` occurrences across an already
+/// ammonia-sanitized HTML run — NOT a full HTML parse (ammonia's output is
+/// well-formed, so a bounded attribute scan is safe and avoids a second
+/// parser dependency). `lower`/`html` stay byte-index-aligned the same way
+/// `extract_meta_tags` relies on (ASCII-lowercasing never changes UTF-8 byte
+/// length). Capped at 64 matches so a pathological anchor count cannot blow
+/// the scan budget; the caller further caps the DEDUPED result at
+/// `MAX_PREVIEWS_PER_MESSAGE`.
+fn extract_href_urls(html: &str) -> Vec<String> {
+    let lower = html.to_ascii_lowercase();
+    let mut urls = Vec::new();
+    let mut from = 0usize;
+    while urls.len() < 64 {
+        let Some(rel) = lower[from..].find("href=") else {
+            break;
+        };
+        let start = from + rel + "href=".len();
+        let Some(quote) = html[start..].chars().next() else {
+            break;
+        };
+        if quote != '"' && quote != '\'' {
+            // Not a quoted value (e.g. an unquoted attribute ammonia never
+            // emits, or a false-positive substring match) — skip past it.
+            from = start;
+            continue;
+        }
+        let after_quote = start + quote.len_utf8();
+        let Some(end_rel) = html[after_quote..].find(quote) else {
+            break;
+        };
+        urls.push(html[after_quote..after_quote + end_rel].to_string());
+        from = after_quote + end_rel + quote.len_utf8();
+    }
+    urls
+}
+
+/// Extracts candidate preview URLs from `segments`' `Html` runs (the
+/// sanitizer's `<a href>` output — the authoritative "hyperlink-enabled" set,
+/// since a URL the sanitizer stripped never reaches here), de-duplicated in
+/// first-seen order and capped at `MAX_PREVIEWS_PER_MESSAGE`, then resolves
+/// each through `cache` (a hit reuses the cached outcome; a miss is
+/// rate-limit-gated then fetched). Misses are fetched CONCURRENTLY via a
+/// `JoinSet` so the total added latency is one fetch's worth, not N serial
+/// fetches. Each successful fetch APPENDS one `Segment::LinkPreview` to the
+/// END of `segments` (existing segments are never reordered or removed); a
+/// failure or a rate-limited URL degrades silently to no card (a failure is
+/// still cached as a negative so a repeat within `NEGATIVE_TTL` doesn't
+/// re-fetch; a rate-limited miss is NOT cached, so a later minute may still
+/// succeed). `now_ms` drives the rate limiter's sliding window; `now` drives
+/// the cache's TTL — both must be consistent with the caller's clock but are
+/// deliberately separate types/precisions, matching each dependency's own
+/// clock source.
+pub async fn enrich(
+    segments: &mut Vec<Segment>,
+    client: &reqwest::Client,
+    cache: &LinkPreviewCache,
+    rate: &PreviewRateLimiter,
+    user: Uuid,
+    now_ms: i64,
+    now: Instant,
+) {
+    let mut urls: Vec<String> = Vec::new();
+    'outer: for seg in segments.iter() {
+        if let Segment::Html { sanitized_html } = seg {
+            for url in extract_href_urls(sanitized_html) {
+                if !urls.contains(&url) {
+                    urls.push(url);
+                    if urls.len() >= MAX_PREVIEWS_PER_MESSAGE {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut previews: Vec<LinkPreview> = Vec::with_capacity(urls.len());
+    let mut misses: Vec<String> = Vec::new();
+    for url in urls {
+        match cache.get(&url, now) {
+            Some(Some(preview)) => previews.push(preview),
+            Some(None) => {} // live cached negative: skip silently, no re-fetch
+            None => misses.push(url),
+        }
+    }
+
+    if !misses.is_empty() {
+        let mut set = tokio::task::JoinSet::new();
+        for url in misses {
+            // Rate-limit-gated BEFORE spawning the fetch task — a rejected
+            // URL never touches the network and is never cached (a fresh
+            // minute may still succeed for it).
+            if !rate.check(user, now_ms, PREVIEW_FETCH_PER_MIN) {
+                continue;
+            }
+            let client = client.clone();
+            set.spawn(async move {
+                let result = fetch_preview(&client, &url).await;
+                (url, result)
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            let Ok((url, result)) = joined else {
+                continue; // a joined task panicking is not this stage's failure mode to surface
+            };
+            match result {
+                Ok(preview) => {
+                    cache.insert(url, Some(preview.clone()), now);
+                    previews.push(preview);
+                }
+                Err(_) => {
+                    cache.insert(url, None, now);
+                }
+            }
+        }
+    }
+
+    for preview in previews {
+        segments.push(Segment::LinkPreview {
+            url: preview.url,
+            title: preview.title,
+            description: preview.description,
+        });
+    }
 }
 
 /// Why `fetch_preview` failed. Every guard in this module maps to exactly one
@@ -328,11 +462,33 @@ pub fn build_client() -> reqwest::Client {
 }
 
 /// Test-only client whose resolver permits loopback, so tests can point it at a
-/// `127.0.0.1`-bound stub server. No production counterpart exists.
+/// `127.0.0.1`-bound stub server. No production counterpart exists. NOTE: a
+/// literal-IP host (e.g. `http://127.0.0.1:PORT/`) is STILL rejected by
+/// `validate_url` regardless of this flag (see that fn's doc) — this client
+/// only helps a DOMAIN host that a resolver maps to loopback (see
+/// `build_client_with_resolve_fn`).
 #[cfg(test)]
 pub fn build_client_allow_loopback() -> reqwest::Client {
     build_client_with_timeouts(
         GuardedResolver::new_allow_loopback(),
+        CONNECT_TIMEOUT,
+        TOTAL_TIMEOUT,
+    )
+}
+
+/// Test-only client whose resolver is entirely replaced by `f` (loopback
+/// permitted) — the seam ingest-stage tests use to point an ordinary DOMAIN
+/// hostname (e.g. `stub.test`, never an IP literal, which `validate_url`
+/// blocks unconditionally) at a real stub server's loopback address. Exposed
+/// beyond `link_preview`'s own `#[cfg(test)] mod tests` so `chat::mod.rs`'s
+/// ingest-integration tests can build an equivalent client without
+/// duplicating `GuardedResolver`/`build_client_with_timeouts` wiring.
+#[cfg(test)]
+pub fn build_client_with_resolve_fn(
+    f: impl Fn(&str) -> std::io::Result<Vec<IpAddr>> + Send + Sync + 'static,
+) -> reqwest::Client {
+    build_client_with_timeouts(
+        GuardedResolver::with_resolve_fn(true, f),
         CONNECT_TIMEOUT,
         TOTAL_TIMEOUT,
     )

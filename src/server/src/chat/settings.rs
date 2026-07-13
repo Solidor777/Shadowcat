@@ -28,6 +28,29 @@ pub struct ChatContentPolicy {
     pub images: bool,
     pub hyperlinks: bool,
     pub emails: bool,
+    /// Tri-state, unlike every other toggle here: `None` (absent) is the
+    /// spec'd DEFAULT-ON behavior (design doc §6), resolved by
+    /// `previews_enabled` to ON only when `hyperlinks` is also on — a
+    /// preview is meaningless without a rendered link to attach it to.
+    /// `Some(false)`/`Some(true)` are an explicit GM override either way.
+    /// A bare `bool` defaulting `false` (matching every sibling field)
+    /// cannot express "absent means on, explicit-false means off"; this is
+    /// the one field in this struct that widens the fail-closed baseline.
+    #[serde(default)]
+    pub link_previews: Option<bool>,
+}
+
+impl ChatContentPolicy {
+    /// Resolved link-preview enablement (design doc §6): previews require
+    /// `hyperlinks` to be on (a preview with no rendered link is
+    /// meaningless), and within that, `link_previews` defaults ON when
+    /// absent — a GM must explicitly write `link_previews: false` to opt
+    /// out once hyperlinks are enabled. A fail-closed empty/default policy
+    /// (`hyperlinks: false`) always resolves to `false` regardless of
+    /// `link_previews`.
+    pub fn previews_enabled(&self) -> bool {
+        self.hyperlinks && self.link_previews.unwrap_or(true)
+    }
 }
 
 /// Read the world's chat content policy, fail-closed. A query error, an
@@ -152,6 +175,55 @@ mod tests {
     fn default_policy_is_all_off() {
         let p = ChatContentPolicy::default();
         assert!(!p.markdown && !p.html && !p.images && !p.hyperlinks && !p.emails);
+        assert_eq!(p.link_previews, None);
+        assert!(
+            !p.previews_enabled(),
+            "hyperlinks off must yield previews disabled regardless of link_previews"
+        );
+    }
+
+    #[test]
+    fn previews_enabled_hyperlinks_off_is_always_false() {
+        let mut p = ChatContentPolicy {
+            hyperlinks: false,
+            ..Default::default()
+        };
+        assert!(!p.previews_enabled());
+        p.link_previews = Some(true);
+        assert!(
+            !p.previews_enabled(),
+            "hyperlinks off must override an explicit link_previews: true"
+        );
+    }
+
+    #[test]
+    fn previews_enabled_hyperlinks_on_absent_link_previews_defaults_true() {
+        let p = ChatContentPolicy {
+            hyperlinks: true,
+            link_previews: None,
+            ..Default::default()
+        };
+        assert!(p.previews_enabled());
+    }
+
+    #[test]
+    fn previews_enabled_hyperlinks_on_explicit_false_disables() {
+        let p = ChatContentPolicy {
+            hyperlinks: true,
+            link_previews: Some(false),
+            ..Default::default()
+        };
+        assert!(!p.previews_enabled());
+    }
+
+    #[test]
+    fn previews_enabled_hyperlinks_on_explicit_true_enables() {
+        let p = ChatContentPolicy {
+            hyperlinks: true,
+            link_previews: Some(true),
+            ..Default::default()
+        };
+        assert!(p.previews_enabled());
     }
 
     #[tokio::test]
