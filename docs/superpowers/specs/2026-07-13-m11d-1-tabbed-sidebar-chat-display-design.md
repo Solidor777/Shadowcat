@@ -116,10 +116,16 @@ its component unchanged:
 | factions | 3 | 🚩 | `factions.tab` | — |
 | conditions | 4 | ✨ | `conditions.tab` | — |
 | game-settings | 5 | ⚙️ | `gameSettings.tab` | ✓ |
+| settings | 6 | 🔧 | `settings.tab` | — |
 
 Chat is `order: 0` ⇒ the default active tab for a fresh world (Foundry parity, and chat is the
 one panel every role uses). `game-settings` gains `gmOnly` (its panel already self-gates
 internally; the tab filter removes the dead tab for players — defense in depth retained).
+
+> Correction (execution finding): the original table omitted the `settings` module (the
+> M8.5c logout/user-settings panel), which also contributed at order 0 and — registering
+> before chat — won the default-tab tie. Caught by Task 9's spec review; settings moved to
+> order 6 with its own tab metadata, restoring chat as the unique order-0 default.
 
 ## 2. Chat display modules
 
