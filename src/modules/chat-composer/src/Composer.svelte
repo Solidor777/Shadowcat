@@ -1,11 +1,27 @@
 <script lang="ts">
+  import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { MAX_MESSAGE_CHARS, type WireAudience } from "@shadowcat/core";
+  import { actorDisplayName, MAX_MESSAGE_CHARS, type WireActorOwnerRef, type WireAudience, type WireDocument } from "@shadowcat/core";
 
   let { channel, audience, placeholderName }: { channel: string; audience: WireAudience; placeholderName: string } = $props();
 
   const ctx = getAppContext();
   const t = ctx.t;
+
+  const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
+
+  // "Speak as" options: the default (no attribution) plus every actor doc the current
+  // user may speak as — own actors only for a Player, ALL actors for a GM (spec §8).
+  // Reactive to actor creation/ownership changes via the store subscriber bridge.
+  const speakableActors = $derived.by((): WireDocument[] => {
+    subscribe();
+    const all = ctx.documents.query("actor");
+    return ctx.role === "gm" ? all : all.filter((doc) => doc.owner === ctx.selfId);
+  });
+
+  // Sticky per session (component-local `$state`, not persisted) — spec §8. Empty string
+  // is the sentinel for "Myself" (the default, no-attribution option).
+  let selectedActorId = $state("");
 
   // Counter shows only when the author is nearing the server cap (MAX_MESSAGE_CHARS,
   // chat/mod.rs) — not on every keystroke, to avoid a permanently-visible chrome element.
@@ -38,7 +54,8 @@
     if (!canSend) return;
     // /-commands (e.g. "/roll 1d6") ride verbatim — the server (chat::parse_command)
     // is the sole parser; the composer never inspects or branches on content shape.
-    ctx.chat.send({ channel, content: trimmed, audience });
+    const actorOwner: WireActorOwnerRef | undefined = selectedActorId ? { kind: "actor", actor_id: selectedActorId } : undefined;
+    ctx.chat.send(actorOwner ? { channel, content: trimmed, audience, actorOwner } : { channel, content: trimmed, audience });
     value = "";
     queueMicrotask(autoGrow);
   }
@@ -56,6 +73,13 @@
 </script>
 
 <div class="composer">
+  <label class="visually-hidden" for="chat-composer-speak-as">{t("chat.composer.speakAs")}</label>
+  <select id="chat-composer-speak-as" aria-label={t("chat.composer.speakAs")} bind:value={selectedActorId}>
+    <option value="">{t("chat.composer.myself")}</option>
+    {#each speakableActors as actor (actor.id)}
+      <option value={actor.id}>{actorDisplayName(actor.system as { name?: string; displayName?: string })}</option>
+    {/each}
+  </select>
   <label class="visually-hidden" for="chat-composer-input">{placeholder}</label>
   <textarea
     id="chat-composer-input"
@@ -77,6 +101,11 @@
     display: flex;
     align-items: flex-end;
     gap: var(--space-1);
+  }
+  select {
+    flex: 0 0 auto;
+    min-height: 44px;
+    max-width: 8em;
   }
   textarea {
     flex: 1 1 auto;

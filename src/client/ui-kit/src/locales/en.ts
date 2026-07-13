@@ -155,6 +155,8 @@ export const en: Messages = {
   "chat.newMessages": "New messages ↓",
   "chat.composer.placeholder": "Message #{name}",
   "chat.composer.placeholderGm": "Message the GM",
+  "chat.composer.speakAs": "Speak as",
+  "chat.composer.myself": "Myself",
   "chat.composer.send": "Send",
   "chat.composer.count": "{used} / {max}",
   "chat.edited": "(edited)",
