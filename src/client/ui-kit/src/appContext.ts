@@ -4,6 +4,7 @@ import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
 import type { TokenSelection } from "./tokenSelection.svelte";
+import type { PanelsApi } from "./panelsBridge";
 
 /**
  * Ambient app state contributed components read via Svelte context. Carries the
@@ -96,13 +97,23 @@ export interface AppContext {
   leaveWorld: () => void;
   /** Log out of the server session and return to the pre-world (login) view. */
   logout: () => Promise<void>;
-  /** Narrow per-world UI-state seam (currently: the sidebar's active tab). The
-   * shell owns storage/persistence; this seam only reads/writes the current
-   * world's slice. */
+  /** Narrow per-world UI-state seam. The shell owns storage/persistence; this
+   * seam only reads/writes the current world's slice. `getActiveTab`/
+   * `setActiveTab` persist the tabbed-sidebar's active tab.
+   * TODO: remove `getActiveTab`/`setActiveTab` once the panel host fully
+   * replaces the tabbed sidebar.
+   * `getPanelLayout`/`setPanelLayout` persist the panel host's dock/size/order
+   * blob (opaque to this seam — the panel host owns its shape). */
   uiState: {
     getActiveTab(): string | null;
     setActiveTab(id: string): void;
+    getPanelLayout(): unknown | null;
+    setPanelLayout(blob: unknown): void;
   };
+  /** Imperative panel-host seam (open/close/focus/toggle by panel id). No-ops
+   * (with a one-time console warning) until the panel host binds; see
+   * `PanelsBridge`. */
+  panels: PanelsApi;
 }
 
 /** Context key; exported only so test fixtures can seed an AppContext. */

@@ -4,6 +4,7 @@ import { DocumentStore, AssetResolver, ContributionRegistry } from "@shadowcat/c
 import { SceneInteractionBridge } from "../sceneInteraction";
 import { ActorSelection } from "../actorSelection.svelte";
 import { TokenSelection } from "../tokenSelection.svelte";
+import { PanelsBridge } from "../panelsBridge";
 
 /** Build a Map for @testing-library/svelte's `context` option holding a minimal
  * AppContext (overridable per field), seeded under the real private key. */
@@ -32,7 +33,13 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     chat: over.chat ?? { send: () => {}, edit: () => {}, delete: () => {} },
     leaveWorld: over.leaveWorld ?? (() => {}),
     logout: over.logout ?? (async () => {}),
-    uiState: over.uiState ?? { getActiveTab: () => null, setActiveTab: () => {} },
+    uiState: over.uiState ?? {
+      getActiveTab: () => null,
+      setActiveTab: () => {},
+      getPanelLayout: () => null,
+      setPanelLayout: () => {},
+    },
+    panels: over.panels ?? new PanelsBridge(),
   };
   return new Map([[__APP_CONTEXT_KEY__, ctx]]);
 }

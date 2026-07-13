@@ -1,7 +1,7 @@
 <script lang="ts">
   import { AssetResolver } from "@shadowcat/core";
   import { setAppContext } from "@shadowcat/ui-kit";
-  import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
+  import { SceneInteractionBridge, ActorSelection, TokenSelection, PanelsBridge } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
   import Assets from "../Assets.svelte";
 
@@ -33,7 +33,8 @@
     chat: { send: () => {}, edit: () => {}, delete: () => {} },
     leaveWorld: () => {},
     logout: async () => {},
-    uiState: { getActiveTab: () => null, setActiveTab: () => {} },
+    uiState: { getActiveTab: () => null, setActiveTab: () => {}, getPanelLayout: () => null, setPanelLayout: () => {} },
+    panels: new PanelsBridge(),
   });
 </script>
 
