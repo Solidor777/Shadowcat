@@ -65,10 +65,11 @@ export class WorldSession {
   state = $state<ConnState>("closed");
   role = $state<WorldRole | null>(null);
   world = $state<string | null>(null);
-  /** userId → username for see-as labels; fetched on a GM's Welcome (the members
-   * endpoint is GM-gated, so this stays empty for players). A stable reactive Map
-   * (mutated in place, never reassigned) so the reference captured into AppContext
-   * at mount stays valid and consumers re-render when it populates on (re)connect. */
+  /** userId → username for the world's members, fetched on every role's Welcome
+   * (chat author/whisper-recipient name resolution; the GM additionally uses it
+   * for see-as labels). A stable reactive Map (mutated in place, never reassigned)
+   * so the reference captured into AppContext at mount stays valid and consumers
+   * re-render when it populates on (re)connect. */
   readonly members = new SvelteMap<string, string>();
   /** World-default capability grants + declarative requirements from the latest Welcome; inputs
    * to the advisory `canEdit` gate. Re-set on every (re)connect. */
