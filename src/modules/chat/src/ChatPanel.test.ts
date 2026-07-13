@@ -202,6 +202,37 @@ describe("ChatPanel — composer instantiation", () => {
     await fireEvent.click(screen.getByText("chat.gmChannel"));
     expect(screen.getByTestId("composer").getAttribute("data-audience")).toBe("gm_only");
   });
+
+  it("passes the channel's registered display name as placeholderName, not the sender's own username", async () => {
+    const store = storeWith(buildChannelRegistryDoc("w1", { general: { name: "General" }, ooc: { name: "OOC" } }, "creg1"));
+    render(ChatPanel, {
+      context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, selfId: "u1", contributions: registryWithCardAndComposer() }),
+    });
+    // All view posts to the "general" channel — placeholder is that channel's
+    // display name, never members.get(selfId) (the sender's own username).
+    expect(screen.getByTestId("composer").getAttribute("data-placeholder")).toBe("General");
+
+    await fireEvent.click(screen.getByText("OOC"));
+    expect(screen.getByTestId("composer").getAttribute("data-placeholder")).toBe("OOC");
+  });
+
+  it("falls back to the raw channel id when the post-target channel is unregistered", () => {
+    render(ChatPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: new DocumentStore(), store: new DocumentStore(), contributions: registryWithCardAndComposer() }) });
+    // No channel-registry doc exists yet: "general" has no registered name.
+    expect(screen.getByTestId("composer").getAttribute("data-placeholder")).toBe("general");
+  });
+
+  it("the GM view's placeholderName prop is unaffected by placeholderGm ignoring it (real Composer branches on audience, not this prop)", async () => {
+    const store = storeWith(buildChannelRegistryDoc("w1", { general: { name: "General" } }, "creg1"));
+    render(ChatPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, contributions: registryWithCardAndComposer() }) });
+    await fireEvent.click(screen.getByText("chat.gmChannel"));
+    const composer = screen.getByTestId("composer");
+    expect(composer.getAttribute("data-audience")).toBe("gm_only");
+    // The GM postTarget channel is still "general", so placeholderName resolves
+    // normally here too — it's the real Composer.svelte's placeholderGm branch
+    // (gated on audience.kind, not on this prop) that makes it unused for GM.
+    expect(composer.getAttribute("data-placeholder")).toBe("General");
+  });
 });
 
 // jsdom has no layout engine: offsetParent, scrollHeight, and clientHeight all
@@ -291,5 +322,37 @@ describe("ChatPanel — hidden-tab scroll safety", () => {
     mockVisible(messages, true);
     FakeIntersectionObserver.instances[0]?.trigger(true);
     expect(messages.scrollTop).toBe(500);
+  });
+
+  it("a message arriving while hidden AND scrolled up keeps position on reveal and shows the pill, instead of force-scrolling to bottom", async () => {
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+    const store = storeWith(publicMsg("m1", 1));
+    const { container: root } = render(ChatPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, contributions: registryWithCard() }) });
+    const messages = root.querySelector(".messages") as HTMLElement;
+    // The initial mount (jsdom's default offsetParent is null, i.e. "hidden")
+    // already deferred a scroll-to-bottom for m1 under the default atBottom=true
+    // state. Consume that stale deferral first — reveal at the bottom — so it
+    // cannot contaminate the scrolled-up scenario this test actually exercises.
+    mockVisible(messages, true);
+    mockScrollMetrics(messages, { scrollTop: 900, clientHeight: 100, scrollHeight: 1000 });
+    FakeIntersectionObserver.instances[0]?.trigger(true);
+
+    // Establish "scrolled up" (not at bottom) while still visible, then hide the tab.
+    mockScrollMetrics(messages, { scrollTop: 0, clientHeight: 100, scrollHeight: 1000 });
+    await fireEvent.scroll(messages);
+    mockVisible(messages, false);
+    Object.defineProperty(messages, "scrollHeight", { configurable: true, get: () => 500 });
+    messages.scrollTop = 0; // sentinel prior (scrolled-up) position
+
+    store.applyCommand(cmd([{ op: "create", doc: publicMsg("m2", 2) }]));
+    await vi.waitFor(() => expect(screen.getAllByTestId("card").length).toBe(2));
+    expect(messages.scrollTop).toBe(0); // unchanged: no write while hidden
+
+    mockVisible(messages, true);
+    FakeIntersectionObserver.instances[0]?.trigger(true);
+    // Reader keeps their scrolled-up position — no force-scroll-to-bottom — and
+    // gets the new-messages pill instead, mirroring the always-visible path.
+    expect(messages.scrollTop).toBe(0);
+    expect(screen.queryByText("chat.newMessages")).toBeTruthy();
   });
 });

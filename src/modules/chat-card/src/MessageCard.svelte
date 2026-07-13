@@ -209,7 +209,12 @@
     gap: var(--space-1);
   }
   .actions button {
-    min-height: 32px;
+    // Touch floor: these buttons are permanently visible on touch devices (no
+    // hover concept to reveal them), so they must clear the 44px minimum even
+    // though they render as small pill-style controls on desktop.
+    min-height: 44px;
+    min-width: 44px;
+    padding: 0 var(--space-1);
   }
   // Hover/focus-reveal on hover-capable devices, always-visible on touch (no hover concept
   // to reveal on). Uses opacity/pointer-events, never visibility/display, so the buttons

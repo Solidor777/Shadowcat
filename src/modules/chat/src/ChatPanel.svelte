@@ -47,6 +47,14 @@
     return Object.entries(sys?.channels ?? {}).filter((e): e is [string, { name: string }] => e[1] != null);
   });
 
+  // Composer placeholder contract is the CHANNEL's display name ("Message
+  // #General"), never the sender's own username — look the post-target channel
+  // id up in the registry, falling back to the raw id when unregistered (e.g.
+  // "general" before the GM has ever opened the editor, or a legacy channel).
+  function channelDisplayName(channelId: string): string {
+    return channelEntries.find(([id]) => id === channelId)?.[1].name ?? channelId;
+  }
+
   // GM registry seed (FactionsPanel idiom): reactive subscribe() inside the
   // $effect so a panel mounted before resync populates the store still seeds
   // exactly once, whether the store was empty at mount or fills in later.
@@ -144,17 +152,25 @@
     const grew = count > prevMessageCount;
     prevMessageCount = count;
     if (!grew || !container) return;
+    // untrack: read atBottom's CURRENT value without subscribing this effect to
+    // it — onscroll-driven atBottom writes must never re-run this effect on
+    // their own; only a genuine message-count change (above) may. Read once and
+    // reuse for both the hidden and visible branches below, so a hidden reader
+    // who had scrolled up keeps that position (and gets the pill) on reveal
+    // instead of being force-scrolled to the bottom, mirroring the visible path.
+    const wasAtBottom = untrack(() => atBottom);
     if (!isVisible(container)) {
       // Do not measure or write scrollTop while hidden — scrollHeight/
       // clientHeight both read 0, which would wrongly zero scrollTop and mark
       // the panel "at bottom." Resync happens on the next visibility transition.
-      pendingScrollToBottom = true;
+      if (wasAtBottom) {
+        pendingScrollToBottom = true;
+      } else {
+        showNewMessagesPill = true;
+      }
       return;
     }
-    // untrack: read atBottom's CURRENT value without subscribing this effect to
-    // it — onscroll-driven atBottom writes must never re-run this effect on
-    // their own; only a genuine message-count change (above) may.
-    if (untrack(() => atBottom)) {
+    if (wasAtBottom) {
       // Wait for the DOM to paint the new message before measuring scrollHeight.
       queueMicrotask(scrollToBottom);
     } else {
@@ -222,7 +238,7 @@
   <div class="composer-slot">
     {#if composerComp}
       {@const Composer = composerComp}
-      <Composer {...postTarget(view)} placeholderName={ctx.members.get(ctx.selfId) ?? ""} />
+      <Composer {...postTarget(view)} placeholderName={channelDisplayName(postTarget(view).channel)} />
     {/if}
   </div>
 </section>

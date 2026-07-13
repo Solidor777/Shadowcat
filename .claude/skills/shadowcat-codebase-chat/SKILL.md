@@ -68,7 +68,9 @@ with zero message-specific plumbing in any of those subsystems.
     stored at ingest as `parsed.body` when the send parsed a `/w` (so an unmodified prefill
     resubmit can't trip the edit path's `AudienceLocked`) else the FULL content
     (command prefix KEPT — `/me x` prefills as `/me x` and re-parses to the same kind);
-    replaced on edit (always full content there — edit rejects `/w`); **CLEARED (`None`) by
+    replaced on edit (always full content there; a WHISPER edit skips command parsing entirely,
+    mirroring send's literal-body semantics for a whisper — a non-whisper edit still rejects `/w`);
+    **CLEARED (`None`) by
     the delete tombstone alongside `content`** — a retained source would leak deleted content.
     EXPOSURE NOTE: like every `system` string leaf (incl. `channel`), `source` is swept into
     the content-agnostic FTS index and can surface in `SearchHit.snippet`/`.document` — any
@@ -119,12 +121,17 @@ with zero message-specific plumbing in any of those subsystems.
   - `handle_edit_message(room, repo, ctx, rate, message_id, content, now, budget_per_min) ->
     Result<Command, SendMessageError>` — owner-or-GM authorized (`cur.owner == Some(ctx.user_id)
     || ctx.world_role == WorldRole::Gm`); rejects editing an already-tombstoned message (reuses
-    `NotFound` — an edit must not resurrect cleared `content` on a soft-deleted doc); re-runs
-    `parse_command` + `sanitize` on the new content (so `kind` MAY change, e.g. a plain message
-    edited into `/me`); a `/w` in the edit content is rejected as `SendMessageError::
-    AudienceLocked` rather than silently retargeting readership — `channel`/`user_owner`/
-    `actor_owner`/`audience`/`deleted_at` are always copied verbatim from the STORED doc, never
-    re-derived from the request. Publishes a single `Operation::Update` on `/system` under
+    `NotFound` — an edit must not resurrect cleared `content` on a soft-deleted doc); for a
+    NON-WHISPER message, re-runs `parse_command` + `sanitize` on the new content (so `kind` MAY
+    change, e.g. a plain message edited into `/me`), and a `/w` in the edit content is rejected as
+    `SendMessageError::AudienceLocked` rather than silently retargeting readership; for a WHISPER
+    message, `parse_command` is SKIPPED entirely — the content is treated as the literal body and
+    stored `kind` is kept, mirroring `handle_send_message`'s own literal-body treatment of a
+    whisper's content, so an unmodified resubmit of the whisper's `source` prefill (itself
+    post-`/w`-strip) can never reparse into a different `kind` or spuriously trip
+    `AudienceLocked` on a literal "/w ..." body. `channel`/`user_owner`/`actor_owner`/`audience`/
+    `deleted_at` are always copied verbatim from the STORED doc, never re-derived from the
+    request. Publishes a single `Operation::Update` on `/system` under
     `WriteOrigin::ServerMessageRevision`. Rate-limited like `handle_send_message`.
   - `handle_delete_message(room, repo, ctx, rate, message_id, now, budget_per_min) ->
     Result<Command, SendMessageError>` — same owner-or-GM authorization; a pure SOFT tombstone (no
@@ -265,10 +272,15 @@ with zero message-specific plumbing in any of those subsystems.
   same cap+membership validation chokepoint; when BOTH are present, the parsed content `/w`
   overrides the frame's `audience` argument. An edit can never open either front-door — a `/w` in
   edited content is rejected outright (`AudienceLocked`), not silently applied.
-- **An edit re-runs the FULL send pipeline (`parse_command` + `sanitize`) except audience, which is
-  frozen.** `kind` MAY change on edit (a plain message can become `/me`), but `channel`/
-  `user_owner`/`actor_owner`/`audience`/`deleted_at` are always copied verbatim from the STORED
-  document, never re-derived from the edit request. A delete is a pure SOFT tombstone — `content`
+- **A NON-WHISPER edit re-runs the FULL send pipeline (`parse_command` + `sanitize`) except
+  audience, which is frozen.** `kind` MAY change on edit (a plain message can become `/me`), but
+  `channel`/`user_owner`/`actor_owner`/`audience`/`deleted_at` are always copied verbatim from the
+  STORED document, never re-derived from the edit request. **A WHISPER edit skips
+  `parse_command` entirely** — the edit content is the literal body and `kind` is left as stored,
+  mirroring `handle_send_message`'s own literal-body treatment of a whisper's content; without
+  this, an unmodified resubmit of a whisper's edit-prefill (itself post-`/w`-strip `source`) could
+  silently reparse into a different `kind` or spuriously trip `AudienceLocked` one token deeper.
+  `AudienceLocked` therefore fires only for a non-whisper edit. A delete is a pure SOFT tombstone — `content`
   is cleared and `deleted_at` is set via `Operation::Update` on `/system`, NOT a hard
   `Operation::Delete`; the doc stays in the sequenced log at its original seq, so resync and
   per-recipient redaction keep applying to it unmodified. An edit on an already-tombstoned message

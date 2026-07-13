@@ -151,6 +151,13 @@ pub struct MessageSystem {
     /// never rendered as markup. MUST be cleared by the delete tombstone with
     /// `content` (a retained source would leak deleted content).
     ///
+    /// A WHISPER's `source` is stored post-`/w`-strip (the literal body, not
+    /// the raw "/w @user ..." prefix) precisely so an unmodified prefill
+    /// resubmit round-trips: `handle_edit_message` skips command parsing
+    /// entirely for a whisper (mirroring `handle_send_message`'s own
+    /// literal-body treatment of a whisper's content), so nested command-like
+    /// text in a whisper body is never parsed on send OR on edit.
+    ///
     /// EXPOSURE NOTE: like every string leaf of `system` (incl. `channel`),
     /// this pre-sanitize text is swept into the content-agnostic FTS index and
     /// can surface in `SearchHit.snippet`/`.document`. Any search-UI consumer
@@ -409,14 +416,28 @@ pub async fn handle_send_message(
     .map_err(SendMessageError::Data)
 }
 
-/// Server-authoritative message edit: owner-or-GM only, re-runs the same
-/// command-parse + sanitize pipeline `handle_send_message` uses, and rewrites
-/// ONLY `content`/`kind`/`edited_at` on the stored `/system` body —
-/// `channel`/`user_owner`/`actor_owner`/`audience`/`deleted_at` are copied
-/// verbatim from the stored document, never re-derived from the edit request.
-/// A `/w` (or any whisper-targeting content) in the edit is rejected as
-/// `AudienceLocked` rather than silently retargeting the audience — the sole
-/// place this function may reach `Room::publish` uses
+/// Server-authoritative message edit: owner-or-GM only, and rewrites ONLY
+/// `content`/`kind`/`edited_at` on the stored `/system` body — `channel`/
+/// `user_owner`/`actor_owner`/`audience`/`deleted_at` are copied verbatim from
+/// the stored document, never re-derived from the edit request.
+///
+/// For a NON-WHISPER message, this re-runs the same command-parse + sanitize
+/// pipeline `handle_send_message` uses; a `/w` (or any whisper-targeting
+/// content) in the edit is rejected as `AudienceLocked` rather than silently
+/// retargeting the audience.
+///
+/// For a WHISPER message, command parsing is skipped entirely — the edit
+/// content is treated as the literal body (mirroring `handle_send_message`'s
+/// own literal-body treatment of whisper content) and `kind` is left as
+/// stored. Without this, re-running `parse_command` on an unmodified prefill
+/// resubmit of a stored whisper body could silently mutate `kind` (e.g. a
+/// stored "/me waves" body reparsing to `Emote`) or spuriously trip
+/// `AudienceLocked` on a literal "/w ..." body — the exact idempotency
+/// failure the `source`-strip mechanism exists to prevent, one token deeper.
+/// `AudienceLocked` therefore only ever fires for a non-whisper message; a
+/// whisper's literal body may legitimately contain "/w ..." text.
+///
+/// The sole place this function may reach `Room::publish` uses
 /// `WriteOrigin::ServerMessageRevision`, the ONLY origin that re-opens the
 /// `apply_intent` Update blanket-rejection for a stored `message` doc.
 #[allow(clippy::too_many_arguments)]
@@ -465,24 +486,42 @@ pub async fn handle_edit_message(
         return Err(SendMessageError::NotFound);
     }
 
-    let parsed = parse_command(&content);
-    // Audience is frozen on edit — a /w in an edit is rejected, not applied.
-    if parsed.whisper_to.is_some() {
-        return Err(SendMessageError::AudienceLocked);
-    }
-    if parsed.body.trim().is_empty() {
+    // A stored WHISPER's literal body may legitimately contain "/w ..." or any
+    // other leading command token — `handle_send_message` never parses a
+    // whisper's body as a command either (see `source`'s doc comment: a send's
+    // `source` for a whisper is the POST-parse body, so an unmodified prefill
+    // resubmit is exactly this literal text). Re-parsing it here would silently
+    // mutate `kind` (e.g. a stored "/me waves" whisper body re-parsing to
+    // `Emote`) or re-trip `AudienceLocked` on a stored "/w ..." literal — the
+    // exact failure the `source`/prefill mechanism exists to prevent, one
+    // token deeper. Skip parsing entirely for a whisper edit and keep the
+    // stored `kind`; the `AudienceLocked` rejection below applies only to
+    // non-whisper messages, where a literal "/w ..." body is unexpected.
+    let is_whisper = matches!(sys.audience, Audience::Whisper { .. });
+    let (kind, body) = if is_whisper {
+        (sys.kind, content.clone())
+    } else {
+        let parsed = parse_command(&content);
+        // Audience is frozen on edit — a /w in an edit is rejected, not applied.
+        if parsed.whisper_to.is_some() {
+            return Err(SendMessageError::AudienceLocked);
+        }
+        (parsed.kind, parsed.body)
+    };
+    if body.trim().is_empty() {
         return Err(SendMessageError::Empty);
     }
 
     let policy = resolve_content_policy(repo, room.world_id).await;
-    let segments = sanitize(&parsed.body, &policy);
+    let segments = sanitize(&body, &policy);
 
     // Build the revised system: new content + kind, edited_at=now; preserve
     // channel/user_owner/actor_owner/audience/deleted_at from the stored doc.
     sys.content = segments;
-    sys.kind = parsed.kind;
-    // Edit always rejects a /w (AudienceLocked, checked above), so the full
-    // content is always the correct source here — no strip needed.
+    sys.kind = kind;
+    // Whisper edits skip parsing (body IS the literal content above); non-
+    // whisper edits always reject a /w (AudienceLocked, checked above) — either
+    // way the full raw content is the correct source here, no strip needed.
     sys.source = Some(content.clone());
     sys.edited_at = Some(now);
     let new_system = serde_json::to_value(&sys)
@@ -1430,6 +1469,205 @@ mod tests {
             sys.content.is_empty(),
             "delete tombstone must clear content"
         );
+    }
+
+    #[tokio::test]
+    async fn whisper_edit_prefill_resubmit_is_idempotent() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let sender = repo
+            .create_user("sender", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let alice = repo
+            .create_user("alice", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, sender, WorldRole::Player)
+            .await
+            .unwrap();
+        repo.add_member(w.id, alice, WorldRole::Player)
+            .await
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: sender,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        // Send "/w @alice /me waves": a nested command inside a whisper body is
+        // NOT parsed — stored kind is Normal, content/source are the literal
+        // post-/w-strip body "/me waves".
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "/w @alice /me waves".into(),
+            None,
+            Audience::Public,
+            100,
+            30,
+        )
+        .await
+        .unwrap();
+        let message_id = match &cmd.ops[0] {
+            Operation::Create { doc } => doc.id,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let stored = repo.get_document(message_id).await.unwrap().unwrap();
+        let sys: MessageSystem = serde_json::from_value(stored.system.clone()).unwrap();
+        assert_eq!(sys.kind, MessageKind::Normal);
+        assert_eq!(sys.source, Some("/me waves".into()));
+        assert!(matches!(sys.audience, Audience::Whisper { .. }));
+
+        // Edit-resubmit of the UNMODIFIED prefill ("/me waves", the stored
+        // source): kind/content/source must round-trip unchanged, not reparse
+        // into MessageKind::Emote.
+        handle_edit_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            message_id,
+            "/me waves".into(),
+            101,
+            30,
+        )
+        .await
+        .unwrap();
+        let stored = repo.get_document(message_id).await.unwrap().unwrap();
+        let sys2: MessageSystem = serde_json::from_value(stored.system.clone()).unwrap();
+        assert_eq!(
+            sys2.kind,
+            MessageKind::Normal,
+            "must not reparse into Emote"
+        );
+        assert_eq!(sys2.source, Some("/me waves".into()));
+        assert_eq!(sys2.content, sys.content);
+
+        // A second whisper, sent as "/w @alice hi": stored source is the
+        // post-strip literal "hi". Edit-resubmitting "hi" (which itself looks
+        // like an ordinary /w-free body) must not spuriously trip
+        // AudienceLocked — the whole point of skipping command parsing on a
+        // whisper edit — and a resubmit of a literal "/w ..." body must also
+        // survive without AudienceLocked (only a non-whisper message rejects a
+        // literal /w-shaped edit body).
+        let cmd2 = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "/w @alice hi".into(),
+            None,
+            Audience::Public,
+            102,
+            30,
+        )
+        .await
+        .unwrap();
+        let message_id2 = match &cmd2.ops[0] {
+            Operation::Create { doc } => doc.id,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let stored2 = repo.get_document(message_id2).await.unwrap().unwrap();
+        let sys2_pre: MessageSystem = serde_json::from_value(stored2.system.clone()).unwrap();
+        assert_eq!(sys2_pre.source, Some("hi".into()));
+
+        // Edit-resubmit of a whisper's stored body that itself reads as a /w
+        // command must NOT be rejected AudienceLocked — command parsing is
+        // skipped entirely on a whisper edit.
+        handle_edit_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            message_id2,
+            "/w @bob hi".into(),
+            103,
+            30,
+        )
+        .await
+        .expect("a whisper edit must never reject a literal /w-shaped body");
+        let stored2 = repo.get_document(message_id2).await.unwrap().unwrap();
+        let sys2_post: MessageSystem = serde_json::from_value(stored2.system).unwrap();
+        assert_eq!(sys2_post.kind, MessageKind::Normal);
+        assert_eq!(sys2_post.source, Some("/w @bob hi".into()));
+        // Audience must remain the ORIGINAL whisper's recipients — frozen, not
+        // retargeted to @bob, despite the literal body reading as a /w command.
+        assert!(
+            matches!(sys2_post.audience, Audience::Whisper { ref recipients } if recipients == &vec![alice])
+        );
+
+        // Editing a PUBLIC (non-whisper) message with /w-shaped content still
+        // rejects AudienceLocked — the fast path applies ONLY to whisper
+        // messages, not to every message.
+        let cmd3 = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "hello".into(),
+            None,
+            Audience::Public,
+            104,
+            30,
+        )
+        .await
+        .unwrap();
+        let public_id = match &cmd3.ops[0] {
+            Operation::Create { doc } => doc.id,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let err = handle_edit_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            public_id,
+            "/w @alice hi".into(),
+            105,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SendMessageError::AudienceLocked));
+
+        // An ORDINARY whisper edit (genuinely different content) still
+        // sanitizes and updates content/source.
+        handle_edit_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            message_id2,
+            "bye now".into(),
+            106,
+            30,
+        )
+        .await
+        .unwrap();
+        let stored2 = repo.get_document(message_id2).await.unwrap().unwrap();
+        let sys2_final: MessageSystem = serde_json::from_value(stored2.system).unwrap();
+        assert_eq!(sys2_final.source, Some("bye now".into()));
+        match &sys2_final.content[..] {
+            [Segment::Text { text }] => assert_eq!(text, "bye now"),
+            other => panic!("expected a single Text segment, got {other:?}"),
+        }
     }
 
     #[test]
