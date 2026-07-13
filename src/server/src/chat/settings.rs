@@ -284,6 +284,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unknown_enum_variant_string_resolves_to_default() {
+        let (repo, world_id, gm) = world().await;
+        // An out-of-vocabulary variant string (not a type mismatch) also fails
+        // the whole-body deserialization — no #[serde(other)] catch-all exists,
+        // so fail-closed covers this distinct failure class too.
+        let doc = dice_settings_doc(
+            world_id,
+            gm,
+            serde_json::json!({ "mode": "foobar", "direction": "low_wins" }),
+        );
+        create_dice_doc(&repo, world_id, gm, doc).await;
+        let ctx = resolve_dice_context(&repo, world_id).await;
+        assert_eq!(ctx.mode, ModeKind::Total);
+        assert_eq!(ctx.direction, Direction::HighWins);
+    }
+
+    #[tokio::test]
     async fn total_high_wins_is_read() {
         let (repo, world_id, gm) = world().await;
         let doc = dice_settings_doc(

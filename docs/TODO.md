@@ -107,7 +107,9 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   requires GM-authored content to matter), so this is low-risk — but add a uniqueness
   enforcement (or explicit tie-break ordering) when M11d's GM chat-settings UI gets a write
   path, mirroring the `faction-registry`/`condition-registry` idempotent-seed pattern.
-  (Surfaced by the M11c-3 whole-branch review.)
+  (Surfaced by the M11c-3 whole-branch review.) The same gap applies verbatim to
+  `DICE_SETTINGS_DOC_TYPE`/`resolve_dice_context` (M11d-2, same first-doc idiom by design) —
+  fix both doc types together.
 
 ## Client / chat display (M11d-1)
 - Message-list virtualization: the panel renders only the most recent 200 messages per view
