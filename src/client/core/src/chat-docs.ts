@@ -162,3 +162,29 @@ export function buildDiceSettingsDoc(
 ): WireDocument {
   return envelope(worldId, DICE_SETTINGS_DOC_TYPE, null, body satisfies DiceSettingsSystem, id);
 }
+
+/** Doc_type for the single per-world chat-settings config `Document`
+ * (server: chat/settings.rs CHAT_SETTINGS_DOC_TYPE). */
+export const CHAT_SETTINGS_DOC_TYPE = "chat-settings";
+
+/** Mirror of chat::settings::ChatContentPolicy. Every field `#[serde(default)]`
+ * on the server (false), except `link_previews` which is tri-state: `undefined`
+ * (absent) is the spec'd default-on-when-hyperlinks-on behavior
+ * (`ChatContentPolicy::previews_enabled`), `true`/`false` are an explicit GM
+ * override. A partial body is safe on the server; the panel writes single
+ * fields via JSON-pointer update, never the whole doc. */
+export interface ChatSettingsSystem {
+  markdown?: boolean;
+  html?: boolean;
+  images?: boolean;
+  hyperlinks?: boolean;
+  emails?: boolean;
+  link_previews?: boolean;
+}
+export function buildChatSettingsDoc(
+  worldId: string,
+  body: ChatSettingsSystem,
+  id?: string,
+): WireDocument {
+  return envelope(worldId, CHAT_SETTINGS_DOC_TYPE, null, body satisfies ChatSettingsSystem, id);
+}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseMessageSystem, buildChannelRegistryDoc, buildDiceSettingsDoc, isKnownSegment, MESSAGE_DOC_TYPE } from "./chat-docs";
+import { parseMessageSystem, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc, isKnownSegment, MESSAGE_DOC_TYPE } from "./chat-docs";
 import type { WireDocument } from "./wire";
 
 function msgDoc(system: unknown, docType = MESSAGE_DOC_TYPE): WireDocument {
@@ -189,4 +189,12 @@ test("buildDiceSettingsDoc builds a world-scoped parentless singleton doc", () =
   expect(d.parent_id).toBeNull();
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
   expect(d.system).toEqual({ mode: "success_count", direction: "low_wins" });
+});
+
+test("buildChatSettingsDoc builds a world-scoped parentless singleton doc", () => {
+  const d = buildChatSettingsDoc("w1", { hyperlinks: true, link_previews: false });
+  expect(d.doc_type).toBe("chat-settings");
+  expect(d.parent_id).toBeNull();
+  expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
+  expect(d.system).toEqual({ hyperlinks: true, link_previews: false });
 });
