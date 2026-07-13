@@ -156,7 +156,9 @@ The composer gains an actor picker (dropdown listing actors the user may speak a
 sending the existing `actor_owner: ActorOwnerRef::Actor{actor_id}` wire field the whole stack
 already supports (storage, redaction, card header rendering all shipped). Per-message, sticky
 per session (local state, not persisted). Token-instance attribution (speak-as-token) stays
-deferred (needs token selection context in chat — logged).
+deferred (needs token selection context in chat — logged). The server validates attribution at
+ingest: an `Actor` ref must name an existing actor doc owned by the sender (GM: any actor);
+`TokenInstance` refs are rejected until speak-as-token ships (fail-closed).
 
 ## 9. Testing strategy
 

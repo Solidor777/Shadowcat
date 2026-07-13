@@ -1,14 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildActorDoc, MAX_MESSAGE_CHARS, type WireAudience, type WireDocument } from "@shadowcat/core";
+import { DocumentStore, buildActorDoc, MAX_MESSAGE_CHARS, type WireAudience, type WireCommand, type WireDocument } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import Composer from "./Composer.svelte";
 
 const publicAudience: WireAudience = { kind: "public" };
 const gmAudience: WireAudience = { kind: "gm_only" };
 
-const cmd = (ops: { op: "create"; doc: WireDocument }[]) => ({ seq: 1, world_id: "w1", author: "a", ts: 0, ops });
+const cmd = (ops: WireCommand["ops"]) => ({ seq: 1, world_id: "w1", author: "a", ts: 0, ops });
 function storeWith(...docs: WireDocument[]): DocumentStore {
   const s = new DocumentStore();
   s.applyCommand(cmd(docs.map((doc) => ({ op: "create" as const, doc }))));
@@ -208,6 +208,26 @@ describe("Composer — speak-as-actor picker", () => {
     documents.applyCommand(cmd([{ op: "create", doc: ownedActor("act9", "u-self", "LateJoiner") }]));
     await Promise.resolve();
     expect(Array.from(select.options).map((o) => o.textContent)).toContain("LateJoiner");
+  });
+
+  it("prunes a dangling selection when the selected actor is deleted", async () => {
+    const actor = ownedActor("act1", "u-self", "Goblin");
+    const documents = storeWith(actor);
+    const { send } = renderComposer({ documents });
+    const select = screen.getByLabelText("chat.composer.speakAs") as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: "act1" } });
+    expect(select.value).toBe("act1");
+
+    documents.applyCommand(cmd([{ op: "delete", doc: actor }]));
+    await Promise.resolve();
+
+    expect(select.value).toBe("");
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "hello" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledWith({ channel: "general", content: "hello", audience: publicAudience });
+    const sentArg = send.mock.calls[0][0] as Record<string, unknown>;
+    expect(sentArg.actorOwner).toBeUndefined();
   });
 
   it("selection is sticky across a send", async () => {

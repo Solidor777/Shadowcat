@@ -23,6 +23,17 @@
   // is the sentinel for "Myself" (the default, no-attribution option).
   let selectedActorId = $state("");
 
+  // Prunes a dangling selection: if the selected actor leaves `speakableActors`
+  // (deleted, or ownership transferred away from the current user), the select
+  // would otherwise render blank (selectedIndex -1) while sends kept attaching
+  // the now-nonexistent actor_id. Resets to "" (Myself) whenever the current
+  // selection no longer resolves to a live, speakable actor doc.
+  $effect(() => {
+    if (selectedActorId && !speakableActors.some((a) => a.id === selectedActorId)) {
+      selectedActorId = "";
+    }
+  });
+
   // Counter shows only when the author is nearing the server cap (MAX_MESSAGE_CHARS,
   // chat/mod.rs) — not on every keystroke, to avoid a permanently-visible chrome element.
   const COUNTER_THRESHOLD = MAX_MESSAGE_CHARS - 200;
@@ -74,7 +85,7 @@
 
 <div class="composer">
   <label class="visually-hidden" for="chat-composer-speak-as">{t("chat.composer.speakAs")}</label>
-  <select id="chat-composer-speak-as" aria-label={t("chat.composer.speakAs")} bind:value={selectedActorId}>
+  <select id="chat-composer-speak-as" bind:value={selectedActorId}>
     <option value="">{t("chat.composer.myself")}</option>
     {#each speakableActors as actor (actor.id)}
       <option value={actor.id}>{actorDisplayName(actor.system as { name?: string; displayName?: string })}</option>
