@@ -4,6 +4,7 @@ import { ContributionRegistry } from "@shadowcat/core";
 import { setAppContextForTest } from "./__fixtures__/appContextTest";
 import TabbedSurface from "./TabbedSurface.svelte";
 import Probe from "./__fixtures__/Probe.svelte";
+import MountCounter, { mountCount, resetMountCount } from "./__fixtures__/MountCounter.svelte";
 
 // Translation stub that echoes the key so assertions can check for it directly.
 const t = (key: string) => key;
@@ -133,7 +134,7 @@ test("an activeId that names a gmOnly tab hidden from the current role falls bac
   expect((screen.getByTestId("panel-chat") as HTMLElement).hasAttribute("hidden")).toBe(false);
 });
 
-test("collapse toggle removes the content area; clicking a tab while collapsed re-expands", async () => {
+test("collapse toggle hides the content area non-destructively; clicking a tab while collapsed re-expands", async () => {
   const registry = registryWithTabs();
   const seen: string[] = [];
   render(TabbedSurface, {
@@ -141,14 +142,46 @@ test("collapse toggle removes the content area; clicking a tab while collapsed r
     context: setAppContextForTest({ contributions: registry, role: "gm", t }),
   });
 
-  expect(screen.getByTestId("panel-chat")).toBeTruthy();
+  const chatPanel = screen.getByTestId("panel-chat") as HTMLElement;
+  expect(chatPanel).toBeTruthy();
 
   await fireEvent.click(screen.getByLabelText("sidebar.collapse"));
-  expect(screen.queryByTestId("panel-chat")).toBeNull();
+  // The panel stays mounted in the DOM (querying by testId still finds it);
+  // it is hidden non-destructively via the content wrapper's `hidden` attribute,
+  // not removed by an {#if}.
+  expect(screen.getByTestId("panel-chat")).toBeTruthy();
+  expect(chatPanel.closest(".content")?.hasAttribute("hidden")).toBe(true);
 
   // Clicking a rail tab while collapsed re-expands the content area and still
   // reports the click via onTabChange (activeId selection remains parent-owned).
   await fireEvent.click(screen.getByTestId("tab-untabbed"));
   expect(screen.getByTestId("panel-untabbed")).toBeTruthy();
+  expect(chatPanel.closest(".content")?.hasAttribute("hidden")).toBe(false);
   expect(seen).toEqual(["untabbed"]);
+});
+
+test("collapse then expand does not remount panels (state/mount-effects survive)", async () => {
+  resetMountCount();
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat",
+    contract: "sidebar",
+    component: MountCounter,
+    tab: { icon: "💬", labelKey: "chat.tab" },
+  });
+
+  render(TabbedSurface, {
+    props: { contract: "sidebar" },
+    context: setAppContextForTest({ contributions: registry, role: "gm", t }),
+  });
+
+  expect(screen.getByTestId("mount-counter")).toBeTruthy();
+  expect(mountCount).toBe(1);
+
+  await fireEvent.click(screen.getByLabelText("sidebar.collapse"));
+  expect(mountCount).toBe(1);
+
+  await fireEvent.click(screen.getByLabelText("sidebar.expand"));
+  expect(mountCount).toBe(1);
+  expect(screen.getByTestId("mount-counter")).toBeTruthy();
 });

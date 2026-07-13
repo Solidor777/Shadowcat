@@ -60,18 +60,18 @@
       >{c.tab?.icon ?? c.id.slice(0, 1)}</button>
     {/each}
   </div>
-  {#if !collapsed}
-    <div class="content">
-      <!-- Every panel stays mounted (state/scroll preserved; GM seed $effects run
-           regardless of the active tab); the inactive ones are display:none. -->
-      {#each items as c (c.id)}
-        {@const Comp = c.component as Component<Record<string, unknown>>}
-        <div class="panel" role="tabpanel" hidden={c.id !== active} data-testid="panel-{c.id}">
-          <Comp {...(c.props ?? {})} />
-        </div>
-      {/each}
-    </div>
-  {/if}
+  <div class="content" hidden={collapsed}>
+    <!-- Every panel stays mounted (state/scroll preserved; GM seed $effects run
+         regardless of the active tab, and across collapse/expand): the inactive
+         ones are display:none, and collapsing hides the whole content area the
+         same non-destructive way — never unmounted. -->
+    {#each items as c (c.id)}
+      {@const Comp = c.component as Component<Record<string, unknown>>}
+      <div class="panel" role="tabpanel" hidden={c.id !== active} data-testid="panel-{c.id}">
+        <Comp {...(c.props ?? {})} />
+      </div>
+    {/each}
+  </div>
 </div>
 
 <style lang="scss">
@@ -108,6 +108,10 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+    /* [hidden] must win over the class's `display: flex`; browsers give the
+       `hidden` attribute UA-stylesheet display:none, but it's easily beaten by
+       an author `display` declaration of equal specificity — pin it explicitly. */
+    &[hidden] { display: none; }
   }
   .panel {
     flex: 1;
