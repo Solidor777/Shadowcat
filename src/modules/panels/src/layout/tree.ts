@@ -144,7 +144,9 @@ function detach(l: PanelLayoutV1, id: string): [PanelLayoutV1, PanelLocation] {
 /** Places a detached panel per an explicit or defaulted placement. Falls back to a new
  * docked group in "right" when no zone is given — used by op-driven `open`/`restore`,
  * where the caller is actively surfacing the panel (unlike `defaultLayout`, where an
- * absent `PanelMeta.defaultPlacement` means launcher-only/closed). */
+ * absent `PanelMeta.defaultPlacement` means launcher-only/closed).
+ * `DefaultPlacement.order` is not consumed here: callers pass registrations pre-sorted
+ * by contribution order; a docked default always opens its own group. */
 function placeByPlacement(l: PanelLayoutV1, id: string, placement?: DefaultPlacement): PanelLayoutV1 {
   if (placement?.kind === "minimized") {
     return { ...l, expanded: { ...l.expanded, minimized: [...l.expanded.minimized, id] } };
@@ -189,13 +191,37 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
     }
 
     case "dock": {
+      // CONTRACT: a numeric `o.group` indexes the target zone as it stood in `l`, the
+      // layout passed INTO this op — not post-detach state. If `id` was the sole tab of
+      // an earlier group in the SAME target zone, `detach` removes that group and shifts
+      // every later index down by one; resolving `o.group` after `detach` would then land
+      // one group too far. Resolve the target group's IDENTITY here, before `detach` runs,
+      // and re-find that identity in the post-detach array. Identity is keyed on the
+      // group's `tabs` array reference rather than the `GroupNode` object itself: when a
+      // whole group elsewhere in the zone is removed, `detach`'s `renormalize` rebuilds
+      // every surviving `GroupNode` (equal-share resize touches every group's `size`) but
+      // reuses each one's original `tabs` array untouched.
+      const preZoneNode = l.expanded.zones[o.zone];
+      const preLen = preZoneNode.groups.length;
+      const preGi = o.group !== "new" && preLen > 0 ? Math.min(Math.max(o.group, 0), preLen - 1) : -1;
+      const targetTabs = preGi !== -1 ? preZoneNode.groups[preGi].tabs : null;
+
       const [l1] = detach(l, o.id);
       const zoneNode = l1.expanded.zones[o.zone];
+
+      let gi = targetTabs ? zoneNode.groups.findIndex((g) => g.tabs === targetTabs) : -1;
+      if (gi === -1 && targetTabs && zoneNode.groups.length === preLen) {
+        // `detach` mutated the group's OWN `tabs` array in place — this only happens when
+        // `id` was detached from WITHIN the target group itself (multi-tab group, still
+        // present, just a new `tabs` array). Array length is unchanged, so the index is
+        // still valid even though the `tabs` reference is not.
+        gi = preGi;
+      }
+
       let groups: GroupNode[];
-      if (o.group === "new" || zoneNode.groups.length === 0) {
+      if (gi === -1) {
         groups = renormalize([...zoneNode.groups, { tabs: [o.id], active: o.id, size: 0 }]);
       } else {
-        const gi = Math.min(Math.max(o.group, 0), zoneNode.groups.length - 1);
         groups = zoneNode.groups.map((g, i) => {
           if (i !== gi) return g;
           const at = o.tabIndex === undefined ? g.tabs.length : Math.min(Math.max(o.tabIndex, 0), g.tabs.length);
@@ -261,8 +287,10 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
 
 /** Drops every id not in `known` from all four locations (zones/floating/minimized) plus
  * `compact.order`, repairing `active`/`activeView` to a surviving member (or the group's/
- * order's new first entry). Only renormalizes a zone's group sizes when a whole group was
- * dropped — a group that merely lost one of several tabs keeps its manually-set size. */
+ * order's new first entry). A zone's groups are renormalized — ALL surviving groups in
+ * that zone get an equal-share `size`, not just the affected one — whenever pruning drops
+ * a whole group from it; a group that merely lost one of several tabs (but is not itself
+ * dropped) keeps every group's manually-set size untouched. */
 export function prune(l: PanelLayoutV1, known: ReadonlySet<string>): PanelLayoutV1 {
   const zones = {} as Record<ZoneId, ZoneNode>;
   for (const zone of ZONE_IDS) {
@@ -290,7 +318,10 @@ export function prune(l: PanelLayoutV1, known: ReadonlySet<string>): PanelLayout
 
 /** Builds the initial layout for a module set at first launch. A registration with no
  * `placement` mirrors `PanelMeta.defaultPlacement` absence: launcher-only/closed — present
- * in `compact.order` (so compact mode can still switch to it) but nowhere in `expanded`. */
+ * in `compact.order` (so compact mode can still switch to it) but nowhere in `expanded`.
+ * `DefaultPlacement.order` is not consumed here: callers pass registrations pre-sorted
+ * by contribution order; a docked default always opens its own group.
+ * PRECONDITION: `regs` ids are unique (registry-guaranteed). */
 export function defaultLayout(regs: { id: string; placement?: DefaultPlacement }[]): PanelLayoutV1 {
   let l: PanelLayoutV1 = {
     version: 1,

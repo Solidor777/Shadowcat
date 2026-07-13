@@ -188,6 +188,58 @@ describe("op: dock", () => {
     expect(l.expanded.zones.right.groups[0].tabs).toEqual(["chat", "assets"]);
     expect(l.expanded.zones.right.groups[0].active).toBe("assets");
   });
+
+  it("group: N resolves against the PRE-op zone state, not post-detach — docking a panel " +
+    "that was the sole tab of an EARLIER group in the same zone must not shift the target " +
+    "index onto the wrong group", () => {
+    // Build right = [{A}, {B}, {C}, {D}] (four solo-tab groups), then dock A at numeric
+    // group 2 (pre-op index of C). Detaching A removes A's own (now-empty) group first,
+    // which — if resolved AFTER detach — would shift index 2 onto D instead of C.
+    let l = defaultLayout([]);
+    l = applyOp(l, { op: "dock", id: "A", zone: "right", group: "new" });
+    l = applyOp(l, { op: "dock", id: "B", zone: "right", group: "new" });
+    l = applyOp(l, { op: "dock", id: "C", zone: "right", group: "new" });
+    l = applyOp(l, { op: "dock", id: "D", zone: "right", group: "new" });
+    expect(l.expanded.zones.right.groups.map((g) => g.tabs)).toEqual([["A"], ["B"], ["C"], ["D"]]);
+
+    l = applyOp(l, { op: "dock", id: "A", zone: "right", group: 2 });
+
+    // A must land tabbed into the group that CONTAINS C (assert by member id, not index —
+    // the group's array position may itself have shifted after A's own group vanished).
+    const groupWithC = l.expanded.zones.right.groups.find((g) => g.tabs.includes("C"));
+    expect(groupWithC).toBeDefined();
+    expect(groupWithC!.tabs).toEqual(["C", "A"]);
+    expect(groupWithC!.active).toBe("A");
+    // The other two groups (B, D) are untouched singles.
+    expect(l.expanded.zones.right.groups.filter((g) => g.tabs.length === 1).map((g) => g.tabs[0]).sort()).toEqual([
+      "B",
+      "D",
+    ]);
+  });
+
+  it("group: N targeting the LAST group still resolves correctly after an earlier group vanishes", () => {
+    let l = defaultLayout([]);
+    l = applyOp(l, { op: "dock", id: "A", zone: "right", group: "new" });
+    l = applyOp(l, { op: "dock", id: "B", zone: "right", group: "new" });
+    l = applyOp(l, { op: "dock", id: "C", zone: "right", group: "new" });
+    // Pre-op index of the last group (C) is 2.
+    l = applyOp(l, { op: "dock", id: "A", zone: "right", group: 2 });
+    const groupWithC = l.expanded.zones.right.groups.find((g) => g.tabs.includes("C"));
+    expect(groupWithC!.tabs).toEqual(["C", "A"]);
+  });
+
+  it("group: N in a DIFFERENT zone from the panel's current location is unaffected by detach shifting", () => {
+    let l = defaultLayout([]);
+    l = applyOp(l, { op: "dock", id: "A", zone: "bottom", group: "new" });
+    l = applyOp(l, { op: "dock", id: "B", zone: "right", group: "new" });
+    l = applyOp(l, { op: "dock", id: "C", zone: "right", group: "new" });
+    // A lives in "bottom"; docking it into "right" group 1 (C) must be unaffected by any
+    // shift, since detaching A touches "bottom", not "right".
+    l = applyOp(l, { op: "dock", id: "A", zone: "right", group: 1 });
+    const groupWithC = l.expanded.zones.right.groups.find((g) => g.tabs.includes("C"));
+    expect(groupWithC!.tabs).toEqual(["C", "A"]);
+    expect(l.expanded.zones.bottom.groups).toEqual([]);
+  });
 });
 
 describe("op: activeTab", () => {
@@ -289,6 +341,22 @@ describe("prune", () => {
     const pruned = prune(l, known);
     expect(pruned.expanded.zones.right.groups[0].size).toBe(0.7);
   });
+
+  it("re-equalizes ALL surviving groups' sizes in a zone when a whole group is dropped, not just the pruned one", () => {
+    let l = defaultLayout([]);
+    l = applyOp(l, { op: "dock", id: "solo1", zone: "right", group: "new" });
+    l = applyOp(l, { op: "dock", id: "solo2", zone: "right", group: "new" });
+    l = applyOp(l, { op: "dock", id: "solo3", zone: "right", group: "new" });
+    l = applyOp(l, { op: "resizeGroup", zone: "right", group: 0, size: 0.7 });
+    l = applyOp(l, { op: "resizeGroup", zone: "right", group: 1, size: 0.2 });
+    l = applyOp(l, { op: "resizeGroup", zone: "right", group: 2, size: 0.1 });
+    expect(l.expanded.zones.right.groups.map((g) => g.size)).toEqual([0.7, 0.2, 0.1]);
+
+    // Prune away solo2's only tab: its whole group drops. Survivors (solo1, solo3) must
+    // be re-equalized to 0.5/0.5, not left at their old manually-set 0.7/0.1.
+    const pruned = prune(l, new Set(["solo1", "solo3"]));
+    expect(pruned.expanded.zones.right.groups.map((g) => g.size)).toEqual([0.5, 0.5]);
+  });
 });
 
 describe("every op is total (no throw on any prior location)", () => {
@@ -311,6 +379,65 @@ describe("every op is total (no throw on any prior location)", () => {
       const l = defaultLayout([]);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect(() => applyOp(l, o as any)).not.toThrow();
+    }
+  });
+});
+
+describe("every op is total against a POPULATED layout (not just a fresh empty one)", () => {
+  // 2 zones (right, bottom); right has 2 groups incl. a 2-tab group; one floating; one
+  // minimized. Exercises activeTab/resizeZone/resizeGroup/compactView and out-of-bounds
+  // group/tabIndex clamp paths from real, non-empty state — a fresh-empty-only walk never
+  // reaches these branches.
+  function populated(): PanelLayoutV1 {
+    let l = defaultLayout([]);
+    l = applyOp(l, { op: "dock", id: "p1", zone: "right", group: "new" });
+    l = applyOp(l, { op: "dock", id: "p2", zone: "right", group: "new" });
+    l = applyOp(l, { op: "dock", id: "p3", zone: "right", group: 1 }); // p2's group -> 2 tabs
+    l = applyOp(l, { op: "dock", id: "p4", zone: "bottom", group: "new" });
+    l = applyOp(l, { op: "float", id: "p5", rect: { x: 0, y: 0, w: 10, h: 10 } });
+    l = applyOp(l, { op: "minimize", id: "p6" });
+    return l;
+  }
+
+  const ALL_IDS = ["p1", "p2", "p3", "p4", "p5", "p6"];
+
+  function assertOneLocationInvariant(l: PanelLayoutV1) {
+    for (const id of ALL_IDS) {
+      const inZones = Object.values(l.expanded.zones).some((z) => z.groups.some((g) => g.tabs.includes(id)));
+      const inFloating = l.expanded.floating.some((f) => f.id === id);
+      const inMinimized = l.expanded.minimized.includes(id);
+      expect([inZones, inFloating, inMinimized].filter(Boolean).length).toBeLessThanOrEqual(1);
+    }
+  }
+
+  const OPS_ON_POPULATED: object[] = [
+    { op: "open", id: "p6" },
+    { op: "close", id: "p3" },
+    { op: "dock", id: "p5", zone: "right", group: "new" },
+    { op: "dock", id: "p4", zone: "right", group: 1 },
+    { op: "float", id: "p2", rect: { x: 0, y: 0, w: 1, h: 1 } },
+    { op: "minimize", id: "p1" },
+    { op: "restore", id: "p6" },
+    { op: "activeTab", zone: "right", group: 1, id: "p3" },
+    { op: "resizeZone", zone: "right", size: 500 },
+    { op: "resizeGroup", zone: "right", group: 1, size: 0.9 },
+    { op: "compactView", id: "p2" },
+    // Out-of-bounds / negative clamp paths against a POPULATED (non-empty) zone.
+    { op: "dock", id: "p5", zone: "right", group: 99 },
+    { op: "activeTab", zone: "right", group: 99, id: "p1" },
+    { op: "resizeGroup", zone: "right", group: 99, size: 0.5 },
+    { op: "resizeGroup", zone: "right", group: -3, size: 0.5 },
+    { op: "dock", id: "p4", zone: "right", group: 0, tabIndex: 99 },
+    { op: "dock", id: "p4", zone: "right", group: 0, tabIndex: -5 },
+  ];
+
+  it("applies every op against a populated fixture without throwing, preserving the one-location invariant", () => {
+    for (const o of OPS_ON_POPULATED) {
+      const l = populated();
+      let l2!: PanelLayoutV1;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(() => (l2 = applyOp(l, o as any))).not.toThrow();
+      assertOneLocationInvariant(l2);
     }
   });
 });
