@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { ContributionRegistry, type Contribution } from "./contributions";
+import { ContributionRegistry, type Contribution, PANEL_CONTRACT, type PanelMeta } from "./contributions";
 
 const c = (over: Partial<Contribution>): Contribution => ({
   id: "x",
@@ -37,6 +37,27 @@ describe("ContributionRegistry", () => {
     r.contribute(c({ id: "k" }), { module: "m2" });
     r.removeModule("m1");
     expect(r.contributionsFor("s:sidebar").map((x) => x.id)).toEqual(["k"]);
+  });
+
+  it("round-trips panel metadata through the shadowcat.panel contract, order-sorted", () => {
+    const r = new ContributionRegistry();
+    const panelB: PanelMeta = {
+      icon: "b-icon",
+      labelKey: "panel.b",
+      defaultPlacement: { kind: "docked", zone: "right", order: 1 },
+    };
+    const panelA: PanelMeta = {
+      icon: "a-icon",
+      labelKey: "panel.a",
+      gmOnly: true,
+      defaultPlacement: { kind: "minimized" },
+    };
+    r.contribute(c({ id: "b", contract: PANEL_CONTRACT, order: 2, panel: panelB }));
+    r.contribute(c({ id: "a", contract: PANEL_CONTRACT, order: 1, panel: panelA }));
+    const result = r.contributionsFor(PANEL_CONTRACT);
+    expect(result.map((x) => x.id)).toEqual(["a", "b"]);
+    expect(result[0].panel).toEqual(panelA);
+    expect(result[1].panel).toEqual(panelB);
   });
 
   it("subscribe returns an unsubscribe that stops notifications", () => {

@@ -15,6 +15,30 @@ export interface ContributionTab {
   gmOnly?: boolean;
 }
 
+/** Dock zone a panel targets under the panel-manager host. */
+export type ZoneId = "right" | "bottom" | "left";
+
+/** Where a panel starts when its module first contributes it.
+ * Absent `defaultPlacement` on a `PanelMeta` means launcher-only (closed). */
+export type DefaultPlacement =
+  | { kind: "docked"; zone: ZoneId; order?: number }
+  | { kind: "minimized" };
+
+/** Panel metadata for the `shadowcat.panel` contract (M12a panel-manager host).
+ * Plain data — framework-neutral, mirrors `ContributionTab`'s host-resolves-i18n
+ * shape. Coexists with `tab`/`ContributionTab` during the M12a transition; no
+ * runtime reads both fields on the same contribution. */
+export interface PanelMeta {
+  icon: string;
+  labelKey: string;
+  /** Advisory UI filter only; the host is responsible for hiding gmOnly panels. */
+  gmOnly?: boolean;
+  defaultPlacement?: DefaultPlacement;
+}
+
+/** Contract id panel modules contribute under for the panel-manager host. */
+export const PANEL_CONTRACT = "shadowcat.panel";
+
 export interface Contribution {
   id: string;
   contract: string;
@@ -24,6 +48,7 @@ export interface Contribution {
   /** Opaque host-rendered component handle. */
   component: unknown;
   tab?: ContributionTab;
+  panel?: PanelMeta;
 }
 
 interface Entry {
