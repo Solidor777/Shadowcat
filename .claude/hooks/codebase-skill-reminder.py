@@ -10,13 +10,13 @@ import sys, json, os, tempfile, re
 # (subsystem-id, [path regexes]). Order = priority; first match wins.
 SUBSYSTEMS = [
     ("dice",                 [r"src/server/src/dice/"]),
-    ("chat",                 [r"src/server/src/chat/"]),
+    ("chat",                 [r"src/server/src/chat/", r"src/client/core/src/chat-docs\.ts", r"src/modules/chat/", r"src/modules/chat-composer/", r"src/modules/chat-card/"]),
     ("assets",               [r"src/modules/assets/", r"src/server/src/data/asset\.rs", r"src/server/src/http/assets\.rs"]),
     ("documents-permissions", [r"src/server/src/data/", r"src/client/core/src/wire\.ts"]),
     ("actors-tokens",        [r"src/modules/actors/", r"src/modules/factions/", r"src/client/core/src/actor\.ts"]),
     ("scene-rendering",      [r"src/server/src/scene/", r"src/modules/stage/", r"src/modules/scene-tools/", r"src/client/render/"]),
     ("realtime-sync",        [r"src/server/src/ws/", r"src/server/src/http/", r"src/server/src/auth/", r"src/client/core/src/(store|optimistic|ws-client)\.ts"]),
-    ("client-shell",         [r"src/modules/entry/", r"src/modules/core-ui/", r"src/modules/topbar/", r"src/modules/statusbar/", r"src/modules/settings/", r"src/client/shell/", r"src/client/ui-kit/"]),
+    ("client-shell",         [r"src/modules/entry/", r"src/modules/core-ui/", r"src/modules/sidebar/", r"src/modules/topbar/", r"src/modules/statusbar/", r"src/modules/settings/", r"src/client/shell/", r"src/client/ui-kit/"]),
 ]
 
 

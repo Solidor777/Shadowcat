@@ -108,3 +108,24 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   enforcement (or explicit tie-break ordering) when M11d's GM chat-settings UI gets a write
   path, mirroring the `faction-registry`/`condition-registry` idempotent-seed pattern.
   (Surfaced by the M11c-3 whole-branch review.)
+
+## Client / chat display (M11d-1)
+- Message-list virtualization: the panel renders only the most recent 200 messages per view
+  (older history exists in the store via resync but is unrendered), and the reactive pipeline
+  re-parses/re-sorts the full unbounded message history on ANY document mutation (whole-store
+  subscribe, same idiom as the small bounded registries). Fine at current scale; virtualize +
+  narrow the subscription when long-session history makes it observable.
+- Unread badges / notification pips on the chat tab (and tab popout windows, if ever wanted) —
+  Foundry-parity polish, deliberately out of M11d-1 scope.
+- Actor-name → sheet navigation and internal doc-link buttons on the message card — blocked on
+  M12 sheet infrastructure; names render as emphasized text meanwhile.
+- Speaking-as-actor composer UX (`actor_owner` picker) — lands with M11d-2 roll attribution;
+  the wire field, storage, and card rendering already support it.
+- Send/edit/delete failure surfacing: the chat frames carry no correlation id, so server
+  rejections (e.g. flood limit) are invisible to the sender beyond client pre-validation —
+  needs a protocol-level reason channel (pre-existing M11c deferral, re-affirmed).
+- TabbedSurface: WAI-ARIA APG roving-tabindex keyboard model for the tab rail
+  (Left/Right/Home/End; only the active tab in the Tab order) — plain focusable buttons today.
+- Sidebar collapse state is session-local (not persisted in ui_state) — persist if users ask.
+- Server shortcodes: pre-parse replacement also fires inside markdown code spans; refine to
+  skip code spans if it ever matters in practice.

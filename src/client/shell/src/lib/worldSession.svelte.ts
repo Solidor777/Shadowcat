@@ -24,6 +24,8 @@ import {
   type SceneSubscription,
   type PathResult,
   type MoveStream,
+  type WireActorOwnerRef,
+  type WireAudience,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
@@ -63,10 +65,11 @@ export class WorldSession {
   state = $state<ConnState>("closed");
   role = $state<WorldRole | null>(null);
   world = $state<string | null>(null);
-  /** userId → username for see-as labels; fetched on a GM's Welcome (the members
-   * endpoint is GM-gated, so this stays empty for players). A stable reactive Map
-   * (mutated in place, never reassigned) so the reference captured into AppContext
-   * at mount stays valid and consumers re-render when it populates on (re)connect. */
+  /** userId → username for the world's members, fetched on every role's Welcome
+   * (chat author/whisper-recipient name resolution; the GM additionally uses it
+   * for see-as labels). A stable reactive Map (mutated in place, never reassigned)
+   * so the reference captured into AppContext at mount stays valid and consumers
+   * re-render when it populates on (re)connect. */
   readonly members = new SvelteMap<string, string>();
   /** World-default capability grants + declarative requirements from the latest Welcome; inputs
    * to the advisory `canEdit` gate. Re-set on every (re)connect. */
@@ -201,6 +204,27 @@ export class WorldSession {
     return this.#ws.moveRequest(scene, tokenId, path);
   }
 
+  /** Send a chat message. Fire-and-forget; no-op when disconnected — thin delegate
+   * to `WsClient.sendChatMessage`. */
+  sendChatMessage(opts: {
+    channel: string;
+    content: string;
+    actorOwner?: WireActorOwnerRef | null;
+    audience?: WireAudience;
+  }): void {
+    this.#ws?.sendChatMessage(opts);
+  }
+
+  /** Edit an existing chat message. Fire-and-forget; no-op when disconnected. */
+  editChatMessage(messageId: string, content: string): void {
+    this.#ws?.editChatMessage(messageId, content);
+  }
+
+  /** Delete an existing chat message. Fire-and-forget; no-op when disconnected. */
+  deleteChatMessage(messageId: string): void {
+    this.#ws?.deleteChatMessage(messageId);
+  }
+
   /** Subscribe to a SceneDerived channel. Returns a synchronous handle; the
    * underlying WS subscription is (re)established on every Welcome so derived state
    * survives a reconnect. */
@@ -307,30 +331,30 @@ export class WorldSession {
       this.role = w.user_role;
       this.#worldGrants = w.world_default_grants;
       this.#requirements = w.capability_requirements;
-      // Activate modules BEFORE any await below (a GM's member fetch) so the
+      // Activate modules BEFORE any await below (the member fetch) so the
       // layout module contributes Layout into the `root` surface the host renders
       // — the table chrome paints immediately on mount, never a blank frame during
-      // the GM member-fetch round-trip. `#bootstrapped` set before the await so a
+      // the member-fetch round-trip. `#bootstrapped` set before the await so a
       // second Welcome (reconnect) cannot re-enter and double-add the modules.
       if (!this.#bootstrapped) {
         this.#bootstrapped = true;
         for (const m of this.opts.modules) this.#modules.add(m);
         await this.#modules.activate();
       }
-      // Fetch member usernames for see-as labels (GM only; the endpoint 403s
-      // players). Best-effort: a failure leaves the picker on short-id fallback.
-      // The members SvelteMap is mutated in place, so the see-as UI (already
-      // rendered after activation) populates reactively when this resolves.
-      if (w.user_role === "gm") {
-        try {
-          const list = await listWorldMembers(w.world);
-          // Mutate in place (not reassign) so the AppContext-captured reference
-          // stays valid; reconnect re-populates the same Map.
-          this.members.clear();
-          for (const m of list) this.members.set(m.user, m.username);
-        } catch (e) {
-          this.#logger.warn("member list fetch failed", e);
-        }
+      // Fetch member usernames: every role needs these to resolve chat author
+      // names and whisper recipient labels; the GM additionally uses them for
+      // see-as labels. Best-effort: a failure leaves those UIs on short-id
+      // fallback. The members SvelteMap is mutated in place, so consumers
+      // (already rendered after activation) populate reactively when this
+      // resolves.
+      try {
+        const list = await listWorldMembers(w.world);
+        // Mutate in place (not reassign) so the AppContext-captured reference
+        // stays valid; reconnect re-populates the same Map.
+        this.members.clear();
+        for (const m of list) this.members.set(m.user, m.username);
+      } catch (e) {
+        this.#logger.warn("member list fetch failed", e);
       }
       reconcileTopology(this.#modules.declarations(), w.contract_declarations, this.#logger);
       // Scene subscriptions are dropped by the WS on disconnect; re-establish each

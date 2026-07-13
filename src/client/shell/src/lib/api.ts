@@ -36,7 +36,7 @@ export function listWorlds(): Promise<WorldEntry[]> {
   return getJson<WorldEntry[]>("/api/worlds");
 }
 
-/** A world member (GM-only endpoint). Mirrors the server's MemberEntry. */
+/** A world member (visible to every world member). Mirrors the server's MemberEntry. */
 export interface WorldMember {
   user: string;
   username: string;

@@ -11,6 +11,6 @@ export const actors: Module = {
     provides: [],
   },
   register(ctx) {
-    ctx.contributions.contribute({ id: "actors:sidebar", contract: "shadowcat.surface:sidebar", order: 2, component: ActorsPanel });
+    ctx.contributions.contribute({ id: "actors:sidebar", contract: "shadowcat.surface:sidebar", order: 2, component: ActorsPanel, tab: { icon: "👥", labelKey: "actors.tab" } });
   },
 };

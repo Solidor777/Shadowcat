@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, WireActorOwnerRef, WireAudience } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -13,6 +13,19 @@ import type { TokenSelection } from "./tokenSelection.svelte";
 /** Translate function shape (framework-neutral; the Svelte adapter supplies a
  * reactive implementation). */
 export type TFunc = (key: string, params?: Record<string, string | number>) => string;
+
+/** Chat transport seam (see `AppContext.chat`). Fire-and-forget: none of these
+ * calls resolve/reject — the server applies or rejects out-of-band. */
+export interface ChatApi {
+  send(opts: {
+    channel: string;
+    content: string;
+    actorOwner?: WireActorOwnerRef | null;
+    audience?: WireAudience;
+  }): void;
+  edit(messageId: string, content: string): void;
+  delete(messageId: string): void;
+}
 
 export interface AppContext {
   contributions: ContributionRegistry;
@@ -28,7 +41,7 @@ export interface AppContext {
   /** Advisory client-side edit gate (mirrors the server's Update-path check) for showing/hiding
    * write controls. The server remains authoritative. GM ⇒ always true. */
   canEdit(doc: WireDocument, path: string): boolean;
-  /** userId → username for the world's members (GM-only source; empty for players). */
+  /** userId → username for the world's members (all roles; used for chat name resolution + GM see-as labels). */
   members: Map<string, string>;
   t: TFunc;
   /** Resolves asset UUIDs to serve URLs, cache-busting on replace. */
@@ -75,10 +88,21 @@ export interface AppContext {
   ) => Promise<MoveStream>;
   /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe. */
   onPing: (cb: (msg: { scene: string; x: number; y: number; user: string }) => void) => () => void;
+  /** Chat transport seam: send/edit/delete a chat message. Fire-and-forget (no
+   * correlation id) — the server applies/rejects out-of-band; the composer
+   * pre-validates the cheap rejects client-side. */
+  chat: ChatApi;
   /** Leave the current world and return to world-select. */
   leaveWorld: () => void;
   /** Log out of the server session and return to the pre-world (login) view. */
   logout: () => Promise<void>;
+  /** Narrow per-world UI-state seam (currently: the sidebar's active tab). The
+   * shell owns storage/persistence; this seam only reads/writes the current
+   * world's slice. */
+  uiState: {
+    getActiveTab(): string | null;
+    setActiveTab(id: string): void;
+  };
 }
 
 /** Context key; exported only so test fixtures can seed an AppContext. */

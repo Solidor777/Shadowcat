@@ -3,6 +3,7 @@
   import { t } from "@shadowcat/ui-kit";
   import { logout } from "./api";
   import { navigate } from "./route.svelte";
+  import { getActiveTab, setActiveTab } from "./sessionState.svelte";
   import type { WorldSession } from "./worldSession.svelte";
 
   let { session, leaveWorld }: { session: WorldSession; leaveWorld: () => void } =
@@ -32,6 +33,15 @@
     pathfind: (s, st, wp, fr) => session.pathfind(s, st, wp, fr),
     moveRequest: (s, tid, p) => session.moveRequest(s, tid, p),
     onPing: (cb) => session.onPing(cb),
+    chat: {
+      send: (o) => session.sendChatMessage(o),
+      edit: (id, c) => session.editChatMessage(id, c),
+      delete: (id) => session.deleteChatMessage(id),
+    },
+    uiState: {
+      getActiveTab: () => getActiveTab(session.world!),
+      setActiveTab: (id) => setActiveTab(session.world!, id),
+    },
     leaveWorld,
     logout: async () => {
       await logout();

@@ -8,6 +8,8 @@ describe("factions module", () => {
     expect(factions.manifest.requires).toContain("shadowcat.surface:sidebar");
     const contributions = new ContributionRegistry();
     factions.register({ contributions } as never);
-    expect(contributions.contributionsFor("shadowcat.surface:sidebar").length).toBe(1);
+    const list = contributions.contributionsFor("shadowcat.surface:sidebar");
+    expect(list.length).toBe(1);
+    expect(list[0].tab).toEqual({ icon: "🚩", labelKey: "factions.tab" });
   });
 });

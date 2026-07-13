@@ -882,7 +882,48 @@ Decomposed **M11a–d**:
   > **M11d (default display modules) is next**, and should resolve that question at its own
   > brainstorm before implementation.
   Design: [`superpowers/specs/2026-07-08-m11c-chat-core-design.md`](superpowers/specs/2026-07-08-m11c-chat-core-design.md).
-- **M11d — Default display modules:** independently-replaceable composer + message-card contribution modules; text enrichment (Markdown/HTML/images/links/emails, GM-gated, no embedded CSS); emotes; roll integration; internal doc links; SSRF-guarded server-side link previews.
+- **M11d — Default display modules**, decomposed at its brainstorm (2026-07-13) into three
+  checkpoints — **M11d-1** (tabbed sidebar + chat display), **M11d-2** (dice→chat wire
+  integration), **M11d-3** (SSRF-guarded link previews — this RESOLVES the open M11c-4
+  question: the fetcher folds into the M11d cycle as its third checkpoint, not a standalone
+  c-4).
+  > **M11d-1 DONE** (branch `m11d-1-tabbed-sidebar-chat-display`, executed via SDD — Sonnet
+  > implementers, per-task two-reviewer gates, 1 pre-authorized buddy-check on the
+  > server-enabler unit) — **the tabbed sidebar + the chat display layer.**
+  > Shipped, client: `Contribution.tab` metadata (`{icon, labelKey, gmOnly?}`); ui-kit
+  > `TabbedSurface` (vertical icon rail, gmOnly filtering, all-panels-stay-mounted across tab
+  > switches AND collapse, 44px targets); **the sidebar as a module** —
+  > `@shadowcat/module-sidebar` provides the multi `sidebar` contract (moved out of core-ui)
+  > behind a new singleton `sidebar-host` surface, with per-world activeTab persistence into
+  > the reserved M7 `ui_state` field; tab metadata on all six panels (chat 0 = default,
+  > assets 1, actors 2, factions 3, conditions 4, game-settings 5 gmOnly, settings 6 — the
+  > settings module was MISSING from the design table and collided at order 0, caught in
+  > review); the chat trio `@shadowcat/module-chat` (host: channel-registry config doc +
+  > GM editor, All/channel/GM views, 200-render cap, stick-to-bottom + pill scroll with
+  > hidden-tab safety) / `module-chat-composer` (trimmed-length cap, IME guard, no client
+  > command parsing) / `module-chat-card` (fail-closed render; the single `{@html}` sink
+  > proven to render only ammonia-produced html segments; per-viewer actor names via
+  > `resolveTokenActor`; edit/delete affordances); client body mirror `chat-docs.ts`
+  > (fail-closed Zod, unknown-segment forward-compat that REFUSES known kinds);
+  > `WsClient`/`AppContext.chat` + `uiState` seams. Shipped, server:
+  > `MessageSystem.source` (edit prefill; whisper-stripped; CLEARED on delete tombstone),
+  > always-on `:shortcode:`→emoji pre-pass in `sanitize`, `list_members` widened to any
+  > member (chat name resolution). Review takeaways: the buddy-check on the server enablers
+  > converged in 3 rounds (raw `source` in the FTS index adjudicated Minor — pre-existing
+  > `channel` precedent — documented at the field); per-task reviews caught and fixed 9
+  > Important findings (collapse-unmount, sidebar grid growth cap, default-tab collision,
+  > tombstone-vs-real-deletion, pill false-positive, hidden-tab scroll corruption,
+  > trimmed-cap mismatch, IME guard, roll-formula-empty-on-enriched-worlds). Also fixed
+  > pre-existing red gates found on main: the M11c-3 `edit/delete_message` ClientMsg variants
+  > were never mirrored into wire.ts (core typecheck red since that merge) and eslint choked
+  > on a stale worktree's dist bundle. Both codebase skills updated + reviewed per the gate.
+  > Spec: [`superpowers/specs/2026-07-13-m11d-1-tabbed-sidebar-chat-display-design.md`](superpowers/specs/2026-07-13-m11d-1-tabbed-sidebar-chat-display-design.md).
+  > Plan: [`superpowers/plans/2026-07-13-m11d-1-tabbed-sidebar-chat-display.md`](superpowers/plans/2026-07-13-m11d-1-tabbed-sidebar-chat-display.md).
+  > Deferred (TODO.md): list virtualization beyond the render cap; unread badges/tab popouts;
+  > actor-name→sheet + internal doc links (need M12 sheets); speaking-as-actor composer
+  > (M11d-2 with roll attribution); APG roving tabindex on the tab rail; shortcodes inside
+  > code spans; send-failure surfacing (no correlation ids); collapse persistence.
+  > **M11d-2 (dice→chat wire integration) is next.**
 
 ### M12 · Minimal default modules
 - Actor / scene browsers, generic actor / item sheets — built against the public API, each treated as an API bug report. (Chat panel superseded: the baseline chat display modules ship in **M11d**.)

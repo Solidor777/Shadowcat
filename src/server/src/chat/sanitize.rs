@@ -12,6 +12,11 @@ use pulldown_cmark::{html, Event, Options, Parser};
 /// security boundary, crossed exactly once here. All-off => one `Text`
 /// segment (fail-closed baseline, identical to c-1's `plain_text_content`).
 pub fn sanitize(raw: &str, policy: &ChatContentPolicy) -> Vec<Segment> {
+    // `:shortcode:` -> unicode pre-pass, ahead of BOTH branches below, so
+    // stored content is final and identical regardless of the markdown/html
+    // policy toggles — always-on typing sugar, not policy-gated enrichment.
+    let replaced = super::shortcodes::replace_shortcodes(raw);
+    let raw: &str = &replaced;
     if !policy.markdown && !policy.html {
         return vec![Segment::Text {
             text: raw.to_string(),
@@ -182,6 +187,20 @@ mod tests {
                 Segment::Html { sanitized_html } => sanitized_html.clone(),
             })
             .collect()
+    }
+
+    /// The shortcode pre-pass runs identically on the plain-text early-return
+    /// path (the enriched path is exercised via `shortcodes.rs`'s own tests).
+    #[test]
+    fn sanitize_replaces_shortcodes_in_plain_text_mode() {
+        let policy = ChatContentPolicy::default(); // everything off
+        let out = sanitize("gg :heart:", &policy);
+        assert_eq!(
+            out,
+            vec![Segment::Text {
+                text: "gg ❤️".into()
+            }]
+        );
     }
 
     #[test]

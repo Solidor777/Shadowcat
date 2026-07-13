@@ -5,6 +5,7 @@
   import { loadSessionState, setLastWorld, flushOnUnload } from "./lib/sessionState.svelte";
   import { currentRoute, navigate } from "./lib/route.svelte";
   import { coreUi } from "@shadowcat/module-core-ui";
+  import { sidebar } from "@shadowcat/module-sidebar";
   import { topBar } from "@shadowcat/module-topbar";
   import { statusBar } from "@shadowcat/module-statusbar";
   import { stage } from "@shadowcat/module-stage";
@@ -15,6 +16,9 @@
   import { conditions } from "@shadowcat/module-conditions";
   import { gameSettings } from "@shadowcat/module-game-settings";
   import { sceneTools } from "@shadowcat/module-scene-tools";
+  import { chat } from "@shadowcat/module-chat";
+  import { chatComposer } from "@shadowcat/module-chat-composer";
+  import { chatCard } from "@shadowcat/module-chat-card";
   import { WorldSession } from "./lib/worldSession.svelte";
   import Table from "./lib/Table.svelte";
 
@@ -82,7 +86,7 @@
     const wsUrl =
       (location.protocol === "https:" ? "wss:" : "ws:") +
       "//" + location.host + "/ws?world=" + worldId;
-    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [coreUi, topBar, statusBar, stage, settings, gameSettings, assets, actors, factions, conditions, sceneTools] });
+    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [sidebar, coreUi, topBar, statusBar, stage, settings, gameSettings, assets, actors, factions, conditions, sceneTools, chat, chatComposer, chatCard] });
     session = s;
     void s.enter(worldId);
     setLastWorld(worldId);

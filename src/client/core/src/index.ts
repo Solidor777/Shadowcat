@@ -69,6 +69,8 @@ export type {
   WireCapabilityRequirement,
   WireContractDeclaration,
   WireSearchHit,
+  WireActorOwnerRef,
+  WireAudience,
 } from "./wire";
 export { AssetResolver } from "./assets";
 export type { AssetOp } from "./assets";
@@ -77,3 +79,6 @@ export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, build
 export type { SceneSystem, TokenSystem, ActorSystem, TokenOverrides, RenderVisual, AnimatedSource, FaceVisual, TokenVisual, Faction, FactionStance, FactionRegistrySystem, Condition, ConditionRegistrySystem, MovementRestriction, MovementModel, LightMode, DiagonalRule, EasingMode, EnvironmentLight, GridDistance, SceneVisionOverrides, SceneLightingOverrides, WorldSceneDefaults, WorldSettingsSystem, ResolvedSceneSettings, GradationBand, LightGradationSystem, VisionMode, VisionModesSystem, VisionAssignment, LightSystem, RegionShapeKind, RegionShape, RegionBehavior, RegionSystem, SceneDimensions } from "./scene-docs";
 export { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, footprintRadius, resolveTokenVisual } from "./actor";
 export type { EffectiveActor, ConditionTarget, TokenBox } from "./actor";
+export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, MAX_MESSAGE_CHARS, MessageKindSchema, ChatSegmentSchema, ChatMessageSystemSchema, parseMessageSystem, isKnownSegment, buildChannelRegistryDoc } from "./chat-docs";
+export type { MessageKind, ChatSegment, UnknownSegment, ChatMessageSystem, ChatChannel, ChannelRegistrySystem } from "./chat-docs";
+export type { ContributionTab } from "./contributions";

@@ -2985,6 +2985,7 @@ mod tests {
             crate::chat::Audience::Public,
             crate::chat::MessageKind::Normal,
             crate::chat::plain_text_content("hi"),
+            None,
             1,
         );
         r.apply_intent(
@@ -3006,6 +3007,7 @@ mod tests {
             crate::chat::Audience::Public,
             crate::chat::MessageKind::Normal,
             vec![],
+            None,
             2,
         );
         other.doc_type = "note".into();
@@ -3052,6 +3054,7 @@ mod tests {
             crate::chat::Audience::Public,
             crate::chat::MessageKind::Normal,
             vec![],
+            None,
             1,
         );
         let err = r
@@ -3102,6 +3105,7 @@ mod tests {
             crate::chat::Audience::Public,
             crate::chat::MessageKind::Normal,
             crate::chat::plain_text_content("hi"),
+            None,
             1,
         );
         msg.owner = Some(other);
@@ -3150,6 +3154,7 @@ mod tests {
             crate::chat::Audience::Public,
             crate::chat::MessageKind::Normal,
             crate::chat::plain_text_content("hi"),
+            None,
             1,
         );
         let msg_id = msg.id;
@@ -3222,6 +3227,7 @@ mod tests {
             crate::chat::Audience::Public,
             crate::chat::MessageKind::Normal,
             crate::chat::plain_text_content("hi"),
+            None,
             1,
         );
         let msg_id = msg.id;

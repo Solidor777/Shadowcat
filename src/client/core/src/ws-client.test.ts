@@ -576,4 +576,73 @@ describe("WsClient", () => {
       client.moveRequest("scene1", "tok1", [[0, 0], [100, 0]]),
     ).rejects.toThrow(/not connected/i);
   });
+
+  it("sendChatMessage sends a send_message frame with defaulted audience and actor_owner", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+
+    client.sendChatMessage({ channel: "ic", content: "hello" });
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "send_message")!);
+    expect(frame).toEqual({
+      type: "send_message",
+      channel: "ic",
+      content: "hello",
+      actor_owner: null,
+      audience: { kind: "public" },
+    });
+  });
+
+  it("sendChatMessage forwards actor_owner and audience when given", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+
+    client.sendChatMessage({
+      channel: "ic",
+      content: "hi",
+      actorOwner: { kind: "actor", actor_id: "a1" },
+      audience: { kind: "whisper", recipients: ["u2"] },
+    });
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "send_message")!);
+    expect(frame).toEqual({
+      type: "send_message",
+      channel: "ic",
+      content: "hi",
+      actor_owner: { kind: "actor", actor_id: "a1" },
+      audience: { kind: "whisper", recipients: ["u2"] },
+    });
+  });
+
+  it("editChatMessage sends an edit_message frame", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+
+    client.editChatMessage("m1", "edited text");
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "edit_message")!);
+    expect(frame).toEqual({ type: "edit_message", message_id: "m1", content: "edited text" });
+  });
+
+  it("deleteChatMessage sends a delete_message frame", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+
+    client.deleteChatMessage("m1");
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "delete_message")!);
+    expect(frame).toEqual({ type: "delete_message", message_id: "m1" });
+  });
 });

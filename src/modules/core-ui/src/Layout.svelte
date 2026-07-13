@@ -6,7 +6,7 @@
   <div class="topbar"><Surface contract="shadowcat.surface:topbar" /></div>
   <div class="toolrail"><Surface contract="shadowcat.surface:toolrail" /></div>
   <div class="stage"><Surface contract="shadowcat.surface:stage" /></div>
-  <div class="sidebar"><Surface contract="shadowcat.surface:sidebar" /></div>
+  <div class="sidebar"><Surface contract="shadowcat.surface:sidebar-host" /></div>
   <div class="statusbar"><Surface contract="shadowcat.surface:statusbar" /></div>
 </div>
 
@@ -38,7 +38,11 @@
   }
   .sidebar {
     grid-area: sidebar;
-    overflow: auto;
+    /* Growth cap: zeroes the grid item's automatic minimum size so tall tab
+     * content scrolls inside the host's panels instead of growing the 1fr
+     * track past 100vh. Scrolling itself is owned by the tab host's panels. */
+    min-height: 0;
+    overflow: hidden;
     background: var(--surface-raised);
     border-left: 1px solid var(--border);
   }

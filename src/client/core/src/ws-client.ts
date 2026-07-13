@@ -10,6 +10,8 @@ import {
   type ServerMsg,
   type WireCommand,
   type WireSearchHit,
+  type WireActorOwnerRef,
+  type WireAudience,
 } from "./wire";
 
 /** A resolved page of search results (Core.search). */
@@ -586,6 +588,39 @@ export class WsClient {
   onMoveStream(cb: (s: MoveStream) => void): () => void {
     this.moveStreamListeners.add(cb);
     return () => this.moveStreamListeners.delete(cb);
+  }
+
+  /**
+   * Send a chat message. Fire-and-forget: this frame carries no correlation id
+   * by design — server-side rejections are logged server-side only, and the
+   * composer pre-validates the cheap rejects (empty content, unknown channel)
+   * client-side before calling this.
+   */
+  sendChatMessage(opts: {
+    channel: string;
+    content: string;
+    actorOwner?: WireActorOwnerRef | null;
+    audience?: WireAudience;
+  }): void {
+    this.send({
+      type: "send_message",
+      channel: opts.channel,
+      content: opts.content,
+      actor_owner: opts.actorOwner ?? null,
+      audience: opts.audience ?? { kind: "public" },
+    });
+  }
+
+  /** Edit an existing chat message. Fire-and-forget (no correlation id); the
+   * server enforces edit ownership and rejects out-of-band. */
+  editChatMessage(messageId: string, content: string): void {
+    this.send({ type: "edit_message", message_id: messageId, content });
+  }
+
+  /** Delete an existing chat message. Fire-and-forget (no correlation id); the
+   * server enforces delete ownership and rejects out-of-band. */
+  deleteChatMessage(messageId: string): void {
+    this.send({ type: "delete_message", message_id: messageId });
   }
 
   private applyEvent(cmd: WireCommand): void {

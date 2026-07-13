@@ -325,7 +325,9 @@ export type ClientMsg =
       content: string;
       actor_owner: WireActorOwnerRef | null;
       audience: WireAudience;
-    };
+    }
+  | { type: "edit_message"; message_id: string; content: string }
+  | { type: "delete_message"; message_id: string };
 
 /**
  * Standalone Zod mirror of the `send_message` `ClientMsg` variant. `ClientMsg`

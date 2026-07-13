@@ -8,7 +8,9 @@ export default [
     extends: [tseslint.configs.recommended],
   }),
   {
-    ignores: ["dist/", "node_modules/", "target/", "**/*.svelte", "src/types/generated/"],
+    // .claude/worktrees holds harness-created git worktrees whose own dist/
+    // builds are not at the repo-root "dist/" path this list matches.
+    ignores: ["dist/", "node_modules/", "target/", "**/*.svelte", "src/types/generated/", ".claude/worktrees/"],
   },
   // Allow _-prefixed identifiers to signal intentionally unused parameters/variables.
   ...tseslint.config({
