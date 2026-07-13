@@ -24,6 +24,8 @@ import {
   type SceneSubscription,
   type PathResult,
   type MoveStream,
+  type WireActorOwnerRef,
+  type WireAudience,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
@@ -199,6 +201,27 @@ export class WorldSession {
   ): Promise<MoveStream> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     return this.#ws.moveRequest(scene, tokenId, path);
+  }
+
+  /** Send a chat message. Fire-and-forget; no-op when disconnected — thin delegate
+   * to `WsClient.sendChatMessage`. */
+  sendChatMessage(opts: {
+    channel: string;
+    content: string;
+    actorOwner?: WireActorOwnerRef | null;
+    audience?: WireAudience;
+  }): void {
+    this.#ws?.sendChatMessage(opts);
+  }
+
+  /** Edit an existing chat message. Fire-and-forget; no-op when disconnected. */
+  editChatMessage(messageId: string, content: string): void {
+    this.#ws?.editChatMessage(messageId, content);
+  }
+
+  /** Delete an existing chat message. Fire-and-forget; no-op when disconnected. */
+  deleteChatMessage(messageId: string): void {
+    this.#ws?.deleteChatMessage(messageId);
   }
 
   /** Subscribe to a SceneDerived channel. Returns a synchronous handle; the

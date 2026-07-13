@@ -69,6 +69,8 @@ export type {
   WireCapabilityRequirement,
   WireContractDeclaration,
   WireSearchHit,
+  WireActorOwnerRef,
+  WireAudience,
 } from "./wire";
 export { AssetResolver } from "./assets";
 export type { AssetOp } from "./assets";

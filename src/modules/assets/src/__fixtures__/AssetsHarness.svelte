@@ -30,6 +30,7 @@
     pathfind: () => Promise.reject(new Error("not connected")),
     moveRequest: () => Promise.reject(new Error("not connected")),
     onPing: () => () => {},
+    chat: { send: () => {}, edit: () => {}, delete: () => {} },
     leaveWorld: () => {},
     logout: async () => {},
     uiState: { getActiveTab: () => null, setActiveTab: () => {} },

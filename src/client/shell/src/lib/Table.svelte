@@ -33,6 +33,11 @@
     pathfind: (s, st, wp, fr) => session.pathfind(s, st, wp, fr),
     moveRequest: (s, tid, p) => session.moveRequest(s, tid, p),
     onPing: (cb) => session.onPing(cb),
+    chat: {
+      send: (o) => session.sendChatMessage(o),
+      edit: (id, c) => session.editChatMessage(id, c),
+      delete: (id) => session.deleteChatMessage(id),
+    },
     uiState: {
       getActiveTab: () => getActiveTab(session.world!),
       setActiveTab: (id) => setActiveTab(session.world!, id),

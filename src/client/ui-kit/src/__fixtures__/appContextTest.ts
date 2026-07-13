@@ -29,6 +29,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     pathfind: over.pathfind ?? (() => Promise.reject(new Error("not connected"))),
     moveRequest: over.moveRequest ?? (() => Promise.reject(new Error("not connected"))),
     onPing: over.onPing ?? (() => () => {}),
+    chat: over.chat ?? { send: () => {}, edit: () => {}, delete: () => {} },
     leaveWorld: over.leaveWorld ?? (() => {}),
     logout: over.logout ?? (async () => {}),
     uiState: over.uiState ?? { getActiveTab: () => null, setActiveTab: () => {} },
