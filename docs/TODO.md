@@ -176,11 +176,19 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   arg-order risk.
 
 ## Client / panels (M12a Task 6 — DockviewEngine)
-- TODO: Live resize (`resizeZone`/`resizeGroup`) translation — no per-group/per-zone
-  dimension-change event was found on `DockviewGroupPanelApi`/`DockviewApi` within this task's
-  scope; a persisted zone/group size currently only takes effect on load, not from a live
-  user drag-resize gesture. Find the right event (or poll `ResizeObserver` on each group's
-  element) and wire it into `onOp`.
+- RESOLVED (M12a Task 6 buddy-check fix wave): live resize (`resizeZone`/`resizeGroup`)
+  translation is now wired — `group.api.onDidDimensionsChange` (`DockviewGroupPanelApi`, inherited
+  from `PanelApi` via `GridviewPanelApi`) fires per managed group; `DockviewEngine` subscribes one
+  listener per group at creation (disposed on removal/`destroy()`) and emits `resizeZone`/
+  `resizeGroup` ops, guarded by `#applying` and a sub-pixel-delta dedupe. The original entry's
+  premise ("no event surface found") was false — a buddy-check reviewer traced the event through
+  `dockview-core`'s own source.
+- TODO: Whole-GROUP drag transfers (a titlebar drag of an entire tab group, `PanelTransfer`'s
+  `panelId === null`) are vetoed outright in v1 (`DockviewEngine#handleWillDrop` fails closed on
+  any payload it cannot classify into a `DropSite`) rather than translated into per-tab dock ops.
+  Translate whole-group transfers into per-tab dock ops to re-enable the group-drag gesture.
+  (Surfaced by the Task 6 buddy-check: an untranslated group transfer previously fell through
+  `#handleWillDrop` WITHOUT vetoing, letting a group land above the stage on a top-edge drop.)
 - TODO: Floating-panel position/size sync in `DockviewEngine.apply()` for an ALREADY-floating
   panel — creation is handled (`api.addPanel({..., floating: {...}})`), but a live re-drag or
   resize of an existing floating window is not mirrored back into the tree, so the persisted

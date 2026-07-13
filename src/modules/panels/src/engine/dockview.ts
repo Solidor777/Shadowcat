@@ -111,6 +111,16 @@ export class DockviewEngine implements EngineAdapter {
   // Reentrancy guard for W3: `#restoreStage` itself adds a panel; without
   // this, the model's own remove/add bookkeeping could recurse back in.
   #restoringStage = false;
+  // One live `onDidDimensionsChange` subscription per managed (non-stage)
+  // group, keyed by dockview group id. Added the moment `apply()` creates a
+  // group, disposed the moment `apply()` removes it (and on `destroy()`) —
+  // a group's whole lifetime is bracketed by exactly one subscription.
+  #groupResizeSubs = new Map<string, { dispose(): void }>();
+  // Last EMITTED px dimensions per zone/group, to skip dockview's frequent
+  // sub-pixel dimension churn (every layout pass fires this event, not just
+  // a user's splitter drag) — avoids feedback-loop op spam.
+  #lastZonePx = new Map<ZoneId, number>();
+  #lastGroupPx = new Map<string, number>();
 
   constructor(logger?: Logger) {
     this.#logger = logger ?? consoleLogger();
@@ -214,12 +224,31 @@ export class DockviewEngine implements EngineAdapter {
    * ONLY place a dockview drag event is translated into `DropSite` and fed
    * to it. A veto calls `event.preventDefault()`, which dockview honours
    * before performing the actual DOM move (`DockviewWillDropEvent` fires
-   * before the model applies anything and checks `defaultPrevented`). */
+   * before the model applies anything and checks `defaultPrevented`).
+   * Fails CLOSED on anything this translation layer cannot classify: a null
+   * layout (pre-first-`apply()`) or a payload `#toDropSite` cannot resolve
+   * into a `DropSite` (notably a whole-GROUP transfer — `PanelTransfer`'s
+   * `panelId` is null for a titlebar drag of an entire group, per
+   * `groupDragSource.ts`) are vetoed outright rather than let through
+   * unpoliced. A whole-group drop targeting the container's TOP edge would
+   * otherwise land ABOVE the stage (W1/D4 violation) since `classifyDrop`
+   * never runs against it; vetoing the whole gesture class in v1 also means
+   * a completed group drop never needs a `LayoutOp` translation (see
+   * `#handleDidDrop`). */
   #handleWillDrop(event: DockviewWillDropEvent): void {
     const layout = this.#expanded;
-    if (!layout) return;
+    if (!layout) {
+      event.preventDefault();
+      return;
+    }
     const site = this.#toDropSite(event, event.kind);
-    if (!site) return; // no recognisable single-panel payload (e.g. a whole-group drag) — not policed here
+    if (!site) {
+      // Whole-group transfers and any other unclassifiable payload shape —
+      // vetoed rather than silently let through (see doc comment above).
+      event.preventDefault();
+      this.#logger.warn("panels: vetoed drop (unclassifiable payload, e.g. a whole-group transfer)");
+      return;
+    }
     const result = classifyDrop(site, layout);
     if ("veto" in result) {
       event.preventDefault();
@@ -238,6 +267,10 @@ export class DockviewEngine implements EngineAdapter {
   #handleDidDrop(event: DockviewDidDropEvent): void {
     if (this.#applying) return;
     const layout = this.#expanded;
+    // A real completed drop can never reach here with a null layout:
+    // `#handleWillDrop` now `preventDefault()`s every drop in that window
+    // (see its doc comment), so dockview never lets one complete. Kept as a
+    // defense-in-depth bail, not a reachable production path.
     if (!layout) return;
     const site = this.#toDropSite(event, undefined);
     if (!site) return;
@@ -258,7 +291,12 @@ export class DockviewEngine implements EngineAdapter {
   ): DropSite | null {
     const data = event.getData();
     const id = data?.panelId;
-    if (!id) return null; // whole-group drags carry no single subject id — out of policy scope here
+    // Whole-group drags (`PanelTransfer.panelId === null`, a titlebar drag of
+    // an entire group) carry no single subject id — `classifyDrop` has no
+    // vocabulary for a group-as-subject, so this returns null. The caller
+    // (`#handleWillDrop`) vetoes every null-site result outright; this is
+    // NOT "unpoliced", just policed one level up.
+    if (!id) return null;
     const targetGroupId = event.group?.id;
     const stageGroup = targetGroupId === STAGE_GROUP_ID;
 
@@ -305,6 +343,15 @@ export class DockviewEngine implements EngineAdapter {
         let previousGroupIdInZone: string | null = null;
 
         zoneNode.groups.forEach((groupNode, index) => {
+          // W3 hardening: a tree group whose tabs are entirely the stage id
+          // (after filtering) has no real content to dock. Creating it
+          // anyway would removePanel the LIVE stage panel out of its own
+          // locked group to "move" it here; W3's `#restoreStage` remounts it
+          // synchronously, so the loop's own `addPanel("stage")` below would
+          // then throw on a duplicate id and abort the whole `apply()`. Skip
+          // the group entirely rather than let the tree relocate the stage.
+          if (groupNode.tabs.every((t) => t === STAGE_ID)) return;
+
           const groupId = groupIdFor(zone, index, groupNode.tabs);
           seenGroupIds.add(groupId);
           this.#zoneOfGroup.set(groupId, { zone, index });
@@ -314,10 +361,17 @@ export class DockviewEngine implements EngineAdapter {
             group = previousGroupIdInZone
               ? api.addGroup({ id: groupId, referenceGroup: previousGroupIdInZone, direction: "below" })
               : api.addGroup({ id: groupId, referenceGroup: STAGE_GROUP_ID, direction: ZONE_EDGE_DIRECTION[zone] });
+            this.#groupResizeSubs.set(
+              groupId,
+              group.api.onDidDimensionsChange(() => this.#handleGroupDimensionsChange(groupId)),
+            );
           }
           previousGroupIdInZone = groupId;
 
           groupNode.tabs.forEach((tabId, tabIndex) => {
+            // Same W3 hardening as above, per-tab: never let the tree
+            // relocate the real stage panel into a zone group.
+            if (tabId === STAGE_ID) return;
             seenPanelIds.add(tabId);
             const existing = api.getPanel(tabId);
             if (!existing) {
@@ -371,10 +425,63 @@ export class DockviewEngine implements EngineAdapter {
       for (const group of [...api.groups]) {
         if (group.id !== STAGE_GROUP_ID && !seenGroupIds.has(group.id) && group.model.panels.length === 0) {
           api.removeGroup(group);
+          this.#groupResizeSubs.get(group.id)?.dispose();
+          this.#groupResizeSubs.delete(group.id);
+          this.#lastGroupPx.delete(group.id);
         }
       }
     } finally {
       this.#applying = false;
+    }
+  }
+
+  /** Finding 3 (buddy-check): translates a managed group's live
+   * `onDidDimensionsChange` into `resizeZone`/`resizeGroup` ops. Guarded by
+   * `#applying` — dockview's own layout pass fires this event while `apply()`
+   * itself is adding/removing groups, and that churn is our own reconciliation,
+   * not a user drag (same reasoning as `#handleDidRemovePanel`).
+   *
+   * Every managed zone stacks its groups vertically (`apply()` always joins
+   * a same-zone sibling with `direction: "below"`), so the STACKING axis is
+   * always a group's HEIGHT regardless of zone id — `resizeGroup.size` is
+   * therefore always `group.height / Σ(zone's groups' heights)`. The zone's
+   * own FACING dimension differs by zone id: right/left zones are columns of
+   * fixed WIDTH (the axis perpendicular to the stack), while the bottom
+   * zone's facing dimension is its stacked groups' total HEIGHT (the axis
+   * the stack grows along). Both read the group/zone dimensions live off
+   * the engine — `#zoneOfGroup` only tracks which zone/index each group
+   * belongs to, not stale size snapshots. */
+  #handleGroupDimensionsChange(groupId: string): void {
+    if (this.#applying) return;
+    const api = this.#api;
+    if (!api) return;
+    const zoneInfo = this.#zoneOfGroup.get(groupId);
+    if (!zoneInfo) return; // subscription outlived this group's zone membership; removal disposes it, but a same-tick race is defended here too
+    const group = api.getGroup(groupId);
+    if (!group) return;
+
+    let sumHeights = 0;
+    for (const [gid, info] of this.#zoneOfGroup) {
+      if (info.zone !== zoneInfo.zone) continue;
+      const sibling = api.getGroup(gid);
+      if (sibling) sumHeights += sibling.api.height;
+    }
+    if (sumHeights <= 0) return; // no real dimensions yet (e.g. pre-layout) — nothing sane to emit
+
+    const zonePx = zoneInfo.zone === "bottom" ? sumHeights : group.api.width;
+    const lastZonePx = this.#lastZonePx.get(zoneInfo.zone);
+    if (lastZonePx === undefined || Math.abs(lastZonePx - zonePx) >= 1) {
+      this.#lastZonePx.set(zoneInfo.zone, zonePx);
+      for (const cb of this.#opListeners) cb({ op: "resizeZone", zone: zoneInfo.zone, size: zonePx });
+    }
+
+    const lastGroupPx = this.#lastGroupPx.get(groupId);
+    if (lastGroupPx === undefined || Math.abs(lastGroupPx - group.api.height) >= 1) {
+      this.#lastGroupPx.set(groupId, group.api.height);
+      const fraction = Math.min(1, Math.max(Number.EPSILON, group.api.height / sumHeights));
+      for (const cb of this.#opListeners) {
+        cb({ op: "resizeGroup", zone: zoneInfo.zone, group: zoneInfo.index, size: fraction });
+      }
     }
   }
 
@@ -400,6 +507,10 @@ export class DockviewEngine implements EngineAdapter {
   destroy(): void {
     for (const d of this.#disposables) d.dispose();
     this.#disposables = [];
+    for (const d of this.#groupResizeSubs.values()) d.dispose();
+    this.#groupResizeSubs.clear();
+    this.#lastZonePx.clear();
+    this.#lastGroupPx.clear();
     this.#api?.dispose();
     this.#api = null;
     this.#expanded = null;
@@ -408,10 +519,6 @@ export class DockviewEngine implements EngineAdapter {
   }
 }
 
-// TODO: live resize (resizeZone/resizeGroup) translation — no per-group/
-// per-zone dimension-change event surface was found on DockviewGroupPanelApi/
-// DockviewApi within this task's scope; persisted sizes currently only take
-// effect on load, not from live user drag-resize.
 // TODO: floating-panel position/size sync in `apply()` for an
 // ALREADY-floating panel (creation is handled; live re-drag/resize of an
 // existing floating window is not yet mirrored back into the tree).
@@ -419,3 +526,7 @@ export class DockviewEngine implements EngineAdapter {
 // bookkeeping; `onDidDrop`'s missing `kind`) are best-effort approximations,
 // not exhaustively verified against every dockview drag path — recommend a
 // manual browser QA pass over live drag-and-drop before shipping.
+// Whole-GROUP drag transfers (`PanelTransfer.panelId === null`) are vetoed
+// outright in v1 (see `#handleWillDrop`'s doc comment).
+// TODO: Translate whole-group transfers into per-tab dock ops to re-enable
+// the group-drag gesture.

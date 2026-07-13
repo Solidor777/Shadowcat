@@ -1,8 +1,9 @@
 import { test, expect, afterEach } from "vitest";
-import { defaultLayout, applyOp, type PanelLayoutV1 } from "../layout/tree";
+import { defaultLayout, applyOp, type LayoutOp, type PanelLayoutV1 } from "../layout/tree";
 import { DockviewEngine } from "./dockview";
 import { STAGE_ID } from "./policy";
 import { silentLogger } from "@shadowcat/core";
+import type { DockviewWillDropEvent } from "dockview-core";
 
 let engine: DockviewEngine | null = null;
 
@@ -138,4 +139,178 @@ test("a user tab-switch inside a docked group emits an activeTab op", () => {
   chatPanel.group.model.openPanel(chatPanel);
 
   expect(ops).toContainEqual({ op: "activeTab", zone: "right", group: 0, id: "chat" });
+});
+
+/** Fires a synthetic `onWillDrop` through the underlying dockview component —
+ * `DockviewWillDropEvent` isn't exported from `dockview-core`, and simulating
+ * a real native drag gesture isn't possible under jsdom, so a duck-typed
+ * event object (the exact shape `#toDropSite`/`#handleWillDrop` read) is
+ * pushed straight into the component's own `_onWillDrop` emitter (a regular,
+ * non-`#`-private class field — accessible via a cast, not a real API). This
+ * exercises the SAME listener path as `init()`'s `api.onWillDrop(...)`. */
+function fireWillDrop(
+  engine: DockviewEngine,
+  overrides: Partial<{
+    kind: DockviewWillDropEvent["kind"];
+    position: DockviewWillDropEvent["position"];
+    panelId: string | null;
+    group: unknown;
+  }>,
+): { defaultPrevented: boolean } {
+  let prevented = false;
+  const event = {
+    kind: overrides.kind ?? "edge",
+    position: overrides.position ?? "top",
+    panel: undefined,
+    group: overrides.group,
+    getData: () => ({ viewId: "v", groupId: "g", panelId: overrides.panelId ?? null }),
+    get defaultPrevented() {
+      return prevented;
+    },
+    preventDefault() {
+      prevented = true;
+    },
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (engine.debugApi as any).component._onWillDrop.fire(event);
+  return event;
+}
+
+test("Finding 1+2: a whole-group transfer (panelId null) at the container's TOP edge is vetoed", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  engine.apply(twoPanelLayout().expanded, new Map());
+
+  const event = fireWillDrop(engine, { kind: "edge", position: "top", panelId: null });
+  expect(event.defaultPrevented).toBe(true);
+});
+
+test("Finding 1+2: a whole-group transfer at a zone-edge position is ALSO vetoed (v1 vetoes every group transfer, not just top)", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  engine.apply(twoPanelLayout().expanded, new Map());
+
+  const event = fireWillDrop(engine, { kind: "edge", position: "right", panelId: null });
+  expect(event.defaultPrevented).toBe(true);
+});
+
+test("Finding 5: a will-drop event before any apply() fails closed (defaultPrevented)", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  // Deliberately no `apply()` call — `#expanded` is still null.
+
+  const event = fireWillDrop(engine, { kind: "edge", position: "top", panelId: "chat" });
+  expect(event.defaultPrevented).toBe(true);
+});
+
+test("Finding 4: a tree naming the stage id in a zone group applies without throwing, and the real stage stays alive in its own locked group", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  // Manually inject a stage-naming zone group the reducer itself would never
+  // produce (STAGE_ID is never a real registration) — simulating a bug
+  // elsewhere in the pipeline that lets it through to `apply()`.
+  layout = {
+    ...layout,
+    expanded: {
+      ...layout.expanded,
+      zones: {
+        ...layout.expanded.zones,
+        left: { ...layout.expanded.zones.left, groups: [{ tabs: [STAGE_ID], active: STAGE_ID, size: 1 }] },
+      },
+    },
+  };
+
+  expect(() => engine!.apply(layout.expanded, new Map())).not.toThrow();
+
+  const stagePanel = engine.debugApi!.getPanel(STAGE_ID);
+  expect(stagePanel).toBeDefined();
+  expect(stagePanel!.group.id).toBe("sc-stage-group");
+});
+
+test("Finding 3: a group's live dimension change emits resizeZone + resizeGroup ops with sane values", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat", "notes"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }, { id: "notes" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  layout = applyOp(layout, { op: "dock", id: "notes", zone: "right", group: "new" });
+  engine.apply(layout.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  const chatGroup = engine.debugApi!.getPanel("chat")!.group;
+  const notesGroup = engine.debugApi!.getPanel("notes")!.group;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (notesGroup.api as any)._onDidDimensionChange.fire({ width: 320, height: 150 });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (chatGroup.api as any)._onDidDimensionChange.fire({ width: 320, height: 300 });
+
+  const resizeZoneOps = ops.filter((o): o is Extract<LayoutOp, { op: "resizeZone" }> => o.op === "resizeZone");
+  const resizeGroupOps = ops.filter((o): o is Extract<LayoutOp, { op: "resizeGroup" }> => o.op === "resizeGroup");
+
+  expect(resizeZoneOps.length).toBeGreaterThan(0);
+  expect(resizeGroupOps.length).toBeGreaterThan(0);
+  expect(resizeZoneOps.every((o) => o.zone === "right" && o.size === 320)).toBe(true);
+  expect(resizeGroupOps.every((o) => o.zone === "right" && o.size > 0 && o.size <= 1)).toBe(true);
+  // The final chat resize (height 300 of a 450 total) resolves to its exact fraction.
+  const chatResize = resizeGroupOps.find((o) => Math.abs(o.size - 300 / 450) < 1e-9);
+  expect(chatResize).toBeDefined();
+});
+
+test("Finding 3: dimension changes synchronously triggered from inside apply() are NOT emitted (guarded by #applying)", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat", "notes"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }, { id: "notes" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  engine.apply(layout.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  // Piggyback on a REAL dockview event guaranteed to fire synchronously from
+  // inside the next `apply()` call's own body (the active-tab reconciliation
+  // — docking "notes" into the existing group activates it via
+  // `activePanel.api.setActive()`) to prove the `#applying` guard closes over
+  // a genuine mid-`apply()` window, not merely "nothing happened to fire".
+  const unsub = engine.debugApi!.onDidActivePanelChange((event) => {
+    if (event.panel?.id !== "notes") return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (event.panel.group.api as any)._onDidDimensionChange.fire({ width: 500, height: 500 });
+  });
+
+  layout = applyOp(layout, { op: "dock", id: "notes", zone: "right", group: 0 });
+  engine.apply(layout.expanded, new Map());
+  unsub.dispose();
+
+  expect(ops.filter((o) => o.op === "resizeZone" || o.op === "resizeGroup")).toHaveLength(0);
 });
