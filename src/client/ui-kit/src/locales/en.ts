@@ -153,4 +153,8 @@ export const en: Messages = {
   "chat.channels.newName": "New channel",
   "chat.channels.remove": "Remove",
   "chat.newMessages": "New messages ↓",
+  "chat.composer.placeholder": "Message #{name}",
+  "chat.composer.placeholderGm": "Message the GM",
+  "chat.composer.send": "Send",
+  "chat.composer.count": "{used} / {max}",
 };
