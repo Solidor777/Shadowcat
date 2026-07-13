@@ -56,7 +56,7 @@ as buddy-check-worthy by default (its own buddy-check found a Critical: a litera
 - **Ingest (`enrich` in `link_preview.rs`, called from `handle_send_message`/`handle_edit_message`):**
   extracts hrefs from GENUINE `<a>` tags in the sanitized `Segment::Html` runs (NOT a raw
   `href=` substring scan — inert body text `see href="http://x"` would otherwise trigger a real
-  outbound fetch, a buddy-check-caught gap), dedups, caps `MAX_PREVIEWS_PER_MESSAGE=3`, fetches
+  outbound fetch, a per-task-review-caught gap), dedups, caps `MAX_PREVIEWS_PER_MESSAGE=3`, fetches
   cache-misses concurrently (`JoinSet`), appends one `Segment::LinkPreview` per success at the
   END. SYNCHRONOUS before publish (no spawned task/post-hoc revision). Gated on
   `ChatContentPolicy::previews_enabled()` (= `hyperlinks && link_previews.unwrap_or(true)` —
