@@ -61,6 +61,21 @@
     }
   }
 
+  /** The clickable href for a `link_preview` card, or `undefined` to render it non-clickable.
+   * The server only ever stores an `http`/`https` preview URL (fetch_preview's scheme guard),
+   * but the card independently re-checks the scheme rather than trust that invariant across the
+   * boundary — a stored `javascript:`/`data:` URL (from any future path bypassing fetch_preview,
+   * or a serialization bug) must never become a live anchor, since Svelte escapes attribute
+   * VALUES but does not filter URL schemes. */
+  function safeHref(url: string): string | undefined {
+    try {
+      const scheme = new URL(url).protocol;
+      return scheme === "http:" || scheme === "https:" ? url : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   function formatTime(ms: number): string {
     const d = new Date(ms);
     return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -264,7 +279,7 @@
                 browser fetch a remote resource, leaking their IP to a URL an attacker chose. -->
                 <a
                   class="link-preview"
-                  href={s.url}
+                  href={safeHref(s.url)}
                   target="_blank"
                   rel="noopener noreferrer nofollow"
                 >

@@ -196,7 +196,25 @@ describe("MessageCard — link preview (M11d-3)", () => {
     });
     expect(container.querySelector("article")).not.toBeNull();
     expect(container.querySelector(".link-preview-host")?.textContent).toBe("not a url");
-    expect(container.querySelector("a.link-preview")?.getAttribute("href")).toBe("not a url");
+    // An unparseable URL yields no clickable href (safeHref returns undefined) —
+    // the card still renders, just non-clickable.
+    expect(container.querySelector("a.link-preview")?.hasAttribute("href")).toBe(false);
+  });
+
+  it("a non-http(s) scheme url renders no clickable href (defensive scheme guard)", () => {
+    // Defense-in-depth: the server only ever stores http/https preview URLs, but the
+    // card independently refuses to emit a live href for any other scheme, so a
+    // javascript:/data: URL from any future bypass path can never become a live anchor.
+    const doc = msgDoc("m1", baseSystem({
+      content: [{ kind: "link_preview", url: "javascript:alert(1)", title: "T", description: "D" }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc) }),
+    });
+    expect(container.querySelector("article")).not.toBeNull();
+    expect(container.querySelector("a.link-preview")?.hasAttribute("href")).toBe(false);
+    expect(container.querySelector(".link-preview-title")?.textContent).toBe("T");
   });
 
   it("renders both a text segment and a link_preview segment in the same message", () => {
