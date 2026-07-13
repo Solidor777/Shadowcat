@@ -317,20 +317,20 @@ export class WorldSession {
         for (const m of this.opts.modules) this.#modules.add(m);
         await this.#modules.activate();
       }
-      // Fetch member usernames for see-as labels (GM only; the endpoint 403s
-      // players). Best-effort: a failure leaves the picker on short-id fallback.
-      // The members SvelteMap is mutated in place, so the see-as UI (already
-      // rendered after activation) populates reactively when this resolves.
-      if (w.user_role === "gm") {
-        try {
-          const list = await listWorldMembers(w.world);
-          // Mutate in place (not reassign) so the AppContext-captured reference
-          // stays valid; reconnect re-populates the same Map.
-          this.members.clear();
-          for (const m of list) this.members.set(m.user, m.username);
-        } catch (e) {
-          this.#logger.warn("member list fetch failed", e);
-        }
+      // Fetch member usernames: every role needs these to resolve chat author
+      // names and whisper recipient labels; the GM additionally uses them for
+      // see-as labels. Best-effort: a failure leaves those UIs on short-id
+      // fallback. The members SvelteMap is mutated in place, so consumers
+      // (already rendered after activation) populate reactively when this
+      // resolves.
+      try {
+        const list = await listWorldMembers(w.world);
+        // Mutate in place (not reassign) so the AppContext-captured reference
+        // stays valid; reconnect re-populates the same Map.
+        this.members.clear();
+        for (const m of list) this.members.set(m.user, m.username);
+      } catch (e) {
+        this.#logger.warn("member list fetch failed", e);
       }
       reconcileTopology(this.#modules.declarations(), w.contract_declarations, this.#logger);
       // Scene subscriptions are dropped by the WS on disconnect; re-establish each

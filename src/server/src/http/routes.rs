@@ -346,7 +346,15 @@ pub async fn list_members(
     State(state): State<AppState>,
     Path(world): Path<Uuid>,
 ) -> Result<Json<Vec<MemberEntry>>, AppError> {
-    require_gm(&state, &user, world).await?;
+    // Any world member may list the roster: the chat card resolves user ids
+    // to usernames for every viewer (author names, whisper recipient
+    // labels), and a table's roster is inherently visible in shared play.
+    // `permission_context` rejects non-members (Forbidden) — server admins
+    // resolve to GM.
+    state
+        .repo
+        .permission_context(world, user.id, user.role)
+        .await?;
     let members = state.repo.list_members(world).await?;
     Ok(Json(
         members

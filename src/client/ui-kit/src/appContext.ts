@@ -28,7 +28,7 @@ export interface AppContext {
   /** Advisory client-side edit gate (mirrors the server's Update-path check) for showing/hiding
    * write controls. The server remains authoritative. GM ⇒ always true. */
   canEdit(doc: WireDocument, path: string): boolean;
-  /** userId → username for the world's members (GM-only source; empty for players). */
+  /** userId → username for the world's members (all roles; used for chat name resolution + GM see-as labels). */
   members: Map<string, string>;
   t: TFunc;
   /** Resolves asset UUIDs to serve URLs, cache-busting on replace. */

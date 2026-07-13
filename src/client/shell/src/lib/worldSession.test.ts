@@ -255,6 +255,18 @@ test("a GM Welcome populates members in place (stable reference) for see-as labe
   expect(captured.get("u9")).toBe("Zara");
 });
 
+test("a player Welcome also populates members (chat resolves author/recipient names for every role)", async () => {
+  vi.mocked(listWorldMembers).mockResolvedValueOnce([
+    { user: "u9", username: "Zara", role: "player" },
+  ]);
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "player" });
+  await vi.waitFor(() => expect(session.members.get("u9")).toBe("Zara"));
+});
+
 test("an intent dispatched while reconnecting is predicted, queued, and flushed after resync", async () => {
   let capturedClient: { get(id: string): unknown } | null = null;
   const stub = {

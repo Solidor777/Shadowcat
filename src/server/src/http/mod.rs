@@ -588,12 +588,16 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn list_members_is_gm_only_and_returns_usernames() {
+    async fn list_members_is_visible_to_every_member_but_not_outsiders() {
         let state = initialized_state().await;
         seed_user(&state, "gm").await;
         let player_id = seed_user(&state, "pl").await;
+        let spectator_id = seed_user(&state, "sp").await;
+        seed_user(&state, "outsider").await;
         let gm = login_server(&state, "gm").await;
         let pl = login_server(&state, "pl").await;
+        let sp = login_server(&state, "sp").await;
+        let outsider = login_server(&state, "outsider").await;
 
         let world: serde_json::Value = gm
             .post("/api/worlds")
@@ -603,6 +607,10 @@ pub(crate) mod tests {
         let world_id = world["id"].as_str().unwrap().to_string();
         gm.post(&format!("/api/worlds/{world_id}/members"))
             .json(&serde_json::json!({ "user": player_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": spectator_id, "role": "spectator" }))
             .await
             .assert_status(StatusCode::NO_CONTENT);
 
@@ -615,8 +623,27 @@ pub(crate) mod tests {
         assert!(arr.iter().any(|m| m["username"] == "gm"));
         assert!(arr.iter().any(|m| m["username"] == "pl"));
 
-        // A non-GM member is forbidden from listing members.
-        pl.get(&format!("/api/worlds/{world_id}/members"))
+        // A non-GM member also sees the roster: the chat card resolves user
+        // ids to usernames for every viewer (author names, whisper recipient
+        // labels), not just the GM's see-as labels.
+        let members: serde_json::Value = pl
+            .get(&format!("/api/worlds/{world_id}/members"))
+            .await
+            .json();
+        let arr = members.as_array().unwrap();
+        assert!(arr.iter().any(|m| m["username"] == "gm"));
+        assert!(arr.iter().any(|m| m["username"] == "pl"));
+
+        // A spectator sees the roster too.
+        sp.get(&format!("/api/worlds/{world_id}/members"))
+            .await
+            .assert_status(StatusCode::OK);
+
+        // An authenticated non-member is forbidden: the world id is
+        // caller-supplied, so a membership denial here leaks nothing (unlike
+        // the by-id document routes, which remap to 404 for existence-hiding).
+        outsider
+            .get(&format!("/api/worlds/{world_id}/members"))
             .await
             .assert_status(StatusCode::FORBIDDEN);
     }
