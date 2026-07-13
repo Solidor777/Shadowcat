@@ -2,10 +2,10 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
-    buildWorldSettingsDoc, buildLightGradationDoc, buildVisionModesDoc,
+    buildWorldSettingsDoc, buildLightGradationDoc, buildVisionModesDoc, buildDiceSettingsDoc,
     DEFAULT_WORLD_SETTINGS,
     type WorldSettingsSystem, type LightGradationSystem, type VisionModesSystem,
-    type SceneSystem, type WireDocument, DEFAULT_SCENE_BOUNDS,
+    type SceneSystem, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsSystem,
   } from "@shadowcat/core";
 
   const ctx = getAppContext();
@@ -26,6 +26,9 @@
     if (ctx.documents.query("world-settings").length === 0) ops.push({ op: "create" as const, doc: buildWorldSettingsDoc(ctx.world) });
     if (ctx.documents.query("light-gradation").length === 0) ops.push({ op: "create" as const, doc: buildLightGradationDoc(ctx.world) });
     if (ctx.documents.query("vision-modes").length === 0) ops.push({ op: "create" as const, doc: buildVisionModesDoc(ctx.world) });
+    if (ctx.documents.query("dice-settings").length === 0) {
+      ops.push({ op: "create" as const, doc: buildDiceSettingsDoc(ctx.world, { mode: "total", direction: "high_wins" }) });
+    }
     seeded = true;
     if (ops.length > 0) ctx.dispatchIntent(ops);
   });
@@ -50,6 +53,12 @@
   });
   const vmsys = $derived.by((): VisionModesSystem | undefined => vmDoc?.system as VisionModesSystem | undefined);
 
+  const diceDoc = $derived.by((): WireDocument | undefined => {
+    subscribe();
+    return ctx.documents.query("dice-settings")[0];
+  });
+  const dicesys = $derived.by((): DiceSettingsSystem | undefined => diceDoc?.system as DiceSettingsSystem | undefined);
+
   // Single-field JSON-pointer update against a config doc.
   // INVARIANT: doc must be defined; callers guard with the {#if} block.
   function set(docId: string, path: string, value: unknown): void {
@@ -63,6 +72,8 @@
   const EASING = ["easeInOut", "linear"] as const;
   // Gradation band illumination floors as strings for the select control.
   const ILLUMINATION_FLOORS = ["bright", "dim", "dark"] as const;
+  const DICE_MODE = ["total", "success_count"] as const;
+  const DICE_DIRECTION = ["high_wins", "low_wins"] as const;
 
   // Per-scene overrides: scene list + selection + resolved system body.
   // subscribe() is called inside each $derived.by so they re-resolve when the doc store
@@ -198,6 +209,35 @@
           </label>
         </div>
       {/each}
+    </fieldset>
+  {/if}
+
+  {#if ctx.role === "gm" && dicesys && diceDoc}
+    <!-- Ambient dice-notation context: mode (Total/Success count) and direction
+         (High/Low wins). JSON-pointer paths: /system/mode, /system/direction.
+         Matches the server body shape (chat/settings.rs DiceSettingsBody) exactly:
+         mode "total"|"success_count", direction "high_wins"|"low_wins". -->
+    <fieldset>
+      <legend>{ctx.t("gameSettings.dice.title")}</legend>
+      <label>
+        {ctx.t("gameSettings.dice.mode")}
+        <select aria-label="gameSettings.dice.mode" value={dicesys.mode}
+          onchange={(e) => set(diceDoc.id, "/system/mode", (e.currentTarget as HTMLSelectElement).value)}>
+          {#each DICE_MODE as m}
+            <option value={m}>{m === "total" ? ctx.t("gameSettings.dice.modeTotal") : ctx.t("gameSettings.dice.modeSuccess")}</option>
+          {/each}
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.dice.direction")}
+        <select aria-label="gameSettings.dice.direction" value={dicesys.direction}
+          onchange={(e) => set(diceDoc.id, "/system/direction", (e.currentTarget as HTMLSelectElement).value)}>
+          {#each DICE_DIRECTION as d}
+            <option value={d}>{d === "high_wins" ? ctx.t("gameSettings.dice.directionHigh") : ctx.t("gameSettings.dice.directionLow")}</option>
+          {/each}
+        </select>
+      </label>
     </fieldset>
   {/if}
 

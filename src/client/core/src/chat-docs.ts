@@ -125,3 +125,22 @@ export function buildChannelRegistryDoc(
 ): WireDocument {
   return envelope(worldId, CHANNEL_REGISTRY_DOC_TYPE, null, { channels } satisfies ChannelRegistrySystem, id);
 }
+
+/** Doc_type for the single per-world dice-settings config `Document`
+ * (server: chat/settings.rs DICE_SETTINGS_DOC_TYPE). */
+export const DICE_SETTINGS_DOC_TYPE = "dice-settings";
+
+/** Mirror of chat::settings::DiceSettingsBody. Both fields serde-default on
+ * the server (Total / high_wins), so a partial body is still safe there —
+ * the panel always writes the full shape via the reactive seed. */
+export interface DiceSettingsSystem {
+  mode: "total" | "success_count";
+  direction: "high_wins" | "low_wins";
+}
+export function buildDiceSettingsDoc(
+  worldId: string,
+  body: DiceSettingsSystem,
+  id?: string,
+): WireDocument {
+  return envelope(worldId, DICE_SETTINGS_DOC_TYPE, null, body satisfies DiceSettingsSystem, id);
+}

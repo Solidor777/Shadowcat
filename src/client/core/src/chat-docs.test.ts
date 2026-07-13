@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseMessageSystem, buildChannelRegistryDoc, isKnownSegment, MESSAGE_DOC_TYPE } from "./chat-docs";
+import { parseMessageSystem, buildChannelRegistryDoc, buildDiceSettingsDoc, isKnownSegment, MESSAGE_DOC_TYPE } from "./chat-docs";
 import type { WireDocument } from "./wire";
 
 function msgDoc(system: unknown, docType = MESSAGE_DOC_TYPE): WireDocument {
@@ -138,4 +138,12 @@ test("buildChannelRegistryDoc builds a world-scoped parentless singleton map doc
   expect(d.parent_id).toBeNull();
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
   expect((d.system as { channels: Record<string, { name: string }> }).channels.general.name).toBe("General");
+});
+
+test("buildDiceSettingsDoc builds a world-scoped parentless singleton doc", () => {
+  const d = buildDiceSettingsDoc("w1", { mode: "success_count", direction: "low_wins" });
+  expect(d.doc_type).toBe("dice-settings");
+  expect(d.parent_id).toBeNull();
+  expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
+  expect(d.system).toEqual({ mode: "success_count", direction: "low_wins" });
 });
