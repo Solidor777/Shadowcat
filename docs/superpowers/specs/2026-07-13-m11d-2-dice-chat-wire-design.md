@@ -27,8 +27,10 @@ overflow guards (its own TODO items):
   random; `CHAIN_CAP=100/die` × 100 dice could reach 10k records — reject oversized results,
   the roll simply fails with a "roll too large" error).
 - `MAX_EXPERTISE = 100` — cap `SuccessConfig.expertise` (the `O(N·E²)` DP DoS vector).
-- `MAX_DIE_SIDES = 10_000` — cap `Numeric.max - min` span (with records ≤1000 and faces ≤10⁴,
-  every i64 sum is overflow-free by construction).
+- `MAX_DIE_SIDES = 10_000` — cap `Numeric.max - min` span (bounds every per-die value; aggregate
+  arithmetic folds — which unbounded `Const` terms and `*` chains can still overflow — saturate
+  via checked ops in `eval/sum.rs`, a buddy-check correction to this spec's original
+  "overflow-free by construction" claim).
 - `DieKind::validate()` called on every parsed group (future-proofs the `Faces{[]}` panic
   surface even though notation can't construct `Faces` today).
 - Dice crate: `RawRoll::push` gets a `checked_add` guard on `next_id` (documented unreachable
