@@ -2,7 +2,9 @@ import type { Module } from "@shadowcat/core";
 import Settings from "./Settings.svelte";
 
 /** Settings panel (role, locale switcher, leave-world, logout). Requires core-ui's
- * sidebar region; contributes Settings at order 0. */
+ * sidebar region; contributes Settings at order 6 (after game-settings' 5) so
+ * chat's order 0 stays the sole default tab (TabbedSurface picks the first
+ * visible contribution when no activeId matches). */
 export const settings: Module = {
   manifest: {
     id: "settings",
@@ -12,6 +14,6 @@ export const settings: Module = {
     provides: [],
   },
   register(ctx) {
-    ctx.contributions.contribute({ id: "settings:sidebar", contract: "shadowcat.surface:sidebar", order: 0, component: Settings });
+    ctx.contributions.contribute({ id: "settings:sidebar", contract: "shadowcat.surface:sidebar", order: 6, component: Settings, tab: { icon: "🔧", labelKey: "settings.tab" } });
   },
 };

@@ -18,6 +18,7 @@ export const en: Messages = {
   "worlds.errorLoad": "Could not load worlds.",
   "worlds.errorCreate": "Could not create world.",
   "topbar.world": "world {world}",
+  "settings.tab": "Settings",
   "settings.title": "Settings",
   "settings.role": "Role: {role}",
   "settings.leaveWorld": "Leave world",
@@ -149,6 +150,7 @@ export const en: Messages = {
   "chat.channels.edit": "Edit channels",
   "chat.channels.add": "Add channel",
   "chat.channels.name": "Channel name",
+  "chat.channels.newName": "New channel",
   "chat.channels.remove": "Remove",
   "chat.newMessages": "New messages ↓",
 };

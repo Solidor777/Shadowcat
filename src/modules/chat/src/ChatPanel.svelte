@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Component } from "svelte";
+  import { untrack } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
@@ -37,8 +38,10 @@
     subscribe();
     return ctx.documents.query("channel-registry")[0];
   });
-  // A removed channel's key is set to null (set_pointer inserts, it cannot
-  // delete an object key) rather than dropped from the map — filter tombstones.
+  // Malformed-doc fail-safe only (NOT the removal mechanism — see removeChannel):
+  // a channel value should never be null in a doc this client wrote, but a
+  // directly-edited or legacy doc could still contain one; filter defensively
+  // rather than crash on render.
   const channelEntries = $derived.by((): [string, { name: string }][] => {
     const sys = registry?.system as ChannelRegistrySystem | undefined;
     return Object.entries(sys?.channels ?? {}).filter((e): e is [string, { name: string }] => e[1] != null);
@@ -64,7 +67,7 @@
   function addChannel(): void {
     if (!registry) return;
     const id = crypto.randomUUID();
-    const name = newChannelName.trim() || "New channel";
+    const name = newChannelName.trim() || t("chat.channels.newName");
     ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/system/channels/${id}`, old: null, new: { name } }] }]);
     newChannelName = "";
   }
@@ -81,7 +84,12 @@
     const cur = sys.channels[id];
     if (!cur) return;
     if (view.kind === "channel" && view.id === id) view = { kind: "all" };
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/system/channels/${id}`, old: cur, new: null }] }]);
+    // Whole-field replace (FactionsPanel idiom): set_pointer cannot delete an
+    // object key, so genuine removal means dispatching the full map minus the
+    // removed key as one update on the parent path, OCC pre-image included.
+    const next = { ...sys.channels };
+    delete next[id];
+    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/system/channels", old: sys.channels, new: next }] }]);
   }
 
   // Card + composer instantiation: read the singleton contributions directly
@@ -103,6 +111,14 @@
   let container = $state<HTMLElement | undefined>(undefined);
   let atBottom = $state(true);
   let showNewMessagesPill = $state(false);
+  // Non-reactive: this checkpoint's decision is "did the rendered count grow"
+  // (a real new message), never "did scroll position change" — a plain closure
+  // variable, not $state, so reading it can't itself trigger the effect below.
+  let prevMessageCount = 0;
+  // A hidden tab (display:none) reads scrollHeight/clientHeight as 0, so a
+  // message arriving while hidden must defer the scroll-to-bottom until the
+  // panel becomes visible again (see the IntersectionObserver effect below).
+  let pendingScrollToBottom = false;
 
   function checkAtBottom(): void {
     if (!container) return;
@@ -113,18 +129,53 @@
     container.scrollTop = container.scrollHeight;
     atBottom = true;
     showNewMessagesPill = false;
+    pendingScrollToBottom = false;
+  }
+  // Cheap display:none check: TabbedSurface hides an inactive panel via
+  // `[hidden] { display: none }` on an ancestor, which forces every descendant's
+  // offsetParent to null — the standard proxy for "this chat tab is not active."
+  function isVisible(el: HTMLElement): boolean {
+    return el.offsetParent !== null;
   }
 
   $effect(() => {
-    // Depend on rendered-message count so a new message triggers this effect.
-    void visibleDocs.length;
-    if (!container) return;
-    if (atBottom) {
+    // The ONLY dependency this effect subscribes to: rendered-message count.
+    const count = visibleDocs.length;
+    const grew = count > prevMessageCount;
+    prevMessageCount = count;
+    if (!grew || !container) return;
+    if (!isVisible(container)) {
+      // Do not measure or write scrollTop while hidden — scrollHeight/
+      // clientHeight both read 0, which would wrongly zero scrollTop and mark
+      // the panel "at bottom." Resync happens on the next visibility transition.
+      pendingScrollToBottom = true;
+      return;
+    }
+    // untrack: read atBottom's CURRENT value without subscribing this effect to
+    // it — onscroll-driven atBottom writes must never re-run this effect on
+    // their own; only a genuine message-count change (above) may.
+    if (untrack(() => atBottom)) {
       // Wait for the DOM to paint the new message before measuring scrollHeight.
       queueMicrotask(scrollToBottom);
     } else {
       showNewMessagesPill = true;
     }
+  });
+
+  // Hidden tabs never fire scroll/resize; IntersectionObserver is the mechanism
+  // that DOES fire across a display:none <-> visible transition (an element
+  // with no layout box while display:none re-enters the observer's intersection
+  // set once it's laid out again), so it is the resync signal for a
+  // scroll-to-bottom deferred by the effect above while the tab was inactive.
+  $effect(() => {
+    if (!container) return;
+    const el = container;
+    const observer = new IntersectionObserver((entries) => {
+      const entry = entries[entries.length - 1];
+      if (entry?.isIntersecting && pendingScrollToBottom) scrollToBottom();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
   });
 </script>
 

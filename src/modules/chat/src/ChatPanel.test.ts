@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { ContributionRegistry } from "@shadowcat/core";
@@ -156,6 +156,36 @@ describe("ChatPanel — GM channel editor visibility", () => {
     expect(change.old).toBeNull();
     expect(change.new).toEqual({ name: "OOC" });
   });
+
+  it("empty add-channel name falls back to the localized default name", async () => {
+    const dispatchIntent = vi.fn();
+    const store = storeWith(buildChannelRegistryDoc("w1", { general: { name: "General" } }, "creg1"));
+    render(ChatPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, store, dispatchIntent, contributions: new ContributionRegistry() }) });
+    await fireEvent.click(screen.getByLabelText("chat.channels.edit"));
+    await fireEvent.click(screen.getByText("chat.channels.add"));
+    const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
+    const change = (ops[0] as { changes: { path: string; old: unknown; new: unknown }[] }).changes[0];
+    expect(change.new).toEqual({ name: "chat.channels.newName" });
+  });
+
+  it("GM remove-channel dispatches a whole-field replace on /system/channels with the key physically absent", async () => {
+    const dispatchIntent = vi.fn();
+    const channels = { general: { name: "General" }, ooc: { name: "OOC" } };
+    const store = storeWith(buildChannelRegistryDoc("w1", channels, "creg1"));
+    render(ChatPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, store, dispatchIntent, contributions: new ContributionRegistry() }) });
+    await fireEvent.click(screen.getByLabelText("chat.channels.edit"));
+    const removeButtons = screen.getAllByText("chat.channels.remove");
+    await fireEvent.click(removeButtons[1]); // rows render in Object.entries order: general, ooc
+    expect(dispatchIntent).toHaveBeenCalledTimes(1);
+    const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
+    expect(ops[0].op).toBe("update");
+    expect((ops[0] as { doc_id: string }).doc_id).toBe("creg1");
+    const change = (ops[0] as { changes: { path: string; old: unknown; new: unknown }[] }).changes[0];
+    expect(change.path).toBe("/system/channels");
+    expect(change.old).toEqual(channels);
+    expect(change.new).toEqual({ general: { name: "General" } });
+    expect(Object.prototype.hasOwnProperty.call(change.new, "ooc")).toBe(false);
+  });
 });
 
 describe("ChatPanel — composer instantiation", () => {
@@ -171,5 +201,95 @@ describe("ChatPanel — composer instantiation", () => {
 
     await fireEvent.click(screen.getByText("chat.gmChannel"));
     expect(screen.getByTestId("composer").getAttribute("data-audience")).toBe("gm_only");
+  });
+});
+
+// jsdom has no layout engine: offsetParent, scrollHeight, and clientHeight all
+// read as null/0 by default, so every test below stubs the properties it needs
+// on the panel's own scroll container rather than relying on real layout.
+function mockVisible(el: HTMLElement, visible: boolean): void {
+  Object.defineProperty(el, "offsetParent", { configurable: true, get: () => (visible ? document.body : null) });
+}
+function mockScrollMetrics(el: HTMLElement, m: { scrollTop: number; clientHeight: number; scrollHeight: number }): void {
+  Object.defineProperty(el, "scrollTop", { configurable: true, value: m.scrollTop, writable: true });
+  Object.defineProperty(el, "clientHeight", { configurable: true, get: () => m.clientHeight });
+  Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => m.scrollHeight });
+}
+
+describe("ChatPanel — new-message scroll/pill behavior", () => {
+  it("scrolling up alone (no new message) never shows the new-messages pill", async () => {
+    const store = storeWith(publicMsg("m1", 1));
+    const { container: root } = render(ChatPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, contributions: registryWithCard() }) });
+    const messages = root.querySelector(".messages") as HTMLElement;
+    mockVisible(messages, true);
+    mockScrollMetrics(messages, { scrollTop: 0, clientHeight: 100, scrollHeight: 1000 }); // far from bottom
+    await fireEvent.scroll(messages);
+    expect(screen.queryByText("chat.newMessages")).toBeNull();
+  });
+
+  it("a new message while scrolled up shows the pill instead of auto-scrolling", async () => {
+    const store = storeWith(publicMsg("m1", 1));
+    const { container: root } = render(ChatPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, contributions: registryWithCard() }) });
+    const messages = root.querySelector(".messages") as HTMLElement;
+    mockVisible(messages, true);
+    mockScrollMetrics(messages, { scrollTop: 0, clientHeight: 100, scrollHeight: 1000 });
+    await fireEvent.scroll(messages);
+    store.applyCommand(cmd([{ op: "create", doc: publicMsg("m2", 2) }]));
+    await vi.waitFor(() => expect(screen.queryByText("chat.newMessages")).toBeTruthy());
+  });
+
+  it("a new message while at the bottom auto-scrolls without showing the pill", async () => {
+    const store = storeWith(publicMsg("m1", 1));
+    const { container: root } = render(ChatPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, contributions: registryWithCard() }) });
+    const messages = root.querySelector(".messages") as HTMLElement;
+    mockVisible(messages, true);
+    mockScrollMetrics(messages, { scrollTop: 900, clientHeight: 100, scrollHeight: 1000 }); // at bottom
+    await fireEvent.scroll(messages);
+    store.applyCommand(cmd([{ op: "create", doc: publicMsg("m2", 2) }]));
+    await vi.waitFor(() => expect(messages.scrollTop).toBe(1000));
+    expect(screen.queryByText("chat.newMessages")).toBeNull();
+  });
+});
+
+describe("ChatPanel — hidden-tab scroll safety", () => {
+  class FakeIntersectionObserver {
+    static instances: FakeIntersectionObserver[] = [];
+    callback: IntersectionObserverCallback;
+    target?: Element;
+    constructor(cb: IntersectionObserverCallback) {
+      this.callback = cb;
+      FakeIntersectionObserver.instances.push(this);
+    }
+    observe(target: Element): void {
+      this.target = target;
+    }
+    unobserve(): void {}
+    disconnect(): void {}
+    trigger(isIntersecting: boolean): void {
+      this.callback([{ isIntersecting, target: this.target } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+    }
+  }
+
+  afterEach(() => {
+    FakeIntersectionObserver.instances.length = 0;
+    vi.unstubAllGlobals();
+  });
+
+  it("a message arriving while the tab is hidden writes no scrollTop; becoming visible scrolls to bottom", async () => {
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+    const store = storeWith(publicMsg("m1", 1));
+    const { container: root } = render(ChatPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, contributions: registryWithCard() }) });
+    const messages = root.querySelector(".messages") as HTMLElement;
+    // offsetParent defaults to null under jsdom, matching a display:none-hidden tab.
+    Object.defineProperty(messages, "scrollHeight", { configurable: true, get: () => 500 });
+    messages.scrollTop = 42; // sentinel prior position
+
+    store.applyCommand(cmd([{ op: "create", doc: publicMsg("m2", 2) }]));
+    await vi.waitFor(() => expect(screen.getAllByTestId("card").length).toBe(2));
+    expect(messages.scrollTop).toBe(42); // unchanged: no write while hidden
+
+    mockVisible(messages, true);
+    FakeIntersectionObserver.instances[0]?.trigger(true);
+    expect(messages.scrollTop).toBe(500);
   });
 });

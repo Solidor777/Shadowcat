@@ -2,7 +2,7 @@ import type { Module } from "@shadowcat/core";
 import Assets from "./Assets.svelte";
 
 /** Asset panel (upload / grid / replace / delete). Requires core-ui's sidebar
- * region; contributes Assets at order 1 (after settings). */
+ * region; contributes Assets at order 1 (after chat's order 0). */
 export const assets: Module = {
   manifest: {
     id: "assets",
