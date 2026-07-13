@@ -259,6 +259,14 @@ citations) PASSes the gating questions; **an unverifiable claim counts as FAIL**
 FAIL ⇒ bespoke engine inside `module-panels` implementing exactly §3–§4 (same contract, no other
 module changes). The spike report is committed under `docs/superpowers/specs/`.
 
+**Outcome (2026-07-13): ADOPT `dockview-core@7.0.2`** — see
+[`2026-07-13-m12a-dockview-core-spike.md`](2026-07-13-m12a-dockview-core-spike.md). 13 PASS /
+1 PARTIAL: the non-drop half of the stage-well question is native + verified; the non-closable
+half has no engine primitive and converts into mandatory M12a wrapper requirements **W1–W3**
+(headerless stage group; `onWillDrop` veto + wrapper API refusal for the stage id; fail-safe
+restore-if-removed guard, each with dedicated tests). Gating citations were independently
+re-verified mainline against the cloned source.
+
 ## 12. Testing requirements
 
 - **Layout tree = pure reducer**: unit tests for dock/undock/split/minimize/restore/focus ops,
