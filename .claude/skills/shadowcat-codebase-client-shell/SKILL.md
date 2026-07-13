@@ -90,9 +90,12 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   sidebar = the tab host (above); the panel modules each contribute one tab (orders: chat 0,
   assets 1, actors 2, factions 3, conditions 4, game-settings 5 gmOnly, settings 6).
   `game-settings` = `@shadowcat/module-game-settings` (GM-only): idempotently seeds + edits
-  the three vision/lighting config-docs (`world-settings`/`light-gradation`/`vision-modes`,
-  resolvers in `core/scene-docs.ts`). The chat trio is covered by
-  `shadowcat-codebase-chat`.
+  the world's singleton config-docs — the vision/lighting trio
+  (`world-settings`/`light-gradation`/`vision-modes`, resolvers in `core/scene-docs.ts`),
+  plus `dice-settings` (M11d-2) and `chat-settings` (M11d-3: the `hyperlinks` +
+  `link_previews` tri-state toggles). Each section uses the same reactive-seed + real-OCC-
+  pre-image `set()` idiom. The chat/dice server resolvers + segments are covered by
+  `shadowcat-codebase-chat`/`-dice`.
 
 ## Hard invariants
 

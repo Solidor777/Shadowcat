@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseMessageSystem, buildChannelRegistryDoc, buildDiceSettingsDoc, isKnownSegment, MESSAGE_DOC_TYPE } from "./chat-docs";
+import { parseMessageSystem, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc, isKnownSegment, MESSAGE_DOC_TYPE } from "./chat-docs";
 import type { WireDocument } from "./wire";
 
 function msgDoc(system: unknown, docType = MESSAGE_DOC_TYPE): WireDocument {
@@ -132,6 +132,49 @@ describe("roll segments (M11d-2)", () => {
   });
 });
 
+describe("link_preview segments (M11d-3)", () => {
+  test("parses a link_preview segment", () => {
+    const sys = parseMessageSystem(msgDoc({
+      ...base,
+      content: [
+        { kind: "text", text: "check this out" },
+        { kind: "link_preview", url: "https://example.com/a", title: "Example", description: "A page." },
+      ],
+    }));
+    expect(sys).not.toBeNull();
+    expect(sys!.content).toEqual([
+      { kind: "text", text: "check this out" },
+      { kind: "link_preview", url: "https://example.com/a", title: "Example", description: "A page." },
+    ]);
+  });
+  test("fail-closed: link_preview missing title fails the whole message parse", () => {
+    expect(parseMessageSystem(msgDoc({
+      ...base,
+      content: [{ kind: "link_preview", url: "https://example.com/a", description: "A page." }],
+    }))).toBeNull();
+  });
+  test("fail-closed: link_preview with url not a string fails the whole message parse", () => {
+    expect(parseMessageSystem(msgDoc({
+      ...base,
+      content: [{ kind: "link_preview", url: 42, title: "Example", description: "A page." }],
+    }))).toBeNull();
+  });
+  test("unknown segment kinds are still opaque alongside known link_preview kinds", () => {
+    const sys = parseMessageSystem(msgDoc({
+      ...base,
+      content: [
+        { kind: "link_preview", url: "https://example.com/a", title: "Example", description: "A page." },
+        { kind: "preview_card", url: "https://example.com/b" },
+      ],
+    }));
+    expect(sys).not.toBeNull();
+    expect(sys!.content).toHaveLength(2);
+    expect(sys!.content.filter(isKnownSegment)).toEqual([
+      { kind: "link_preview", url: "https://example.com/a", title: "Example", description: "A page." },
+    ]);
+  });
+});
+
 test("buildChannelRegistryDoc builds a world-scoped parentless singleton map doc", () => {
   const d = buildChannelRegistryDoc("w1", { general: { name: "General" } });
   expect(d.doc_type).toBe("channel-registry");
@@ -146,4 +189,12 @@ test("buildDiceSettingsDoc builds a world-scoped parentless singleton doc", () =
   expect(d.parent_id).toBeNull();
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
   expect(d.system).toEqual({ mode: "success_count", direction: "low_wins" });
+});
+
+test("buildChatSettingsDoc builds a world-scoped parentless singleton doc", () => {
+  const d = buildChatSettingsDoc("w1", { hyperlinks: true, link_previews: false });
+  expect(d.doc_type).toBe("chat-settings");
+  expect(d.parent_id).toBeNull();
+  expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
+  expect(d.system).toEqual({ hyperlinks: true, link_previews: false });
 });

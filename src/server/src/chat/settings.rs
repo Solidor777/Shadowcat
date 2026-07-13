@@ -28,11 +28,43 @@ pub struct ChatContentPolicy {
     pub images: bool,
     pub hyperlinks: bool,
     pub emails: bool,
+    /// Tri-state, unlike every other toggle here: `None` (absent) is the
+    /// spec'd DEFAULT-ON behavior (design doc §6), resolved by
+    /// `previews_enabled` to ON only when `hyperlinks` is also on — a
+    /// preview is meaningless without a rendered link to attach it to.
+    /// `Some(false)`/`Some(true)` are an explicit GM override either way.
+    /// A bare `bool` defaulting `false` (matching every sibling field)
+    /// cannot express "absent means on, explicit-false means off"; this is
+    /// the one field in this struct that widens the fail-closed baseline.
+    #[serde(default)]
+    pub link_previews: Option<bool>,
+}
+
+impl ChatContentPolicy {
+    /// Resolved link-preview enablement (design doc §6): previews require
+    /// `hyperlinks` to be on (a preview with no rendered link is
+    /// meaningless), and within that, `link_previews` defaults ON when
+    /// absent — a GM must explicitly write `link_previews: false` to opt
+    /// out once hyperlinks are enabled. A fail-closed empty/default policy
+    /// (`hyperlinks: false`) always resolves to `false` regardless of
+    /// `link_previews`.
+    pub fn previews_enabled(&self) -> bool {
+        self.hyperlinks && self.link_previews.unwrap_or(true)
+    }
 }
 
 /// Read the world's chat content policy, fail-closed. A query error, an
 /// absent `chat-settings` doc, or a `system` body that fails to deserialize
 /// into `ChatContentPolicy` all yield `ChatContentPolicy::default()`.
+///
+/// SINGLETON RESOLUTION: `chat-settings` is a per-world singleton, but nothing
+/// yet enforces uniqueness at the create chokepoint (the GM editor's seed guard
+/// is client-side only). Resolution is DETERMINISTIC regardless: `query_documents`
+/// orders `ORDER BY id`, so if two `chat-settings` docs ever coexist the
+/// lowest-UUID one always wins — never a nondeterministic policy. The fail-closed
+/// direction bounds a stray doc (it can only WIDEN enrichment, which still needs
+/// GM-authored content to matter). Construction-time uniqueness (a singleton
+/// doc-type create-gate) is the stronger, still-deferred half — see `docs/TODO.md`.
 pub async fn resolve_content_policy(repo: &dyn Repository, world_id: Uuid) -> ChatContentPolicy {
     let docs = match repo.query_documents(world_id, CHAT_SETTINGS_DOC_TYPE).await {
         Ok(d) => d,
@@ -152,6 +184,55 @@ mod tests {
     fn default_policy_is_all_off() {
         let p = ChatContentPolicy::default();
         assert!(!p.markdown && !p.html && !p.images && !p.hyperlinks && !p.emails);
+        assert_eq!(p.link_previews, None);
+        assert!(
+            !p.previews_enabled(),
+            "hyperlinks off must yield previews disabled regardless of link_previews"
+        );
+    }
+
+    #[test]
+    fn previews_enabled_hyperlinks_off_is_always_false() {
+        let mut p = ChatContentPolicy {
+            hyperlinks: false,
+            ..Default::default()
+        };
+        assert!(!p.previews_enabled());
+        p.link_previews = Some(true);
+        assert!(
+            !p.previews_enabled(),
+            "hyperlinks off must override an explicit link_previews: true"
+        );
+    }
+
+    #[test]
+    fn previews_enabled_hyperlinks_on_absent_link_previews_defaults_true() {
+        let p = ChatContentPolicy {
+            hyperlinks: true,
+            link_previews: None,
+            ..Default::default()
+        };
+        assert!(p.previews_enabled());
+    }
+
+    #[test]
+    fn previews_enabled_hyperlinks_on_explicit_false_disables() {
+        let p = ChatContentPolicy {
+            hyperlinks: true,
+            link_previews: Some(false),
+            ..Default::default()
+        };
+        assert!(!p.previews_enabled());
+    }
+
+    #[test]
+    fn previews_enabled_hyperlinks_on_explicit_true_enables() {
+        let p = ChatContentPolicy {
+            hyperlinks: true,
+            link_previews: Some(true),
+            ..Default::default()
+        };
+        assert!(p.previews_enabled());
     }
 
     #[tokio::test]
@@ -190,6 +271,80 @@ mod tests {
         assert_eq!(
             resolve_content_policy(&repo, world_id).await,
             ChatContentPolicy::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_null_link_previews_deserializes_to_none() {
+        // The GM tri-state "Default" option writes a literal JSON `null` for
+        // `link_previews` (not an absent key). It MUST resolve to `None`, so
+        // `previews_enabled` follows the default-on-when-hyperlinks rule — a
+        // parse failure here would fail-close the WHOLE policy to all-off.
+        let (repo, world_id, gm) = world().await;
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let doc = settings_doc(
+            world_id,
+            gm,
+            serde_json::json!({ "hyperlinks": true, "link_previews": null }),
+        );
+        repo.apply_intent(
+            &gm_ctx,
+            world_id,
+            vec![Operation::Create { doc }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        let p = resolve_content_policy(&repo, world_id).await;
+        assert_eq!(p.link_previews, None);
+        assert!(p.hyperlinks && p.previews_enabled());
+    }
+
+    #[tokio::test]
+    async fn duplicate_settings_docs_resolve_deterministically_by_lowest_id() {
+        // No construction-time uniqueness guard yet (see the resolver doc +
+        // TODO.md); resolution must still be DETERMINISTIC — `query_documents`
+        // orders by id, so the lowest-UUID doc's policy always wins.
+        let (repo, world_id, gm) = world().await;
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut low = settings_doc(world_id, gm, serde_json::json!({ "markdown": true }));
+        low.id = Uuid::from_u128(1);
+        let mut high = settings_doc(
+            world_id,
+            gm,
+            serde_json::json!({ "markdown": false, "html": true }),
+        );
+        high.id = Uuid::from_u128(u128::MAX);
+        // Insert the high-id doc FIRST to prove insertion order doesn't decide it.
+        repo.apply_intent(
+            &gm_ctx,
+            world_id,
+            vec![Operation::Create { doc: high }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        repo.apply_intent(
+            &gm_ctx,
+            world_id,
+            vec![Operation::Create { doc: low }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        let p = resolve_content_policy(&repo, world_id).await;
+        assert!(
+            p.markdown && !p.html,
+            "the lowest-id doc's policy must win deterministically"
         );
     }
 

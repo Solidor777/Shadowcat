@@ -113,17 +113,24 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   `natural` onto a `Faces` record — remains open and resolves whenever recalculate gains a
   wire exposure (recalc-from-chat is itself deferred, see the M11d-2 deferrals below).
   (Surfaced by the M11b-3 Task 5 code review.)
-- TODO: `chat::resolve_content_policy` (M11c-3) silently takes the first of potentially many
-  `chat-settings` docs for a world (`docs.into_iter().next()`), with no construction-time
-  uniqueness guard on `CHAT_SETTINGS_DOC_TYPE`. If two ever exist, policy resolution becomes
-  order-dependent (SQL `ORDER BY id`, i.e. UUID string order, not creation order). Fail-closed
-  direction limits the blast radius (a stray doc can only *widen* enrichment, which still
-  requires GM-authored content to matter), so this is low-risk — but add a uniqueness
-  enforcement (or explicit tie-break ordering) when M11d's GM chat-settings UI gets a write
-  path, mirroring the `faction-registry`/`condition-registry` idempotent-seed pattern.
-  (Surfaced by the M11c-3 whole-branch review.) The same gap applies verbatim to
-  `DICE_SETTINGS_DOC_TYPE`/`resolve_dice_context` (M11d-2, same first-doc idiom by design) —
-  fix both doc types together.
+- TODO: construction-time uniqueness for the singleton config doc_types
+  (`CHAT_SETTINGS_DOC_TYPE`, `DICE_SETTINGS_DOC_TYPE`, and the faction/condition/world-settings
+  registries) — nothing at the `apply_intent` Create chokepoint stops a second doc of a
+  singleton doc_type from being created in a world (the GM editors' seed guards are
+  client-side-only, racy across two GMs/connections). **The "explicit tie-break ordering" half
+  of the original ask is now DONE + tested (M11d-3):** `resolve_content_policy`/
+  `resolve_dice_context` resolve DETERMINISTICALLY by lowest UUID (`query_documents` `ORDER BY
+  id`), documented at both resolvers and pinned by
+  `duplicate_settings_docs_resolve_deterministically_by_lowest_id` — so a duplicate can never
+  cause a nondeterministic policy, and the fail-closed direction bounds a stray doc to
+  widening-only. **Still deferred:** the STRONGER construction-time guard (a singleton
+  doc-type create-gate). Reason for deferral, re-evaluated when M11d-3's GM chat-settings write
+  path landed: it is its own change — a singleton-doctype registry consulted on every Create
+  across factions/conditions/world-settings/dice-settings/chat-settings uniformly — and the
+  residual risk is low (deterministic + fail-closed resolution already makes a duplicate inert
+  beyond needing GM-authored content). Build it when a singleton config gains a create path that
+  isn't already idempotent-seed-guarded, or as a dedicated hardening sweep.
+  (Surfaced M11c-3; tie-break resolved + re-logged M11d-3 T6 review.)
 
 ## Client / chat display (M11d-1)
 - Message-list virtualization: the panel renders only the most recent 200 messages per view
@@ -163,3 +170,23 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - Notation syntax for crit-event configs (`CritSuccess`/`CritFail` structs remain
   struct-authored only) and for tier ladders — grows with system demand.
 - Per-channel / per-message dice-settings overrides (world-level only today).
+- `handle_send_message`/`handle_edit_message` now take 3 extra positional args
+  (preview_client/preview_cache/preview_rate) across ~40 call sites: bundle the link-preview
+  deps into a `LinkPreviewDeps`-style struct to shrink both signatures and reduce call-site
+  arg-order risk.
+
+## Chat / link previews (M11d-3)
+- Preview images: v1 stores title+description only. An image URL rendered as `<img src>` would
+  make the client fetch it and leak the viewer's IP — the invariant-preserving path is
+  server-fetch-and-cache-as-asset (scheme/size/content-type-validated), its own pipeline. Build
+  when link-preview images are wanted.
+- Async post-publish enrichment: v1 fetches synchronously before publish (a first-seen link adds
+  up to the 5s deadline of send latency; cached links are instant). A UX upgrade would post the
+  message immediately and enrich moments later via a spawned task + a server-authored Update
+  (needs a WriteOrigin path + message-deleted-mid-fetch handling).
+- Persistent/shared preview cache: in-memory per process today (a multi-process deploy re-fetches
+  per process — fine, re-fetchable). Add a shared cache only if fetch volume ever warrants it.
+- oEmbed / provider-specific rich embeds; `<meta http-equiv=refresh>` following — out of scope.
+- Bundle the link-preview deps (`preview_client`/`cache`/`preview_rate`) into a `LinkPreviewDeps`
+  struct to shrink `handle_send_message`/`handle_edit_message` signatures (~40 call sites now under
+  `#[allow(clippy::too_many_arguments)]`) and reduce call-site arg-order risk.

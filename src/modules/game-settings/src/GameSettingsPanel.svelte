@@ -3,9 +3,11 @@
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
     buildWorldSettingsDoc, buildLightGradationDoc, buildVisionModesDoc, buildDiceSettingsDoc,
+    buildChatSettingsDoc,
     DEFAULT_WORLD_SETTINGS,
     type WorldSettingsSystem, type LightGradationSystem, type VisionModesSystem,
     type SceneSystem, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsSystem,
+    type ChatSettingsSystem,
   } from "@shadowcat/core";
 
   const ctx = getAppContext();
@@ -28,6 +30,11 @@
     if (ctx.documents.query("vision-modes").length === 0) ops.push({ op: "create" as const, doc: buildVisionModesDoc(ctx.world) });
     if (ctx.documents.query("dice-settings").length === 0) {
       ops.push({ op: "create" as const, doc: buildDiceSettingsDoc(ctx.world, { mode: "total", direction: "high_wins" }) });
+    }
+    // chat-settings mirrors the server's ChatContentPolicy::default() (every toggle
+    // off/absent — plain text, previews resolve false since hyperlinks is off).
+    if (ctx.documents.query("chat-settings").length === 0) {
+      ops.push({ op: "create" as const, doc: buildChatSettingsDoc(ctx.world, {}) });
     }
     seeded = true;
     if (ops.length > 0) ctx.dispatchIntent(ops);
@@ -58,6 +65,12 @@
     return ctx.documents.query("dice-settings")[0];
   });
   const dicesys = $derived.by((): DiceSettingsSystem | undefined => diceDoc?.system as DiceSettingsSystem | undefined);
+
+  const chatDoc = $derived.by((): WireDocument | undefined => {
+    subscribe();
+    return ctx.documents.query("chat-settings")[0];
+  });
+  const chatsys = $derived.by((): ChatSettingsSystem | undefined => chatDoc?.system as ChatSettingsSystem | undefined);
 
   // Single-field JSON-pointer update against a config doc.
   // INVARIANT: doc must be defined; callers guard with the {#if} block.
@@ -242,6 +255,37 @@
           {#each DICE_DIRECTION as d}
             <option value={d}>{d === "high_wins" ? ctx.t("gameSettings.dice.directionHigh") : ctx.t("gameSettings.dice.directionLow")}</option>
           {/each}
+        </select>
+      </label>
+    </fieldset>
+  {/if}
+
+  {#if ctx.role === "gm" && chatsys && chatDoc}
+    <!-- Chat content policy: hyperlinks toggle + link-preview tri-state.
+         JSON-pointer paths: /system/hyperlinks, /system/link_previews.
+         Matches the server body shape (chat/settings.rs ChatContentPolicy) exactly:
+         hyperlinks is a plain bool (default false); link_previews is TRI-STATE
+         (absent/null = default-on-when-hyperlinks-on, true/false = explicit override) —
+         the "" option writes null, mirroring the scene-override inherit pattern above. -->
+    <fieldset>
+      <legend>{ctx.t("gameSettings.chat.title")}</legend>
+      <label>
+        {ctx.t("gameSettings.chat.hyperlinks")}
+        <input type="checkbox" aria-label="gameSettings.chat.hyperlinks" checked={chatsys.hyperlinks ?? false}
+          onchange={(e) => set(chatDoc.id, "/system/hyperlinks", chatsys.hyperlinks ?? false, (e.currentTarget as HTMLInputElement).checked)} />
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.chat.linkPreviews")}
+        <select aria-label="gameSettings.chat.linkPreviews"
+          value={chatsys.link_previews == null ? "" : chatsys.link_previews ? "true" : "false"}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            set(chatDoc.id, "/system/link_previews", chatsys.link_previews ?? null, v === "" ? null : v === "true");
+          }}>
+          <option value="">{ctx.t("gameSettings.chat.linkPreviewsDefault")}</option>
+          <option value="true">{ctx.t("gameSettings.enabled")}</option>
+          <option value="false">{ctx.t("gameSettings.disabled")}</option>
         </select>
       </label>
     </fieldset>

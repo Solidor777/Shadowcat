@@ -154,6 +154,85 @@ describe("MessageCard — the {@html} boundary", () => {
   });
 });
 
+describe("MessageCard — link preview (M11d-3)", () => {
+  it("renders title/description/host as text, with no img", () => {
+    const doc = msgDoc("m1", baseSystem({
+      content: [
+        { kind: "text", text: "check this out" },
+        { kind: "link_preview", url: "https://example.com/article", title: "An Article", description: "A short summary." },
+      ],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc) }),
+    });
+    expect(container.querySelector(".link-preview-title")?.textContent).toBe("An Article");
+    expect(container.querySelector(".link-preview-description")?.textContent).toBe("A short summary.");
+    expect(container.querySelector(".link-preview-host")?.textContent).toBe("example.com");
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("the anchor has the exact href, rel, and target", () => {
+    const doc = msgDoc("m1", baseSystem({
+      content: [{ kind: "link_preview", url: "https://example.com/x", title: "T", description: "D" }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc) }),
+    });
+    const a = container.querySelector("a.link-preview");
+    expect(a?.getAttribute("href")).toBe("https://example.com/x");
+    expect(a?.getAttribute("rel")).toBe("noopener noreferrer nofollow");
+    expect(a?.getAttribute("target")).toBe("_blank");
+  });
+
+  it("a malformed url falls back to the raw string as the host caption without throwing", () => {
+    const doc = msgDoc("m1", baseSystem({
+      content: [{ kind: "link_preview", url: "not a url", title: "T", description: "D" }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc) }),
+    });
+    expect(container.querySelector("article")).not.toBeNull();
+    expect(container.querySelector(".link-preview-host")?.textContent).toBe("not a url");
+    // An unparseable URL yields no clickable href (safeHref returns undefined) —
+    // the card still renders, just non-clickable.
+    expect(container.querySelector("a.link-preview")?.hasAttribute("href")).toBe(false);
+  });
+
+  it("a non-http(s) scheme url renders no clickable href (defensive scheme guard)", () => {
+    // Defense-in-depth: the server only ever stores http/https preview URLs, but the
+    // card independently refuses to emit a live href for any other scheme, so a
+    // javascript:/data: URL from any future bypass path can never become a live anchor.
+    const doc = msgDoc("m1", baseSystem({
+      content: [{ kind: "link_preview", url: "javascript:alert(1)", title: "T", description: "D" }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc) }),
+    });
+    expect(container.querySelector("article")).not.toBeNull();
+    expect(container.querySelector("a.link-preview")?.hasAttribute("href")).toBe(false);
+    expect(container.querySelector(".link-preview-title")?.textContent).toBe("T");
+  });
+
+  it("renders both a text segment and a link_preview segment in the same message", () => {
+    const doc = msgDoc("m1", baseSystem({
+      content: [
+        { kind: "text", text: "look at this" },
+        { kind: "link_preview", url: "https://example.com", title: "Example", description: "Desc" },
+      ],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc) }),
+    });
+    expect(container.querySelector(".seg-text")?.textContent).toBe("look at this");
+    expect(container.querySelector(".link-preview-title")?.textContent).toBe("Example");
+  });
+});
+
 describe("MessageCard — header", () => {
   it("shows the resolved author name from ctx.members, falling back to a short id", () => {
     const doc = msgDoc("m1", baseSystem({ user_owner: "u1" }));

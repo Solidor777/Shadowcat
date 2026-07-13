@@ -24,11 +24,21 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 mod commands;
+mod link_preview;
+mod preview_cache;
 mod rolls;
 mod sanitize;
 mod settings;
 mod shortcodes;
 pub use commands::{parse_command, ParsedCommand};
+pub use link_preview::{
+    build_client as build_link_preview_client, enrich as enrich_link_previews, fetch_preview,
+    LinkPreview, PreviewError, MAX_PREVIEWS_PER_MESSAGE,
+};
+pub use preview_cache::{
+    LinkPreviewCache, PreviewRateLimiter, MAX_CACHE_ENTRIES, NEGATIVE_TTL, POSITIVE_TTL,
+    PREVIEW_FETCH_PER_MIN,
+};
 pub use sanitize::sanitize;
 pub use settings::{
     resolve_content_policy, resolve_dice_context, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE,
@@ -148,7 +158,18 @@ pub enum Segment {
         formula: String,
         label: Option<String>,
     },
-    // Reserved, produced later: PreviewCard (c-4), DocLink (M11d).
+    /// A server-fetched, SSRF-guarded preview of a link in the message.
+    /// Rendered by the client from STORED data only — the client never
+    /// fetches `url` or any remote resource (that would leak the viewer's
+    /// IP). Appended at the END of `content` by `link_preview::enrich`,
+    /// after every other segment the send/edit pipeline produced (`enrich`
+    /// never reorders or removes an existing segment).
+    LinkPreview {
+        url: String,
+        title: String,
+        description: String,
+    },
+    // Reserved, produced later: DocLink (M11d).
 }
 
 /// The c-1 producer: wrap raw input as a single literal-text segment. Rich
@@ -373,6 +394,9 @@ pub async fn handle_send_message(
     repo: &dyn Repository,
     ctx: &PermissionContext,
     rate: &PingRateLimiter,
+    preview_client: &reqwest::Client,
+    preview_cache: &LinkPreviewCache,
+    preview_rate: &PreviewRateLimiter,
     channel: String,
     content: String,
     actor_owner: Option<ActorOwnerRef>,
@@ -502,7 +526,16 @@ pub async fn handle_send_message(
     // flood budget already consumed above stays 1:1 with the attempt.
     // `handle_edit_message` never reaches this stage: a roll's outcome is
     // immutable once sent, and an edit's `[[...]]` spans stay literal text.
-    let content_segments = if parsed.kind == MessageKind::Roll {
+    //
+    // Resolved ONCE here (not per-branch below) so the link-preview enrich
+    // stage below can reuse the same resolution for `previews_enabled()`
+    // without a second query. The `kind == Roll` branch below never reads
+    // `policy` (a roll's body is executed, not sanitized) — it is resolved
+    // and ignored on that path; the hoist is for the shared Normal/Emote
+    // sanitize call and the enrich gate, both of which run regardless of
+    // whether this attempt turns out to be a roll.
+    let policy = resolve_content_policy(repo, room.world_id).await;
+    let mut content_segments = if parsed.kind == MessageKind::Roll {
         let dice_ctx = resolve_dice_context(repo, room.world_id).await;
         match rolls::execute_roll(&parsed.body, dice_ctx) {
             Ok((formula, outcome)) => vec![Segment::RollEmbed { formula, outcome }],
@@ -542,10 +575,8 @@ pub async fn handle_send_message(
             }
         };
         if let [rolls::BodyChunk::Text(_)] = chunks.as_slice() {
-            let policy = resolve_content_policy(repo, room.world_id).await;
             sanitize(&parsed.body, &policy)
         } else {
-            let policy = resolve_content_policy(repo, room.world_id).await;
             // Ambient dice context is resolved at most once, lazily, only when
             // a roll/button chunk actually appears in this body.
             let mut dice_ctx: Option<crate::dice::ParseContext> = None;
@@ -606,6 +637,27 @@ pub async fn handle_send_message(
             segments
         }
     };
+    // Link-preview enrich stage: only for hyperlink-carrying, non-Roll bodies.
+    // The `kind != Roll` guard is EXPLICIT (design doc §3), not incidental: a
+    // successful roll falls through here with `content_segments == [RollEmbed]`
+    // (only the roll-EXECUTION-FAILURE arm returns early), so without this
+    // guard a `/roll` on a preview-enabled world would enter `enrich` — a no-op
+    // today only because `enrich` scans `Segment::Html` runs (none in a
+    // RollEmbed), but a latent path to attaching outbound-fetched previews to a
+    // roll message if that ever changes. Synchronous, before publish (§3) — no
+    // spawned task, no post-publish revision, no message-deleted-mid-fetch race.
+    if parsed.kind != MessageKind::Roll && policy.previews_enabled() {
+        link_preview::enrich(
+            &mut content_segments,
+            preview_client,
+            preview_cache,
+            preview_rate,
+            ctx.user_id,
+            now,
+            std::time::Instant::now(),
+        )
+        .await;
+    }
     // `source` = raw author input for client edit-prefill, with a parsed /w
     // prefix STRIPPED — an unmodified resubmit of the prefill must not trip
     // handle_edit_message's AudienceLocked rejection (edit always rejects /w).
@@ -666,6 +718,9 @@ pub async fn handle_edit_message(
     repo: &dyn Repository,
     ctx: &PermissionContext,
     rate: &PingRateLimiter,
+    preview_client: &reqwest::Client,
+    preview_cache: &LinkPreviewCache,
+    preview_rate: &PreviewRateLimiter,
     message_id: Uuid,
     content: String,
     now: i64,
@@ -767,7 +822,23 @@ pub async fn handle_edit_message(
     }
 
     let policy = resolve_content_policy(repo, room.world_id).await;
-    let segments = sanitize(&body, &policy);
+    let mut segments = sanitize(&body, &policy);
+    // A preview is derived, not authored — re-derive on every edit so the
+    // card always reflects the CURRENT edited content (never a stale link
+    // preview from before the edit). The roll-immutability checks above
+    // already guarantee `kind != Roll` here.
+    if policy.previews_enabled() {
+        link_preview::enrich(
+            &mut segments,
+            preview_client,
+            preview_cache,
+            preview_rate,
+            ctx.user_id,
+            now,
+            std::time::Instant::now(),
+        )
+        .await;
+    }
 
     // Build the revised system: new content + kind, edited_at=now; preserve
     // channel/user_owner/actor_owner/audience/deleted_at from the stored doc.
@@ -1211,6 +1282,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "hello".into(),
             None,
@@ -1232,6 +1306,9 @@ mod tests {
                 &repo,
                 &ctx,
                 &rate2,
+                &super::link_preview::build_client_allow_loopback(),
+                &LinkPreviewCache::new(),
+                &PreviewRateLimiter::new(),
                 "all".into(),
                 "x".into(),
                 None,
@@ -1246,6 +1323,9 @@ mod tests {
             &repo,
             &ctx,
             &rate2,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "x".into(),
             None,
@@ -1263,6 +1343,9 @@ mod tests {
                 &repo,
                 &ctx,
                 &rate,
+                &super::link_preview::build_client_allow_loopback(),
+                &LinkPreviewCache::new(),
+                &PreviewRateLimiter::new(),
                 "all".into(),
                 "".into(),
                 None,
@@ -1280,6 +1363,9 @@ mod tests {
                 &repo,
                 &ctx,
                 &rate,
+                &super::link_preview::build_client_allow_loopback(),
+                &LinkPreviewCache::new(),
+                &PreviewRateLimiter::new(),
                 "all".into(),
                 long,
                 None,
@@ -1299,6 +1385,9 @@ mod tests {
                 &repo,
                 &ctx,
                 &rate,
+                &super::link_preview::build_client_allow_loopback(),
+                &LinkPreviewCache::new(),
+                &PreviewRateLimiter::new(),
                 "".into(),
                 "hi".into(),
                 None,
@@ -1316,6 +1405,9 @@ mod tests {
                 &repo,
                 &ctx,
                 &rate,
+                &super::link_preview::build_client_allow_loopback(),
+                &LinkPreviewCache::new(),
+                &PreviewRateLimiter::new(),
                 long_channel,
                 "hi".into(),
                 None,
@@ -1368,6 +1460,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "whispers".into(),
             "psst".into(),
             None,
@@ -1424,6 +1519,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "whispers".into(),
             "psst".into(),
             None,
@@ -1478,6 +1576,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "whispers".into(),
             "psst".into(),
             None,
@@ -1530,6 +1631,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "whispers".into(),
             "psst".into(),
             None,
@@ -1589,6 +1693,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "hello".into(),
             None,
@@ -1611,6 +1718,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "/me waves".into(),
             None,
@@ -1633,6 +1743,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "/w @alice hi".into(),
             None,
@@ -1683,6 +1796,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "hello".into(),
             None,
@@ -1702,6 +1818,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             message_id,
             "goodbye".into(),
             101,
@@ -1768,6 +1887,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "/w @alice /me waves".into(),
             None,
@@ -1795,6 +1917,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             message_id,
             "/me waves".into(),
             101,
@@ -1824,6 +1949,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "/w @alice hi".into(),
             None,
@@ -1849,6 +1977,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             message_id2,
             "/w @bob hi".into(),
             103,
@@ -1874,6 +2005,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "hello".into(),
             None,
@@ -1892,6 +2026,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             public_id,
             "/w @alice hi".into(),
             105,
@@ -1908,6 +2045,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             message_id2,
             "bye now".into(),
             106,
@@ -1963,6 +2103,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "attack! [[1d20]] done".into(),
             None,
@@ -1991,6 +2134,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             message_id,
             "attack! done, no roll".into(),
             101,
@@ -2006,6 +2152,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "hello there".into(),
             None,
@@ -2024,6 +2173,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             plain_id,
             "hello again".into(),
             103,
@@ -2078,6 +2230,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "/roll 2d6".into(),
             None,
@@ -2106,6 +2261,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             message_id,
             "2d6 edited".into(),
             101,
@@ -2254,6 +2412,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "grr".into(),
             Some(ActorOwnerRef::Actor { actor_id }),
@@ -2328,6 +2489,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "grr".into(),
             Some(ActorOwnerRef::Actor { actor_id }),
@@ -2378,6 +2542,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "grr".into(),
             Some(ActorOwnerRef::Actor {
@@ -2437,6 +2604,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "grr".into(),
             Some(ActorOwnerRef::Actor { actor_id }),
@@ -2484,6 +2654,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "grr".into(),
             Some(ActorOwnerRef::TokenInstance {
@@ -2546,6 +2719,9 @@ mod tests {
             &repo,
             &ctx,
             &rate,
+            &super::link_preview::build_client_allow_loopback(),
+            &LinkPreviewCache::new(),
+            &PreviewRateLimiter::new(),
             "all".into(),
             "grr".into(),
             Some(ActorOwnerRef::Actor { actor_id: doc_id }),
@@ -2555,5 +2731,516 @@ mod tests {
         )
         .await;
         assert!(matches!(err, Err(SendMessageError::ActorNotSpeakable)));
+    }
+}
+
+/// Ingest integration for the link-preview enrich stage (design doc §8):
+/// drives `handle_send_message`/`handle_edit_message` directly, exactly like
+/// `chat::tests`, but against a real stub `axum` target on `127.0.0.1` — the
+/// same `allow_loopback` seam `link_preview.rs`'s own fetcher tests use. Kept
+/// as its own `mod` (not folded into `chat::tests`) because every test here
+/// needs `hyperlinks: true` and a stub server, unlike the rest of the file.
+#[cfg(test)]
+mod link_preview_ingest_tests {
+    use super::*;
+    use crate::auth::role::ServerRole;
+    use crate::data::document::WorldRole;
+    use crate::data::sqlite::SqliteRepository;
+    use crate::ws::room::RoomRegistry;
+    use axum::routing::get;
+    use axum::Router;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Spawns a stub HTTP target on a random loopback port, returning the
+    /// port. Mirrors `link_preview.rs`'s own test helper. Callers address it
+    /// via the fake domain `stub.test` (never a literal `127.0.0.1` URL,
+    /// which `validate_url` blocks unconditionally regardless of any
+    /// loopback allowance) — `Fixture::new`'s client resolves that name to
+    /// this stub's real loopback IP.
+    async fn spawn_stub(router: Router) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        port
+    }
+
+    /// GM + one Player, `chat-settings` seeded with the given `policy` so the
+    /// enrich stage's gating (`previews_enabled`) is under test control.
+    struct Fixture {
+        repo: SqliteRepository,
+        room: std::sync::Arc<Room>,
+        ctx: PermissionContext,
+        rate: PingRateLimiter,
+        preview_client: reqwest::Client,
+        preview_cache: LinkPreviewCache,
+        preview_rate: PreviewRateLimiter,
+    }
+
+    impl Fixture {
+        async fn new(policy: ChatContentPolicy) -> Self {
+            let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+            let gm = repo
+                .create_user("gm", None, ServerRole::User, 0)
+                .await
+                .unwrap();
+            let player = repo
+                .create_user("pl", None, ServerRole::User, 0)
+                .await
+                .unwrap();
+            let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+            repo.add_member(w.id, player, WorldRole::Player)
+                .await
+                .unwrap();
+            let gm_ctx = PermissionContext {
+                user_id: gm,
+                world_role: WorldRole::Gm,
+            };
+            let doc = Document {
+                id: Uuid::new_v4(),
+                scope: Scope::World { world_id: w.id },
+                doc_type: CHAT_SETTINGS_DOC_TYPE.to_string(),
+                schema_version: 1,
+                source: None,
+                owner: Some(gm),
+                permissions: PermissionSet::default(),
+                embedded: BTreeMap::new(),
+                parent_id: None,
+                system: serde_json::to_value(policy).unwrap(),
+                created_at: 0,
+                updated_at: 0,
+            };
+            repo.apply_intent(
+                &gm_ctx,
+                w.id,
+                vec![Operation::Create { doc }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+            let reg = RoomRegistry::new();
+            let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+            let ctx = PermissionContext {
+                user_id: player,
+                world_role: WorldRole::Player,
+            };
+            Fixture {
+                repo,
+                room,
+                ctx,
+                rate: PingRateLimiter::new(),
+                // Maps the fake domain `stub.test` to real loopback — the
+                // ONLY way to reach a `127.0.0.1`-bound stub, since
+                // `validate_url` rejects a literal `127.0.0.1` host outright
+                // regardless of any loopback allowance (see that fn's doc).
+                preview_client: link_preview::build_client_with_resolve_fn(|_host| {
+                    Ok(vec!["127.0.0.1".parse().unwrap()])
+                }),
+                preview_cache: LinkPreviewCache::new(),
+                preview_rate: PreviewRateLimiter::new(),
+            }
+        }
+
+        async fn send(&self, content: &str, now: i64) -> Result<Command, SendMessageError> {
+            handle_send_message(
+                &self.room,
+                &self.repo,
+                &self.ctx,
+                &self.rate,
+                &self.preview_client,
+                &self.preview_cache,
+                &self.preview_rate,
+                "all".into(),
+                content.into(),
+                None,
+                Audience::Public,
+                now,
+                60,
+            )
+            .await
+        }
+
+        async fn edit(
+            &self,
+            message_id: Uuid,
+            content: &str,
+            now: i64,
+        ) -> Result<Command, SendMessageError> {
+            handle_edit_message(
+                &self.room,
+                &self.repo,
+                &self.ctx,
+                &self.rate,
+                &self.preview_client,
+                &self.preview_cache,
+                &self.preview_rate,
+                message_id,
+                content.into(),
+                now,
+                60,
+            )
+            .await
+        }
+
+        async fn stored_system(&self, cmd: &Command) -> MessageSystem {
+            let doc_id = match &cmd.ops[0] {
+                Operation::Create { doc } => doc.id,
+                Operation::Update { doc_id, .. } => *doc_id,
+                Operation::Delete { doc } => doc.id,
+            };
+            let doc = self.repo.get_document(doc_id).await.unwrap().unwrap();
+            serde_json::from_value(doc.system).unwrap()
+        }
+    }
+
+    /// `markdown` must be on alongside `hyperlinks` for a plain `http://...`
+    /// URL to actually become an `<a href>` — `sanitize`'s bare-toggle
+    /// `hyperlinks` only controls whether ammonia PERMITS the `<a>` tag once
+    /// produced; producing one at all needs markdown link syntax
+    /// (`[label](url)`) run through `pulldown-cmark`. Bodies in this file
+    /// use that syntax accordingly.
+    fn hyperlinks_on() -> ChatContentPolicy {
+        ChatContentPolicy {
+            markdown: true,
+            hyperlinks: true,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn normal_message_with_link_gets_trailing_preview() {
+        let addr = spawn_stub(Router::new().route(
+            "/",
+            get(|| async { axum::response::Html("<title>Hello</title>") }),
+        ))
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let cmd = f
+            .send(&format!("check out [link](http://stub.test:{addr}/)"), 1)
+            .await
+            .unwrap();
+        let sys = f.stored_system(&cmd).await;
+        match sys.content.last() {
+            Some(Segment::LinkPreview { url, title, .. }) => {
+                assert!(url.contains(&addr.to_string()));
+                assert_eq!(title, "Hello");
+            }
+            other => panic!("expected a trailing LinkPreview segment, got {other:?}"),
+        }
+        // The preview is APPENDED — the original Html run is still first.
+        assert!(matches!(sys.content.first(), Some(Segment::Html { .. })));
+    }
+
+    #[tokio::test]
+    async fn same_url_twice_hits_the_cache_one_fetch_total() {
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let addr = spawn_stub(Router::new().route(
+            "/",
+            get(|| async {
+                HITS.fetch_add(1, Ordering::SeqCst);
+                axum::response::Html("<title>Cached</title>")
+            }),
+        ))
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let url = format!("http://stub.test:{addr}/");
+        let first = f.send(&format!("one [x]({url})"), 1).await.unwrap();
+        let second = f.send(&format!("two [x]({url})"), 2).await.unwrap();
+        for cmd in [&first, &second] {
+            let sys = f.stored_system(cmd).await;
+            assert!(matches!(
+                sys.content.last(),
+                Some(Segment::LinkPreview { .. })
+            ));
+        }
+        assert_eq!(
+            HITS.load(Ordering::SeqCst),
+            1,
+            "second send must hit the cache, not re-fetch"
+        );
+    }
+
+    #[tokio::test]
+    async fn max_previews_per_message_caps_four_links_to_three() {
+        let addr = spawn_stub(Router::new().route(
+            "/{id}",
+            get(|| async { axum::response::Html("<title>P</title>") }),
+        ))
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let body = format!(
+            "[a](http://stub.test:{addr}/a) [b](http://stub.test:{addr}/b) [c](http://stub.test:{addr}/c) [d](http://stub.test:{addr}/d)"
+        );
+        let cmd = f.send(&body, 1).await.unwrap();
+        let sys = f.stored_system(&cmd).await;
+        let preview_count = sys
+            .content
+            .iter()
+            .filter(|s| matches!(s, Segment::LinkPreview { .. }))
+            .count();
+        assert_eq!(
+            preview_count, MAX_PREVIEWS_PER_MESSAGE,
+            "got {:?}",
+            sys.content
+        );
+    }
+
+    #[tokio::test]
+    async fn failing_fetch_degrades_no_card_message_still_posts() {
+        let addr = spawn_stub(Router::new().route(
+            "/",
+            get(|| async { axum::http::StatusCode::INTERNAL_SERVER_ERROR }),
+        ))
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let cmd = f
+            .send(&format!("broken [link](http://stub.test:{addr}/)"), 1)
+            .await
+            .unwrap();
+        let sys = f.stored_system(&cmd).await;
+        assert!(
+            !sys.content
+                .iter()
+                .any(|s| matches!(s, Segment::LinkPreview { .. })),
+            "a failing fetch must not produce a card: {:?}",
+            sys.content
+        );
+        assert!(matches!(sys.content.first(), Some(Segment::Html { .. })));
+    }
+
+    #[tokio::test]
+    async fn previews_suppressed_when_hyperlinks_off() {
+        let addr = spawn_stub(Router::new().route(
+            "/",
+            get(|| async { axum::response::Html("<title>Nope</title>") }),
+        ))
+        .await;
+        // Default policy: every toggle off, including hyperlinks.
+        let f = Fixture::new(ChatContentPolicy::default()).await;
+        let cmd = f
+            .send(
+                &format!("http://stub.test:{addr}/ plain text, no markup"),
+                1,
+            )
+            .await
+            .unwrap();
+        let sys = f.stored_system(&cmd).await;
+        assert!(
+            !sys.content
+                .iter()
+                .any(|s| matches!(s, Segment::LinkPreview { .. })),
+            "hyperlinks off must suppress previews entirely: {:?}",
+            sys.content
+        );
+    }
+
+    #[tokio::test]
+    async fn previews_suppressed_when_link_previews_explicitly_off() {
+        let addr = spawn_stub(Router::new().route(
+            "/",
+            get(|| async { axum::response::Html("<title>Nope</title>") }),
+        ))
+        .await;
+        let f = Fixture::new(ChatContentPolicy {
+            markdown: true,
+            hyperlinks: true,
+            link_previews: Some(false),
+            ..Default::default()
+        })
+        .await;
+        let cmd = f
+            .send(&format!("check [link](http://stub.test:{addr}/)"), 1)
+            .await
+            .unwrap();
+        let sys = f.stored_system(&cmd).await;
+        // Sanity: the link is still rendered as a real anchor — proving the
+        // suppression below is `link_previews`-specific, not a side effect
+        // of the link never becoming an `<a>` in the first place.
+        assert!(matches!(sys.content.first(), Some(Segment::Html { .. })));
+        assert!(
+            !sys.content
+                .iter()
+                .any(|s| matches!(s, Segment::LinkPreview { .. })),
+            "an explicit link_previews:false must suppress previews: {:?}",
+            sys.content
+        );
+    }
+
+    #[tokio::test]
+    async fn burst_of_distinct_urls_hits_the_rate_limit_and_stops_fetching() {
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let addr = spawn_stub(Router::new().route(
+            "/{id}",
+            get(|| async {
+                HITS.fetch_add(1, Ordering::SeqCst);
+                axum::response::Html("<title>x</title>")
+            }),
+        ))
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        // A per-user PREVIEW_FETCH_PER_MIN budget of 20; drive far more than
+        // that many DISTINCT-URL candidates (3 links/message, capped) in the
+        // same 60s window so the limiter must reject some fetches outright.
+        let mut total_previews = 0usize;
+        for i in 0..15u32 {
+            let body = format!(
+                "[a](http://stub.test:{addr}/{i}a) [b](http://stub.test:{addr}/{i}b) [c](http://stub.test:{addr}/{i}c)"
+            );
+            let cmd = f.send(&body, 1_000).await.unwrap();
+            let sys = f.stored_system(&cmd).await;
+            total_previews += sys
+                .content
+                .iter()
+                .filter(|s| matches!(s, Segment::LinkPreview { .. }))
+                .count();
+        }
+        // 15 messages * 3 distinct URLs each = 45 candidate fetches, but the
+        // per-user budget is PREVIEW_FETCH_PER_MIN (20) within the window —
+        // every message still posts (enrich degrades, never blocks the
+        // send), but strictly fewer previews land than candidate URLs.
+        assert!(
+            total_previews < 45,
+            "the rate limit must have stopped some fetches: {total_previews} previews from 45 candidates"
+        );
+        assert!(
+            HITS.load(Ordering::SeqCst) <= PREVIEW_FETCH_PER_MIN,
+            "no more real fetches than the per-user budget: {} hits",
+            HITS.load(Ordering::SeqCst)
+        );
+    }
+
+    /// A preview is derived, not authored — editing a message's links must
+    /// re-derive the card set from the NEW content, dropping a stale preview
+    /// whose link no longer appears.
+    #[tokio::test]
+    async fn edit_re_derives_preview_from_new_content() {
+        let addr = spawn_stub(Router::new().route(
+            "/",
+            get(|| async { axum::response::Html("<title>Original</title>") }),
+        ))
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let sent = f
+            .send(&format!("see [link](http://stub.test:{addr}/)"), 1)
+            .await
+            .unwrap();
+        let doc_id = match &sent.ops[0] {
+            Operation::Create { doc } => doc.id,
+            _ => unreachable!(),
+        };
+        let sys_before = f.stored_system(&sent).await;
+        assert!(matches!(
+            sys_before.content.last(),
+            Some(Segment::LinkPreview { .. })
+        ));
+
+        let edited = f.edit(doc_id, "no links here anymore", 2).await.unwrap();
+        let sys_after = f.stored_system(&edited).await;
+        assert!(
+            !sys_after
+                .content
+                .iter()
+                .any(|s| matches!(s, Segment::LinkPreview { .. })),
+            "an edit removing the link must drop the stale preview: {:?}",
+            sys_after.content
+        );
+    }
+
+    /// A `/roll` on a PREVIEW-ENABLED world never accumulates a `LinkPreview`
+    /// segment: its content is exactly one `RollEmbed`. Pins the design §3
+    /// EXPLICIT `kind != MessageKind::Roll` enrich guard — a successful roll
+    /// falls through to the enrich gate (only the roll-execution-FAILURE arm
+    /// returns early), so the guard, not the incidental absence of `<a href>`
+    /// in a `RollEmbed`, is what keeps a roll message off the outbound-fetch
+    /// path if the roll content model ever changes.
+    #[tokio::test]
+    async fn roll_message_never_gets_a_link_preview_even_when_previews_enabled() {
+        let f = Fixture::new(hyperlinks_on()).await;
+        let cmd = f.send("/roll 1d6", 1).await.unwrap();
+        let sys = f.stored_system(&cmd).await;
+        assert_eq!(sys.kind, MessageKind::Roll);
+        assert_eq!(
+            sys.content.len(),
+            1,
+            "roll content must be one RollEmbed: {:?}",
+            sys.content
+        );
+        assert!(matches!(
+            sys.content.first(),
+            Some(Segment::RollEmbed { .. })
+        ));
+        assert!(
+            !sys.content
+                .iter()
+                .any(|s| matches!(s, Segment::LinkPreview { .. })),
+            "a roll message must never carry a LinkPreview: {:?}",
+            sys.content
+        );
+    }
+
+    /// SECURITY: inert body text carrying a literal `href="..."` substring —
+    /// NOT a markdown link, NOT inside an `<a>` tag — must never trigger a
+    /// fetch. Markdown body text does not escape `"`/`'`, so this prose
+    /// renders through `ammonia` unchanged as plain text; extraction must
+    /// stay scoped to a genuine `<a>` tag span (see `extract_href_urls`'s
+    /// doc), never a raw `href=` substring match anywhere in the run, or the
+    /// server would fetch an attacker-chosen URL from invisible, non-
+    /// hyperlink text. Proven at the ingest level (not just unit-level on
+    /// `extract_href_urls`) via a call-counter stub: zero hits.
+    #[tokio::test]
+    async fn inert_href_substring_in_body_text_yields_no_preview_and_no_fetch() {
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let addr = spawn_stub(Router::new().route(
+            "/x",
+            get(|| async {
+                HITS.fetch_add(1, Ordering::SeqCst);
+                axum::response::Html("<title>should never be fetched</title>")
+            }),
+        ))
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let cmd = f
+            .send(
+                &format!(
+                    "see href=\"http://stub.test:{addr}/x\" for details, no markdown link here"
+                ),
+                1,
+            )
+            .await
+            .unwrap();
+        let sys = f.stored_system(&cmd).await;
+        assert!(matches!(sys.content.first(), Some(Segment::Html { .. })));
+        assert!(
+            !sys.content
+                .iter()
+                .any(|s| matches!(s, Segment::LinkPreview { .. })),
+            "inert body text with a literal href=\"...\" substring must not yield a preview: {:?}",
+            sys.content
+        );
+        assert_eq!(
+            HITS.load(Ordering::SeqCst),
+            0,
+            "the stub must never be hit for a non-anchor href substring"
+        );
+    }
+
+    /// A stored pre-M11d-3 `MessageSystem` (no `LinkPreview` segments) still
+    /// round-trips through the deserializer — the new segment variant is
+    /// purely additive, not a breaking schema change.
+    #[test]
+    fn stored_pre_m11d3_message_still_deserializes() {
+        let j = serde_json::json!({
+            "channel": "all",
+            "user_owner": Uuid::from_u128(1),
+            "kind": "normal",
+            "audience": { "kind": "public" },
+            "content": [{ "kind": "text", "text": "hi" }],
+        });
+        let sys: MessageSystem = serde_json::from_value(j).unwrap();
+        assert_eq!(sys.kind, MessageKind::Normal);
+        assert_eq!(sys.content, vec![Segment::Text { text: "hi".into() }]);
     }
 }
