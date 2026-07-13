@@ -135,4 +135,6 @@ export const en: Messages = {
   "gameSettings.scene.bounds": "Scene size (grid units)",
   "gameSettings.scene.boundsWidth": "Scene width (cells)",
   "gameSettings.scene.boundsHeight": "Scene height (cells)",
+  "sidebar.collapse": "Collapse sidebar",
+  "sidebar.expand": "Expand sidebar",
 };
