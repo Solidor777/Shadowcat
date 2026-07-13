@@ -38,6 +38,11 @@
   }
   .sidebar {
     grid-area: sidebar;
+    /* Growth cap: zeroes the grid item's automatic minimum size so tall tab
+     * content scrolls inside the host's panels instead of growing the 1fr
+     * track past 100vh. Scrolling itself is owned by the tab host's panels. */
+    min-height: 0;
+    overflow: hidden;
     background: var(--surface-raised);
     border-left: 1px solid var(--border);
   }
