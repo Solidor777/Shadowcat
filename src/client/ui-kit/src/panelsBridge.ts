@@ -5,7 +5,7 @@
 // late-attachment shape, but the panel host attaches via `bind` (a single
 // swap-in, not attach/detach), so calls before `bind` warn once (not silently
 // forever) rather than passing an undetected no-op through the whole session.
-import { silentLogger, type Logger } from "@shadowcat/core";
+import type { Logger } from "@shadowcat/core";
 
 export interface PanelsApi {
   open(id: string): void;
@@ -18,7 +18,7 @@ export class PanelsBridge implements PanelsApi {
   #impl: PanelsApi | null = null;
   #warned = false;
 
-  constructor(private readonly logger: Logger = silentLogger) {}
+  constructor(private readonly logger: Logger) {}
 
   /** Bind the real panel-host implementation; subsequent calls delegate. */
   bind(impl: PanelsApi): void {

@@ -1,6 +1,6 @@
 import type { AppContext } from "../appContext";
 import { __APP_CONTEXT_KEY__ } from "../appContext";
-import { DocumentStore, AssetResolver, ContributionRegistry } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger } from "@shadowcat/core";
 import { SceneInteractionBridge } from "../sceneInteraction";
 import { ActorSelection } from "../actorSelection.svelte";
 import { TokenSelection } from "../tokenSelection.svelte";
@@ -39,7 +39,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       getPanelLayout: () => null,
       setPanelLayout: () => {},
     },
-    panels: over.panels ?? new PanelsBridge(),
+    panels: over.panels ?? new PanelsBridge(silentLogger),
   };
   return new Map([[__APP_CONTEXT_KEY__, ctx]]);
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { AssetResolver } from "@shadowcat/core";
+  import { AssetResolver, silentLogger } from "@shadowcat/core";
   import { setAppContext } from "@shadowcat/ui-kit";
   import { SceneInteractionBridge, ActorSelection, TokenSelection, PanelsBridge } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
@@ -34,7 +34,7 @@
     leaveWorld: () => {},
     logout: async () => {},
     uiState: { getActiveTab: () => null, setActiveTab: () => {}, getPanelLayout: () => null, setPanelLayout: () => {} },
-    panels: new PanelsBridge(),
+    panels: new PanelsBridge(silentLogger),
   });
 </script>
 

@@ -1,13 +1,14 @@
 <script lang="ts">
   import { setAppContext, Surface, PanelsBridge } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
+  import { consoleLogger } from "@shadowcat/core";
   import { logout } from "./api";
   import { navigate } from "./route.svelte";
   import { getActiveTab, setActiveTab, getPanelLayout, setPanelLayout } from "./sessionState.svelte";
   import type { WorldSession } from "./worldSession.svelte";
 
   // TODO: bind the real panel host once it mounts; until then calls warn-once and no-op.
-  const panels = new PanelsBridge();
+  const panels = new PanelsBridge(consoleLogger());
 
   let { session, leaveWorld }: { session: WorldSession; leaveWorld: () => void } =
     $props();
