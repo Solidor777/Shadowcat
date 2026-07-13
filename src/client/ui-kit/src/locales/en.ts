@@ -195,4 +195,5 @@ export const en: Messages = {
   "panels.moreViews": "More views",
   "panels.crashed": "Panel crashed",
   "panels.reload": "Reload",
+  "panels.layoutReset": "Panel layout was reset to default",
 };

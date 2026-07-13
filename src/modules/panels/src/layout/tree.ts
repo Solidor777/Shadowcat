@@ -290,29 +290,69 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
  * order's new first entry). A zone's groups are renormalized — ALL surviving groups in
  * that zone get an equal-share `size`, not just the affected one — whenever pruning drops
  * a whole group from it; a group that merely lost one of several tabs (but is not itself
- * dropped) keeps every group's manually-set size untouched. */
+ * dropped) keeps every group's manually-set size untouched.
+ * SAME-REFERENCE NO-OP CONTRACT: when `known` already contains every id anywhere in `l`,
+ * this returns `l` itself (not a structurally-equal copy) — every zone/group/floating-
+ * entry/compact-order reference is reused untouched. Callers (e.g. `PanelsController`)
+ * rely on this to decide whether a prune pass actually changed anything worth persisting,
+ * exactly like every no-op branch of `applyOp` above. */
 export function prune(l: PanelLayoutV1, known: ReadonlySet<string>): PanelLayoutV1 {
+  let changed = false;
   const zones = {} as Record<ZoneId, ZoneNode>;
   for (const zone of ZONE_IDS) {
     const zoneNode = l.expanded.zones[zone];
     const groups: GroupNode[] = [];
+    let zoneChanged = false;
     for (const g of zoneNode.groups) {
       const tabs = g.tabs.filter((t) => known.has(t));
-      if (tabs.length === 0) continue;
-      const active = tabs.includes(g.active) ? g.active : tabs[0];
-      groups.push(tabs.length === g.tabs.length && active === g.active ? g : { ...g, tabs, active });
+      if (tabs.length === 0) {
+        zoneChanged = true;
+        continue;
+      }
+      if (tabs.length === g.tabs.length) {
+        groups.push(g);
+      } else {
+        const active = tabs.includes(g.active) ? g.active : tabs[0];
+        groups.push({ ...g, tabs, active });
+        zoneChanged = true;
+      }
     }
+    if (!zoneChanged) {
+      zones[zone] = zoneNode;
+      continue;
+    }
+    changed = true;
     zones[zone] = groups.length === zoneNode.groups.length ? { ...zoneNode, groups } : { ...zoneNode, groups: renormalize(groups) };
   }
-  const floating = compactZ(l.expanded.floating.filter((f) => known.has(f.id)));
-  const minimized = l.expanded.minimized.filter((id) => known.has(id));
-  const order = l.compact.order.filter((id) => known.has(id));
+
+  const floatingKept = l.expanded.floating.filter((f) => known.has(f.id));
+  const floatingChanged = floatingKept.length !== l.expanded.floating.length;
+  const floating = floatingChanged ? compactZ(floatingKept) : l.expanded.floating;
+  if (floatingChanged) changed = true;
+
+  const minimizedKept = l.expanded.minimized.filter((id) => known.has(id));
+  const minimizedChanged = minimizedKept.length !== l.expanded.minimized.length;
+  if (minimizedChanged) changed = true;
+
+  const orderKept = l.compact.order.filter((id) => known.has(id));
+  const orderChanged = orderKept.length !== l.compact.order.length;
+  if (orderChanged) changed = true;
+
   const activeView =
-    l.compact.activeView !== null && order.includes(l.compact.activeView) ? l.compact.activeView : (order[0] ?? null);
+    l.compact.activeView !== null && orderKept.includes(l.compact.activeView) ? l.compact.activeView : (orderKept[0] ?? null);
+  if (activeView !== l.compact.activeView) changed = true;
+
+  if (!changed) return l;
+
   return {
     ...l,
-    expanded: { ...l.expanded, zones, floating, minimized },
-    compact: { activeView, order },
+    expanded: {
+      ...l.expanded,
+      zones,
+      floating,
+      minimized: minimizedChanged ? minimizedKept : l.expanded.minimized,
+    },
+    compact: { activeView, order: orderChanged ? orderKept : l.compact.order },
   };
 }
 

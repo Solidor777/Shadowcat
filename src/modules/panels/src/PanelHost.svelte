@@ -1,54 +1,57 @@
 <script lang="ts">
   import { untrack, type Component } from "svelte";
-  import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, sizeClass } from "@shadowcat/ui-kit";
-  import { PANEL_CONTRACT, consoleLogger, type Logger, type PanelMeta } from "@shadowcat/core";
-  import { applyOp, defaultLayout, prune, type PanelLayoutV1 } from "./layout/tree";
+  import { getAppContext, sizeClass, type PanelsApi } from "@shadowcat/ui-kit";
+  import { consoleLogger, type Logger } from "@shadowcat/core";
   import type { EngineAdapter } from "./engine/adapter";
   import { FakeEngine } from "./engine/fake";
+  import { PanelsController } from "./controller.svelte";
   import CompactSwitcher from "./CompactSwitcher.svelte";
   import DockChips from "./DockChips.svelte";
 
   /** `engine` defaults to `FakeEngine` (the bespoke-fallback engine); a real
-   * docking engine can be injected by a caller that owns persisted layout
-   * state. `layout` here is derived inline from the current registrations —
-   * the seam a layout-owning controller replaces is this `$state` init plus
-   * the `applyOp` reducer calls below, without touching props or markup.
-   * `logger` mirrors `PanelsBridge`'s pattern — no logger seam exists on
-   * AppContext, so this component accepts one as an optional prop and falls
-   * back to the production console logger. */
-  let { engine, logger }: { engine?: EngineAdapter; logger?: Logger } = $props();
+   * docking engine can be injected by a caller. `controller` defaults to a
+   * `PanelsController` built from AppContext (persisted layout + gmOnly
+   * filtering + `PanelsApi`); tests inject their own to assert against it
+   * directly. `logger` mirrors `PanelsBridge`'s pattern — no logger seam
+   * exists on AppContext, so this component accepts one as an optional prop
+   * and falls back to the production console logger. */
+  let {
+    engine,
+    logger,
+    controller,
+  }: { engine?: EngineAdapter; logger?: Logger; controller?: PanelsController } = $props();
   const log = untrack(() => logger ?? consoleLogger());
 
   const ctx = getAppContext();
   const t = ctx.t;
 
-  const subscribe = createSubscriber((update) => ctx.contributions.subscribe(update));
-
-  // gmOnly filtering happens here ONCE — every downstream consumer (layout,
-  // switcher, chips, engine) sees only the already-filtered set.
-  const visibleRegs = $derived.by(() => {
-    subscribe();
-    return ctx.contributions
-      .contributionsFor(PANEL_CONTRACT)
-      .filter((c) => !(c.panel?.gmOnly && ctx.role !== "gm"));
-  });
-
-  const metaMap = $derived.by(() => {
-    const m = new Map<string, PanelMeta>();
-    for (const c of visibleRegs) if (c.panel) m.set(c.id, c.panel);
-    return m;
-  });
-
-  // Seeds initial layout from the registrations present at mount. A one-time
-  // read by design — the seam a layout-owning controller replaces (see the
-  // `engine`/`layout` doc comment above) — so it is explicitly untracked
-  // rather than reactively re-deriving on every registry change.
-  let layout = $state<PanelLayoutV1>(
-    untrack(() =>
-      defaultLayout(visibleRegs.map((c) => ({ id: c.id, placement: c.panel?.defaultPlacement }))),
-    ),
+  const ctrl = untrack(
+    () =>
+      controller ??
+      new PanelsController({
+        contributions: ctx.contributions,
+        role: ctx.role,
+        getPanelLayout: () => ctx.uiState.getPanelLayout(),
+        setPanelLayout: (blob) => ctx.uiState.setPanelLayout(blob),
+        // `ctx.panels` is documented (`AppContext.panels`) as the concrete
+        // `PanelsBridge` instance; `PanelsApi` intentionally omits `bind` (a
+        // proxy-rebind affordance, not part of the general contract other
+        // callers use), so this narrow cast at the sole binding site brings
+        // it into scope.
+        bridge: ctx.panels as unknown as { bind(impl: PanelsApi): void },
+        logger: log,
+        // The controller already logs a reset via `logger.warn`; `onReset` is
+        // the seam a visible toast (e.g. a statusbar live region) hangs off
+        // once that surface exists — a no-op until then.
+        onReset: () => {},
+      }),
   );
+
+  // gmOnly filtering happens once, in the controller — every downstream
+  // consumer (switcher, chips, engine) sees only the already-filtered set.
+  const visibleRegs = $derived(ctrl.visibleRegs);
+  const metaMap = $derived(ctrl.metaMap);
+  const layout = $derived(ctrl.layout);
 
   const eng: EngineAdapter = untrack(() => engine ?? new FakeEngine());
 
@@ -62,15 +65,20 @@
 
   const knownIds = $derived(new Set(visibleRegs.map((c) => c.id)));
 
-  // Reactively prunes `layout` (dropping any id no longer among `knownIds`)
-  // whenever a registration is added/removed — BEFORE the reconcile effect
-  // below can hand a stale id to `eng.apply`/`slotFor`. Depends only on
-  // `knownIds`, reading `layout`/`remountKeys` via `untrack`, so its own
-  // writes to them cannot re-trigger this same effect (no prune/apply race).
+  // Reactively prunes the controller's layout (dropping any id no longer
+  // among `knownIds`) whenever a registration is added/removed — BEFORE the
+  // reconcile effect below can hand a stale id to `eng.apply`/`slotFor`.
+  // `syncKnownIds` reads AND conditionally writes the controller's layout
+  // state; that read must stay untracked here (mirroring the untracked
+  // `remountKeys` read below), or this effect would also depend on the very
+  // state it writes and self-retrigger every pass (an infinite update loop) —
+  // it relies solely on `prune`'s same-reference no-op contract to skip
+  // persisting when nothing was actually dropped. Depends only on
+  // `knownIds`, so this effect's own writes cannot re-trigger itself (no
+  // prune/apply race).
   $effect(() => {
     const known = knownIds;
-    const current = untrack(() => layout);
-    layout = prune(current, known);
+    untrack(() => ctrl.syncKnownIds(known));
     const keys = untrack(() => remountKeys);
     let changed = false;
     const nm = new Map(keys);
@@ -120,7 +128,7 @@
     if (!hostEl || !stageEl) return;
     eng.init(hostEl, slotFor, stageEl);
     const unsubOp = eng.onOp((op) => {
-      layout = applyOp(layout, op);
+      ctrl.dispatch(op);
     });
     return () => {
       unsubOp();
@@ -147,7 +155,11 @@
   <!-- Every visible registration's component mounts here EXACTLY ONCE, for as
        long as the registration exists. Hosts (engine groups, the compact
        active view, ...) adopt these elements via `appendChild`; this
-       container only ever hides via CSS, never `{#if}`. -->
+       container only ever hides via CSS, never `{#if}`. The `{#each}` below
+       creates each iteration's slot in `visibleRegs` order, which is why that
+       order is this staging container's render/DOM order — a fact about
+       staging-slot CREATION sequence only; it carries no z-order or visual
+       stacking meaning for any host that later adopts a slot elsewhere. -->
   <div class="staging" bind:this={stagingEl}>
     {#each visibleRegs as c (c.id)}
       {@const Comp = c.component as Component<Record<string, unknown>>}
@@ -186,7 +198,7 @@
     <DockChips
       minimized={layout.expanded.minimized}
       meta={metaMap}
-      onRestore={(id) => (layout = applyOp(layout, { op: "restore", id }))}
+      onRestore={(id) => ctrl.dispatch({ op: "restore", id })}
     />
   </div>
 
@@ -196,7 +208,7 @@
     meta={metaMap}
     {slotFor}
     release={releaseToStaging}
-    onSwitch={(id) => (layout = applyOp(layout, { op: "compactView", id }))}
+    onSwitch={(id) => ctrl.dispatch({ op: "compactView", id })}
   />
 </div>
 

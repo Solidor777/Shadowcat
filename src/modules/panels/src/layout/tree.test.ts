@@ -357,6 +357,12 @@ describe("prune", () => {
     const pruned = prune(l, new Set(["solo1", "solo3"]));
     expect(pruned.expanded.zones.right.groups.map((g) => g.size)).toEqual([0.5, 0.5]);
   });
+
+  it("same-reference no-op: returns the SAME layout when `known` already covers every id", () => {
+    const l = base();
+    const known = new Set(REGS.map((r) => r.id));
+    expect(prune(l, known)).toBe(l);
+  });
 });
 
 describe("every op is total (no throw on any prior location)", () => {
