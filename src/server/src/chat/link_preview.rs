@@ -528,7 +528,9 @@ fn build_client_with_timeouts(
         .redirect(Policy::none())
         .connect_timeout(connect_timeout)
         .timeout(timeout)
-        .cookie_store(false)
+        // No cookie store at all: the `cookies` feature is off in the release
+        // build, so a preview fetch is inherently stateless/uncredentialed
+        // (an explicit `.cookie_store(false)` would require that feature).
         .user_agent(USER_AGENT)
         .build()
         .expect("link-preview reqwest client configuration is always valid")

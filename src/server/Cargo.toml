@@ -36,13 +36,12 @@ ammonia = "4.1.3"
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 # Server's first outbound HTTP (chat/link_preview.rs, SSRF-guarded). rustls-tls
 # keeps TLS pure-Rust (no OpenSSL system dep, cross-platform CI invariant);
-# `stream` enables `bytes_stream()` for the size-capped body read. json/cookies/
-# multipart are ALSO listed here (not split into [dev-dependencies]) because the
-# existing integration tests (tests/*.rs) already use reqwest's higher-level
-# json/multipart/cookie-jar API against the stub server — a single dependency
-# entry avoids a version-resolution split between [dependencies] and
-# [dev-dependencies] for the same crate.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "cookies", "multipart"] }
+# Production preview fetcher needs only `rustls-tls` (pure-Rust TLS, no OpenSSL —
+# cross-platform) + `stream` (`bytes_stream()` for the size-capped body read); the
+# preview client is deliberately cookie-free. json/cookies/multipart are added under
+# [dev-dependencies] (feature-unioned only for test builds) so the RELEASE binary
+# does not carry the cookie-jar/multipart/json machinery the integration tests use.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 url = "2"
 
 # Embeds the application icon into the Windows executable (see build.rs); a
@@ -51,6 +50,11 @@ url = "2"
 winresource = "0.1"
 
 [dev-dependencies]
+# The integration tests (tests/*.rs) drive the test server via reqwest's
+# higher-level json/cookie-jar/multipart API. Cargo unions these with the
+# [dependencies] features for test builds only — the release binary keeps just
+# rustls-tls + stream (same crate + version, no resolution split).
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "multipart"] }
 proptest = "1"
 tempfile = "3"
 axum-test = "17"
