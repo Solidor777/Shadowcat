@@ -16,6 +16,7 @@
   import { conditions } from "@shadowcat/module-conditions";
   import { gameSettings } from "@shadowcat/module-game-settings";
   import { sceneTools } from "@shadowcat/module-scene-tools";
+  import { chat } from "@shadowcat/module-chat";
   import { WorldSession } from "./lib/worldSession.svelte";
   import Table from "./lib/Table.svelte";
 
@@ -83,7 +84,7 @@
     const wsUrl =
       (location.protocol === "https:" ? "wss:" : "ws:") +
       "//" + location.host + "/ws?world=" + worldId;
-    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [sidebar, coreUi, topBar, statusBar, stage, settings, gameSettings, assets, actors, factions, conditions, sceneTools] });
+    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [sidebar, coreUi, topBar, statusBar, stage, settings, gameSettings, assets, actors, factions, conditions, sceneTools, chat] });
     session = s;
     void s.enter(worldId);
     setLastWorld(worldId);

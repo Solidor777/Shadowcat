@@ -142,4 +142,13 @@ export const en: Messages = {
   "gameSettings.scene.boundsHeight": "Scene height (cells)",
   "sidebar.collapse": "Collapse sidebar",
   "sidebar.expand": "Expand sidebar",
+  "chat.tab": "Chat",
+  "chat.channels": "Channels",
+  "chat.all": "All",
+  "chat.gmChannel": "GM",
+  "chat.channels.edit": "Edit channels",
+  "chat.channels.add": "Add channel",
+  "chat.channels.name": "Channel name",
+  "chat.channels.remove": "Remove",
+  "chat.newMessages": "New messages ↓",
 };
