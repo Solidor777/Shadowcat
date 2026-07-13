@@ -6,6 +6,15 @@
 /** One provider or many for a surface contract. */
 export type Cardinality = "singleton" | "multi";
 
+/** Optional tab metadata a tabbed host (e.g. the sidebar) renders for a contribution.
+ * Plain data — framework-neutral. `labelKey` is an i18n key the HOST resolves at
+ * render (locale-reactive); `gmOnly` tabs are hidden from non-GM users by the host. */
+export interface ContributionTab {
+  icon: string;
+  labelKey: string;
+  gmOnly?: boolean;
+}
+
 export interface Contribution {
   id: string;
   contract: string;
@@ -14,6 +23,7 @@ export interface Contribution {
   props?: Record<string, unknown>;
   /** Opaque host-rendered component handle. */
   component: unknown;
+  tab?: ContributionTab;
 }
 
 interface Entry {

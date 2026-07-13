@@ -225,7 +225,8 @@ function defaultPermissions(): WireDocument["permissions"] {
   };
 }
 
-function envelope(worldId: string, docType: string, parentId: string | null, system: unknown, id?: string): WireDocument {
+/** Package-internal document envelope builder (shared by scene-docs and chat-docs). */
+export function envelope(worldId: string, docType: string, parentId: string | null, system: unknown, id?: string): WireDocument {
   const now = Date.now();
   return {
     id: id ?? crypto.randomUUID(),
