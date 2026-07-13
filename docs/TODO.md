@@ -163,3 +163,7 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - Notation syntax for crit-event configs (`CritSuccess`/`CritFail` structs remain
   struct-authored only) and for tier ladders — grows with system demand.
 - Per-channel / per-message dice-settings overrides (world-level only today).
+- `handle_send_message`/`handle_edit_message` now take 3 extra positional args
+  (preview_client/preview_cache/preview_rate) across ~40 call sites: bundle the link-preview
+  deps into a `LinkPreviewDeps`-style struct to shrink both signatures and reduce call-site
+  arg-order risk.

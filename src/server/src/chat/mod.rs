@@ -529,7 +529,11 @@ pub async fn handle_send_message(
     //
     // Resolved ONCE here (not per-branch below) so the link-preview enrich
     // stage below can reuse the same resolution for `previews_enabled()`
-    // without a second query.
+    // without a second query. The `kind == Roll` branch below never reads
+    // `policy` (a roll's body is executed, not sanitized) — it is resolved
+    // and ignored on that path; the hoist is for the shared Normal/Emote
+    // sanitize call and the enrich gate, both of which run regardless of
+    // whether this attempt turns out to be a roll.
     let policy = resolve_content_policy(repo, room.world_id).await;
     let mut content_segments = if parsed.kind == MessageKind::Roll {
         let dice_ctx = resolve_dice_context(repo, room.world_id).await;
@@ -3174,6 +3178,52 @@ mod link_preview_ingest_tests {
                 .any(|s| matches!(s, Segment::LinkPreview { .. })),
             "a roll message must never carry a LinkPreview: {:?}",
             sys.content
+        );
+    }
+
+    /// SECURITY: inert body text carrying a literal `href="..."` substring —
+    /// NOT a markdown link, NOT inside an `<a>` tag — must never trigger a
+    /// fetch. Markdown body text does not escape `"`/`'`, so this prose
+    /// renders through `ammonia` unchanged as plain text; extraction must
+    /// stay scoped to a genuine `<a>` tag span (see `extract_href_urls`'s
+    /// doc), never a raw `href=` substring match anywhere in the run, or the
+    /// server would fetch an attacker-chosen URL from invisible, non-
+    /// hyperlink text. Proven at the ingest level (not just unit-level on
+    /// `extract_href_urls`) via a call-counter stub: zero hits.
+    #[tokio::test]
+    async fn inert_href_substring_in_body_text_yields_no_preview_and_no_fetch() {
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let addr = spawn_stub(Router::new().route(
+            "/x",
+            get(|| async {
+                HITS.fetch_add(1, Ordering::SeqCst);
+                axum::response::Html("<title>should never be fetched</title>")
+            }),
+        ))
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let cmd = f
+            .send(
+                &format!(
+                    "see href=\"http://stub.test:{addr}/x\" for details, no markdown link here"
+                ),
+                1,
+            )
+            .await
+            .unwrap();
+        let sys = f.stored_system(&cmd).await;
+        assert!(matches!(sys.content.first(), Some(Segment::Html { .. })));
+        assert!(
+            !sys.content
+                .iter()
+                .any(|s| matches!(s, Segment::LinkPreview { .. })),
+            "inert body text with a literal href=\"...\" substring must not yield a preview: {:?}",
+            sys.content
+        );
+        assert_eq!(
+            HITS.load(Ordering::SeqCst),
+            0,
+            "the stub must never be hit for a non-anchor href substring"
         );
     }
 

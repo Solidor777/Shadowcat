@@ -41,45 +41,65 @@ pub struct LinkPreview {
 /// link four times still counts it once toward this cap.
 pub const MAX_PREVIEWS_PER_MESSAGE: usize = 3;
 
-/// Bounded scan for `href="..."`/`href='...'` occurrences across an already
-/// ammonia-sanitized HTML run — NOT a full HTML parse (ammonia's output is
-/// well-formed, so a bounded attribute scan is safe and avoids a second
-/// parser dependency). `lower`/`html` stay byte-index-aligned the same way
-/// `extract_meta_tags` relies on (ASCII-lowercasing never changes UTF-8 byte
-/// length). Capped at 64 matches so a pathological anchor count cannot blow
-/// the scan budget; the caller further caps the DEDUPED result at
+/// Bounded scan for the `href` attribute of a genuine `<a ...>` tag opener
+/// across an already ammonia-sanitized HTML run — NOT a raw `href="..."`
+/// substring scan and NOT a full HTML parse (ammonia's output is
+/// well-formed, so a bounded scan scoped to `<a` tag spans is safe and
+/// avoids a second parser dependency).
+///
+/// SECURITY: scoping to an actual `<a ` tag's attribute list — rather than
+/// searching the whole run for the bytes `href="..."` anywhere — is
+/// load-bearing. Markdown BODY TEXT does not escape `"`/`'` (verified
+/// against vendored `pulldown-cmark-escape`), so a member typing plain prose
+/// like `see href="http://attacker.example/x" for details` (no markdown
+/// link, no anchor) renders through `ammonia` unchanged; an unscoped scan
+/// would match that literal substring and cause the server to fetch an
+/// arbitrary attacker-chosen URL from inert, non-hyperlink text. Requiring
+/// an `<a` tag OPEN (`<a` followed by whitespace or `>`, so `<article>` /
+/// `<a-custom-element>` never match) before extracting `href` closes that
+/// gap; when `html`/`hyperlinks` policy is on, raw user HTML also only
+/// reaches this run through `ammonia::clean`, which normalizes/quotes
+/// attributes, so every `<a` span found here is a well-formed tag ammonia
+/// itself emitted.
+///
+/// `lower`/`html` stay byte-index-aligned the same way `extract_meta_tags`
+/// relies on (ASCII-lowercasing never changes UTF-8 byte length). Capped at
+/// 64 anchor tags scanned so a pathological anchor count cannot blow the
+/// scan budget; the caller further caps the DEDUPED result at
 /// `MAX_PREVIEWS_PER_MESSAGE`.
 fn extract_href_urls(html: &str) -> Vec<String> {
     let lower = html.to_ascii_lowercase();
     let mut urls = Vec::new();
     let mut from = 0usize;
     while urls.len() < 64 {
-        let Some(rel) = lower[from..].find("href=") else {
+        let Some(rel) = lower[from..].find("<a") else {
             break;
         };
-        let start = from + rel + "href=".len();
-        let Some(quote) = html[start..].chars().next() else {
+        let start = from + rel;
+        let after = lower[start + 2..].chars().next();
+        let is_anchor_open = matches!(after, Some(c) if c.is_whitespace() || c == '>');
+        let Some(gt_rel) = lower[start..].find('>') else {
             break;
         };
-        if quote != '"' && quote != '\'' {
-            // Not a quoted value (e.g. an unquoted attribute ammonia never
-            // emits, or a false-positive substring match) — skip past it.
-            from = start;
-            continue;
+        let end = start + gt_rel;
+        if is_anchor_open {
+            let tag_orig = &html[start..end];
+            let tag_lower = &lower[start..end];
+            if let Some(href) = extract_attr(tag_lower, tag_orig, "href") {
+                urls.push(href);
+            }
         }
-        let after_quote = start + quote.len_utf8();
-        let Some(end_rel) = html[after_quote..].find(quote) else {
-            break;
-        };
-        urls.push(html[after_quote..after_quote + end_rel].to_string());
-        from = after_quote + end_rel + quote.len_utf8();
+        from = end + 1;
     }
     urls
 }
 
-/// Extracts candidate preview URLs from `segments`' `Html` runs (the
-/// sanitizer's `<a href>` output — the authoritative "hyperlink-enabled" set,
-/// since a URL the sanitizer stripped never reaches here), de-duplicated in
+/// Extracts candidate preview URLs from `segments`' `Html` runs — specifically
+/// the `href` of an actual `<a>` tag in the sanitized output (see
+/// `extract_href_urls`'s doc for why this must be scoped to a real anchor
+/// tag, not any `href="..."` substring) — the authoritative "hyperlink-
+/// enabled" set, since a URL the sanitizer stripped never reaches here, and
+/// non-anchor body text can never yield a candidate. De-duplicated in
 /// first-seen order and capped at `MAX_PREVIEWS_PER_MESSAGE`, then resolves
 /// each through `cache` (a hit reuses the cached outcome; a miss is
 /// rate-limit-gated then fetched). Misses are fetched CONCURRENTLY via a
@@ -904,6 +924,46 @@ mod tests {
     use axum::Router;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // -- extract_href_urls: scoped to a genuine <a> tag span -----------------
+
+    #[test]
+    fn extracts_href_from_a_genuine_anchor_tag() {
+        let html = r#"<p>check <a href="http://example.test/x" rel="noopener">this</a> out</p>"#;
+        assert_eq!(extract_href_urls(html), vec!["http://example.test/x"]);
+    }
+
+    #[test]
+    fn extracts_multiple_anchors_in_first_seen_order() {
+        let html = r#"<a href="http://a.test/">a</a><a href="http://b.test/">b</a>"#;
+        assert_eq!(
+            extract_href_urls(html),
+            vec!["http://a.test/", "http://b.test/"]
+        );
+    }
+
+    #[test]
+    fn ignores_href_substring_not_inside_an_anchor_tag() {
+        // Body text containing a literal `href="..."` substring with no
+        // preceding `<a` tag open — the exact inert-prose case the SSRF fix
+        // closes. Must yield zero candidate URLs.
+        let html = r#"<p>see href="http://attacker.example/x" for details</p>"#;
+        assert!(extract_href_urls(html).is_empty());
+    }
+
+    #[test]
+    fn ignores_non_anchor_tags_whose_name_starts_with_a() {
+        // `<article>`/`<a-custom-element>` share the `<a` prefix but are not
+        // anchor tags — must not be mistaken for one.
+        let html = r#"<article href="http://attacker.example/">x</article><a-widget href="http://attacker.example/2">y</a-widget>"#;
+        assert!(extract_href_urls(html).is_empty());
+    }
+
+    #[test]
+    fn ignores_anchor_tag_with_no_href_attribute() {
+        let html = r#"<a name="anchor">no href here</a>"#;
+        assert!(extract_href_urls(html).is_empty());
+    }
 
     // -- is_blocked_ip: table-driven, one representative per named range ----
 
