@@ -1,9 +1,6 @@
-import { test, expect, vi, afterEach } from "vitest";
+import { test, expect } from "vitest";
+import type { Logger } from "@shadowcat/core";
 import { PanelsBridge, type PanelsApi } from "./panelsBridge";
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
 
 function fakeImpl(): PanelsApi & { calls: string[] } {
   const calls: string[] = [];
@@ -16,21 +13,31 @@ function fakeImpl(): PanelsApi & { calls: string[] } {
   };
 }
 
-test("PanelsBridge.open before bind warns once and no-throws", () => {
-  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-  const bridge = new PanelsBridge();
+function capturingLogger(): Logger & { warnings: string[] } {
+  const warnings: string[] = [];
+  return {
+    warnings,
+    debug: () => {},
+    warn: (msg) => warnings.push(msg),
+    error: () => {},
+  };
+}
+
+test("PanelsBridge.open before bind warns once through the injected logger, not console", () => {
+  const logger = capturingLogger();
+  const bridge = new PanelsBridge(logger);
 
   expect(() => bridge.open("a")).not.toThrow();
   expect(() => bridge.close("a")).not.toThrow();
   expect(() => bridge.focus("a")).not.toThrow();
   expect(() => bridge.toggle("a")).not.toThrow();
 
-  expect(warn).toHaveBeenCalledTimes(1); // warns once, not per call
+  expect(logger.warnings).toHaveLength(1); // warns once, not per call
 });
 
 test("PanelsBridge delegates to the bound implementation", () => {
-  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-  const bridge = new PanelsBridge();
+  const logger = capturingLogger();
+  const bridge = new PanelsBridge(logger);
   const impl = fakeImpl();
 
   bridge.bind(impl);
@@ -40,5 +47,5 @@ test("PanelsBridge delegates to the bound implementation", () => {
   bridge.toggle("d");
 
   expect(impl.calls).toEqual(["open:a", "close:b", "focus:c", "toggle:d"]);
-  expect(warn).not.toHaveBeenCalled();
+  expect(logger.warnings).toHaveLength(0);
 });
