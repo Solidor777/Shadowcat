@@ -7,7 +7,7 @@
 // round-trip, so it is usable and testable without mounting any component.
 import { PANEL_CONTRACT, type Contribution, type ContributionRegistry, type Logger, type PanelMeta } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
-import type { PanelsApi } from "@shadowcat/ui-kit";
+import type { PanelsApi, PanelsChipsView } from "@shadowcat/ui-kit";
 import { createSubscriber } from "svelte/reactivity";
 import { applyOp, defaultLayout, locate, prune, type LayoutOp, type PanelLayoutV1 } from "./layout/tree";
 import { decodeLayout, encodeLayout } from "./layout/persist";
@@ -47,7 +47,7 @@ const EMPTY_LAYOUT: PanelLayoutV1 = {
   compact: { activeView: null, order: [] },
 };
 
-export class PanelsController implements PanelsApi {
+export class PanelsController implements PanelsApi, PanelsChipsView {
   #deps: PanelsControllerDeps;
   #subscribe: () => void;
   #layout = $state<PanelLayoutV1>(EMPTY_LAYOUT);
@@ -86,6 +86,15 @@ export class PanelsController implements PanelsApi {
     const m = new Map<string, PanelMeta>();
     for (const c of this.visibleRegs) if (c.panel) m.set(c.id, c.panel);
     return m;
+  }
+
+  /** Currently minimized panel ids, in `layout` order. `#layout` is `$state`,
+   * so a caller reading this inside a Svelte `$derived`/template — even
+   * through the `PanelsBridge` indirection `bind()` sets up — establishes a
+   * reactive dependency on every later layout change, not just the value at
+   * bind time (the `panels:chips` live-props requirement). */
+  get minimized(): readonly string[] {
+    return this.#layout.expanded.minimized;
   }
 
   /** Applies a `LayoutOp` — from an engine gesture (`PanelHost`'s `eng.onOp`)
@@ -151,5 +160,13 @@ export class PanelsController implements PanelsApi {
     } else {
       this.dispatch({ op: "minimize", id });
     }
+  }
+
+  // --- PanelsChipsView ---
+
+  /** Restores a minimized panel (docks it to a new "right" group, mirroring
+   * `applyOp`'s `restore` op) — the `panel-dock` chip strip's click handler. */
+  restore(id: string): void {
+    this.dispatch({ op: "restore", id });
   }
 }

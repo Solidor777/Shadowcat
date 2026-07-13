@@ -50,6 +50,10 @@ test("place a token via the tool rail, then drag it", async ({ page }) => {
   const host = page.locator(".stage-host");
   await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
 
+  // The Assets panel starts minimized (M12a interim default); restore it from
+  // the statusbar's dock-chip strip before uploading.
+  await page.getByTestId("chip-assets:panel").click();
+
   // Upload an image asset (the token art).
   await page
     .getByTestId("asset-upload")
@@ -88,6 +92,10 @@ test("author an animated (frame-list) actor token; it places without error", asy
   const host = page.locator(".stage-host");
   await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
 
+  // The Assets panel starts minimized (M12a interim default); restore it from
+  // the statusbar's dock-chip strip before uploading.
+  await page.getByTestId("chip-assets:panel").click();
+
   // Upload two frames for the animated actor.
   await page
     .getByTestId("asset-upload")
@@ -105,6 +113,10 @@ test("author an animated (frame-list) actor token; it places without error", asy
   await page.getByRole("button", { name: /leave world/i }).click();
   await page.getByRole("button", { name: /Animated Actor World/ }).click();
   await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  // The Actors panel also starts minimized; restore it (the panel layout persisted
+  // across leave/re-enter, so Assets is already docked from the restore above).
+  await page.getByTestId("chip-actors:panel").click();
 
   // Author an animated (frame-list) actor via the Actors panel. Scoped to `.actors`
   // (ActorsPanel's root section) since the Factions/Conditions panels reuse the same

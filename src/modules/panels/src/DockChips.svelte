@@ -11,7 +11,7 @@
     meta,
     onRestore,
   }: {
-    minimized: string[];
+    minimized: readonly string[];
     meta: ReadonlyMap<string, PanelMeta>;
     onRestore: (id: string) => void;
   } = $props();

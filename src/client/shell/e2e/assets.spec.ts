@@ -17,7 +17,9 @@ test("upload an image, see the thumbnail, replace it, then delete it", async ({ 
   await page.getByLabel("New world name").fill("Asset World");
   await page.getByRole("button", { name: "Create world" }).click();
 
-  // In-world: the Assets panel is in the sidebar.
+  // In-world: the Assets panel starts minimized (M12a interim default); restore
+  // it from the statusbar's dock-chip strip.
+  await page.getByTestId("chip-assets:panel").click();
   await expect(page.getByRole("heading", { name: "Assets" })).toBeVisible();
 
   // Upload.

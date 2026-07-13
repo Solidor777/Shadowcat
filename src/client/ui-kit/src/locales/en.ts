@@ -152,8 +152,6 @@ export const en: Messages = {
   "gameSettings.chat.hyperlinks": "Hyperlinks",
   "gameSettings.chat.linkPreviews": "Link previews",
   "gameSettings.chat.linkPreviewsDefault": "Default (on when hyperlinks enabled)",
-  "sidebar.collapse": "Collapse sidebar",
-  "sidebar.expand": "Expand sidebar",
   "chat.tab": "Chat",
   "chat.channels": "Channels",
   "chat.all": "All",

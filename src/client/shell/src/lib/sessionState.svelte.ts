@@ -69,17 +69,6 @@ export function setLastWorld(id: string | null): void {
   schedulePersist();
 }
 
-export function getActiveTab(world: string): string | null {
-  return state.worlds[world]?.activeTab ?? null;
-}
-
-export function setActiveTab(world: string, id: string): void {
-  const w = (state.worlds[world] ??= {});
-  if (w.activeTab === id) return;
-  w.activeTab = id;
-  schedulePersist();
-}
-
 export function getPanelLayout(world: string): unknown | null {
   return state.worlds[world]?.panelLayout ?? null;
 }

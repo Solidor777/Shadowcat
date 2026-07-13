@@ -34,8 +34,6 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     leaveWorld: over.leaveWorld ?? (() => {}),
     logout: over.logout ?? (async () => {}),
     uiState: over.uiState ?? {
-      getActiveTab: () => null,
-      setActiveTab: () => {},
       getPanelLayout: () => null,
       setPanelLayout: () => {},
     },

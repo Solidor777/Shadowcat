@@ -4,7 +4,7 @@ import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
 import type { TokenSelection } from "./tokenSelection.svelte";
-import type { PanelsApi } from "./panelsBridge";
+import type { PanelsApi, PanelsChipsView } from "./panelsBridge";
 
 /**
  * Ambient app state contributed components read via Svelte context. Carries the
@@ -98,22 +98,18 @@ export interface AppContext {
   /** Log out of the server session and return to the pre-world (login) view. */
   logout: () => Promise<void>;
   /** Narrow per-world UI-state seam. The shell owns storage/persistence; this
-   * seam only reads/writes the current world's slice. `getActiveTab`/
-   * `setActiveTab` persist the tabbed-sidebar's active tab.
-   * TODO: remove `getActiveTab`/`setActiveTab` once the panel host fully
-   * replaces the tabbed sidebar.
-   * `getPanelLayout`/`setPanelLayout` persist the panel host's dock/size/order
-   * blob (opaque to this seam — the panel host owns its shape). */
+   * seam only reads/writes the current world's slice. `getPanelLayout`/
+   * `setPanelLayout` persist the panel host's dock/size/order blob (opaque to
+   * this seam — the panel host owns its shape). */
   uiState: {
-    getActiveTab(): string | null;
-    setActiveTab(id: string): void;
     getPanelLayout(): unknown | null;
     setPanelLayout(blob: unknown): void;
   };
-  /** Imperative panel-host seam (open/close/focus/toggle by panel id). No-ops
-   * (with a one-time console warning) until the panel host binds; see
-   * `PanelsBridge`. */
-  panels: PanelsApi;
+  /** Imperative panel-host seam (open/close/focus/toggle by panel id) plus a
+   * live read-only view (`minimized`/`metaMap`/`restore`) for surfaces that
+   * render a panel-dock strip elsewhere. No-ops/empty (with a one-time console
+   * warning on a write call) until the panel host binds; see `PanelsBridge`. */
+  panels: PanelsApi & PanelsChipsView;
 }
 
 /** Context key; exported only so test fixtures can seed an AppContext. */

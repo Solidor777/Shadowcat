@@ -3,7 +3,7 @@
 // components) and the `panels` Module registration below.
 import { PANEL_CONTRACT, type Module } from "@shadowcat/core";
 import PanelHost from "./PanelHost.svelte";
-import DockChips from "./DockChips.svelte";
+import DockChipsContribution from "./DockChipsContribution.svelte";
 
 export * from "./layout/tree";
 export * from "./layout/persist";
@@ -15,22 +15,21 @@ export { PanelsController, regsForRole, type PanelsBridgeLike, type PanelsContro
 export { default as PanelHost } from "./PanelHost.svelte";
 export { default as CompactSwitcher } from "./CompactSwitcher.svelte";
 export { default as DockChips } from "./DockChips.svelte";
+export { default as DockChipsContribution } from "./DockChipsContribution.svelte";
 
 /** Panel-manager module: hosts the dockable panel surface into core-ui's
  * singleton `panel-host` region and the minimized-chips strip into
  * statusbar's singleton `panel-dock` region, and in turn provides the multi
  * `shadowcat.panel` contract every panel module (chat, assets, actors, ...)
- * contributes into — the panel-contract mirror of how the sidebar module
- * owns the `sidebar`/`sidebar-host` contract pair.
+ * contributes into.
  *
- * `register` runs in the framework-neutral `ModuleContext` (no AppContext:
- * no role, no `uiState`, no `PanelsBridge`), so it cannot construct the
- * `PanelsController` that owns persisted layout state — `PanelHost` builds
- * its own controller lazily at mount, from AppContext, once it has one.
- * TODO: give the `panels:chips` contribution live props (minimized ids +
- * restore callback) once the `panel-dock` surface is real; that needs a
- * cross-layer seam sharing ONE `PanelsController` between this contribution
- * and `PanelHost`'s, which doesn't exist yet. */
+ * `register` runs in the framework-neutral `ModuleContext` (no AppContext: no
+ * role, no `uiState`, no `PanelsBridge`), so it cannot construct the
+ * `PanelsController` that owns persisted layout state itself. `PanelHost`
+ * builds its own controller lazily at mount, from AppContext, and binds it
+ * into the shell's shared `PanelsBridge` (`ctx.panels`); `DockChipsContribution`
+ * reads the SAME bridge reactively, so the `panel-dock` chip strip stays live
+ * without needing its own controller instance. */
 export const panels: Module = {
   manifest: {
     id: "panels",
@@ -48,7 +47,7 @@ export const panels: Module = {
     ctx.contributions.contribute({
       id: "panels:chips",
       contract: "shadowcat.surface:panel-dock",
-      component: DockChips,
+      component: DockChipsContribution,
     });
   },
 };

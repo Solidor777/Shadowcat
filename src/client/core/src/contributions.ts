@@ -6,15 +6,6 @@
 /** One provider or many for a surface contract. */
 export type Cardinality = "singleton" | "multi";
 
-/** Optional tab metadata a tabbed host (e.g. the sidebar) renders for a contribution.
- * Plain data — framework-neutral. `labelKey` is an i18n key the HOST resolves at
- * render (locale-reactive); `gmOnly` tabs are hidden from non-GM users by the host. */
-export interface ContributionTab {
-  icon: string;
-  labelKey: string;
-  gmOnly?: boolean;
-}
-
 /** Dock zone a panel targets under the panel-manager host. */
 export type ZoneId = "right" | "bottom" | "left";
 
@@ -25,9 +16,8 @@ export type DefaultPlacement =
   | { kind: "minimized" };
 
 /** Panel metadata for the `shadowcat.panel` contract (M12a panel-manager host).
- * Plain data — framework-neutral, mirrors `ContributionTab`'s host-resolves-i18n
- * shape. Coexists with `tab`/`ContributionTab` during the M12a transition; no
- * runtime reads both fields on the same contribution. */
+ * Plain data — framework-neutral. `labelKey` is an i18n key the HOST resolves at
+ * render (locale-reactive); `gmOnly` panels are hidden from non-GM users by the host. */
 export interface PanelMeta {
   icon: string;
   labelKey: string;
@@ -47,7 +37,6 @@ export interface Contribution {
   props?: Record<string, unknown>;
   /** Opaque host-rendered component handle. */
   component: unknown;
-  tab?: ContributionTab;
   panel?: PanelMeta;
 }
 

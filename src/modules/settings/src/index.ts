@@ -1,19 +1,25 @@
-import type { Module } from "@shadowcat/core";
+import { PANEL_CONTRACT, type Module } from "@shadowcat/core";
 import Settings from "./Settings.svelte";
 
-/** Settings panel (role, locale switcher, leave-world, logout). Requires core-ui's
- * sidebar region; contributes Settings at order 6 (after game-settings' 5) so
- * chat's order 0 stays the sole default tab (TabbedSurface picks the first
- * visible contribution when no activeId matches). */
+/** Settings panel (role, locale switcher, leave-world, logout). Requires the
+ * panel-manager's contract; contributes Settings at order 6 (after
+ * game-settings' 5) so chat's order 0 stays the sole default docked panel,
+ * minimized by default. */
 export const settings: Module = {
   manifest: {
     id: "settings",
     version: "0.1.0",
     dependencies: { "core-ui": "^0.1.0" },
-    requires: ["shadowcat.surface:sidebar"],
+    requires: [PANEL_CONTRACT],
     provides: [],
   },
   register(ctx) {
-    ctx.contributions.contribute({ id: "settings:sidebar", contract: "shadowcat.surface:sidebar", order: 6, component: Settings, tab: { icon: "🔧", labelKey: "settings.tab" } });
+    ctx.contributions.contribute({
+      id: "settings:panel",
+      contract: PANEL_CONTRACT,
+      order: 6,
+      component: Settings,
+      panel: { icon: "🔧", labelKey: "settings.tab", defaultPlacement: { kind: "minimized" } },
+    });
   },
 };

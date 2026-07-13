@@ -51,10 +51,9 @@ export function listWorldMembers(world: string): Promise<WorldMember[]> {
  * the client owns the structure. */
 export interface UiState {
   global: { locale: string; lastWorld: string | null };
-  // TODO: drop `activeTab` once the panel-manager host replaces the tabbed sidebar.
   // `panelLayout` is an opaque blob owned by @shadowcat/module-panels' persistence
   // codec (encodeLayout/decodeLayout) — the shell never inspects its shape.
-  worlds: Record<string, { activeTab?: string; panelLayout?: unknown }>;
+  worlds: Record<string, { panelLayout?: unknown }>;
 }
 
 function defaultUiState(): UiState {

@@ -5,8 +5,6 @@ import {
   loadSessionState,
   getSessionState,
   setLastWorld,
-  getActiveTab,
-  setActiveTab,
   getPanelLayout,
   setPanelLayout,
   flushSessionState,
@@ -53,30 +51,6 @@ test("a locale change persists the new locale", async () => {
   expect(put.mock.calls.at(-1)?.[0].global.locale).toBe("zz");
 });
 
-test("getActiveTab returns null for a world with no recorded state", async () => {
-  vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
-    worlds: {},
-  });
-  await loadSessionState();
-  expect(getActiveTab("w1")).toBeNull();
-});
-
-test("setActiveTab records the tab per-world and persists (debounced)", async () => {
-  vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
-    worlds: {},
-  });
-  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
-  await loadSessionState();
-  setActiveTab("w1", "chat");
-  expect(getActiveTab("w1")).toBe("chat");
-  expect(getActiveTab("w2")).toBeNull();
-  await flushSessionState();
-  expect(put).toHaveBeenCalled();
-  expect(put.mock.calls.at(-1)?.[0].worlds.w1?.activeTab).toBe("chat");
-});
-
 test("getPanelLayout returns null for a world with no recorded state", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
     global: { locale: "en", lastWorld: null },
@@ -86,7 +60,7 @@ test("getPanelLayout returns null for a world with no recorded state", async () 
   expect(getPanelLayout("w1")).toBeNull();
 });
 
-test("setPanelLayout records the blob per-world and schedules the same debounced persist as setActiveTab", async () => {
+test("setPanelLayout records the blob per-world and schedules a debounced persist", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
     global: { locale: "en", lastWorld: null },
     worlds: {},

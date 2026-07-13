@@ -4,7 +4,7 @@
   import { consoleLogger } from "@shadowcat/core";
   import { logout } from "./api";
   import { navigate } from "./route.svelte";
-  import { getActiveTab, setActiveTab, getPanelLayout, setPanelLayout } from "./sessionState.svelte";
+  import { getPanelLayout, setPanelLayout } from "./sessionState.svelte";
   import type { WorldSession } from "./worldSession.svelte";
 
   // TODO: bind the real panel host once it mounts; until then calls warn-once and no-op.
@@ -43,8 +43,6 @@
       delete: (id) => session.deleteChatMessage(id),
     },
     uiState: {
-      getActiveTab: () => getActiveTab(session.world!),
-      setActiveTab: (id) => setActiveTab(session.world!, id),
       getPanelLayout: () => getPanelLayout(session.world!),
       setPanelLayout: (blob) => setPanelLayout(session.world!, blob),
     },

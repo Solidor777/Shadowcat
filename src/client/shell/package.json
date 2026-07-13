@@ -21,7 +21,7 @@
     "@shadowcat/module-factions": "workspace:*",
     "@shadowcat/module-game-settings": "workspace:*",
     "@shadowcat/module-scene-tools": "workspace:*",
-    "@shadowcat/module-sidebar": "workspace:*",
+    "@shadowcat/module-panels": "workspace:*",
     "@shadowcat/types": "workspace:^",
     "@shadowcat/ui-kit": "workspace:*"
   },

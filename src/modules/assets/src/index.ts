@@ -1,17 +1,24 @@
-import type { Module } from "@shadowcat/core";
+import { PANEL_CONTRACT, type Module } from "@shadowcat/core";
 import Assets from "./Assets.svelte";
 
-/** Asset panel (upload / grid / replace / delete). Requires core-ui's sidebar
- * region; contributes Assets at order 1 (after chat's order 0). */
+/** Asset panel (upload / grid / replace / delete). Requires the panel-manager's
+ * contract; contributes Assets at order 1 (after chat's order 0), minimized by
+ * default (M12a interim; M12b's launcher flips this to launcher-only). */
 export const assets: Module = {
   manifest: {
     id: "assets",
     version: "0.1.0",
     dependencies: { "core-ui": "^0.1.0" },
-    requires: ["shadowcat.surface:sidebar"],
+    requires: [PANEL_CONTRACT],
     provides: [],
   },
   register(ctx) {
-    ctx.contributions.contribute({ id: "assets:sidebar", contract: "shadowcat.surface:sidebar", order: 1, component: Assets, tab: { icon: "🖼️", labelKey: "assets.tab" } });
+    ctx.contributions.contribute({
+      id: "assets:panel",
+      contract: PANEL_CONTRACT,
+      order: 1,
+      component: Assets,
+      panel: { icon: "🖼️", labelKey: "assets.tab", defaultPlacement: { kind: "minimized" } },
+    });
   },
 };

@@ -6,7 +6,8 @@ test("core-ui declares the region surfaces and contributes the layout into root"
   const provided = (coreUi.manifest.provides ?? []).map((p) => p.contract);
   expect(provided).toContain("shadowcat.surface:root");
   expect(provided).toContain("shadowcat.surface:topbar");
-  expect(provided).toContain("shadowcat.surface:sidebar-host");
+  expect(provided).toContain("shadowcat.surface:panel-host");
+  expect(provided).not.toContain("shadowcat.surface:sidebar-host");
   expect(provided).not.toContain("shadowcat.surface:sidebar");
 
   const contributions = new ContributionRegistry();

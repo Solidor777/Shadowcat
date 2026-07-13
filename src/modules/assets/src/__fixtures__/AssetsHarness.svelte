@@ -33,7 +33,7 @@
     chat: { send: () => {}, edit: () => {}, delete: () => {} },
     leaveWorld: () => {},
     logout: async () => {},
-    uiState: { getActiveTab: () => null, setActiveTab: () => {}, getPanelLayout: () => null, setPanelLayout: () => {} },
+    uiState: { getPanelLayout: () => null, setPanelLayout: () => {} },
     panels: new PanelsBridge(silentLogger),
   });
 </script>

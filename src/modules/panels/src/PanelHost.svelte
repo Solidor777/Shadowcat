@@ -1,10 +1,10 @@
 <script lang="ts">
   import { untrack, type Component } from "svelte";
-  import { getAppContext, sizeClass, type PanelsApi } from "@shadowcat/ui-kit";
+  import { getAppContext, sizeClass, Surface } from "@shadowcat/ui-kit";
   import { consoleLogger, type Logger } from "@shadowcat/core";
   import type { EngineAdapter } from "./engine/adapter";
   import { FakeEngine } from "./engine/fake";
-  import { PanelsController } from "./controller.svelte";
+  import { PanelsController, type PanelsBridgeLike } from "./controller.svelte";
   import CompactSwitcher from "./CompactSwitcher.svelte";
   import DockChips from "./DockChips.svelte";
 
@@ -33,12 +33,13 @@
         role: ctx.role,
         getPanelLayout: () => ctx.uiState.getPanelLayout(),
         setPanelLayout: (blob) => ctx.uiState.setPanelLayout(blob),
-        // `ctx.panels` is documented (`AppContext.panels`) as the concrete
-        // `PanelsBridge` instance; `PanelsApi` intentionally omits `bind` (a
-        // proxy-rebind affordance, not part of the general contract other
-        // callers use), so this narrow cast at the sole binding site brings
-        // it into scope.
-        bridge: ctx.panels as unknown as { bind(impl: PanelsApi): void },
+        // `AppContext.panels` is typed as `PanelsApi & PanelsChipsView`, which
+        // intentionally omits `bind` (a proxy-rebind affordance, not part of
+        // the general contract other callers use). This cast rests on
+        // composition-root convention, not the type system: `Table.svelte` is
+        // the sole place that constructs the concrete `PanelsBridge` and
+        // assigns it to `ctx.panels`, so this is the sole binding site.
+        bridge: ctx.panels as unknown as PanelsBridgeLike,
         logger: log,
         // The controller already logs a reset via `logger.warn`; `onReset` is
         // the seam a visible toast (e.g. a statusbar live region) hangs off
@@ -190,7 +191,13 @@
     {/each}
   </div>
 
-  <div class="stage" bind:this={stageEl}></div>
+  <!-- The always-present canvas/stage content (module-stage's contribution
+       into core-ui's singleton `shadowcat.surface:stage`) lives inside the
+       engine's reserved stage well — never a draggable/closable panel; see
+       `STAGE_ID`/`classifyDrop`'s stage vetoes. -->
+  <div class="stage" bind:this={stageEl}>
+    <Surface contract="shadowcat.surface:stage" />
+  </div>
 
   <div class="engine-host" bind:this={hostEl} hidden={sizeClass() !== "expanded"}></div>
 
@@ -221,6 +228,10 @@
   }
   .staging {
     display: none;
+  }
+  .stage {
+    height: 100%;
+    width: 100%;
   }
   .engine-host {
     flex: 1;

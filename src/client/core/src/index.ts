@@ -81,4 +81,3 @@ export { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget
 export type { EffectiveActor, ConditionTarget, TokenBox } from "./actor";
 export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, CHAT_SETTINGS_DOC_TYPE, MAX_MESSAGE_CHARS, MessageKindSchema, DieRecordSchema, RollOutcomeSchema, ChatSegmentSchema, ChatMessageSystemSchema, parseMessageSystem, isKnownSegment, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc } from "./chat-docs";
 export type { MessageKind, DieRecord, RollOutcome, ChatSegment, UnknownSegment, ChatMessageSystem, ChatChannel, ChannelRegistrySystem, DiceSettingsSystem, ChatSettingsSystem } from "./chat-docs";
-export type { ContributionTab } from "./contributions";

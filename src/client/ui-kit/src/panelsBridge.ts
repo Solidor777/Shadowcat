@@ -5,7 +5,7 @@
 // late-attachment shape, but the panel host attaches via `bind` (a single
 // swap-in, not attach/detach), so calls before `bind` warn once (not silently
 // forever) rather than passing an undetected no-op through the whole session.
-import type { Logger } from "@shadowcat/core";
+import type { Logger, PanelMeta } from "@shadowcat/core";
 
 export interface PanelsApi {
   open(id: string): void;
@@ -14,14 +14,24 @@ export interface PanelsApi {
   toggle(id: string): void;
 }
 
-export class PanelsBridge implements PanelsApi {
-  #impl: PanelsApi | null = null;
+/** Read-only live view of the bound panel host's layout, for a surface that
+ * renders somewhere else entirely (e.g. the statusbar's `panel-dock` chip
+ * strip) — the panel-manager module's `PanelsController` implements this
+ * alongside `PanelsApi`, and both are bound in the same `bind()` call. */
+export interface PanelsChipsView {
+  readonly minimized: readonly string[];
+  readonly metaMap: ReadonlyMap<string, PanelMeta>;
+  restore(id: string): void;
+}
+
+export class PanelsBridge implements PanelsApi, PanelsChipsView {
+  #impl: (PanelsApi & PanelsChipsView) | null = null;
   #warned = false;
 
   constructor(private readonly logger: Logger) {}
 
   /** Bind the real panel-host implementation; subsequent calls delegate. */
-  bind(impl: PanelsApi): void {
+  bind(impl: PanelsApi & PanelsChipsView): void {
     this.#impl = impl;
   }
 
@@ -49,5 +59,24 @@ export class PanelsBridge implements PanelsApi {
   toggle(id: string): void {
     if (!this.#impl) return this.#warnOnce();
     this.#impl.toggle(id);
+  }
+
+  /** Live minimized-panel ids; reads through to the bound controller's `$state`
+   * so a caller reading this inside a Svelte `$derived`/template establishes a
+   * reactive dependency on layout changes made after `bind()`, from any
+   * surface. Empty until bound. */
+  get minimized(): readonly string[] {
+    return this.#impl?.minimized ?? [];
+  }
+
+  /** Live panel metadata map (icon/labelKey), gmOnly-filtered by the bound
+   * controller. Empty until bound. */
+  get metaMap(): ReadonlyMap<string, PanelMeta> {
+    return this.#impl?.metaMap ?? new Map();
+  }
+
+  restore(id: string): void {
+    if (!this.#impl) return this.#warnOnce();
+    this.#impl.restore(id);
   }
 }

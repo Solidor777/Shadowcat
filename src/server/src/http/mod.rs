@@ -865,10 +865,10 @@ pub(crate) mod tests {
 
         let valid = serde_json::json!([
             { "module_id": "sidebar", "version": "1.0.0",
-              "provides": [{ "contract": "shadowcat.surface:sidebar", "cardinality": "singleton" }],
+              "provides": [{ "contract": "example.surface:widget", "cardinality": "singleton" }],
               "requires": [] },
             { "module_id": "combat", "version": "1.0.0",
-              "provides": [], "requires": ["shadowcat.surface:sidebar"] }
+              "provides": [], "requires": ["example.surface:widget"] }
         ]);
 
         // A non-GM cannot read or write.
@@ -891,7 +891,7 @@ pub(crate) mod tests {
             .json();
         assert_eq!(
             got[0]["provides"][0]["contract"],
-            "shadowcat.surface:sidebar"
+            "example.surface:widget"
         );
 
         // Dangling requires (no provider) is rejected.
@@ -907,9 +907,9 @@ pub(crate) mod tests {
         // Two singleton providers of the same contract is rejected.
         let dup_singleton = serde_json::json!([
             { "module_id": "a", "version": "1.0.0",
-              "provides": [{ "contract": "shadowcat.surface:sidebar", "cardinality": "singleton" }], "requires": [] },
+              "provides": [{ "contract": "example.surface:widget", "cardinality": "singleton" }], "requires": [] },
             { "module_id": "b", "version": "1.0.0",
-              "provides": [{ "contract": "shadowcat.surface:sidebar", "cardinality": "singleton" }], "requires": [] }
+              "provides": [{ "contract": "example.surface:widget", "cardinality": "singleton" }], "requires": [] }
         ]);
         gm.put(&format!("/api/worlds/{world_id}/contracts"))
             .json(&dup_singleton)
@@ -930,9 +930,9 @@ pub(crate) mod tests {
         // is a cardinality contradiction and is rejected.
         let mixed_cardinality = serde_json::json!([
             { "module_id": "a", "version": "1.0.0",
-              "provides": [{ "contract": "shadowcat.surface:sidebar", "cardinality": "singleton" }], "requires": [] },
+              "provides": [{ "contract": "example.surface:widget", "cardinality": "singleton" }], "requires": [] },
             { "module_id": "b", "version": "1.0.0",
-              "provides": [{ "contract": "shadowcat.surface:sidebar", "cardinality": "multi" }], "requires": [] }
+              "provides": [{ "contract": "example.surface:widget", "cardinality": "multi" }], "requires": [] }
         ]);
         gm.put(&format!("/api/worlds/{world_id}/contracts"))
             .json(&mixed_cardinality)
