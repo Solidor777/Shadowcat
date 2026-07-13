@@ -8,12 +8,9 @@
 //! these caps, entropy seeding, or chat settings; those are transport policy
 //! that belongs here, not in `dice/`.
 //!
-//! `execute_roll`/`validate_formula`/`BodyChunk`/`scan_body` are not yet
-//! called from `handle_send_message` — the chat ingest stage that wires this
-//! module in is a following checkpoint task. Until then every item here is
-//! reachable only from this module's own tests, so the crate's dead-code lint
-//! is suppressed at the module level; remove this once ingest calls in.
-#![allow(dead_code)]
+//! `execute_roll`/`validate_formula`/`BodyChunk`/`scan_body` are called from
+//! `handle_send_message`'s roll stage (`chat/mod.rs`) — the sole ingest path
+//! that may execute untrusted dice notation.
 
 use uuid::Uuid;
 
@@ -148,8 +145,11 @@ pub(crate) fn entropy_seed() -> u64 {
     ((bits >> 64) as u64) ^ (bits as u64)
 }
 
+// `pub`, not `pub(crate)`: `SendMessageError::Roll` (a publicly-reachable
+// error variant) carries this type, so it must be at least as visible as
+// that public enum, even though the `rolls` module itself stays private.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RollError {
+pub enum RollError {
     Parse(ParseError),
     TooManyDice(u32),
     TooManyRecords(usize),

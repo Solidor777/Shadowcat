@@ -185,6 +185,11 @@ mod tests {
             .map(|s| match s {
                 Segment::Text { text } => text.clone(),
                 Segment::Html { sanitized_html } => sanitized_html.clone(),
+                // `sanitize()` (the function under test) never produces a
+                // roll segment -- those are `chat::rolls`'s own producers.
+                Segment::RollEmbed { .. } | Segment::RollButton { .. } => {
+                    unreachable!("sanitize() never produces roll segments")
+                }
             })
             .collect()
     }

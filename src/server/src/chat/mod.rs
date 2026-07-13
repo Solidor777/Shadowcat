@@ -40,6 +40,7 @@ use crate::data::document::{DocRole, Document, PermissionSet, Scope, WorldRole};
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::DataError;
+use crate::dice::RollOutcome;
 use crate::ws::room::Room;
 use crate::ws::PingRateLimiter;
 
@@ -126,7 +127,28 @@ pub enum Segment {
     /// A run of ammonia-sanitized HTML (safe by construction; the client renders
     /// it via innerHTML). Produced only by `sanitize` (chat/sanitize.rs).
     Html { sanitized_html: String },
-    // Reserved, produced later: RollEmbed (M11d), PreviewCard (c-4), DocLink (M11d).
+    /// A completed roll: the formula plus its full deterministic outcome.
+    /// `outcome` embeds the evaluated `RollOutcome` (records included — the
+    /// natural faces make the roll reproducible/auditable from the stored
+    /// segment alone). The `RollSpec`/`RawRoll` are deliberately NOT stored —
+    /// recalculate-from-chat is out of scope pre-release, so there is no
+    /// data-continuity promise to a future recalc feature. Produced only by
+    /// `chat::rolls::execute_roll`, called from `handle_send_message`'s roll
+    /// stage; never produced on edit (rolls are immutable, see
+    /// `handle_edit_message`).
+    RollEmbed {
+        formula: String,
+        outcome: RollOutcome,
+    },
+    /// An unexecuted, parse-and-cap-validated formula the card renders as a
+    /// button; clicking it sends a fresh `/roll <formula>` `SendMessage`
+    /// (a new, independently-attributed roll). `label` is plain data (never
+    /// rendered as markup).
+    RollButton {
+        formula: String,
+        label: Option<String>,
+    },
+    // Reserved, produced later: PreviewCard (c-4), DocLink (M11d).
 }
 
 /// The c-1 producer: wrap raw input as a single literal-text segment. Rich
@@ -254,6 +276,36 @@ pub fn build_message_doc(
     }
 }
 
+/// Author a `MessageKind::System` error notice for a failed roll attempt:
+/// whispered to the sender only (same channel), owned by the sender (so they
+/// may delete it), one `Text` segment with the error's player-presentable
+/// `Display` text. This is `MessageKind::System`'s first real producer —
+/// deliberately NOT `parse_command` (which can never emit `System`, proven by
+/// its own exhaustive test); a roll failure is authored directly here instead.
+fn build_roll_error_notice(
+    world_id: Uuid,
+    sender: Uuid,
+    channel: String,
+    err: &rolls::RollError,
+    now: i64,
+) -> Document {
+    build_message_doc(
+        world_id,
+        sender,
+        channel,
+        None,
+        Audience::Whisper {
+            recipients: vec![sender],
+        },
+        MessageKind::System,
+        vec![Segment::Text {
+            text: err.to_string(),
+        }],
+        None,
+        now,
+    )
+}
+
 /// Max characters accepted for a single message's raw content (pre-producer).
 pub const MAX_MESSAGE_CHARS: usize = 4096;
 
@@ -293,6 +345,16 @@ pub enum SendMessageError {
     Forbidden,
     /// An edit attempted to change audience (a `/w` inside an edit). Frozen.
     AudienceLocked,
+    /// A roll formula failed to parse, exceeded a wire-boundary cap, or a
+    /// message body's inline-roll scan failed. Never returned to the caller
+    /// as a hard error — `handle_send_message` catches this and authors a
+    /// `MessageKind::System` notice instead (see `build_roll_error_notice`);
+    /// kept as a variant for completeness/testability of the mapping.
+    Roll(rolls::RollError),
+    /// A roll's outcome is immutable once sent: editing a message whose
+    /// STORED `kind == Roll`, or editing content that itself parses to
+    /// `kind == Roll`, are both rejected outright (no re-rolling by edit).
+    RollImmutable,
 }
 
 /// Server-authoritative message ingest: flood-limit, validate, CONSTRUCT the
@@ -388,8 +450,118 @@ pub async fn handle_send_message(
     if parsed.body.trim().is_empty() {
         return Err(SendMessageError::Empty);
     }
-    let policy = resolve_content_policy(repo, room.world_id).await;
-    let content_segments = sanitize(&parsed.body, &policy);
+    // Roll stage: `parsed.kind`/an inline `[[...]]`/`[[roll:...]]` span in the
+    // body determines whether (part of) the body executes as dice notation
+    // before sanitize runs. INVARIANT: exactly ONE message is authored per
+    // send attempt — a roll/scan failure authors a `MessageKind::System`
+    // notice INSTEAD of the intended message (never in addition), so the
+    // flood budget already consumed above stays 1:1 with the attempt.
+    // `handle_edit_message` never reaches this stage: a roll's outcome is
+    // immutable once sent, and an edit's `[[...]]` spans stay literal text.
+    let content_segments = if parsed.kind == MessageKind::Roll {
+        let dice_ctx = resolve_dice_context(repo, room.world_id).await;
+        match rolls::execute_roll(&parsed.body, dice_ctx) {
+            Ok((formula, outcome)) => vec![Segment::RollEmbed { formula, outcome }],
+            Err(e) => {
+                let notice = build_roll_error_notice(room.world_id, ctx.user_id, channel, &e, now);
+                return room
+                    .publish(
+                        repo,
+                        ctx,
+                        vec![Operation::Create { doc: notice }],
+                        now,
+                        WriteOrigin::Client,
+                    )
+                    .await
+                    .map_err(SendMessageError::Data);
+            }
+        }
+    } else {
+        // Normal/Emote: scan for inline rolls/buttons. The all-Text case is
+        // the byte-identical fast path over the whole body (unchanged from
+        // before this checkpoint); a mixed body sanitizes each Text chunk
+        // independently and interleaves roll segments in scan order.
+        let chunks = match rolls::scan_body(&parsed.body) {
+            Ok(c) => c,
+            Err(e) => {
+                let notice = build_roll_error_notice(room.world_id, ctx.user_id, channel, &e, now);
+                return room
+                    .publish(
+                        repo,
+                        ctx,
+                        vec![Operation::Create { doc: notice }],
+                        now,
+                        WriteOrigin::Client,
+                    )
+                    .await
+                    .map_err(SendMessageError::Data);
+            }
+        };
+        if let [rolls::BodyChunk::Text(_)] = chunks.as_slice() {
+            let policy = resolve_content_policy(repo, room.world_id).await;
+            sanitize(&parsed.body, &policy)
+        } else {
+            let policy = resolve_content_policy(repo, room.world_id).await;
+            // Ambient dice context is resolved at most once, lazily, only when
+            // a roll/button chunk actually appears in this body.
+            let mut dice_ctx: Option<crate::dice::ParseContext> = None;
+            let mut segments = Vec::with_capacity(chunks.len());
+            let mut roll_err = None;
+            for chunk in chunks {
+                match chunk {
+                    rolls::BodyChunk::Text(t) => segments.extend(sanitize(t, &policy)),
+                    rolls::BodyChunk::Inline(formula) => {
+                        if dice_ctx.is_none() {
+                            dice_ctx = Some(resolve_dice_context(repo, room.world_id).await);
+                        }
+                        match rolls::execute_roll(formula, dice_ctx.unwrap()) {
+                            Ok((formula, outcome)) => {
+                                segments.push(Segment::RollEmbed { formula, outcome })
+                            }
+                            Err(e) => {
+                                roll_err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                    rolls::BodyChunk::Button { formula, label } => {
+                        if dice_ctx.is_none() {
+                            dice_ctx = Some(resolve_dice_context(repo, room.world_id).await);
+                        }
+                        // Stored/validated formula is trimmed — the `roll:`/`|`
+                        // split leaves incidental whitespace (e.g.
+                        // "[[roll: 1d20|Attack]]") that must not survive into
+                        // the button's stored formula or the click-to-send text.
+                        let formula = formula.trim();
+                        match rolls::validate_formula(formula, dice_ctx.unwrap()) {
+                            Ok(()) => segments.push(Segment::RollButton {
+                                formula: formula.to_string(),
+                                label: label.map(|s| s.to_string()),
+                            }),
+                            Err(e) => {
+                                roll_err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(e) = roll_err {
+                let notice = build_roll_error_notice(room.world_id, ctx.user_id, channel, &e, now);
+                return room
+                    .publish(
+                        repo,
+                        ctx,
+                        vec![Operation::Create { doc: notice }],
+                        now,
+                        WriteOrigin::Client,
+                    )
+                    .await
+                    .map_err(SendMessageError::Data);
+            }
+            segments
+        }
+    };
     // `source` = raw author input for client edit-prefill, with a parsed /w
     // prefix STRIPPED — an unmodified resubmit of the prefill must not trip
     // handle_edit_message's AudienceLocked rejection (edit always rejects /w).
@@ -489,6 +661,15 @@ pub async fn handle_edit_message(
     if sys.deleted_at.is_some() {
         return Err(SendMessageError::NotFound);
     }
+    // Roll immutability (anti-cheat): a roll's outcome is fixed at send time.
+    // The STORED kind check alone is sufficient to cover every audience —
+    // including `Whisper`, whose body is NEVER parsed as a command at send
+    // time either (see `handle_send_message`'s literal-body treatment), so a
+    // whisper's stored `kind` can never BE `Roll` in the first place; this
+    // check is what actually blocks a PUBLIC/GM-only roll from being edited.
+    if sys.kind == MessageKind::Roll {
+        return Err(SendMessageError::RollImmutable);
+    }
 
     // A stored WHISPER's literal body may legitimately contain "/w ..." or any
     // other leading command token — `handle_send_message` never parses a
@@ -509,6 +690,14 @@ pub async fn handle_edit_message(
         // Audience is frozen on edit — a /w in an edit is rejected, not applied.
         if parsed.whisper_to.is_some() {
             return Err(SendMessageError::AudienceLocked);
+        }
+        // Roll immutability: editing content INTO a roll (e.g. a plain message
+        // edited to "/roll 1d6") is rejected the same as editing a message
+        // that already IS one — no editing-in-to a roll either. Edits also
+        // never call `scan_body`: an edit's `[[...]]` spans stay literal text
+        // through the ordinary sanitize path below (never re-executed).
+        if parsed.kind == MessageKind::Roll {
+            return Err(SendMessageError::RollImmutable);
         }
         (parsed.kind, parsed.body)
     };

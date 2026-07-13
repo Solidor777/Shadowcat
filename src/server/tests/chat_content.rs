@@ -574,22 +574,26 @@ async fn whisper_with_no_body_text_is_rejected_as_empty() {
 
 /// `/roll 2d6+3` driven through the full `handle_send_message` pipeline
 /// (not just the pure parser unit test in `commands.rs`) stores
-/// `MessageKind::Roll` with the dice expression verbatim as a literal
-/// `Segment::Text` — `Fixture::new()` seeds no `chat-settings` doc, so the
-/// default content policy (markdown/html both off) applies and the
-/// expression is never run through the markdown/HTML producer.
+/// `MessageKind::Roll` with the formula EXECUTED (M11d-2): content is one
+/// `Segment::RollEmbed`, never a literal `Text` of the unexecuted expression
+/// — see `chat_rolls.rs` for the full roll-execution integration matrix.
 #[tokio::test]
-async fn roll_command_produces_roll_kind_with_verbatim_expression() {
+async fn roll_command_produces_roll_kind_with_executed_embed() {
     let f = Fixture::new().await;
     let cmd = f.send("/roll 2d6+3").await.unwrap();
     let sys = f.stored_message_system(&cmd).await;
     assert_eq!(sys.kind, MessageKind::Roll);
-    assert_eq!(
-        sys.content,
-        vec![Segment::Text {
-            text: "2d6+3".into()
-        }]
-    );
+    match sys.content.as_slice() {
+        [Segment::RollEmbed { formula, outcome }] => {
+            assert_eq!(formula, "2d6+3");
+            assert!(
+                (5..=15).contains(&outcome.total),
+                "2d6+3 total out of range: {}",
+                outcome.total
+            );
+        }
+        other => panic!("expected one RollEmbed segment, got {other:?}"),
+    }
 }
 
 #[tokio::test]
