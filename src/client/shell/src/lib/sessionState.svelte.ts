@@ -69,6 +69,17 @@ export function setLastWorld(id: string | null): void {
   schedulePersist();
 }
 
+export function getActiveTab(world: string): string | null {
+  return state.worlds[world]?.activeTab ?? null;
+}
+
+export function setActiveTab(world: string, id: string): void {
+  const w = (state.worlds[world] ??= {});
+  if (w.activeTab === id) return;
+  w.activeTab = id;
+  schedulePersist();
+}
+
 /** Force any pending persist to run now (test/teardown helper). */
 export async function flushSessionState(): Promise<void> {
   if (timer) {

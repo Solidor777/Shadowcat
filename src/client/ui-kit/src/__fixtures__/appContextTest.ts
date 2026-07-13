@@ -31,6 +31,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     onPing: over.onPing ?? (() => () => {}),
     leaveWorld: over.leaveWorld ?? (() => {}),
     logout: over.logout ?? (async () => {}),
+    uiState: over.uiState ?? { getActiveTab: () => null, setActiveTab: () => {} },
   };
   return new Map([[__APP_CONTEXT_KEY__, ctx]]);
 }

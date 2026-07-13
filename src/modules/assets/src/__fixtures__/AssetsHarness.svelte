@@ -32,6 +32,7 @@
     onPing: () => () => {},
     leaveWorld: () => {},
     logout: async () => {},
+    uiState: { getActiveTab: () => null, setActiveTab: () => {} },
   });
 </script>
 

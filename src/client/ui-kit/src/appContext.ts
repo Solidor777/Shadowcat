@@ -79,6 +79,13 @@ export interface AppContext {
   leaveWorld: () => void;
   /** Log out of the server session and return to the pre-world (login) view. */
   logout: () => Promise<void>;
+  /** Narrow per-world UI-state seam (currently: the sidebar's active tab). The
+   * shell owns storage/persistence; this seam only reads/writes the current
+   * world's slice. */
+  uiState: {
+    getActiveTab(): string | null;
+    setActiveTab(id: string): void;
+  };
 }
 
 /** Context key; exported only so test fixtures can seed an AppContext. */

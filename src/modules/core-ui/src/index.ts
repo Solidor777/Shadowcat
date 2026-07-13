@@ -17,7 +17,7 @@ export const coreUi: Module = {
       { contract: "shadowcat.surface:stage", cardinality: "singleton" },
       { contract: "shadowcat.surface:statusbar", cardinality: "singleton" },
       { contract: "shadowcat.surface:toolrail", cardinality: "multi" },
-      { contract: "shadowcat.surface:sidebar", cardinality: "multi" },
+      { contract: "shadowcat.surface:sidebar-host", cardinality: "singleton" },
     ],
   },
   register(ctx) {

@@ -5,6 +5,8 @@ import {
   loadSessionState,
   getSessionState,
   setLastWorld,
+  getActiveTab,
+  setActiveTab,
   flushSessionState,
   flushOnUnload,
 } from "./sessionState.svelte";
@@ -47,6 +49,30 @@ test("a locale change persists the new locale", async () => {
   i18n.setLocale("zz");
   await flushSessionState();
   expect(put.mock.calls.at(-1)?.[0].global.locale).toBe("zz");
+});
+
+test("getActiveTab returns null for a world with no recorded state", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {},
+  });
+  await loadSessionState();
+  expect(getActiveTab("w1")).toBeNull();
+});
+
+test("setActiveTab records the tab per-world and persists (debounced)", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {},
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  setActiveTab("w1", "chat");
+  expect(getActiveTab("w1")).toBe("chat");
+  expect(getActiveTab("w2")).toBeNull();
+  await flushSessionState();
+  expect(put).toHaveBeenCalled();
+  expect(put.mock.calls.at(-1)?.[0].worlds.w1?.activeTab).toBe("chat");
 });
 
 test("flushOnUnload keepalive-persists a change made during the cooldown", async () => {
