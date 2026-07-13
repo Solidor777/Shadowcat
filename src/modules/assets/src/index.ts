@@ -12,6 +12,6 @@ export const assets: Module = {
     provides: [],
   },
   register(ctx) {
-    ctx.contributions.contribute({ id: "assets:sidebar", contract: "shadowcat.surface:sidebar", order: 1, component: Assets });
+    ctx.contributions.contribute({ id: "assets:sidebar", contract: "shadowcat.surface:sidebar", order: 1, component: Assets, tab: { icon: "🖼️", labelKey: "assets.tab" } });
   },
 };

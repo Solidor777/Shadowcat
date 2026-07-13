@@ -13,6 +13,6 @@ export const conditions: Module = {
     provides: [],
   },
   register(ctx) {
-    ctx.contributions.contribute({ id: "conditions:sidebar", contract: "shadowcat.surface:sidebar", order: 4, component: ConditionsPanel });
+    ctx.contributions.contribute({ id: "conditions:sidebar", contract: "shadowcat.surface:sidebar", order: 4, component: ConditionsPanel, tab: { icon: "✨", labelKey: "conditions.tab" } });
   },
 };

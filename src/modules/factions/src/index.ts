@@ -12,6 +12,6 @@ export const factions: Module = {
     provides: [],
   },
   register(ctx) {
-    ctx.contributions.contribute({ id: "factions:sidebar", contract: "shadowcat.surface:sidebar", order: 3, component: FactionsPanel });
+    ctx.contributions.contribute({ id: "factions:sidebar", contract: "shadowcat.surface:sidebar", order: 3, component: FactionsPanel, tab: { icon: "🚩", labelKey: "factions.tab" } });
   },
 };

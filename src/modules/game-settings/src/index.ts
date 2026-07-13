@@ -14,6 +14,6 @@ export const gameSettings: Module = {
     provides: [],
   },
   register(ctx) {
-    ctx.contributions.contribute({ id: "game-settings:sidebar", contract: "shadowcat.surface:sidebar", order: 5, component: GameSettingsPanel });
+    ctx.contributions.contribute({ id: "game-settings:sidebar", contract: "shadowcat.surface:sidebar", order: 5, component: GameSettingsPanel, tab: { icon: "⚙️", labelKey: "gameSettings.tab", gmOnly: true } });
   },
 };
