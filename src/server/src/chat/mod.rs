@@ -24,6 +24,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 mod commands;
+mod rolls;
 mod sanitize;
 mod settings;
 mod shortcodes;
