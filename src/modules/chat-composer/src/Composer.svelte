@@ -15,8 +15,13 @@
   let textarea = $state<HTMLTextAreaElement | undefined>(undefined);
 
   const trimmed = $derived(value.trim());
-  const overLimit = $derived(value.length > MAX_MESSAGE_CHARS);
-  const showCounter = $derived(value.length > COUNTER_THRESHOLD);
+  // Cap/counter/send-gating derive from the TRIMMED length, matching what send()
+  // actually transmits and what the server validates (chat/mod.rs MAX_MESSAGE_CHARS).
+  // Known, fail-safe divergence: JS .length counts UTF-16 code units while the server
+  // counts Unicode scalar values (chars().count()) — the client can only over-block
+  // near the cap, never under-block, so this asymmetry is safe.
+  const overLimit = $derived(trimmed.length > MAX_MESSAGE_CHARS);
+  const showCounter = $derived(trimmed.length > COUNTER_THRESHOLD);
   const canSend = $derived(trimmed.length > 0 && !overLimit);
 
   const placeholder = $derived(audience.kind === "gm_only" ? t("chat.composer.placeholderGm") : t("chat.composer.placeholder", { name: placeholderName }));
@@ -39,6 +44,9 @@
   }
 
   function onKeydown(e: KeyboardEvent): void {
+    // Ignore Enter while an IME composition is in progress (CJK/Japanese/Korean input) —
+    // the Enter here commits the composed candidate, it must not also send the message.
+    if (e.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       send();
@@ -61,7 +69,7 @@
   <button type="button" onclick={send} disabled={!canSend}>{t("chat.composer.send")}</button>
 </div>
 {#if showCounter}
-  <div class="counter" class:over={overLimit}>{t("chat.composer.count", { used: value.length, max: MAX_MESSAGE_CHARS })}</div>
+  <div class="counter" class:over={overLimit}>{t("chat.composer.count", { used: trimmed.length, max: MAX_MESSAGE_CHARS })}</div>
 {/if}
 
 <style lang="scss">
@@ -86,7 +94,7 @@
     text-align: right;
     font-size: 0.85em;
     &.over {
-      color: var(--color-danger, #c0392b);
+      color: var(--danger);
     }
   }
   .visually-hidden {

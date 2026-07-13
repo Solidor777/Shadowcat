@@ -86,6 +86,24 @@ describe("Composer — sending", () => {
     expect(send).toHaveBeenCalledWith({ channel: "general", content: "/roll 1d6", audience: publicAudience });
   });
 
+  it("allows sending when trimmed length is under the cap even if raw padded length is over", async () => {
+    const { send } = renderComposer();
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    const padding = " ".repeat(MAX_MESSAGE_CHARS);
+    const paddedValue = `${padding}hello${padding}`;
+    await fireEvent.input(textarea, { target: { value: paddedValue } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledWith({ channel: "general", content: "hello", audience: publicAudience });
+  });
+
+  it("does not send on Enter while an IME composition is in progress", async () => {
+    const { send } = renderComposer();
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "こんにちは" } });
+    await fireEvent.keyDown(textarea, { key: "Enter", isComposing: true });
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("clicking Send also sends", async () => {
     const { send } = renderComposer();
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
