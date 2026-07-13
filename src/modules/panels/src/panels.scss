@@ -1,0 +1,34 @@
+// Minimal wiring: imports dockview's base stylesheet, then maps its CSS
+// custom properties onto our design tokens so the docking chrome matches the
+// rest of the app instead of dockview's shipped themes. A full stage-well
+// skin (drop overlays, tab-group chips, floating titlebar) is future work;
+// this file only wires the two token systems together. Imported once, as a
+// side effect, from `engine/dockview.ts` — never paid for by `FakeEngine`-only
+// hosts.
+// Referenced by relative path (not a bare "pkg/..." specifier) — dart-sass's
+// CLI/Vite compiler resolves plain npm-package specifiers only via the
+// newer Node "pkg:" importer scheme, which is not universally wired through
+// every consumer of this stylesheet; a relative path into the module's own
+// `node_modules/dockview-core` (a direct dependency, always present there)
+// resolves everywhere without extra sass config.
+@use "../node_modules/dockview-core/dist/styles/dockview.css";
+
+.sc-dockview-root {
+  --dv-group-view-background-color: var(--surface-base);
+  --dv-tabs-and-actions-container-background-color: var(--surface-raised);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--surface-base);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--surface-raised);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--surface-raised);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--surface-overlay);
+  --dv-tab-divider-color: var(--border);
+  --dv-activegroup-visiblepanel-tab-color: var(--text-primary);
+  --dv-activegroup-hiddenpanel-tab-color: var(--text-muted);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--text-muted);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--text-muted);
+  --dv-separator-border: var(--border);
+  --dv-paneview-header-border-color: var(--border);
+  --dv-drag-over-border-color: var(--accent);
+  --dv-active-sash-color: var(--accent);
+
+  height: 100%;
+}

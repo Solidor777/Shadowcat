@@ -175,6 +175,31 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   deps into a `LinkPreviewDeps`-style struct to shrink both signatures and reduce call-site
   arg-order risk.
 
+## Client / panels (M12a Task 6 — DockviewEngine)
+- TODO: Live resize (`resizeZone`/`resizeGroup`) translation — no per-group/per-zone
+  dimension-change event was found on `DockviewGroupPanelApi`/`DockviewApi` within this task's
+  scope; a persisted zone/group size currently only takes effect on load, not from a live
+  user drag-resize gesture. Find the right event (or poll `ResizeObserver` on each group's
+  element) and wire it into `onOp`.
+- TODO: Floating-panel position/size sync in `DockviewEngine.apply()` for an ALREADY-floating
+  panel — creation is handled (`api.addPanel({..., floating: {...}})`), but a live re-drag or
+  resize of an existing floating window is not mirrored back into the tree, so the persisted
+  `Rect` can drift from what the user sees.
+- TODO: `DockviewEngine#toDropSite`'s fallback branches (a drop's target group falling outside
+  the engine's own zone bookkeeping; `onDidDrop`'s translation, which has no `kind` field unlike
+  `onWillDrop` and so approximates one) are best-effort, not exhaustively verified against every
+  dockview drag path. Real drag-and-drop cannot be simulated under jsdom (no native
+  `DragEvent`/`PointerEvent` gesture), so this is untested beyond the pure `classifyDrop`
+  policy tests + programmatic-API jsdom tests (adoption, idempotence, W3 stage-restore).
+  Recommend a manual browser QA pass over live drag-and-drop (edge docks, tab-strip drops,
+  float-drags, cross-zone moves) before shipping.
+- TODO: `DockviewEngine.apply()`'s group-identity scheme keys a dockview group id off its
+  first tab's id (`groupIdFor`), not a stable positional/structural id — reordering a group's
+  first tab, or emptying then refilling a group, causes that group to be torn down and
+  recreated rather than patched in place (harmless: content survives via the persistent slot
+  element; only the dockview chrome/tab-order animation resets). A finer, content-independent
+  diff is future work if this churn becomes visible in practice.
+
 ## Chat / link previews (M11d-3)
 - Preview images: v1 stores title+description only. An image URL rendered as `<img src>` would
   make the client fetch it and leak the viewer's IP — the invariant-preserving path is

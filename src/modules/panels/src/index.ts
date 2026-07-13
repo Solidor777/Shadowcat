@@ -6,6 +6,8 @@ export * from "./layout/tree";
 export * from "./layout/persist";
 export type { EngineAdapter } from "./engine/adapter";
 export { FakeEngine } from "./engine/fake";
+export { DockviewEngine } from "./engine/dockview";
+export { classifyDrop, STAGE_ID, type DropSite, type ClassifyResult } from "./engine/policy";
 export { default as PanelHost } from "./PanelHost.svelte";
 export { default as CompactSwitcher } from "./CompactSwitcher.svelte";
 export { default as DockChips } from "./DockChips.svelte";
