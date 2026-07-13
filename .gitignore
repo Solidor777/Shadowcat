@@ -46,3 +46,6 @@ playwright-report/
 
 # Binary runtime asset store (uploaded files land in assets/<uuid>/; icons stay tracked)
 /assets/*/
+
+# Brainstorming visual-companion scratch
+.superpowers/
