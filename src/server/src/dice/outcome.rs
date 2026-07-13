@@ -32,7 +32,17 @@ impl RawRoll {
     /// Append a natural die with a fresh id; returns that id.
     pub fn push(&mut self, kind: DieKind, natural: i32) -> DieId {
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = match self.next_id.checked_add(1) {
+            Some(n) => n,
+            None => {
+                // Unreachable while the chat boundary's roll-record cap bounds any
+                // one roll's die count well below `DieId::MAX`; guard is
+                // defense-in-depth against an id collision that would otherwise
+                // silently alias two distinct dice under the same id.
+                debug_assert!(false, "RawRoll::next_id overflowed DieId::MAX");
+                DieId::MAX
+            }
+        };
         self.dice.push(RawDie { id, kind, natural });
         id
     }
@@ -163,6 +173,20 @@ mod tests {
         assert_eq!(b, 1);
         assert_eq!(r.dice.len(), 2);
         assert_eq!(r.dice[0].natural, 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "next_id overflowed")]
+    fn raw_roll_push_debug_asserts_on_next_id_overflow() {
+        // Debug/test builds have debug_assertions on, so the guard's
+        // debug_assert! fires before the saturating fallback would run;
+        // this proves the guard actually triggers at the boundary rather
+        // than silently wrapping.
+        let mut r = RawRoll {
+            next_id: DieId::MAX,
+            ..Default::default()
+        };
+        r.push(DieKind::Numeric { min: 1, max: 6 }, 1);
     }
 
     fn labeled_record(label: &str, value: i32, kept: bool) -> DieRecord {

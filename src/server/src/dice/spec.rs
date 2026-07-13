@@ -9,6 +9,7 @@ pub type DieId = u32;
 /// `is_ordered`, M11b-3 §9) iff EVERY face has `value: Some`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Face {
+    #[serde(default)]
     pub value: Option<i32>,
     pub symbols: Vec<Symbol>,
 }
@@ -187,7 +188,9 @@ pub enum Direction {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tier {
     pub margin_offset: i32,
+    #[serde(default)]
     pub label: Option<String>,
+    #[serde(default)]
     pub tier_value: Option<i32>,
 }
 
@@ -226,6 +229,7 @@ pub struct CritFail {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TotalConfig {
     /// Margin reference; `None` => report the bare total, no classification.
+    #[serde(default)]
     pub difficulty: Option<i32>,
     /// Ladder over `margin = oriented(total, difficulty)`. Empty => default 2-rung pass/fail.
     pub tiers: Vec<Tier>,
@@ -237,10 +241,13 @@ pub struct SuccessConfig {
     /// Per-die target (comparator + threshold) — REQUIRED in this mode.
     pub success: SuccessRule,
     /// Margin reference; `None` => report the bare success count.
+    #[serde(default)]
     pub required_successes: Option<i32>,
     /// Ladder over `margin = net_successes - required_successes`. Empty => default 2-rung.
     pub tiers: Vec<Tier>,
+    #[serde(default)]
     pub crit_success: Option<CritSuccess>,
+    #[serde(default)]
     pub crit_fail: Option<CritFail>,
     /// Expertise budget (M11b-2): points distributed across the pooled kept dice
     /// to maximize net successes (tie-break net counters). 0 = off.
@@ -420,5 +427,81 @@ mod tests {
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert_eq!(spec, serde_json::from_str::<RollSpec>(&json).unwrap());
+    }
+
+    #[test]
+    fn face_deserializes_with_missing_value_key() {
+        let mut value = serde_json::to_value(Face {
+            value: Some(3),
+            symbols: vec!["x".into()],
+        })
+        .unwrap();
+        value.as_object_mut().unwrap().remove("value");
+        let face: Face = serde_json::from_value(value).unwrap();
+        assert_eq!(face.value, None);
+    }
+
+    #[test]
+    fn tier_deserializes_with_missing_label_and_tier_value_keys() {
+        let mut value = serde_json::to_value(Tier {
+            margin_offset: 0,
+            label: Some("x".into()),
+            tier_value: Some(1),
+        })
+        .unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.remove("label");
+        obj.remove("tier_value");
+        let tier: Tier = serde_json::from_value(value).unwrap();
+        assert_eq!(tier.label, None);
+        assert_eq!(tier.tier_value, None);
+    }
+
+    #[test]
+    fn total_config_deserializes_with_missing_difficulty_key() {
+        let mut value = serde_json::to_value(TotalConfig {
+            difficulty: Some(10),
+            tiers: vec![],
+        })
+        .unwrap();
+        value.as_object_mut().unwrap().remove("difficulty");
+        let cfg: TotalConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(cfg.difficulty, None);
+    }
+
+    #[test]
+    fn success_config_deserializes_with_missing_optional_keys() {
+        // The TODO'd partial-JSON gap: a client-authored SuccessConfig omitting
+        // required_successes/crit_success/crit_fail must still deserialize,
+        // defaulting each to None rather than failing the whole roll.
+        let full = SuccessConfig {
+            success: SuccessRule::Numeric {
+                comp: Comparator::Gte,
+                target: 5,
+            },
+            required_successes: Some(3),
+            tiers: vec![],
+            crit_success: Some(CritSuccess {
+                trigger: CritTrigger::AtLeast(6),
+                extra_successes: 1,
+                positive_counter: 1,
+            }),
+            crit_fail: Some(CritFail {
+                trigger: CritTrigger::AtLeast(1),
+                lost: 1,
+                negative_counter: 1,
+                allow_negative: false,
+            }),
+            expertise: 2,
+        };
+        let mut value = serde_json::to_value(full).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.remove("required_successes");
+        obj.remove("crit_success");
+        obj.remove("crit_fail");
+        let cfg: SuccessConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(cfg.required_successes, None);
+        assert_eq!(cfg.crit_success, None);
+        assert_eq!(cfg.crit_fail, None);
     }
 }

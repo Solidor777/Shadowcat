@@ -1,4 +1,4 @@
-use crate::dice::notation::lexer::{lex, Token};
+use crate::dice::notation::lexer::{describe_token, lex, Token};
 use crate::dice::notation::{ModeKind, ParseContext, ParseError};
 use crate::dice::spec::{
     BinOp, Comparator, DiceGroup, DieKind, Direction, ExplodeKind, Expr, GroupModifier, Mode,
@@ -37,7 +37,7 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
     };
     let expr = p.expr()?;
     if p.pos != p.toks.len() {
-        return Err(ParseError::Trailing(format!("{:?}", p.toks[p.pos])));
+        return Err(ParseError::Trailing(p.toks[p.pos].to_string()));
     }
 
     // Explicit cs/cf forces SuccessCount; otherwise the ambient mode governs.
@@ -98,7 +98,10 @@ impl P {
     fn expect_int(&mut self) -> Result<i32, ParseError> {
         match self.bump() {
             Some(Token::Int(n)) => Ok(n),
-            other => Err(ParseError::Unexpected(format!("{other:?}, expected int"))),
+            other => Err(ParseError::Unexpected(format!(
+                "expected a number, found {}",
+                describe_token(other.as_ref())
+            ))),
         }
     }
 
@@ -149,7 +152,10 @@ impl P {
                 let e = self.expr()?;
                 match self.bump() {
                     Some(Token::RParen) => Ok(e),
-                    other => Err(ParseError::Unexpected(format!("{other:?}, expected )"))),
+                    other => Err(ParseError::Unexpected(format!(
+                        "expected ')', found {}",
+                        describe_token(other.as_ref())
+                    ))),
                 }
             }
             Some(Token::Int(_)) => {
@@ -185,7 +191,10 @@ impl P {
                     Ok(Expr::Const(n))
                 }
             }
-            other => Err(ParseError::Unexpected(format!("{other:?}"))),
+            other => Err(ParseError::Unexpected(format!(
+                "expected a number or dice expression, found {}",
+                describe_token(other)
+            ))),
         }
     }
 
@@ -254,7 +263,11 @@ impl P {
                                 target,
                             });
                         }
-                        other => return Err(ParseError::Unexpected(format!("modifier {other}"))),
+                        other => {
+                            return Err(ParseError::Unexpected(format!(
+                                "unknown dice modifier '{other}'"
+                            )))
+                        }
                     }
                 }
                 _ => break,
@@ -283,7 +296,8 @@ impl P {
             Some(Token::Cmp(c)) => Ok((c, self.expect_int()?)),
             Some(Token::Int(n)) => Ok((Comparator::Gte, n)),
             other => Err(ParseError::Unexpected(format!(
-                "{other:?}, expected comparator/int"
+                "expected a comparator or number, found {}",
+                describe_token(other.as_ref())
             ))),
         }
     }

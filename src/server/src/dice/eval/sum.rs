@@ -33,6 +33,24 @@ pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> Rol
     }
 }
 
+/// Accumulates via `checked_add`, saturating at `i64::MAX`/`MIN` instead of
+/// panicking on overflow. Unreachable while the chat boundary's roll-record
+/// cap bounds a group's kept-die count well below what it takes to overflow
+/// `i64`; guard is defense-in-depth against a pathological dice-group count.
+fn checked_add_saturating(acc: i64, next: i64) -> i64 {
+    match acc.checked_add(next) {
+        Some(v) => v,
+        None => {
+            debug_assert!(false, "dice group total overflowed i64");
+            if next >= 0 {
+                i64::MAX
+            } else {
+                i64::MIN
+            }
+        }
+    }
+}
+
 fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
     match expr {
         Expr::Const(c) => *c as i64,
@@ -44,7 +62,7 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
                 .iter()
                 .filter(|r| r.group_index == gi && r.kept)
                 .map(|r| r.value as i64)
-                .sum()
+                .fold(0i64, checked_add_saturating)
         }
         Expr::Bin { op, lhs, rhs } => {
             let l = fold(lhs, raws, next_group);
@@ -291,6 +309,15 @@ mod tests {
         let out = evaluate(&spec, &roll(&spec, &mut NoiseRng::from_seed(1)));
         assert_eq!(out.tier_value, Some(2)); // margin 7 -> highest rung <= 7 is offset 5
         assert!(out.pass.is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "dice group total overflowed")]
+    fn checked_add_saturating_debug_asserts_on_overflow() {
+        // Debug/test builds have debug_assertions on, so the guard's
+        // debug_assert! fires before the saturating fallback would run;
+        // proves the guard actually triggers at the boundary.
+        super::checked_add_saturating(i64::MAX, 1);
     }
 
     #[test]
