@@ -145,6 +145,12 @@ pub struct MessageSystem {
     #[serde(default)]
     pub audience: Audience,
     pub content: Vec<Segment>,
+    /// The author's raw input (post-`/w`-strip), kept for client edit-prefill —
+    /// sanitized `Segment::Html` cannot be reversed to author input. Data only,
+    /// never rendered as markup. MUST be cleared by the delete tombstone with
+    /// `content` (a retained source would leak deleted content).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// Set when the message has been edited (c-3's edit path). Absent (not
     /// `null`) on the wire for an unedited message, so a stored c-1 message
     /// with no marker still round-trips unchanged.
@@ -180,6 +186,7 @@ pub fn build_message_doc(
     audience: Audience,
     kind: MessageKind,
     content: Vec<Segment>,
+    source: Option<String>,
     now: i64,
 ) -> Document {
     let (default, gm_role, mut users) = match &audience {
@@ -203,6 +210,7 @@ pub fn build_message_doc(
         kind,
         audience,
         content,
+        source,
         edited_at: None,
         deleted_at: None,
     };
@@ -312,6 +320,9 @@ pub async fn handle_send_message(
             return Err(SendMessageError::TooLong);
         }
     }
+    // Captured BEFORE `parsed.whisper_to` is consumed below — drives the
+    // /w-prefix strip on `source` (see build_message_doc call).
+    let had_whisper = parsed.whisper_to.is_some();
     // Effective audience: an explicit /w wins; otherwise the c-2 frame field.
     let audience = if let Some(names) = parsed.whisper_to {
         let mut recipients = Vec::with_capacity(names.len());
@@ -360,6 +371,14 @@ pub async fn handle_send_message(
     }
     let policy = resolve_content_policy(repo, room.world_id).await;
     let content_segments = sanitize(&parsed.body, &policy);
+    // `source` = raw author input for client edit-prefill, with a parsed /w
+    // prefix STRIPPED — an unmodified resubmit of the prefill must not trip
+    // handle_edit_message's AudienceLocked rejection (edit always rejects /w).
+    let source = Some(if had_whisper {
+        parsed.body.clone()
+    } else {
+        content.clone()
+    });
     let doc = build_message_doc(
         room.world_id,
         ctx.user_id,
@@ -368,6 +387,7 @@ pub async fn handle_send_message(
         audience,
         parsed.kind,
         content_segments,
+        source,
         now,
     );
     room.publish(
@@ -453,6 +473,9 @@ pub async fn handle_edit_message(
     // channel/user_owner/actor_owner/audience/deleted_at from the stored doc.
     sys.content = segments;
     sys.kind = parsed.kind;
+    // Edit always rejects a /w (AudienceLocked, checked above), so the full
+    // content is always the correct source here — no strip needed.
+    sys.source = Some(content.clone());
     sys.edited_at = Some(now);
     let new_system = serde_json::to_value(&sys)
         .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
@@ -514,6 +537,9 @@ pub async fn handle_delete_message(
     let mut sys: MessageSystem = serde_json::from_value(cur.system.clone())
         .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
     sys.content = Vec::new();
+    // Clear alongside content — a retained source would leak deleted content
+    // through the envelope (edit-prefill data is otherwise unredacted).
+    sys.source = None;
     sys.deleted_at = Some(now);
     let new_system = serde_json::to_value(&sys)
         .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
@@ -558,6 +584,7 @@ mod tests {
             kind: MessageKind::Normal,
             audience: Audience::Public,
             content: plain_text_content("hi"),
+            source: None,
             edited_at: None,
             deleted_at: None,
         };
@@ -584,6 +611,7 @@ mod tests {
             Audience::Public,
             MessageKind::Emote,
             plain_text_content("waves"),
+            None,
             1,
         );
         let sys: MessageSystem = serde_json::from_value(doc.system).unwrap();
@@ -653,6 +681,7 @@ mod tests {
             Audience::Public,
             MessageKind::Normal,
             plain_text_content("hi"),
+            None,
             1234,
         );
         assert_eq!(doc.doc_type, MESSAGE_DOC_TYPE);
@@ -682,6 +711,7 @@ mod tests {
             Audience::Public,
             MessageKind::Normal,
             vec![],
+            None,
             0,
         );
         assert!(ops_target_message(&[Operation::Create {
@@ -697,6 +727,7 @@ mod tests {
             Audience::Public,
             MessageKind::Normal,
             vec![],
+            None,
             0,
         );
         note.doc_type = "note".into();
@@ -716,6 +747,7 @@ mod tests {
             Audience::Public,
             MessageKind::Normal,
             vec![],
+            None,
             0,
         );
         note.doc_type = "note".into();
@@ -727,6 +759,7 @@ mod tests {
             Audience::Public,
             MessageKind::Normal,
             vec![],
+            None,
             0,
         );
         assert!(ops_target_message(&[
@@ -761,6 +794,7 @@ mod tests {
             Audience::Public,
             MessageKind::Normal,
             plain_text_content("hi"),
+            None,
             0,
         );
         assert_eq!(doc.permissions.default, DocRole::Observer);
@@ -782,6 +816,7 @@ mod tests {
             },
             MessageKind::Normal,
             plain_text_content("psst"),
+            None,
             0,
         );
         assert_eq!(doc.permissions.default, DocRole::None);
@@ -806,6 +841,7 @@ mod tests {
             },
             MessageKind::Normal,
             plain_text_content("note to self"),
+            None,
             0,
         );
         assert_eq!(
@@ -826,6 +862,7 @@ mod tests {
             Audience::GmOnly,
             MessageKind::Normal,
             plain_text_content("only the GM sees this"),
+            None,
             0,
         );
         assert_eq!(doc.permissions.default, DocRole::None);
@@ -1211,6 +1248,197 @@ mod tests {
     /// message-specific indexing code, and its body text surfaces in the
     /// snippet.
     #[tokio::test]
+    async fn source_stores_raw_input_for_plain_and_command_messages() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let alice = repo
+            .create_user("alice", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        repo.add_member(w.id, alice, WorldRole::Player)
+            .await
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        // Plain message: source == the full content.
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "hello".into(),
+            None,
+            Audience::Public,
+            100,
+            30,
+        )
+        .await
+        .unwrap();
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        assert_eq!(sys.source, Some("hello".into()));
+
+        // Command message: source keeps the command prefix (re-parses identically).
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "/me waves".into(),
+            None,
+            Audience::Public,
+            101,
+            30,
+        )
+        .await
+        .unwrap();
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        assert_eq!(sys.source, Some("/me waves".into()));
+
+        // Whisper via content /w: source has the /w prefix STRIPPED.
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "/w @alice hi".into(),
+            None,
+            Audience::Public,
+            102,
+            30,
+        )
+        .await
+        .unwrap();
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        assert_eq!(sys.source, Some("hi".into()));
+    }
+
+    #[tokio::test]
+    async fn edit_replaces_source_and_delete_clears_it() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "hello".into(),
+            None,
+            Audience::Public,
+            100,
+            30,
+        )
+        .await
+        .unwrap();
+        let message_id = match &cmd.ops[0] {
+            Operation::Create { doc } => doc.id,
+            other => panic!("expected Create, got {other:?}"),
+        };
+
+        handle_edit_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            message_id,
+            "goodbye".into(),
+            101,
+            30,
+        )
+        .await
+        .unwrap();
+        let stored = repo.get_document(message_id).await.unwrap().unwrap();
+        let sys: MessageSystem = serde_json::from_value(stored.system.clone()).unwrap();
+        assert_eq!(sys.source, Some("goodbye".into()));
+
+        handle_delete_message(&room, &repo, &ctx, &rate, message_id, 102, 30)
+            .await
+            .unwrap();
+        let stored = repo.get_document(message_id).await.unwrap().unwrap();
+        let sys: MessageSystem = serde_json::from_value(stored.system).unwrap();
+        assert_eq!(sys.source, None, "delete tombstone must clear source");
+        assert!(
+            sys.content.is_empty(),
+            "delete tombstone must clear content"
+        );
+    }
+
+    #[test]
+    fn stored_pre_source_message_still_deserializes() {
+        // A stored c-3 (pre-`source`) MessageSystem JSON has no `source` key at all.
+        let j = serde_json::json!({
+            "channel": "all",
+            "user_owner": Uuid::from_u128(1),
+            "kind": "normal",
+            "audience": { "kind": "public" },
+            "content": [],
+        });
+        let sys: MessageSystem = serde_json::from_value(j).unwrap();
+        assert_eq!(sys.source, None);
+    }
+
+    #[tokio::test]
     async fn posted_message_is_searchable_by_members() {
         use crate::auth::role::ServerRole;
         use crate::data::document::WorldRole;
@@ -1249,6 +1477,7 @@ mod tests {
             Audience::Public,
             MessageKind::Normal,
             plain_text_content("banshee wail"),
+            None,
             1,
         );
         r.apply_intent(
