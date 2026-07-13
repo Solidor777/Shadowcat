@@ -2,8 +2,8 @@
   import { untrack, type Component } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass } from "@shadowcat/ui-kit";
-  import { PANEL_CONTRACT, type PanelMeta } from "@shadowcat/core";
-  import { applyOp, defaultLayout, type PanelLayoutV1 } from "./layout/tree";
+  import { PANEL_CONTRACT, consoleLogger, type Logger, type PanelMeta } from "@shadowcat/core";
+  import { applyOp, defaultLayout, prune, type PanelLayoutV1 } from "./layout/tree";
   import type { EngineAdapter } from "./engine/adapter";
   import { FakeEngine } from "./engine/fake";
   import CompactSwitcher from "./CompactSwitcher.svelte";
@@ -13,8 +13,12 @@
    * docking engine can be injected by a caller that owns persisted layout
    * state. `layout` here is derived inline from the current registrations —
    * the seam a layout-owning controller replaces is this `$state` init plus
-   * the `applyOp` reducer calls below, without touching props or markup. */
-  let { engine }: { engine?: EngineAdapter } = $props();
+   * the `applyOp` reducer calls below, without touching props or markup.
+   * `logger` mirrors `PanelsBridge`'s pattern — no logger seam exists on
+   * AppContext, so this component accepts one as an optional prop and falls
+   * back to the production console logger. */
+  let { engine, logger }: { engine?: EngineAdapter; logger?: Logger } = $props();
+  const log = untrack(() => logger ?? consoleLogger());
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -56,10 +60,41 @@
   // remount path; ordinary layout ops never touch it.
   let remountKeys = $state<Map<string, number>>(new Map());
 
+  const knownIds = $derived(new Set(visibleRegs.map((c) => c.id)));
+
+  // Reactively prunes `layout` (dropping any id no longer among `knownIds`)
+  // whenever a registration is added/removed — BEFORE the reconcile effect
+  // below can hand a stale id to `eng.apply`/`slotFor`. Depends only on
+  // `knownIds`, reading `layout`/`remountKeys` via `untrack`, so its own
+  // writes to them cannot re-trigger this same effect (no prune/apply race).
+  $effect(() => {
+    const known = knownIds;
+    const current = untrack(() => layout);
+    layout = prune(current, known);
+    const keys = untrack(() => remountKeys);
+    let changed = false;
+    const nm = new Map(keys);
+    for (const id of [...nm.keys()]) {
+      if (!known.has(id)) {
+        nm.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) remountKeys = nm;
+  });
+
+  function releaseToStaging(el: HTMLElement): void {
+    if (stagingEl && el.parentElement !== stagingEl) stagingEl.appendChild(el);
+  }
+
+  // Never throws on an unknown/removed id (containment for finding 1): a bug
+  // upstream then degrades to a missing panel, not a dead reactive graph.
+  // Returns a detached placeholder that is never appended anywhere visible.
   function slotFor(id: string): HTMLElement {
     const el = slotEls.get(id);
-    if (!el) throw new Error(`panel-host: no slot registered for panel "${id}"`);
-    return el;
+    if (el) return el;
+    log.warn(`panel-host: no slot registered for panel "${id}"; returning a detached placeholder`);
+    return document.createElement("div");
   }
 
   /** Svelte action registering an `{#each}` iteration's slot element under its
@@ -120,15 +155,19 @@
         {#key remountKeys.get(c.id) ?? 0}
           <svelte:boundary onerror={() => {}}>
             <Comp {...(c.props ?? {})} />
-            {#snippet failed(_error, reset)}
+            {#snippet failed(_error, _reset)}
               <div class="crashed" data-testid="crashed-{c.id}">
                 <span>{t("panels.crashed")}</span>
                 <button
                   type="button"
                   data-testid="reload-{c.id}"
                   onclick={() => {
+                    // The {#key} bump below is the sole sanctioned remount
+                    // path: it discards + re-mounts a fresh instance and, in
+                    // doing so, tears down this boundary along with it —
+                    // calling the boundary's own `reset()` too would mount a
+                    // second, immediately-discarded instance first.
                     bumpRemount(c.id);
-                    reset();
                   }}
                 >{t("panels.reload")}</button>
               </div>
@@ -156,6 +195,7 @@
     activeView={layout.compact.activeView}
     meta={metaMap}
     {slotFor}
+    release={releaseToStaging}
     onSwitch={(id) => (layout = applyOp(layout, { op: "compactView", id }))}
   />
 </div>

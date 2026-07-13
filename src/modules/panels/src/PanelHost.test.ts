@@ -32,6 +32,7 @@ const { default: PanelHost } = await import("./PanelHost.svelte");
 const { FakeEngine } = await import("./engine/fake");
 const { default: CountingPanel } = await import("./__fixtures__/CountingPanel.svelte");
 const { default: ThrowingPanel } = await import("./__fixtures__/ThrowingPanel.svelte");
+const { default: CrashOnceCountingPanel } = await import("./__fixtures__/CrashOnceCountingPanel.svelte");
 
 afterEach(() => {
   cleanup();
@@ -174,4 +175,128 @@ test("adoption: after apply, a docked panel's slot element is adopted into the F
   expect(slotEl).toBeTruthy();
   expect(groupEl).toBeTruthy();
   expect(slotEl!.parentElement!.isSameNode(groupEl)).toBe(true);
+});
+
+test("removed-while-docked: disposing a docked contribution prunes it reactively without crashing the host, survivor stays adopted", async () => {
+  const registry = new ContributionRegistry();
+  const disposeA = registry.contribute({
+    id: "a:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "a", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  registry.contribute({
+    id: "b:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "b", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "bottom" } },
+  });
+  const engine = new FakeEngine();
+  const context = setAppContextForTest({ contributions: registry, role: "gm" });
+  render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  expect(() => disposeA()).not.toThrow();
+  await Promise.resolve();
+
+  // Removed id's zone/group is gone entirely from the FakeEngine's tree.
+  expect(engine.groupEl("right", 0)).toBeNull();
+
+  // Host is alive: the survivor is still mounted and adopted into its group.
+  const survivorSlot = screen
+    .getAllByTestId("counting-panel")
+    .map((el) => el.closest('[data-panel="b:panel"]'))
+    .find((el) => el !== null);
+  const survivorGroup = engine.groupEl("bottom", 0);
+  expect(survivorSlot).toBeTruthy();
+  expect(survivorGroup).toBeTruthy();
+  expect(survivorSlot!.parentElement!.isSameNode(survivorGroup)).toBe(true);
+});
+
+test("crash-reload: the sole remount path is the {#key} bump — reset() is not also invoked, so exactly one new mount recovers the panel", async () => {
+  let mounts = 0;
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "crash:panel",
+    contract: PANEL_CONTRACT,
+    component: CrashOnceCountingPanel,
+    props: {
+      onMountFn: () => {
+        mounts++;
+      },
+    },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  const context = setAppContextForTest({ contributions: registry, role: "gm" });
+  render(PanelHost, { context });
+
+  expect(mounts).toBe(1);
+
+  await fireEvent.click(screen.getByTestId("boom-btn"));
+  expect(screen.getByTestId("crashed-crash:panel")).toBeTruthy();
+
+  await fireEvent.click(screen.getByTestId("reload-crash:panel"));
+
+  expect(screen.queryByTestId("crashed-crash:panel")).toBeNull();
+  expect(screen.getByTestId("boom-btn")).toBeTruthy();
+  expect(mounts).toBe(2);
+});
+
+test("compact staging: only the active view is adopted; flipping to expanded releases a launcher-only panel back to staging", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  registry.contribute({
+    id: "launcher:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "l", labelKey: "chat.tab" },
+  });
+  const context = setAppContextForTest({ contributions: registry, role: "gm" });
+  const { container } = render(PanelHost, { context });
+
+  mql.fire(false); // compact
+  await Promise.resolve();
+
+  await fireEvent.click(screen.getByTestId("compact-switch-launcher:panel"));
+  await Promise.resolve();
+
+  const launcherSlot = container.querySelector('[data-panel="launcher:panel"]')!;
+  const stagingEl = container.querySelector(".staging")!;
+  expect(launcherSlot.parentElement!.isSameNode(stagingEl)).toBe(false);
+
+  mql.fire(true); // expanded
+  await Promise.resolve();
+
+  // Never placed in `expanded` (launcher-only), so the engine's reconcile has
+  // no reclaim path of its own for it — CompactSwitcher must release it.
+  expect(launcherSlot.parentElement!.isSameNode(stagingEl)).toBe(true);
+});
+
+test("FakeEngine.init adopts the stageEl into a center-well container", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  const engine = new FakeEngine();
+  const context = setAppContextForTest({ contributions: registry, role: "gm" });
+  const { container } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  const stageEl = container.querySelector(".stage")!;
+  const centerEl = engine.centerEl();
+  expect(centerEl).toBeTruthy();
+  expect(stageEl.parentElement!.isSameNode(centerEl)).toBe(true);
 });

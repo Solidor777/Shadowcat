@@ -4,21 +4,25 @@
 
   /** Bottom switcher for the compact (narrow-viewport) presentation: a full-
    * screen active view plus a tab strip listing every registered panel in
-   * registry order. Adopts slot elements the same way the engine does — every
-   * `order` id is adopted into its content area (display toggled to the
-   * active one) whenever this is the active presentation, and released back
-   * on the next flip (the engine's own `apply` reclaims them on flip-back). */
+   * registry order. Adopts ONLY `activeView`'s slot into its content area;
+   * every other `order` id stays in PanelHost's staging container. `release`
+   * returns the currently adopted slot to staging whenever the active id
+   * changes, this leaves compact presentation, or the component unmounts —
+   * a launcher-only panel (absent from `expanded`) has no other reclaim
+   * path, so ownership of releasing an adopted slot lives here. */
   let {
     order,
     activeView,
     meta,
     slotFor,
+    release,
     onSwitch,
   }: {
     order: string[];
     activeView: string | null;
     meta: ReadonlyMap<string, PanelMeta>;
     slotFor: (id: string) => HTMLElement;
+    release: (el: HTMLElement) => void;
     onSwitch: (id: string) => void;
   } = $props();
 
@@ -26,15 +30,34 @@
   const t = ctx.t;
 
   let contentEl: HTMLElement;
+  let adoptedId: string | null = null;
+  let adoptedEl: HTMLElement | null = null;
+
+  function releaseAdopted(): void {
+    if (adoptedEl) release(adoptedEl);
+    adoptedEl = null;
+    adoptedId = null;
+  }
 
   $effect(() => {
-    if (sizeClass() !== "compact") return;
-    if (!contentEl) return;
-    for (const id of order) {
-      const slot = slotFor(id);
-      if (slot.parentElement !== contentEl) contentEl.appendChild(slot);
-      slot.style.display = id === activeView ? "" : "none";
+    if (sizeClass() !== "compact" || !contentEl) {
+      releaseAdopted();
+      return;
     }
+    if (activeView === adoptedId) return;
+    releaseAdopted();
+    if (activeView !== null) {
+      const slot = slotFor(activeView);
+      if (slot.parentElement !== contentEl) contentEl.appendChild(slot);
+      slot.style.display = "";
+      adoptedEl = slot;
+      adoptedId = activeView;
+    }
+  });
+
+  // No reactive dependencies read: runs once at mount, cleanup fires only on unmount.
+  $effect(() => {
+    return () => releaseAdopted();
   });
 
   function label(id: string): string {

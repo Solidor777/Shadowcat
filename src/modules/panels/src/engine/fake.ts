@@ -19,10 +19,21 @@ export class FakeEngine implements EngineAdapter {
   #floatEls = new Map<string, HTMLElement>(); // key: panel id
   #opListeners = new Set<(op: LayoutOp) => void>();
   #focused: string | null = null;
+  #stageEl: HTMLElement | null = null;
+  #centerEl: HTMLElement | null = null;
 
-  init(host: HTMLElement, slotFor: (id: string) => HTMLElement): void {
+  init(host: HTMLElement, slotFor: (id: string) => HTMLElement, stageEl: HTMLElement): void {
     this.#host = host;
     this.#slotFor = slotFor;
+    // Adopts the shared stage/canvas element into a dedicated center-well
+    // container — faithful to the adapter contract's reserved-layout-space
+    // semantics (real engines lay dock zones out around this well).
+    this.#stageEl = stageEl;
+    const centerEl = document.createElement("div");
+    centerEl.dataset.fakeCenter = "";
+    centerEl.appendChild(stageEl);
+    host.appendChild(centerEl);
+    this.#centerEl = centerEl;
     for (const zone of ZONE_IDS) {
       const el = document.createElement("div");
       el.dataset.zone = zone;
@@ -117,6 +128,16 @@ export class FakeEngine implements EngineAdapter {
     return this.#floatEls.get(id) ?? null;
   }
 
+  /** Test helper: the center-well container the `stageEl` passed to `init` was adopted into. */
+  centerEl(): HTMLElement | null {
+    return this.#centerEl;
+  }
+
+  /** Test helper: the `stageEl` passed to `init` (or null before init/after destroy). */
+  get stageEl(): HTMLElement | null {
+    return this.#stageEl;
+  }
+
   destroy(): void {
     this.#zoneEls.clear();
     this.#groupEls.clear();
@@ -124,5 +145,7 @@ export class FakeEngine implements EngineAdapter {
     this.#opListeners.clear();
     this.#host = null;
     this.#slotFor = null;
+    this.#stageEl = null;
+    this.#centerEl = null;
   }
 }
