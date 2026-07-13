@@ -62,15 +62,40 @@ function actorSystem(over: Partial<ActorSystem> = {}): ActorSystem {
 }
 
 /** A localized `t` that actually interpolates params, needed to assert on chip text
- * (chat.rollPending / chat.whisperTo) whose whole value is parameterized. */
+ * (chat.rollPending / chat.whisperTo / chat.roll.*) whose whole value is parameterized. */
 function fakeT(key: string, params?: Record<string, string | number>): string {
   const templates: Record<string, string> = {
     "chat.rollPending": "🎲 {formula}",
     "chat.whisperTo": "to {names}",
+    "chat.systemBadge": "System",
+    "chat.roll.successes": "{n} successes",
+    "chat.roll.pass": "Success",
+    "chat.roll.fail": "Failure",
   };
   let s = templates[key] ?? key;
   if (params) for (const [k, v] of Object.entries(params)) s = s.replaceAll(`{${k}}`, String(v));
   return s;
+}
+
+/** Mirrors dice::outcome::DieRecord's defaults, overridable per test. */
+function dieRecord(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    value: 4, natural: 4, kept: true, exploded: false,
+    crit_success: false, crit_fail: false, expertise: 0, group_index: 0,
+    label: null, symbols: [],
+    ...over,
+  };
+}
+
+/** Mirrors dice::outcome::RollOutcome's defaults, overridable per test. */
+function rollOutcome(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    total: 4, records: [dieRecord()],
+    successes: null, pass: null, margin: null, tier_label: null, tier_value: null,
+    crit_successes: 0, crit_fails: 0, positive_counter: 0, negative_counter: 0,
+    symbol_counts: {},
+    ...over,
+  };
 }
 
 describe("MessageCard — fail-closed body parse", () => {
@@ -82,6 +107,21 @@ describe("MessageCard — fail-closed body parse", () => {
 
   it("renders nothing for a non-message doc_type", () => {
     const doc = { ...msgDoc("m1", baseSystem()), doc_type: "actor" };
+    const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
+    expect(container.querySelector("article")).toBeNull();
+  });
+
+  it("renders nothing for a malformed roll_embed segment (missing outcome)", () => {
+    // chat-docs.ts's fail-closed pattern: a known-kind segment with a malformed payload
+    // fails BOTH the strict schema AND the unknown-segment rescue (which refuses known
+    // kinds), so the whole message parse fails, not just the one segment.
+    const doc = msgDoc("m1", baseSystem({ kind: "roll", content: [{ kind: "roll_embed", formula: "1d6" }] }));
+    const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
+    expect(container.querySelector("article")).toBeNull();
+  });
+
+  it("renders nothing for a malformed roll_button segment (missing formula)", () => {
+    const doc = msgDoc("m1", baseSystem({ content: [{ kind: "roll_button" }] }));
     const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
     expect(container.querySelector("article")).toBeNull();
   });
@@ -104,7 +144,10 @@ describe("MessageCard — the {@html} boundary", () => {
   });
 
   it("filters out an unknown segment kind without crashing, rendering only known segments", () => {
-    const doc = msgDoc("m1", baseSystem({ content: [{ kind: "text", text: "a" }, { kind: "roll_embed", data: 1 }] }));
+    // "preview_card" is a genuinely unknown kind (per chat-docs.ts's fail-closed pattern, a
+    // malformed roll_embed/roll_button/text/html segment would fail the WHOLE message parse
+    // instead of being rescued here).
+    const doc = msgDoc("m1", baseSystem({ content: [{ kind: "text", text: "a" }, { kind: "preview_card", url: "x" }] }));
     const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
     expect(container.querySelectorAll(".seg-text, .seg-html").length).toBe(1);
     expect(container.textContent).toContain("a");
@@ -221,6 +264,286 @@ describe("MessageCard — emote/roll rendering", () => {
       context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
     });
     expect(container.querySelector(".roll-pending")?.textContent).toBe("🎲 1d20");
+  });
+});
+
+describe("MessageCard — roll block (kind=roll, content = single roll_embed)", () => {
+  it("shows total prominently when successes is null", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [{ kind: "roll_embed", formula: "2d6+1", outcome: rollOutcome({ total: 9 }) }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-formula")?.textContent).toBe("2d6+1");
+    expect(container.querySelector(".roll-total")?.textContent).toBe("9");
+    expect(container.querySelector(".roll-successes")).toBeNull();
+    expect(container.querySelector(".roll-pending")).toBeNull();
+  });
+
+  it("labels the formula line with the localized chat.roll.formula key", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [{ kind: "roll_embed", formula: "2d6+1", outcome: rollOutcome({ total: 9 }) }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-formula")?.getAttribute("aria-label")).toBe("chat.roll.formula");
+  });
+
+  it("falls back to the pending shell (not the block) when the raw content carries an extra unknown segment alongside the roll_embed", () => {
+    // Server invariant: a roll message's content is exactly one RollEmbed. The guard must
+    // check the RAW content length, not the known-segment-filtered length — filtering first
+    // would silently drop the unknown segment and still render the block.
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      source: "/roll 1d6",
+      content: [
+        { kind: "roll_embed", formula: "1d6", outcome: rollOutcome() },
+        { kind: "preview_card", url: "x" },
+      ],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-block")).toBeNull();
+    expect(container.querySelector(".roll-pending")).not.toBeNull();
+  });
+
+  it("shows successes + pass/fail over total when successes is present", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [{ kind: "roll_embed", formula: "3d10", outcome: rollOutcome({ total: 12, successes: 2, pass: true }) }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-successes")?.textContent).toBe("2 successes");
+    expect(container.querySelector(".roll-pass")?.textContent?.trim()).toBe("Success");
+    expect(container.querySelector(".roll-pass.pass")).not.toBeNull();
+    expect(container.querySelector(".roll-total")).toBeNull();
+  });
+
+  it("shows Failure styling when pass is false", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [{ kind: "roll_embed", formula: "3d10", outcome: rollOutcome({ successes: 0, pass: false }) }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-pass")?.textContent?.trim()).toBe("Failure");
+    expect(container.querySelector(".roll-pass.fail")).not.toBeNull();
+  });
+
+  it("shows tier_label instead of pass/fail when present", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [{ kind: "roll_embed", formula: "3d10", outcome: rollOutcome({ successes: 3, pass: true, tier_label: "Critical" }) }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-tier")?.textContent).toBe("Critical");
+    expect(container.querySelector(".roll-pass")).toBeNull();
+  });
+
+  it("marks dropped, crit-success, and crit-fail dice with the right classes", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [{
+        kind: "roll_embed", formula: "4d6dl1",
+        outcome: rollOutcome({
+          records: [
+            dieRecord({ value: 1, kept: false }),
+            dieRecord({ value: 6, crit_success: true }),
+            dieRecord({ value: 1, crit_fail: true }),
+          ],
+        }),
+      }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    const chips = container.querySelectorAll(".die-chip");
+    expect(chips).toHaveLength(3);
+    expect(chips[0].classList.contains("dropped")).toBe(true);
+    expect(chips[1].classList.contains("crit-success")).toBe(true);
+    expect(chips[2].classList.contains("crit-fail")).toBe(true);
+  });
+
+  it("renders a die's label chip and space-joined symbols when present", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [{
+        kind: "roll_embed", formula: "1d20[atk]",
+        outcome: rollOutcome({ records: [dieRecord({ label: "atk", symbols: ["*", "!"] })] }),
+      }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".die-label")?.textContent).toBe("atk");
+    expect(container.querySelector(".die-symbols")?.textContent).toBe("* !");
+  });
+
+  it("renders positive/negative counter rows only when non-zero", () => {
+    const withCounters = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [{ kind: "roll_embed", formula: "5d6", outcome: rollOutcome({ positive_counter: 2, negative_counter: 1 }) }],
+    }));
+    const shown = render(MessageCard, {
+      props: { message: withCounters, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(withCounters), t: fakeT }),
+    });
+    expect(shown.container.querySelector(".roll-counters")).not.toBeNull();
+    expect(shown.container.querySelector(".counter.positive")?.textContent).toBe("+2");
+    expect(shown.container.querySelector(".counter.negative")?.textContent).toBe("-1");
+    shown.unmount();
+
+    const zero = msgDoc("m2", baseSystem({
+      kind: "roll",
+      content: [{ kind: "roll_embed", formula: "5d6", outcome: rollOutcome() }],
+    }));
+    const hidden = render(MessageCard, {
+      props: { message: zero, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(zero), t: fakeT }),
+    });
+    expect(hidden.container.querySelector(".roll-counters")).toBeNull();
+  });
+
+  it("renders symbol_counts rows only when non-empty", () => {
+    const withSymbols = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [{ kind: "roll_embed", formula: "5d6", outcome: rollOutcome({ symbol_counts: { success: 3, advantage: 1 } }) }],
+    }));
+    const shown = render(MessageCard, {
+      props: { message: withSymbols, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(withSymbols), t: fakeT }),
+    });
+    expect(shown.container.querySelector(".roll-symbol-counts")).not.toBeNull();
+    expect(shown.container.querySelectorAll(".symbol-count")).toHaveLength(2);
+    shown.unmount();
+
+    const empty = msgDoc("m2", baseSystem({
+      kind: "roll",
+      content: [{ kind: "roll_embed", formula: "5d6", outcome: rollOutcome() }],
+    }));
+    const hidden = render(MessageCard, {
+      props: { message: empty, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(empty), t: fakeT }),
+    });
+    expect(hidden.container.querySelector(".roll-symbol-counts")).toBeNull();
+  });
+
+  it("a kind=roll message with more than one segment falls back to the pending shell, not the block", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      source: "/roll 1d6",
+      content: [
+        { kind: "roll_embed", formula: "1d6", outcome: rollOutcome() },
+        { kind: "text", text: "extra" },
+      ],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-block")).toBeNull();
+    expect(container.querySelector(".roll-pending")).not.toBeNull();
+  });
+});
+
+describe("MessageCard — inline roll chip (roll_embed inside Normal/Emote content)", () => {
+  it("shows successes over total, with a title tooltip of formula + kept die values", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "normal",
+      content: [
+        { kind: "text", text: "I rolled: " },
+        {
+          kind: "roll_embed", formula: "2d6",
+          outcome: rollOutcome({
+            total: 7, successes: 2,
+            records: [dieRecord({ value: 3, kept: true }), dieRecord({ value: 4, kept: false })],
+          }),
+        },
+      ],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    const chip = container.querySelector(".roll-chip");
+    expect(chip?.textContent).toBe("2");
+    expect(chip?.getAttribute("title")).toBe("2d6: 3");
+    // Not rendered as a block — inline within the normal paragraph.
+    expect(container.querySelector(".roll-block")).toBeNull();
+  });
+
+  it("shows total when successes is null", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "emote",
+      content: [{ kind: "roll_embed", formula: "1d20", outcome: rollOutcome({ total: 15 }) }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-chip")?.textContent).toBe("15");
+  });
+});
+
+describe("MessageCard — roll button", () => {
+  it("sends the exact channel/content on click", async () => {
+    const doc = msgDoc("m1", baseSystem({
+      channel: "ooc",
+      content: [{ kind: "roll_button", formula: "1d20+5", label: "Attack" }],
+    }));
+    const send = vi.fn();
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, chat: { send, edit: () => {}, delete: () => {} } }),
+    });
+    await fireEvent.click(screen.getByText("Attack"));
+    expect(send).toHaveBeenCalledWith({ channel: "ooc", content: "/roll 1d20+5" });
+  });
+
+  it("falls back to the formula as the label when label is absent", () => {
+    const doc = msgDoc("m1", baseSystem({
+      content: [{ kind: "roll_button", formula: "1d20+5" }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    const btn = container.querySelector(".roll-btn");
+    expect(btn?.textContent?.trim()).toBe("1d20+5");
+  });
+});
+
+describe("MessageCard — system notices", () => {
+  it("renders a muted card with the System badge and the plain-text notice body", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "system",
+      content: [{ kind: "text", text: "Roll rejected: too many dice" }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".card.system")).not.toBeNull();
+    expect(container.querySelector(".chip.system-badge")?.textContent).toBe("System");
+    expect(container.querySelector(".seg-text")?.textContent).toBe("Roll rejected: too many dice");
   });
 });
 

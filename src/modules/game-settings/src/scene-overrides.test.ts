@@ -67,7 +67,7 @@ describe("per-scene overrides", () => {
     await fireEvent.change(sel, { target: { value: "" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/fog", old: null, new: null }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/fog", old: true, new: null }] },
     ]);
   });
 
@@ -85,7 +85,7 @@ describe("per-scene overrides", () => {
     await fireEvent.change(sel, { target: { value: "" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/movementRestriction", old: null, new: null }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/movementRestriction", old: "unrestricted", new: null }] },
     ]);
   });
 
@@ -114,7 +114,7 @@ describe("per-scene overrides", () => {
     await fireEvent.change(input, { target: { value: "50" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/system/bounds", old: null, new: { width: 30, height: 50 } }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/system/bounds", old: { width: 30, height: 30 }, new: { width: 30, height: 50 } }] },
     ]);
   });
 
@@ -144,7 +144,7 @@ describe("per-scene overrides", () => {
     await fireEvent.change(sel, { target: { value: "" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/movementModel", old: null, new: null }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/movementModel", old: "continuous", new: null }] },
     ]);
   });
 });

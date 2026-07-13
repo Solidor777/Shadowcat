@@ -1,15 +1,42 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { MAX_MESSAGE_CHARS, type WireAudience } from "@shadowcat/core";
+import { DocumentStore, buildActorDoc, MAX_MESSAGE_CHARS, type WireAudience, type WireCommand, type WireDocument } from "@shadowcat/core";
+import type { WorldRole } from "@shadowcat/types";
 import Composer from "./Composer.svelte";
 
 const publicAudience: WireAudience = { kind: "public" };
 const gmAudience: WireAudience = { kind: "gm_only" };
 
-function renderComposer(opts: { audience?: WireAudience; send?: (o: unknown) => void } = {}) {
-  const send = opts.send ?? vi.fn();
-  const context = setAppContextForTest({ chat: { send, edit: vi.fn(), delete: vi.fn() } });
+const cmd = (ops: WireCommand["ops"]) => ({ seq: 1, world_id: "w1", author: "a", ts: 0, ops });
+function storeWith(...docs: WireDocument[]): DocumentStore {
+  const s = new DocumentStore();
+  s.applyCommand(cmd(docs.map((doc) => ({ op: "create" as const, doc }))));
+  return s;
+}
+
+/** `buildActorDoc` seeds `owner: null` (M10a); tests that need an owned actor
+ * set it directly, mirroring how the server stamps `owner` on Create. */
+function ownedActor(id: string, owner: string, name: string): WireDocument {
+  return { ...buildActorDoc("w1", { name, displayName: name, visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false }, id), owner };
+}
+
+function renderComposer(
+  opts: {
+    audience?: WireAudience;
+    send?: ReturnType<typeof vi.fn<(o: unknown) => void>>;
+    documents?: DocumentStore;
+    role?: WorldRole;
+    selfId?: string;
+  } = {},
+) {
+  const send = opts.send ?? vi.fn<(o: unknown) => void>();
+  const context = setAppContextForTest({
+    chat: { send, edit: vi.fn(), delete: vi.fn() },
+    documents: opts.documents ?? new DocumentStore(),
+    role: opts.role ?? "player",
+    selfId: opts.selfId ?? "u-self",
+  });
   render(Composer, { props: { channel: "general", audience: opts.audience ?? publicAudience, placeholderName: "Alice" }, context });
   return { send };
 }
@@ -122,5 +149,103 @@ describe("Composer — placeholder", () => {
   it("uses the GM placeholder key when audience is gm_only", () => {
     renderComposer({ audience: gmAudience });
     expect(screen.getByPlaceholderText("chat.composer.placeholderGm")).toBeTruthy();
+  });
+});
+
+describe("Composer — speak-as-actor picker", () => {
+  it("defaults to Myself and sends with no actorOwner", async () => {
+    const documents = storeWith(ownedActor("act1", "u-self", "Goblin"));
+    const { send } = renderComposer({ documents });
+    const select = screen.getByLabelText("chat.composer.speakAs") as HTMLSelectElement;
+    expect(select.value).toBe("");
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "hello" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledWith({ channel: "general", content: "hello", audience: publicAudience });
+    const sentArg = send.mock.calls[0][0] as Record<string, unknown>;
+    expect(sentArg.actorOwner).toBeUndefined();
+  });
+
+  it("picking an actor sends actorOwner: {kind: actor, actor_id} exactly", async () => {
+    const documents = storeWith(ownedActor("act1", "u-self", "Goblin"));
+    const { send } = renderComposer({ documents });
+    const select = screen.getByLabelText("chat.composer.speakAs") as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: "act1" } });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "grr" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledWith({
+      channel: "general",
+      content: "grr",
+      audience: publicAudience,
+      actorOwner: { kind: "actor", actor_id: "act1" },
+    });
+  });
+
+  it("a player sees only their own actors, not another player's", () => {
+    const documents = storeWith(ownedActor("act1", "u-self", "Mine"), ownedActor("act2", "u-other", "TheirsNotMine"));
+    renderComposer({ documents, role: "player", selfId: "u-self" });
+    const select = screen.getByLabelText("chat.composer.speakAs") as HTMLSelectElement;
+    const labels = Array.from(select.options).map((o) => o.textContent);
+    expect(labels).toContain("Mine");
+    expect(labels).not.toContain("TheirsNotMine");
+  });
+
+  it("a GM sees every actor regardless of owner", () => {
+    const documents = storeWith(ownedActor("act1", "u-self", "Mine"), ownedActor("act2", "u-other", "TheirsButGmSees"));
+    renderComposer({ documents, role: "gm", selfId: "u-self" });
+    const select = screen.getByLabelText("chat.composer.speakAs") as HTMLSelectElement;
+    const labels = Array.from(select.options).map((o) => o.textContent);
+    expect(labels).toContain("Mine");
+    expect(labels).toContain("TheirsButGmSees");
+  });
+
+  it("reacts to a newly created actor doc appearing in the store", async () => {
+    const documents = new DocumentStore();
+    renderComposer({ documents, role: "player", selfId: "u-self" });
+    const select = screen.getByLabelText("chat.composer.speakAs") as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.textContent)).not.toContain("LateJoiner");
+    documents.applyCommand(cmd([{ op: "create", doc: ownedActor("act9", "u-self", "LateJoiner") }]));
+    await Promise.resolve();
+    expect(Array.from(select.options).map((o) => o.textContent)).toContain("LateJoiner");
+  });
+
+  it("prunes a dangling selection when the selected actor is deleted", async () => {
+    const actor = ownedActor("act1", "u-self", "Goblin");
+    const documents = storeWith(actor);
+    const { send } = renderComposer({ documents });
+    const select = screen.getByLabelText("chat.composer.speakAs") as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: "act1" } });
+    expect(select.value).toBe("act1");
+
+    documents.applyCommand(cmd([{ op: "delete", doc: actor }]));
+    await Promise.resolve();
+
+    expect(select.value).toBe("");
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "hello" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledWith({ channel: "general", content: "hello", audience: publicAudience });
+    const sentArg = send.mock.calls[0][0] as Record<string, unknown>;
+    expect(sentArg.actorOwner).toBeUndefined();
+  });
+
+  it("selection is sticky across a send", async () => {
+    const documents = storeWith(ownedActor("act1", "u-self", "Goblin"));
+    const { send } = renderComposer({ documents });
+    const select = screen.getByLabelText("chat.composer.speakAs") as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: "act1" } });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "first" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    await fireEvent.input(textarea, { target: { value: "second" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(select.value).toBe("act1");
+    expect(send).toHaveBeenLastCalledWith({
+      channel: "general",
+      content: "second",
+      audience: publicAudience,
+      actorOwner: { kind: "actor", actor_id: "act1" },
+    });
   });
 });

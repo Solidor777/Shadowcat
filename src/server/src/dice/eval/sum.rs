@@ -33,10 +33,59 @@ pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> Rol
     }
 }
 
+/// Accumulates via `checked_add`, saturating at `i64::MAX`/`MIN` instead of
+/// panicking on overflow. Unreachable while the chat boundary's roll-record
+/// cap bounds a group's kept-die count well below what it takes to overflow
+/// `i64`; guard is defense-in-depth against a pathological dice-group count.
+fn checked_add_saturating(acc: i64, next: i64) -> i64 {
+    match acc.checked_add(next) {
+        Some(v) => v,
+        None => {
+            debug_assert!(false, "dice group total overflowed i64");
+            if next >= 0 {
+                i64::MAX
+            } else {
+                i64::MIN
+            }
+        }
+    }
+}
+
+/// Saturating `Add`/`Sub`/`Mul` for `Expr::Bin` folds. Unlike
+/// `checked_add_saturating` above (whose overflow is unreachable given the
+/// chat boundary's per-group record cap), a pure-`Const` arithmetic chain
+/// (`2000000000*2000000000*3`) has NO dice groups at all -- `walk_groups`
+/// counts zero, so `chat/rolls.rs`'s `MAX_ROLL_DICE`/`MAX_ROLL_RECORDS` caps
+/// never see it -- and a chain of `Mul`-combined dice groups (`1d10000 *
+/// 1d10000 * ...`) can overflow `i64` even within those caps. Overflow here
+/// is genuinely reachable, so these saturate silently (no `debug_assert!`).
+fn add_saturating(l: i64, r: i64) -> i64 {
+    l.checked_add(r)
+        .unwrap_or(if r >= 0 { i64::MAX } else { i64::MIN })
+}
+
+fn sub_saturating(l: i64, r: i64) -> i64 {
+    l.checked_sub(r)
+        .unwrap_or(if r <= 0 { i64::MAX } else { i64::MIN })
+}
+
+fn mul_saturating(l: i64, r: i64) -> i64 {
+    l.checked_mul(r).unwrap_or(if (l >= 0) == (r >= 0) {
+        i64::MAX
+    } else {
+        i64::MIN
+    })
+}
+
 fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
     match expr {
         Expr::Const(c) => *c as i64,
-        Expr::Neg(inner) => -fold(inner, raws, next_group),
+        // `i64::MIN.checked_neg()` is `None` (its magnitude has no positive
+        // i64 representation); saturate to `i64::MAX` instead of the raw `-`
+        // negation, which is checked-overflow (panics) even in release.
+        Expr::Neg(inner) => fold(inner, raws, next_group)
+            .checked_neg()
+            .unwrap_or(i64::MAX),
         Expr::Dice(_) => {
             let gi = *next_group;
             *next_group += 1;
@@ -44,21 +93,29 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
                 .iter()
                 .filter(|r| r.group_index == gi && r.kept)
                 .map(|r| r.value as i64)
-                .sum()
+                .fold(0i64, checked_add_saturating)
         }
         Expr::Bin { op, lhs, rhs } => {
             let l = fold(lhs, raws, next_group);
             let r = fold(rhs, raws, next_group);
             match op {
-                BinOp::Add => l + r,
-                BinOp::Sub => l - r,
-                BinOp::Mul => l * r,
+                BinOp::Add => add_saturating(l, r),
+                BinOp::Sub => sub_saturating(l, r),
+                BinOp::Mul => mul_saturating(l, r),
                 // Division by zero yields 0 (documented; parser rejects literal `/0`).
                 BinOp::Div => {
                     if r == 0 {
                         0
                     } else {
-                        l / r
+                        // `i64::MIN / -1` is the one division that overflows i64
+                        // (its magnitude has no positive i64 representation) --
+                        // Rust's `/` is checked-overflow even in release, which
+                        // would panic and abort the whole process under
+                        // panic=abort. Reachable from untrusted chat input via a
+                        // pure-const chain (`mul_saturating` can produce an exact
+                        // `i64::MIN`, and `-1` comes from `Expr::Neg`), with zero
+                        // dice groups so the roll-count caps never see it.
+                        l.checked_div(r).unwrap_or(i64::MAX)
                     }
                 }
             }
@@ -69,10 +126,18 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
 #[cfg(test)]
 mod tests {
     use crate::dice::eval::{evaluate, roll};
+    use crate::dice::notation::{self, ModeKind, ParseContext};
     use crate::dice::rng::NoiseRng;
     use crate::dice::spec::{
         BinOp, DiceGroup, DieKind, Direction, Expr, Mode, RollSpec, Tier, TotalConfig,
     };
+
+    fn total_ctx() -> ParseContext {
+        ParseContext {
+            mode: ModeKind::Total,
+            direction: Direction::HighWins,
+        }
+    }
 
     fn total_mode() -> Mode {
         Mode::Total(TotalConfig {
@@ -294,6 +359,15 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "dice group total overflowed")]
+    fn checked_add_saturating_debug_asserts_on_overflow() {
+        // Debug/test builds have debug_assertions on, so the guard's
+        // debug_assert! fires before the saturating fallback would run;
+        // proves the guard actually triggers at the boundary.
+        super::checked_add_saturating(i64::MAX, 1);
+    }
+
+    #[test]
     fn unordered_faces_die_contributes_zero_to_total() {
         use crate::dice::spec::{DiceGroup, DieKind, Face};
         let spec = RollSpec {
@@ -314,5 +388,33 @@ mod tests {
         let raws = roll(&spec, &mut NoiseRng::from_seed(1));
         let out = evaluate(&spec, &raws);
         assert_eq!(out.total, 0);
+    }
+
+    #[test]
+    fn div_i64_min_by_neg_one_saturates_without_panic() {
+        // `2000000000*2000000000*-3` folds via `mul_saturating` to an exact
+        // `i64::MIN` (sign-differing overflow: 4e18 * -3), then `/-1` is the
+        // one division that overflows i64 -- Rust's `/` is checked-overflow
+        // even in release, so this would panic (and, with panic=abort,
+        // abort the whole process) without the `checked_div` guard. Zero
+        // dice groups, so the chat-boundary roll-count caps never apply;
+        // run under the debug profile (overflow-checks on) so reaching a
+        // result at all proves no panic.
+        let spec = notation::parse("2000000000*2000000000*-3/-1", total_ctx()).unwrap();
+        let raws = roll(&spec, &mut NoiseRng::from_seed(1));
+        let out = evaluate(&spec, &raws);
+        assert_eq!(out.total, i64::MAX);
+    }
+
+    #[test]
+    fn neg_over_i64_min_folding_subexpression_saturates_without_panic() {
+        // `2000000000*2000000000*-2000000000` folds via `mul_saturating` to
+        // an exact `i64::MIN`; negating that with raw `-` overflows (no
+        // positive i64 can represent `i64::MIN`'s magnitude) and panics even
+        // in release. `checked_neg` must saturate to `i64::MAX` instead.
+        let spec = notation::parse("-(2000000000*2000000000*-2000000000)", total_ctx()).unwrap();
+        let raws = roll(&spec, &mut NoiseRng::from_seed(1));
+        let out = evaluate(&spec, &raws);
+        assert_eq!(out.total, i64::MAX);
     }
 }

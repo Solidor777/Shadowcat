@@ -27,8 +27,10 @@ overflow guards (its own TODO items):
   random; `CHAIN_CAP=100/die` × 100 dice could reach 10k records — reject oversized results,
   the roll simply fails with a "roll too large" error).
 - `MAX_EXPERTISE = 100` — cap `SuccessConfig.expertise` (the `O(N·E²)` DP DoS vector).
-- `MAX_DIE_SIDES = 10_000` — cap `Numeric.max - min` span (with records ≤1000 and faces ≤10⁴,
-  every i64 sum is overflow-free by construction).
+- `MAX_DIE_SIDES = 10_000` — cap `Numeric.max - min` span (bounds every per-die value; aggregate
+  arithmetic folds — which unbounded `Const` terms and `*` chains can still overflow — saturate
+  via checked ops in `eval/sum.rs`, a buddy-check correction to this spec's original
+  "overflow-free by construction" claim).
 - `DieKind::validate()` called on every parsed group (future-proofs the `Faces{[]}` panic
   surface even though notation can't construct `Faces` today).
 - Dice crate: `RawRoll::push` gets a `checked_add` guard on `next_id` (documented unreachable
@@ -74,6 +76,8 @@ overflow guards (its own TODO items):
 - Edited content never executes inline spans or produces buttons: `[[…]]` in an edit stays
   literal text through the normal sanitize path. One rule — "edits never create roll
   segments" — keeps the whole re-roll-by-edit cheat class closed.
+- An edit is likewise rejected when the stored content already carries any roll segment — an
+  executed inline roll's audit record cannot be erased by editing around it.
 
 ## 3. Ambient dice settings
 
@@ -152,7 +156,9 @@ The composer gains an actor picker (dropdown listing actors the user may speak a
 sending the existing `actor_owner: ActorOwnerRef::Actor{actor_id}` wire field the whole stack
 already supports (storage, redaction, card header rendering all shipped). Per-message, sticky
 per session (local state, not persisted). Token-instance attribution (speak-as-token) stays
-deferred (needs token selection context in chat — logged).
+deferred (needs token selection context in chat — logged). The server validates attribution at
+ingest: an `Actor` ref must name an existing actor doc owned by the sender (GM: any actor);
+`TokenInstance` refs are rejected until speak-as-token ships (fail-closed).
 
 ## 9. Testing strategy
 

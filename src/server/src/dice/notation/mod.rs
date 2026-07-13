@@ -61,3 +61,97 @@ pub enum ParseError {
     /// ASCII printable characters (plus space) except `]`.
     InvalidLabelChar,
 }
+
+/// Player-presentable rendering. `Unexpected`/`Trailing`'s inner `String` is
+/// built at each construction site via `Token`'s own `Display` (see
+/// `lexer::describe_token`), never `{:?}` — this impl is a thin wrapper, not a
+/// place that itself formats a `Token`/`Option<Token>` with Debug.
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseError::Empty => write!(f, "the dice expression is empty"),
+            ParseError::Unexpected(msg) => write!(f, "{msg}"),
+            ParseError::Trailing(msg) => write!(f, "unexpected trailing input: {msg}"),
+            ParseError::InvalidDieSides(n) => {
+                write!(f, "a die must have at least 1 side (got {n})")
+            }
+            ParseError::DuplicateSuccessRule => {
+                write!(f, "a roll can only set one success rule (cs, cf, or t<N>)")
+            }
+            ParseError::DuplicateExpertise => {
+                write!(f, "a roll can only set one expertise budget (e<N>)")
+            }
+            ParseError::EmptyLabel => write!(f, "a dice group label cannot be empty"),
+            ParseError::UnterminatedLabel => {
+                write!(f, "a dice group label is missing its closing ']'")
+            }
+            ParseError::InvalidLabelChar => {
+                write!(f, "a dice group label contains an unsupported character")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn no_debug_artifacts(s: &str) -> bool {
+        !s.contains('{') && !s.contains("Some(") && !s.contains("None")
+    }
+
+    #[test]
+    fn every_parse_error_variant_displays_without_debug_artifacts() {
+        // Iterate every variant explicitly (including realistic `Unexpected`/
+        // `Trailing` payloads, since those two wrap free text built at their
+        // construction sites via `Token`'s Display, not this impl).
+        let variants: Vec<ParseError> = vec![
+            ParseError::Empty,
+            ParseError::Unexpected("expected a number, found the number 5".to_string()),
+            ParseError::Trailing("the number 5".to_string()),
+            ParseError::InvalidDieSides(0),
+            ParseError::DuplicateSuccessRule,
+            ParseError::DuplicateExpertise,
+            ParseError::EmptyLabel,
+            ParseError::UnterminatedLabel,
+            ParseError::InvalidLabelChar,
+        ];
+        assert_eq!(
+            variants.len(),
+            9,
+            "update this test if a ParseError variant is added or removed"
+        );
+        for v in variants {
+            let rendered = v.to_string();
+            assert!(
+                no_debug_artifacts(&rendered),
+                "variant {v:?} rendered debug artifacts: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn real_parse_failures_render_without_debug_artifacts() {
+        let inputs = [
+            "4d6 @ 2",                  // lexer: unexpected character
+            "2d6 2d6",                  // trailing input
+            "4d",                       // expect_int: missing sides
+            "(1d4+1",                   // expect ')'
+            "4d6xyz",                   // unknown modifier
+            "6d6r",                     // cmp_target_required
+            "café",                     // non-ASCII
+            "999999999999999999999999", // invalid number literal
+        ];
+        for input in inputs {
+            let err = parse(input, ParseContext::default())
+                .expect_err("expected a parse error for malformed input");
+            let rendered = err.to_string();
+            assert!(
+                no_debug_artifacts(&rendered),
+                "input {input:?} produced debug artifacts: {rendered:?}"
+            );
+        }
+    }
+}

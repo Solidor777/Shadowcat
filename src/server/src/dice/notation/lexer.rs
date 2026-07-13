@@ -19,6 +19,50 @@ pub enum Token {
     Label(String),
 }
 
+/// Player-presentable rendering of a single token, used to build `ParseError`
+/// messages without leaking `{:?}` Debug output (e.g. `Cmp(Gte)`) into
+/// player-facing text.
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Token::Int(n) => write!(f, "the number {n}"),
+            Token::D => write!(f, "'d'"),
+            Token::Ident(s) => write!(f, "'{s}'"),
+            Token::Plus => write!(f, "'+'"),
+            Token::Minus => write!(f, "'-'"),
+            Token::Star => write!(f, "'*'"),
+            Token::Slash => write!(f, "'/'"),
+            Token::LParen => write!(f, "'('"),
+            Token::RParen => write!(f, "')'"),
+            Token::Cmp(c) => write!(f, "the comparator '{}'", comparator_symbol(*c)),
+            Token::Bang => write!(f, "'!'"),
+            Token::BangBang => write!(f, "'!!'"),
+            Token::BangP => write!(f, "'!p'"),
+            Token::Label(s) => write!(f, "the label '{s}'"),
+        }
+    }
+}
+
+fn comparator_symbol(c: Comparator) -> &'static str {
+    match c {
+        Comparator::Eq => "=",
+        Comparator::Ne => "!=",
+        Comparator::Gt => ">",
+        Comparator::Lt => "<",
+        Comparator::Gte => ">=",
+        Comparator::Lte => "<=",
+    }
+}
+
+/// Player-presentable rendering of an optional token (`None` = end of input),
+/// used at every "found `X`, expected `Y`" `ParseError` construction site.
+pub fn describe_token(tok: Option<&Token>) -> String {
+    match tok {
+        Some(t) => t.to_string(),
+        None => "end of input".to_string(),
+    }
+}
+
 /// Lexes dice notation into a token stream.
 ///
 /// INVARIANT: `input` must be ASCII-only. Every match arm below operates on
@@ -30,7 +74,9 @@ pub enum Token {
 /// slice-at-non-char-boundary panic.
 pub fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
     if !input.is_ascii() {
-        return Err(ParseError::Unexpected("non-ASCII input".to_string()));
+        return Err(ParseError::Unexpected(
+            "the roll expression must be ASCII-only".to_string(),
+        ));
     }
     let mut out = Vec::new();
     let bytes = input.as_bytes();
@@ -44,9 +90,9 @@ pub fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
                 while i < bytes.len() && (bytes[i] as char).is_ascii_digit() {
                     i += 1;
                 }
-                let n: i32 = input[start..i]
-                    .parse()
-                    .map_err(|_| ParseError::Unexpected(input[start..i].to_string()))?;
+                let n: i32 = input[start..i].parse().map_err(|_| {
+                    ParseError::Unexpected(format!("'{}' is not a valid number", &input[start..i]))
+                })?;
                 out.push(Token::Int(n));
             }
             'd' | 'D' if !(i + 1 < bytes.len() && (bytes[i + 1] as char).is_ascii_alphabetic()) => {
@@ -131,7 +177,11 @@ pub fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
                 out.push(Token::Cmp(cmp));
                 i += adv;
             }
-            _ => return Err(ParseError::Unexpected(c.to_string())),
+            _ => {
+                return Err(ParseError::Unexpected(format!(
+                    "unexpected character '{c}'"
+                )))
+            }
         }
     }
     Ok(out)

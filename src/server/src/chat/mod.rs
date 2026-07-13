@@ -24,18 +24,23 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 mod commands;
+mod rolls;
 mod sanitize;
 mod settings;
 mod shortcodes;
 pub use commands::{parse_command, ParsedCommand};
 pub use sanitize::sanitize;
-pub use settings::{resolve_content_policy, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE};
+pub use settings::{
+    resolve_content_policy, resolve_dice_context, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE,
+    DICE_SETTINGS_DOC_TYPE,
+};
 
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use crate::data::document::{DocRole, Document, PermissionSet, Scope, WorldRole};
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::DataError;
+use crate::dice::RollOutcome;
 use crate::ws::room::Room;
 use crate::ws::PingRateLimiter;
 
@@ -122,7 +127,28 @@ pub enum Segment {
     /// A run of ammonia-sanitized HTML (safe by construction; the client renders
     /// it via innerHTML). Produced only by `sanitize` (chat/sanitize.rs).
     Html { sanitized_html: String },
-    // Reserved, produced later: RollEmbed (M11d), PreviewCard (c-4), DocLink (M11d).
+    /// A completed roll: the formula plus its full deterministic outcome.
+    /// `outcome` embeds the evaluated `RollOutcome` (records included — the
+    /// natural faces make the roll reproducible/auditable from the stored
+    /// segment alone). The `RollSpec`/`RawRoll` are deliberately NOT stored —
+    /// recalculate-from-chat is out of scope pre-release, so there is no
+    /// data-continuity promise to a future recalc feature. Produced only by
+    /// `chat::rolls::execute_roll`, called from `handle_send_message`'s roll
+    /// stage; never produced on edit (rolls are immutable, see
+    /// `handle_edit_message`).
+    RollEmbed {
+        formula: String,
+        outcome: RollOutcome,
+    },
+    /// An unexecuted, parse-and-cap-validated formula the card renders as a
+    /// button; clicking it sends a fresh `/roll <formula>` `SendMessage`
+    /// (a new, independently-attributed roll). `label` is plain data (never
+    /// rendered as markup).
+    RollButton {
+        formula: String,
+        label: Option<String>,
+    },
+    // Reserved, produced later: PreviewCard (c-4), DocLink (M11d).
 }
 
 /// The c-1 producer: wrap raw input as a single literal-text segment. Rich
@@ -250,6 +276,36 @@ pub fn build_message_doc(
     }
 }
 
+/// Author a `MessageKind::System` error notice for a failed roll attempt:
+/// whispered to the sender only (same channel), owned by the sender (so they
+/// may delete it), one `Text` segment with the error's player-presentable
+/// `Display` text. This is `MessageKind::System`'s first real producer —
+/// deliberately NOT `parse_command` (which can never emit `System`, proven by
+/// its own exhaustive test); a roll failure is authored directly here instead.
+fn build_roll_error_notice(
+    world_id: Uuid,
+    sender: Uuid,
+    channel: String,
+    err: &rolls::RollError,
+    now: i64,
+) -> Document {
+    build_message_doc(
+        world_id,
+        sender,
+        channel,
+        None,
+        Audience::Whisper {
+            recipients: vec![sender],
+        },
+        MessageKind::System,
+        vec![Segment::Text {
+            text: err.to_string(),
+        }],
+        None,
+        now,
+    )
+}
+
 /// Max characters accepted for a single message's raw content (pre-producer).
 pub const MAX_MESSAGE_CHARS: usize = 4096;
 
@@ -289,6 +345,22 @@ pub enum SendMessageError {
     Forbidden,
     /// An edit attempted to change audience (a `/w` inside an edit). Frozen.
     AudienceLocked,
+    /// A roll formula failed to parse, exceeded a wire-boundary cap, or a
+    /// message body's inline-roll scan failed. Never returned to the caller
+    /// as a hard error — `handle_send_message` catches this and authors a
+    /// `MessageKind::System` notice instead (see `build_roll_error_notice`);
+    /// kept as a variant for completeness/testability of the mapping.
+    Roll(rolls::RollError),
+    /// A roll's outcome is immutable once sent: editing a message whose
+    /// STORED `kind == Roll`, or editing content that itself parses to
+    /// `kind == Roll`, are both rejected outright (no re-rolling by edit).
+    RollImmutable,
+    /// The requested `actor_owner` cannot be attributed by this sender: the
+    /// referenced actor doc does not exist, is not an `actor` doc_type, or
+    /// is owned by someone else and the sender is not a GM; or the ref is a
+    /// `TokenInstance` (rejected fail-closed pending speak-as-token, design
+    /// doc §8).
+    ActorNotSpeakable,
 }
 
 /// Server-authoritative message ingest: flood-limit, validate, CONSTRUCT the
@@ -322,6 +394,44 @@ pub async fn handle_send_message(
     }
     if !rate.check(ctx.user_id, now, budget_per_min) {
         return Err(SendMessageError::RateLimited);
+    }
+    // Attribution ownership gate (spec §8): `actor_owner` is client-supplied
+    // and otherwise stored verbatim — without this check any world member
+    // could attribute a message to ANY actor doc, spoofing its display name
+    // to every recipient who can read the message. Fail-closed, whole-send:
+    // an invalid ref rejects BEFORE any content parsing/sanitization/roll
+    // execution runs, exactly like the whisper-recipient validation below.
+    // `handle_edit_message` copies `actor_owner` verbatim from the STORED
+    // doc, never from the edit request, so this ingest-time gate is the
+    // ONLY place attribution is ever chosen — no separate edit-time check
+    // is needed.
+    if let Some(owner_ref) = &actor_owner {
+        match owner_ref {
+            ActorOwnerRef::Actor { actor_id } => {
+                let actor_doc = repo
+                    .get_document(*actor_id)
+                    .await
+                    .map_err(SendMessageError::Data)?;
+                let is_gm = ctx.world_role == WorldRole::Gm;
+                let allowed = match &actor_doc {
+                    // GM may attribute as any existing actor doc; a Player
+                    // only as an actor doc they own.
+                    Some(d) if d.doc_type == "actor" => is_gm || d.owner == Some(ctx.user_id),
+                    _ => false,
+                };
+                if !allowed {
+                    return Err(SendMessageError::ActorNotSpeakable);
+                }
+            }
+            // No first-party producer resolves a TokenInstance ref into a
+            // display identity at send time (speak-as-token is an
+            // explicitly deferred M11d follow-up, design doc §8) — reject
+            // fail-closed rather than store an unvalidated ref that a
+            // future consumer might trust.
+            ActorOwnerRef::TokenInstance { .. } => {
+                return Err(SendMessageError::ActorNotSpeakable);
+            }
+        }
     }
     // Parse leading command (server-authoritative kind; /w whisper targets).
     let parsed = parse_command(&content);
@@ -384,8 +494,118 @@ pub async fn handle_send_message(
     if parsed.body.trim().is_empty() {
         return Err(SendMessageError::Empty);
     }
-    let policy = resolve_content_policy(repo, room.world_id).await;
-    let content_segments = sanitize(&parsed.body, &policy);
+    // Roll stage: `parsed.kind`/an inline `[[...]]`/`[[roll:...]]` span in the
+    // body determines whether (part of) the body executes as dice notation
+    // before sanitize runs. INVARIANT: exactly ONE message is authored per
+    // send attempt — a roll/scan failure authors a `MessageKind::System`
+    // notice INSTEAD of the intended message (never in addition), so the
+    // flood budget already consumed above stays 1:1 with the attempt.
+    // `handle_edit_message` never reaches this stage: a roll's outcome is
+    // immutable once sent, and an edit's `[[...]]` spans stay literal text.
+    let content_segments = if parsed.kind == MessageKind::Roll {
+        let dice_ctx = resolve_dice_context(repo, room.world_id).await;
+        match rolls::execute_roll(&parsed.body, dice_ctx) {
+            Ok((formula, outcome)) => vec![Segment::RollEmbed { formula, outcome }],
+            Err(e) => {
+                let notice = build_roll_error_notice(room.world_id, ctx.user_id, channel, &e, now);
+                return room
+                    .publish(
+                        repo,
+                        ctx,
+                        vec![Operation::Create { doc: notice }],
+                        now,
+                        WriteOrigin::Client,
+                    )
+                    .await
+                    .map_err(SendMessageError::Data);
+            }
+        }
+    } else {
+        // Normal/Emote: scan for inline rolls/buttons. The all-Text case is
+        // the byte-identical fast path over the whole body (unchanged from
+        // before this checkpoint); a mixed body sanitizes each Text chunk
+        // independently and interleaves roll segments in scan order.
+        let chunks = match rolls::scan_body(&parsed.body) {
+            Ok(c) => c,
+            Err(e) => {
+                let notice = build_roll_error_notice(room.world_id, ctx.user_id, channel, &e, now);
+                return room
+                    .publish(
+                        repo,
+                        ctx,
+                        vec![Operation::Create { doc: notice }],
+                        now,
+                        WriteOrigin::Client,
+                    )
+                    .await
+                    .map_err(SendMessageError::Data);
+            }
+        };
+        if let [rolls::BodyChunk::Text(_)] = chunks.as_slice() {
+            let policy = resolve_content_policy(repo, room.world_id).await;
+            sanitize(&parsed.body, &policy)
+        } else {
+            let policy = resolve_content_policy(repo, room.world_id).await;
+            // Ambient dice context is resolved at most once, lazily, only when
+            // a roll/button chunk actually appears in this body.
+            let mut dice_ctx: Option<crate::dice::ParseContext> = None;
+            let mut segments = Vec::with_capacity(chunks.len());
+            let mut roll_err = None;
+            for chunk in chunks {
+                match chunk {
+                    rolls::BodyChunk::Text(t) => segments.extend(sanitize(t, &policy)),
+                    rolls::BodyChunk::Inline(formula) => {
+                        if dice_ctx.is_none() {
+                            dice_ctx = Some(resolve_dice_context(repo, room.world_id).await);
+                        }
+                        match rolls::execute_roll(formula, dice_ctx.unwrap()) {
+                            Ok((formula, outcome)) => {
+                                segments.push(Segment::RollEmbed { formula, outcome })
+                            }
+                            Err(e) => {
+                                roll_err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                    rolls::BodyChunk::Button { formula, label } => {
+                        if dice_ctx.is_none() {
+                            dice_ctx = Some(resolve_dice_context(repo, room.world_id).await);
+                        }
+                        // Stored/validated formula is trimmed — the `roll:`/`|`
+                        // split leaves incidental whitespace (e.g.
+                        // "[[roll: 1d20|Attack]]") that must not survive into
+                        // the button's stored formula or the click-to-send text.
+                        let formula = formula.trim();
+                        match rolls::validate_formula(formula, dice_ctx.unwrap()) {
+                            Ok(()) => segments.push(Segment::RollButton {
+                                formula: formula.to_string(),
+                                label: label.map(|s| s.to_string()),
+                            }),
+                            Err(e) => {
+                                roll_err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(e) = roll_err {
+                let notice = build_roll_error_notice(room.world_id, ctx.user_id, channel, &e, now);
+                return room
+                    .publish(
+                        repo,
+                        ctx,
+                        vec![Operation::Create { doc: notice }],
+                        now,
+                        WriteOrigin::Client,
+                    )
+                    .await
+                    .map_err(SendMessageError::Data);
+            }
+            segments
+        }
+    };
     // `source` = raw author input for client edit-prefill, with a parsed /w
     // prefix STRIPPED — an unmodified resubmit of the prefill must not trip
     // handle_edit_message's AudienceLocked rejection (edit always rejects /w).
@@ -485,6 +705,32 @@ pub async fn handle_edit_message(
     if sys.deleted_at.is_some() {
         return Err(SendMessageError::NotFound);
     }
+    // Roll immutability (anti-cheat): a roll's outcome is fixed at send time.
+    // This check is UNCONDITIONAL (not gated on audience) because
+    // `kind == Roll` + `audience == Whisper` IS reachable: `handle_send_message`
+    // always runs `parse_command` on the raw content regardless of which
+    // front-door set the audience (the c-2 frame field or a content `/w`) — a
+    // frame `SendMessage{content: "/roll 2d6", audience: Whisper{..}}` parses
+    // to `kind: Roll` with no `/w` in the content, so the frame's `Whisper`
+    // audience is used verbatim alongside `kind: Roll`. Without this
+    // unconditional placement, a whispered roll's audit record could be
+    // edited away.
+    //
+    // A message carrying ANY roll segment is edit-immutable, not just one
+    // whose STORED `kind` is `Roll`: a Normal/Emote message's body can embed
+    // an inline `[[...]]` roll or a `[[roll:...]]` button mid-text (e.g.
+    // "attack! [[1d20]] done"), producing `Segment::RollEmbed`/
+    // `Segment::RollButton` entries inside an otherwise-Normal message's
+    // `content`. Editing that message's text would otherwise silently erase
+    // the executed roll's audit record even though the top-level `kind`
+    // check never fires. Delete remains available for any message.
+    let has_roll_segment = sys
+        .content
+        .iter()
+        .any(|seg| matches!(seg, Segment::RollEmbed { .. } | Segment::RollButton { .. }));
+    if sys.kind == MessageKind::Roll || has_roll_segment {
+        return Err(SendMessageError::RollImmutable);
+    }
 
     // A stored WHISPER's literal body may legitimately contain "/w ..." or any
     // other leading command token — `handle_send_message` never parses a
@@ -505,6 +751,14 @@ pub async fn handle_edit_message(
         // Audience is frozen on edit — a /w in an edit is rejected, not applied.
         if parsed.whisper_to.is_some() {
             return Err(SendMessageError::AudienceLocked);
+        }
+        // Roll immutability: editing content INTO a roll (e.g. a plain message
+        // edited to "/roll 1d6") is rejected the same as editing a message
+        // that already IS one — no editing-in-to a roll either. Edits also
+        // never call `scan_body`: an edit's `[[...]]` spans stay literal text
+        // through the ordinary sanitize path below (never re-executed).
+        if parsed.kind == MessageKind::Roll {
+            return Err(SendMessageError::RollImmutable);
         }
         (parsed.kind, parsed.body)
     };
@@ -1670,6 +1924,198 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn editing_a_normal_message_with_an_inline_roll_segment_is_immutable() {
+        // FIX 2: a Normal message whose body embeds an inline roll ("attack!
+        // [[1d20]] done") stores kind: Normal (never Roll) but its content
+        // still carries a Segment::RollEmbed mid-text. Editing must be
+        // rejected the same as editing a top-level `/roll` message would be
+        // -- otherwise the roll's audit record could be erased by editing
+        // around it.
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "attack! [[1d20]] done".into(),
+            None,
+            Audience::Public,
+            100,
+            30,
+        )
+        .await
+        .unwrap();
+        let (message_id, doc) = match &cmd.ops[0] {
+            Operation::Create { doc } => (doc.id, doc),
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        assert_eq!(sys.kind, MessageKind::Normal);
+        assert!(
+            sys.content
+                .iter()
+                .any(|s| matches!(s, Segment::RollEmbed { .. })),
+            "expected an inline RollEmbed segment, got {:?}",
+            sys.content
+        );
+
+        let err = handle_edit_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            message_id,
+            "attack! done, no roll".into(),
+            101,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SendMessageError::RollImmutable));
+
+        // A plain Normal message (no roll segment) still edits fine.
+        let cmd2 = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "hello there".into(),
+            None,
+            Audience::Public,
+            102,
+            30,
+        )
+        .await
+        .unwrap();
+        let plain_id = match &cmd2.ops[0] {
+            Operation::Create { doc } => doc.id,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        handle_edit_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            plain_id,
+            "hello again".into(),
+            103,
+            30,
+        )
+        .await
+        .expect("a plain Normal message must still edit fine");
+    }
+
+    #[tokio::test]
+    async fn whisper_roll_via_frame_audience_is_edit_immutable() {
+        // FIX 3: kind == Roll + audience == Whisper IS reachable via the c-2
+        // frame's `audience` field (content has no /w, so parse_command never
+        // sets whisper_to, and the frame's Whisper audience is used as-is
+        // alongside kind: Roll). The unconditional kind == Roll check must
+        // still block editing it.
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let sender = repo
+            .create_user("sender", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let alice = repo
+            .create_user("alice", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, sender, WorldRole::Player)
+            .await
+            .unwrap();
+        repo.add_member(w.id, alice, WorldRole::Player)
+            .await
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: sender,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "/roll 2d6".into(),
+            None,
+            Audience::Whisper {
+                recipients: vec![alice],
+            },
+            100,
+            30,
+        )
+        .await
+        .unwrap();
+        let (message_id, doc) = match &cmd.ops[0] {
+            Operation::Create { doc } => (doc.id, doc),
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        assert_eq!(
+            sys.kind,
+            MessageKind::Roll,
+            "expected reachable kind: Roll + audience: Whisper combination"
+        );
+        assert!(matches!(sys.audience, Audience::Whisper { .. }));
+
+        let err = handle_edit_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            message_id,
+            "2d6 edited".into(),
+            101,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SendMessageError::RollImmutable));
+    }
+
     #[test]
     fn stored_pre_source_message_still_deserializes() {
         // A stored c-3 (pre-`source`) MessageSystem JSON has no `source` key at all.
@@ -1739,5 +2185,375 @@ mod tests {
         let page = r.search(&ot_ctx, w.id, "banshee", 10, None).await.unwrap();
         assert_eq!(page.hits.len(), 1, "another member finds the message");
         assert!(page.hits[0].snippet.to_lowercase().contains("banshee"));
+    }
+
+    /// A minimal actor doc for the attribution-ownership gate tests, seeded
+    /// directly via `apply_command` (bypasses permission checks — these
+    /// tests exercise `handle_send_message`'s attribution gate, not the
+    /// actor-create authorization path).
+    fn seed_actor_doc(id: Uuid, world: Uuid, owner: Option<Uuid>) -> Document {
+        Document {
+            id,
+            scope: Scope::World { world_id: world },
+            doc_type: "actor".into(),
+            schema_version: 1,
+            source: None,
+            owner,
+            permissions: crate::data::document::PermissionSet::default(),
+            embedded: Default::default(),
+            parent_id: None,
+            system: serde_json::json!({ "name": "Goblin" }),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn send_message_allows_player_attributing_own_actor() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::UnsequencedCommand;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let actor_id = Uuid::new_v4();
+        repo.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author: player,
+            ts: 0,
+            ops: vec![Operation::Create {
+                doc: seed_actor_doc(actor_id, w.id, Some(player)),
+            }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "grr".into(),
+            Some(ActorOwnerRef::Actor { actor_id }),
+            Audience::Public,
+            100,
+            30,
+        )
+        .await
+        .unwrap();
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        assert_eq!(sys.actor_owner, Some(ActorOwnerRef::Actor { actor_id }));
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_player_attributing_another_users_actor() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::UnsequencedCommand;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let other = repo
+            .create_user("ot", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        repo.add_member(w.id, other, WorldRole::Player)
+            .await
+            .unwrap();
+        let actor_id = Uuid::new_v4();
+        repo.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author: other,
+            ts: 0,
+            ops: vec![Operation::Create {
+                doc: seed_actor_doc(actor_id, w.id, Some(other)),
+            }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        // The seeded actor doc's own Create already consumed one seq;
+        // capture it so the assertion below proves the REJECTED send
+        // itself persisted nothing, not merely that the log is empty.
+        let seq_before = repo.events_since(w.id, 0).await.unwrap().len();
+        let err = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "grr".into(),
+            Some(ActorOwnerRef::Actor { actor_id }),
+            Audience::Public,
+            100,
+            30,
+        )
+        .await;
+        assert!(matches!(err, Err(SendMessageError::ActorNotSpeakable)));
+        assert_eq!(
+            repo.events_since(w.id, 0).await.unwrap().len(),
+            seq_before,
+            "spoofed attribution must persist nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_attributing_a_nonexistent_actor() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let err = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "grr".into(),
+            Some(ActorOwnerRef::Actor {
+                actor_id: Uuid::new_v4(),
+            }),
+            Audience::Public,
+            100,
+            30,
+        )
+        .await;
+        assert!(matches!(err, Err(SendMessageError::ActorNotSpeakable)));
+    }
+
+    #[tokio::test]
+    async fn send_message_allows_gm_attributing_any_actor() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::UnsequencedCommand;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let actor_id = Uuid::new_v4();
+        repo.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author: player,
+            ts: 0,
+            ops: vec![Operation::Create {
+                doc: seed_actor_doc(actor_id, w.id, Some(player)),
+            }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "grr".into(),
+            Some(ActorOwnerRef::Actor { actor_id }),
+            Audience::Public,
+            100,
+            30,
+        )
+        .await
+        .unwrap();
+        // seq 2: the seeded actor doc's own Create consumed seq 1.
+        assert_eq!(cmd.seq, 2, "GM may attribute a message to any actor doc");
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_token_instance_attribution() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let err = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "grr".into(),
+            Some(ActorOwnerRef::TokenInstance {
+                token_id: Uuid::new_v4(),
+            }),
+            Audience::Public,
+            100,
+            30,
+        )
+        .await;
+        assert!(
+            matches!(err, Err(SendMessageError::ActorNotSpeakable)),
+            "token-instance attribution has no first-party producer yet — rejected fail-closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_attribution_to_a_non_actor_doc() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::UnsequencedCommand;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let mut wrong_type = seed_actor_doc(Uuid::new_v4(), w.id, Some(player));
+        wrong_type.doc_type = "note".into();
+        let doc_id = wrong_type.id;
+        repo.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author: player,
+            ts: 0,
+            ops: vec![Operation::Create { doc: wrong_type }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let err = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "grr".into(),
+            Some(ActorOwnerRef::Actor { actor_id: doc_id }),
+            Audience::Public,
+            100,
+            30,
+        )
+        .await;
+        assert!(matches!(err, Err(SendMessageError::ActorNotSpeakable)));
     }
 }
