@@ -62,6 +62,23 @@
     return content.filter(isKnownSegment).filter((s) => s.kind === "text").map((s) => (s as Extract<ChatSegment, { kind: "text" }>).text).join("");
   }
 
+  // The command tokens `chat::parse_command` accepts (src/server/src/chat/commands.rs) —
+  // exact, case-sensitive match. A bare `/NdM` shorthand matches neither prefix and is
+  // displayed verbatim (leading slash included).
+  const ROLL_COMMAND_PREFIXES = ["/roll ", "/r "];
+
+  /** Roll-pending display formula. `source` holds the FULL raw author input (including any
+   * command token) so a markdown/html-enabled world's `sanitize()` wrapping the body into a
+   * single `Segment::Html` never loses the formula — `textOf` alone would read empty here. */
+  const rollFormula = $derived.by((): string => {
+    if (!sys) return "";
+    const src = sys.source ?? textOf(sys.content);
+    for (const prefix of ROLL_COMMAND_PREFIXES) {
+      if (src.startsWith(prefix)) return src.slice(prefix.length);
+    }
+    return src;
+  });
+
   const canModerate = $derived(!!sys && (sys.user_owner === ctx.selfId || ctx.role === "gm"));
 
   let editing = $state(false);
@@ -119,9 +136,9 @@
     {:else}
       <div class="body">
         {#if sys.kind === "roll"}
-          <p class="roll-pending">{t("chat.rollPending", { formula: textOf(sys.content) })}</p>
+          <p class="roll-pending">{t("chat.rollPending", { formula: rollFormula })}</p>
         {:else}
-          <p class:emote-line={sys.kind === "emote"}>
+          <p>
             {#if sys.kind === "emote"}
               <span class="seg-text">{authorName} </span>
             {/if}
@@ -174,11 +191,18 @@
     font-style: italic;
     opacity: 0.7;
   }
-  .emote-line {
+  // Single hook for emote styling — anchored on .card (the class:emote binding), not a
+  // second class on the inner <p>, so there is one source of truth for "this is an emote".
+  .card.emote .body p {
     font-style: italic;
   }
   .roll-pending {
     font-family: monospace;
+  }
+  .seg-text {
+    // Preserves author-typed newlines in a plain-text segment; without this a multi-line
+    // message collapses to one visual line despite the \n surviving in the DOM text node.
+    white-space: pre-wrap;
   }
   .actions {
     display: flex;
@@ -186,6 +210,20 @@
   }
   .actions button {
     min-height: 32px;
+  }
+  // Hover/focus-reveal on hover-capable devices, always-visible on touch (no hover concept
+  // to reveal on). Uses opacity/pointer-events, never visibility/display, so the buttons
+  // stay in the tab order — Tab-focusing one triggers :focus-within on .card and reveals it.
+  @media (hover: hover) {
+    .actions {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .card:hover .actions,
+    .card:focus-within .actions {
+      opacity: 1;
+      pointer-events: auto;
+    }
   }
   .edit-box {
     display: flex;

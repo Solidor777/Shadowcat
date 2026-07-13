@@ -176,7 +176,7 @@ describe("MessageCard — emote/roll rendering", () => {
       props: { message: doc, showChannel: false },
       context: setAppContextForTest({ documents: storeWith(doc), members: new Map([["u1", "Alice"]]) }),
     });
-    const line = container.querySelector(".emote-line");
+    const line = container.querySelector(".card.emote .body p");
     expect(line).not.toBeNull();
     expect(line?.textContent?.trim()).toBe("Alice waves");
   });
@@ -188,6 +188,50 @@ describe("MessageCard — emote/roll rendering", () => {
       context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
     });
     expect(container.querySelector(".roll-pending")?.textContent).toBe("🎲 1d20+5");
+  });
+
+  it("derives the roll formula from source (stripping the /roll prefix) when content is wrapped as a single html segment", () => {
+    // On a markdown/html-enabled world, sanitize() wraps even a bare formula body into one
+    // Segment::Html — textOf() alone would read empty here. `source` carries the FULL raw
+    // input including the command token, which must be stripped before display.
+    const doc = msgDoc(
+      "m1",
+      baseSystem({ kind: "roll", source: "/roll 1d20+5", content: [{ kind: "html", sanitized_html: "<p>1d20+5</p>" }] }),
+    );
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-pending")?.textContent).toBe("🎲 1d20+5");
+  });
+
+  it("strips a /r prefix from source the same way, leaving a bare shorthand source untouched", () => {
+    const doc = msgDoc("m1", baseSystem({ kind: "roll", source: "/r 2d6", content: [{ kind: "text", text: "2d6" }] }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-pending")?.textContent).toBe("🎲 2d6");
+  });
+
+  it("falls back to textOf(content) for the roll formula when source is absent", () => {
+    const doc = msgDoc("m1", baseSystem({ kind: "roll", content: [{ kind: "text", text: "1d20" }] }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-pending")?.textContent).toBe("🎲 1d20");
+  });
+});
+
+describe("MessageCard — whitespace preservation", () => {
+  it("preserves a newline in a multi-line plain-text segment via .seg-text's pre-wrap", () => {
+    const doc = msgDoc("m1", baseSystem({ content: [{ kind: "text", text: "line one\nline two" }] }));
+    const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
+    const seg = container.querySelector(".seg-text");
+    expect(seg).not.toBeNull();
+    expect(seg?.classList.contains("seg-text")).toBe(true);
+    expect(seg?.textContent).toBe("line one\nline two");
   });
 });
 
@@ -344,6 +388,13 @@ describe("MessageCard — actor attribution + redaction fixtures (real resolveTo
 
   it("a dangling token_instance reference fails closed (no actor name shown, no throw)", () => {
     const doc = msgDoc("m1", baseSystem({ actor_owner: { kind: "token_instance", token_id: "does-not-exist" } }));
+    const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
+    expect(container.querySelector(".actor-name")).toBeNull();
+    expect(container.querySelector(".author")).not.toBeNull(); // rest of the header still renders
+  });
+
+  it("a dangling actor reference fails closed (no actor name shown, no throw)", () => {
+    const doc = msgDoc("m1", baseSystem({ actor_owner: { kind: "actor", actor_id: "does-not-exist" } }));
     const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
     expect(container.querySelector(".actor-name")).toBeNull();
     expect(container.querySelector(".author")).not.toBeNull(); // rest of the header still renders
