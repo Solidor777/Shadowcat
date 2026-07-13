@@ -167,4 +167,9 @@ export const en: Messages = {
   "chat.cancel": "Cancel",
   "chat.deleteConfirm": "Delete this message?",
   "chat.rollPending": "🎲 {formula}",
+  "chat.systemBadge": "System",
+  "chat.roll.formula": "Formula",
+  "chat.roll.successes": "{n} successes",
+  "chat.roll.pass": "Success",
+  "chat.roll.fail": "Failure",
 };
