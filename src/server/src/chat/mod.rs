@@ -150,6 +150,13 @@ pub struct MessageSystem {
     /// sanitized `Segment::Html` cannot be reversed to author input. Data only,
     /// never rendered as markup. MUST be cleared by the delete tombstone with
     /// `content` (a retained source would leak deleted content).
+    ///
+    /// EXPOSURE NOTE: like every string leaf of `system` (incl. `channel`),
+    /// this pre-sanitize text is swept into the content-agnostic FTS index and
+    /// can surface in `SearchHit.snippet`/`.document`. Any search-UI consumer
+    /// must treat message-doc snippet/`source` strings as inert text (never
+    /// innerHTML) — this field is the highest-volume raw-text instance of that
+    /// pre-existing pattern.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     /// Set when the message has been edited (c-3's edit path). Absent (not

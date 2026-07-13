@@ -307,10 +307,10 @@ export class WorldSession {
       this.role = w.user_role;
       this.#worldGrants = w.world_default_grants;
       this.#requirements = w.capability_requirements;
-      // Activate modules BEFORE any await below (a GM's member fetch) so the
+      // Activate modules BEFORE any await below (the member fetch) so the
       // layout module contributes Layout into the `root` surface the host renders
       // — the table chrome paints immediately on mount, never a blank frame during
-      // the GM member-fetch round-trip. `#bootstrapped` set before the await so a
+      // the member-fetch round-trip. `#bootstrapped` set before the await so a
       // second Welcome (reconnect) cannot re-enter and double-add the modules.
       if (!this.#bootstrapped) {
         this.#bootstrapped = true;
