@@ -184,9 +184,13 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   premise ("no event surface found") was false — a buddy-check reviewer traced the event through
   `dockview-core`'s own source.
 - TODO: Whole-GROUP drag transfers (a titlebar drag of an entire tab group, `PanelTransfer`'s
-  `panelId === null`) are vetoed outright in v1 (`DockviewEngine#handleWillDrop` fails closed on
-  any payload it cannot classify into a `DropSite`) rather than translated into per-tab dock ops.
-  Translate whole-group transfers into per-tab dock ops to re-enable the group-drag gesture.
+  `panelId === null`) are vetoed outright in v1 rather than translated into per-tab dock ops.
+  `DockviewEngine#handleWillDrop` fails closed on any payload it cannot classify into a
+  `DropSite` — container-edge transfers via the component-level `api.onWillDrop` wire, and
+  group-onto-group transfers via a per-group `group.model.onWillDrop` subscription
+  (`#groupWillDropSubs`, added because the component never forwards a group's `onWillDrop`
+  on its own — see `DockviewEngine`'s doc comments for the citation). Translate whole-group
+  transfers into per-tab dock ops to re-enable the group-drag gesture.
   (Surfaced by the Task 6 buddy-check: an untranslated group transfer previously fell through
   `#handleWillDrop` WITHOUT vetoing, letting a group land above the stage on a top-edge drop.)
 - TODO: Floating-panel position/size sync in `DockviewEngine.apply()` for an ALREADY-floating

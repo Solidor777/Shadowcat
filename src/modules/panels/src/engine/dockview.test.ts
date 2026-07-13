@@ -246,6 +246,122 @@ test("Finding 4: a tree naming the stage id in a zone group applies without thro
   expect(stagePanel!.group.id).toBe("sc-stage-group");
 });
 
+test("Finding 4 (mixed): a zone group naming BOTH the stage id and a real panel places the real panel and leaves the stage untouched", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  // A MIXED group — the stage id sits alongside a real panel id in the same
+  // group's tabs, unlike Finding 4's all-stage case (which skips the whole
+  // group). The per-tab STAGE_ID skip must fire for "stage" only; "chat"
+  // still gets placed normally in the same (real, non-stage) group.
+  layout = {
+    ...layout,
+    expanded: {
+      ...layout.expanded,
+      zones: {
+        ...layout.expanded.zones,
+        right: { ...layout.expanded.zones.right, groups: [{ tabs: [STAGE_ID, "chat"], active: "chat", size: 1 }] },
+      },
+    },
+  };
+
+  expect(() => engine!.apply(layout.expanded, new Map())).not.toThrow();
+
+  const chatPanel = engine.debugApi!.getPanel("chat");
+  expect(chatPanel).toBeDefined();
+  expect(chatPanel!.group.id).not.toBe("sc-stage-group");
+
+  const stagePanel = engine.debugApi!.getPanel(STAGE_ID);
+  expect(stagePanel).toBeDefined();
+  expect(stagePanel!.group.id).toBe("sc-stage-group");
+});
+
+test("group-onto-group: a whole-group transfer targeting an existing group's content is vetoed via the per-group onWillDrop wire", () => {
+  // Regression test for the residual the fix-confirmation buddy-check
+  // flagged: `DockviewApi.onWillDrop` (subscribed once in `init()`) NEVER
+  // fires for a drop targeting an existing group — the component only
+  // forwards a group model's own `onWillDrop` through the permanently-unwired
+  // `_advancedDnDService` optional chain (`dockviewComponent.ts:4592-4594`).
+  // This exercises the mechanism that actually closes the gap: a per-group
+  // subscription to `group.model.onWillDrop` (`#groupWillDropSubs`, wired in
+  // `apply()`), fired here via the group model's own private `_onWillDrop`
+  // emitter — the SAME emitter `group.model.onWillDrop(cb)` subscribes to in
+  // production (mirrors the file's existing `_onDidDimensionChange.fire`
+  // pattern for testing a real dockview event without a native drag gesture).
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat", "assets"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  engine.apply(twoPanelLayout().expanded, new Map());
+
+  const chatGroup = engine.debugApi!.getPanel("chat")!.group;
+
+  let prevented = false;
+  const event = {
+    kind: "content",
+    position: "center",
+    panel: undefined,
+    group: chatGroup,
+    // panelId: null — a whole-GROUP transfer (a titlebar drag of the
+    // "assets" group) dropped onto "chat"'s group content area.
+    getData: () => ({ viewId: "v", groupId: "sc-group:assets", panelId: null }),
+    get defaultPrevented() {
+      return prevented;
+    },
+    preventDefault() {
+      prevented = true;
+    },
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (chatGroup.model as any)._onWillDrop.fire(event);
+
+  expect(prevented).toBe(true);
+});
+
+test("group-onto-group: a normal single-panel drop onto an existing group's content is classified, not vetoed, via the per-group onWillDrop wire", () => {
+  // Proves the previous test isn't a blanket veto of every group-target
+  // drop — the SAME per-group wire runs the real `classifyDrop` policy and
+  // only vetoes unclassifiable payloads (e.g. whole-group transfers).
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat", "assets"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  engine.apply(twoPanelLayout().expanded, new Map());
+
+  const chatGroup = engine.debugApi!.getPanel("chat")!.group;
+
+  let prevented = false;
+  const event = {
+    kind: "content",
+    position: "center",
+    panel: undefined,
+    group: chatGroup,
+    // A real single-panel id ("assets") dragged onto "chat"'s group — a
+    // legitimate cross-group move `classifyDrop` should allow.
+    getData: () => ({ viewId: "v", groupId: "sc-group:assets", panelId: "assets" }),
+    get defaultPrevented() {
+      return prevented;
+    },
+    preventDefault() {
+      prevented = true;
+    },
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (chatGroup.model as any)._onWillDrop.fire(event);
+
+  expect(prevented).toBe(false);
+});
+
 test("Finding 3: a group's live dimension change emits resizeZone + resizeGroup ops with sane values", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");

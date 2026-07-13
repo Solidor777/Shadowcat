@@ -116,6 +116,25 @@ export class DockviewEngine implements EngineAdapter {
   // group, disposed the moment `apply()` removes it (and on `destroy()`) —
   // a group's whole lifetime is bracketed by exactly one subscription.
   #groupResizeSubs = new Map<string, { dispose(): void }>();
+  // One live `group.model.onWillDrop` subscription per managed (non-stage)
+  // group — same add/dispose lifecycle as `#groupResizeSubs` above. Required
+  // because `DockviewApi.onWillDrop` (subscribed once in `init()`, below)
+  // NEVER fires for a drop targeting an existing group: the component only
+  // forwards a group model's `onWillDrop` through `_advancedDnDService?.
+  // dispatchWillDrop(event)` (`dockviewComponent.ts:4592-4594`), and this
+  // codebase ships no `advancedDnDService` module (`allModules.ts:16-24`), so
+  // that optional chain is a permanent no-op — `#handleWillDrop` is
+  // otherwise unreachable for any group-target drop (header, tab, or
+  // content). `IDockviewGroupPanelModel.onWillDrop` (`dockviewGroupPanelModel.
+  // ts:109`) is a public event on the SAME `group.model` this class already
+  // reaches via `api.getGroup(groupId)`, fires with the identical
+  // `DockviewWillDropEvent` shape as the component-level event
+  // (`dockviewGroupPanelModel.ts:1731-1741`), and gates `_onMove`/`_onDidDrop`
+  // on `defaultPrevented` exactly like the root path (`handleDropEvent`,
+  // `dockviewGroupPanelModel.ts:1741-1811`) — so binding `#handleWillDrop`
+  // to it directly closes the group-onto-group veto bypass with the SAME
+  // classify/veto logic, no new method needed.
+  #groupWillDropSubs = new Map<string, { dispose(): void }>();
   // Last EMITTED px dimensions per zone/group, to skip dockview's frequent
   // sub-pixel dimension churn (every layout pass fires this event, not just
   // a user's splitter drag) — avoids feedback-loop op spam.
@@ -234,7 +253,17 @@ export class DockviewEngine implements EngineAdapter {
    * otherwise land ABOVE the stage (W1/D4 violation) since `classifyDrop`
    * never runs against it; vetoing the whole gesture class in v1 also means
    * a completed group drop never needs a `LayoutOp` translation (see
-   * `#handleDidDrop`). */
+   * `#handleDidDrop`).
+   *
+   * Two independent wires feed this SAME method: `init()`'s `api.onWillDrop`
+   * (fires only for root/edge drops — `dockviewComponent.ts`'s
+   * `rootDropTarget.onWillShowOverlay`/`onDrop` wiring is the only path that
+   * calls `this._onWillDrop.fire(...)` directly) and, per managed group,
+   * `group.model.onWillDrop` (subscribed in `apply()` — see
+   * `#groupWillDropSubs`'s doc comment for why the component-level event
+   * alone does NOT cover group-target drops). Together they cover every
+   * drop this engine can receive: container-edge drops via the component
+   * path, group-onto-group drops via the per-group path. */
   #handleWillDrop(event: DockviewWillDropEvent): void {
     const layout = this.#expanded;
     if (!layout) {
@@ -294,8 +323,8 @@ export class DockviewEngine implements EngineAdapter {
     // Whole-group drags (`PanelTransfer.panelId === null`, a titlebar drag of
     // an entire group) carry no single subject id — `classifyDrop` has no
     // vocabulary for a group-as-subject, so this returns null. The caller
-    // (`#handleWillDrop`) vetoes every null-site result outright; this is
-    // NOT "unpoliced", just policed one level up.
+    // (`#handleWillDrop`) vetoes every null-site result outright — for BOTH
+    // the wires that feed it (component-level edge drops, per-group drops).
     if (!id) return null;
     const targetGroupId = event.group?.id;
     const stageGroup = targetGroupId === STAGE_GROUP_ID;
@@ -365,6 +394,10 @@ export class DockviewEngine implements EngineAdapter {
               groupId,
               group.api.onDidDimensionsChange(() => this.#handleGroupDimensionsChange(groupId)),
             );
+            this.#groupWillDropSubs.set(
+              groupId,
+              group.model.onWillDrop((event) => this.#handleWillDrop(event)),
+            );
           }
           previousGroupIdInZone = groupId;
 
@@ -427,6 +460,8 @@ export class DockviewEngine implements EngineAdapter {
           api.removeGroup(group);
           this.#groupResizeSubs.get(group.id)?.dispose();
           this.#groupResizeSubs.delete(group.id);
+          this.#groupWillDropSubs.get(group.id)?.dispose();
+          this.#groupWillDropSubs.delete(group.id);
           this.#lastGroupPx.delete(group.id);
         }
       }
@@ -509,6 +544,8 @@ export class DockviewEngine implements EngineAdapter {
     this.#disposables = [];
     for (const d of this.#groupResizeSubs.values()) d.dispose();
     this.#groupResizeSubs.clear();
+    for (const d of this.#groupWillDropSubs.values()) d.dispose();
+    this.#groupWillDropSubs.clear();
     this.#lastZonePx.clear();
     this.#lastGroupPx.clear();
     this.#api?.dispose();
@@ -527,6 +564,8 @@ export class DockviewEngine implements EngineAdapter {
 // not exhaustively verified against every dockview drag path — recommend a
 // manual browser QA pass over live drag-and-drop before shipping.
 // Whole-GROUP drag transfers (`PanelTransfer.panelId === null`) are vetoed
-// outright in v1 (see `#handleWillDrop`'s doc comment).
+// outright in v1 (see `#handleWillDrop`'s doc comment) for both the
+// container-edge path (component-level `api.onWillDrop`) and the
+// group-onto-group path (per-group `group.model.onWillDrop`, `#groupWillDropSubs`).
 // TODO: Translate whole-group transfers into per-tab dock ops to re-enable
 // the group-drag gesture.
