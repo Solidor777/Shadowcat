@@ -22,8 +22,14 @@ export const ChatSegmentSchema = z.discriminatedUnion("kind", [
 ]);
 export type ChatSegment = z.infer<typeof ChatSegmentSchema>;
 /** Forward-compat: a segment kind this client doesn't know (e.g. a newer server's
- * roll_embed) parses as opaque and renders as nothing — the message still shows. */
-const UnknownSegmentSchema = z.object({ kind: z.string() }).passthrough();
+ * roll_embed) parses as opaque and renders as nothing — the message still shows.
+ * INVARIANT: refuses the KNOWN kinds — without this, a malformed text/html
+ * segment (missing/wrong-typed payload) would be rescued by this fallback and
+ * then misclassified as trustworthy by isKnownSegment, breaking fail-closed. */
+const UnknownSegmentSchema = z
+  .object({ kind: z.string() })
+  .passthrough()
+  .refine((s) => s.kind !== "text" && s.kind !== "html");
 export type UnknownSegment = z.infer<typeof UnknownSegmentSchema>;
 const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegmentSchema]));
 

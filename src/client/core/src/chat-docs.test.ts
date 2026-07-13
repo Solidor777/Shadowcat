@@ -39,6 +39,13 @@ describe("parseMessageSystem", () => {
     expect(sys!.content).toHaveLength(2);
     expect(sys!.content.filter(isKnownSegment)).toEqual([{ kind: "text", text: "a" }]);
   });
+  test("fail-closed: a malformed KNOWN-kind segment fails the whole message parse", () => {
+    // The unknown-kind fallback must not rescue a text/html segment with a
+    // missing or wrong-typed payload — isKnownSegment would misclassify it.
+    expect(parseMessageSystem(msgDoc({ ...base, content: [{ kind: "text" }] }))).toBeNull();
+    expect(parseMessageSystem(msgDoc({ ...base, content: [{ kind: "text", text: 42 }] }))).toBeNull();
+    expect(parseMessageSystem(msgDoc({ ...base, content: [{ kind: "html", sanitized_html: 123 }] }))).toBeNull();
+  });
   test("fail-closed: wrong doc_type, malformed body, missing fields → null", () => {
     expect(parseMessageSystem(msgDoc(base, "actor"))).toBeNull();
     expect(parseMessageSystem(msgDoc("nonsense"))).toBeNull();
