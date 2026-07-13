@@ -61,8 +61,16 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 
 ## Server / dice (M11a)
 - RESOLVED (M11a Task 9): `DieKind::Numeric { min, max }` with `min > max` (or a degenerate non-positive span) was only guarded by a `debug_assert!` inside `rng::roll_uniform` — a release build reaching it silently returned a value unrelated to the intended range instead of erroring. The notation parser (`dice::notation::parser::factor`) now rejects a non-positive sides count at parse time (`ParseError::InvalidDieSides`), before a `DieKind::Numeric` is ever constructed from untrusted notation input. `dice::spec`/`dice::rng` themselves remain unvalidated by design (pure library, M11a scope) — the `debug_assert!` in `rng::roll_uniform` still stands as the last-resort guard for any caller that bypasses the parser. Re-check when M11d wires a wire-facing `RollSpec` construction path — that boundary needs the same `sides < 1` validation independent of the notation parser, since it can build a `RollSpec` directly.
-- TODO: `RollSpec.success`/`required_successes` (and future optional fields on `dice::spec` types) lack `#[serde(default)]` — today's only round-trip always populates every field, so it passes, but a future hand-built or partial JSON (an M11d wire payload, or an older persisted `RollSpec` after a schema addition) that omits these keys will fail to deserialize with "missing field" instead of defaulting to `None`. Add `#[serde(default)]` before M11d exposes these types past the pure-library boundary. (Surfaced by the M11a Task 2 code review.)
-- TODO: Two overflow sites share the same root cause — no per-roll dice-count ceiling exists yet — and the same resolution path (whatever cap Task 9 / M11d establishes): (1) `RawRoll::push` (`dice/outcome.rs`) increments `next_id: DieId (u32)` with no overflow guard — release profile has no `overflow-checks`, so wraparound is silent, not a panic, and a sufficiently long-lived `RawRoll` could reissue id `0` and collide with a retained entry, violating the doc comment's own "ids never collide" invariant; (2) `eval::sum::fold` (`dice/eval/sum.rs`) sums a `Dice` group's kept records into an `i64` with no cap on `DiceGroup.count`, so an uncapped count is an unbounded-work / overflow surface at evaluation time as well as at roll time. Neither is reachable within one roll today (`DiceGroup::count` bound doesn't exist yet, see the min>max validation TODO above), but both become real once Task 9 / a transport boundary lifts that ceiling. Add `checked_add`/saturating guards at both sites alongside whatever per-roll dice-count cap Task 9 (or M11d) establishes — mirrors the `roll_uniform` full-span guard already added in `rng.rs` (commit `49c63ed`). (Surfaced by the M11a Task 3 code review; broadened by the M11a Task 6 buddy-check.)
+- RESOLVED (M11d-2 Task 1): every `Option<>` field on types reachable from `RollSpec` now
+  carries `#[serde(default)]` (incl. `Tier.label`/`tier_value`, `TotalConfig.difficulty`,
+  `SuccessConfig.required_successes`/`crit_success`/`crit_fail`, `Face.value`), pinned by a
+  partial-JSON deserialization test — closing the original gap: `RollSpec.success`/`required_successes` lacked `#[serde(default)]` — today's only round-trip always populates every field, so it passes, but a future hand-built or partial JSON (an M11d wire payload, or an older persisted `RollSpec` after a schema addition) that omits these keys will fail to deserialize with "missing field" instead of defaulting to `None`. Add `#[serde(default)]` before M11d exposes these types past the pure-library boundary. (Surfaced by the M11a Task 2 code review.)
+- RESOLVED (M11d-2 Tasks 1+3 + buddy-check): the transport boundary now caps
+  `MAX_ROLL_DICE=100`/`MAX_ROLL_RECORDS=1000` (`chat/rolls.rs`), `RawRoll::push` guards
+  `next_id` via `checked_add` (debug-assert + saturate), and `eval::sum::fold` saturates BOTH
+  the per-group sum AND — a buddy-check catch beyond this entry's original scope — every
+  `Expr::Bin` Add/Sub/Mul arm (unbounded `Const` terms/`*` chains were deterministically
+  overflowable with zero dice). Original entry: two overflow sites shared the root cause — no per-roll dice-count ceiling — and the same resolution path (whatever cap Task 9 / M11d establishes): (1) `RawRoll::push` (`dice/outcome.rs`) increments `next_id: DieId (u32)` with no overflow guard — release profile has no `overflow-checks`, so wraparound is silent, not a panic, and a sufficiently long-lived `RawRoll` could reissue id `0` and collide with a retained entry, violating the doc comment's own "ids never collide" invariant; (2) `eval::sum::fold` (`dice/eval/sum.rs`) sums a `Dice` group's kept records into an `i64` with no cap on `DiceGroup.count`, so an uncapped count is an unbounded-work / overflow surface at evaluation time as well as at roll time. Neither is reachable within one roll today (`DiceGroup::count` bound doesn't exist yet, see the min>max validation TODO above), but both become real once Task 9 / a transport boundary lifts that ceiling. Add `checked_add`/saturating guards at both sites alongside whatever per-roll dice-count cap Task 9 (or M11d) establishes — mirrors the `roll_uniform` full-span guard already added in `rng.rs` (commit `49c63ed`). (Surfaced by the M11a Task 3 code review; broadened by the M11a Task 6 buddy-check.)
 - Bound `SuccessConfig.expertise` (u32) at the M11d untrusted-transport boundary,
   alongside the per-roll dice-count cap: `eval::expertise::allocate` is `O(N·E²)`, so
   an unbounded `E` from an untrusted `RollSpec` is a DoS vector via `die_values`'s
@@ -73,7 +81,9 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   together by whatever sane bound gets enforced at that boundary (design intent: `E` is
   single digits in every real system). Pure-library M11b-2 stays cap-agnostic by design.
   (Surfaced by the M11b-2 Task 2/Task 3 code reviews.)
-- TODO: `ParseError`'s messages (`Unexpected`/`Trailing`, and any future variant carrying a `format!("{:?}", ...)` payload) are raw Rust `Debug`-formatted `Token` values (e.g. `Some(BangP)`), not human-readable text. Fine while errors stay server-internal, but before M11c/d surfaces a parse failure directly to a player in a chat UI, add a `Display` impl for `Token` (and route the error arms through it) so the message reads as dice notation, not a Rust enum dump. (Surfaced by the M11a Task 9 review fix — `ParseError::DuplicateSuccessRule` was added with a clean fixed message; the pre-existing variants were not.)
+- RESOLVED (M11d-2 Task 1): `ParseError` (and `Token`) now implement player-presentable
+  `Display`, consumed by the chat System error notices; pinned by a no-debug-artifacts test
+  over every variant. Original entry: messages were raw Rust `Debug`-formatted `Token` values (e.g. `Some(BangP)`), not human-readable text. Fine while errors stay server-internal, but before M11c/d surfaces a parse failure directly to a player in a chat UI, add a `Display` impl for `Token` (and route the error arms through it) so the message reads as dice notation, not a Rust enum dump. (Surfaced by the M11a Task 9 review fix — `ParseError::DuplicateSuccessRule` was added with a clean fixed message; the pre-existing variants were not.)
 - Dice notation: extended math functions (floor/ceil/round/abs/min/max) are not yet
   parsed. M11a covers dice + arithmetic +-*/() + keep/drop/explode/reroll + cs/cf. Add
   as the notation grammar grows with system demand.
@@ -82,9 +92,10 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   offset ties on `max_by_key`/`min_by_key`'s caller-order-dependent semantics (documented in
   `classify.rs`'s doc comment), so which duplicate wins depends on vec order rather than being
   deterministic. Not reachable today (M11b-1 authors `Tier` lists directly, no untrusted
-  construction path exists yet); add a uniqueness/sortedness guard when M11d wires a
-  wire-facing `RollSpec`/`Tier` construction path, mirroring the existing `sides >= 1` and
-  `#[serde(default)]` guards already tracked above. (Surfaced by the M11b-1 whole-branch review.)
+  construction path exists yet); add a uniqueness/sortedness guard when a wire-facing
+  `Tier` construction path appears. STILL OPEN after M11d-2: the wire boundary it wired is
+  notation-only, and notation has no tier-ladder syntax — `Tier` lists remain
+  struct-authored with no untrusted path. (Surfaced by the M11b-1 whole-branch review.)
 - TODO: `DieKind::Faces` (M11b-3) has two unguarded panic surfaces, mirroring the existing
   `min > max` / dice-count-cap gaps above — `DieKind::validate()` (which rejects an empty
   `faces` list) is never called from any production code path, only from `spec.rs`'s own unit
@@ -95,10 +106,13 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   panics via index-out-of-bounds — concretely reachable via `recalc::RecalcOp::ReplaceDie`,
   which (unlike `RerollDice`) has no `Faces`-vs-`Numeric` gate at all and will happily write an
   arbitrary `natural` onto a `Faces` die's base record. Neither is reachable from untrusted input
-  today (no notation path constructs `Faces` yet — M11b-3 is struct-only for face-lists); both
-  resolve together at the same M11d untrusted-wire boundary that already needs to call
-  `DieKind::validate()` on any wire-constructed `RollSpec`, alongside the `sides >= 1` /
-  dice-count-cap guards above. (Surfaced by the M11b-3 Task 5 code review.)
+  today (no notation path constructs `Faces` yet — M11b-3 is struct-only for face-lists).
+  PARTIALLY RESOLVED (M11d-2): the wire boundary (`chat/rolls.rs::validate_pre_roll`) now
+  calls `DieKind::validate()` on every parsed group, closing (1) for any future
+  notation-constructed `Faces`; (2) — `RecalcOp::ReplaceDie` writing an out-of-range
+  `natural` onto a `Faces` record — remains open and resolves whenever recalculate gains a
+  wire exposure (recalc-from-chat is itself deferred, see the M11d-2 deferrals below).
+  (Surfaced by the M11b-3 Task 5 code review.)
 - TODO: `chat::resolve_content_policy` (M11c-3) silently takes the first of potentially many
   `chat-settings` docs for a world (`docs.into_iter().next()`), with no construction-time
   uniqueness guard on `CHAT_SETTINGS_DOC_TYPE`. If two ever exist, policy resolution becomes
@@ -131,3 +145,21 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - Sidebar collapse state is session-local (not persisted in ui_state) — persist if users ask.
 - Server shortcodes: pre-parse replacement also fires inside markdown code spans; refine to
   skip code spans if it ever matters in practice.
+
+## Chat / dice wire (M11d-2)
+- Recalculate-from-chat (reroll failures, replace dice on a posted roll): the RollEmbed
+  deliberately stores only `{formula, outcome}` — no `spec`/`raws` — so stored rolls cannot be
+  recalculated. Revisit in Phase 2 with a persistence decision (and close the ReplaceDie
+  Faces-natural gap above at the same boundary).
+- Rich roll tooltips: the inline chip uses the native `title` attribute; a popover with the
+  full per-die table when a design pass wants it.
+- Speak-as-token-instance attribution: `ActorOwnerRef::TokenInstance` is REJECTED at ingest
+  (fail-closed, no first-party producer) — build the composer/token-context UX and lift the
+  rejection together.
+- Attribution scope pinning: the ingest ownership check (`ActorNotSpeakable`) verifies
+  existence/doc_type/owner but not that the actor doc's world scope matches the sending world
+  — inert today (foreign refs fail closed to no attribution on every reader's client); pin the
+  scope when convenient.
+- Notation syntax for crit-event configs (`CritSuccess`/`CritFail` structs remain
+  struct-authored only) and for tier ladders — grows with system demand.
+- Per-channel / per-message dice-settings overrides (world-level only today).
