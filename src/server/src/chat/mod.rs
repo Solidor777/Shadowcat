@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 mod commands;
 mod link_preview;
+mod preview_cache;
 mod rolls;
 mod sanitize;
 mod settings;
@@ -32,6 +33,10 @@ mod shortcodes;
 pub use commands::{parse_command, ParsedCommand};
 pub use link_preview::{
     build_client as build_link_preview_client, fetch_preview, LinkPreview, PreviewError,
+};
+pub use preview_cache::{
+    LinkPreviewCache, PreviewRateLimiter, MAX_CACHE_ENTRIES, NEGATIVE_TTL, POSITIVE_TTL,
+    PREVIEW_FETCH_PER_MIN,
 };
 pub use sanitize::sanitize;
 pub use settings::{
