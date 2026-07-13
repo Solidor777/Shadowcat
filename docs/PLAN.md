@@ -990,7 +990,18 @@ Decomposed **M11a–d**:
   > chat display) · M11d-2 (dice→chat wire) · M11d-3 (link previews). All merged to LOCAL main,
   > NOT pushed (the push decision for the full M11 body is the user's).
 
-### M12 · Minimal default modules
+### M12 · Dockable panel system + minimal default modules
+> Cross-cutting spec (approved 2026-07-13): [`superpowers/specs/2026-07-13-m12-dockable-panels-default-modules-design.md`](superpowers/specs/2026-07-13-m12-dockable-panels-default-modules-design.md).
+> Scope widened by user decision from the original "minimal default modules" line: a **unified
+> dockable panel system** (one `panel` primitive: docked / floating / minimized / popped-out /
+> compact-view; replaces the fixed sidebar — chat-only docked by default), a layout refresh
+> (topbar launcher, statusbar dock strip, real mobile tooling), sheet registry + generic sheets,
+> browsers + **multi-scene** (closing the pre-M10 deferral), and **pop-out windows** (pulled
+> forward from Phase 2). Engine: dockview-core behind a project-owned contract, gated on a
+> source-verification spike (bespoke fallback behind the same contract). Decomposed
+> **M12a** (spike gate + panel-manager core + sidebar swap) → **M12b** (layout refresh) →
+> **M12c** (sheet registry + generic actor/item/fallback sheets + `openDocument` + chat doc-link
+> closure) → **M12d** (actor/scene browsers + `activeScene` multi-scene) → **M12e** (pop-out).
 - Actor / scene browsers, generic actor / item sheets — built against the public API, each treated as an API bug report. (Chat panel superseded: the baseline chat display modules ship in **M11d**.)
 
 ### M12.5 · Backups + snapshot restore (gate precondition)
