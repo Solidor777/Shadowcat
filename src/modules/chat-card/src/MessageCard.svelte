@@ -49,6 +49,18 @@
     return eff ? actorDisplayName(eff) : null;
   }
 
+  /** Host caption for a `link_preview` card. Never throws on a malformed `url` — a preview is
+   * server-fetched and validated at ingest, but the client mirror trusts nothing about the
+   * stored string's shape, so a bad URL degrades to showing the raw string instead of crashing
+   * the card. */
+  function hostOf(url: string): string {
+    try {
+      return new URL(url).host;
+    } catch {
+      return url;
+    }
+  }
+
   function formatTime(ms: number): string {
     const d = new Date(ms);
     return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -235,7 +247,9 @@
               {:else if s.kind === "html"}
                 <!-- INVARIANT: sanitized_html is ammonia-cleaned by the server's chat::sanitize —
                 the ONLY string this app may ever pass to {@html}. Every other segment kind
-                (text, roll_embed, roll_button) renders via escaped interpolation only. -->
+                (text, roll_embed, roll_button, link_preview) renders via escaped interpolation
+                only; link_preview in particular is a server-fetched title/description/url and
+                is rendered with plain `{...}` text bindings, never innerHTML. -->
                 <span class="seg-html">{@html s.sanitized_html}</span>
               {:else if s.kind === "roll_embed"}
                 <span class="roll-chip" title={inlineRollTitle(s)}>{s.outcome.successes ?? s.outcome.total}</span>
@@ -243,6 +257,21 @@
                 <button type="button" class="roll-btn" onclick={() => sendRollButton(s)}>
                   {s.label ?? s.formula}
                 </button>
+              {:else if s.kind === "link_preview"}
+                <!-- Server-fetched preview (SSRF-guarded, M11d-3). The client NEVER fetches
+                `s.url` or any remote resource — only stored title/description/url strings are
+                rendered, all as escaped text. No <img>: an <img src> would make the viewer's
+                browser fetch a remote resource, leaking their IP to a URL an attacker chose. -->
+                <a
+                  class="link-preview"
+                  href={s.url}
+                  target="_blank"
+                  rel="noopener noreferrer nofollow"
+                >
+                  <span class="link-preview-title">{s.title}</span>
+                  <span class="link-preview-description">{s.description}</span>
+                  <span class="link-preview-host">{hostOf(s.url)}</span>
+                </a>
               {/if}
             {/each}
           </p>
@@ -427,5 +456,35 @@
   .seg-html :global(img) {
     max-width: 100%;
     display: block;
+  }
+  // Link-preview card (spec §7, M11d-3). No <img> — server-fetched title/description/host
+  // only, all escaped text; the whole card is the link (44px touch floor on the anchor itself).
+  .link-preview {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-height: 44px;
+    padding: var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    text-decoration: none;
+    color: inherit;
+  }
+  .link-preview-title {
+    font-weight: 700;
+  }
+  .link-preview-description {
+    opacity: 0.75;
+    // Clamps to ~2 lines rather than letting a long server-fetched description balloon the
+    // card's height in the message list.
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .link-preview-host {
+    font-size: 0.85em;
+    opacity: 0.6;
   }
 </style>
