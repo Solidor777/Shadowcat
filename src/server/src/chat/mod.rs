@@ -24,11 +24,15 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 mod commands;
+mod link_preview;
 mod rolls;
 mod sanitize;
 mod settings;
 mod shortcodes;
 pub use commands::{parse_command, ParsedCommand};
+pub use link_preview::{
+    build_client as build_link_preview_client, fetch_preview, LinkPreview, PreviewError,
+};
 pub use sanitize::sanitize;
 pub use settings::{
     resolve_content_policy, resolve_dice_context, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE,
