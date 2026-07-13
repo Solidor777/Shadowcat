@@ -1,19 +1,33 @@
 ---
 name: shadowcat-codebase-dice
-description: "Use when touching Shadowcat's dice engine: RollSpec/Expr AST, the seeded-noise RNG, roll/evaluate/recalculate, the per-group reroll/explode/keep-drop pipeline, group_index-based Total folding, SuccessCount aggregation, group_spans-based recalculation, the shared classify/crit layers, or the dice notation lexer/parser. Covers src/server/src/dice/. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat's dice engine: RollSpec/Expr AST, the seeded-noise RNG, roll/evaluate/recalculate, the per-group reroll/explode/keep-drop pipeline, group_index-based Total folding, SuccessCount aggregation, group_spans-based recalculation, the shared classify/crit layers, the dice notation lexer/parser, or the chat wire boundary that executes untrusted notation (caps/entropy/validate in chat/rolls.rs — co-owned with shadowcat-codebase-chat). Covers src/server/src/dice/. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Dice Engine
 
-Orientation for the server-authoritative dice engine: a pure Rust library with no wire/ws
-coupling yet. M11a shipped the core evaluator (RNG, per-group pipeline, Sum/SuccessCount modes,
-notation, recalculate). **M11b-1 shipped** the `direction` global flip, a data-carrying `Mode`,
-the shared classification layer, crit events, and unified `t<N>` notation. **M11b-2 shipped** the
+Orientation for the server-authoritative dice engine: a pure Rust library (still no ws/data/http
+imports) whose ONLY untrusted entry is the notation parser, now wired to chat. M11a shipped the
+core evaluator (RNG, per-group pipeline, Sum/SuccessCount modes, notation, recalculate).
+**M11b-1 shipped** the `direction` global flip, a data-carrying `Mode`, the shared
+classification layer, crit events, and unified `t<N>` notation. **M11b-2 shipped** the
 expertise-point DP allocator (buddy-checked, differential-oracle-verified) and `e<N>` notation.
 **M11b-3 shipped** labeled dice, custom-face (symbolic) dice, the `is_ordered` pipeline gate,
-`SuccessRule`/`CritTrigger` as enums (symbol-driven success/crit), `symbol_counts`, and
-Numeric-only expertise (all detailed below) — **M11b is now fully DONE**. M11c (chat core) and
-M11d (transport/wire integration, default display modules) build on all of this later.
+`SuccessRule`/`CritTrigger` as enums, `symbol_counts`, and Numeric-only expertise — **M11b
+fully DONE**. **M11d-2 shipped the transport boundary**: `chat/rolls.rs` (OUTSIDE this crate —
+see `shadowcat-codebase-chat`) executes untrusted notation at chat ingest behind caps
+(`MAX_ROLL_DICE=100`, `MAX_ROLL_RECORDS=1000`, `MAX_EXPERTISE=100` — true DP worst case is
+records-bounded, ~1000·100² ≈ 1e7 ops — `MAX_DIE_SIDES=10_000`, `MAX_INLINE_ROLLS=8`),
+per-roll OS-entropy seeds (`Uuid::new_v4` fold), and the first production `DieKind::validate()`
+caller; this crate gained the matching hardening — `#[serde(default)]` on every optional
+`RollSpec`-reachable field, `RawRoll::push` `checked_add` id guard, saturating arithmetic in
+`eval::sum::fold` (per-group sum AND every `Expr::Bin` Add/Sub/Mul arm — unbounded `Const`
+terms/`*` chains were deterministically overflowable with zero dice, a buddy-check Critical),
+and player-presentable `Display` for `ParseError`/`Token` (surfaced via chat System notices).
+The recursive-descent parser has NO depth counter — callers rely on their input-length cap
+(documented on `struct P`; chat's `MAX_MESSAGE_CHARS=4096` ≈ 2k nesting levels, safe on all
+three target OSes' default stacks). Ambient `ParseContext` for chat rolls comes from the
+world's `dice-settings` config doc (`chat/settings.rs::resolve_dice_context`, fail-closed
+Total/HighWins, GM-authored in `module-game-settings`'s Dice section).
 
 ## Purpose
 
@@ -41,9 +55,10 @@ on.
   `Faces{faces: Vec<Face>}` (M11b-3, custom/symbolic dice). `Face{value: Option<i32>, symbols:
   Vec<Symbol>}` (`Symbol = String`, an opaque system-assigned tag, e.g. Genesys "triumph");
   `value: None` means the face has no numeric meaning, only symbols. `DieKind::validate() ->
-  Result<(), DieKindError>` rejects `Faces{faces: []}` (`DieKindError::EmptyFaces`) — **not called
-  from any production path yet** (only `spec.rs`'s own unit tests), logged in `docs/TODO.md` as an
-  M11d untrusted-wire-boundary gap. `DieKind::is_ordered()`: `Numeric` always `true`; `Faces` is
+  Result<(), DieKindError>` rejects `Faces{faces: []}` (`DieKindError::EmptyFaces`) — called in
+  production by `chat/rolls.rs::validate_pre_roll` on every parsed group (M11d-2); the
+  remaining `ReplaceDie`-onto-`Faces` recalc gap stays TODO'd until recalculate gains wire
+  exposure. `DieKind::is_ordered()`: `Numeric` always `true`; `Faces` is
   `true` iff EVERY face has `value: Some` — a single unordered face makes the whole die unrankable
   against a valued sibling. `Comparator`+`test` (`#[derive(Default)] #[default] Gte`), `ExplodeKind`
   (Standard/Compound/Penetrate), `GroupModifier`, `DiceGroup{count, kind, modifiers, label:
@@ -313,8 +328,13 @@ on.
   before construction** — `rng::roll_uniform` only `debug_assert!`s this (unsafe in release). The
   notation parser enforces it (`ParseError::InvalidDieSides`); any FUTURE wire-facing `RollSpec`
   construction path (M11d) bypassing the parser needs the identical guard independently.
-- **Pure library — `dice` must never depend on `ws`/`data`/`http`/`scene`.** No wire frames, no
-  `#[derive(TS)]`/ts-rs bindings yet (that's M11d's job, once real consumers exist).
+- **Pure library — `dice` must never depend on `ws`/`data`/`http`/`scene`.** Still NO wire
+  frames and NO `#[derive(TS)]`/ts-rs bindings even after M11d-2: roll outcomes ride the
+  opaque chat `system` body (`Segment::RollEmbed{formula, outcome}`) and the client mirrors
+  them by hand in `chat-docs.ts` Zod (`RollOutcomeSchema`/`DieRecordSchema`) — a shape change
+  to `RollOutcome`/`DieRecord` MUST update that mirror, not regenerate a binding. All
+  transport policy (caps, entropy, settings, error surfacing) lives in `chat/rolls.rs`, never
+  here.
 - **Expertise optimizes the CLAMPED (visible) net successes, with a counter-max fallback in the
   all-failed region.** `eval::expertise::allocate` maximizes raw lexicographic `(net, counter)`
   first; only when that raw net is `< 1` AND `allow_negative` is unset (every allocation clamps to
@@ -337,13 +357,17 @@ on.
 - **The plan text and the real code can drift** — this module was built through several
   buddy-check fix rounds that changed signatures after the plan's own example code was written.
   Always read the actual current file before assuming a plan snippet's exact signature.
-- **No per-roll dice-count cap exists yet.** `DiceGroup.count: u32` is unbounded; `RawRoll::next_id`
-  (a `u32` counter) has no overflow guard; `eval::sum::fold`'s `i64` total sum is theoretically
-  overflowable for a pathological `count`. All tracked in `docs/TODO.md` "Server / dice (M11a)",
-  deferred to whatever cap Task 9/M11d establishes at the transport boundary — not yet built.
-- **`ParseError` messages are raw `{:?}` Debug output** (e.g. `"Some(BangP), expected int"`) — not
-  yet player-presentable. Needs a `Display` impl for `Token` before M11c/d surfaces parse errors
-  directly in a chat UI (logged in `docs/TODO.md`).
+- **The crate's OWN types stay uncapped by design — the caps live at the transport boundary**
+  (M11d-2): `DiceGroup.count` is still an unbounded `u32` inside the pure library; anything
+  reaching `roll()`/`evaluate()` from untrusted input MUST come through
+  `chat/rolls.rs::execute_roll`/`validate_formula` (the cap walk + `DieKind::validate()`
+  caller). A future second transport must reuse or replicate that boundary, never call
+  `notation::parse` + `roll` bare. Overflow is defense-in-depth-guarded crate-side
+  (`RawRoll::push` checked id increment; saturating folds in `eval/sum.rs` incl. every
+  `Expr::Bin` arm).
+- **`ParseError`/`Token` implement player-presentable `Display`** (M11d-2) — chat System
+  notices surface them directly; a new variant MUST get a clean `Display` arm (pinned by the
+  no-debug-artifacts test iterating every variant), never a `{:?}` payload.
 - **The notation-level `cs`/`cf` tokens and `SuccessConfig.crit_success`/`crit_fail` are two
   unrelated mechanisms that happen to share initials.** `cs`/`cf` in a dice-notation string set
   the ordinary per-die `SuccessRule` (or its M11a-era inverted-comparator `cf` approximation);
@@ -367,11 +391,12 @@ on.
   own pre-approved buddy-check (Task 9, reopening the sealed crit-scoring path for `CritTrigger`)
   and the independent Task 11 review (expertise's Numeric-only restriction) each found and fixed
   a real bug too — see the `fixed`-term and derived-value-retrigger Hard invariants above.
-- **`DieKind::validate()` (rejecting an empty `Faces { faces: [] }`) is not called from any
-  production path yet** — only from `spec.rs`'s own unit tests. An empty-`faces` `Faces` die
-  reaching `roll_uniform(rng, 0, faces.len() as i32 - 1)` computes a degenerate zero/negative span;
-  no notation path constructs `Faces` today (M11b-3 is struct-only for face-lists), so this is not
-  reachable yet — logged in `docs/TODO.md` as an M11d untrusted-wire-boundary enforcement point.
+- **`DieKind::validate()` is enforced at the wire boundary, not inside `roll()`** (M11d-2):
+  `chat/rolls.rs::validate_pre_roll` calls it per parsed group before any rolling, so an
+  empty-`faces` die can no longer arrive via chat (notation still can't construct `Faces`
+  anyway). The crate itself remains unvalidated by design — any future non-chat caller that
+  hand-builds a `RollSpec` must run the same validation; the `ReplaceDie`-onto-`Faces`
+  out-of-range-natural recalc gap stays open until recalculate is wire-exposed (TODO.md).
 - **`compare_labels` returns `Some(0)`, not `None`, for an all-dropped-but-ordered label.** `None`
   means the label has ZERO matching records at all, OR at least one matching record is unordered
   (see the Hard invariants entry above); a label whose records all exist, are all ordered, but are

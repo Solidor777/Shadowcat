@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-chat
-description: "Use when touching Shadowcat's chat system: the message Document model (incl. source/edited/deleted markers), SendMessage/EditMessage/DeleteMessage ingest, the ops_target_message ingress guard, the WriteOrigin-gated Update exemption, the content sanitizer + shortcode pre-pass (chat/sanitize.rs, chat/shortcodes.rs), the chat-settings policy, the command parser, the client body mirror (client/core chat-docs.ts), or the chat UI modules (modules/chat, chat-composer, chat-card — the {@html} card boundary). Covers src/server/src/chat/ + src/client/core/src/chat-docs.ts + src/modules/chat*. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat's chat system: the message Document model (incl. source/edited/deleted markers), SendMessage/EditMessage/DeleteMessage ingest, the ops_target_message ingress guard, the WriteOrigin-gated Update exemption, the content sanitizer + shortcode pre-pass, the chat/dice settings policies, the command parser, the roll wire boundary (chat/rolls.rs caps/entropy/span-scanner, RollEmbed/RollButton segments, System error notices, roll immutability, attribution authz), the client body mirror (chat-docs.ts), or the chat UI modules (chat, chat-composer, chat-card — the {@html} boundary + roll rendering). Covers src/server/src/chat/ + src/client/core/src/chat-docs.ts + src/modules/chat*. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Chat Core
@@ -20,7 +20,55 @@ path and a soft-tombstone delete path, gated by a new `WriteOrigin` marker. **M1
 input), an always-on `:shortcode:` → emoji pre-pass in `sanitize`, a member-visible world
 roster, the client Zod mirror (`chat-docs.ts`), and the chat UI as three replaceable modules
 (`module-chat` host / `module-chat-composer` / `module-chat-card`) mounted in the tabbed
-sidebar. The link-preview fetcher (ex-c-4, now M11d-3) is the only unbuilt chat piece.
+sidebar. **M11d-2 shipped the dice wire**: rolls execute server-side at chat ingest
+(`chat/rolls.rs` — the ONLY untrusted-notation execution path, behind caps + per-roll OS
+entropy), outcomes ride the body as `Segment::RollEmbed`/`RollButton`, roll errors surface as
+the first `MessageKind::System` producer (whispered server notices), rolls are edit-immutable,
+attribution is ownership-validated at ingest, and the card/composer render/author it all. The
+link-preview fetcher (ex-c-4, now M11d-3) is the only unbuilt chat piece.
+
+## Dice wire (M11d-2) — `src/server/src/chat/rolls.rs` + the ingest roll stage
+
+- `rolls.rs`: caps (`MAX_ROLL_DICE=100` summed over the parsed `Expr`; `MAX_ROLL_RECORDS=1000`
+  post-roll; `MAX_EXPERTISE=100`; `MAX_DIE_SIDES=10_000`; `MAX_INLINE_ROLLS=8`),
+  `DieKind::validate()` per group, `entropy_seed()` (fresh `Uuid::new_v4` fold per roll —
+  nothing persists the seed; a stored outcome's naturals reproduce it), `scan_body` (BALANCED
+  `[[…]]` span grammar — single-bracket nesting depth so notation `[label]`s survive;
+  `roll:`-prefixed spans are buttons, `|` splits a label), `execute_roll` /
+  `validate_formula` (parse+caps without rolling, for buttons), `RollError` + Display.
+- `handle_send_message` roll stage (post-parse, pre-sanitize): kind `Roll` ⇒ the body is the
+  formula, content becomes ONE `RollEmbed{formula, outcome}` (sanitize skipped — no text);
+  Normal/Emote bodies are `scan_body`-chunked — Text chunks sanitize EACH INDEPENDENTLY
+  (markdown spanning an inline roll doesn't survive, documented), Inline chunks execute,
+  Button chunks validate-only. Ambient `ParseContext` = `resolve_dice_context` (the
+  `dice-settings` config doc, fail-closed Total/HighWins, GM-authored in
+  module-game-settings' Dice section). ANY roll failure ⇒ the message is NOT created; instead
+  ONE server-authored `MessageKind::System` notice (audience `Whisper{[sender]}`, same
+  channel, sender-owned/deletable, content = the error's Display text) — exactly one message
+  per attempted send, so the flood budget stays 1:1. `System` still has NO parse_command
+  producer (exhaustive test unchanged).
+- **Roll immutability (anti-cheat):** `handle_edit_message` rejects (`RollImmutable`) when the
+  stored `kind == Roll`, when the stored content carries ANY `RollEmbed`/`RollButton` segment
+  (an executed inline roll's audit record cannot be erased by editing around it), or when the
+  new content parses to kind `Roll` (no editing INTO a roll). The stored-kind check is
+  deliberately UNCONDITIONAL because `kind: Roll` + `audience: Whisper` IS reachable via the
+  frame `audience` field (no `/w` token ⇒ `parse_command` still runs). Edits never call
+  `scan_body` — `[[…]]` in an edit stays literal text.
+- **Attribution authz (M11d-2):** `handle_send_message` fail-closed-validates `actor_owner`
+  BEFORE `build_message_doc` — an `Actor` ref must resolve to an existing `doc_type=="actor"`
+  doc owned by the sender (GM: any actor); `TokenInstance` refs are REJECTED until
+  speak-as-token ships (`SendMessageError::ActorNotSpeakable`, nothing persisted). Edits copy
+  `actor_owner` verbatim from the stored doc, so this ingest gate is the only one needed.
+  (World-scope pinning of the actor doc is a logged, inert TODO.)
+- Client: `chat-docs.ts` mirrors `roll_embed`/`roll_button` (`RollOutcomeSchema`/
+  `DieRecordSchema`, records `.passthrough()` for server-only audit fields; the
+  unknown-segment fallback REFUSES both new kinds — fail-closed; i64 `total`/`margin` can
+  saturate past 2^53, a documented display-precision tradeoff). The card renders the block
+  form ONLY for kind `Roll` + raw single-`RollEmbed` content, inline chips otherwise, buttons
+  via `ctx.chat.send({channel: sys.channel, content: "/roll "+formula})` (fresh PUBLIC roll —
+  no audience inheritance), System notices muted+badged; everything escaped, the `{@html}`
+  single-sink invariant untouched. The composer's "Speak as" picker (own actors; GM: all)
+  sends `actorOwner` and self-prunes when the selected actor disappears.
 
 ## Purpose
 
@@ -374,7 +422,8 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   visibility — panels stay mounted in the tabbed sidebar).
 - **`src/modules/chat-composer`** — Enter sends / Shift+Enter newline / `e.isComposing` IME
   guard; validation on the TRIMMED length (what's actually sent); NO client command parsing
-  (`/`-commands ride verbatim — the server parses); `actor_owner` not sent (v1).
+  (`/`-commands ride verbatim — the server parses); the "Speak as" picker (M11d-2) sends
+  `actor_owner` `Actor` refs, server-ownership-validated at ingest (see Dice wire above).
 - **`src/modules/chat-card`** — fail-closed render (`parseMessageSystem` null ⇒ nothing).
   **THE `{@html}` INVARIANT: the module's single `{@html}` sink renders only an
   `isKnownSegment`-narrowed `kind:"html"` segment's `sanitized_html` (ammonia-produced);

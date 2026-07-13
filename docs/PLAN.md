@@ -923,7 +923,42 @@ Decomposed **M11a–d**:
   > actor-name→sheet + internal doc links (need M12 sheets); speaking-as-actor composer
   > (M11d-2 with roll attribution); APG roving tabindex on the tab rail; shortcodes inside
   > code spans; send-failure surfacing (no correlation ids); collapse persistence.
-  > **M11d-2 (dice→chat wire integration) is next.**
+  > **M11d-2 DONE** (branch `m11d-2-dice-chat-wire`, SDD — Sonnet implementers, per-task
+  > two-reviewer gates, 1 pre-authorized buddy-check on the roll-execution unit) — **rolls
+  > execute at chat ingest; every dice wire-boundary TODO closed.**
+  > Shipped, server: `chat/rolls.rs` (the ONLY untrusted-notation execution path — caps
+  > `MAX_ROLL_DICE=100`/`MAX_ROLL_RECORDS=1000`/`MAX_EXPERTISE=100`/`MAX_DIE_SIDES=10000`/
+  > `MAX_INLINE_ROLLS=8`, per-roll OS-entropy seeds via `Uuid::new_v4` fold, the BALANCED
+  > `[[…]]` span scanner that survives notation `[label]`s, first production
+  > `DieKind::validate()` caller); dice-crate hardening (`serde(default)` on every optional
+  > RollSpec-reachable field, checked id increments, saturating folds, player-presentable
+  > `ParseError`/`Token` Display); the ingest roll stage (`/roll` result messages = one
+  > `Segment::RollEmbed{formula, outcome}`; inline `[[…]]` embeds with independently-sanitized
+  > text chunks; parse-validated `[[roll:…|label]]` buttons); roll errors as the FIRST
+  > `MessageKind::System` producer (whispered server notices, one message per attempted send);
+  > roll immutability (edits rejected for kind Roll, any stored roll segment, or edit-into-roll
+  > — the whole re-roll-by-edit cheat class closed); attribution authz at ingest
+  > (`ActorNotSpeakable`: Actor refs owner-or-GM-validated, TokenInstance rejected until
+  > speak-as-token ships); the `dice-settings` ambient config doc (fail-closed Total/HighWins).
+  > Shipped, client: `chat-docs.ts` roll mirrors (fail-closed, unknown-fallback refuses the new
+  > kinds, i64-saturation precision documented); card roll rendering (block form, inline chips
+  > + tooltips, buttons posting fresh public `/roll`s to the carrying channel, real System
+  > styling — all escaped, the `{@html}` single-sink untouched); the composer "Speak as" actor
+  > picker (own actors / GM all, self-pruning on deletion); a game-settings Dice section —
+  > whose review fixed a REAL Critical panel-wide (every GameSettingsPanel write sent
+  > `old: null` pre-images, so post-seed edits were always OCC-rejected; closes that panel's
+  > TODO entry). Review takeaways: the buddy-check found 1 Critical (unguarded `Expr::Bin`
+  > fold arithmetic — a 30-char zero-dice const chain deterministically overflowed i64) + 2
+  > Important (inline-roll audit records erasable via edit; a false whisper-kind invariant
+  > comment), all fixed + re-verified by both seats; per-task reviews added the attribution
+  > ownership gate (pre-existing spoofing vector), IME/trimmed-cap composer guards carried
+  > from M11d-1's precedent, and the malformed-embed card tests.
+  > Spec: [`superpowers/specs/2026-07-13-m11d-2-dice-chat-wire-design.md`](superpowers/specs/2026-07-13-m11d-2-dice-chat-wire-design.md).
+  > Plan: [`superpowers/plans/2026-07-13-m11d-2-dice-chat-wire.md`](superpowers/plans/2026-07-13-m11d-2-dice-chat-wire.md).
+  > Deferred (TODO.md "Chat / dice wire"): recalc-from-chat (embeds store formula+outcome
+  > only), rich tooltips, speak-as-token, attribution world-scope pinning, crit/tier notation,
+  > per-channel dice-settings.
+  > **M11d-3 (SSRF-guarded link previews — the final M11 checkpoint) is next.**
 
 ### M12 · Minimal default modules
 - Actor / scene browsers, generic actor / item sheets — built against the public API, each treated as an API bug report. (Chat panel superseded: the baseline chat display modules ship in **M11d**.)
