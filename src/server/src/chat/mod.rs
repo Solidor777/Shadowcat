@@ -633,11 +633,16 @@ pub async fn handle_send_message(
             segments
         }
     };
-    // Link-preview enrich stage: only for hyperlink-carrying, non-Roll bodies
-    // (a `kind == Roll` message always returns above before reaching here).
-    // Synchronous, before publish (design doc §3) — no spawned task, no
-    // post-publish revision, no message-deleted-mid-fetch race.
-    if policy.previews_enabled() {
+    // Link-preview enrich stage: only for hyperlink-carrying, non-Roll bodies.
+    // The `kind != Roll` guard is EXPLICIT (design doc §3), not incidental: a
+    // successful roll falls through here with `content_segments == [RollEmbed]`
+    // (only the roll-EXECUTION-FAILURE arm returns early), so without this
+    // guard a `/roll` on a preview-enabled world would enter `enrich` — a no-op
+    // today only because `enrich` scans `Segment::Html` runs (none in a
+    // RollEmbed), but a latent path to attaching outbound-fetched previews to a
+    // roll message if that ever changes. Synchronous, before publish (§3) — no
+    // spawned task, no post-publish revision, no message-deleted-mid-fetch race.
+    if parsed.kind != MessageKind::Roll && policy.previews_enabled() {
         link_preview::enrich(
             &mut content_segments,
             preview_client,
@@ -3137,6 +3142,38 @@ mod link_preview_ingest_tests {
                 .any(|s| matches!(s, Segment::LinkPreview { .. })),
             "an edit removing the link must drop the stale preview: {:?}",
             sys_after.content
+        );
+    }
+
+    /// A `/roll` on a PREVIEW-ENABLED world never accumulates a `LinkPreview`
+    /// segment: its content is exactly one `RollEmbed`. Pins the design §3
+    /// EXPLICIT `kind != MessageKind::Roll` enrich guard — a successful roll
+    /// falls through to the enrich gate (only the roll-execution-FAILURE arm
+    /// returns early), so the guard, not the incidental absence of `<a href>`
+    /// in a `RollEmbed`, is what keeps a roll message off the outbound-fetch
+    /// path if the roll content model ever changes.
+    #[tokio::test]
+    async fn roll_message_never_gets_a_link_preview_even_when_previews_enabled() {
+        let f = Fixture::new(hyperlinks_on()).await;
+        let cmd = f.send("/roll 1d6", 1).await.unwrap();
+        let sys = f.stored_system(&cmd).await;
+        assert_eq!(sys.kind, MessageKind::Roll);
+        assert_eq!(
+            sys.content.len(),
+            1,
+            "roll content must be one RollEmbed: {:?}",
+            sys.content
+        );
+        assert!(matches!(
+            sys.content.first(),
+            Some(Segment::RollEmbed { .. })
+        ));
+        assert!(
+            !sys.content
+                .iter()
+                .any(|s| matches!(s, Segment::LinkPreview { .. })),
+            "a roll message must never carry a LinkPreview: {:?}",
+            sys.content
         );
     }
 
