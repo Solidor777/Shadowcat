@@ -56,6 +56,15 @@ impl ChatContentPolicy {
 /// Read the world's chat content policy, fail-closed. A query error, an
 /// absent `chat-settings` doc, or a `system` body that fails to deserialize
 /// into `ChatContentPolicy` all yield `ChatContentPolicy::default()`.
+///
+/// SINGLETON RESOLUTION: `chat-settings` is a per-world singleton, but nothing
+/// yet enforces uniqueness at the create chokepoint (the GM editor's seed guard
+/// is client-side only). Resolution is DETERMINISTIC regardless: `query_documents`
+/// orders `ORDER BY id`, so if two `chat-settings` docs ever coexist the
+/// lowest-UUID one always wins — never a nondeterministic policy. The fail-closed
+/// direction bounds a stray doc (it can only WIDEN enrichment, which still needs
+/// GM-authored content to matter). Construction-time uniqueness (a singleton
+/// doc-type create-gate) is the stronger, still-deferred half — see `docs/TODO.md`.
 pub async fn resolve_content_policy(repo: &dyn Repository, world_id: Uuid) -> ChatContentPolicy {
     let docs = match repo.query_documents(world_id, CHAT_SETTINGS_DOC_TYPE).await {
         Ok(d) => d,
@@ -262,6 +271,80 @@ mod tests {
         assert_eq!(
             resolve_content_policy(&repo, world_id).await,
             ChatContentPolicy::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_null_link_previews_deserializes_to_none() {
+        // The GM tri-state "Default" option writes a literal JSON `null` for
+        // `link_previews` (not an absent key). It MUST resolve to `None`, so
+        // `previews_enabled` follows the default-on-when-hyperlinks rule — a
+        // parse failure here would fail-close the WHOLE policy to all-off.
+        let (repo, world_id, gm) = world().await;
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let doc = settings_doc(
+            world_id,
+            gm,
+            serde_json::json!({ "hyperlinks": true, "link_previews": null }),
+        );
+        repo.apply_intent(
+            &gm_ctx,
+            world_id,
+            vec![Operation::Create { doc }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        let p = resolve_content_policy(&repo, world_id).await;
+        assert_eq!(p.link_previews, None);
+        assert!(p.hyperlinks && p.previews_enabled());
+    }
+
+    #[tokio::test]
+    async fn duplicate_settings_docs_resolve_deterministically_by_lowest_id() {
+        // No construction-time uniqueness guard yet (see the resolver doc +
+        // TODO.md); resolution must still be DETERMINISTIC — `query_documents`
+        // orders by id, so the lowest-UUID doc's policy always wins.
+        let (repo, world_id, gm) = world().await;
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut low = settings_doc(world_id, gm, serde_json::json!({ "markdown": true }));
+        low.id = Uuid::from_u128(1);
+        let mut high = settings_doc(
+            world_id,
+            gm,
+            serde_json::json!({ "markdown": false, "html": true }),
+        );
+        high.id = Uuid::from_u128(u128::MAX);
+        // Insert the high-id doc FIRST to prove insertion order doesn't decide it.
+        repo.apply_intent(
+            &gm_ctx,
+            world_id,
+            vec![Operation::Create { doc: high }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        repo.apply_intent(
+            &gm_ctx,
+            world_id,
+            vec![Operation::Create { doc: low }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        let p = resolve_content_policy(&repo, world_id).await;
+        assert!(
+            p.markdown && !p.html,
+            "the lowest-id doc's policy must win deterministically"
         );
     }
 

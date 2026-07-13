@@ -113,17 +113,24 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   `natural` onto a `Faces` record — remains open and resolves whenever recalculate gains a
   wire exposure (recalc-from-chat is itself deferred, see the M11d-2 deferrals below).
   (Surfaced by the M11b-3 Task 5 code review.)
-- TODO: `chat::resolve_content_policy` (M11c-3) silently takes the first of potentially many
-  `chat-settings` docs for a world (`docs.into_iter().next()`), with no construction-time
-  uniqueness guard on `CHAT_SETTINGS_DOC_TYPE`. If two ever exist, policy resolution becomes
-  order-dependent (SQL `ORDER BY id`, i.e. UUID string order, not creation order). Fail-closed
-  direction limits the blast radius (a stray doc can only *widen* enrichment, which still
-  requires GM-authored content to matter), so this is low-risk — but add a uniqueness
-  enforcement (or explicit tie-break ordering) when M11d's GM chat-settings UI gets a write
-  path, mirroring the `faction-registry`/`condition-registry` idempotent-seed pattern.
-  (Surfaced by the M11c-3 whole-branch review.) The same gap applies verbatim to
-  `DICE_SETTINGS_DOC_TYPE`/`resolve_dice_context` (M11d-2, same first-doc idiom by design) —
-  fix both doc types together.
+- TODO: construction-time uniqueness for the singleton config doc_types
+  (`CHAT_SETTINGS_DOC_TYPE`, `DICE_SETTINGS_DOC_TYPE`, and the faction/condition/world-settings
+  registries) — nothing at the `apply_intent` Create chokepoint stops a second doc of a
+  singleton doc_type from being created in a world (the GM editors' seed guards are
+  client-side-only, racy across two GMs/connections). **The "explicit tie-break ordering" half
+  of the original ask is now DONE + tested (M11d-3):** `resolve_content_policy`/
+  `resolve_dice_context` resolve DETERMINISTICALLY by lowest UUID (`query_documents` `ORDER BY
+  id`), documented at both resolvers and pinned by
+  `duplicate_settings_docs_resolve_deterministically_by_lowest_id` — so a duplicate can never
+  cause a nondeterministic policy, and the fail-closed direction bounds a stray doc to
+  widening-only. **Still deferred:** the STRONGER construction-time guard (a singleton
+  doc-type create-gate). Reason for deferral, re-evaluated when M11d-3's GM chat-settings write
+  path landed: it is its own change — a singleton-doctype registry consulted on every Create
+  across factions/conditions/world-settings/dice-settings/chat-settings uniformly — and the
+  residual risk is low (deterministic + fail-closed resolution already makes a duplicate inert
+  beyond needing GM-authored content). Build it when a singleton config gains a create path that
+  isn't already idempotent-seed-guarded, or as a dedicated hardening sweep.
+  (Surfaced M11c-3; tie-break resolved + re-logged M11d-3 T6 review.)
 
 ## Client / chat display (M11d-1)
 - Message-list virtualization: the panel renders only the most recent 200 messages per view
