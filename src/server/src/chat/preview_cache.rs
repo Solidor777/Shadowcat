@@ -213,8 +213,11 @@ mod tests {
             "one past the budget must be rejected"
         );
 
-        // 60s later the sliding window has fully rolled past every prior hit.
-        let recovered_at = 1_000 + 60_000;
+        // A full 60s window past the LAST recorded hit: every prior hit has
+        // aged out (`retain` threshold now exceeds the last hit's timestamp),
+        // so the whole budget is free again.
+        let last_hit = 1_000 + (PREVIEW_FETCH_PER_MIN as i64 - 1);
+        let recovered_at = last_hit + 60_001;
         assert!(lim.check(u, recovered_at, PREVIEW_FETCH_PER_MIN));
     }
 }
