@@ -662,12 +662,29 @@ pub async fn handle_edit_message(
         return Err(SendMessageError::NotFound);
     }
     // Roll immutability (anti-cheat): a roll's outcome is fixed at send time.
-    // The STORED kind check alone is sufficient to cover every audience —
-    // including `Whisper`, whose body is NEVER parsed as a command at send
-    // time either (see `handle_send_message`'s literal-body treatment), so a
-    // whisper's stored `kind` can never BE `Roll` in the first place; this
-    // check is what actually blocks a PUBLIC/GM-only roll from being edited.
-    if sys.kind == MessageKind::Roll {
+    // This check is UNCONDITIONAL (not gated on audience) because
+    // `kind == Roll` + `audience == Whisper` IS reachable: `handle_send_message`
+    // always runs `parse_command` on the raw content regardless of which
+    // front-door set the audience (the c-2 frame field or a content `/w`) — a
+    // frame `SendMessage{content: "/roll 2d6", audience: Whisper{..}}` parses
+    // to `kind: Roll` with no `/w` in the content, so the frame's `Whisper`
+    // audience is used verbatim alongside `kind: Roll`. Without this
+    // unconditional placement, a whispered roll's audit record could be
+    // edited away.
+    //
+    // A message carrying ANY roll segment is edit-immutable, not just one
+    // whose STORED `kind` is `Roll`: a Normal/Emote message's body can embed
+    // an inline `[[...]]` roll or a `[[roll:...]]` button mid-text (e.g.
+    // "attack! [[1d20]] done"), producing `Segment::RollEmbed`/
+    // `Segment::RollButton` entries inside an otherwise-Normal message's
+    // `content`. Editing that message's text would otherwise silently erase
+    // the executed roll's audit record even though the top-level `kind`
+    // check never fires. Delete remains available for any message.
+    let has_roll_segment = sys
+        .content
+        .iter()
+        .any(|seg| matches!(seg, Segment::RollEmbed { .. } | Segment::RollButton { .. }));
+    if sys.kind == MessageKind::Roll || has_roll_segment {
         return Err(SendMessageError::RollImmutable);
     }
 
@@ -1861,6 +1878,198 @@ mod tests {
             [Segment::Text { text }] => assert_eq!(text, "bye now"),
             other => panic!("expected a single Text segment, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn editing_a_normal_message_with_an_inline_roll_segment_is_immutable() {
+        // FIX 2: a Normal message whose body embeds an inline roll ("attack!
+        // [[1d20]] done") stores kind: Normal (never Roll) but its content
+        // still carries a Segment::RollEmbed mid-text. Editing must be
+        // rejected the same as editing a top-level `/roll` message would be
+        // -- otherwise the roll's audit record could be erased by editing
+        // around it.
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "attack! [[1d20]] done".into(),
+            None,
+            Audience::Public,
+            100,
+            30,
+        )
+        .await
+        .unwrap();
+        let (message_id, doc) = match &cmd.ops[0] {
+            Operation::Create { doc } => (doc.id, doc),
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        assert_eq!(sys.kind, MessageKind::Normal);
+        assert!(
+            sys.content
+                .iter()
+                .any(|s| matches!(s, Segment::RollEmbed { .. })),
+            "expected an inline RollEmbed segment, got {:?}",
+            sys.content
+        );
+
+        let err = handle_edit_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            message_id,
+            "attack! done, no roll".into(),
+            101,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SendMessageError::RollImmutable));
+
+        // A plain Normal message (no roll segment) still edits fine.
+        let cmd2 = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "hello there".into(),
+            None,
+            Audience::Public,
+            102,
+            30,
+        )
+        .await
+        .unwrap();
+        let plain_id = match &cmd2.ops[0] {
+            Operation::Create { doc } => doc.id,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        handle_edit_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            plain_id,
+            "hello again".into(),
+            103,
+            30,
+        )
+        .await
+        .expect("a plain Normal message must still edit fine");
+    }
+
+    #[tokio::test]
+    async fn whisper_roll_via_frame_audience_is_edit_immutable() {
+        // FIX 3: kind == Roll + audience == Whisper IS reachable via the c-2
+        // frame's `audience` field (content has no /w, so parse_command never
+        // sets whisper_to, and the frame's Whisper audience is used as-is
+        // alongside kind: Roll). The unconditional kind == Roll check must
+        // still block editing it.
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let sender = repo
+            .create_user("sender", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let alice = repo
+            .create_user("alice", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, sender, WorldRole::Player)
+            .await
+            .unwrap();
+        repo.add_member(w.id, alice, WorldRole::Player)
+            .await
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: sender,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let cmd = handle_send_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            "all".into(),
+            "/roll 2d6".into(),
+            None,
+            Audience::Whisper {
+                recipients: vec![alice],
+            },
+            100,
+            30,
+        )
+        .await
+        .unwrap();
+        let (message_id, doc) = match &cmd.ops[0] {
+            Operation::Create { doc } => (doc.id, doc),
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        assert_eq!(
+            sys.kind,
+            MessageKind::Roll,
+            "expected reachable kind: Roll + audience: Whisper combination"
+        );
+        assert!(matches!(sys.audience, Audience::Whisper { .. }));
+
+        let err = handle_edit_message(
+            &room,
+            &repo,
+            &ctx,
+            &rate,
+            message_id,
+            "2d6 edited".into(),
+            101,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SendMessageError::RollImmutable));
     }
 
     #[test]

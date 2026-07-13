@@ -28,11 +28,18 @@ pub(crate) const MAX_ROLL_DICE: u32 = 100;
 /// oversized result rejects the roll outright rather than allocating it.
 pub(crate) const MAX_ROLL_RECORDS: usize = 1_000;
 /// Cap on `SuccessConfig.expertise` — the DP allocator's cost is `O(N*E^2)`,
-/// an unbounded `E` is a DoS vector independent of `MAX_ROLL_DICE`.
+/// an unbounded `E` is a DoS vector independent of `MAX_ROLL_DICE`. `N` here
+/// is not `MAX_ROLL_DICE`: the DP pools KEPT dice records, which explosions
+/// can inflate to just under `MAX_ROLL_RECORDS` (1000). Worst case is
+/// therefore ~1000 * 100^2 = 1e7 ops, not `MAX_ROLL_DICE * E^2` -- still
+/// cheap and bounded, but the bound is on the record cap, not the dice cap.
 pub(crate) const MAX_EXPERTISE: u32 = 100;
-/// Cap on a `DieKind::Numeric` die's face count (`max - min + 1`). With
-/// records <= `MAX_ROLL_RECORDS` and faces <= `MAX_DIE_SIDES`, every i64 sum
-/// in the evaluator is overflow-free by construction.
+/// Cap on a `DieKind::Numeric` die's face count (`max - min + 1`). Per-die
+/// values are bounded by this cap and `MAX_ROLL_RECORDS`, but the evaluator's
+/// aggregate folds (`eval::sum::fold`'s `Expr::Bin` arithmetic, including a
+/// pure-`Const` chain with zero dice groups) are NOT overflow-free by
+/// construction -- they saturate at `i64::MAX`/`MIN` on overflow instead of
+/// panicking or wrapping (see `eval::sum`'s `*_saturating` helpers).
 pub(crate) const MAX_DIE_SIDES: i64 = 10_000;
 /// Cap on non-text chunks (`Inline`/`Button`) `scan_body` may extract from one
 /// message body.
@@ -546,6 +553,28 @@ mod tests {
             Err(RollError::TooManyDice(101)) => {}
             other => panic!("expected TooManyDice(101), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pure_const_multiplication_chain_saturates_without_panic() {
+        // Zero dice groups: `walk_groups` counts none, so `MAX_ROLL_DICE`/
+        // `MAX_ROLL_RECORDS` never see this formula. Run under a debug build
+        // (overflow-checks on) -- if the fold used raw `*` this would panic;
+        // reaching a saturated result proves it does not.
+        let (_, out) = execute_roll_with_seed("2000000000*2000000000*3", total_ctx(), 1).unwrap();
+        assert_eq!(out.total, i64::MAX);
+    }
+
+    #[test]
+    fn multi_group_multiplication_saturates_without_panic() {
+        // Two `d10000` groups multiplied together: within `MAX_ROLL_DICE`/
+        // `MAX_ROLL_SIDES`, but `1d10000 * 1d10000` can still reach values
+        // near `i64::MAX` depending on draws; assert only that evaluation
+        // completes (no panic) and the total is a finite, non-negative i64
+        // (both dice draws are positive, so the true product is always >= 0,
+        // never spuriously saturating to `i64::MIN`).
+        let (_, out) = execute_roll_with_seed("1d10000*1d10000", total_ctx(), 7).unwrap();
+        assert!(out.total >= 0);
     }
 
     #[test]

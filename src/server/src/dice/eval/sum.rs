@@ -51,6 +51,32 @@ fn checked_add_saturating(acc: i64, next: i64) -> i64 {
     }
 }
 
+/// Saturating `Add`/`Sub`/`Mul` for `Expr::Bin` folds. Unlike
+/// `checked_add_saturating` above (whose overflow is unreachable given the
+/// chat boundary's per-group record cap), a pure-`Const` arithmetic chain
+/// (`2000000000*2000000000*3`) has NO dice groups at all -- `walk_groups`
+/// counts zero, so `chat/rolls.rs`'s `MAX_ROLL_DICE`/`MAX_ROLL_RECORDS` caps
+/// never see it -- and a chain of `Mul`-combined dice groups (`1d10000 *
+/// 1d10000 * ...`) can overflow `i64` even within those caps. Overflow here
+/// is genuinely reachable, so these saturate silently (no `debug_assert!`).
+fn add_saturating(l: i64, r: i64) -> i64 {
+    l.checked_add(r)
+        .unwrap_or(if r >= 0 { i64::MAX } else { i64::MIN })
+}
+
+fn sub_saturating(l: i64, r: i64) -> i64 {
+    l.checked_sub(r)
+        .unwrap_or(if r <= 0 { i64::MAX } else { i64::MIN })
+}
+
+fn mul_saturating(l: i64, r: i64) -> i64 {
+    l.checked_mul(r).unwrap_or(if (l >= 0) == (r >= 0) {
+        i64::MAX
+    } else {
+        i64::MIN
+    })
+}
+
 fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
     match expr {
         Expr::Const(c) => *c as i64,
@@ -68,9 +94,9 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
             let l = fold(lhs, raws, next_group);
             let r = fold(rhs, raws, next_group);
             match op {
-                BinOp::Add => l + r,
-                BinOp::Sub => l - r,
-                BinOp::Mul => l * r,
+                BinOp::Add => add_saturating(l, r),
+                BinOp::Sub => sub_saturating(l, r),
+                BinOp::Mul => mul_saturating(l, r),
                 // Division by zero yields 0 (documented; parser rejects literal `/0`).
                 BinOp::Div => {
                     if r == 0 {

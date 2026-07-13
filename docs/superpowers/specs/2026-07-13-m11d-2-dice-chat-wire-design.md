@@ -74,6 +74,8 @@ overflow guards (its own TODO items):
 - Edited content never executes inline spans or produces buttons: `[[…]]` in an edit stays
   literal text through the normal sanitize path. One rule — "edits never create roll
   segments" — keeps the whole re-roll-by-edit cheat class closed.
+- An edit is likewise rejected when the stored content already carries any roll segment — an
+  executed inline roll's audit record cannot be erased by editing around it.
 
 ## 3. Ambient dice settings
 
