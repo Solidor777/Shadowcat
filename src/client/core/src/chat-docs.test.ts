@@ -34,7 +34,7 @@ describe("parseMessageSystem", () => {
     expect(sys!.edited_at).toBe(5);
   });
   test("unknown segment kinds survive parse and are filtered by isKnownSegment", () => {
-    const sys = parseMessageSystem(msgDoc({ ...base, content: [{ kind: "text", text: "a" }, { kind: "roll_embed", roll: {} }] }));
+    const sys = parseMessageSystem(msgDoc({ ...base, content: [{ kind: "text", text: "a" }, { kind: "preview_card", url: "x" }] }));
     expect(sys).not.toBeNull();
     expect(sys!.content).toHaveLength(2);
     expect(sys!.content.filter(isKnownSegment)).toEqual([{ kind: "text", text: "a" }]);
@@ -51,6 +51,84 @@ describe("parseMessageSystem", () => {
     expect(parseMessageSystem(msgDoc("nonsense"))).toBeNull();
     expect(parseMessageSystem(msgDoc({ channel: "g" }))).toBeNull();
     expect(parseMessageSystem(msgDoc({ ...base, content: "not-an-array" }))).toBeNull();
+  });
+});
+
+function dieRecord(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    value: 4, natural: 4, kept: true, exploded: false,
+    crit_success: false, crit_fail: false, expertise: 0, group_index: 0,
+    label: null, symbols: [],
+    ...overrides,
+  };
+}
+function rollOutcome(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    total: 4, records: [dieRecord()],
+    successes: null, pass: null, margin: null, tier_label: null, tier_value: null,
+    crit_successes: 0, crit_fails: 0, positive_counter: 0, negative_counter: 0,
+    symbol_counts: {},
+    ...overrides,
+  };
+}
+
+describe("roll segments (M11d-2)", () => {
+  test("parses a roll_embed segment", () => {
+    const sys = parseMessageSystem(msgDoc({
+      ...base, kind: "roll",
+      content: [{ kind: "roll_embed", formula: "2d6+1", outcome: rollOutcome() }],
+    }));
+    expect(sys).not.toBeNull();
+    expect(sys!.content).toEqual([{ kind: "roll_embed", formula: "2d6+1", outcome: rollOutcome() }]);
+  });
+  test("tolerates extra server-only fields on a DieRecord (passthrough)", () => {
+    const sys = parseMessageSystem(msgDoc({
+      ...base, kind: "roll",
+      content: [{
+        kind: "roll_embed", formula: "1d20",
+        outcome: rollOutcome({
+          records: [dieRecord({ id: 0, rerolled_from: null, ordered: true })],
+        }),
+      }],
+    }));
+    expect(sys).not.toBeNull();
+  });
+  test("parses a roll_button segment with and without label", () => {
+    const withLabel = parseMessageSystem(msgDoc({
+      ...base, content: [{ kind: "roll_button", formula: "1d20", label: "Attack" }],
+    }));
+    expect(withLabel!.content).toEqual([{ kind: "roll_button", formula: "1d20", label: "Attack" }]);
+    const withoutLabel = parseMessageSystem(msgDoc({
+      ...base, content: [{ kind: "roll_button", formula: "1d20", label: null }],
+    }));
+    expect(withoutLabel!.content).toEqual([{ kind: "roll_button", formula: "1d20", label: null }]);
+  });
+  test("fail-closed: roll_embed missing outcome fails the whole message parse", () => {
+    expect(parseMessageSystem(msgDoc({
+      ...base, content: [{ kind: "roll_embed", formula: "1d20" }],
+    }))).toBeNull();
+  });
+  test("fail-closed: roll_embed with outcome.total wrong type fails the whole message parse", () => {
+    expect(parseMessageSystem(msgDoc({
+      ...base, content: [{ kind: "roll_embed", formula: "1d20", outcome: rollOutcome({ total: "four" }) }],
+    }))).toBeNull();
+  });
+  test("fail-closed: roll_embed with outcome.records not an array fails the whole message parse", () => {
+    expect(parseMessageSystem(msgDoc({
+      ...base, content: [{ kind: "roll_embed", formula: "1d20", outcome: rollOutcome({ records: "nope" }) }],
+    }))).toBeNull();
+  });
+  test("unknown segment kinds are still opaque alongside known roll kinds", () => {
+    const sys = parseMessageSystem(msgDoc({
+      ...base,
+      content: [
+        { kind: "roll_button", formula: "1d20", label: null },
+        { kind: "preview_card", url: "https://example.com" },
+      ],
+    }));
+    expect(sys).not.toBeNull();
+    expect(sys!.content).toHaveLength(2);
+    expect(sys!.content.filter(isKnownSegment)).toEqual([{ kind: "roll_button", formula: "1d20", label: null }]);
   });
 });
 

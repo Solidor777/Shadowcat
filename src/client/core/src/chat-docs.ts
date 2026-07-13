@@ -14,27 +14,71 @@ export const MAX_MESSAGE_CHARS = 4096;
 export const MessageKindSchema = z.enum(["normal", "emote", "roll", "system"]);
 export type MessageKind = z.infer<typeof MessageKindSchema>;
 
+/** Mirror of dice::outcome::DieRecord (M11d-2). Only the fields the roll card
+ * renders are validated; `.passthrough()` tolerates server-only audit fields
+ * (id, rerolled_from, ordered, ...) the client doesn't read, so an additive
+ * server-side field never breaks this mirror. */
+export const DieRecordSchema = z
+  .object({
+    value: z.number(),
+    natural: z.number(),
+    kept: z.boolean(),
+    exploded: z.boolean(),
+    crit_success: z.boolean(),
+    crit_fail: z.boolean(),
+    expertise: z.number(),
+    group_index: z.number(),
+    label: z.string().nullish(),
+    symbols: z.array(z.string()),
+  })
+  .passthrough();
+export type DieRecord = z.infer<typeof DieRecordSchema>;
+
+/** Mirror of dice::outcome::RollOutcome (M11d-2). `successes`/`pass`/`margin`/
+ * `tier_label`/`tier_value` are `None` in Total mode with no `difficulty`. */
+export const RollOutcomeSchema = z.object({
+  total: z.number(),
+  records: z.array(DieRecordSchema),
+  successes: z.number().nullish(),
+  pass: z.boolean().nullish(),
+  margin: z.number().nullish(),
+  tier_label: z.string().nullish(),
+  tier_value: z.number().nullish(),
+  crit_successes: z.number(),
+  crit_fails: z.number(),
+  positive_counter: z.number(),
+  negative_counter: z.number(),
+  symbol_counts: z.record(z.string(), z.number()),
+});
+export type RollOutcome = z.infer<typeof RollOutcomeSchema>;
+
 /** Known segment kinds. `html.sanitized_html` is innerHTML-safe ONLY because the
- * server's chat::sanitize (ammonia) produced it — no client code may construct one. */
+ * server's chat::sanitize (ammonia) produced it — no client code may construct one.
+ * `roll_embed.outcome` is a completed, immutable roll's full deterministic result
+ * (chat/mod.rs Segment::RollEmbed); `roll_button` renders an unexecuted formula the
+ * user can click to send a fresh `/roll` (chat/mod.rs Segment::RollButton). */
 export const ChatSegmentSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({ kind: z.literal("html"), sanitized_html: z.string() }),
+  z.object({ kind: z.literal("roll_embed"), formula: z.string(), outcome: RollOutcomeSchema }),
+  z.object({ kind: z.literal("roll_button"), formula: z.string(), label: z.string().nullish() }),
 ]);
 export type ChatSegment = z.infer<typeof ChatSegmentSchema>;
-/** Forward-compat: a segment kind this client doesn't know (e.g. a newer server's
- * roll_embed) parses as opaque and renders as nothing — the message still shows.
- * INVARIANT: refuses the KNOWN kinds — without this, a malformed text/html
- * segment (missing/wrong-typed payload) would be rescued by this fallback and
- * then misclassified as trustworthy by isKnownSegment, breaking fail-closed. */
+/** Forward-compat: a segment kind this client doesn't know (e.g. a future server's
+ * PreviewCard/DocLink) parses as opaque and renders as nothing — the message still
+ * shows. INVARIANT: refuses every KNOWN kind — without this, a malformed
+ * text/html/roll_embed/roll_button segment (missing/wrong-typed payload) would be
+ * rescued by this fallback and then misclassified as trustworthy by isKnownSegment,
+ * breaking fail-closed. */
 const UnknownSegmentSchema = z
   .object({ kind: z.string() })
   .passthrough()
-  .refine((s) => s.kind !== "text" && s.kind !== "html");
+  .refine((s) => s.kind !== "text" && s.kind !== "html" && s.kind !== "roll_embed" && s.kind !== "roll_button");
 export type UnknownSegment = z.infer<typeof UnknownSegmentSchema>;
 const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegmentSchema]));
 
 export function isKnownSegment(s: ChatSegment | UnknownSegment): s is ChatSegment {
-  return s.kind === "text" || s.kind === "html";
+  return s.kind === "text" || s.kind === "html" || s.kind === "roll_embed" || s.kind === "roll_button";
 }
 
 export const ChatMessageSystemSchema = z.object({
