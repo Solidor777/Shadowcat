@@ -83,11 +83,15 @@
     return src;
   });
 
-  // Block form only when the WHOLE content is exactly one roll_embed (spec §7) — a roll
-  // message that (for any reason) carries additional/other segments falls back to the
-  // pending shell rather than silently rendering only its first segment.
+  // Block form only when the WHOLE RAW content is exactly one segment and that segment is a
+  // roll_embed (server invariant, chat spec §7: a roll message's content is exactly one
+  // RollEmbed). The length check runs against `sys.content` (raw, pre-filter) rather than the
+  // known-segment-filtered list — filtering first would let an extra UNKNOWN segment silently
+  // vanish and the lone roll_embed still render as a block, contradicting this guard's own
+  // "additional/other segments fall back to the pending shell" intent.
   const rollBlock = $derived.by((): RollEmbedSegment | null => {
     if (!sys || sys.kind !== "roll") return null;
+    if (sys.content.length !== 1) return null;
     const known = sys.content.filter(isKnownSegment);
     if (known.length === 1 && known[0].kind === "roll_embed") return known[0] as RollEmbedSegment;
     return null;
@@ -171,7 +175,7 @@
       <div class="body">
         {#if rollBlock}
           <div class="roll-block">
-            <div class="roll-formula">{rollBlock.formula}</div>
+            <div class="roll-formula" aria-label={t("chat.roll.formula")}>{rollBlock.formula}</div>
             {#if rollBlock.outcome.successes != null}
               <div class="roll-result">
                 <span class="roll-successes">{t("chat.roll.successes", { n: rollBlock.outcome.successes })}</span>

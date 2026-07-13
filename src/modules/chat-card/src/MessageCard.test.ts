@@ -110,6 +110,21 @@ describe("MessageCard — fail-closed body parse", () => {
     const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
     expect(container.querySelector("article")).toBeNull();
   });
+
+  it("renders nothing for a malformed roll_embed segment (missing outcome)", () => {
+    // chat-docs.ts's fail-closed pattern: a known-kind segment with a malformed payload
+    // fails BOTH the strict schema AND the unknown-segment rescue (which refuses known
+    // kinds), so the whole message parse fails, not just the one segment.
+    const doc = msgDoc("m1", baseSystem({ kind: "roll", content: [{ kind: "roll_embed", formula: "1d6" }] }));
+    const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
+    expect(container.querySelector("article")).toBeNull();
+  });
+
+  it("renders nothing for a malformed roll_button segment (missing formula)", () => {
+    const doc = msgDoc("m1", baseSystem({ content: [{ kind: "roll_button" }] }));
+    const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
+    expect(container.querySelector("article")).toBeNull();
+  });
 });
 
 describe("MessageCard — the {@html} boundary", () => {
@@ -266,6 +281,38 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     expect(container.querySelector(".roll-total")?.textContent).toBe("9");
     expect(container.querySelector(".roll-successes")).toBeNull();
     expect(container.querySelector(".roll-pending")).toBeNull();
+  });
+
+  it("labels the formula line with the localized chat.roll.formula key", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [{ kind: "roll_embed", formula: "2d6+1", outcome: rollOutcome({ total: 9 }) }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-formula")?.getAttribute("aria-label")).toBe("chat.roll.formula");
+  });
+
+  it("falls back to the pending shell (not the block) when the raw content carries an extra unknown segment alongside the roll_embed", () => {
+    // Server invariant: a roll message's content is exactly one RollEmbed. The guard must
+    // check the RAW content length, not the known-segment-filtered length — filtering first
+    // would silently drop the unknown segment and still render the block.
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      source: "/roll 1d6",
+      content: [
+        { kind: "roll_embed", formula: "1d6", outcome: rollOutcome() },
+        { kind: "preview_card", url: "x" },
+      ],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-block")).toBeNull();
+    expect(container.querySelector(".roll-pending")).not.toBeNull();
   });
 
   it("shows successes + pass/fail over total when successes is present", () => {
