@@ -29,7 +29,10 @@ mod settings;
 mod shortcodes;
 pub use commands::{parse_command, ParsedCommand};
 pub use sanitize::sanitize;
-pub use settings::{resolve_content_policy, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE};
+pub use settings::{
+    resolve_content_policy, resolve_dice_context, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE,
+    DICE_SETTINGS_DOC_TYPE,
+};
 
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use crate::data::document::{DocRole, Document, PermissionSet, Scope, WorldRole};
