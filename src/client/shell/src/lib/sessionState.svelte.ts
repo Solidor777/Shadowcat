@@ -80,6 +80,16 @@ export function setActiveTab(world: string, id: string): void {
   schedulePersist();
 }
 
+export function getPanelLayout(world: string): unknown | null {
+  return state.worlds[world]?.panelLayout ?? null;
+}
+
+export function setPanelLayout(world: string, blob: unknown): void {
+  const w = (state.worlds[world] ??= {});
+  w.panelLayout = blob;
+  schedulePersist();
+}
+
 /** Force any pending persist to run now (test/teardown helper). */
 export async function flushSessionState(): Promise<void> {
   if (timer) {

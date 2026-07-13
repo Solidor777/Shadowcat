@@ -7,6 +7,8 @@ import {
   setLastWorld,
   getActiveTab,
   setActiveTab,
+  getPanelLayout,
+  setPanelLayout,
   flushSessionState,
   flushOnUnload,
 } from "./sessionState.svelte";
@@ -73,6 +75,31 @@ test("setActiveTab records the tab per-world and persists (debounced)", async ()
   await flushSessionState();
   expect(put).toHaveBeenCalled();
   expect(put.mock.calls.at(-1)?.[0].worlds.w1?.activeTab).toBe("chat");
+});
+
+test("getPanelLayout returns null for a world with no recorded state", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {},
+  });
+  await loadSessionState();
+  expect(getPanelLayout("w1")).toBeNull();
+});
+
+test("setPanelLayout records the blob per-world and schedules the same debounced persist as setActiveTab", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {},
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  const blob = { version: 1 };
+  setPanelLayout("w1", blob);
+  expect(getPanelLayout("w1")).toBe(blob);
+  expect(getPanelLayout("w2")).toBeNull();
+  await flushSessionState();
+  expect(put).toHaveBeenCalled();
+  expect(put.mock.calls.at(-1)?.[0].worlds.w1?.panelLayout).toBe(blob);
 });
 
 test("flushOnUnload keepalive-persists a change made during the cooldown", async () => {
