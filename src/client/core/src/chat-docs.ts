@@ -62,29 +62,47 @@ export type RollOutcome = z.infer<typeof RollOutcomeSchema>;
  * server's chat::sanitize (ammonia) produced it — no client code may construct one.
  * `roll_embed.outcome` is a completed, immutable roll's full deterministic result
  * (chat/mod.rs Segment::RollEmbed); `roll_button` renders an unexecuted formula the
- * user can click to send a fresh `/roll` (chat/mod.rs Segment::RollButton). */
+ * user can click to send a fresh `/roll` (chat/mod.rs Segment::RollButton).
+ * `link_preview` mirrors chat/mod.rs Segment::LinkPreview — a server-fetched,
+ * SSRF-guarded preview of a link in the message; the client renders ONLY the
+ * stored `url`/`title`/`description` strings (escaped, never innerHTML) and never
+ * fetches `url` itself (M11d-3). */
 export const ChatSegmentSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({ kind: z.literal("html"), sanitized_html: z.string() }),
   z.object({ kind: z.literal("roll_embed"), formula: z.string(), outcome: RollOutcomeSchema }),
   z.object({ kind: z.literal("roll_button"), formula: z.string(), label: z.string().nullish() }),
+  z.object({ kind: z.literal("link_preview"), url: z.string(), title: z.string(), description: z.string() }),
 ]);
 export type ChatSegment = z.infer<typeof ChatSegmentSchema>;
 /** Forward-compat: a segment kind this client doesn't know (e.g. a future server's
- * PreviewCard/DocLink) parses as opaque and renders as nothing — the message still
- * shows. INVARIANT: refuses every KNOWN kind — without this, a malformed
- * text/html/roll_embed/roll_button segment (missing/wrong-typed payload) would be
- * rescued by this fallback and then misclassified as trustworthy by isKnownSegment,
- * breaking fail-closed. */
+ * DocLink) parses as opaque and renders as nothing — the message still shows.
+ * INVARIANT: refuses every KNOWN kind — without this, a malformed
+ * text/html/roll_embed/roll_button/link_preview segment (missing/wrong-typed
+ * payload) would be rescued by this fallback and then misclassified as
+ * trustworthy by isKnownSegment, breaking fail-closed. */
 const UnknownSegmentSchema = z
   .object({ kind: z.string() })
   .passthrough()
-  .refine((s) => s.kind !== "text" && s.kind !== "html" && s.kind !== "roll_embed" && s.kind !== "roll_button");
+  .refine(
+    (s) =>
+      s.kind !== "text" &&
+      s.kind !== "html" &&
+      s.kind !== "roll_embed" &&
+      s.kind !== "roll_button" &&
+      s.kind !== "link_preview",
+  );
 export type UnknownSegment = z.infer<typeof UnknownSegmentSchema>;
 const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegmentSchema]));
 
 export function isKnownSegment(s: ChatSegment | UnknownSegment): s is ChatSegment {
-  return s.kind === "text" || s.kind === "html" || s.kind === "roll_embed" || s.kind === "roll_button";
+  return (
+    s.kind === "text" ||
+    s.kind === "html" ||
+    s.kind === "roll_embed" ||
+    s.kind === "roll_button" ||
+    s.kind === "link_preview"
+  );
 }
 
 export const ChatMessageSystemSchema = z.object({
