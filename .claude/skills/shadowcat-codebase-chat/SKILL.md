@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-chat
-description: "Use when touching Shadowcat's chat core: the message Document model, SendMessage/EditMessage/DeleteMessage ingest, the ops_target_message ingress guard, the create-gate baseline-message exemption, the WriteOrigin-gated Update exemption, the content sanitizer (chat/sanitize.rs), the chat-settings content policy (chat/settings.rs), or the command parser (chat/commands.rs). Covers src/server/src/chat/. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat's chat system: the message Document model (incl. source/edited/deleted markers), SendMessage/EditMessage/DeleteMessage ingest, the ops_target_message ingress guard, the WriteOrigin-gated Update exemption, the content sanitizer + shortcode pre-pass (chat/sanitize.rs, chat/shortcodes.rs), the chat-settings policy, the command parser, the client body mirror (client/core chat-docs.ts), or the chat UI modules (modules/chat, chat-composer, chat-card — the {@html} card boundary). Covers src/server/src/chat/ + src/client/core/src/chat-docs.ts + src/modules/chat*. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Chat Core
@@ -15,8 +15,12 @@ message-specific redaction/search/broadcast code. **M11c-3 shipped** (sanitizer 
 `ammonia` + `pulldown-cmark`) replaces c-1's raw-text-only model; a leading-command parser
 (`chat::parse_command`) derives `MessageKind`/a content-level `/w` whisper target; `EditMessage`/
 `DeleteMessage` replace c-1's blanket Update rejection with a real, authorized, sanitizing edit
-path and a soft-tombstone delete path, gated by a new `WriteOrigin` marker. c-4 (link-preview
-fetcher) is the only remaining M11c checkpoint.
+path and a soft-tombstone delete path, gated by a new `WriteOrigin` marker. **M11d-1 shipped**
+(the client display layer + three server enablers): `MessageSystem.source` (edit-prefill raw
+input), an always-on `:shortcode:` → emoji pre-pass in `sanitize`, a member-visible world
+roster, the client Zod mirror (`chat-docs.ts`), and the chat UI as three replaceable modules
+(`module-chat` host / `module-chat-composer` / `module-chat-card`) mounted in the tabbed
+sidebar. The link-preview fetcher (ex-c-4, now M11d-3) is the only unbuilt chat piece.
 
 ## Purpose
 
@@ -54,11 +58,23 @@ with zero message-specific plumbing in any of those subsystems.
     ZERO server-enforced meaning — the server never validates or branches on it. A client module
     choosing to post to a "GM" channel is what sets `audience: GmOnly`; the server has no concept
     of a reserved channel name.
-  - `MessageSystem{channel, user_owner, actor_owner, kind, audience, content, edited_at,
-    deleted_at}` — the `system` body shape; `audience` rides the opaque body verbatim, same
-    treatment as `kind`/`actor_owner`. `edited_at`/`deleted_at` (both `Option<i64>`, `#[serde(
-    skip_serializing_if = "Option::is_none")]`) are the c-3 edit/delete markers — absent (not
-    `null`) on an unedited/live message, so a stored c-1 message round-trips unchanged.
+  - `MessageSystem{channel, user_owner, actor_owner, kind, audience, content, source,
+    edited_at, deleted_at}` — the `system` body shape; `audience` rides the opaque body
+    verbatim, same treatment as `kind`/`actor_owner`. `edited_at`/`deleted_at` (both
+    `Option<i64>`, `#[serde(skip_serializing_if = "Option::is_none")]`) are the c-3 edit/delete
+    markers — absent (not `null`) on an unedited/live message, so a stored c-1 message
+    round-trips unchanged. `source: Option<String>` (M11d-1, same serde shape) is the author's
+    RAW input kept for client edit-prefill (sanitized `Segment::Html` can't be reversed):
+    stored at ingest as `parsed.body` when the send parsed a `/w` (so an unmodified prefill
+    resubmit can't trip the edit path's `AudienceLocked`) else the FULL content
+    (command prefix KEPT — `/me x` prefills as `/me x` and re-parses to the same kind);
+    replaced on edit (always full content there — edit rejects `/w`); **CLEARED (`None`) by
+    the delete tombstone alongside `content`** — a retained source would leak deleted content.
+    EXPOSURE NOTE: like every `system` string leaf (incl. `channel`), `source` is swept into
+    the content-agnostic FTS index and can surface in `SearchHit.snippet`/`.document` — any
+    search-UI consumer must treat message snippet/`source` strings as inert text, never
+    innerHTML (documented at the field; buddy-check-adjudicated as the highest-volume instance
+    of a pre-existing pattern, not a new leak class).
   - `build_message_doc(...) -> Document` — constructs the whole `Document`: `owner = Some(user)`;
     `audience` maps onto `PermissionSet{default, gm_role, users}` (see
     `shadowcat-codebase-documents-permissions` for what `gm_role` does at `resolve_access` time):
@@ -119,6 +135,14 @@ with zero message-specific plumbing in any of those subsystems.
     per-recipient redaction continue to apply unmodified. Rate-limited (without a budget, a single
     owner/GM could repeatedly re-delete the same message, each call consuming a real seq number
     and re-writing the FTS index — an unbounded write/broadcast amplification from one frame).
+- `src/server/src/chat/shortcodes.rs` (M11d-1) — `replace_shortcodes(raw) -> Cow<str>`: an
+  always-on `:name:` → unicode-emoji pre-pass (`[a-z0-9_+-]+` names, sorted static table +
+  binary search, O(n), UTF-8-boundary-safe, no policy toggle — typing sugar, zero security
+  surface since output is plain unicode). Runs as the FIRST line of `sanitize()`, so it applies
+  identically to the plain-text early-return and the enriched path, on send AND edit; `source`
+  is captured BEFORE it runs, so shortcodes stay literal in edit-prefill. v1 limitation
+  (documented): pre-parse replacement also fires inside markdown code spans. Table sortedness
+  is pinned by a test (`binary_search_by_key` silently breaks on a mis-sorted row).
 - `src/server/src/chat/sanitize.rs` — `sanitize(raw: &str, policy: &ChatContentPolicy) ->
   Vec<Segment>`, the c-3 content-security boundary. `!policy.markdown && !policy.html` short-
   circuits to a single `Segment::Text` (identical to c-1's `plain_text_content`, the fail-closed
@@ -251,8 +275,15 @@ with zero message-specific plumbing in any of those subsystems.
   is rejected (`NotFound`) — content can never be resurrected on a soft-deleted doc.
 - **Content model is opaque and NOT ts-rs-exported** (`MessageKind`, `Segment`, `MessageSystem`)
   — only `ActorOwnerRef` and `Audience` (both on the wire `SendMessage` frame) are. The client
-  mirrors the body shape independently in Zod later (M11d); a Rust-side shape change here needs a
-  corresponding, manually-kept-in-sync client mirror, not a regenerated binding. `PermissionSet`
+  mirror NOW EXISTS: `src/client/core/src/chat-docs.ts` (M11d-1) — Zod schemas +
+  `parseMessageSystem(doc) -> ChatMessageSystem | null` (fail-closed: wrong doc_type or ANY
+  malformed body → null, never partial) + `isKnownSegment` (unknown segment kinds parse as
+  opaque forward-compat and render as nothing, but the fallback REFUSES kinds "text"/"html" so
+  a malformed known-kind segment fails the whole message instead of being misclassified —
+  load-bearing, pinned by tests). A Rust-side body-shape change MUST update that file by hand
+  (drift notes at both ends), not a regenerated binding. `MAX_MESSAGE_CHARS` is mirrored there
+  for composer pre-validation (JS `.length` counts UTF-16 units vs the server's
+  `chars().count()` — divergence is fail-safe: client can only over-block). `PermissionSet`
   itself IS a generic, already-mirrored envelope type — its new `gm_role` field is picked up by
   the existing drift guard, not a message-specific mirror.
 - **A whisper hides from the GM by default; only `recipients` membership grants a GM access.**
@@ -307,6 +338,44 @@ with zero message-specific plumbing in any of those subsystems.
   `GmOnly` channel permanently keeps read/search access to their own message even if never
   promoted to GM. Anyone building an edit/delete path on top of this (c-3) must not assume `Owner`
   implies "currently privileged"; it means "originally authored."
+
+## Client display layer (M11d-1)
+
+Three independently replaceable modules (UI-is-modules; swap any one without the others):
+
+- **`src/modules/chat`** (`@shadowcat/module-chat`, the host) — contributes the sidebar tab
+  (order 0 = the default tab; `settings` was moved to order 6 to keep 0 unique) and DECLARES
+  the singleton surfaces `shadowcat.surface:chat.composer` / `chat.message`. Reads both
+  contributions DIRECTLY from the registry (not `<Surface>`) because it must pass reactive
+  instance props: per-message `{message, showChannel}` to the card, the current
+  `postTarget(view)` `{channel, audience, placeholderName}` to the composer. Views:
+  All / per-registry-channel / **GM pseudo-channel** (display-only filters over
+  `query("message")` — the server enforces `audience`, never `channel`; posting on the GM view
+  sets `audience: gm_only`, exactly the c-2 contract). Channels live in a `channel-registry`
+  singleton config doc (id→`{name}` map, GM-seeded `{general}` via the reactive-seed idiom;
+  add/rename are single-key updates but **remove is a WHOLE-FIELD replace of
+  `/system/channels`** with the key deleted — `set_pointer` cannot delete keys; a null
+  tombstone was reviewed and rejected). Render cap: last 200 per view. Scroll: stick-to-bottom
+  + "new messages" pill; the pill effect tracks the previous count in a non-reactive closure +
+  `untrack`ed `atBottom` (scrolling alone must not re-trigger), and all scroll measurement
+  bails while the tab is `display:none`-hidden (an IntersectionObserver re-syncs on
+  visibility — panels stay mounted in the tabbed sidebar).
+- **`src/modules/chat-composer`** — Enter sends / Shift+Enter newline / `e.isComposing` IME
+  guard; validation on the TRIMMED length (what's actually sent); NO client command parsing
+  (`/`-commands ride verbatim — the server parses); `actor_owner` not sent (v1).
+- **`src/modules/chat-card`** — fail-closed render (`parseMessageSystem` null ⇒ nothing).
+  **THE `{@html}` INVARIANT: the module's single `{@html}` sink renders only an
+  `isKnownSegment`-narrowed `kind:"html"` segment's `sanitized_html` (ammonia-produced);
+  Text segments are text nodes (`white-space: pre-wrap`); every other string interpolates
+  escaped.** Header: author via `ctx.members` (member-visible roster, M11d-1 widened
+  `list_members` from GM-only to any member — chat name resolution needs it), actor name via
+  the real `resolveTokenActor`/`actorDisplayName` fail-closed chokepoint (an
+  `ActorOwnerRef::Actor` is wrapped in a synthetic `{system:{actor_id, overrides:{}}}` token
+  — safe: that resolver branch reads only `system.actor_id`). Roll-pending shell derives the
+  formula from `sys.source` (command prefix stripped per `parse_command`'s exact tokens) —
+  `textOf(content)` alone is EMPTY on markdown/html worlds where the body becomes one Html
+  segment. Edit prefill = `source ?? textOf`; deleted tombstone suppresses body+actions;
+  actions are owner-or-GM, hover/focus-revealed only on hover-capable devices.
 
 ## Pointers
 
