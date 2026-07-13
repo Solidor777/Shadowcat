@@ -20,7 +20,7 @@ describe("world defaults editor", () => {
     await fireEvent.change(sel, { target: { value: "revealed" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "ws1", changes: [{ path: "/system/scene/movementRestriction", old: null, new: "revealed" }] },
+      { op: "update", doc_id: "ws1", changes: [{ path: "/system/scene/movementRestriction", old: "visible", new: "revealed" }] },
     ]);
   });
 
@@ -31,7 +31,7 @@ describe("world defaults editor", () => {
     const sel = screen.getByLabelText("gameSettings.diagonalRule") as HTMLSelectElement;
     await fireEvent.change(sel, { target: { value: "alternating" } });
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "ws1", changes: [{ path: "/system/pathfinding/diagonalRule", old: null, new: "alternating" }] },
+      { op: "update", doc_id: "ws1", changes: [{ path: "/system/pathfinding/diagonalRule", old: "chebyshev", new: "alternating" }] },
     ]);
   });
 
@@ -44,7 +44,7 @@ describe("world defaults editor", () => {
     await fireEvent.change(sel, { target: { value: "continuous" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "ws1", changes: [{ path: "/system/scene/movementModel", old: null, new: "continuous" }] },
+      { op: "update", doc_id: "ws1", changes: [{ path: "/system/scene/movementModel", old: "grid-stepped", new: "continuous" }] },
     ]);
   });
 });
