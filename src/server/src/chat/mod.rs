@@ -26,6 +26,7 @@ use uuid::Uuid;
 mod commands;
 mod sanitize;
 mod settings;
+mod shortcodes;
 pub use commands::{parse_command, ParsedCommand};
 pub use sanitize::sanitize;
 pub use settings::{resolve_content_policy, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE};
