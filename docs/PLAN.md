@@ -958,7 +958,37 @@ Decomposed **M11a–d**:
   > Deferred (TODO.md "Chat / dice wire"): recalc-from-chat (embeds store formula+outcome
   > only), rich tooltips, speak-as-token, attribution world-scope pinning, crit/tier notation,
   > per-channel dice-settings.
-  > **M11d-3 (SSRF-guarded link previews — the final M11 checkpoint) is next.**
+  > **M11d-3 DONE** (branch `m11d-3-link-previews`, SDD — Sonnet implementers, per-task
+  > two-reviewer gates + a MANDATORY two-opus security buddy-check on the fetcher) — **SSRF-guarded
+  > link previews; the final M11 checkpoint. M11 IS COMPLETE.**
+  > Shipped: the server's FIRST outbound HTTP (`reqwest` promoted to a production dep with
+  > `rustls-tls`, ~1.1 MiB binary delta, far under the 60 MiB budget) behind a full SSRF guard in
+  > `chat/link_preview.rs` — `validate_url` (http/https only, no userinfo, literal-IP hosts
+  > `is_blocked_ip`-checked directly), a `GuardedResolver` validating every resolved IP against a
+  > clean-room RFC-cited v4+v6 blocklist (all-or-nothing → the DNS-rebind close), manual
+  > per-hop-revalidated redirects (≤5), one wall-clock 5s deadline over the whole chain, a 512 KiB
+  > streamed size cap, an HTML content-type gate, and a bounded title/OpenGraph extractor; an
+  > in-memory URL cache + per-user fetch rate limiter (`preview_cache.rs`); synchronous
+  > ingest enrichment (`enrich`, extracting hrefs from GENUINE `<a>` tags) gated on
+  > `previews_enabled()` (default-ON within a hyperlink-enabled world) + an explicit `kind != Roll`
+  > guard; the `Segment::LinkPreview` model + client Zod mirror + a card that renders title/
+  > description/host as escaped text (no `<img>`, no `{@html}`, a `safeHref` http/https-only anchor
+  > guard); and a GM tri-state toggle in `module-game-settings`. **The security buddy-check earned
+  > its cost — it caught a Critical the single-reviewer pass missed: a literal-IP URL
+  > (`http://169.254.169.254/`, cloud-metadata) bypassed the resolver via hyper's IP-literal DNS
+  > short-circuit; both seats confirmed the fix.** Per-task reviews also caught + fixed an
+  > invisible-body-text outbound-fetch gap (raw `href=` substring scan → scoped to real `<a>`
+  > tags), a fold-overflow abort (`i64::MIN / -1`), and a flagged singleton-uniqueness TODO
+  > checkpoint (deterministic-lowest-id resolution made explicit + tested; construction-time
+  > uniqueness re-logged with reason). Deferred (TODO.md): preview images (server-fetch-as-asset),
+  > async post-publish enrichment, persistent cache, oEmbed, the singleton-doctype create-gate.
+  > Spec: [`superpowers/specs/2026-07-13-m11d-3-link-previews-design.md`](superpowers/specs/2026-07-13-m11d-3-link-previews-design.md).
+  > Plan: [`superpowers/plans/2026-07-13-m11d-3-link-previews.md`](superpowers/plans/2026-07-13-m11d-3-link-previews.md).
+  >
+  > **M11 (dice engine + chat system) is COMPLETE**: M11a/b (dice engine) · M11c-1/2/3 (chat core:
+  > message model, restricted audiences, sanitizer/commands/edit-delete) · M11d-1 (tabbed sidebar +
+  > chat display) · M11d-2 (dice→chat wire) · M11d-3 (link previews). All merged to LOCAL main,
+  > NOT pushed (the push decision for the full M11 body is the user's).
 
 ### M12 · Minimal default modules
 - Actor / scene browsers, generic actor / item sheets — built against the public API, each treated as an API bug report. (Chat panel superseded: the baseline chat display modules ship in **M11d**.)

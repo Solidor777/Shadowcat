@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-chat
-description: "Use when touching Shadowcat's chat system: the message Document model (incl. source/edited/deleted markers), SendMessage/EditMessage/DeleteMessage ingest, the ops_target_message ingress guard, the WriteOrigin-gated Update exemption, the content sanitizer + shortcode pre-pass, the chat/dice settings policies, the command parser, the roll wire boundary (chat/rolls.rs caps/entropy/span-scanner, RollEmbed/RollButton segments, System error notices, roll immutability, attribution authz), the client body mirror (chat-docs.ts), or the chat UI modules (chat, chat-composer, chat-card — the {@html} boundary + roll rendering). Covers src/server/src/chat/ + src/client/core/src/chat-docs.ts + src/modules/chat*. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat's chat system: the message Document model (incl. source/edited/deleted markers), SendMessage/EditMessage/DeleteMessage ingest, the ops_target_message ingress guard, the WriteOrigin-gated Update exemption, the content sanitizer + shortcode pre-pass, the chat/dice settings policies, the command parser, the roll wire boundary (chat/rolls.rs caps/entropy/span-scanner, RollEmbed/RollButton segments, System error notices, roll immutability, attribution authz), the SSRF-guarded link-preview fetcher (chat/link_preview.rs GuardedResolver/IP-blocklist/redirects, preview_cache.rs, the LinkPreview segment + ingest enrich + previews_enabled toggle), the client body mirror (chat-docs.ts), or the chat UI modules (chat, chat-composer, chat-card — the {@html} boundary + roll/preview rendering). Covers src/server/src/chat/ + src/client/core/src/chat-docs.ts + src/modules/chat*. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Chat Core
@@ -24,8 +24,56 @@ sidebar. **M11d-2 shipped the dice wire**: rolls execute server-side at chat ing
 (`chat/rolls.rs` — the ONLY untrusted-notation execution path, behind caps + per-roll OS
 entropy), outcomes ride the body as `Segment::RollEmbed`/`RollButton`, roll errors surface as
 the first `MessageKind::System` producer (whispered server notices), rolls are edit-immutable,
-attribution is ownership-validated at ingest, and the card/composer render/author it all. The
-link-preview fetcher (ex-c-4, now M11d-3) is the only unbuilt chat piece.
+attribution is ownership-validated at ingest, and the card/composer render/author it all.
+**M11d-3 shipped** (the final M11 checkpoint): SSRF-guarded link previews — the server's FIRST
+outbound HTTP, behind a validating DNS resolver + IP blocklist, fetched synchronously at ingest,
+stored as a `Segment::LinkPreview`, rendered client-side (never fetched by the client). **M11 is
+now complete.**
+
+## Link previews (M11d-3) — `src/server/src/chat/link_preview.rs` + `preview_cache.rs`
+
+The server's only outbound HTTP. `reqwest` is now a PRODUCTION dep (rustls-tls; ~1.1 MiB binary
+delta, far under budget). Load-bearing security surface — treat any change to `link_preview.rs`
+as buddy-check-worthy by default (its own buddy-check found a Critical: a literal-IP URL
+`http://169.254.169.254/` bypassed the resolver via hyper's IP-literal DNS short-circuit).
+
+- **`fetch_preview(client, url)`** — the ONLY untrusted-URL fetch path. Guards in order:
+  `validate_url` (scheme `http`/`https` ONLY, reject `userinfo`, reject empty host, AND — the
+  Critical fix — for an IP-LITERAL host run `is_blocked_ip` directly since hyper short-circuits
+  DNS for literals; url-crate normalizes `2130706433`/`0x7f000001` to `Host::Ipv4`, caught here);
+  `GuardedResolver` (custom `reqwest::dns::Resolve`, validates EVERY resolved IP against the
+  clean-room RFC-cited `is_blocked_ip` v4+v6 blocklist — private/loopback/link-local/CGNAT/ULA/
+  multicast/documentation/6to4-`2002::/16`/NAT64/IPv4-mapped/IPv4-compat, ALL-OR-NOTHING so a
+  public+private mix rejects wholesale → the DNS-rebind close, since reqwest connects to exactly
+  the validated IPs); `redirect(Policy::none())` + a manual ≤`MAX_REDIRECTS=5` loop re-validating
+  scheme+host per hop; ONE wall-clock `tokio::time::timeout(TOTAL_TIMEOUT=5s)` over the whole
+  redirect chain (not per-hop); streamed `MAX_PREVIEW_BYTES=512KiB` cap; `text/html` content-type
+  gate; a bounded `<title>`/OpenGraph extractor (title≤200, desc≤400). Production
+  `build_client()` takes NO flag (`allow_loopback` false); `build_client_allow_loopback`/
+  `build_client_with_resolve_fn` are `#[cfg(test)]`-only — production literally cannot build a
+  loopback-permitting client. **No preview image in v1** (an `<img src>` would make the client
+  fetch → leak the viewer's IP; title+desc only).
+- **Ingest (`enrich` in `link_preview.rs`, called from `handle_send_message`/`handle_edit_message`):**
+  extracts hrefs from GENUINE `<a>` tags in the sanitized `Segment::Html` runs (NOT a raw
+  `href=` substring scan — inert body text `see href="http://x"` would otherwise trigger a real
+  outbound fetch, a buddy-check-caught gap), dedups, caps `MAX_PREVIEWS_PER_MESSAGE=3`, fetches
+  cache-misses concurrently (`JoinSet`), appends one `Segment::LinkPreview` per success at the
+  END. SYNCHRONOUS before publish (no spawned task/post-hoc revision). Gated on
+  `ChatContentPolicy::previews_enabled()` (= `hyperlinks && link_previews.unwrap_or(true)` —
+  default-ON only when hyperlinks on) AND an EXPLICIT `kind != MessageKind::Roll` guard. Holds NO
+  lock across the fetch await (only the sending connection's own loop blocks, bounded by the 5s
+  deadline). Every failure degrades silently (no card, cached negative).
+- **`LinkPreviewCache`** (in-memory, on `WsState`): URL→`(Instant, Option<LinkPreview>)`,
+  positive/negative TTLs, evict-oldest past a cap; `PreviewRateLimiter` (per-user distinct-URL
+  fetch budget, only on cache MISS). Both mirror `message_rate`'s `WsState` Arc-field pattern.
+- **`ChatContentPolicy.link_previews: Option<bool>`** — tri-state (absent/`None` = default-on;
+  `Some(false)`/`Some(true)` = GM override), authored in `module-game-settings`' new chat-settings
+  section. Singleton `chat-settings`/`dice-settings` resolution is deterministic-by-lowest-UUID
+  (`query_documents ORDER BY id`); construction-time uniqueness is a logged TODO.
+- **Client:** `chat-docs.ts` mirrors `link_preview` (fail-closed refine); the card renders a
+  bordered escaped-text card (title/description/host), the whole card an `<a rel="noopener
+  noreferrer nofollow">` whose href is gated by a `safeHref` scheme re-check (http/https only —
+  a stored non-http url renders non-clickable, defense-in-depth). No `<img>`, no `{@html}`.
 
 ## Dice wire (M11d-2) — `src/server/src/chat/rolls.rs` + the ingest roll stage
 

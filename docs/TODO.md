@@ -174,3 +174,19 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   (preview_client/preview_cache/preview_rate) across ~40 call sites: bundle the link-preview
   deps into a `LinkPreviewDeps`-style struct to shrink both signatures and reduce call-site
   arg-order risk.
+
+## Chat / link previews (M11d-3)
+- Preview images: v1 stores title+description only. An image URL rendered as `<img src>` would
+  make the client fetch it and leak the viewer's IP — the invariant-preserving path is
+  server-fetch-and-cache-as-asset (scheme/size/content-type-validated), its own pipeline. Build
+  when link-preview images are wanted.
+- Async post-publish enrichment: v1 fetches synchronously before publish (a first-seen link adds
+  up to the 5s deadline of send latency; cached links are instant). A UX upgrade would post the
+  message immediately and enrich moments later via a spawned task + a server-authored Update
+  (needs a WriteOrigin path + message-deleted-mid-fetch handling).
+- Persistent/shared preview cache: in-memory per process today (a multi-process deploy re-fetches
+  per process — fine, re-fetchable). Add a shared cache only if fetch volume ever warrants it.
+- oEmbed / provider-specific rich embeds; `<meta http-equiv=refresh>` following — out of scope.
+- Bundle the link-preview deps (`preview_client`/`cache`/`preview_rate`) into a `LinkPreviewDeps`
+  struct to shrink `handle_send_message`/`handle_edit_message` signatures (~40 call sites now under
+  `#[allow(clippy::too_many_arguments)]`) and reduce call-site arg-order risk.
