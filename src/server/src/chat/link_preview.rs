@@ -5,11 +5,13 @@
 //! doc §2 for the full rationale.
 //!
 //! Guard order (each a hard fail-closed reject): URL validation (scheme +
-//! userinfo + host) -> address validation (`GuardedResolver`, DNS-rebind-safe
-//! because reqwest connects to EXACTLY the IPs the resolver validated, no
-//! second resolution) -> manual per-hop redirect re-validation -> connect/
-//! total timeouts -> streamed size cap -> content-type check -> bounded
-//! text extraction.
+//! userinfo + host; a literal-IP host is checked against the blocked ranges
+//! HERE because hyper's connector short-circuits DNS for IP literals, so the
+//! resolver only ever sees `Host::Domain`) -> address validation for domain
+//! hosts (`GuardedResolver`, DNS-rebind-safe because reqwest connects to
+//! EXACTLY the IPs the resolver validated, no second resolution) -> manual
+//! per-hop redirect re-validation -> a single deadline over the whole redirect
+//! chain -> streamed size cap -> content-type check -> bounded text extraction.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -18,7 +20,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::redirect::Policy;
-use url::Url;
+use url::{Host, Url};
 
 /// A server-fetched preview. Stored verbatim by the ingest stage (a later
 /// checkpoint) as a `Segment::LinkPreview`; the client renders ONLY these
@@ -166,6 +168,18 @@ fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
     if ip.is_loopback() {
         return true; // ::1/128, RFC 4291
     }
+    // ::/96 IPv4-compatible (deprecated, RFC 4291 §2.5.5.1). `::` and `::1` are
+    // already returned above; any remaining address with an all-zero high 96
+    // bits embeds a v4 in segments 6-7 — unwrap and re-check through the v4
+    // rules, mirroring the ::ffff:0:0/96 mapped-address handling above (e.g.
+    // ::127.0.0.1 must stay blocked).
+    if s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0 {
+        return is_blocked_ipv4(embedded_v4(s));
+    }
+    if s[0] == 0x2002 {
+        return true; // 2002::/16 6to4 (deprecated, RFC 7526) — an arbitrary v4
+                     // is encapsulated in bits 16-48, so block the prefix wholesale
+    }
     if s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0 {
         return true; // 100::/64 discard-only, RFC 6666
     }
@@ -206,9 +220,12 @@ pub fn is_blocked_ip(ip: IpAddr) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// GuardedResolver: the single resolution point. reqwest connects to EXACTLY
-// the addresses this returns, so validating them here closes the classic
-// resolve-vs-connect DNS-rebind gap (no second, un-validated resolution).
+// GuardedResolver: the single resolution point for DOMAIN hosts. reqwest
+// connects to EXACTLY the addresses this returns, so validating them here
+// closes the classic resolve-vs-connect DNS-rebind gap (no second, un-validated
+// resolution). Literal-IP hosts never reach here — hyper's connector skips DNS
+// for them, so `validate_url` checks IP-literal hosts against the blocked
+// ranges directly.
 // ---------------------------------------------------------------------------
 
 /// Host -> IPs resolution seam. Production uses `tokio::net::lookup_host`;
@@ -219,21 +236,31 @@ pub fn is_blocked_ip(ip: IpAddr) -> bool {
 type ResolveFn = dyn Fn(&str) -> std::io::Result<Vec<IpAddr>> + Send + Sync;
 
 pub struct GuardedResolver {
-    /// Test-only escape hatch: when `true`, a loopback address (127.0.0.0/8,
-    /// `::1`) is treated as allowed — every OTHER blocked range still applies
-    /// unconditionally. The stub HTTP targets this module's tests run against
-    /// bind `127.0.0.1`, so exercising the guard against them needs this.
-    /// Production code MUST always construct with `allow_loopback: false`
-    /// (the `build_client` entry point does).
-    pub allow_loopback: bool,
+    /// When `true`, a loopback address (127.0.0.0/8, `::1`) is treated as
+    /// allowed — every OTHER blocked range still applies unconditionally. This
+    /// is settable ONLY through the `#[cfg(test)]` constructors below (the field
+    /// is private and no production constructor sets it), because the only
+    /// legitimate use is pointing tests at a `127.0.0.1`-bound stub server;
+    /// production code cannot reopen loopback.
+    allow_loopback: bool,
     resolve_fn: Option<Arc<ResolveFn>>,
 }
 
 impl GuardedResolver {
-    /// Production constructor: real DNS via `tokio::net::lookup_host`.
-    pub fn new(allow_loopback: bool) -> Self {
+    /// Production constructor: real DNS via `tokio::net::lookup_host`, loopback
+    /// always blocked. There is no production path that sets `allow_loopback`.
+    pub fn new() -> Self {
         Self {
-            allow_loopback,
+            allow_loopback: false,
+            resolve_fn: None,
+        }
+    }
+
+    /// Test constructor: real DNS, loopback permitted. See `allow_loopback` doc.
+    #[cfg(test)]
+    pub fn new_allow_loopback() -> Self {
+        Self {
+            allow_loopback: true,
             resolve_fn: None,
         }
     }
@@ -248,6 +275,12 @@ impl GuardedResolver {
             allow_loopback,
             resolve_fn: Some(Arc::new(f)),
         }
+    }
+}
+
+impl Default for GuardedResolver {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -285,15 +318,21 @@ impl Resolve for GuardedResolver {
     }
 }
 
-/// Builds the shared preview-fetch client: `GuardedResolver`, no automatic
-/// redirects (`fetch_preview` follows them manually so each hop re-validates),
-/// bounded connect/total timeouts, no cookie store (a preview fetch must be
-/// stateless/uncredentialed), a fixed User-Agent. `allow_loopback` must be
-/// `false` in production; it exists only so tests can point the client at a
-/// `127.0.0.1`-bound stub server.
-pub fn build_client(allow_loopback: bool) -> reqwest::Client {
+/// Builds the shared preview-fetch client: `GuardedResolver` (loopback blocked),
+/// no automatic redirects (`fetch_preview` follows them manually so each hop
+/// re-validates), bounded connect/total timeouts, no cookie store (a preview
+/// fetch must be stateless/uncredentialed), a fixed User-Agent. Takes NO
+/// loopback flag: production cannot construct a loopback-permitting client.
+pub fn build_client() -> reqwest::Client {
+    build_client_with_timeouts(GuardedResolver::new(), CONNECT_TIMEOUT, TOTAL_TIMEOUT)
+}
+
+/// Test-only client whose resolver permits loopback, so tests can point it at a
+/// `127.0.0.1`-bound stub server. No production counterpart exists.
+#[cfg(test)]
+pub fn build_client_allow_loopback() -> reqwest::Client {
     build_client_with_timeouts(
-        GuardedResolver::new(allow_loopback),
+        GuardedResolver::new_allow_loopback(),
         CONNECT_TIMEOUT,
         TOTAL_TIMEOUT,
     )
@@ -327,6 +366,30 @@ fn build_client_with_timeouts(
 /// panics; every failure mode is a `PreviewError` variant. `client` is built
 /// once (`build_client`) and injected/shared across calls.
 pub async fn fetch_preview(
+    client: &reqwest::Client,
+    raw_url: &str,
+) -> Result<LinkPreview, PreviewError> {
+    fetch_preview_with_deadline(client, raw_url, TOTAL_TIMEOUT).await
+}
+
+/// Fetch behind a SINGLE `deadline` bounding the entire redirect chain, not each
+/// hop. reqwest's per-request `timeout` is per `send()`, so a `MAX_REDIRECTS`
+/// chain could otherwise burn `TOTAL_TIMEOUT * (MAX_REDIRECTS + 1)` wall-clock
+/// per URL; this outer bound is the real limit (the per-request timeout stays as
+/// defense in depth). Elapsing the deadline maps to `PreviewError::Timeout`.
+/// `fetch_preview` passes `TOTAL_TIMEOUT`; tests inject a short deadline.
+async fn fetch_preview_with_deadline(
+    client: &reqwest::Client,
+    raw_url: &str,
+    deadline: Duration,
+) -> Result<LinkPreview, PreviewError> {
+    match tokio::time::timeout(deadline, fetch_preview_inner(client, raw_url)).await {
+        Ok(result) => result,
+        Err(_elapsed) => Err(PreviewError::Timeout),
+    }
+}
+
+async fn fetch_preview_inner(
     client: &reqwest::Client,
     raw_url: &str,
 ) -> Result<LinkPreview, PreviewError> {
@@ -400,8 +463,15 @@ pub async fn fetch_preview(
 }
 
 /// Guard #1: scheme MUST be exactly http/https; reject a URL carrying
-/// `userinfo` (credential confusion); reject a missing/empty host. Run on the
-/// initial URL AND on every redirect hop's resolved `Location`.
+/// `userinfo` (credential confusion); reject a missing/empty host; and — the
+/// SSRF-critical part — validate any literal-IP host HERE, directly. A URL
+/// whose host is an IP literal (incl. url-crate-normalized decimal/hex forms
+/// like `2130706433`/`0x7f000001`, which parse to `Host::Ipv4`) never reaches
+/// `GuardedResolver`: hyper-util's connector short-circuits DNS for IP-literal
+/// hosts, so `is_blocked_ip` would otherwise never be consulted and reqwest
+/// would connect straight to a blocked address. Only `Host::Domain` proceeds to
+/// the resolver. Run on the initial URL AND on every redirect hop's resolved
+/// `Location`, so this closes the literal-IP door on redirects too.
 fn validate_url(url: &Url) -> Result<(), PreviewError> {
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err(PreviewError::BadScheme);
@@ -409,8 +479,20 @@ fn validate_url(url: &Url) -> Result<(), PreviewError> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err(PreviewError::BadScheme);
     }
-    match url.host_str() {
-        Some(h) if !h.is_empty() => Ok(()),
+    match url.host() {
+        Some(Host::Ipv4(a)) => {
+            if is_blocked_ip(IpAddr::V4(a)) {
+                return Err(PreviewError::BlockedAddress);
+            }
+            Ok(())
+        }
+        Some(Host::Ipv6(a)) => {
+            if is_blocked_ip(IpAddr::V6(a)) {
+                return Err(PreviewError::BlockedAddress);
+            }
+            Ok(())
+        }
+        Some(Host::Domain(h)) if !h.is_empty() => Ok(()),
         _ => Err(PreviewError::BadScheme),
     }
 }
@@ -702,6 +784,10 @@ mod tests {
             "::1",               // loopback
             "::ffff:10.0.0.1",   // IPv4-mapped private
             "64:ff9b::10.0.0.1", // NAT64-mapped private
+            "::127.0.0.1",       // ::/96 IPv4-compatible embedding loopback
+            "::7f00:1",          // ::/96 IPv4-compatible embedding loopback (packed form)
+            "2002:c0a8:0101::1", // 2002::/16 6to4 encapsulating 192.168.1.1
+            "2002::1",           // 2002::/16 6to4 (blocked wholesale)
             "100::1",            // discard
             "2001:db8::1",       // documentation
             "fc00::1",           // unique-local
@@ -794,7 +880,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_non_http_schemes() {
-        let client = build_client(true);
+        let client = build_client_allow_loopback();
         for scheme_url in [
             "file:///etc/passwd",
             "ftp://example.com/x",
@@ -808,11 +894,75 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_userinfo() {
-        let client = build_client(true);
+        let client = build_client_allow_loopback();
         let err = fetch_preview(&client, "http://user:pass@example.com/")
             .await
             .unwrap_err();
         assert_eq!(err, PreviewError::BadScheme);
+    }
+
+    // -- fetch_preview: literal-IP hosts blocked in validate_url (never reach
+    //    the resolver — hyper short-circuits DNS for IP literals) ------------
+
+    #[tokio::test]
+    async fn rejects_literal_blocked_ip_hosts() {
+        // `build_client_allow_loopback` is irrelevant here: validate_url blocks
+        // these before any resolver/connection, so loopback allowance can't save
+        // an IP-literal host. Each fails closed as BlockedAddress (not a connect).
+        let client = build_client_allow_loopback();
+        for url in [
+            "http://169.254.169.254/", // link-local cloud-metadata endpoint
+            "http://127.0.0.1/",       // loopback
+            "http://[::1]/",           // v6 loopback
+            "http://10.0.0.1/",        // RFC 1918 private
+        ] {
+            let err = fetch_preview(&client, url).await.unwrap_err();
+            assert_eq!(err, PreviewError::BlockedAddress, "{url}");
+        }
+    }
+
+    #[test]
+    fn url_crate_normalizes_numeric_ipv4_literals() {
+        // url 2.5.8 applies WHATWG IPv4 host parsing to special (http) schemes:
+        // a bare decimal or hex host normalizes to a Host::Ipv4, so validate_url's
+        // IP-literal arm catches it (it does NOT fall through as a Domain).
+        let loopback = Ipv4Addr::new(127, 0, 0, 1);
+        assert_eq!(
+            Url::parse("http://2130706433/").unwrap().host(),
+            Some(Host::Ipv4(loopback)),
+            "decimal 2130706433 must normalize to 127.0.0.1"
+        );
+        assert_eq!(
+            Url::parse("http://0x7f000001/").unwrap().host(),
+            Some(Host::Ipv4(loopback)),
+            "hex 0x7f000001 must normalize to 127.0.0.1"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_normalized_decimal_ip_literal() {
+        // http://2130706433/ == http://127.0.0.1/ after url normalization.
+        let client = build_client_allow_loopback();
+        let err = fetch_preview(&client, "http://2130706433/")
+            .await
+            .unwrap_err();
+        assert_eq!(err, PreviewError::BlockedAddress);
+    }
+
+    #[test]
+    fn validate_url_allows_public_ip_literal() {
+        // A literal PUBLIC IP passes validate_url; whether a connection succeeds
+        // is a separate concern (no resolver is consulted for an IP literal).
+        let url = Url::parse("http://93.184.216.34/").unwrap();
+        assert!(validate_url(&url).is_ok());
+    }
+
+    #[test]
+    fn validate_url_rejects_file_scheme_at_hop() {
+        // Pins the scheme guard independent of the redirect stub: a file:// URL
+        // (as a redirect Location would resolve to) is BadScheme.
+        let url = Url::parse("file:///etc/passwd").unwrap();
+        assert_eq!(validate_url(&url), Err(PreviewError::BadScheme));
     }
 
     // -- fetch_preview: address guard, via the injectable resolve_fn seam ---
@@ -1041,6 +1191,60 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, PreviewError::BlockedAddress);
+    }
+
+    #[tokio::test]
+    async fn redirect_to_a_non_http_scheme_is_rejected_at_the_hop() {
+        // The first hop is the real stub (allowed via allow_loopback); its
+        // Location is a file:// URL. This pins the HOP-LEVEL scheme guard: if the
+        // per-hop validate_url were removed, the resolver would NOT catch this
+        // (a file:// URL never resolves a host), so only the hop-level scheme
+        // check produces BadScheme here.
+        let router = Router::new().route(
+            "/",
+            get(|| async { axum::response::Redirect::to("file:///etc/passwd") }),
+        );
+        let (addr, _handle) = spawn_stub(router).await;
+        let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+        let client = stub_client("stub.test");
+        let err = fetch_preview(&client, &format!("http://stub.test:{port}/"))
+            .await
+            .unwrap_err();
+        assert_eq!(err, PreviewError::BadScheme);
+    }
+
+    #[tokio::test]
+    async fn redirect_chain_exceeding_the_total_deadline_times_out() {
+        // Each hop delays; the per-request reqwest timeout is long (5s) so no
+        // single hop times out, but the outer deadline bounds the WHOLE chain.
+        // Proves the deadline is total, not per-hop: a chain that would burn
+        // well past the deadline (yet stay under MAX_REDIRECTS pacing) yields
+        // Timeout, not Redirects.
+        let router = Router::new().route(
+            "/slow",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                axum::response::Redirect::to("/slow")
+            }),
+        );
+        let (addr, _handle) = spawn_stub(router).await;
+        let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+
+        // Long per-request timeout (no single hop times out); the injected outer
+        // deadline (120ms) fires after ~2 hops, before MAX_REDIRECTS is reached.
+        let resolver =
+            GuardedResolver::with_resolve_fn(true, |_host| Ok(vec!["127.0.0.1".parse().unwrap()]));
+        let client =
+            build_client_with_timeouts(resolver, Duration::from_secs(3), Duration::from_secs(5));
+
+        let err = fetch_preview_with_deadline(
+            &client,
+            &format!("http://stub.test:{port}/slow"),
+            Duration::from_millis(120),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, PreviewError::Timeout);
     }
 
     #[tokio::test]
