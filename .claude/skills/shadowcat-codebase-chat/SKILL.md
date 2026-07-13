@@ -371,7 +371,8 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   `list_members` from GM-only to any member — chat name resolution needs it), actor name via
   the real `resolveTokenActor`/`actorDisplayName` fail-closed chokepoint (an
   `ActorOwnerRef::Actor` is wrapped in a synthetic `{system:{actor_id, overrides:{}}}` token
-  — safe: that resolver branch reads only `system.actor_id`). Roll-pending shell derives the
+  — safe: that resolver branch reads only `system.actor_id` + `system.overrides`, and the
+  empty overrides map is a no-op). Roll-pending shell derives the
   formula from `sys.source` (command prefix stripped per `parse_command`'s exact tokens) —
   `textOf(content)` alone is EMPTY on markdown/html worlds where the body becomes one Html
   segment. Edit prefill = `source ?? textOf`; deleted tombstone suppresses body+actions;
