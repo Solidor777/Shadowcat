@@ -111,12 +111,22 @@ function isReferentiallyConsistent(l: PanelLayoutV1): boolean {
  * is the only validation layer. A structurally valid AND referentially consistent blob is
  * then `prune`d against `known` so stale panel ids (module uninstalled/renamed since last
  * save) never linger; pruning alone does NOT trigger a reset — `reset` reports decode-time
- * validity, not membership drift. */
+ * validity, not membership drift.
+ *
+ * `source` carries the SAME guard-validated blob `layout` was pruned FROM — `null` on
+ * `reset`, otherwise the untouched `raw` (already known to satisfy `isPanelLayoutV1` +
+ * `isReferentiallyConsistent`), before `known`-membership pruning ever ran. `known` here is
+ * necessarily whatever the CALLER already had registered at decode time (routinely empty or
+ * partial — module registration order does not guarantee every panel-contract module has
+ * registered before the panel host itself mounts and decodes); pruning against that partial
+ * set would otherwise permanently drop every not-yet-registered panel's saved position.
+ * `PanelsController` retains `source` to reconstruct later-registering panels' persisted
+ * locations via `placeNewRegistrations` instead of losing them to that race. */
 export function decodeLayout(
   raw: unknown,
   known: ReadonlySet<string>,
   fallback: () => PanelLayoutV1,
-): { layout: PanelLayoutV1; reset: boolean } {
-  if (!isPanelLayoutV1(raw) || !isReferentiallyConsistent(raw)) return { layout: fallback(), reset: true };
-  return { layout: prune(raw, known), reset: false };
+): { layout: PanelLayoutV1; reset: boolean; source: PanelLayoutV1 | null } {
+  if (!isPanelLayoutV1(raw) || !isReferentiallyConsistent(raw)) return { layout: fallback(), reset: true, source: null };
+  return { layout: prune(raw, known), reset: false, source: raw };
 }

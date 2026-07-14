@@ -356,34 +356,125 @@ export function prune(l: PanelLayoutV1, known: ReadonlySet<string>): PanelLayout
   };
 }
 
+/** Places `id` into `l` at the EXACT location `loc` recorded for it in `source` — the
+ * persisted-history counterpart to `placeByPlacement` (which uses only a static
+ * `PanelMeta.defaultPlacement`). Docked groups have no stable identity across a session
+ * (a `GroupNode` is a plain array), so a persisted group is matched by TAB MEMBERSHIP: if
+ * some other member of `source`'s group for `id` is already live in the same zone, `id`
+ * joins that exact live group — re-sorted to the persisted `tabs` order restricted to the
+ * ids actually present — and inherits the persisted `active` tab when it is among them;
+ * otherwise a fresh single-tab group opens for `id` alone, ready for later persisted
+ * groupmates to join by this same rule (order-of-registration independent). Caller
+ * guarantees `loc.where !== "closed"` — a closed-in-source id has nothing to place. */
+function placeFromPersistedLocation(l: PanelLayoutV1, id: string, source: PanelLayoutV1, loc: PanelLocation): PanelLayoutV1 {
+  switch (loc.where) {
+    case "minimized":
+      return { ...l, expanded: { ...l.expanded, minimized: [...l.expanded.minimized, id] } };
+
+    case "floating": {
+      const persisted = source.expanded.floating[loc.index];
+      const maxZ = l.expanded.floating.reduce((m, f) => Math.max(m, f.z), -1);
+      const floating = compactZ([...l.expanded.floating, { id, rect: persisted.rect, z: maxZ + 1 }]);
+      return { ...l, expanded: { ...l.expanded, floating } };
+    }
+
+    case "docked": {
+      const persistedGroup = source.expanded.zones[loc.zone].groups[loc.group];
+      const zoneNode = l.expanded.zones[loc.zone];
+      const gi = zoneNode.groups.findIndex(
+        (g) => g.tabs.length > 0 && g.tabs.every((t) => persistedGroup.tabs.includes(t)),
+      );
+      let groups: GroupNode[];
+      if (gi === -1) {
+        groups = renormalize([...zoneNode.groups, { tabs: [id], active: id, size: 0 }]);
+      } else {
+        // Reorder to the persisted tab order, restricted to ids actually live (`id` plus
+        // whatever of the persisted group's other members already joined this group).
+        const tabs = persistedGroup.tabs.filter((t) => t === id || zoneNode.groups[gi].tabs.includes(t));
+        const active = tabs.includes(persistedGroup.active) ? persistedGroup.active : zoneNode.groups[gi].active;
+        groups = zoneNode.groups.map((g, i) => (i === gi ? { ...g, tabs, active } : g));
+      }
+      return { ...l, expanded: { ...l.expanded, zones: { ...l.expanded.zones, [loc.zone]: { ...zoneNode, groups } } } };
+    }
+
+    case "closed":
+      return l;
+  }
+}
+
+/** Inserts `id` (not yet in `order`) preserving its RELATIVE order against every other id
+ * already in `order` that also appears in `persistedSource.compact.order` — i.e. among ids
+ * `persistedSource` has an opinion on, the final order converges to the persisted order
+ * regardless of registration arrival order. An id absent from `persistedSource` (or with no
+ * `persistedSource` at all) is simply appended, matching pre-persistence-aware behavior. */
+function insertPersistedOrder(order: string[], id: string, persistedSource: PanelLayoutV1 | null): string[] {
+  const srcOrder = persistedSource?.compact.order;
+  if (!srcOrder || !srcOrder.includes(id)) return [...order, id];
+  const idPos = srcOrder.indexOf(id);
+  let at = order.length;
+  for (let i = 0; i < order.length; i++) {
+    const otherPos = srcOrder.indexOf(order[i]);
+    if (otherPos !== -1 && otherPos > idPos) {
+      at = i;
+      break;
+    }
+  }
+  return [...order.slice(0, at), id, ...order.slice(at)];
+}
+
 /** Incrementally places every registration in `regs` not yet present in `compact.order` —
- * i.e. never seen by this layout before — using the same per-registration rule
- * `defaultLayout` applies at first launch: unconditionally pushed onto `compact.order`,
- * then `placeByPlacement`d into `expanded` only if it carries a `placement`. Same-reference
- * no-op contract: returns `l` itself when every `regs` id is already in `compact.order` — a
- * registration once placed here is never re-defaulted even if the user later closes/moves
- * it, since this only catches ids this layout has NEVER recorded. Used both by
- * `defaultLayout` (a fresh layout, where every id is "new") and by
+ * i.e. never seen by this layout before. Used both by `defaultLayout` (a fresh layout,
+ * where every id is "new", `persistedSource` always `null`) and by
  * `PanelsController.syncRegistrations` (a live layout catching up contributions that
  * register AFTER this controller's own construction — module registration order does not
- * guarantee every panel-contract module is present before the panel host itself mounts).
- * `DefaultPlacement.order` is not consumed here: callers pass registrations pre-sorted by
- * contribution order; a docked default always opens its own group.
+ * guarantee every panel-contract module is present before the panel host itself mounts, or
+ * even before construction completes).
+ *
+ * When `persistedSource` is non-null (the PRE-`prune` structurally-validated blob this
+ * session's user actually saved — see `decodeLayout`'s `source` field) and records a real
+ * location for a registration's id, that persisted location is reconstructed exactly via
+ * `placeFromPersistedLocation` INSTEAD of `reg.placement`'s static default — this is the
+ * fix for the M12a boot race where every panel beyond the first-registering ones raced
+ * `defaultLayout` against their own module's registration and got default-placed (and
+ * `#persist`ed), silently discarding the user's saved layout on every reload. An id present
+ * in `persistedSource.compact.order` but located nowhere (closed-but-known) is added to
+ * `compact.order` and left otherwise unplaced — never re-opened via `reg.placement`. An id
+ * genuinely absent from `persistedSource` (never seen by the user's saved session) falls
+ * back to `reg.placement` exactly as before. `DefaultPlacement.order` is not consumed here:
+ * callers pass registrations pre-sorted by contribution order; a docked default always
+ * opens its own group.
+ * Same-reference no-op contract: returns `l` itself when every `regs` id is already in
+ * `compact.order` — a registration once placed here is never re-defaulted/re-persisted-over
+ * even if the user later closes/moves it, since this only catches ids this layout has NEVER
+ * recorded.
  * PRECONDITION: `regs` ids are unique (registry-guaranteed). */
 export function placeNewRegistrations(
   l: PanelLayoutV1,
   regs: { id: string; placement?: DefaultPlacement }[],
+  persistedSource: PanelLayoutV1 | null = null,
 ): PanelLayoutV1 {
   let out = l;
   let changed = false;
   for (const reg of regs) {
     if (out.compact.order.includes(reg.id)) continue;
     changed = true;
-    out = { ...out, compact: { ...out.compact, order: [...out.compact.order, reg.id] } };
-    if (reg.placement) out = placeByPlacement(out, reg.id, reg.placement);
+    out = { ...out, compact: { ...out.compact, order: insertPersistedOrder(out.compact.order, reg.id, persistedSource) } };
+
+    const persistedLoc = persistedSource ? locate(persistedSource, reg.id) : null;
+    const knownToPersistedSource = persistedSource != null && (persistedSource.compact.order.includes(reg.id) || persistedLoc?.where !== "closed");
+    if (knownToPersistedSource) {
+      if (persistedLoc && persistedLoc.where !== "closed") out = placeFromPersistedLocation(out, reg.id, persistedSource!, persistedLoc);
+      // else: closed-but-known in the persisted blob — stays closed, never re-defaulted.
+    } else if (reg.placement) {
+      out = placeByPlacement(out, reg.id, reg.placement);
+    }
   }
   if (changed && out.compact.activeView === null && out.compact.order.length > 0) {
-    out = { ...out, compact: { ...out.compact, activeView: out.compact.order[0] } };
+    const preferred = persistedSource?.compact.activeView;
+    out = {
+      ...out,
+      compact: { ...out.compact, activeView: preferred && out.compact.order.includes(preferred) ? preferred : out.compact.order[0] },
+    };
   }
   return changed ? out : l;
 }

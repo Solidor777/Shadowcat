@@ -186,6 +186,76 @@ test("regsForRole: a gmOnly registration is invisible to a non-GM role", () => {
   expect(regsForRole(regs, "gm").map((r) => r.id)).toEqual(["chat:panel", "game-settings:panel"]);
 });
 
+// `panels` (which requires PANEL_CONTRACT) topologically activates BEFORE any
+// panel-contract module, so `PanelHost`'s controller is routinely constructed against an
+// EMPTY (or partial) registry — this reproduces that exact condition and asserts a saved,
+// customized layout survives it instead of being silently overwritten with defaults.
+test("late registrations against an empty-registry construction restore their SAVED positions, not defaults", () => {
+  // A saved, customized layout: assets docked left alone, actors floating, chat docked
+  // right, settings minimized, factions closed-but-known (never placed).
+  const saved = {
+    version: 1 as const,
+    expanded: {
+      zones: {
+        right: { groups: [{ tabs: ["chat"], active: "chat", size: 1 }], size: 320 },
+        bottom: { groups: [], size: 240 },
+        left: { groups: [{ tabs: ["assets"], active: "assets", size: 1 }], size: 320 },
+      },
+      floating: [{ id: "actors", rect: { x: 40, y: 60, w: 400, h: 300 }, z: 0 }],
+      minimized: ["settings"],
+    },
+    compact: { activeView: "chat", order: ["chat", "assets", "actors", "settings", "factions"] },
+  };
+
+  const contributions = new ContributionRegistry(); // EMPTY at construction.
+  const setPanelLayout = vi.fn();
+  const ctrl = new PanelsController({
+    contributions,
+    role: "gm",
+    getPanelLayout: () => saved,
+    setPanelLayout,
+    bridge: fakeBridge(),
+    logger: silentLogger,
+  });
+
+  // Registrations arrive incrementally, in an order that does not match `saved.compact.order`.
+  const reg = (id: string, defaultPlacement?: { kind: "docked"; zone: "left" | "right" | "bottom" } | { kind: "minimized" }) =>
+    contributions.contribute({
+      id,
+      contract: PANEL_CONTRACT,
+      component: {},
+      panel: { icon: id, labelKey: `${id}.tab`, defaultPlacement },
+    });
+
+  reg("settings", { kind: "minimized" });
+  ctrl.syncRegistrations(ctrl.visibleRegs);
+  reg("factions", { kind: "minimized" });
+  ctrl.syncRegistrations(ctrl.visibleRegs);
+  reg("actors", { kind: "docked", zone: "right" }); // default would be docked right, NOT floating
+  ctrl.syncRegistrations(ctrl.visibleRegs);
+  reg("chat", { kind: "docked", zone: "right" });
+  ctrl.syncRegistrations(ctrl.visibleRegs);
+  reg("assets", { kind: "minimized" }); // default would be minimized, NOT docked left
+  ctrl.syncRegistrations(ctrl.visibleRegs);
+
+  expect(locate(ctrl.layout, "assets")).toEqual({ where: "docked", zone: "left", group: 0, tabIndex: 0 });
+  expect(locate(ctrl.layout, "actors")).toEqual({ where: "floating", index: 0 });
+  expect(ctrl.layout.expanded.floating[0]).toEqual({ id: "actors", rect: { x: 40, y: 60, w: 400, h: 300 }, z: 0 });
+  expect(locate(ctrl.layout, "chat")).toEqual({ where: "docked", zone: "right", group: 0, tabIndex: 0 });
+  expect(locate(ctrl.layout, "settings")).toEqual({ where: "minimized" });
+  // factions was closed-but-known in the saved blob — stays closed, never re-defaulted.
+  expect(locate(ctrl.layout, "factions")).toEqual({ where: "closed" });
+  expect(ctrl.layout.compact.order).toContain("factions");
+
+  // No call along the way persisted a defaults-shaped tree that discarded the customization
+  // — every persisted snapshot must already carry the restored (non-default) positions.
+  for (const call of setPanelLayout.mock.calls) {
+    const blob = call[0] as typeof saved;
+    const assetsLoc = locate(blob as never, "assets");
+    if (assetsLoc.where === "docked") expect(assetsLoc.zone).toBe("left");
+  }
+});
+
 test("the controller binds itself into the supplied bridge at construction", () => {
   const bridge = fakeBridge();
   const ctrl = new PanelsController({

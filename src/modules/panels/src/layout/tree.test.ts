@@ -78,6 +78,96 @@ describe("placeNewRegistrations", () => {
   });
 });
 
+// B4 fix: a `persistedSource` (the pre-prune blob a user actually saved) reconstructs a
+// late-registering panel's REAL prior position instead of falling back to its static
+// `reg.placement` default — the boot-race fix (see tree.ts's `placeNewRegistrations` doc
+// comment for the full mechanism).
+describe("placeNewRegistrations with a persistedSource", () => {
+  it("places a persisted docked id into its correct zone/group/tab-order", () => {
+    const source = defaultLayout([{ id: "assets", placement: { kind: "docked", zone: "left" } }]);
+    const l0 = defaultLayout([]);
+    const l1 = placeNewRegistrations(l0, [{ id: "assets", placement: { kind: "minimized" } }], source);
+    expect(locate(l1, "assets")).toEqual({ where: "docked", zone: "left", group: 0, tabIndex: 0 });
+  });
+
+  it("places a persisted floating id at its saved rect/z", () => {
+    let source = defaultLayout([]);
+    source = applyOp(source, { op: "float", id: "assets", rect: { x: 10, y: 20, w: 300, h: 200 } });
+    const l0 = defaultLayout([]);
+    const l1 = placeNewRegistrations(l0, [{ id: "assets", placement: { kind: "minimized" } }], source);
+    const loc = locate(l1, "assets");
+    expect(loc.where).toBe("floating");
+    expect(loc.where === "floating" && l1.expanded.floating[loc.index]).toEqual({ id: "assets", rect: { x: 10, y: 20, w: 300, h: 200 }, z: 0 });
+  });
+
+  it("places a persisted minimized id as minimized even when reg.placement defaults it docked", () => {
+    let source = defaultLayout([{ id: "assets", placement: { kind: "docked", zone: "right" } }]);
+    source = applyOp(source, { op: "minimize", id: "assets" });
+    const l0 = defaultLayout([]);
+    const l1 = placeNewRegistrations(l0, [{ id: "assets", placement: { kind: "docked", zone: "right" } }], source);
+    expect(locate(l1, "assets")).toEqual({ where: "minimized" });
+  });
+
+  it("two ids sharing a persisted group reunite regardless of registration order", () => {
+    let source = defaultLayout([{ id: "assets", placement: { kind: "docked", zone: "left" } }]);
+    source = applyOp(source, { op: "dock", id: "actors", zone: "left", group: 0 });
+    expect(locate(source, "assets")).toEqual({ where: "docked", zone: "left", group: 0, tabIndex: 0 });
+    expect(locate(source, "actors")).toEqual({ where: "docked", zone: "left", group: 0, tabIndex: 1 });
+
+    // "actors" registers first, then "assets" — order reversed from the persisted tabs.
+    let l = defaultLayout([]);
+    l = placeNewRegistrations(l, [{ id: "actors", placement: { kind: "minimized" } }], source);
+    expect(l.expanded.zones.left.groups).toEqual([{ tabs: ["actors"], active: "actors", size: 1 }]);
+
+    l = placeNewRegistrations(l, [{ id: "assets", placement: { kind: "minimized" } }], source);
+    expect(l.expanded.zones.left.groups).toEqual([{ tabs: ["assets", "actors"], active: "actors", size: 1 }]);
+    expect(locate(l, "assets")).toEqual({ where: "docked", zone: "left", group: 0, tabIndex: 0 });
+    expect(locate(l, "actors")).toEqual({ where: "docked", zone: "left", group: 0, tabIndex: 1 });
+  });
+
+  it("an id absent from persistedSource falls back to its own reg.placement", () => {
+    const source = defaultLayout([{ id: "assets", placement: { kind: "docked", zone: "left" } }]);
+    const l0 = defaultLayout([]);
+    const l1 = placeNewRegistrations(l0, [{ id: "chat", placement: { kind: "docked", zone: "right" } }], source);
+    expect(locate(l1, "chat")).toEqual({ where: "docked", zone: "right", group: 0, tabIndex: 0 });
+  });
+
+  it("an id closed-but-known in persistedSource's compact.order stays closed, not re-defaulted", () => {
+    const source = defaultLayout([{ id: "settings" }]); // no placement — closed but recorded
+    expect(source.compact.order).toEqual(["settings"]);
+    expect(locate(source, "settings")).toEqual({ where: "closed" });
+
+    const l0 = defaultLayout([]);
+    const l1 = placeNewRegistrations(l0, [{ id: "settings", placement: { kind: "minimized" } }], source);
+    expect(locate(l1, "settings")).toEqual({ where: "closed" });
+    expect(l1.compact.order).toEqual(["settings"]);
+  });
+
+  it("is a same-reference no-op when nothing new, even with a persistedSource present", () => {
+    const source = defaultLayout([{ id: "assets", placement: { kind: "docked", zone: "left" } }]);
+    const l0 = defaultLayout(REGS);
+    const l1 = placeNewRegistrations(l0, REGS, source);
+    expect(l1).toBe(l0);
+  });
+
+  it("restores the persisted activeView when the layout started with none", () => {
+    let source = defaultLayout([{ id: "assets", placement: { kind: "docked", zone: "right" } }]);
+    source = applyOp(source, { op: "dock", id: "chat", zone: "right", group: "new" });
+    source = { ...source, compact: { ...source.compact, activeView: "chat" } };
+
+    const l0 = defaultLayout([]);
+    const l1 = placeNewRegistrations(
+      l0,
+      [
+        { id: "assets", placement: { kind: "docked", zone: "right" } },
+        { id: "chat", placement: { kind: "docked", zone: "right" } },
+      ],
+      source,
+    );
+    expect(l1.compact.activeView).toBe("chat");
+  });
+});
+
 describe("locate", () => {
   it("finds a docked panel's zone/group/tabIndex", () => {
     const l = base();

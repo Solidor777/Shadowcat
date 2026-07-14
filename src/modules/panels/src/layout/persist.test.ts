@@ -27,6 +27,28 @@ describe("encodeLayout / decodeLayout round-trip", () => {
   });
 });
 
+describe("decodeLayout source (B4: pre-prune blob for PanelsController)", () => {
+  it("returns the untouched pre-prune blob as source when valid, even with a partial known set", () => {
+    const l = base(); // records both "chat" and "assets"
+    const encoded = encodeLayout(l);
+    // `known` reflects only what has registered SO FAR (the boot race) — narrower than
+    // what the blob actually records.
+    const partiallyKnown = new Set(["chat"]);
+    const { layout, source } = decodeLayout(encoded, partiallyKnown, fallback);
+    // The returned `layout` is pruned against the partial set (assets dropped)...
+    expect(layout.compact.order).toEqual(["chat"]);
+    // ...but `source` still records "assets" — nothing here has been pruned.
+    expect(source).toEqual(l);
+    expect(source?.compact.order).toEqual(["chat", "assets"]);
+  });
+
+  it("returns null source on reset", () => {
+    const { source, reset } = decodeLayout("not an object", KNOWN, fallback);
+    expect(reset).toBe(true);
+    expect(source).toBeNull();
+  });
+});
+
 describe("decodeLayout structural validation", () => {
   it("resets on non-object garbage", () => {
     const fb = fallback();

@@ -51,6 +51,15 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
   #deps: PanelsControllerDeps;
   #subscribe: () => void;
   #layout = $state<PanelLayoutV1>(EMPTY_LAYOUT);
+  /** The pre-`prune` structurally-validated blob `#layout` was decoded from at construction
+   * (`null` on reset/first-run) — retained so `syncRegistrations` can place a
+   * later-registering panel at its ACTUAL persisted location instead of `reg.placement`'s
+   * static default. See `decodeLayout`'s `source` field and `placeNewRegistrations`'s
+   * `persistedSource` parameter for the mechanism; this is what stops a real saved layout
+   * from being silently overwritten with defaults whenever a panel module's own
+   * registration happens to run after the `panels` module's (routine, since every panel
+   * module `requires` `PANEL_CONTRACT`, which topologically activates `panels` FIRST). */
+  #persistedSource: PanelLayoutV1 | null = null;
 
   constructor(deps: PanelsControllerDeps) {
     this.#deps = deps;
@@ -59,8 +68,9 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
     const regs = regsForRole(deps.contributions.contributionsFor(PANEL_CONTRACT), deps.role);
     const known = new Set(regs.map((c) => c.id));
     const buildDefault = () => defaultLayout(regs.map((c) => ({ id: c.id, placement: c.panel?.defaultPlacement })));
-    const { layout, reset } = decodeLayout(deps.getPanelLayout(), known, buildDefault);
+    const { layout, reset, source } = decodeLayout(deps.getPanelLayout(), known, buildDefault);
     this.#layout = layout;
+    this.#persistedSource = source;
 
     if (reset) {
       this.#persist(layout);
@@ -127,6 +137,7 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
     next = placeNewRegistrations(
       next,
       regs.map((c) => ({ id: c.id, placement: c.panel?.defaultPlacement })),
+      this.#persistedSource,
     );
     if (next === this.#layout) return;
     this.#layout = next;
