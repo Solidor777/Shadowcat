@@ -1,9 +1,10 @@
 // Public entry point for @shadowcat/module-panels. Re-exports the pure layout
 // tree surface plus the panel-host runtime (engine seam + FakeEngine + host
 // components) and the `panels` Module registration below.
-import { PANEL_CONTRACT, type Module } from "@shadowcat/core";
+import { consoleLogger, PANEL_CONTRACT, type Module } from "@shadowcat/core";
 import PanelHost from "./PanelHost.svelte";
 import DockChipsContribution from "./DockChipsContribution.svelte";
+import { DockviewEngine } from "./engine/dockview";
 
 export * from "./layout/tree";
 export * from "./layout/persist";
@@ -39,10 +40,19 @@ export const panels: Module = {
     provides: [{ contract: PANEL_CONTRACT, cardinality: "multi" }],
   },
   register(ctx) {
+    // Composition root for the production docking engine: `register()` runs
+    // exactly once per module install, so this constructs exactly one
+    // `DockviewEngine` instance for the app's one `panel-host` surface.
+    // `FakeEngine` remains the default only where a caller constructs
+    // `PanelHost` directly WITHOUT an `engine` prop (tests, and the
+    // bespoke-fallback seam the `EngineAdapter` doc comment describes) — this
+    // contribution always supplies the real engine, so that default path is
+    // never reached in production.
     ctx.contributions.contribute({
       id: "panels:host",
       contract: "shadowcat.surface:panel-host",
       component: PanelHost,
+      props: { engine: new DockviewEngine(consoleLogger()) },
     });
     ctx.contributions.contribute({
       id: "panels:chips",

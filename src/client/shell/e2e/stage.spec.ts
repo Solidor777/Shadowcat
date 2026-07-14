@@ -83,11 +83,10 @@ test("place a token via the tool rail, then drag it", async ({ page }) => {
   await expect(host).toHaveAttribute("data-token-count", "1");
 });
 
-// Blocked on docs/OPEN_BUGS.md's "[Panels] shipped FakeEngine loses width containment
-// past 2 docked groups in one zone" — this flow needs assets+settings+actors all docked
-// in "right" across its lifetime (on top of chat's permanent default dock = 4 total),
-// which deterministically hits that pre-existing defect.
-test.fixme("author an animated (frame-list) actor token; it places without error", async ({ page }) => {
+// Docks assets+settings+actors into "right" across its lifetime, on top of
+// chat's permanent default dock (4 groups total in one zone) — exercises the
+// production `DockviewEngine`'s width containment past 2 groups in a zone.
+test("author an animated (frame-list) actor token; it places without error", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("Username").fill("ops");
   await page.getByLabel("Password").fill("pw-boot");

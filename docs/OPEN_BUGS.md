@@ -15,28 +15,26 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   player would reasonably expect to succeed. Worth a dedicated look by whoever next touches
   `movement.rs`'s corner-crossing branch. (Surfaced by the M10f-2 Task 6 fixture-freeze.)
 
-## Client / panels (shipped FakeEngine)
+## Client / panels (FakeEngine bespoke-fallback only)
 
-- [Panels] The SHIPPED engine — `FakeEngine` (`src/modules/panels/src/engine/fake.ts`;
-  `PanelHost.svelte` defaults to it, and nothing in `src/` injects `DockviewEngine`, which is
-  exported but unwired outside its own tests) — loses width containment once a THIRD docked
-  group is added to the same zone (`right`/`bottom`/`left`): with exactly 2 groups the zone
-  stacks within its column width, but the 3rd group renders full-viewport-width, covering the
-  stage canvas underneath it (confirmed via screenshot in the served app: two "full width"
-  stacked panels with no narrow right-hand column at all). `FakeEngine.apply` renders each
-  zone's groups as plain stacked `<div>`s appended after the center well — the suspect
-  rendering path. Deterministic and reproducible with generous real-time waits
-  between each dock (NOT a same-tick/rapid-fire timing race) — confirmed independent of the M12a
-  B4 persisted-layout fix by reproducing it on the pre-B4-fix code via explicit rapid chip
-  restores (`chip-<id>:panel` → `restore()`, always docks a fresh group into "right"). No UI
-  affordance currently exists to un-dock/minimize a panel back out of a zone once docked (M12a
-  ships no minimize/close control on a docked panel's tab — the interim default-placement design
-  is `{kind:"minimized"}` for non-chat panels, restored only forward via `PanelsChipsView.restore`),
-  so once a session docks 3 panels into one zone there is no way back. Fix belongs in
-  `FakeEngine`'s zone layout; any engine wired in later (`DockviewEngine`'s "below" sibling-chain
-  sizing is unverified until then) must pass the same 3-groups-in-one-zone containment check. Blocks
-  `stage.spec.ts`'s "author an animated (frame-list) actor token" e2e test, marked `test.fixme`
-  pending this fix (it needs `assets` + `settings` + `actors` all docked in "right" across its
-  lifetime, on top of `chat`'s permanent default dock = 4 total). Surfaced by the M12a B4
-  buddy-check fix's own mandated e2e verification, which correctly restores richer persisted
-  layouts across a reload/re-entry than any prior test exercised.
+- [Panels] The bespoke-fallback engine — `FakeEngine` (`src/modules/panels/src/engine/fake.ts`,
+  used only when a caller constructs `PanelHost` without an explicit `engine` prop, e.g. tests) —
+  loses width containment once a THIRD docked group is added to the same zone
+  (`right`/`bottom`/`left`): with exactly 2 groups the zone stacks within its column width, but
+  the 3rd group renders full-viewport-width, covering the stage canvas underneath it (confirmed
+  via screenshot: two "full width" stacked panels with no narrow right-hand column at all).
+  `FakeEngine.apply` renders each zone's groups as plain stacked `<div>`s appended after the
+  center well — the suspect rendering path. Deterministic and reproducible with generous
+  real-time waits between each dock (NOT a same-tick/rapid-fire timing race). No UI affordance
+  currently exists to un-dock/minimize a panel back out of a zone once docked under FakeEngine
+  (M12a ships no minimize/close control on a docked panel's tab — the interim default-placement
+  design is `{kind:"minimized"}` for non-chat panels, restored only forward via
+  `PanelsChipsView.restore`), so once a `FakeEngine` session docks 3 panels into one zone there is
+  no way back.
+  **Not present under the production engine**: `panels/src/index.ts` now wires `DockviewEngine`
+  as the `panel-host` surface's engine (M12a Task 9 step 0), and `stage.spec.ts`'s "author an
+  animated (frame-list) actor token" e2e — which docks 4 groups into "right" across its
+  lifetime — passes cleanly under it (un-fixme'd; dockview's "below" sibling-chain sizing
+  contains width correctly past 2 groups). Fix belongs in `FakeEngine`'s zone layout if/when a
+  bespoke-fallback caller needs more than 2 docked groups in one zone; not release-blocking since
+  production never reaches `FakeEngine`.
