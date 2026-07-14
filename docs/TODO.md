@@ -222,6 +222,22 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   recreated rather than patched in place (harmless: content survives via the persistent slot
   element; only the dockview chrome/tab-order animation resets). A finer, content-independent
   diff is future work if this churn becomes visible in practice.
+- RESOLVED (M12a Task 9): docked-panel-to-floating was itself a latent gap in `apply()`'s
+  floating loop — it only handled floating-panel CREATION (`!api.getPanel(f.id)`), never a
+  panel already docked that the tree newly lists under `expanded.floating`, leaving it
+  stranded in its old (tree-orphaned) group. Fixed with the same remove+re-add-under-groupId
+  pattern the zone loop already used for cross-group moves, keyed on
+  `existing.group.api.location.type !== "floating"` (dockview's own public location
+  discriminant). Surfaced by wiring the `PanelMenu`'s "Float" command — the first UI affordance
+  to ever trigger a "float" op against the production engine.
+- TODO: `PanelMenu`'s "Float" command is the ONLY current trigger for a `float` `LayoutOp`, and
+  floating a panel via its OWN tab menu necessarily destroys that same tab (and its menu
+  button) as part of the docked→floating transition — `DockviewEngine`'s focus-return-to-
+  invoker (`#floatInvokers`/`#teardownFloatingA11y`) therefore always degrades to a safe no-op
+  for this milestone's only reachable path (the invoker is gone by close time). The mechanism
+  is implemented and exercised (`dockview.test.ts`'s float/Escape test asserts the graceful
+  degradation, not a specific restored-focus target); a future non-self-referential float
+  trigger (a command palette, a chip-strip "float" action) would benefit from it fully.
 
 ## Chat / link previews (M11d-3)
 - Preview images: v1 stores title+description only. An image URL rendered as `<img src>` would

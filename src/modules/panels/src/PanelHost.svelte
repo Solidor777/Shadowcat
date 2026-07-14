@@ -5,6 +5,7 @@
   import type { EngineAdapter } from "./engine/adapter";
   import { FakeEngine } from "./engine/fake";
   import { PanelsController, type PanelsBridgeLike } from "./controller.svelte";
+  import type { LayoutOp } from "./layout/tree";
   import CompactSwitcher from "./CompactSwitcher.svelte";
 
   /** `engine` defaults to `FakeEngine` (the bespoke-fallback engine); a real
@@ -23,6 +24,51 @@
 
   const ctx = getAppContext();
   const t = ctx.t;
+
+  // The a11y live-region text (`panels.moved`), announced once per
+  // layout-changing op `dispatch` accepts — see `describeOp` below. `$state`
+  // so re-announcing the SAME text still fires (Svelte skips a no-op
+  // reassignment only when the VALUE is identical; two consecutive `dock`s
+  // to different zones always differ, and even an identical repeat is
+  // harmless — a screen reader coalescing an unchanged polite region is
+  // expected, not a bug this needs to work around).
+  let announce = $state("");
+
+  /** Maps a layout-changing op to its `panels.moved` announcement, or `null`
+   * for an op that isn't a "move" worth narrating (tab-switch, resize,
+   * compact-view switch, or an `open` that's merely a focus bump). Reuses
+   * the existing `panels.dockRight`/`dockBottom`/`dockLeft`/`float`/
+   * `minimize`/`restore`/`close` keys as the "where" phrase — the same
+   * words a sighted user already sees on the chip strip/menu. */
+  function describeOp(op: LayoutOp): string | null {
+    const label = (id: string): string => {
+      const meta = ctrl.metaMap.get(id);
+      return meta ? t(meta.labelKey) : id;
+    };
+    let where: string;
+    switch (op.op) {
+      case "dock":
+        where = t(op.zone === "right" ? "panels.dockRight" : op.zone === "bottom" ? "panels.dockBottom" : "panels.dockLeft");
+        break;
+      case "float":
+        where = t("panels.float");
+        break;
+      case "minimize":
+        where = t("panels.minimize");
+        break;
+      case "restore":
+        where = t("panels.restore");
+        break;
+      case "close":
+        where = t("panels.close");
+        break;
+      default:
+        // resizeZone/resizeGroup/activeTab/compactView/open: not a "move"
+        // worth narrating (continuous drag feedback or a mere focus bump).
+        return null;
+    }
+    return t("panels.moved", { panel: label(op.id), where });
+  }
 
   const ctrl = untrack(
     () =>
@@ -44,6 +90,10 @@
         // the seam a visible toast (e.g. a statusbar live region) hangs off
         // once that surface exists — a no-op until then.
         onReset: () => {},
+        onOp: (op) => {
+          const text = describeOp(op);
+          if (text !== null) announce = text;
+        },
       }),
   );
 
@@ -247,6 +297,11 @@
     release={releaseToStaging}
     onSwitch={(id) => ctrl.dispatch({ op: "compactView", id })}
   />
+
+  <!-- Narrates every layout-changing op (drag OR menu-driven — both funnel
+       through `ctrl.dispatch`, see `describeOp`) — sighted-only chip/menu
+       affordances otherwise give a screen-reader user no signal a panel moved. -->
+  <div class="sr-only" role="status" aria-live="polite">{announce}</div>
 </div>
 
 <style lang="scss">
@@ -256,6 +311,17 @@
     height: 100%;
     min-height: 0;
     position: relative;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
   .staging {
     display: none;

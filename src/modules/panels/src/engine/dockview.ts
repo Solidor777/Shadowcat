@@ -11,11 +11,16 @@ import type {
   IDockviewGroupPanel,
   IContentRenderer,
   IDockviewPanel,
+  ITabRenderer,
+  TabPartInitParameters,
 } from "dockview-core";
+import { mount, unmount } from "svelte";
 import { consoleLogger, type Logger, type PanelMeta, type ZoneId } from "@shadowcat/core";
+import { i18n } from "@shadowcat/ui-kit";
 import type { EngineAdapter } from "./adapter";
 import type { ExpandedLayout, LayoutOp } from "../layout/tree";
-import { classifyDrop, STAGE_ID, type DropSite } from "./policy";
+import { classifyDrop, opForMenuCommand, STAGE_ID, type DropSite, type MenuCommand } from "./policy";
+import PanelMenu from "../PanelMenu.svelte";
 // Minimal wiring: imports dockview's base stylesheet + our token overrides —
 // only paid for when a real docking engine is actually instantiated, never
 // by `FakeEngine`-only hosts.
@@ -91,6 +96,122 @@ function groupIdFor(zone: ZoneId, index: number, tabs: readonly string[]): strin
   return `sc-group:${tabs[0] ?? `${zone}:${index}:empty`}`;
 }
 
+/** Mounts `PanelMenu` into a small popover positioned under `anchor` (the tab's
+ * menu button); returns a `close()` that unmounts it and restores focus to
+ * `anchor`. A pointerdown outside the popover, or the menu's own `onClose`
+ * (Escape/Tab), closes it — the two paths share this single teardown so
+ * neither can leave the other's listener/DOM behind. */
+function mountPanelMenu(anchor: HTMLElement, onCommand: (cmd: MenuCommand) => void): () => void {
+  const container = document.createElement("div");
+  container.className = "sc-panel-menu-popover";
+  const rect = anchor.getBoundingClientRect();
+  container.style.position = "fixed";
+  container.style.top = `${rect.bottom}px`;
+  container.style.left = `${rect.left}px`;
+  document.body.appendChild(container);
+
+  let closed = false;
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener("pointerdown", onDocPointerDown, true);
+    unmount(app);
+    container.remove();
+    anchor.focus();
+  };
+  const onDocPointerDown = (event: PointerEvent): void => {
+    if (!container.contains(event.target as Node)) close();
+  };
+  const app = mount(PanelMenu, { target: container, props: { onCommand, onClose: close } });
+  document.addEventListener("pointerdown", onDocPointerDown, true);
+  // First menu item takes focus (WAI-ARIA Menu pattern: opening a menu moves
+  // focus onto it). Deferred a tick: `mount()` has already appended the
+  // buttons synchronously, but queuing avoids fighting the click event that
+  // opened this same menu (still bubbling) for focus.
+  queueMicrotask(() => container.querySelector<HTMLButtonElement>("button")?.focus());
+  return close;
+}
+
+/** Renders a tab's visible chrome — icon, `i18n.t(labelKey)` label, and a
+ * command-menu button — as the CONTENT of dockview's own tab wrapper
+ * (`Tab#_element` in `tab.js`, `role="tab"`), which already implements APG
+ * roving tabindex (arrow keys move that wrapper's focus without activating;
+ * Enter/Space activates) and is not reimplemented here. `getMeta` is read
+ * lazily (not snapshotted at construction) so a later `apply()` call's meta
+ * map is always current; an `i18n.subscribe` re-renders the label on locale
+ * change. */
+class PanelTabRenderer implements ITabRenderer {
+  readonly element: HTMLElement;
+  #iconEl: HTMLElement;
+  #labelEl: HTMLElement;
+  #menuBtn: HTMLButtonElement;
+  #unsubLocale: () => void;
+  #closeMenu: (() => void) | null = null;
+
+  constructor(
+    private readonly id: string,
+    private readonly getMeta: () => PanelMeta | undefined,
+    private readonly onCommand: (id: string, cmd: MenuCommand, invoker: HTMLElement) => void,
+  ) {
+    this.element = document.createElement("div");
+    this.element.className = "sc-tab";
+    this.#iconEl = document.createElement("span");
+    this.#iconEl.className = "sc-tab-icon";
+    this.#iconEl.setAttribute("aria-hidden", "true");
+    this.#labelEl = document.createElement("span");
+    this.#labelEl.className = "sc-tab-label";
+    this.#menuBtn = document.createElement("button");
+    this.#menuBtn.type = "button";
+    this.#menuBtn.className = "sc-tab-menu-btn";
+    this.#menuBtn.setAttribute("aria-haspopup", "menu");
+    this.#menuBtn.setAttribute("aria-expanded", "false");
+    this.#menuBtn.textContent = "⋮";
+    this.element.append(this.#iconEl, this.#labelEl, this.#menuBtn);
+    this.#renderLabels();
+    this.#unsubLocale = i18n.subscribe(() => this.#renderLabels());
+    this.#menuBtn.addEventListener("click", (event) => {
+      // Never let a menu-button click bubble into the tab wrapper's own
+      // click handling (`Tab#_onTabClick`), which would also activate this
+      // tab as a side effect of opening its menu.
+      event.stopPropagation();
+      this.#toggleMenu();
+    });
+  }
+
+  // No per-panel state to read from dockview's own init parameters — label/
+  // icon come entirely from `getMeta()`, never `params.title`.
+  init(_params: TabPartInitParameters): void {}
+
+  #renderLabels(): void {
+    const meta = this.getMeta();
+    this.#iconEl.textContent = meta?.icon ?? "";
+    this.#labelEl.textContent = meta ? i18n.t(meta.labelKey) : this.id;
+    this.#menuBtn.setAttribute("aria-label", i18n.t("panels.menu"));
+  }
+
+  #toggleMenu(): void {
+    if (this.#closeMenu) {
+      this.#closeMenu();
+      return;
+    }
+    const close = mountPanelMenu(this.#menuBtn, (cmd) => {
+      close();
+      this.onCommand(this.id, cmd, this.#menuBtn);
+    });
+    this.#menuBtn.setAttribute("aria-expanded", "true");
+    this.#closeMenu = () => {
+      close();
+      this.#menuBtn.setAttribute("aria-expanded", "false");
+      this.#closeMenu = null;
+    };
+  }
+
+  dispose(): void {
+    this.#closeMenu?.();
+    this.#unsubLocale();
+  }
+}
+
 /** Gesture contract: classify → veto or redispatch; dockview never self-mutates
  * from a drop. Every will-drop wire (`#handleWillDrop`, fed by both the
  * component-level `api.onWillDrop` and the per-group `group.model.onWillDrop`
@@ -158,6 +279,19 @@ export class DockviewEngine implements EngineAdapter {
   // a user's splitter drag) — avoids feedback-loop op spam.
   #lastZonePx = new Map<ZoneId, number>();
   #lastGroupPx = new Map<string, number>();
+  // Meta snapshot from the last `apply()` call — read by `PanelTabRenderer`'s
+  // `getMeta` closure (icon/labelKey are effectively static per panel once
+  // registered, so a live reference here is sufficient; no per-render diffing).
+  #meta: ReadonlyMap<string, PanelMeta> = new Map();
+  // Invoking element (the menu button) for each floating panel created via a
+  // "float" menu command, so `#teardownFloatingA11y` can return focus to it
+  // on close. Absent for any future non-menu float path — that path simply
+  // degrades to no focus-return, never a crash.
+  #floatInvokers = new Map<string, HTMLElement>();
+  // One live Escape-to-close keydown listener per floating panel's dialog
+  // element, disposed the moment that panel leaves the model (mirrors
+  // `#groupResizeSubs`'s per-group add/dispose lifecycle).
+  #floatingEscapeSubs = new Map<string, () => void>();
 
   constructor(logger?: Logger) {
     this.#logger = logger ?? consoleLogger();
@@ -171,6 +305,27 @@ export class DockviewEngine implements EngineAdapter {
         options.name === "sc-stage"
           ? new AdoptingContentRenderer(() => stageEl, "sc-dockview-stage-content")
           : new AdoptingContentRenderer(() => slotFor(options.id), "sc-dockview-panel-content"),
+      // `DockviewPanelModel.createTabComponent` (dockviewPanelModel.js) only
+      // calls `options.createTabComponent` at all when `componentName ??
+      // defaultTabComponent` is truthy — no per-panel `tabComponent` is ever
+      // set on `addPanel`, so this MUST be a truthy string or `createTabComponent`
+      // below is never reached and every tab silently falls back to
+      // dockview's own `DefaultTab`. The value itself is arbitrary; `options.id`
+      // (not `options.name`, which is always this same string) is what the
+      // factory below branches on.
+      defaultTabComponent: "sc-tab",
+      // The stage's own group is headerless (`hideHeader: true`, W1), so this
+      // is never actually invoked for the stage id — the `undefined` fallback
+      // (dockview's `DefaultTab`) is defense-in-depth only, matching `apply`/
+      // `focus`'s belt-and-suspenders STAGE_ID guards elsewhere in this class.
+      createTabComponent: (options: CreateComponentOptions) =>
+        options.id === STAGE_ID
+          ? undefined
+          : new PanelTabRenderer(
+              options.id,
+              () => this.#meta.get(options.id),
+              (id, cmd, invoker) => this.#handleMenuCommand(id, cmd, invoker),
+            ),
     });
     this.#api = api;
 
@@ -181,6 +336,20 @@ export class DockviewEngine implements EngineAdapter {
       api.onDidRemovePanel((panel) => this.#handleDidRemovePanel(panel)),
       api.onDidActivePanelChange((event) => this.#handleActivePanelChange(event)),
     );
+  }
+
+  /** Translates a `PanelMenu` command into the `LayoutOp` `opForMenuCommand`
+   * (policy.ts, dockview-free) maps it to, and emits it through the SAME
+   * `#opListeners` channel a drag gesture uses — the controller cannot tell
+   * the two apart, and per the parity requirement, it doesn't need to: both
+   * paths produce identical `LayoutOp` shapes for the equivalent move.
+   * `float` additionally records `invoker` (the tab's own menu button,
+   * handed in by `PanelTabRenderer`) as this panel's focus-return target
+   * (see `#floatInvokers`). */
+  #handleMenuCommand(id: string, cmd: MenuCommand, invoker: HTMLElement): void {
+    if (cmd === "float") this.#floatInvokers.set(id, invoker);
+    const op = opForMenuCommand(cmd, id);
+    for (const cb of this.#opListeners) cb(op);
   }
 
   /** W1: mounts the stage into its own dedicated group — headerless (no tab
@@ -233,6 +402,11 @@ export class DockviewEngine implements EngineAdapter {
   }
 
   #handleDidRemovePanel(panel: IDockviewPanel): void {
+    // Always runs, even for an `#applying`-driven removal (e.g. a floating
+    // panel docked or closed via the reducer) — this is a DOM/focus
+    // teardown, not a user-gesture translation, so it does not share the
+    // `#applying` guard below.
+    this.#teardownFloatingA11y(panel.id);
     if (panel.id === STAGE_ID) {
       this.#restoreStage();
       return;
@@ -242,6 +416,47 @@ export class DockviewEngine implements EngineAdapter {
     // already knows about it; re-emitting here would just replay a stale op.
     if (this.#applying) return;
     for (const cb of this.#opListeners) cb({ op: "close", id: panel.id });
+  }
+
+  /** W1/D4: floating groups are non-modal dialogs (dockview's own `Overlay`
+   * sets `role="dialog"`/`aria-modal="false"` — see `overlay.js`); this adds
+   * the label + focus management the brief requires that dockview doesn't
+   * supply itself: `aria-label` = the panel's own label, DOM focus moves
+   * into the dialog the moment it appears, and Escape (bubbled from
+   * anywhere inside it) closes it via the same op channel a menu/drag
+   * gesture uses. Called once per floating-panel CREATION (`apply()`'s
+   * floating loop) — `panel.group.element` is a descendant of the dialog's
+   * `Overlay#_element`, so `.closest()` finds it without reaching into any
+   * dockview-internal field. */
+  #wireFloatingA11y(id: string, meta: PanelMeta | undefined): void {
+    const panel = this.#api?.getPanel(id);
+    if (!panel) return;
+    const dialogEl = panel.group.element.closest<HTMLElement>('[role="dialog"]');
+    if (!dialogEl) return;
+    dialogEl.tabIndex = -1;
+    if (meta) dialogEl.setAttribute("aria-label", i18n.t(meta.labelKey));
+    const onKeydown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      for (const cb of this.#opListeners) cb({ op: "close", id });
+    };
+    dialogEl.addEventListener("keydown", onKeydown);
+    this.#floatingEscapeSubs.set(id, () => dialogEl.removeEventListener("keydown", onKeydown));
+    dialogEl.focus();
+  }
+
+  /** Reverses `#wireFloatingA11y` for `id` — disposes its Escape listener and
+   * returns DOM focus to whatever menu button opened it (`#floatInvokers`),
+   * when that element is still attached. A no-op (safe, idempotent) for any
+   * id that was never floating. Called from `#handleDidRemovePanel`, which
+   * fires for every panel removal regardless of cause (menu close, Escape,
+   * or a dock transition moving the panel out of its floating window). */
+  #teardownFloatingA11y(id: string): void {
+    this.#floatingEscapeSubs.get(id)?.();
+    this.#floatingEscapeSubs.delete(id);
+    const invoker = this.#floatInvokers.get(id);
+    this.#floatInvokers.delete(id);
+    if (invoker && document.contains(invoker)) invoker.focus();
   }
 
   #handleActivePanelChange(event: DockviewActivePanelChangeEvent): void {
@@ -355,10 +570,11 @@ export class DockviewEngine implements EngineAdapter {
     };
   }
 
-  apply(expanded: ExpandedLayout, _meta: ReadonlyMap<string, PanelMeta>): void {
+  apply(expanded: ExpandedLayout, meta: ReadonlyMap<string, PanelMeta>): void {
     const api = this.#api;
     if (!api) return;
     this.#expanded = expanded;
+    this.#meta = meta;
     this.#applying = true;
     try {
       const seenPanelIds = new Set<string>([STAGE_ID]);
@@ -435,12 +651,22 @@ export class DockviewEngine implements EngineAdapter {
 
       for (const f of expanded.floating) {
         seenPanelIds.add(f.id);
-        if (!api.getPanel(f.id)) {
+        const existing = api.getPanel(f.id);
+        // A panel already present but NOT in a floating group is transitioning
+        // INTO floating (e.g. the menu's "Float" command on a docked tab) —
+        // mirrors the zone loop's cross-group-move branch just above: remove
+        // + re-add under the same id rather than leaving it stranded in its
+        // old (now tree-orphaned) group. `location.type` is dockview's own
+        // public discriminant for a group's placement (`'grid' | 'floating' |
+        // 'popout' | 'edge'`), read off the panel's CURRENT group.
+        if (!existing || existing.group.api.location.type !== "floating") {
+          if (existing) api.removePanel(existing);
           api.addPanel({
             id: f.id,
             component: "sc-panel",
             floating: { x: f.rect.x, y: f.rect.y, width: f.rect.w, height: f.rect.h },
           });
+          this.#wireFloatingA11y(f.id, meta.get(f.id));
         }
         // Position/size sync of an ALREADY-floating panel is deferred — see
         // TODO below.

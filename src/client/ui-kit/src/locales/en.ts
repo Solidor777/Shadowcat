@@ -194,4 +194,6 @@ export const en: Messages = {
   "panels.crashed": "Panel crashed",
   "panels.reload": "Reload",
   "panels.layoutReset": "Panel layout was reset to default",
+  "panels.menu": "Panel options",
+  "panels.moved": "{panel} moved to {where}",
 };

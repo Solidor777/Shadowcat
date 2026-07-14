@@ -45,6 +45,42 @@ export interface DropSite {
   position: "left" | "right" | "top" | "bottom" | "center";
 }
 
+/** Every command `PanelMenu` can offer, on a docked tab or a floating
+ * header alike (no context-dependent filtering — `applyOp` already handles
+ * every op from any starting location). */
+export type MenuCommand = "dockRight" | "dockBottom" | "dockLeft" | "float" | "minimize" | "close";
+
+/** Fixed floating rect a menu-triggered "Float" command opens at — a drag
+ * gesture supplies its own drop rect (`classifyDrop`'s `kind: "floating"`
+ * site, sourced from the pointer position); the menu has no pointer
+ * position to derive one from. */
+export const MENU_FLOAT_RECT: Rect = { x: 96, y: 96, w: 360, h: 280 };
+
+/** Maps a `PanelMenu` command to the exact `LayoutOp` the equivalent drag
+ * gesture produces through `classifyDrop`: `dockRight`/`dockBottom`/`dockLeft`
+ * mirror an edge drop's `{op:"dock", zone, group:"new"}`; `minimize`/`close`
+ * are already 1:1 with their own `LayoutOp`. `float` has no drag rect to
+ * mirror (see `MENU_FLOAT_RECT`) — parity there is by construction, not by
+ * equality with a drag result. Kept here (not in `dockview.ts`) so this
+ * mapping — and its parity with `classifyDrop` — is testable with zero
+ * dockview dependency. */
+export function opForMenuCommand(command: MenuCommand, id: string): LayoutOp {
+  switch (command) {
+    case "dockRight":
+      return { op: "dock", id, zone: "right", group: "new" };
+    case "dockBottom":
+      return { op: "dock", id, zone: "bottom", group: "new" };
+    case "dockLeft":
+      return { op: "dock", id, zone: "left", group: "new" };
+    case "float":
+      return { op: "float", id, rect: MENU_FLOAT_RECT };
+    case "minimize":
+      return { op: "minimize", id };
+    case "close":
+      return { op: "close", id };
+  }
+}
+
 export type ClassifyResult = LayoutOp | { veto: true; reason: string };
 
 function veto(reason: string): { veto: true; reason: string } {

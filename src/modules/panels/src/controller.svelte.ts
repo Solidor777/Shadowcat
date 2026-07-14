@@ -39,6 +39,12 @@ export interface PanelsControllerDeps {
    * was rejected and the default was substituted in its place; the caller
    * resolves + surfaces it (e.g. a statusbar live-region toast). */
   onReset?: (key: string) => void;
+  /** Fired with an op every time `dispatch` actually changes the layout
+   * (never for a no-op op) — drag gestures and `PanelMenu` commands both
+   * funnel through `dispatch`, so this is the ONE hook that sees every
+   * layout-changing op regardless of origin. `PanelHost` uses it to drive
+   * the a11y live-region announcement. */
+  onOp?: (op: LayoutOp) => void;
 }
 
 const EMPTY_LAYOUT: PanelLayoutV1 = {
@@ -118,6 +124,7 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
     if (next === this.#layout) return;
     this.#layout = next;
     this.#persist(next);
+    this.#deps.onOp?.(op);
   }
 
   /** Drops any panel id no longer present among current registrations

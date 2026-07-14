@@ -33,6 +33,11 @@ const { FakeEngine } = await import("./engine/fake");
 const { default: CountingPanel } = await import("./__fixtures__/CountingPanel.svelte");
 const { default: ThrowingPanel } = await import("./__fixtures__/ThrowingPanel.svelte");
 const { default: CrashOnceCountingPanel } = await import("./__fixtures__/CrashOnceCountingPanel.svelte");
+// Dynamic, alongside the imports above: a static top-level `import { i18n }
+// from "@shadowcat/ui-kit"` would pull in the whole ui-kit barrel (including
+// `sizeClass.svelte.ts`, which reads `matchMedia` at module load) BEFORE the
+// `vi.stubGlobal` call above runs, breaking the ordering that comment warns about.
+const { i18n } = await import("@shadowcat/ui-kit");
 
 afterEach(() => {
   cleanup();
@@ -278,6 +283,61 @@ test("compact staging: only the active view is adopted; flipping to expanded rel
   // Never placed in `expanded` (launcher-only), so the engine's reconcile has
   // no reclaim path of its own for it — CompactSwitcher must release it.
   expect(launcherSlot.parentElement!.isSameNode(stagingEl)).toBe(true);
+});
+
+test("live region: minimizing a panel announces panels.moved with its label and 'Minimize'", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  const engine = new FakeEngine();
+  // The default test `t` (`(k) => k`, no interpolation) can't prove the
+  // announcement text is actually assembled from the panel's label + the
+  // op's destination — use the real catalog-backed `i18n.t` instead.
+  const context = setAppContextForTest({ contributions: registry, role: "gm", t: (k, p) => i18n.t(k, p) });
+  const { container } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  const liveRegion = container.querySelector('[role="status"]')!;
+  expect(liveRegion).toBeTruthy();
+  expect(liveRegion.textContent).toBe("");
+
+  engine.emitOp({ op: "minimize", id: "chat:panel" });
+  await Promise.resolve();
+
+  expect(liveRegion.textContent).toBe("Chat moved to Minimize");
+});
+
+test("live region: a pure focus/resize op (activeTab) does not announce", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  registry.contribute({
+    id: "notes:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "n", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  const engine = new FakeEngine();
+  const context = setAppContextForTest({ contributions: registry, role: "gm" });
+  const { container } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  const liveRegion = container.querySelector('[role="status"]')!;
+  engine.emitOp({ op: "activeTab", zone: "right", group: 0, id: "chat:panel" });
+  await Promise.resolve();
+
+  expect(liveRegion.textContent).toBe("");
 });
 
 test("FakeEngine.init adopts the stageEl into a center-well container", async () => {

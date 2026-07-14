@@ -2,14 +2,21 @@ import { test, expect, afterEach } from "vitest";
 import { defaultLayout, applyOp, type LayoutOp, type PanelLayoutV1 } from "../layout/tree";
 import { DockviewEngine } from "./dockview";
 import { STAGE_ID } from "./policy";
-import { silentLogger } from "@shadowcat/core";
+import { silentLogger, type PanelMeta } from "@shadowcat/core";
 import type { DockviewWillDropEvent } from "dockview-core";
 
 let engine: DockviewEngine | null = null;
+// Hosts appended to `document.body` for focus-management tests (jsdom only
+// tracks `document.activeElement` for attached elements) are torn down here
+// alongside the engine, so no test leaks a detached-but-body-mounted `<div>`
+// into a later test's `document.body`.
+let attachedHost: HTMLElement | null = null;
 
 afterEach(() => {
   engine?.destroy();
   engine = null;
+  attachedHost?.remove();
+  attachedHost = null;
 });
 
 function makeSlots(ids: string[]): (id: string) => HTMLElement {
@@ -517,4 +524,121 @@ test("a genuine engine-side removal (outside apply()) still emits exactly one cl
 
   expect(ops.filter((o) => o.op === "close")).toHaveLength(1);
   expect(ops.find((o) => o.op === "close")).toEqual({ op: "close", id: "assets" });
+});
+
+test("custom tab: renders icon + label from the meta map, not dockview's own title", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  const meta = new Map<string, PanelMeta>([["chat", { icon: "💬", labelKey: "test.chatLabel" }]]);
+  engine.apply(layout.expanded, meta);
+
+  const tabEl = host.querySelector<HTMLElement>(".sc-tab")!;
+  expect(tabEl).toBeTruthy();
+  expect(tabEl.querySelector(".sc-tab-icon")!.textContent).toBe("💬");
+  // "test.chatLabel" has no catalog entry — `I18n.t` falls back to the key
+  // itself, which doubles as an unambiguous "this came from our own meta
+  // map, not dockview's title" signal.
+  expect(tabEl.querySelector(".sc-tab-label")!.textContent).toBe("test.chatLabel");
+  expect(tabEl.querySelector(".sc-tab-menu-btn")).toBeTruthy();
+});
+
+test("roving tabindex: ArrowRight/ArrowLeft move focus between tabs without activating; Enter activates the focused tab", () => {
+  attachedHost = document.createElement("div");
+  document.body.appendChild(attachedHost);
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat", "notes"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(attachedHost, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }, { id: "notes" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  layout = applyOp(layout, { op: "dock", id: "notes", zone: "right", group: 0 });
+  engine.apply(layout.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  // dockview's own `Tab` wrapper (`role="tab"`) is what carries the roving
+  // tabindex — our custom tab component is its CONTENT, not a replacement
+  // for it. `notes` docked second, so it starts active (tab order: chat, notes).
+  // Filtered to tabs hosting OUR custom content: the stage's own tab (headerless
+  // group, `hideHeader: true`) still exists in the DOM (just CSS-hidden), so an
+  // unfiltered `[role="tab"]` query would also match it.
+  const tabs = Array.from(attachedHost.querySelectorAll<HTMLElement>('[role="tab"]')).filter(
+    (el) => el.querySelector(".sc-tab") !== null,
+  );
+  expect(tabs).toHaveLength(2);
+  tabs[0].focus();
+  expect(document.activeElement).toBe(tabs[0]);
+
+  tabs[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  expect(document.activeElement).toBe(tabs[1]);
+  expect(ops.some((o) => o.op === "activeTab")).toBe(false);
+
+  tabs[1].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+  expect(document.activeElement).toBe(tabs[0]);
+  expect(ops.some((o) => o.op === "activeTab")).toBe(false);
+
+  tabs[0].dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  expect(ops).toContainEqual({ op: "activeTab", zone: "right", group: 0, id: "chat" });
+});
+
+test("menu 'Float' command: the resulting floating dialog gets aria-label + focus-in, matching classifyDrop-parity op shape", async () => {
+  attachedHost = document.createElement("div");
+  document.body.appendChild(attachedHost);
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(attachedHost, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  const meta = new Map<string, PanelMeta>([["chat", { icon: "c", labelKey: "test.chatLabel" }]]);
+  engine.apply(layout.expanded, meta);
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  const menuBtn = attachedHost.querySelector<HTMLButtonElement>(".sc-tab-menu-btn")!;
+  menuBtn.click();
+  // `mountPanelMenu` mounts synchronously but defers the first-item focus by
+  // a microtask; give both a turn.
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const floatItem = document.querySelector<HTMLButtonElement>('[data-testid="panel-menu-float"]')!;
+  expect(floatItem).toBeTruthy();
+  floatItem.click();
+
+  const floatOp = ops.find((o) => o.op === "float");
+  expect(floatOp).toBeDefined();
+  layout = applyOp(layout, floatOp!);
+  engine.apply(layout.expanded, meta);
+
+  const dialogEl = attachedHost.querySelector<HTMLElement>('[role="dialog"]');
+  expect(dialogEl).toBeTruthy();
+  expect(dialogEl!.getAttribute("aria-label")).toBe("test.chatLabel");
+  expect(document.activeElement).toBe(dialogEl);
+
+  // Escape (bubbled from anywhere inside the dialog) closes it via the same
+  // op channel a menu/drag gesture uses.
+  dialogEl!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(ops.find((o) => o.op === "close")).toEqual({ op: "close", id: "chat" });
+
+  // Applying that close removes "chat" entirely (its own docked tab — the
+  // only current trigger for a menu-driven float — is gone by this point,
+  // so there is no live invoker element to restore focus to); the teardown
+  // must still run cleanly rather than leaving focus on the disposed dialog.
+  layout = applyOp(layout, { op: "close", id: "chat" });
+  engine.apply(layout.expanded, meta);
+  expect(document.activeElement).not.toBe(dialogEl);
 });
