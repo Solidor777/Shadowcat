@@ -91,6 +91,16 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
+    // A plain `[hidden]` selector (the UA default `[hidden]{display:none}`)
+    // has the same specificity as this scoped class selector; being the
+    // scoped rule declared LATER in the cascade, `display: flex` above wins
+    // over `[hidden]`'s `display: none` without this override — an expanded-
+    // mode `.compact-switcher` would otherwise still lay out at full height,
+    // stealing flex space and pointer events from `.engine-host`'s sibling
+    // content (e.g. the stage canvas).
+    &[hidden] {
+      display: none;
+    }
   }
   .active-view {
     flex: 1;

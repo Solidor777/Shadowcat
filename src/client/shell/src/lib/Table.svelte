@@ -7,7 +7,9 @@
   import { getPanelLayout, setPanelLayout } from "./sessionState.svelte";
   import type { WorldSession } from "./worldSession.svelte";
 
-  // TODO: bind the real panel host once it mounts; until then calls warn-once and no-op.
+  // `PanelHost` binds the real implementation into this bridge at its own
+  // mount (later than `Table`'s own init); calls made before that bind are
+  // a no-op, warned once via the injected logger.
   const panels = new PanelsBridge(consoleLogger());
 
   let { session, leaveWorld }: { session: WorldSession; leaveWorld: () => void } =

@@ -4,7 +4,7 @@ import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
 import type { TokenSelection } from "./tokenSelection.svelte";
-import type { PanelsApi, PanelsChipsView } from "./panelsBridge";
+import type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
 
 /**
  * Ambient app state contributed components read via Svelte context. Carries the

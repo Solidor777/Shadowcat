@@ -4,7 +4,7 @@
   import { SceneInteractionBridge } from "../sceneInteraction";
   import { ActorSelection } from "../actorSelection.svelte";
   import { TokenSelection } from "../tokenSelection.svelte";
-  import { PanelsBridge } from "../panelsBridge";
+  import { PanelsBridge } from "../panelsBridge.svelte";
   import { t } from "../i18n.svelte";
   import Surface from "../Surface.svelte";
 

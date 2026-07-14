@@ -1,6 +1,10 @@
-import { test, expect } from "vitest";
+import { test, expect, afterEach } from "vitest";
+import { render, screen, waitFor, cleanup } from "@testing-library/svelte";
 import type { Logger, PanelMeta } from "@shadowcat/core";
-import { PanelsBridge, type PanelsApi, type PanelsChipsView } from "./panelsBridge";
+import { PanelsBridge, type PanelsApi, type PanelsChipsView } from "./panelsBridge.svelte";
+import PanelsBridgeProbe from "./__fixtures__/PanelsBridgeProbe.svelte";
+
+afterEach(() => cleanup());
 
 function fakeImpl(): PanelsApi & PanelsChipsView & { calls: string[] } {
   const calls: string[] = [];
@@ -69,4 +73,20 @@ test("PanelsBridge.minimized/metaMap read through to the bound implementation", 
 
   expect(bridge.minimized).toEqual(["a"]);
   expect(bridge.metaMap.get("a")).toEqual({ icon: "a", labelKey: "a.tab" });
+});
+
+// Buddy-check finding 4: the panel host mounts (and calls `bind()`) LATER
+// than other AppContext readers, so a `$derived` over `bridge.minimized` can
+// evaluate first, while `#impl` is still null. A plain field would freeze
+// that derived at `[]` forever; `#impl` must be reactive so a later `bind()`
+// still reaches an already-evaluated reader.
+test("a reader that evaluates BEFORE bind() sees the update once bind() runs", async () => {
+  const bridge = new PanelsBridge(capturingLogger());
+  render(PanelsBridgeProbe, { props: { bridge } });
+
+  expect(screen.getByTestId("minimized").textContent).toBe("");
+
+  bridge.bind(fakeImpl());
+
+  await waitFor(() => expect(screen.getByTestId("minimized").textContent).toBe("a"));
 });

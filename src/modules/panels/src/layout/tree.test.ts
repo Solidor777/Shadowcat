@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyOp, defaultLayout, locate, prune, type PanelLayoutV1 } from "./tree";
+import { applyOp, defaultLayout, locate, placeNewRegistrations, prune, type PanelLayoutV1 } from "./tree";
 
 const REGS = [
   { id: "chat", placement: { kind: "docked" as const, zone: "right" as const } },
@@ -40,6 +40,41 @@ describe("defaultLayout", () => {
     expect(l.expanded.zones.right.groups).toEqual([]);
     expect(l.expanded.zones.bottom.groups).toEqual([]);
     expect(l.expanded.zones.left.groups).toEqual([]);
+  });
+});
+
+// A live PanelHost's `visibleRegs` can grow AFTER `defaultLayout` already ran at
+// controller construction (module registration order is not guaranteed) — this is the
+// incremental catch-up that reconciles that gap.
+describe("placeNewRegistrations", () => {
+  it("places a registration never seen before, exactly like defaultLayout would", () => {
+    const l0 = defaultLayout([{ id: "chat", placement: { kind: "docked", zone: "right" } }]);
+    const l1 = placeNewRegistrations(l0, [
+      { id: "chat", placement: { kind: "docked", zone: "right" } },
+      { id: "assets", placement: { kind: "minimized" } },
+    ]);
+    expect(l1.expanded.minimized).toEqual(["assets"]);
+    expect(l1.compact.order).toEqual(["chat", "assets"]);
+  });
+
+  it("is a same-reference no-op when every id is already in compact.order", () => {
+    const l0 = base();
+    const l1 = placeNewRegistrations(l0, REGS);
+    expect(l1).toBe(l0);
+  });
+
+  it("does not re-place an id the user already relocated away from its default", () => {
+    let l = defaultLayout([{ id: "assets", placement: { kind: "minimized" } }]);
+    l = applyOp(l, { op: "restore", id: "assets" }); // user docks it
+    const l2 = placeNewRegistrations(l, [{ id: "assets", placement: { kind: "minimized" } }]);
+    expect(l2).toBe(l); // already in compact.order — untouched, stays docked
+    expect(locate(l2, "assets").where).toBe("docked");
+  });
+
+  it("seeds compact.activeView from the first newly-placed id when the layout started with none", () => {
+    const l0 = defaultLayout([]);
+    const l1 = placeNewRegistrations(l0, [{ id: "chat", placement: { kind: "docked", zone: "right" } }]);
+    expect(l1.compact.activeView).toBe("chat");
   });
 });
 

@@ -25,7 +25,13 @@ export interface PanelsChipsView {
 }
 
 export class PanelsBridge implements PanelsApi, PanelsChipsView {
-  #impl: (PanelsApi & PanelsChipsView) | null = null;
+  // `$state`: a reader that evaluates `minimized`/`metaMap` inside a Svelte
+  // `$derived`/template BEFORE `bind()` runs (the panel host mounts later
+  // than callers that read AppContext.panels) must still see the bound
+  // implementation once it arrives — a plain field carries no reactive
+  // signal, so a derived that already ran with `#impl === null` would stay
+  // frozen at `[]`/empty forever (buddy-check finding 4).
+  #impl = $state<(PanelsApi & PanelsChipsView) | null>(null);
   #warned = false;
 
   constructor(private readonly logger: Logger) {}

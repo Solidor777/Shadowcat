@@ -9,7 +9,7 @@ import { PANEL_CONTRACT, type Contribution, type ContributionRegistry, type Logg
 import type { WorldRole } from "@shadowcat/types";
 import type { PanelsApi, PanelsChipsView } from "@shadowcat/ui-kit";
 import { createSubscriber } from "svelte/reactivity";
-import { applyOp, defaultLayout, locate, prune, type LayoutOp, type PanelLayoutV1 } from "./layout/tree";
+import { applyOp, defaultLayout, locate, placeNewRegistrations, prune, type LayoutOp, type PanelLayoutV1 } from "./layout/tree";
 import { decodeLayout, encodeLayout } from "./layout/persist";
 
 /** gmOnly filtering is ADVISORY ONLY: it hides a panel from this client's own
@@ -111,12 +111,23 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
   }
 
   /** Drops any panel id no longer present among current registrations
-   * (module uninstalled/renamed since the layout was built) — called by
-   * `PanelHost`'s registration-change effect. Same reference-equality
-   * contract as `dispatch`: `prune` returns the SAME reference when nothing
-   * was dropped, so an unrelated registry notification never re-persists. */
-  syncKnownIds(known: ReadonlySet<string>): void {
-    const next = prune(this.#layout, known);
+   * (module uninstalled/renamed since the layout was built), THEN
+   * default-places any registration this layout has never recorded —
+   * `regsForRole`'s live registry read can (and, per module registration
+   * order, routinely does) return more contributions after this controller's
+   * own construction than it did when `defaultLayout` first ran, so an id
+   * that simply hadn't registered yet at construction time would otherwise
+   * sit forever unreachable (no zone, no minimized chip, no compact-switcher
+   * tab). Called by `PanelHost`'s registration-change effect on every
+   * `visibleRegs` change. Same reference-equality contract as `dispatch`:
+   * returns without persisting when neither pass changed anything. */
+  syncRegistrations(regs: readonly Contribution[]): void {
+    const known = new Set(regs.map((c) => c.id));
+    let next = prune(this.#layout, known);
+    next = placeNewRegistrations(
+      next,
+      regs.map((c) => ({ id: c.id, placement: c.panel?.defaultPlacement })),
+    );
     if (next === this.#layout) return;
     this.#layout = next;
     this.#persist(next);

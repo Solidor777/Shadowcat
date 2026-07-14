@@ -6,7 +6,6 @@
   import { FakeEngine } from "./engine/fake";
   import { PanelsController, type PanelsBridgeLike } from "./controller.svelte";
   import CompactSwitcher from "./CompactSwitcher.svelte";
-  import DockChips from "./DockChips.svelte";
 
   /** `engine` defaults to `FakeEngine` (the bespoke-fallback engine); a real
    * docking engine can be injected by a caller. `controller` defaults to a
@@ -59,27 +58,38 @@
   let hostEl: HTMLElement;
   let stageEl: HTMLElement;
   let stagingEl: HTMLElement;
+  let compactStageEl: HTMLElement;
+  // The stage's engine-adopted parent (`FakeEngine`'s center-well, or
+  // dockview's stage-panel content container) — captured once, right after
+  // `eng.init()` synchronously appends `stageEl` there. `$state` so the
+  // adoption effect below reactively re-runs once this transitions from
+  // null (mount-before-init race) to set, rather than depending on
+  // declaration/scheduling order between the two effects (buddy-check
+  // finding 1's async-completion guard: identity, not a mode string).
+  let stageHomeEl = $state<HTMLElement | null>(null);
   const slotEls = new Map<string, HTMLElement>();
   // Bumped only by a boundary's reload affordance — the sole sanctioned
   // remount path; ordinary layout ops never touch it.
   let remountKeys = $state<Map<string, number>>(new Map());
 
-  const knownIds = $derived(new Set(visibleRegs.map((c) => c.id)));
-
-  // Reactively prunes the controller's layout (dropping any id no longer
-  // among `knownIds`) whenever a registration is added/removed — BEFORE the
-  // reconcile effect below can hand a stale id to `eng.apply`/`slotFor`.
-  // `syncKnownIds` reads AND conditionally writes the controller's layout
-  // state; that read must stay untracked here (mirroring the untracked
-  // `remountKeys` read below), or this effect would also depend on the very
-  // state it writes and self-retrigger every pass (an infinite update loop) —
-  // it relies solely on `prune`'s same-reference no-op contract to skip
-  // persisting when nothing was actually dropped. Depends only on
-  // `knownIds`, so this effect's own writes cannot re-trigger itself (no
-  // prune/apply race).
+  // Reactively syncs the controller's layout against `visibleRegs` whenever a
+  // registration is added/removed — BEFORE the reconcile effect below can
+  // hand a stale id to `eng.apply`/`slotFor`. `syncRegistrations` both prunes
+  // ids no longer registered AND default-places any id this layout has never
+  // recorded (module registration order does not guarantee every panel
+  // module has contributed by the time this controller was constructed).
+  // Reads AND conditionally writes the controller's layout state; that read
+  // must stay untracked here (mirroring the untracked `remountKeys` read
+  // below), or this effect would also depend on the very state it writes and
+  // self-retrigger every pass (an infinite update loop) — it relies solely
+  // on `syncRegistrations`'s same-reference no-op contract to skip
+  // persisting when nothing actually changed. Depends only on `visibleRegs`,
+  // so this effect's own writes cannot re-trigger itself (no prune/apply
+  // race).
   $effect(() => {
-    const known = knownIds;
-    untrack(() => ctrl.syncKnownIds(known));
+    const regs = visibleRegs;
+    const known = new Set(regs.map((c) => c.id));
+    untrack(() => ctrl.syncRegistrations(regs));
     const keys = untrack(() => remountKeys);
     let changed = false;
     const nm = new Map(keys);
@@ -128,13 +138,35 @@
   $effect(() => {
     if (!hostEl || !stageEl) return;
     eng.init(hostEl, slotFor, stageEl);
+    stageHomeEl = stageEl.parentElement;
     const unsubOp = eng.onOp((op) => {
       ctrl.dispatch(op);
     });
     return () => {
       unsubOp();
       eng.destroy();
+      stageHomeEl = null;
     };
+  });
+
+  // The always-present canvas Surface inside `.stage` must never unmount
+  // ({#key}/{#if} on it are forbidden — CSS-hide + appendChild moves only).
+  // `.engine-host` is `hidden` while compact, so the engine's own adoption
+  // location for `stageEl` sits inside a `[hidden]` ancestor in that mode;
+  // this effect relocates `stageEl` itself instead: into the persistent
+  // `.compact-stage` well while compact, back into the engine's own adopted
+  // location (`stageHomeEl`) while expanded. Guarded by comparing actual DOM
+  // parent identity (not just the mode string), so a same-tick race with the
+  // engine-init effect above can't strand it unparented.
+  $effect(() => {
+    if (!stageEl) return;
+    if (sizeClass() === "compact") {
+      if (compactStageEl && stageEl.parentElement !== compactStageEl) {
+        compactStageEl.appendChild(stageEl);
+      }
+    } else if (stageHomeEl && stageEl.parentElement !== stageHomeEl) {
+      stageHomeEl.appendChild(stageEl);
+    }
   });
 
   // Reconcile the engine only while expanded is the active presentation —
@@ -201,13 +233,11 @@
 
   <div class="engine-host" bind:this={hostEl} hidden={sizeClass() !== "expanded"}></div>
 
-  <div class="dock-chips-host" hidden={sizeClass() !== "expanded"}>
-    <DockChips
-      minimized={layout.expanded.minimized}
-      meta={metaMap}
-      onRestore={(id) => ctrl.dispatch({ op: "restore", id })}
-    />
-  </div>
+  <!-- Persistent compact-mode home for `stageEl` (see the adoption effect
+       above) — fills the compact layout behind the switcher so the canvas
+       stays outside any `[hidden]` ancestor instead of trapped inside
+       `.engine-host`. -->
+  <div class="compact-stage" bind:this={compactStageEl} hidden={sizeClass() !== "compact"}></div>
 
   <CompactSwitcher
     order={layout.compact.order}
@@ -225,6 +255,7 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
+    position: relative;
   }
   .staging {
     display: none;
@@ -236,6 +267,20 @@
   .engine-host {
     flex: 1;
     min-height: 0;
+  }
+  .compact-stage {
+    position: absolute;
+    inset: 0;
+  }
+  // CompactSwitcher is rendered as an ordinary in-flow child; a positioned
+  // sibling with z-index 0 (`.compact-stage`) paints AFTER in-flow,
+  // non-positioned boxes in stacking order, which would otherwise cover it.
+  // Giving the switcher its own stacking context above `.compact-stage`
+  // keeps it visible on top of the canvas layer, matching a docked-panel-
+  // over-canvas mobile layout.
+  :global(.compact-switcher) {
+    position: relative;
+    z-index: 1;
   }
   .crashed {
     display: flex;

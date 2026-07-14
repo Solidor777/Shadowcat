@@ -356,24 +356,46 @@ export function prune(l: PanelLayoutV1, known: ReadonlySet<string>): PanelLayout
   };
 }
 
-/** Builds the initial layout for a module set at first launch. A registration with no
- * `placement` mirrors `PanelMeta.defaultPlacement` absence: launcher-only/closed — present
- * in `compact.order` (so compact mode can still switch to it) but nowhere in `expanded`.
- * `DefaultPlacement.order` is not consumed here: callers pass registrations pre-sorted
- * by contribution order; a docked default always opens its own group.
+/** Incrementally places every registration in `regs` not yet present in `compact.order` —
+ * i.e. never seen by this layout before — using the same per-registration rule
+ * `defaultLayout` applies at first launch: unconditionally pushed onto `compact.order`,
+ * then `placeByPlacement`d into `expanded` only if it carries a `placement`. Same-reference
+ * no-op contract: returns `l` itself when every `regs` id is already in `compact.order` — a
+ * registration once placed here is never re-defaulted even if the user later closes/moves
+ * it, since this only catches ids this layout has NEVER recorded. Used both by
+ * `defaultLayout` (a fresh layout, where every id is "new") and by
+ * `PanelsController.syncRegistrations` (a live layout catching up contributions that
+ * register AFTER this controller's own construction — module registration order does not
+ * guarantee every panel-contract module is present before the panel host itself mounts).
+ * `DefaultPlacement.order` is not consumed here: callers pass registrations pre-sorted by
+ * contribution order; a docked default always opens its own group.
  * PRECONDITION: `regs` ids are unique (registry-guaranteed). */
+export function placeNewRegistrations(
+  l: PanelLayoutV1,
+  regs: { id: string; placement?: DefaultPlacement }[],
+): PanelLayoutV1 {
+  let out = l;
+  let changed = false;
+  for (const reg of regs) {
+    if (out.compact.order.includes(reg.id)) continue;
+    changed = true;
+    out = { ...out, compact: { ...out.compact, order: [...out.compact.order, reg.id] } };
+    if (reg.placement) out = placeByPlacement(out, reg.id, reg.placement);
+  }
+  if (changed && out.compact.activeView === null && out.compact.order.length > 0) {
+    out = { ...out, compact: { ...out.compact, activeView: out.compact.order[0] } };
+  }
+  return changed ? out : l;
+}
+
+/** Builds the initial layout for a module set at first launch — every `regs` entry is
+ * "new" against an empty layout, so this is `placeNewRegistrations` applied to the empty
+ * starting tree. */
 export function defaultLayout(regs: { id: string; placement?: DefaultPlacement }[]): PanelLayoutV1 {
-  let l: PanelLayoutV1 = {
+  const empty: PanelLayoutV1 = {
     version: 1,
     expanded: { zones: emptyZones(), floating: [], minimized: [] },
     compact: { activeView: null, order: [] },
   };
-  for (const reg of regs) {
-    l = { ...l, compact: { ...l.compact, order: [...l.compact.order, reg.id] } };
-    if (reg.placement) l = placeByPlacement(l, reg.id, reg.placement);
-  }
-  if (l.compact.order.length > 0) {
-    l = { ...l, compact: { ...l.compact, activeView: l.compact.order[0] } };
-  }
-  return l;
+  return placeNewRegistrations(empty, regs);
 }

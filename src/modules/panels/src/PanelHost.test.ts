@@ -107,11 +107,10 @@ test("gmOnly: a gmOnly registration is absent from the compact switcher and dock
   const context = setAppContextForTest({ contributions: registry, role: "player" });
   render(PanelHost, { context });
 
-  // Dock chips (expanded, default presentation): the gmOnly panel is
-  // minimized by default placement but never rendered as a restore chip.
-  expect(screen.queryByTestId("chip-game-settings:panel")).toBeNull();
-
   // Compact switcher: the gmOnly panel never reaches `compact.order` either.
+  // (The dock-chip strip is now rendered solely by the statusbar's
+  // `panel-dock` Surface — `DockChipsContribution.test.ts` covers its
+  // gmOnly filtering via the same shared controller.)
   mql.fire(false);
   await Promise.resolve();
   expect(screen.queryByTestId("compact-switch-game-settings:panel")).toBeNull();

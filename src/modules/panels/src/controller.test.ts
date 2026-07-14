@@ -113,6 +113,64 @@ test("an invalid persisted blob resets to default, fires the reset callback, and
   expect(locate(ctrl.layout, "b:panel").where).toBe("docked");
 });
 
+// Reproduces the real-world gap this fixes: a module-registration order where NOT every
+// panel-contract module has contributed yet by the time `PanelHost` constructs its
+// controller (`defaultLayout` then only sees a partial `regs` list). Without
+// `syncRegistrations` catching up, a late-registering panel is default-placed nowhere —
+// no zone, no minimized chip, no compact-switcher tab — for the rest of the session.
+test("syncRegistrations default-places a panel that registers AFTER construction", () => {
+  const contributions = new ContributionRegistry();
+  contributions.contribute({
+    id: "a:panel",
+    contract: PANEL_CONTRACT,
+    component: {},
+    panel: { icon: "a", labelKey: "a.tab", defaultPlacement: { kind: "docked", zone: "bottom" } },
+  });
+  const ctrl = new PanelsController({
+    contributions,
+    role: "gm",
+    getPanelLayout: () => null,
+    setPanelLayout: () => {},
+    bridge: fakeBridge(),
+    logger: silentLogger,
+  });
+
+  // "b:panel" was absent from the registry at construction time — it must start
+  // reachable nowhere yet (this controller has never seen it).
+  expect(locate(ctrl.layout, "b:panel")).toEqual({ where: "closed" });
+  expect(ctrl.layout.compact.order).toEqual(["a:panel"]);
+
+  // It registers late (mirrors PanelHost's `visibleRegs` growing after mount).
+  contributions.contribute({
+    id: "b:panel",
+    contract: PANEL_CONTRACT,
+    component: {},
+    panel: { icon: "b", labelKey: "b.tab", defaultPlacement: { kind: "minimized" } },
+  });
+  ctrl.syncRegistrations(ctrl.visibleRegs);
+
+  expect(locate(ctrl.layout, "b:panel").where).toBe("minimized");
+  expect(ctrl.layout.compact.order).toEqual(["a:panel", "b:panel"]);
+});
+
+test("syncRegistrations persists only when something actually changed", () => {
+  const contributions = registry();
+  const setPanelLayout = vi.fn();
+  const ctrl = new PanelsController({
+    contributions,
+    role: "gm",
+    getPanelLayout: () => null,
+    setPanelLayout,
+    bridge: fakeBridge(),
+    logger: silentLogger,
+  });
+  setPanelLayout.mockClear();
+
+  ctrl.syncRegistrations(ctrl.visibleRegs); // same regs as construction — no-op
+
+  expect(setPanelLayout).not.toHaveBeenCalled();
+});
+
 test("regsForRole: a gmOnly registration is invisible to a non-GM role", () => {
   const regs = [
     { id: "chat:panel", contract: PANEL_CONTRACT, component: {}, panel: { icon: "c", labelKey: "chat.tab" } },

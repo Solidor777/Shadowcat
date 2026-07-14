@@ -25,12 +25,25 @@ export class FakeEngine implements EngineAdapter {
   init(host: HTMLElement, slotFor: (id: string) => HTMLElement, stageEl: HTMLElement): void {
     this.#host = host;
     this.#slotFor = slotFor;
+    // Establishes a definite size chain for the DOM this bespoke-fallback
+    // engine owns (buddy-check finding 2): `host` is a bare container with no
+    // layout of its own, so without a flex context here `centerEl` resolves
+    // to `height: auto` and the adopted `.stage` (`height: 100%`, PanelHost.
+    // svelte) collapses to its content height. Inline styles are used
+    // because no external stylesheet can target JS-created engine internals
+    // reliably.
+    host.style.display = "flex";
+    host.style.flexDirection = "column";
+    host.style.height = "100%";
+    host.style.minHeight = "0";
     // Adopts the shared stage/canvas element into a dedicated center-well
     // container — faithful to the adapter contract's reserved-layout-space
     // semantics (real engines lay dock zones out around this well).
     this.#stageEl = stageEl;
     const centerEl = document.createElement("div");
     centerEl.dataset.fakeCenter = "";
+    centerEl.style.flex = "1";
+    centerEl.style.minHeight = "0";
     centerEl.appendChild(stageEl);
     host.appendChild(centerEl);
     this.#centerEl = centerEl;

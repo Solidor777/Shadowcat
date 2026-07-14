@@ -4,7 +4,7 @@ import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger } from
 import { SceneInteractionBridge } from "../sceneInteraction";
 import { ActorSelection } from "../actorSelection.svelte";
 import { TokenSelection } from "../tokenSelection.svelte";
-import { PanelsBridge } from "../panelsBridge";
+import { PanelsBridge } from "../panelsBridge.svelte";
 
 /** Build a Map for @testing-library/svelte's `context` option holding a minimal
  * AppContext (overridable per field), seeded under the real private key. */
