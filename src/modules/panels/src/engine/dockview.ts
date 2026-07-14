@@ -292,6 +292,20 @@ export class DockviewEngine implements EngineAdapter {
   // element, disposed the moment that panel leaves the model (mirrors
   // `#groupResizeSubs`'s per-group add/dispose lifecycle).
   #floatingEscapeSubs = new Map<string, () => void>();
+  // Ids currently mid-transition from docked into floating WITHIN THE SAME
+  // `apply()` call (the floating loop's remove+re-add-under-same-id branch,
+  // mirroring the zone loop's cross-group-move pattern). `api.removePanel`
+  // fires `onDidRemovePanel` synchronously — by the time that listener runs,
+  // dockview has already detached the outgoing tab's DOM (confirmed: a
+  // `document.contains` check inside the listener already reads false), so
+  // `#teardownFloatingA11y` never gets to invoke `invoker.focus()` here
+  // regardless of this guard. What it WOULD otherwise do, wrongly, is
+  // `#floatInvokers.delete(id)` — discarding the very entry `apply()`'s
+  // floating loop is about to hand to the panel's OWN new floating dialog a
+  // few lines later. Gating the delete on this set is what actually fixes
+  // Finding 1: the invoker entry now survives the transient churn intact,
+  // available to a LATER, real close of the floating panel.
+  #floatTransitionIds = new Set<string>();
 
   constructor(logger?: Logger) {
     this.#logger = logger ?? consoleLogger();
@@ -345,11 +359,22 @@ export class DockviewEngine implements EngineAdapter {
    * paths produce identical `LayoutOp` shapes for the equivalent move.
    * `float` additionally records `invoker` (the tab's own menu button,
    * handed in by `PanelTabRenderer`) as this panel's focus-return target
-   * (see `#floatInvokers`). */
+   * (see `#floatInvokers`). Refuses `STAGE_ID` in TWO independent layers:
+   * the early return below (mirrors `focus()`'s existing W2 guard) and
+   * `opForMenuCommand`'s own veto (mirrors `classifyDrop`'s stage veto) —
+   * belt-and-suspenders alongside `createTabComponent`'s `STAGE_ID` branch
+   * (`init()`) and W1's headerless stage group, which never gives the stage
+   * a `PanelTabRenderer`/menu button to invoke this with in the first place;
+   * neither guard here is the sole line of defense. */
   #handleMenuCommand(id: string, cmd: MenuCommand, invoker: HTMLElement): void {
+    if (id === STAGE_ID) return;
+    const result = opForMenuCommand(cmd, id);
+    if ("veto" in result) {
+      this.#logger.warn(`panels: vetoed menu command (${result.reason})`, { id, cmd });
+      return;
+    }
     if (cmd === "float") this.#floatInvokers.set(id, invoker);
-    const op = opForMenuCommand(cmd, id);
-    for (const cb of this.#opListeners) cb(op);
+    for (const cb of this.#opListeners) cb(result);
   }
 
   /** W1: mounts the stage into its own dedicated group — headerless (no tab
@@ -405,8 +430,14 @@ export class DockviewEngine implements EngineAdapter {
     // Always runs, even for an `#applying`-driven removal (e.g. a floating
     // panel docked or closed via the reducer) — this is a DOM/focus
     // teardown, not a user-gesture translation, so it does not share the
-    // `#applying` guard below.
-    this.#teardownFloatingA11y(panel.id);
+    // `#applying` guard below. EXCEPT for the docked→floating transient
+    // remove+re-add this panel's own `apply()` call is mid-way through (see
+    // `#floatTransitionIds`): that removal is not a real close, and running
+    // teardown here would discard the invoker entry `apply()`'s floating
+    // loop is about to reuse for this SAME id's new floating dialog.
+    if (!this.#floatTransitionIds.has(panel.id)) {
+      this.#teardownFloatingA11y(panel.id);
+    }
     if (panel.id === STAGE_ID) {
       this.#restoreStage();
       return;
@@ -660,7 +691,17 @@ export class DockviewEngine implements EngineAdapter {
         // public discriminant for a group's placement (`'grid' | 'floating' |
         // 'popout' | 'edge'`), read off the panel's CURRENT group.
         if (!existing || existing.group.api.location.type !== "floating") {
-          if (existing) api.removePanel(existing);
+          if (existing) {
+            // Bracket the transient removal so `#handleDidRemovePanel` skips
+            // `#teardownFloatingA11y` for it — see `#floatTransitionIds`'s
+            // doc comment.
+            this.#floatTransitionIds.add(f.id);
+            try {
+              api.removePanel(existing);
+            } finally {
+              this.#floatTransitionIds.delete(f.id);
+            }
+          }
           api.addPanel({
             id: f.id,
             component: "sc-panel",
@@ -770,6 +811,9 @@ export class DockviewEngine implements EngineAdapter {
     this.#groupResizeSubs.clear();
     for (const d of this.#groupWillDropSubs.values()) d.dispose();
     this.#groupWillDropSubs.clear();
+    for (const dispose of this.#floatingEscapeSubs.values()) dispose();
+    this.#floatingEscapeSubs.clear();
+    this.#floatInvokers.clear();
     this.#lastZonePx.clear();
     this.#lastGroupPx.clear();
     this.#api?.dispose();

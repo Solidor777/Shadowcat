@@ -41,9 +41,12 @@ export const panels: Module = {
   },
   register(ctx) {
     // Composition root for the production docking engine: `register()` runs
-    // exactly once per module install, so this constructs exactly one
-    // `DockviewEngine` instance for the app's one `panel-host` surface.
-    // `FakeEngine` remains the default only where a caller constructs
+    // once per module INSTALL, not once per app lifetime — a fresh
+    // `WorldSession` builds its own `ModuleRegistry` and re-installs every
+    // module (including this one) on each world entry, so this constructs
+    // one `DockviewEngine` instance per world session's `panel-host`
+    // surface, not a single app-wide singleton. `FakeEngine` remains the
+    // default only where a caller constructs
     // `PanelHost` directly WITHOUT an `engine` prop (tests, and the
     // bespoke-fallback seam the `EngineAdapter` doc comment describes) — this
     // contribution always supplies the real engine, so that default path is

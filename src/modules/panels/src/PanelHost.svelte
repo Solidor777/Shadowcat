@@ -35,11 +35,17 @@
   let announce = $state("");
 
   /** Maps a layout-changing op to its `panels.moved` announcement, or `null`
-   * for an op that isn't a "move" worth narrating (tab-switch, resize,
-   * compact-view switch, or an `open` that's merely a focus bump). Reuses
-   * the existing `panels.dockRight`/`dockBottom`/`dockLeft`/`float`/
-   * `minimize`/`restore`/`close` keys as the "where" phrase — the same
-   * words a sighted user already sees on the chip strip/menu. */
+   * for an op that isn't worth narrating (tab-switch, resize, compact-view
+   * switch). Reuses the existing `panels.dockRight`/`dockBottom`/`dockLeft`/
+   * `float`/`minimize`/`restore`/`close` keys as the "where" phrase — the
+   * same words a sighted user already sees on the chip strip/menu.
+   * `"open"` is NOT narrated as a "move" here even though `applyOp`'s
+   * `"open"` case can be a real placement change (surfacing a minimized or
+   * closed panel into a docked group, via `placeByPlacement`) rather than a
+   * mere focus bump within an already-open group/floating window — no
+   * current UI affordance dispatches `"open"` (unreachable from any control
+   * this host renders today), so this is dead code pending a future
+   * command palette, not a narration bug against any live path. */
   function describeOp(op: LayoutOp): string | null {
     const label = (id: string): string => {
       const meta = ctrl.metaMap.get(id);
@@ -63,8 +69,8 @@
         where = t("panels.close");
         break;
       default:
-        // resizeZone/resizeGroup/activeTab/compactView/open: not a "move"
-        // worth narrating (continuous drag feedback or a mere focus bump).
+        // resizeZone/resizeGroup/activeTab/compactView/open: not narrated —
+        // see the doc comment above for why "open" specifically is excluded.
         return null;
     }
     return t("panels.moved", { panel: label(op.id), where });

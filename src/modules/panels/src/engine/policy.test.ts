@@ -132,6 +132,13 @@ describe("opForMenuCommand — parity with classifyDrop", () => {
   test("float carries the menu's fixed rect (no pointer position to mirror from a drag)", () => {
     const op = opForMenuCommand("float", "chat");
     expect(op).toMatchObject({ op: "float", id: "chat" });
-    if (op.op === "float") expect(op.rect).toBeTruthy();
+    if ("op" in op && op.op === "float") expect(op.rect).toBeTruthy();
+  });
+
+  test("Finding 4: any command against the stage id is vetoed, mirroring classifyDrop's own stage veto", () => {
+    for (const cmd of ["dockRight", "dockBottom", "dockLeft", "float", "minimize", "close"] as const) {
+      const result = opForMenuCommand(cmd, STAGE_ID);
+      expect("veto" in result && result.veto).toBe(true);
+    }
   });
 });

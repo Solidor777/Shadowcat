@@ -642,3 +642,115 @@ test("menu 'Float' command: the resulting floating dialog gets aria-label + focu
   engine.apply(layout.expanded, meta);
   expect(document.activeElement).not.toBe(dialogEl);
 });
+
+test("Finding 1 (T9 review): docked->floating preserves the #floatInvokers entry across the transient remove/re-add; a later close returns focus to it once the invoker is live again, and degrades gracefully when it stays detached (the self-referential case)", async () => {
+  attachedHost = document.createElement("div");
+  document.body.appendChild(attachedHost);
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(attachedHost, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  engine.apply(layout.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  const menuBtn = attachedHost.querySelector<HTMLButtonElement>(".sc-tab-menu-btn")!;
+  menuBtn.click();
+  await Promise.resolve();
+  await Promise.resolve();
+  const floatItem = document.querySelector<HTMLButtonElement>('[data-testid="panel-menu-float"]')!;
+  floatItem.click();
+
+  const floatOp = ops.find((o) => o.op === "float");
+  expect(floatOp).toBeDefined();
+  layout = applyOp(layout, floatOp!);
+  engine.apply(layout.expanded, new Map());
+
+  // dockview tears down the outgoing docked tab's DOM (including its own
+  // menu button) synchronously as part of the docked->floating transient
+  // remove/re-add, BEFORE `onDidRemovePanel` even fires — the self-
+  // referential trigger's invoker is therefore already gone by the time any
+  // teardown logic runs, regardless of this fix. This is the graceful-
+  // degradation half of the finding, not a regression to guard against.
+  expect(document.contains(menuBtn)).toBe(false);
+
+  // Simulate a hypothetical non-self-referential invoker (e.g. a future
+  // command-palette button, which the docked->floating churn never
+  // destroys) by reattaching the SAME element reference the engine
+  // recorded. This only lands on a LIVE element at close time if
+  // `#floatInvokers`'s entry for "chat" actually survived the transient
+  // churn intact: before the fix, `#teardownFloatingA11y` deleted that
+  // entry mid-churn (see `#floatTransitionIds`'s doc comment), and no later
+  // close could ever recover the reference to reattach here.
+  document.body.appendChild(menuBtn);
+
+  const dialogEl = attachedHost.querySelector<HTMLElement>('[role="dialog"]')!;
+  dialogEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(ops.find((o) => o.op === "close")).toEqual({ op: "close", id: "chat" });
+
+  layout = applyOp(layout, { op: "close", id: "chat" });
+  engine.apply(layout.expanded, new Map());
+
+  expect(document.activeElement).toBe(menuBtn);
+});
+
+test("Finding 3 (T9 review): destroy() clears #floatInvokers and disposes+clears #floatingEscapeSubs", async () => {
+  attachedHost = document.createElement("div");
+  document.body.appendChild(attachedHost);
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(attachedHost, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  engine.apply(layout.expanded, new Map());
+
+  const menuBtn = attachedHost.querySelector<HTMLButtonElement>(".sc-tab-menu-btn")!;
+  menuBtn.click();
+  await Promise.resolve();
+  await Promise.resolve();
+  const floatItem = document.querySelector<HTMLButtonElement>('[data-testid="panel-menu-float"]')!;
+  floatItem.click();
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+  const floatOp = ops.find((o) => o.op === "float") ?? { op: "float" as const, id: "chat", rect: { x: 0, y: 0, w: 1, h: 1 } };
+  layout = applyOp(layout, floatOp);
+  engine.apply(layout.expanded, new Map());
+
+  const dialogEl = attachedHost.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(dialogEl).toBeTruthy();
+
+  // destroy() while a floating dialog + its invoker bookkeeping are still
+  // live must not leak either map, nor leave the Escape listener attached to
+  // a dialog element that no longer belongs to any engine.
+  engine.destroy();
+  engine = null; // afterEach's own destroy() must not double-dispose.
+
+  dialogEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(ops.filter((o) => o.op === "close")).toHaveLength(0);
+});
+
+test("Finding 4b (T9 review): the stage's own tab never renders a .sc-tab-menu-btn — no menu-command affordance exists for it to invoke", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  engine.apply(twoPanelLayout().expanded, new Map());
+
+  const stagePanel = engine.debugApi!.getPanel(STAGE_ID)!;
+  expect(stagePanel.group.id).toBe("sc-stage-group");
+  // The stage group is headerless (W1): no tab strip renders for it at all,
+  // so no `.sc-tab-menu-btn` for the stage exists anywhere in the host.
+  const stageGroupEl = stagePanel.group.element;
+  expect(stageGroupEl.querySelector(".sc-tab-menu-btn")).toBeNull();
+});

@@ -232,12 +232,19 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   to ever trigger a "float" op against the production engine.
 - TODO: `PanelMenu`'s "Float" command is the ONLY current trigger for a `float` `LayoutOp`, and
   floating a panel via its OWN tab menu necessarily destroys that same tab (and its menu
-  button) as part of the docked→floating transition — `DockviewEngine`'s focus-return-to-
-  invoker (`#floatInvokers`/`#teardownFloatingA11y`) therefore always degrades to a safe no-op
-  for this milestone's only reachable path (the invoker is gone by close time). The mechanism
-  is implemented and exercised (`dockview.test.ts`'s float/Escape test asserts the graceful
-  degradation, not a specific restored-focus target); a future non-self-referential float
-  trigger (a command palette, a chip-strip "float" action) would benefit from it fully.
+  button) as part of the docked→floating transition. `DockviewEngine`'s focus-return-to-invoker
+  mechanism (`#floatInvokers`/`#teardownFloatingA11y`) is correct and general: the T9 review
+  (Finding 1) fixed a bug where the transient remove/re-add inside `apply()`'s floating loop
+  discarded the `#floatInvokers` entry BEFORE the new floating dialog was even created —
+  `#floatTransitionIds` now brackets that transient removal so the entry survives, and focus
+  correctly returns to any invoker still attached to the document when the panel is later
+  closed (`dockview.test.ts`'s Finding 1 test proves this by reattaching a captured invoker).
+  For THIS milestone's only reachable trigger, the invoker is always the tab's own menu button,
+  which dockview detaches from the DOM synchronously as part of the SAME transition (before
+  `onDidRemovePanel` even fires) — so focus-return still degrades to a safe no-op in practice
+  for the self-referential case specifically, by construction, not because the mechanism is
+  broken. A future non-self-referential float trigger (a command palette, a chip-strip "float"
+  action) gets full, working focus-return with no further change needed here.
 
 ## Chat / link previews (M11d-3)
 - Preview images: v1 stores title+description only. An image URL rendered as `<img src>` would

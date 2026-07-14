@@ -63,8 +63,17 @@ export const MENU_FLOAT_RECT: Rect = { x: 96, y: 96, w: 360, h: 280 };
  * mirror (see `MENU_FLOAT_RECT`) — parity there is by construction, not by
  * equality with a drag result. Kept here (not in `dockview.ts`) so this
  * mapping — and its parity with `classifyDrop` — is testable with zero
- * dockview dependency. */
-export function opForMenuCommand(command: MenuCommand, id: string): LayoutOp {
+ * dockview dependency.
+ *
+ * Vetoes `id === STAGE_ID` up front, mirroring `classifyDrop`'s own stage
+ * veto — belt-and-suspenders alongside `dockview.ts`'s `#handleMenuCommand`
+ * guard and W1's headerless stage group (which never gives the stage a menu
+ * button to invoke this with in the first place): a menu-command chokepoint
+ * with the identical shape as the drag chokepoint, not the sole guard. */
+export function opForMenuCommand(command: MenuCommand, id: string): ClassifyResult {
+  if (id === STAGE_ID) {
+    return veto("the stage panel is not a menu-command subject");
+  }
   switch (command) {
     case "dockRight":
       return { op: "dock", id, zone: "right", group: "new" };

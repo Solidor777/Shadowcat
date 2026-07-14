@@ -236,6 +236,19 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
     }
 
     case "float": {
+      // Same-reference no-op for an already-floating id, mirroring
+      // "minimize"'s already-minimized guard below: a menu "Float" command on
+      // a panel already floating would otherwise `detach` + re-add it at
+      // `o.rect` (always `MENU_FLOAT_RECT` for a menu trigger — see
+      // `opForMenuCommand`), silently discarding whatever rect the user
+      // already dragged/resized it to. Drag gestures never reach this branch
+      // for an already-floating panel in the first place: `classifyDrop`'s
+      // `kind: "floating"` case has no producer in `dockview.ts`'s
+      // `#toDropSite` translation (only `"edge"`/`"group"` sites are ever
+      // built from a real drag), so every `float` op in this codebase is
+      // menu-originated — this guard changes no drag-originated behavior.
+      const loc = locate(l, o.id);
+      if (loc.where === "floating") return l;
       const [l1] = detach(l, o.id);
       const maxZ = l1.expanded.floating.reduce((m, f) => Math.max(m, f.z), -1);
       const floating = compactZ([...l1.expanded.floating, { id: o.id, rect: o.rect, z: maxZ + 1 }]);

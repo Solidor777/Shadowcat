@@ -260,6 +260,14 @@ describe("op: close/minimize/float detach first", () => {
     expect(l.expanded.minimized).not.toContain("assets");
     expect(l.expanded.floating).toEqual([{ id: "assets", rect: { x: 10, y: 20, w: 300, h: 200 }, z: 0 }]);
   });
+
+  it("float on an already-floating id is a same-reference no-op — its current rect/z is untouched, mirroring the already-minimized guard", () => {
+    let l = base();
+    l = applyOp(l, { op: "float", id: "assets", rect: { x: 10, y: 20, w: 300, h: 200 } });
+    const l2 = applyOp(l, { op: "float", id: "assets", rect: { x: 999, y: 999, w: 1, h: 1 } });
+    expect(l2).toBe(l);
+    expect(l2.expanded.floating).toEqual([{ id: "assets", rect: { x: 10, y: 20, w: 300, h: 200 }, z: 0 }]);
+  });
 });
 
 describe("op: open is a focus no-op when already open", () => {
