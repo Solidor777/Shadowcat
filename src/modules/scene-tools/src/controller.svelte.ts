@@ -46,12 +46,15 @@ export interface ToolContext {
     tokenId: string,
     path: [number, number][],
   ) => Promise<MoveStream>;
+  /** The scene tools act on (M12d). From `ctx.viewedSceneId`; absent ⇒ the first scene (legacy). */
+  viewedSceneId?: () => string | null;
 }
 
-/** The active scene (single scene in M8d §15) + its grid cell size (default 100) and
+/** The active scene (the viewed scene, M12d) + its grid cell size (default 100) and
  * distance scale (default 5 ft/cell, matching `resolveSceneSettings` defaults). */
 function activeScene(ctx: ToolContext): { id: string; size: number; perCell: number; unit: string } | null {
-  const scene = ctx.documents.query("scene")[0];
+  const vsid = ctx.viewedSceneId?.() ?? ctx.documents.query("scene")[0]?.id ?? null;
+  const scene = vsid ? ctx.documents.get(vsid) : undefined;
   if (!scene) return null;
   const grid = (scene.system as { grid?: { size?: number; distance?: { perCell: number; unit: string } } } | undefined)?.grid;
   const size = grid?.size ?? 100;

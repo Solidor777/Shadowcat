@@ -57,6 +57,24 @@ test("place stamps a snapped token from the selected asset, parented to the scen
   }
 });
 
+test("place stamps the placed token onto the viewed scene, not the first scene", () => {
+  const d = new DocumentStore();
+  d.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: buildSceneDoc("w1", {}, "sA") }] });
+  d.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: buildSceneDoc("w1", {}, "sB") }] });
+  const { ctx, sent } = ctxWith(d);
+  ctx.viewedSceneId = () => "sB";
+  const controller = new ToolController(ctx);
+  controller.selectedAsset = "asset-1";
+  const tool = makePlaceTool(ctx, controller);
+  expect(tool.onPointerDown({ x: 0, y: 0 }, ev)).toBe(true);
+  expect(sent).toHaveLength(1);
+  const op = sent[0][0];
+  expect(op.op).toBe("create");
+  if (op.op === "create") {
+    expect(op.doc.parent_id).toBe("sB");
+  }
+});
+
 test("place is unhandled when no scene exists", () => {
   const { ctx, sent } = ctxWith(docsWithScene(false));
   const controller = new ToolController(ctx);

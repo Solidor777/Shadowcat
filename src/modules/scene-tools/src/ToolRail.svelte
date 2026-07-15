@@ -18,6 +18,7 @@
     world: ctx.world,
     sendPing: ctx.sendPing,
     pathfind: ctx.pathfind,
+    viewedSceneId: () => ctx.viewedSceneId,
   });
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).
@@ -33,7 +34,8 @@
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
   const activeScene = $derived.by((): WireDocument | undefined => {
     subscribe();
-    return ctx.documents.query("scene")[0];
+    const vsid = ctx.viewedSceneId;
+    return vsid ? ctx.documents.get(vsid) : ctx.documents.query("scene")[0];
   });
   const snapToGrid = $derived.by((): boolean => {
     subscribe();
