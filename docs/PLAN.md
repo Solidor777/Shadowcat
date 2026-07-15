@@ -1151,7 +1151,9 @@ Decomposed **M11a–d**:
 > in the Nightfox repo, filing API friction back into `POST_WORK_FINDINGS.md`.
 > Decomposed **M13-0** (three-category document shape D15: envelope / `engine` / `system` —
 > engine-known fields relocate from the system-body root to a typed, ts-rs-generated `engine`
-> block; pre-v1 hard cutover, NO migration code; own spec cycle after M12 completes) →
+> block; pre-v1 hard cutover, NO migration code; spec
+> `docs/superpowers/specs/2026-07-15-m13-0-document-shape-design.md`, plan
+> `docs/superpowers/plans/2026-07-15-m13-0-document-shape.md`) →
 > **M13-1** (external-module toolchain: engine-package consumption for out-of-tree modules,
 > module build/packaging, world install/load via the M6b loader, dev-server + e2e-harness
 > access for external repos; own spec cycle; bootstraps the Nightfox repo) →
