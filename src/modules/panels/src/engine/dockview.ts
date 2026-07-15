@@ -232,10 +232,11 @@ class PanelTabRenderer implements ITabRenderer {
  * a drop's `PanelTransfer.viewId` does not match this instance's own
  * `accessor.id` — i.e. a drag whose data never originated from THIS
  * `DockviewApi`, `dockviewGroupPanelModel.ts:1747-1821`) has no wiring here:
- * this codebase creates exactly one `DockviewApi` per `PanelHost` (no
- * popout/multi-instance support), so no drag reaching this class can ever
- * satisfy that mismatch — the event is unreachable for a real user gesture,
- * not merely unhandled. */
+ * this codebase creates exactly one `DockviewApi` per `PanelHost`, and a
+ * popped-out group still shares that same instance/`accessor.id` (pop-out
+ * moves a panel between groups of ONE api, it never spins up a second one),
+ * so no drag reaching this class can ever satisfy that mismatch — the event
+ * is unreachable for a real user gesture, not merely unhandled. */
 export class DockviewEngine implements EngineAdapter {
   #api: DockviewApi | null = null;
   #opListeners = new Set<(op: LayoutOp) => void>();

@@ -78,8 +78,12 @@ const ZONE_DEFAULT_SIZE: Record<ZoneId, number> = { right: 320, bottom: 240, lef
 
 // Floating-sheet cascade: a fixed base rect, offset a step per already-floating panel,
 // wrapping every 6 so a burst of sheets never marches off-screen. Deterministic + pure
-// so the reducer stays unit-testable (no viewport read).
-const SHEET_CASCADE_BASE: Rect = { x: 80, y: 60, w: 420, h: 520 };
+// so the reducer stays unit-testable (no viewport read). Value aligned with
+// controller.svelte.ts's REHYDRATE_FLOAT_BASE/STEP (kept as a separate constant, not a
+// shared import, so the two modules stay decoupled) — the same logical operation
+// (reload -> float a persisted popout) must land at the same screen position
+// regardless of which of the two call sites handles a given panel's registration timing.
+const SHEET_CASCADE_BASE: Rect = { x: 96, y: 96, w: 420, h: 520 };
 const SHEET_CASCADE_STEP = 28;
 
 function emptyZones(): Record<ZoneId, ZoneNode> {

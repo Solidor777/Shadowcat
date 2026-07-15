@@ -60,10 +60,12 @@ const EMPTY_LAYOUT: PanelLayoutV1 = {
 
 // Cascade base/step for a reload-rehydrated (formerly popped-out) panel's floating
 // rect — an unoffset rect would stack every rehydrated popout (and the first-ever
-// floating panel) at the identical (x,y). Mirrors tree.ts's own
-// SHEET_CASCADE_BASE/STEP formula (not imported — that pair is layout-internal;
-// this is the controller's own, deliberately separate constant so the two call
-// sites cannot silently drift together).
+// floating panel) at the identical (x,y). Value kept numerically aligned with
+// tree.ts's SHEET_CASCADE_BASE/STEP (not imported — that pair is layout-internal;
+// this is the controller's own, deliberately separate constant so the two modules
+// stay decoupled) so the SAME logical operation (reload -> float a persisted
+// popout) lands at the same screen position regardless of which of the two call
+// sites (already-registered vs late-registering panel) handles a given panel.
 const REHYDRATE_FLOAT_BASE = { x: 96, y: 96, w: 420, h: 520 };
 const REHYDRATE_FLOAT_STEP = 28;
 
