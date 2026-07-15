@@ -9,6 +9,7 @@ export { SceneInteractionBridge } from "./sceneInteraction";
 export type { SceneInteraction } from "./sceneInteraction";
 export { ActorSelection } from "./actorSelection.svelte";
 export { TokenSelection } from "./tokenSelection.svelte";
+export { SceneSelection } from "./sceneSelection.svelte";
 export { sizeClass } from "./sizeClass.svelte";
 export type { SizeClass } from "./sizeClass.svelte";
 export { PanelsBridge } from "./panelsBridge.svelte";

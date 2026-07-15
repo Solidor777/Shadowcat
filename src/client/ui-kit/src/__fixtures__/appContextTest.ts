@@ -5,6 +5,7 @@ import { SceneInteractionBridge } from "../sceneInteraction";
 import { ActorSelection } from "../actorSelection.svelte";
 import { TokenSelection } from "../tokenSelection.svelte";
 import { PanelsBridge } from "../panelsBridge.svelte";
+import { SceneSelection } from "../sceneSelection.svelte";
 
 /** Build a Map for @testing-library/svelte's `context` option holding a minimal
  * AppContext (overridable per field), seeded under the real private key. */
@@ -39,6 +40,10 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       setPanelLayout: () => {},
     },
     panels: over.panels ?? new PanelsBridge(silentLogger),
+    viewedSceneId: over.viewedSceneId ?? null,
+    setGmViewedScene: over.setGmViewedScene ?? (() => {}),
+    searchDocuments: over.searchDocuments ?? (() => Promise.reject(new Error("not connected"))),
+    sceneSelection: over.sceneSelection ?? new SceneSelection(),
   };
   return new Map([[__APP_CONTEXT_KEY__, ctx]]);
 }

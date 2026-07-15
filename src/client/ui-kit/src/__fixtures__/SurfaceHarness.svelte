@@ -5,6 +5,7 @@
   import { ActorSelection } from "../actorSelection.svelte";
   import { TokenSelection } from "../tokenSelection.svelte";
   import { PanelsBridge } from "../panelsBridge.svelte";
+  import { SceneSelection } from "../sceneSelection.svelte";
   import { t } from "../i18n.svelte";
   import Surface from "../Surface.svelte";
 
@@ -13,7 +14,7 @@
   // The registry is a fixed instance per render; capturing it once is intended.
   // store/world/role/t/assets are unused by <Surface> but required by the AppContext shape.
   // svelte-ignore state_referenced_locally
-  setAppContext({ contributions: registry, store: new DocumentStore(), documents: new DocumentStore(), world: "test", role: "gm", selfId: "u1", canEdit: () => true, openDocument: () => {}, members: new Map(), t, assets: new AssetResolver(), onAssetChanged: () => () => {}, subscribeScene: () => ({ unsubscribe() {} }), dispatchIntent: () => {}, scene: new SceneInteractionBridge(), actorSelection: new ActorSelection(), tokenSelection: new TokenSelection(), sendPing: () => {}, pathfind: () => Promise.reject(new Error("not connected")), moveRequest: () => Promise.reject(new Error("not connected")), onPing: () => () => {}, chat: { send: () => {}, edit: () => {}, delete: () => {} }, leaveWorld: () => {}, logout: async () => {}, uiState: { getPanelLayout: () => null, setPanelLayout: () => {} }, panels: new PanelsBridge(silentLogger) });
+  setAppContext({ contributions: registry, store: new DocumentStore(), documents: new DocumentStore(), world: "test", role: "gm", selfId: "u1", canEdit: () => true, openDocument: () => {}, members: new Map(), t, assets: new AssetResolver(), onAssetChanged: () => () => {}, subscribeScene: () => ({ unsubscribe() {} }), dispatchIntent: () => {}, scene: new SceneInteractionBridge(), actorSelection: new ActorSelection(), tokenSelection: new TokenSelection(), sendPing: () => {}, pathfind: () => Promise.reject(new Error("not connected")), moveRequest: () => Promise.reject(new Error("not connected")), onPing: () => () => {}, chat: { send: () => {}, edit: () => {}, delete: () => {} }, leaveWorld: () => {}, logout: async () => {}, uiState: { getPanelLayout: () => null, setPanelLayout: () => {} }, panels: new PanelsBridge(silentLogger), viewedSceneId: null, setGmViewedScene: () => {}, searchDocuments: () => Promise.reject(new Error("not connected")), sceneSelection: new SceneSelection() });
 </script>
 
 <Surface {contract} />
