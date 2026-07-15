@@ -12,7 +12,9 @@
     onClose,
   }: {
     onCommand: (cmd: MenuCommand) => void;
-    onClose: () => void;
+    // `returnFocus` (default true) lets Tab close the popup WITHOUT forcing
+    // focus back to the invoking tab — see the Tab case below.
+    onClose: (returnFocus?: boolean) => void;
   } = $props();
 
   const items: { cmd: MenuCommand; labelKey: string }[] = [
@@ -61,10 +63,11 @@
         onClose();
         break;
       case "Tab":
-        // A menu is a closed focus loop while open (WAI-ARIA Menu pattern) —
-        // Tab closes it rather than escaping into the surrounding page.
-        event.preventDefault();
-        onClose();
+        // WAI-ARIA APG Menu Button pattern: Tab closes the popup and lets
+        // focus proceed natively to the next tabbable element — it does NOT
+        // bounce focus back to the invoking tab (that is Escape's job) or
+        // suppress the native Tab traversal.
+        onClose(false);
         break;
     }
   }

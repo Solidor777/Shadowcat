@@ -2,7 +2,7 @@ import { PANEL_CONTRACT, type Module } from "@shadowcat/core";
 import ActorsPanel from "./ActorsPanel.svelte";
 
 /** Actor create/list/pick panel. Requires the panel-manager's contract;
- * contributes ActorsPanel minimized by default. */
+ * contributes ActorsPanel launcher-closed by default. */
 export const actors: Module = {
   manifest: {
     id: "actors",
@@ -17,7 +17,7 @@ export const actors: Module = {
       contract: PANEL_CONTRACT,
       order: 2,
       component: ActorsPanel,
-      panel: { icon: "👥", labelKey: "actors.tab", defaultPlacement: { kind: "minimized" } },
+      panel: { icon: "👥", labelKey: "actors.tab" },
     });
   },
 };

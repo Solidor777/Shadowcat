@@ -3,7 +3,7 @@ import FactionsPanel from "./FactionsPanel.svelte";
 
 /** World faction registry: seeds three defaults (GM, idempotent) and provides the GM editor.
  * Replaceable — a game-system module can supply its own seed/editor. Requires the
- * panel-manager's contract; contributes FactionsPanel minimized by default. */
+ * panel-manager's contract; contributes FactionsPanel launcher-closed by default. */
 export const factions: Module = {
   manifest: {
     id: "factions",
@@ -18,7 +18,7 @@ export const factions: Module = {
       contract: PANEL_CONTRACT,
       order: 3,
       component: FactionsPanel,
-      panel: { icon: "🚩", labelKey: "factions.tab", defaultPlacement: { kind: "minimized" } },
+      panel: { icon: "🚩", labelKey: "factions.tab" },
     });
   },
 };

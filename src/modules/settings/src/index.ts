@@ -4,7 +4,7 @@ import Settings from "./Settings.svelte";
 /** Settings panel (role, locale switcher, leave-world, logout). Requires the
  * panel-manager's contract; contributes Settings at order 6 (after
  * game-settings' 5) so chat's order 0 stays the sole default docked panel,
- * minimized by default. */
+ * launcher-closed by default. */
 export const settings: Module = {
   manifest: {
     id: "settings",
@@ -19,7 +19,7 @@ export const settings: Module = {
       contract: PANEL_CONTRACT,
       order: 6,
       component: Settings,
-      panel: { icon: "🔧", labelKey: "settings.tab", defaultPlacement: { kind: "minimized" } },
+      panel: { icon: "🔧", labelKey: "settings.tab" },
     });
   },
 };

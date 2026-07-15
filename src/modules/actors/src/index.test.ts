@@ -13,7 +13,6 @@ describe("actors module", () => {
     expect(list[0].panel).toEqual({
       icon: "👥",
       labelKey: "actors.tab",
-      defaultPlacement: { kind: "minimized" },
     });
   });
 });

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, sizeClass } from "@shadowcat/ui-kit";
   import { resolveSceneSettings, type WireDocument } from "@shadowcat/core";
   import { ToolController, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
@@ -22,6 +22,10 @@
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).
   const isGm = ctx.role === "gm";
+
+  // Compact: the rail renders as a horizontal bottom strip (core-ui repositions
+  // it into the compact grid's bottom row); expanded: a vertical side rail.
+  const compact = $derived(sizeClass() === "compact");
 
   // Reactive subscription mirrors GameSettingsPanel's registry-seed pattern: calling
   // subscribe() inside each $derived.by registers a reactive dependency on the document
@@ -69,7 +73,7 @@
 </script>
 
 {#if isGm}
-  <div class="tool-rail" role="toolbar" aria-label={t("tools.title")}>
+  <div class="tool-rail" class:compact role="toolbar" aria-label={t("tools.title")}>
     {#each tools as tool (tool.id)}
       <button
         type="button"
@@ -165,5 +169,18 @@
   .controls select,
   .controls input {
     min-height: 32px;
+  }
+
+  /* Compact bottom strip: lay tools out horizontally with overflow scroll
+   * instead of a vertical column; the active-tool controls follow suit. */
+  .tool-rail.compact {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    overflow-x: auto;
+  }
+  .tool-rail.compact .controls {
+    flex-direction: row;
+    align-items: center;
   }
 </style>

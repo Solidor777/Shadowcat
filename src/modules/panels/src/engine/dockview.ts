@@ -101,7 +101,10 @@ function groupIdFor(zone: ZoneId, index: number, tabs: readonly string[]): strin
  * `anchor`. A pointerdown outside the popover, or the menu's own `onClose`
  * (Escape/Tab), closes it — the two paths share this single teardown so
  * neither can leave the other's listener/DOM behind. */
-function mountPanelMenu(anchor: HTMLElement, onCommand: (cmd: MenuCommand) => void): () => void {
+function mountPanelMenu(
+  anchor: HTMLElement,
+  onCommand: (cmd: MenuCommand) => void,
+): (returnFocus?: boolean) => void {
   const container = document.createElement("div");
   container.className = "sc-panel-menu-popover";
   const rect = anchor.getBoundingClientRect();
@@ -111,13 +114,16 @@ function mountPanelMenu(anchor: HTMLElement, onCommand: (cmd: MenuCommand) => vo
   document.body.appendChild(container);
 
   let closed = false;
-  const close = (): void => {
+  // `returnFocus` (default true) lets a Tab-driven close (APG Menu Button
+  // pattern) skip forcing focus back onto `anchor`, so native Tab traversal
+  // can proceed to the next tabbable element instead of being bounced.
+  const close = (returnFocus = true): void => {
     if (closed) return;
     closed = true;
     document.removeEventListener("pointerdown", onDocPointerDown, true);
     unmount(app);
     container.remove();
-    anchor.focus();
+    if (returnFocus) anchor.focus();
   };
   const onDocPointerDown = (event: PointerEvent): void => {
     if (!container.contains(event.target as Node)) close();

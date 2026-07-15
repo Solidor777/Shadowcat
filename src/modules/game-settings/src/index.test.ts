@@ -14,7 +14,6 @@ describe("game-settings module", () => {
       icon: "⚙️",
       labelKey: "gameSettings.tab",
       gmOnly: true,
-      defaultPlacement: { kind: "minimized" },
     });
   });
 });

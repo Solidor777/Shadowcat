@@ -58,8 +58,10 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   never dockable-over, never floatable, never minimizable — `STAGE_ID` vetoed in both the drop
   and menu paths.
 - Panel modules declare `Contribution.panel` metadata (`icon`, `labelKey`, `gmOnly?`,
-  `defaultPlacement`); interim defaults: chat docked right, everything else minimized (M12b
-  flips to launcher-closed).
+  `defaultPlacement`); defaults: chat docked right, every other panel launcher-closed (absent
+  from the layout tree, not a minimized chip) until opened from the topbar `LauncherMenu`
+  ([[shadowcat-codebase-client-shell]]) — toggling the same launcher item again minimizes it
+  back to a statusbar chip.
 
 ## Hard invariants
 
@@ -95,9 +97,14 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
 - jsdom cannot simulate a real pointer-drag gesture — `dockview.test.ts` unit-tests
   `DockviewEngine` directly under jsdom (init/apply/DOM adoption) with duck-typed
   `DockviewWillDropEvent`s standing in for drops. NO e2e test exercises a real dockview tab
-  drag either (`panels.spec.ts` covers chip-click dock + reload-persistence only); real-pointer
-  drop-position classification fidelity is a manual-QA gap, logged in
-  `docs/POST_WORK_FINDINGS.md` (M12a verification gap).
+  drag either (`panels.spec.ts` covers launcher-open→dock→reload-survival, re-toggle→
+  minimize-to-chip, and the compact/expanded 48rem axis — M12b launcher-closed defaults mean
+  there is no chip on a fresh world until a panel is minimized); real-pointer drop-position
+  classification fidelity is a manual-QA gap, logged in `docs/POST_WORK_FINDINGS.md` (M12a
+  verification gap).
+- On any dockview-core version bump, re-verify `--z-popover` (`_semantic.scss`, 1000) still
+  clears dockview's floating-overlay z-index (`--dv-overlay-z-index`, 999 at 7.0.2) — the
+  popover menus stack above floating panel groups only by that numeric margin.
 
 ## Pointers
 

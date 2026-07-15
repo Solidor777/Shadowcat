@@ -3,8 +3,8 @@ import ConditionsPanel from "./ConditionsPanel.svelte";
 
 /** World condition registry: seeds a generic emoji set (GM, idempotent) + a GM editor, and a
  * selection-driven toggle palette. Replaceable — a game-system module can supply its own
- * seed/editor. Requires the panel-manager's contract; contributes ConditionsPanel minimized
- * by default. */
+ * seed/editor. Requires the panel-manager's contract; contributes ConditionsPanel
+ * launcher-closed by default. */
 export const conditions: Module = {
   manifest: {
     id: "conditions",
@@ -19,7 +19,7 @@ export const conditions: Module = {
       contract: PANEL_CONTRACT,
       order: 4,
       component: ConditionsPanel,
-      panel: { icon: "✨", labelKey: "conditions.tab", defaultPlacement: { kind: "minimized" } },
+      panel: { icon: "✨", labelKey: "conditions.tab" },
     });
   },
 };

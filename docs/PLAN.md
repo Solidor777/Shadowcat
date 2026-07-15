@@ -1027,11 +1027,50 @@ Decomposed **M11a–d**:
 > `shadowcat-codebase-panels` skill CREATED + `shadowcat-codebase-client-shell` rewritten
 > (reviewed skill-update gate, adversarial pass + fix-confirmation).
 > Plan: [`superpowers/plans/2026-07-13-m12a-panel-manager-core.md`](superpowers/plans/2026-07-13-m12a-panel-manager-core.md).
+> **M12b DONE** (branch `m12b-layout-refresh`, 8 SDD tasks): topbar `LauncherMenu` (open/close
+> any panel by id, a11y menu + focus management) + `Presence` roster replace the interim panel
+> defaults; panel defaults flip from "chat docked, all else minimized to chips" to
+> launcher-closed for everything but chat; the core-ui grid drives compact/expanded off the
+> single `sizeClass` 48rem axis (the old 40rem toolrail media query is removed —
+> `Layout.svelte`/`sizeClass.svelte.ts` now share one breakpoint); statusbar row is 2rem; the
+> scene-tools `ToolRail` renders as a compact bottom strip below 48rem. Token re-audit
+> (bounded raw-color scan + token-existence check across the new/changed chrome): one new
+> semantic token, `--z-popover`, added to close a stacking-context gap between the launcher
+> menu and `PanelMenu`'s popover (applied to both); no new color token was needed — every
+> other value resolved against the existing `_semantic.scss`/`_primitives.scss` tiers. e2e
+> finale rewrote `panels.spec.ts` for the launcher-closed defaults (open→dock→reload survival,
+> re-toggle→minimize-to-chip, compact/expanded axis) and repaired `stage.spec.ts` +
+> `assets.spec.ts`'s chip-click setup steps to the launcher path.
+> Plan: [`superpowers/plans/2026-07-14-m12b-layout-refresh.md`](superpowers/plans/2026-07-14-m12b-layout-refresh.md).
 - Actor / scene browsers, generic actor / item sheets — built against the public API, each treated as an API bug report. (Chat panel superseded: the baseline chat display modules ship in **M11d**.)
 
 ### M12.5 · Backups + snapshot restore (gate precondition)
 - Basic world backup (SQLite snapshot / per-world export) + restore path; minimal manual scheduling. Distinct from Phase-4 backup *automation*.
 - Satisfies the dogfood-alpha gate's data-safety precondition.
+
+### M13 · Nightfox — first-party generic system module
+> Cross-cutting spec (approved 2026-07-15): [`superpowers/specs/2026-07-15-m13-nightfox-system-design.md`](superpowers/specs/2026-07-15-m13-nightfox-system-design.md).
+> Decomposed **M13a** (`@shadowcat/formula` shared formula library: free-form parser/evaluator,
+> fail-closed error values, DoS caps, cycle guard, dice-notation-template mode) → **M13b**
+> (`@shadowcat/module-nightfox` headless rules: `system.nightfox` stat model — number/resource/
+> text/boolean as maps, Zod tier-1 write validation, one-dependency-graph resolver, typed
+> commutative modifier buckets `add → mulAdditive → mulCompound`, `effect` doc_type with opt-in
+> transfer + active gating) → **M13c** (`@shadowcat/module-nightfox-sheets` over the M12c sheet
+> registry) → **M13d** (per-stat roll templates → labeled M11 notation via `/roll`; zero new wire
+> frames) → **M13e** (templates: provenance stamp + on-command 3-way pull/push/revert merge
+> engine — engine-level, own sub-spec; closes the deferred document-inheritance model) →
+> **M13f** (declarative server-side schema registry, subtree-scoped, data-only enforcement —
+> own sub-spec; invariant 6 intact).
+- Purpose: (1) a playable generic system (stats, derived formulas, rolls to chat, items/effects
+  modifying stats, template documents); (2) the reference implementation for system builders —
+  built only against public seams, every friction point logged as an API bug report; second
+  internal system toward the Phase-4 freeze gate.
+- Load-bearing invariant: modifier application is order-independent by construction (commutative
+  buckets; permutation property test) — reordering inventory/embeds never changes stats.
+- M13a/b are headless and startable before M12 completes; only M13c gates on M12c.
+- Excludes: comparison/conditional grammar, `override` bucket, effect durations/triggers
+  (Phase-2 combat), server-side formula evaluation (Phase-3 sandboxed validators), live
+  template inheritance.
 
 **▶ Dogfood alpha gate** — backups (M12.5) must exist before real worlds accrue.
 
