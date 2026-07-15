@@ -331,12 +331,16 @@ server-guarded system data.
   blunt in practice).
 - Effect durations/triggers — Phase-2 combat tracker territory; v1 effects are
   on-while-present-and-active.
+- GM-only secret text on items/effects (user, 2026-07-15) — authoring surface only (a sheet
+  field that auto-writes `property_overrides["/system/<field>"] = "gm_only"`); the redaction
+  mechanism + partitioned FTS already exist and the M13-0 shape needs no change (M13-0 spec
+  §8). Candidate for M13c or a later sheet pass.
 
 ## 13. Checkpoint decomposition
 
 | Checkpoint | Repo | Contents | Depends on |
 |---|---|---|---|
-| **M13-0** | Shadowcat | Three-category document shape (D15): `engine` block relocation, typed + ts-rs-generated, hard cutover, no migration — own spec cycle | M12 complete (avoids the running M12 session; M12c sheets read these fields) |
+| **M13-0** | Shadowcat | Three-category document shape (D15): `engine` block relocation, typed + ts-rs-generated, hard cutover, no migration — spec: `2026-07-15-m13-0-document-shape-design.md` | M12 complete (avoids the running M12 session; M12c sheets read these fields) |
 | **M13-1** | Shadowcat (+ Nightfox repo bootstrap) | External-module toolchain (D16): engine-package consumption mechanism, module build/packaging, world install/load via the M6b loader, dev-server + e2e-harness access for external repos — own spec cycle; bootstraps the Nightfox repository | M12 complete |
 | **M13a** | Shadowcat | `@shadowcat/formula`: grammar, evaluator, caps, cycle guard, notation-template mode | nothing (startable pre-M12-completion) |
 | **M13b** | **Nightfox** | Nightfox rules package: schema + Zod (tier-1), dependency-graph resolver, buckets, items/effects semantics (`active`/`transfer`), `effect` doc_type | M13a, **M13-1** |
