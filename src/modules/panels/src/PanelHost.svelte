@@ -112,6 +112,17 @@
       }),
   );
 
+  // Flushes any notice `PanelsController` queued during its own construction
+  // (currently only the reload-restore notice — see `flushPendingNotice`'s
+  // doc comment for why this can't fire from the constructor's `onNotice`
+  // callback itself). Reads no reactive state, so this `$effect` runs
+  // exactly once, after first mount — the live region below is guaranteed
+  // to have already painted its EMPTY initial value by the time this can
+  // possibly change it, which is what makes the change announced at all.
+  $effect(() => {
+    ctrl.flushPendingNotice();
+  });
+
   // gmOnly filtering happens once, in the controller — every downstream
   // consumer (switcher, chips, engine) sees only the already-filtered set.
   const visibleRegs = $derived(ctrl.visibleRegs);

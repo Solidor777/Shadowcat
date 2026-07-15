@@ -283,10 +283,22 @@ test("rehydratePoppedOut: a persisted popped-out id comes back as floating + a n
 
   expect(ctrl.layout.expanded.poppedOut).toEqual([]);
   expect(ctrl.layout.expanded.floating.map((f) => f.id)).toEqual(["chat"]);
-  expect(notices).toEqual(["panels.popoutRestoredFloating"]);
+  // Finding 4 (buddy-check): the notice is QUEUED, not fired, at construction
+  // — `deps.onNotice` must not be invoked until a post-mount caller (`PanelHost`'s
+  // `$effect`) calls `flushPendingNotice()`. Firing it here, synchronously
+  // alongside construction, would set the a11y live region's text before its
+  // first paint; a `polite` live region only announces CHANGES.
+  expect(notices).toEqual([]);
   // The converted layout must be PERSISTED, not just held in memory — otherwise
   // this notice would fire again on every subsequent page load.
   expect(setPanelLayout).toHaveBeenCalledWith(encodeLayout(ctrl.layout));
+
+  ctrl.flushPendingNotice();
+  expect(notices).toEqual(["panels.popoutRestoredFloating"]);
+
+  // Idempotent: a second flush must not re-announce.
+  ctrl.flushPendingNotice();
+  expect(notices).toEqual(["panels.popoutRestoredFloating"]);
 });
 
 // A fixed (unoffset) rehydration rect would stack every rehydrated popout at

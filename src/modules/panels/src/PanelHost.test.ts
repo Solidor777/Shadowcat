@@ -1,8 +1,10 @@
 import { test, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { ContributionRegistry, PANEL_CONTRACT } from "@shadowcat/core";
+import { ContributionRegistry, PANEL_CONTRACT, silentLogger } from "@shadowcat/core";
 import type { EngineAdapter } from "./engine/adapter";
+import { applyOp, defaultLayout } from "./layout/tree";
+import { PanelsController } from "./controller.svelte";
 
 /** Minimal fake MediaQueryList (mirrors ui-kit's sizeClass.test.ts) so
  * PanelHost's sizeClass()-driven presentation switch is deterministic under
@@ -440,6 +442,86 @@ test("live region: an engine notice announces the resolved i18n text", async () 
   await Promise.resolve();
 
   expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
+});
+
+test("Finding 4 (buddy-check): a reload-restored popout's notice reaches the live region", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+
+  // A persisted layout with "chat:panel" popped-out — `PanelsController`
+  // rehydrates it to floating + queues (but, per Finding 4's fix, does not
+  // yet FIRE) `panels.popoutRestoredFloating` at construction.
+  let saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
+  saved = applyOp(saved, { op: "dock", id: "chat:panel", zone: "right", group: "new" });
+  saved = applyOp(saved, { op: "popOut", id: "chat:panel" });
+
+  const engine = new FakeEngine();
+  const context = setAppContextForTest({
+    contributions: registry,
+    role: "gm",
+    t: (k, p) => i18n.t(k, p),
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {} },
+  });
+  const { container } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  // Proves the notice is actually OBSERVABLE by the live region a screen
+  // reader watches (not merely that some callback fired) — the gap Finding
+  // 4 named. `controller.test.ts` proves the narrower claim (construction
+  // alone must not call `onNotice`); the test below proves `PanelHost` is
+  // what performs the flush that makes this text appear.
+  const liveRegion = container.querySelector('[role="status"]')!;
+  expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
+});
+
+test("Finding 4 (buddy-check): PanelHost's post-mount effect — not PanelsController's constructor — is what flushes the reload notice", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+
+  let saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
+  saved = applyOp(saved, { op: "dock", id: "chat:panel", zone: "right", group: "new" });
+  saved = applyOp(saved, { op: "popOut", id: "chat:panel" });
+
+  const notices: string[] = [];
+  // Built OUTSIDE `PanelHost`, mirroring its own construction args exactly
+  // (mounted via the `controller` test-injection prop below) — isolates
+  // "did `onNotice` fire" from Svelte's internal template-effect scheduling,
+  // which the DOM-text assertion above can't distinguish timing-wise (jsdom
+  // + testing-library flush effects synchronously within `render()`, so a
+  // pre/post-render `textContent` snapshot alone cannot prove WHEN the
+  // notice fired relative to mount, only that it eventually did).
+  const ctrl = new PanelsController({
+    contributions: registry,
+    role: "gm",
+    getPanelLayout: () => saved,
+    setPanelLayout: () => {},
+    bridge: { bind: () => {} },
+    logger: silentLogger,
+    onNotice: (key) => notices.push(key),
+  });
+  // Construction alone must not have announced anything yet.
+  expect(notices).toEqual([]);
+
+  const engine = new FakeEngine();
+  const context = setAppContextForTest({ contributions: registry, role: "gm", t: (k, p) => i18n.t(k, p) });
+  render(PanelHost, { props: { engine, controller: ctrl }, context });
+
+  // Mounting `PanelHost` with this already-constructed controller is what
+  // triggers the flush — proving the post-mount `$effect`, not the
+  // constructor, is the actual firing point.
+  expect(notices).toEqual(["panels.popoutRestoredFloating"]);
 });
 
 test("live region: unmounting unsubscribes the engine's onNotice listener (unsubNotice teardown)", async () => {

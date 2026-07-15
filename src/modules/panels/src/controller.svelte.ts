@@ -82,6 +82,10 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
    * registration happens to run after the `panels` module's (routine, since every panel
    * module `requires` `PANEL_CONTRACT`, which topologically activates `panels` FIRST). */
   #persistedSource: PanelLayoutV1 | null = null;
+  /** A notice queued during construction, pending `flushPendingNotice()` —
+   * see that method's doc comment for why `#rehydratePoppedOut` cannot call
+   * `deps.onNotice` directly. */
+  #pendingNotice: string | null = null;
 
   constructor(deps: PanelsControllerDeps) {
     this.#deps = deps;
@@ -109,7 +113,10 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
    * — the browser blocks it), so every persisted popped-out id rehydrates to a
    * floating window at construction, before the first `apply()`. The tree's
    * `poppedOut` array persists across sessions; the live `Window` never does.
-   * Runs once; persists + notifies only if it actually converted anything. */
+   * Runs once; persists + queues a notice only if it actually converted
+   * anything — see `flushPendingNotice` for why the notice is QUEUED here
+   * rather than fired through `deps.onNotice` directly (this method runs
+   * synchronously inside the constructor, before the host has mounted). */
   #rehydratePoppedOut(): void {
     const ids = [...this.#layout.expanded.poppedOut];
     if (ids.length === 0) return;
@@ -125,7 +132,26 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
     }
     this.#layout = l;
     this.#persist(l);
-    this.#deps.onNotice?.("panels.popoutRestoredFloating");
+    this.#pendingNotice = "panels.popoutRestoredFloating";
+  }
+
+  /** Flushes a notice queued during construction (currently only
+   * `#rehydratePoppedOut`'s reload-restore notice) through `deps.onNotice`.
+   * MUST be called from a post-mount hook (e.g. `PanelHost`'s `$effect`),
+   * never synchronously alongside construction: `PanelsController` is built
+   * in the host's `<script>` body, before the DOM is attached, so calling
+   * `deps.onNotice` directly from `#rehydratePoppedOut` would set the a11y
+   * live region's (`role="status" aria-live="polite"`) text before its FIRST
+   * render — a `polite` region only announces content CHANGES, so text
+   * already present at initial paint is silently swallowed by assistive
+   * tech. No-op when nothing is queued (the common case: most mounts have no
+   * persisted popout to rehydrate). Idempotent: a second call after the
+   * first is also a no-op, so a caller need not guard re-invocation. */
+  flushPendingNotice(): void {
+    if (this.#pendingNotice === null) return;
+    const key = this.#pendingNotice;
+    this.#pendingNotice = null;
+    this.#deps.onNotice?.(key);
   }
 
   get layout(): PanelLayoutV1 {
