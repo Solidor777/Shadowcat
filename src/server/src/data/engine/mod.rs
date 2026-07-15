@@ -318,6 +318,41 @@ mod tests {
     }
 
     #[test]
+    fn actor_missing_display_name_is_rejected() {
+        let v = json!({
+            "visual": { "kind": "image", "asset": "a" },
+            "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+            "faction": null, "conditions": [], "prototype": true
+        });
+        assert!(validate_engine("actor", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn actor_missing_conditions_is_rejected() {
+        let v = json!({
+            "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+            "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+            "faction": null, "prototype": true
+        });
+        assert!(validate_engine("actor", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn actor_missing_faction_key_accepted_as_none() {
+        // INVARIANT: `Option<T>` accepts an absent key as `None` regardless
+        // of `#[serde(default)]` — pins the true ingress contract on
+        // `ActorEngine.faction` (see its doc comment).
+        let v = json!({
+            "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+            "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+            "conditions": [], "prototype": true
+        });
+        assert!(validate_engine("actor", Some(&v)).is_ok());
+        let engine: ActorEngine = serde_json::from_value(v).unwrap();
+        assert_eq!(engine.faction, None);
+    }
+
+    #[test]
     fn world_settings_unknown_field_is_rejected() {
         let mut v = serde_json::to_value(WorldSettingsEngine::default()).unwrap();
         v.as_object_mut().unwrap().insert("bogus".into(), json!(1));

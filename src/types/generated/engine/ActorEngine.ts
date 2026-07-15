@@ -18,8 +18,13 @@ displayName: string, visual: TokenVisual, size: Size,
  */
 shape: string, 
 /**
- * scene-docs.ts:203 `faction: string | null` — the key is required;
- * the value is nullable (hence `Option`, not `#[serde(default)]`).
+ * scene-docs.ts:203 `faction: string | null`. INVARIANT: `Option<T>`
+ * always accepts a missing key as `None` (serde special-cases `Option`
+ * regardless of `#[serde(default)]`) — absent and explicit `null` are
+ * ingress-equivalent here, not distinguishable. The re-serialized,
+ * persisted form always writes an explicit `null` for `None`, restoring
+ * exact parity with the client's `faction: string | null` contract on
+ * the stored/broadcast side.
  */
 faction: string | null, 
 /**
