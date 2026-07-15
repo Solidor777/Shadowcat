@@ -8,11 +8,24 @@ import type { VisionAssignment } from "./VisionAssignment";
  * `name` which moves to the envelope). Every other field of `ActorSystem`
  * (inventory, stats, …) lives in `system` — this is a SPLIT type.
  */
-export type ActorEngine = { displayName: string | null, visual: TokenVisual, size: Size, 
+export type ActorEngine = { 
+/**
+ * scene-docs.ts:199 `displayName: string` — required, non-nullable.
+ */
+displayName: string, visual: TokenVisual, size: Size, 
 /**
  * "square" | "circle" — kept a `String` in v1 (asserted by the battery).
  */
-shape: string, faction: string | null, conditions: Array<string>, 
+shape: string, 
+/**
+ * scene-docs.ts:203 `faction: string | null` — the key is required;
+ * the value is nullable (hence `Option`, not `#[serde(default)]`).
+ */
+faction: string | null, 
+/**
+ * scene-docs.ts:204 `conditions: string[]` — the key is required.
+ */
+conditions: Array<string>, 
 /**
  * Default place-mode: true ⇒ instance (independent copy) on drop; false
  * ⇒ link (shared).

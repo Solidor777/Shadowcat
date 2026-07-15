@@ -144,15 +144,17 @@ pub enum AnimatedSource {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct ActorEngine {
-    #[serde(default, rename = "displayName")]
-    pub display_name: Option<String>,
+    /// scene-docs.ts:199 `displayName: string` — required, non-nullable.
+    #[serde(rename = "displayName")]
+    pub display_name: String,
     pub visual: TokenVisual,
     pub size: Size,
     /// "square" | "circle" — kept a `String` in v1 (asserted by the battery).
     pub shape: String,
-    #[serde(default)]
+    /// scene-docs.ts:203 `faction: string | null` — the key is required;
+    /// the value is nullable (hence `Option`, not `#[serde(default)]`).
     pub faction: Option<String>,
-    #[serde(default)]
+    /// scene-docs.ts:204 `conditions: string[]` — the key is required.
     pub conditions: Vec<String>,
     /// Default place-mode: true ⇒ instance (independent copy) on drop; false
     /// ⇒ link (shared).

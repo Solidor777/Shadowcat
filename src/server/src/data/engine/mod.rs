@@ -103,14 +103,28 @@ pub fn validate_engine(
 }
 
 /// Fail-closed typed read: the stored engine (already ingress-validated) or
-/// `T::default()` when absent/malformed.
+/// `T::default()` when absent/malformed. Absence is the normal case for
+/// non-engine doc types and stays silent; a present-but-undeserializable
+/// engine indicates schema drift between ingress validation and this typed
+/// read and is logged so it's observable rather than silently masked.
 pub fn engine_of<T: serde::de::DeserializeOwned + Default>(
     doc: &crate::data::document::Document,
 ) -> T {
-    doc.engine
-        .as_ref()
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default()
+    match &doc.engine {
+        None => T::default(),
+        Some(v) => match serde_json::from_value(v.clone()) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(
+                    doc_id = %doc.id,
+                    doc_type = %doc.doc_type,
+                    error = %e,
+                    "engine_of: stored engine failed to deserialize; falling back to default"
+                );
+                T::default()
+            }
+        },
+    }
 }
 
 #[cfg(test)]
@@ -178,9 +192,9 @@ mod tests {
     #[test]
     fn actor_minimal_body_is_valid() {
         let v = json!({
-            "visual": { "kind": "image", "asset": "a" },
+            "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
             "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
-            "conditions": [], "prototype": true
+            "faction": null, "conditions": [], "prototype": true
         });
         assert!(validate_engine("actor", Some(&v)).is_ok());
     }
@@ -296,9 +310,9 @@ mod tests {
     #[test]
     fn actor_unknown_field_is_rejected() {
         let v = json!({
-            "visual": { "kind": "image", "asset": "a" },
+            "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
             "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
-            "conditions": [], "prototype": true, "bogus": 1
+            "faction": null, "conditions": [], "prototype": true, "bogus": 1
         });
         assert!(validate_engine("actor", Some(&v)).is_err());
     }
@@ -366,7 +380,7 @@ mod tests {
     // here; its rename to `MessageEngine` + strictness is a chat-subsystem
     // change, not this module's).
 
-    // --- (c) wrong-typed field rejected ---
+    // --- (c) wrong-typed field rejected (all 17 registered doc_types) ---
 
     #[test]
     fn token_wrong_typed_field_is_rejected() {
@@ -381,12 +395,124 @@ mod tests {
     }
 
     #[test]
+    fn wall_wrong_typed_field_is_rejected() {
+        let v = json!({ "seg": { "x1": "0", "y1": 0.0, "x2": 1.0, "y2": 1.0 } });
+        assert!(validate_engine("wall", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn region_wrong_typed_field_is_rejected() {
+        let v = json!({
+            "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+            "behavior": "terrain", "cost": "1.0", "enabled": true
+        });
+        assert!(validate_engine("region", Some(&v)).is_err());
+    }
+
+    #[test]
     fn light_wrong_typed_intensity_is_rejected() {
         let v = json!({
             "x": 0.0, "y": 0.0, "color": "#fff", "intensity": "1",
             "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true
         });
         assert!(validate_engine("light", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn drawing_wrong_typed_field_is_rejected() {
+        let v = json!({
+            "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+            "stroke": null, "fill": { "color": 1, "alpha": null }
+        });
+        assert!(validate_engine("drawing", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn template_wrong_typed_field_is_rejected() {
+        let v = json!({
+            "shape": { "kind": "cone", "x": 0.0, "y": 0.0, "size": 5.0, "direction": 0.0 },
+            "color": 1
+        });
+        assert!(validate_engine("template", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn actor_wrong_typed_field_is_rejected() {
+        let v = json!({
+            "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+            "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+            "faction": null, "conditions": [], "prototype": "true"
+        });
+        assert!(validate_engine("actor", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn message_wrong_typed_field_is_rejected() {
+        let v = json!({
+            "channel": 1, "user_owner": "00000000-0000-0000-0000-000000000000",
+            "kind": "normal", "content": []
+        });
+        assert!(validate_engine("message", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn world_settings_wrong_typed_field_is_rejected() {
+        let mut v = serde_json::to_value(WorldSettingsEngine::default()).unwrap();
+        v["animation"]["speedCellsPerSec"] = json!("6");
+        assert!(validate_engine("world-settings", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn vision_modes_wrong_typed_field_is_rejected() {
+        let v = json!({
+            "modes": {
+                "darkvision": {
+                    "id": "darkvision", "name": "Darkvision",
+                    "illuminationFloor": "dark", "defaultRange": "60"
+                }
+            }
+        });
+        assert!(validate_engine("vision-modes", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn light_gradation_wrong_typed_field_is_rejected() {
+        let v = json!({ "bands": [{ "name": "dim", "minIllumination": "0.5" }] });
+        assert!(validate_engine("light-gradation", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn chat_settings_wrong_typed_field_is_rejected() {
+        let v = json!({ "markdown": "true" });
+        assert!(validate_engine("chat-settings", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn dice_settings_wrong_typed_field_is_rejected() {
+        let v = json!({ "mode": 1 });
+        assert!(validate_engine("dice-settings", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn channel_registry_wrong_typed_field_is_rejected() {
+        let v = json!({ "channels": { "ic": { "name": 1 } } });
+        assert!(validate_engine("channel-registry", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn faction_registry_wrong_typed_field_is_rejected() {
+        let v = json!({
+            "factions": {
+                "goblins": { "name": "Goblins", "color": "#fff", "stance": 1 }
+            }
+        });
+        assert!(validate_engine("faction-registry", Some(&v)).is_err());
+    }
+
+    #[test]
+    fn condition_registry_wrong_typed_field_is_rejected() {
+        let v = json!({ "conditions": { "prone": { "name": "Prone", "icon": 1 } } });
+        assert!(validate_engine("condition-registry", Some(&v)).is_err());
     }
 
     // --- (d)/(e)/(f): registry membership + None handling ---
@@ -467,9 +593,9 @@ mod tests {
     fn shape_literal_set_deserializes() {
         for shape in ["square", "circle"] {
             let v = json!({
-                "visual": { "kind": "image", "asset": "a" },
+                "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
                 "size": { "w": 1.0, "h": 1.0 }, "shape": shape,
-                "conditions": [], "prototype": true
+                "faction": null, "conditions": [], "prototype": true
             });
             assert!(
                 validate_engine("actor", Some(&v)).is_ok(),
@@ -508,6 +634,33 @@ mod tests {
                 "region behavior '{behavior}' must be accepted"
             );
         }
+    }
+
+    /// Drift guard: `WorldSettingsEngine::default()` must serialize to the
+    /// SAME values as the client's `DEFAULT_WORLD_SETTINGS`
+    /// (scene-docs.ts:104-119), field-by-field.
+    #[test]
+    fn world_settings_default_matches_client_default() {
+        let v = serde_json::to_value(WorldSettingsEngine::default()).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "scene": {
+                    "losRestriction": true,
+                    "fog": true,
+                    "lightingEnabled": true,
+                    "lightMode": "environmentLight",
+                    "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+                    "observerVision": false,
+                    "movementRestriction": "visible",
+                    "movementModel": "grid-stepped",
+                    "partialCellLeniency": true,
+                },
+                "pathfinding": { "diagonalRule": "chebyshev" },
+                "animation": { "speedCellsPerSec": 6.0, "easing": "easeInOut" },
+                "activeScene": null,
+            })
+        );
     }
 
     #[test]
