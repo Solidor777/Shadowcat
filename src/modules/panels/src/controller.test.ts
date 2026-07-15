@@ -270,11 +270,12 @@ test("rehydratePoppedOut: a persisted popped-out id comes back as floating + a n
   });
 
   const notices: string[] = [];
+  const setPanelLayout = vi.fn();
   const ctrl = new PanelsController({
     contributions,
     role: "gm",
     getPanelLayout: () => saved,
-    setPanelLayout: () => {},
+    setPanelLayout,
     bridge: fakeBridge(),
     logger: silentLogger,
     onNotice: (key) => notices.push(key),
@@ -283,6 +284,9 @@ test("rehydratePoppedOut: a persisted popped-out id comes back as floating + a n
   expect(ctrl.layout.expanded.poppedOut).toEqual([]);
   expect(ctrl.layout.expanded.floating.map((f) => f.id)).toEqual(["chat"]);
   expect(notices).toEqual(["panels.popoutRestoredFloating"]);
+  // The converted layout must be PERSISTED, not just held in memory — otherwise
+  // this notice would fire again on every subsequent page load.
+  expect(setPanelLayout).toHaveBeenCalledWith(encodeLayout(ctrl.layout));
 });
 
 // A fixed (unoffset) rehydration rect would stack every rehydrated popout at
@@ -308,11 +312,12 @@ test("rehydratePoppedOut: two persisted popped-out ids cascade to distinct float
   saved = applyOp(saved, { op: "dock", id: "assets", zone: "right", group: "new" });
   saved = applyOp(saved, { op: "popOut", id: "assets" });
 
+  const setPanelLayout = vi.fn();
   const ctrl = new PanelsController({
     contributions,
     role: "gm",
     getPanelLayout: () => saved,
-    setPanelLayout: () => {},
+    setPanelLayout,
     bridge: fakeBridge(),
     logger: silentLogger,
   });
@@ -321,6 +326,7 @@ test("rehydratePoppedOut: two persisted popped-out ids cascade to distinct float
   const rects = ctrl.layout.expanded.floating.map((f) => ({ x: f.rect.x, y: f.rect.y }));
   expect(rects).toHaveLength(2);
   expect(rects[0]).not.toEqual(rects[1]);
+  expect(setPanelLayout).toHaveBeenCalledWith(encodeLayout(ctrl.layout));
 });
 
 test("the controller binds itself into the supplied bridge at construction", () => {

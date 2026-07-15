@@ -2,6 +2,7 @@ import { test, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { ContributionRegistry, PANEL_CONTRACT } from "@shadowcat/core";
+import type { EngineAdapter } from "./engine/adapter";
 
 /** Minimal fake MediaQueryList (mirrors ui-kit's sizeClass.test.ts) so
  * PanelHost's sizeClass()-driven presentation switch is deterministic under
@@ -43,6 +44,41 @@ afterEach(() => {
   cleanup();
   mql.fire(true); // reset to expanded between tests
 });
+
+/** Minimal `EngineAdapter` wrapping a `FakeEngine` and adding an `onNotice`
+ * source — `FakeEngine` itself intentionally omits `onNotice` (no notice
+ * source of its own; see `EngineAdapter`'s doc comment), so exercising
+ * PanelHost's `eng.onNotice?.()` subscription + `unsubNotice?.()` teardown
+ * needs a test double that actually implements it. */
+class NoticeEngine implements EngineAdapter {
+  #fake = new FakeEngine();
+  #noticeListeners = new Set<(key: string) => void>();
+
+  init(host: HTMLElement, slotFor: (id: string) => HTMLElement, stageEl: HTMLElement): void {
+    this.#fake.init(host, slotFor, stageEl);
+  }
+  apply(...args: Parameters<EngineAdapter["apply"]>): void {
+    this.#fake.apply(...args);
+  }
+  onOp(cb: Parameters<EngineAdapter["onOp"]>[0]): () => void {
+    return this.#fake.onOp(cb);
+  }
+  onNotice(cb: (key: string) => void): () => void {
+    this.#noticeListeners.add(cb);
+    return () => this.#noticeListeners.delete(cb);
+  }
+  /** Test helper: fires a notice exactly as a real engine's internal source would. */
+  emitNotice(key: string): void {
+    for (const cb of this.#noticeListeners) cb(key);
+  }
+  focus(id: string): void {
+    this.#fake.focus(id);
+  }
+  destroy(): void {
+    this.#fake.destroy();
+    this.#noticeListeners.clear();
+  }
+}
 
 test("mount-counter: a docked panel's component mounts exactly once across the full op lifecycle", async () => {
   let mounts = 0;
@@ -358,4 +394,59 @@ test("FakeEngine.init adopts the stageEl into a center-well container", async ()
   const centerEl = engine.centerEl();
   expect(centerEl).toBeTruthy();
   expect(stageEl.parentElement!.isSameNode(centerEl)).toBe(true);
+});
+
+test("live region: an engine notice announces the resolved i18n text", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  const engine = new NoticeEngine();
+  // Real catalog-backed `i18n.t`, mirroring the op-driven live-region test
+  // above — proves the text is actually the RESOLVED i18n string, not the raw key.
+  const context = setAppContextForTest({ contributions: registry, role: "gm", t: (k, p) => i18n.t(k, p) });
+  const { container } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  const liveRegion = container.querySelector('[role="status"]')!;
+  expect(liveRegion.textContent).toBe("");
+
+  engine.emitNotice("panels.popoutRestoredFloating");
+  await Promise.resolve();
+
+  expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
+});
+
+test("live region: unmounting stops further engine notices (unsubNotice teardown)", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  const engine = new NoticeEngine();
+  const context = setAppContextForTest({ contributions: registry, role: "gm", t: (k, p) => i18n.t(k, p) });
+  const { container, unmount } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  const liveRegion = container.querySelector('[role="status"]')!;
+  engine.emitNotice("panels.popoutRestoredFloating");
+  await Promise.resolve();
+  expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
+
+  unmount();
+
+  // A dropped `unsubNotice?.()` would leave this listener live, so the
+  // destroyed component's `announce = t(key)` closure would still run and
+  // this text would flip to the new key's resolved string. Asserting it
+  // STAYS at the pre-unmount value proves the teardown actually ran.
+  engine.emitNotice("panels.popoutBlocked");
+  await Promise.resolve();
+  expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
 });

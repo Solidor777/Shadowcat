@@ -51,3 +51,33 @@ test("poppedOut degrades to a floating window (bespoke-fallback, spec §10)", ()
   expect(floatEl?.contains(slotFor("chat"))).toBe(true);
   eng.destroy();
 });
+
+// A fixed (unoffset) fallback rect would stack every popped-out id fully
+// overlapping at the identical position — this asserts two simultaneously
+// popped-out ids render at distinct rects and z-indices under this
+// bespoke-fallback engine (mirrors the cascade tests at the other degraded/
+// rehydrated-position sites: tree.test.ts, controller.test.ts).
+test("two simultaneously popped-out ids cascade to distinct floating rects under FakeEngine", () => {
+  const host = document.createElement("div");
+  const slotFor = makeSlots(["chat", "assets"]);
+  const eng = new FakeEngine();
+  eng.init(host, slotFor, document.createElement("div"));
+
+  let l = defaultLayout([{ id: "chat" }, { id: "assets" }]);
+  l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+  l = applyOp(l, { op: "popOut", id: "chat" });
+  l = applyOp(l, { op: "dock", id: "assets", zone: "right", group: "new" });
+  l = applyOp(l, { op: "popOut", id: "assets" });
+  eng.apply(l.expanded, new Map());
+
+  const chatEl = eng.floatEl("chat")!;
+  const assetsEl = eng.floatEl("assets")!;
+  expect(chatEl).not.toBeNull();
+  expect(assetsEl).not.toBeNull();
+  expect({ left: chatEl.style.left, top: chatEl.style.top }).not.toEqual({
+    left: assetsEl.style.left,
+    top: assetsEl.style.top,
+  });
+  expect(chatEl.style.zIndex).not.toBe(assetsEl.style.zIndex);
+  eng.destroy();
+});

@@ -88,10 +88,30 @@ export class FakeEngine implements EngineAdapter {
     // (this bespoke-fallback engine has no cross-window popout; spec §10) so a
     // slot is never lost and the keep-mounted invariant holds — production
     // pop-out is dockview-only.
-    const POPOUT_FALLBACK_RECT = { x: 96, y: 96, w: 420, h: 520 };
+    const POPOUT_FALLBACK_BASE = { x: 96, y: 96, w: 420, h: 520 };
+    const POPOUT_FALLBACK_STEP = 28;
+    // Cascades each fallback rect off its index (mirrors the cascade formula
+    // at the other degraded/rehydrated-position sites in this checkpoint —
+    // tree.ts's SHEET_CASCADE_BASE/STEP, placeFromPersistedLocation's
+    // "popped-out" case, controller.svelte.ts's REHYDRATE_FLOAT_BASE/STEP) so
+    // two-or-more simultaneously-popped-out ids don't render fully
+    // overlapping at the identical position under this bespoke-fallback engine.
+    const maxZ = expanded.floating.reduce((m, f) => Math.max(m, f.z), -1);
     const floatEntries = [
       ...expanded.floating,
-      ...expanded.poppedOut.map((id) => ({ id, rect: POPOUT_FALLBACK_RECT, z: 0 })),
+      ...expanded.poppedOut.map((id, i) => {
+        const off = (i % 6) * POPOUT_FALLBACK_STEP;
+        return {
+          id,
+          rect: {
+            x: POPOUT_FALLBACK_BASE.x + off,
+            y: POPOUT_FALLBACK_BASE.y + off,
+            w: POPOUT_FALLBACK_BASE.w,
+            h: POPOUT_FALLBACK_BASE.h,
+          },
+          z: maxZ + 1 + i,
+        };
+      }),
     ];
     const floatIds = new Set(floatEntries.map((f) => f.id));
     for (const [id, el] of [...this.#floatEls]) {
