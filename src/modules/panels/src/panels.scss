@@ -87,7 +87,7 @@
 // descendant of `.sc-dockview-root`) — its OWN styling lives in
 // `PanelMenu.svelte`'s scoped `<style>`; this class only positions it.
 .sc-panel-menu-popover {
-  z-index: 1000;
+  z-index: var(--z-popover);
 }
 
 // Floating groups are non-modal dialogs (dockview's own `Overlay` sets

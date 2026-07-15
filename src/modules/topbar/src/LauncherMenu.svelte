@@ -164,13 +164,15 @@
   .sc-launcher-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 40;
+    /* One layer below the menu itself so outside-pointer dismissal doesn't
+       intercept clicks on the menu it belongs to. */
+    z-index: calc(var(--z-popover) - 1);
   }
   .sc-launcher-menu {
     position: absolute;
     top: calc(100% + var(--space-1));
     left: 0;
-    z-index: 41;
+    z-index: var(--z-popover);
     display: flex;
     flex-direction: column;
     min-width: 12rem;
