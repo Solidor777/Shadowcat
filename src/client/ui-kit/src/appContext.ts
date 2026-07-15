@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, WireActorOwnerRef, WireAudience } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, WireActorOwnerRef, WireAudience, SheetRef } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -42,6 +42,11 @@ export interface AppContext {
   /** Advisory client-side edit gate (mirrors the server's Update-path check) for showing/hiding
    * write controls. The server remains authoritative. GM ⇒ always true. */
   canEdit(doc: WireDocument, path: string): boolean;
+  /** Open (or focus) a document as a floating sheet panel. `docId` targets a top-level
+   * document (optionally one embedded child via `embeddedPath`); `tokenId` resolves to the
+   * token's linked actor or embedded actor copy. Fail-closed: a dangling/raw ref opens
+   * nothing (logged), never a crash. */
+  openDocument(ref: SheetRef): void;
   /** userId → username for the world's members (all roles; used for chat name resolution + GM see-as labels). */
   members: Map<string, string>;
   t: TFunc;
