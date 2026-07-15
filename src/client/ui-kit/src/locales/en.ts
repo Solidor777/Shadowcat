@@ -222,6 +222,5 @@ export const en: Messages = {
   "sheetActor.system": "All data",
   "sheetItem.title": "Item",
   "sheetItem.name": "Name",
-  "sheetItem.roll": "Roll",
   "sheetItem.system": "All data",
 };
