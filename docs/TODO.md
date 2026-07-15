@@ -195,6 +195,13 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   at world entry today; add a focus-recovery path (or at least a pinning test) when live module
   management lands.
 
+## Client / ui-kit forms (M12c Task 5 buddy check)
+- TODO: no ui-kit component has a coarse-pointer touch-sizing rule for text/number/checkbox
+  `<input>` elements (only buttons get the `@media (pointer: coarse)` 44px bump — see
+  `SystemTreeEditor.svelte` and the pre-existing gap in `GameSettingsPanel.svelte`). This is a
+  systemic ui-kit baseline gap, not a per-component one; fix with a shared input-height token/rule
+  rather than duplicating a media query into every form component.
+
 ## Client / panels (M12a Task 6 — DockviewEngine)
 - RESOLVED (M12a Task 6 buddy-check fix wave): live resize (`resizeZone`/`resizeGroup`)
   translation is now wired — `group.api.onDidDimensionsChange` (`DockviewGroupPanelApi`, inherited
