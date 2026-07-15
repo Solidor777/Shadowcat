@@ -83,6 +83,21 @@ pub fn supercover_cells(a0: (f64, f64), a1: (f64, f64), cell: f64) -> Option<BTr
         f64::INFINITY
     };
 
+    // Per-axis step BUDGET: the exact number of grid-line crossings still needed on each axis to
+    // reach (ei,ej). Root-cause fix for the corner-crossing drift bug (docs/OPEN_BUGS.md /
+    // formerly "Server / move-execution"): the tMax tie test alone cannot distinguish a genuine
+    // mid-path corner crossing (more path beyond, both axes still owe a step) from a tie that
+    // merely COINCIDES with an axis that has already arrived at its target coordinate (e.g. the
+    // segment's own endpoint sits exactly on a lattice intersection, or an earlier forced
+    // single-axis step — itself caused by a0 starting exactly on a grid line — put t_max_i and
+    // t_max_j into permanent lockstep for the rest of the traversal). Gating the diagonal
+    // corner-step on `remaining_i > 0 && remaining_j > 0` makes convergence a property of the
+    // step budget (bounded by remaining_i + remaining_j, decremented every iteration), not of
+    // floating-point tie-breaking, while still emitting both flankers whenever a real corner
+    // crossing has path remaining on both axes (unchanged safe-over-include behavior).
+    let mut remaining_i = (ei as i64 - ci as i64).abs();
+    let mut remaining_j = (ej as i64 - cj as i64).abs();
+
     let mut guard: i64 = 0;
     while (ci, cj) != (ei, ej) {
         guard += 1;
@@ -103,19 +118,28 @@ pub fn supercover_cells(a0: (f64, f64), a1: (f64, f64), cell: f64) -> Option<BTr
         // Safe failure direction: over-detecting a near-corner only over-includes flanking cells
         // (rejects a fine move), never under-includes (never lets a forbidden move through).
         let tol = (t_max_i.abs() + t_max_j.abs() + 1.0) * f64::EPSILON * 64.0;
-        if (t_max_i - t_max_j).abs() < tol {
-            // Exact corner crossing: emit BOTH flanking cells (supercover), then step diagonally.
+        let tied = (t_max_i - t_max_j).abs() < tol;
+        if tied && remaining_i > 0 && remaining_j > 0 {
+            // Genuine corner crossing with path remaining on both axes: emit BOTH flanking
+            // cells (supercover), then step diagonally.
             out.insert((ci + step_i, cj));
             out.insert((ci, cj + step_j));
             ci += step_i;
             cj += step_j;
+            remaining_i -= 1;
+            remaining_j -= 1;
             t_max_i += t_delta_i;
             t_max_j += t_delta_j;
-        } else if t_max_i < t_max_j {
+        } else if remaining_j == 0 || (remaining_i > 0 && t_max_i < t_max_j) {
+            // Either j has already arrived at ej (must not overshoot it), or i is genuinely the
+            // next boundary crossed — step i alone.
             ci += step_i;
+            remaining_i -= 1;
             t_max_i += t_delta_i;
         } else {
+            // Either i has already arrived at ei, or j is the next boundary crossed.
             cj += step_j;
+            remaining_j -= 1;
             t_max_j += t_delta_j;
         }
         out.insert((ci, cj));
@@ -206,6 +230,45 @@ mod tests {
         assert!(c.contains(&(1, 0)), "cell (1,0) present in reversed move");
         assert!(c.contains(&(2, 0)), "cell (2,0) present in reversed move");
         assert_eq!(c.len(), 3);
+    }
+
+    #[test]
+    fn diagonal_leg_with_both_endpoints_on_lattice_corners_succeeds() {
+        // Regression (docs/OPEN_BUGS.md "Server / move-execution"): a diagonal king-step whose
+        // BOTH endpoints sit exactly on 4-way grid-line intersections used to spuriously
+        // fail-closed. Root cause: the corner-crossing branch stepped BOTH axes on every tMax
+        // tie without checking whether one axis had already reached its target cell — once a
+        // preceding single-axis step (forced here because a0's y-coordinate starts exactly on a
+        // grid line) put t_max_i and t_max_j into permanent lockstep, every subsequent tie
+        // re-stepped the already-arrived axis too, drifting the traversal past (ei,ej) forever.
+        let c = cells((200.0, 200.0), (300.0, 100.0), 100.0);
+        assert!(c.contains(&(2, 2)), "start cell present");
+        assert!(c.contains(&(3, 1)), "end cell present");
+    }
+
+    #[test]
+    fn perfect_diagonal_across_many_lattice_corners_converges() {
+        // A longer 45-degree diagonal crossing several lattice-corner ties in a row (dx == dy
+        // exactly at every cell boundary) — a second instance of the same defect class, not just
+        // the single-leg repro. Must converge and include every diagonal + flanking cell without
+        // drifting past the endpoint.
+        let c = cells((0.0, 0.0), (300.0, 300.0), 100.0);
+        assert!(c.contains(&(0, 0)), "start cell present");
+        assert!(c.contains(&(3, 3)), "end cell present");
+        for k in 0..3 {
+            assert!(c.contains(&(k, k)), "diagonal cell ({k},{k}) present");
+        }
+    }
+
+    #[test]
+    fn single_endpoint_on_lattice_corner_still_includes_flankers() {
+        // Only the START sits exactly on a lattice intersection; the end does not. A tie can
+        // still occur mid-path — both flanking cells at that true corner crossing must remain
+        // present (this must NOT regress to under-inclusion once the endpoint-overshoot fix is
+        // in place).
+        let c = cells((200.0, 200.0), (330.0, 70.0), 100.0);
+        assert!(c.contains(&(2, 2)), "start cell present");
+        assert!(c.contains(&(3, 0)), "end cell present");
     }
 
     #[test]

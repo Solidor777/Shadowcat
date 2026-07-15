@@ -1285,13 +1285,12 @@ mod tests {
                 },
             },
             FrozenCase {
-                // Encodes a known, pre-existing supercover_cells defect (docs/OPEN_BUGS.md):
-                // the (200,200)->(300,100) leg has both endpoints exactly on 4-way grid-line
-                // intersections, which spuriously fails closed instead of succeeding. This is
-                // the CORRECT parity outcome (both execute_move and the removed oracle agreed
-                // on it) — if supercover_cells's corner-crossing branch is ever fixed, this
-                // case's expected values must be updated to the newly-correct (non-truncated)
-                // outcome, not treated as a parity regression.
+                // The (200,200)->(300,100) leg has both endpoints exactly on 4-way grid-line
+                // intersections. `movement::supercover_cells`'s corner-crossing branch used to
+                // spuriously fail-closed on this shape (docs/CLOSED_BUGS.md) — fixed by gating
+                // the diagonal corner-step on a per-axis remaining-step budget so a tMax tie
+                // that merely coincides with an axis already at its target can no longer drift
+                // the traversal past (ei,ej). This is now the CORRECT (non-truncated) outcome.
                 label: "diagonal 3-step king path, full visible",
                 wall: None,
                 region: None,
@@ -1300,10 +1299,10 @@ mod tests {
                 restriction: MovementRestriction::Visible,
                 path: vec![(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 100.0)],
                 expected: ExpectedOutcome {
-                    stop: (200.0, 200.0),
-                    render_path: vec![(0.0, 0.0), (100.0, 100.0), (200.0, 200.0)],
-                    truncated: true,
-                    cost: 2.0,
+                    stop: (300.0, 100.0),
+                    render_path: vec![(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 100.0)],
+                    truncated: false,
+                    cost: 3.0,
                 },
             },
         ];

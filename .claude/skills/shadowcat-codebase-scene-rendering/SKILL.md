@@ -753,14 +753,21 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   visibility override (only nested-property overrides existed); secret regions were the first doc
   type to exercise it, and the panic-on-strip bug was caught before it shipped. Any future doc type
   that wants whole-body secrecy (vs. per-field) must go through this same branch, not a new one.
-- **`supercover_cells` can fail-closed on a diagonal king-step whose leg endpoints BOTH sit exactly
-  on 4-way grid-line intersections** — the Amanatides-Woo corner-crossing branch fires repeatedly
-  and drifts away from the target cell until `MAX_MOVE_CELLS` catches it, returning `None` rather
-  than converging (M10f-2 discovery, via an M10f-2 Task 6 fixture-derivation error that surfaced
-  it; not a defect in M10f-2's own code — a pre-existing, already-buddy-checked property of
-  `movement.rs`). Fails closed (never opens a forbidden move) but rejects a move a player might
-  reasonably expect to succeed; logged `docs/TODO.md`, not fixed (out of scope for the checkpoint
-  that found it).
+- **RESOLVED (`docs/CLOSED_BUGS.md`): `supercover_cells`'s corner-crossing branch no longer drifts
+  past the target on a diagonal king-step whose leg endpoints both sit exactly on 4-way grid-line
+  intersections.** (M10f-2 discovered this via a Task 6 fixture-derivation error; a later fix
+  closed it.) Root cause: the branch stepped BOTH axes on every `tMax` tie without checking
+  whether an axis had already reached its target cell — a forced single-axis step early in the
+  traversal (from an endpoint sitting exactly on a grid line) could put `t_max_i`/`t_max_j` into
+  permanent lockstep, so every later tie re-stepped the already-arrived axis too, drifting past
+  `(ei,ej)` until `MAX_MOVE_CELLS` aborted with `None`. Fix: the diagonal corner-step is now gated
+  on a per-axis remaining-step budget (`remaining_i`/`remaining_j`) — it only fires when BOTH axes
+  still owe a grid-line crossing; once either budget hits zero, only the other axis steps
+  regardless of any tie. Convergence is now a property of the (bounded) step budget, not
+  floating-point tie-breaking; the existing safe-over-include behavior for genuine mid-path corner
+  crossings (both flankers emitted) is unchanged and covered by dedicated regression tests in
+  `movement.rs`. `execute_move`'s frozen-fixture "diagonal 3-step king path, full visible" case
+  (`move_exec.rs`) is updated to the now-correct non-truncated outcome.
 - **Cross-scene `MoveStream`/`ScenePing` leak class (M12d) — a NEW divergence axis, not a
   pre-existing gap.** Before M12d every client rendered the SAME scene (`activeScene`, in
   lockstep) — there was no per-client "which scene am I looking at" state for a broadcast
