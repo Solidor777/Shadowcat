@@ -1144,17 +1144,33 @@ Decomposed **M11a–d**:
 
 ### M13 · Nightfox — first-party generic system module
 > Cross-cutting spec (approved 2026-07-15): [`superpowers/specs/2026-07-15-m13-nightfox-system-design.md`](superpowers/specs/2026-07-15-m13-nightfox-system-design.md).
-> Decomposed **M13a** (`@shadowcat/formula` shared formula library: free-form parser/evaluator,
-> fail-closed error values, DoS caps, cycle guard, dice-notation-template mode) → **M13b**
-> (`@shadowcat/module-nightfox` headless rules: `system.nightfox` stat model — number/resource/
-> text/boolean as maps, Zod tier-1 write validation, one-dependency-graph resolver, typed
-> commutative modifier buckets `add → mulAdditive → mulCompound`, `effect` doc_type with opt-in
-> transfer + active gating) → **M13c** (`@shadowcat/module-nightfox-sheets` over the M12c sheet
-> registry) → **M13d** (per-stat roll templates → labeled M11 notation via `/roll`; zero new wire
-> frames) → **M13e** (templates: provenance stamp + on-command 3-way pull/push/revert merge
-> engine — engine-level, own sub-spec; closes the deferred document-inheritance model) →
-> **M13f** (declarative server-side schema registry, subtree-scoped, data-only enforcement —
-> own sub-spec; invariant 6 intact).
+> **Nightfox is an external project (D16)**: its own GitHub repository + project folder,
+> consuming engine packages through the real third-party path (dependency + packaging + M6b
+> dynamic-loader install) — the strongest form of the reference-implementation purpose. Engine
+> work (M13-0/M13-1/M13a/M13e/M13f) stays in this repo; the Nightfox packages (M13b/c/d) live
+> in the Nightfox repo, filing API friction back into `POST_WORK_FINDINGS.md`.
+> Decomposed **M13-0** (three-category document shape D15: envelope / `engine` / `system` —
+> engine-known fields relocate from the system-body root to a typed, ts-rs-generated `engine`
+> block; pre-v1 hard cutover, NO migration code; own spec cycle after M12 completes) →
+> **M13-1** (external-module toolchain: engine-package consumption for out-of-tree modules,
+> module build/packaging, world install/load via the M6b loader, dev-server + e2e-harness
+> access for external repos; own spec cycle; bootstraps the Nightfox repo) →
+> **M13a** (`@shadowcat/formula` shared formula library: free-form parser/evaluator,
+> fail-closed error values, DoS caps, cycle guard, dice-notation-template mode; plan
+> `superpowers/plans/2026-07-15-m13a-formula-library.md`) → **M13b**
+> (`@shadowcat/module-nightfox` headless rules: the reserved `system.stats` variables
+> directory + `system.mechanics` model directory (D13/D14; singleton system per world) —
+> number/resource/text/boolean stats as maps, Zod tier-1 write validation,
+> one-dependency-graph resolver, typed commutative modifier buckets `add → mulAdditive →
+> mulCompound`, `effect` doc_type with opt-in transfer + active gating; plan
+> `superpowers/plans/2026-07-15-m13b-nightfox-headless-rules.md`) → **M13c**
+> (`@shadowcat/module-nightfox-sheets` over the M12c sheet registry; plan deferred until M12c +
+> M13-0 exist) → **M13d** (per-stat roll templates → labeled M11 notation as inline `[[…]]`
+> chat embeds; zero new wire frames; plan `superpowers/plans/2026-07-15-m13d-roll-wire.md`) →
+> **M13e** (templates: provenance stamp + on-command 3-way pull/push/revert merge engine —
+> engine-level, own sub-spec; closes the deferred document-inheritance model) → **M13f**
+> (declarative server-side schema registry, subtree-scoped, data-only enforcement — own
+> sub-spec; invariant 6 intact).
 - Purpose: (1) a playable generic system (stats, derived formulas, rolls to chat, items/effects
   modifying stats, template documents); (2) the reference implementation for system builders —
   built only against public seams, every friction point logged as an API bug report; second
