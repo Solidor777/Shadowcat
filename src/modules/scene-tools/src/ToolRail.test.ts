@@ -130,3 +130,11 @@ test("a non-GM does not see the snap toggle even with an active scene", () => {
   render(ToolRail, { context: setAppContextForTest({ role: "player", documents: sceneStore() }) });
   expect(screen.queryByTestId("snap-toggle")).toBeNull();
 });
+
+test("the tool rail renders as a non-compact side rail under jsdom (expanded default)", () => {
+  const { scene } = captureScene();
+  const { container } = render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  const rail = container.querySelector(".tool-rail");
+  expect(rail).toBeTruthy();
+  expect(rail?.classList.contains("compact")).toBe(false);
+});
