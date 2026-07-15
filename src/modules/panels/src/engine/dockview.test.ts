@@ -643,6 +643,37 @@ test("menu 'Float' command: the resulting floating dialog gets aria-label + focu
   expect(document.activeElement).not.toBe(dialogEl);
 });
 
+test("Tab on a panel-menu item closes the popup but does NOT force focus back to the tab's menu button (APG Menu Button pattern)", async () => {
+  attachedHost = document.createElement("div");
+  document.body.appendChild(attachedHost);
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(attachedHost, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  engine.apply(layout.expanded, new Map());
+
+  const menuBtn = attachedHost.querySelector<HTMLButtonElement>(".sc-tab-menu-btn")!;
+  menuBtn.click();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const item = document.querySelector<HTMLButtonElement>('[data-testid="panel-menu-dockRight"]')!;
+  expect(item).toBeTruthy();
+  const tabEvent = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+  item.dispatchEvent(tabEvent);
+  // Native Tab traversal is not intercepted: preventDefault must not be called.
+  expect(tabEvent.defaultPrevented).toBe(false);
+
+  // The popup unmounts (its item is no longer in the document).
+  expect(document.contains(item)).toBe(false);
+  // ...but focus was not forced back onto the invoking tab's menu button.
+  expect(document.activeElement).not.toBe(menuBtn);
+});
+
 test("Finding 1 (T9 review): docked->floating preserves the #floatInvokers entry across the transient remove/re-add; a later close returns focus to it once the invoker is live again, and degrades gracefully when it stays detached (the self-referential case)", async () => {
   attachedHost = document.createElement("div");
   document.body.appendChild(attachedHost);

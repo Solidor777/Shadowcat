@@ -4,6 +4,9 @@
   const ctx = getAppContext();
   const t = ctx.t;
   const compact = $derived(sizeClass() === "compact");
+  // Stable per-instance id (WAI-ARIA APG Menu Button pattern: the trigger's
+  // `aria-controls` references the popup menu it owns).
+  const menuId = $props.id();
 
   // Registered panels in metaMap order — already gmOnly-filtered by the bound
   // PanelsController (the host is the one place role filtering happens). `$state`-
@@ -58,16 +61,27 @@
         closeMenu();
         break;
       case "Tab":
-        // A menu is a closed focus loop while open (WAI-ARIA Menu pattern).
-        event.preventDefault();
-        closeMenu();
+        // WAI-ARIA APG Menu Button pattern: Tab closes the menu and lets
+        // focus proceed natively to the next tabbable element — it does NOT
+        // bounce focus back to the trigger (that is Escape's job) or
+        // suppress the native Tab traversal.
+        closeMenu(false);
         break;
     }
   }
   function onTriggerKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape" && open) {
+      event.preventDefault();
+      closeMenu();
+      return;
+    }
     if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      openMenu();
+      // Enter/Space on an already-open trigger is a true toggle — closes
+      // rather than re-opening, so an empty menu (no keyboard-reachable
+      // items) is never a focus trap.
+      if (open) closeMenu(false);
+      else openMenu();
     }
   }
 </script>
@@ -79,6 +93,7 @@
     bind:this={triggerEl}
     aria-haspopup="menu"
     aria-expanded={open}
+    aria-controls={open ? menuId : undefined}
     aria-label={t("topbar.launcher")}
     data-testid="launcher-trigger"
     onclick={() => (open ? closeMenu() : openMenu())}
@@ -96,6 +111,7 @@
       onpointerdown={() => closeMenu(false)}
     ></div>
     <div
+      id={menuId}
       class="sc-launcher-menu"
       role="menu"
       aria-label={t("topbar.launcher")}
