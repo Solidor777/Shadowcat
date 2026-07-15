@@ -2,6 +2,7 @@ import type { ReadableDocuments, WireDocument } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { ShapeNodeSpec } from "./types";
 import { rectPoints, circlePoints } from "./geometry";
+import { sceneScopedDocs } from "./scene-scope";
 
 /** Client-owned `region.system` (M10g spec §3): a vector shape + gameplay behavior. The server
  * also reads this (structural-only, #6 exception) to build its `RegionField`. */
@@ -29,11 +30,12 @@ export class RegionView {
   constructor(
     private readonly store: ReadableDocuments,
     private readonly backend: DisplayBackend,
+    private readonly viewedSceneId: () => string | null = () => null,
   ) {}
 
   reconcile(): void {
     const seen = new Set<string>();
-    for (const doc of this.store.query("region")) {
+    for (const doc of sceneScopedDocs(this.store, "region", this.viewedSceneId)) {
       const spec = toSpec(doc);
       if (!spec) continue;
       seen.add(doc.id);

@@ -5,6 +5,7 @@ import type { TokenNodeSpec, ResolvedAnimatedSource } from "./types";
 import { parseColor } from "./geometry";
 import { TokenAnimator, type MoveSample } from "./token-animator";
 import type { EasingMode } from "./easing";
+import { sceneScopedDocs } from "./scene-scope";
 
 /** Engine-reserved token system fields (M8 §4.2; client-owned). `(x,y)` = center. */
 interface TokenSystem {
@@ -36,6 +37,7 @@ export class TokenView {
     private readonly store: ReadableDocuments,
     private readonly assets: AssetResolver,
     private readonly backend: DisplayBackend,
+    private readonly viewedSceneId: () => string | null = () => null,
   ) {}
 
   setDragging(id: string | null): void {
@@ -87,7 +89,7 @@ export class TokenView {
 
   reconcile(): void {
     const seen = new Set<string>();
-    for (const doc of this.store.query("token")) {
+    for (const doc of sceneScopedDocs(this.store, "token", this.viewedSceneId)) {
       const spec = this.toSpec(doc);
       if (!spec) continue;
       seen.add(doc.id);

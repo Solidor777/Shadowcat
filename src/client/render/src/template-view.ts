@@ -2,6 +2,7 @@ import type { ReadableDocuments, WireDocument } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { ShapeNodeSpec } from "./types";
 import { parseColor, circlePoints, conePoints, squarePoints } from "./geometry";
+import { sceneScopedDocs } from "./scene-scope";
 
 /** Client-owned `template.system` (M8 §9): an area anchored at `(x,y)` with a `size`
  * and `direction` (degrees), tessellated per `kind`. */
@@ -21,11 +22,12 @@ export class TemplateView {
   constructor(
     private readonly store: ReadableDocuments,
     private readonly backend: DisplayBackend,
+    private readonly viewedSceneId: () => string | null = () => null,
   ) {}
 
   reconcile(): void {
     const seen = new Set<string>();
-    for (const doc of this.store.query("template")) {
+    for (const doc of sceneScopedDocs(this.store, "template", this.viewedSceneId)) {
       const spec = toSpec(doc);
       if (!spec) continue;
       seen.add(doc.id);

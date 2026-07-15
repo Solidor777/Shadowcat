@@ -1,6 +1,7 @@
 import type { ReadableDocuments, WireDocument } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { ShapeNodeSpec } from "./types";
+import { sceneScopedDocs } from "./scene-scope";
 
 /** Client-owned `wall.system` (M9 §4): a segment + sight/movement flags. The server
  * also reads `seg` + `blocksMove` for its authoritative collision check (#6 exception). */
@@ -22,11 +23,12 @@ export class WallView {
   constructor(
     private readonly store: ReadableDocuments,
     private readonly backend: DisplayBackend,
+    private readonly viewedSceneId: () => string | null = () => null,
   ) {}
 
   reconcile(): void {
     const seen = new Set<string>();
-    for (const doc of this.store.query("wall")) {
+    for (const doc of sceneScopedDocs(this.store, "wall", this.viewedSceneId)) {
       const spec = toSpec(doc);
       if (!spec) continue;
       seen.add(doc.id);

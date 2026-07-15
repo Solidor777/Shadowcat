@@ -1,5 +1,5 @@
-import { test, expect } from "vitest";
-import { DocumentStore, OptimisticClient, AssetResolver } from "@shadowcat/core";
+import { test, expect, describe, it } from "vitest";
+import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
 import { RenderEngine, MockBackend } from "./index";
 import type { SceneTool } from "./index";
 
@@ -898,4 +898,33 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
   expect(engine.toLightingForTest({ mode: "all" })).toBeNull();
   expect(engine.toLightingForTest({ mode: "masked", lit: "garbage" })).toBeNull();
   expect(engine.toLightingForTest(null)).toBeNull();
+});
+
+describe("multi-scene render filtering", () => {
+  function seed() {
+    const store = new DocumentStore();
+    store.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [
+      { op: "create", doc: buildSceneDoc("w1", { background: "bgA" }, "sA") },
+      { op: "create", doc: buildSceneDoc("w1", { background: "bgB" }, "sB") },
+      { op: "create", doc: buildTokenDoc("w1", "sA", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } }, "t-a") },
+      { op: "create", doc: buildTokenDoc("w1", "sB", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } }, "t-b") },
+    ] });
+    return store;
+  }
+
+  it("renders only the viewed scene's tokens + background, and re-projects on switch", () => {
+    const store = seed();
+    let viewed = "sA";
+    const backend = new MockBackend();
+    const engine = new RenderEngine({ store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 }, viewedSceneId: () => viewed });
+    engine.start();
+    expect([...backend.tokens.keys()]).toEqual(["t-a"]);
+    expect(backend.background?.url).toContain("bgA");
+
+    viewed = "sB";
+    engine.reapplyViewedScene();
+    expect([...backend.tokens.keys()]).toEqual(["t-b"]);
+    expect(backend.background?.url).toContain("bgB");
+    engine.destroy();
+  });
 });

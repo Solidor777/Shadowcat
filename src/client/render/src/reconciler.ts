@@ -14,13 +14,14 @@ export class SceneReconciler {
     private readonly store: ReadableDocuments,
     private readonly assets: AssetResolver,
     private readonly backend: DisplayBackend,
+    private readonly viewedSceneId: () => string | null = () => null,
   ) {}
 
   reconcile(): void {
-    // M8c-1 assumes a single active scene; `[0]` is insertion-order. Deterministic
-    // active-scene selection among multiple scene docs is deferred to M8d (see
-    // docs/TODO.md) when scene authoring can create more than one.
-    const scene = this.store.query("scene")[0] as WireDocument | undefined;
+    // The viewed scene's background (M12d). `null` viewed id ⇒ the first scene (legacy
+    // single-scene behavior; `[0]` is insertion-order).
+    const vsid = this.viewedSceneId();
+    const scene = (vsid ? this.store.get(vsid) : this.store.query("scene")[0]) as WireDocument | undefined;
     const bg = (scene?.system as SceneSystem | undefined)?.background;
     if (typeof bg === "string" && bg.length > 0) {
       this.backend.setBackground({ url: this.assets.url(bg) });
