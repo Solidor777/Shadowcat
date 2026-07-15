@@ -123,10 +123,12 @@ fn create_intent(world: Uuid, n: u128, name: &str, default_role: &str) -> serde_
                 "scope": { "kind": "world", "world_id": world },
                 "doc_type": "actor",
                 "schema_version": 1,
+                "name": name,
                 "permissions": { "default": default_role, "users": {}, "property_overrides": {},
                                  "capabilities": { "by_role": {}, "by_user": {} } },
                 // "actor" is engine-defined; a minimal valid body clears the
-                // ingress gate. `system` below is what this suite exercises.
+                // ingress gate. `name` above (the envelope field, indexed by
+                // search) is what this suite matches against.
                 "engine": {
                     "displayName": "Test",
                     "visual": { "kind": "image", "asset": "a.png" },
@@ -136,7 +138,7 @@ fn create_intent(world: Uuid, n: u128, name: &str, default_role: &str) -> serde_
                     "conditions": [],
                     "prototype": true
                 },
-                "system": { "name": name },
+                "system": {},
                 "created_at": 0,
                 "updated_at": 0,
             }

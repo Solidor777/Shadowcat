@@ -314,17 +314,21 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
         .collect();
     let mut whole = serde_json::to_value(&out).expect("document serializes");
     for pointer in hidden {
-        // `/system` (a whole-body GmOnly override, e.g. a secret region) targets a
-        // required `Document` field directly — dropping the key would make `whole`
-        // fail to re-deserialize into a `Document`. Null it instead; nested pointers
-        // (e.g. `/system/name`) target an arbitrary untyped JSON body one level down,
-        // where callers rely on true key absence, so those keep the normal strip.
-        if pointer == "/system" {
-            if let Some(sys) = whole.get_mut("system") {
-                *sys = serde_json::Value::Null;
+        // `/system`, `/engine`, and `/name` target `Document` fields directly:
+        // dropping the key would (for `system`, a required field) fail
+        // re-deserialization, or (for the `Option` fields `engine`/`name`) be
+        // indistinguishable from a doc that never carried one, breaking the
+        // client's stable envelope shape. Null them instead; nested pointers
+        // (e.g. `/system/name`, `/engine/vision`) target an arbitrary body one
+        // level down, where callers rely on true key absence, so those keep
+        // the normal strip.
+        match pointer.as_str() {
+            "/system" | "/engine" | "/name" => {
+                if let Some(f) = whole.get_mut(&pointer[1..]) {
+                    *f = serde_json::Value::Null;
+                }
             }
-        } else {
-            strip_pointer(&mut whole, &pointer);
+            _ => strip_pointer(&mut whole, &pointer),
         }
     }
     serde_json::from_value(whole).expect("filtered document deserializes")
@@ -812,6 +816,128 @@ mod tests {
             filter_properties(&d, &gm).system["secret"],
             serde_json::json!(42)
         );
+    }
+
+    #[test]
+    fn whole_engine_gm_only_nulls_rather_than_drops_the_field() {
+        // `/engine` is an `Option<Value>` envelope field — nulling it under a
+        // whole-band GmOnly override must round-trip exactly like `None`, not
+        // strip the key outright (which would be indistinguishable from a doc
+        // that carries no `engine` band at all, but is still safe to
+        // deserialize either way since the field is optional).
+        let mut perms = PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        };
+        perms
+            .property_overrides
+            .insert("/engine".into(), Visibility::GmOnly);
+        let mut d = doc(perms, serde_json::json!({}));
+        d.engine = Some(serde_json::json!({ "x": 1.0, "y": 2.0 }));
+
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d);
+        let view = filter_properties(&d, &player);
+        assert_eq!(view.engine, None);
+
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d);
+        assert_eq!(
+            filter_properties(&d, &gm).engine,
+            Some(serde_json::json!({ "x": 1.0, "y": 2.0 }))
+        );
+    }
+
+    #[test]
+    fn engine_leaf_gm_only_hides_the_leaf_but_not_a_boundary_neighbor() {
+        // Boundary matching inside `/engine` must behave exactly like inside
+        // `/system`: `/engine/vision` hides only that key, leaving a
+        // string-prefixed sibling (`visionmode`) untouched.
+        let mut perms = PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        };
+        perms
+            .property_overrides
+            .insert("/engine/vision".into(), Visibility::GmOnly);
+        let mut d = doc(perms, serde_json::json!({}));
+        d.engine = Some(serde_json::json!({ "vision": 30, "visionmode": "dark" }));
+
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d);
+        let view = filter_properties(&d, &player);
+        assert!(view.engine.as_ref().unwrap().get("vision").is_none());
+        assert_eq!(view.engine.as_ref().unwrap()["visionmode"], "dark");
+
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d);
+        assert_eq!(filter_properties(&d, &gm).engine.unwrap()["vision"], 30);
+    }
+
+    #[test]
+    fn owner_or_gm_name_visible_to_owner_and_gm_not_other_player() {
+        // `/name` mirrors the `/system/name` OwnerOrGm tier: an owner and the
+        // GM see it; another player is redacted to `null` (not stripped, since
+        // `name` is a top-level `Option` envelope field).
+        let owner = Uuid::from_u128(1);
+        let other = Uuid::from_u128(2);
+        let mut d = doc(
+            perms_with(&[("/name", Visibility::OwnerOrGm)]),
+            serde_json::json!({}),
+        );
+        d.owner = Some(owner);
+        d.name = Some("Goblin Skirmisher".into());
+
+        let a_owner = resolve_access(owner, WorldRole::Player, &d);
+        assert_eq!(
+            filter_properties(&d, &a_owner).name.as_deref(),
+            Some("Goblin Skirmisher")
+        );
+
+        let a_other = resolve_access(other, WorldRole::Player, &d);
+        assert_eq!(filter_properties(&d, &a_other).name, None);
+
+        let a_gm = resolve_access(other, WorldRole::Gm, &d);
+        assert_eq!(
+            filter_properties(&d, &a_gm).name.as_deref(),
+            Some("Goblin Skirmisher")
+        );
+    }
+
+    #[test]
+    fn whole_name_gm_only_nulls_to_null() {
+        let mut perms = PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        };
+        perms
+            .property_overrides
+            .insert("/name".into(), Visibility::GmOnly);
+        let mut d = doc(perms, serde_json::json!({}));
+        d.name = Some("Strahd".into());
+
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d);
+        assert_eq!(filter_properties(&d, &player).name, None);
+
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d);
+        assert_eq!(filter_properties(&d, &gm).name.as_deref(), Some("Strahd"));
+    }
+
+    #[test]
+    fn collect_hidden_embedded_engine_override_is_prefixed() {
+        // An embedded child's `/engine/...` override must surface, parent-
+        // absolute, as `/embedded/<key>/<i>/engine/...` — the same coverage
+        // `filter_properties` gives whole-document egress, needed by
+        // `filter_command`'s Update-delta redaction.
+        let mut child = doc(PermissionSet::default(), serde_json::json!({}));
+        child.engine = Some(serde_json::json!({ "x": 1.0 }));
+        child
+            .permissions
+            .property_overrides
+            .insert("/engine/x".into(), Visibility::GmOnly);
+        let mut parent = doc(PermissionSet::default(), serde_json::json!({}));
+        parent.embedded.insert("actor".into(), vec![child]);
+
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &parent);
+        let mut hidden = Vec::new();
+        collect_hidden(&parent, &player, "", &mut hidden);
+        assert!(hidden.contains(&"/embedded/actor/0/engine/x".to_string()));
     }
 
     #[test]
