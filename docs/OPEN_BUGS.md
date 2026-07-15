@@ -15,6 +15,19 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   player would reasonably expect to succeed. Worth a dedicated look by whoever next touches
   `movement.rs`'s corner-crossing branch. (Surfaced by the M10f-2 Task 6 fixture-freeze.)
 
+## Client / scene-rendering
+
+- [Vision] `RenderEngine.onSceneFrame`/`flushPendingDerived` (`src/client/render/src/engine.ts`) has a
+  frame-ordering monotonicity hole: if a vision frame at seq 5 is deferred (its `computedAtSeq` is
+  ahead of `store.appliedSeq`) and a NEWER frame at seq 7 subsequently arrives and takes the
+  IMMEDIATE-apply branch (its own `computedAtSeq` is not ahead), `lastAppliedSeq` advances to 7
+  without clearing the still-pending seq-5 entry. When the store later catches up to seq 5,
+  `flushPendingDerived` applies the older seq-5 payload and regresses `lastAppliedSeq` back to 5 —
+  a stale-but-same-scene visibility frame overwrites a newer one. Not a secrecy leak (both frames
+  re-filter to the current viewed scene, per the M12d fog-secrecy fix in `74165e4`), only a
+  momentary/self-correcting flicker to an older-but-valid fog state. Pre-existing (predates M12d);
+  surfaced by the M12d Task 4 buddy-check fix-confirmation while verifying the fog-secrecy fix.
+
 ## Client / panels (FakeEngine bespoke-fallback only)
 
 - [Panels] The bespoke-fallback engine — `FakeEngine` (`src/modules/panels/src/engine/fake.ts`,
