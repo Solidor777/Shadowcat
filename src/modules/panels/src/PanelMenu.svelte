@@ -23,6 +23,7 @@
     { cmd: "dockLeft", labelKey: "panels.dockLeft" },
     { cmd: "float", labelKey: "panels.float" },
     { cmd: "minimize", labelKey: "panels.minimize" },
+    { cmd: "popOut", labelKey: "panels.popOut" },
     { cmd: "close", labelKey: "panels.close" },
   ];
 

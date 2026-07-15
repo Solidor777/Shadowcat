@@ -48,7 +48,7 @@ export interface DropSite {
 /** Every command `PanelMenu` can offer, on a docked tab or a floating
  * header alike (no context-dependent filtering — `applyOp` already handles
  * every op from any starting location). */
-export type MenuCommand = "dockRight" | "dockBottom" | "dockLeft" | "float" | "minimize" | "close";
+export type MenuCommand = "dockRight" | "dockBottom" | "dockLeft" | "float" | "minimize" | "popOut" | "close";
 
 /** Fixed floating rect a menu-triggered "Float" command opens at — a drag
  * gesture supplies its own drop rect (`classifyDrop`'s `kind: "floating"`
@@ -85,6 +85,8 @@ export function opForMenuCommand(command: MenuCommand, id: string): ClassifyResu
       return { op: "float", id, rect: MENU_FLOAT_RECT };
     case "minimize":
       return { op: "minimize", id };
+    case "popOut":
+      return { op: "popOut", id };
     case "close":
       return { op: "close", id };
   }
