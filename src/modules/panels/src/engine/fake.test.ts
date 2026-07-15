@@ -1,5 +1,16 @@
 import { test, expect } from "vitest";
 import { FakeEngine } from "./fake";
+import { applyOp, defaultLayout } from "../layout/tree";
+
+function makeSlots(ids: string[]): (id: string) => HTMLElement {
+  const map = new Map<string, HTMLElement>();
+  for (const id of ids) {
+    const el = document.createElement("div");
+    el.dataset.panel = id;
+    map.set(id, el);
+  }
+  return (id: string) => map.get(id) ?? document.createElement("div");
+}
 
 // jsdom has no layout engine, so this can't assert computed pixel heights —
 // it asserts the CONTRACT (buddy-check finding 2): `init()` must give both
@@ -21,4 +32,22 @@ test("FakeEngine.init establishes a definite size chain on host and centerEl", (
   expect(centerEl).toBeTruthy();
   expect(centerEl!.style.flex).toBe("1 1 0%");
   expect(centerEl!.style.minHeight).toBe("0px");
+});
+
+test("poppedOut degrades to a floating window (bespoke-fallback, spec §10)", () => {
+  const host = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+  const eng = new FakeEngine();
+  eng.init(host, slotFor, document.createElement("div"));
+
+  let l = defaultLayout([{ id: "chat" }]);
+  l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+  l = applyOp(l, { op: "popOut", id: "chat" });
+  eng.apply(l.expanded, new Map());
+
+  // Rendered as a float window, so the slot stays adopted (never lost).
+  const floatEl = eng.floatEl("chat");
+  expect(floatEl).not.toBeNull();
+  expect(floatEl?.contains(slotFor("chat"))).toBe(true);
+  eng.destroy();
 });

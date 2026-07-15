@@ -84,15 +84,23 @@ export class FakeEngine implements EngineAdapter {
     }
 
     // Floating: one container per floating panel, adopted directly and
-    // positioned from its `Rect`.
-    const floatIds = new Set(expanded.floating.map((f) => f.id));
+    // positioned from its `Rect`. Popped-out ids are degraded to floating here
+    // (this bespoke-fallback engine has no cross-window popout; spec §10) so a
+    // slot is never lost and the keep-mounted invariant holds — production
+    // pop-out is dockview-only.
+    const POPOUT_FALLBACK_RECT = { x: 96, y: 96, w: 420, h: 520 };
+    const floatEntries = [
+      ...expanded.floating,
+      ...expanded.poppedOut.map((id) => ({ id, rect: POPOUT_FALLBACK_RECT, z: 0 })),
+    ];
+    const floatIds = new Set(floatEntries.map((f) => f.id));
     for (const [id, el] of [...this.#floatEls]) {
       if (!floatIds.has(id)) {
         el.remove();
         this.#floatEls.delete(id);
       }
     }
-    for (const f of expanded.floating) {
+    for (const f of floatEntries) {
       let el = this.#floatEls.get(f.id);
       if (!el) {
         el = document.createElement("div");

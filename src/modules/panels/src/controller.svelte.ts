@@ -45,6 +45,11 @@ export interface PanelsControllerDeps {
    * layout-changing op regardless of origin. `PanelHost` uses it to drive
    * the a11y live-region announcement. */
   onOp?: (op: LayoutOp) => void;
+  /** Fired with a user-facing i18n key for an engine/layout notice the caller
+   * surfaces (live region / toast) — e.g. `panels.popoutRestoredFloating` when
+   * reload rehydrates a popped-out panel to floating (a page load cannot reopen
+   * a popup), or `panels.popoutBlocked` forwarded from the engine. */
+  onNotice?: (key: string) => void;
 }
 
 const EMPTY_LAYOUT: PanelLayoutV1 = {
@@ -52,6 +57,15 @@ const EMPTY_LAYOUT: PanelLayoutV1 = {
   expanded: { zones: { right: { groups: [], size: 320 }, bottom: { groups: [], size: 240 }, left: { groups: [], size: 320 } }, floating: [], minimized: [], poppedOut: [] },
   compact: { activeView: null, order: [] },
 };
+
+// Cascade base/step for a reload-rehydrated (formerly popped-out) panel's floating
+// rect — an unoffset rect would stack every rehydrated popout (and the first-ever
+// floating panel) at the identical (x,y). Mirrors tree.ts's own
+// SHEET_CASCADE_BASE/STEP formula (not imported — that pair is layout-internal;
+// this is the controller's own, deliberately separate constant so the two call
+// sites cannot silently drift together).
+const REHYDRATE_FLOAT_BASE = { x: 96, y: 96, w: 420, h: 520 };
+const REHYDRATE_FLOAT_STEP = 28;
 
 export class PanelsController implements PanelsApi, PanelsChipsView {
   #deps: PanelsControllerDeps;
@@ -84,7 +98,32 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
       deps.onReset?.("panels.layoutReset");
     }
 
+    this.#rehydratePoppedOut();
+
     deps.bridge.bind(this);
+  }
+
+  /** Popouts cannot be reopened without a user gesture (a page load is not one
+   * — the browser blocks it), so every persisted popped-out id rehydrates to a
+   * floating window at construction, before the first `apply()`. The tree's
+   * `poppedOut` array persists across sessions; the live `Window` never does.
+   * Runs once; persists + notifies only if it actually converted anything. */
+  #rehydratePoppedOut(): void {
+    const ids = [...this.#layout.expanded.poppedOut];
+    if (ids.length === 0) return;
+    let l = this.#layout;
+    for (const id of ids) {
+      // Cascade off the CURRENT floating count each iteration (not the loop
+      // index) so rehydrated popouts interleave correctly with any panel
+      // that was already floating before rehydration ran.
+      const n = l.expanded.floating.length;
+      const off = (n % 6) * REHYDRATE_FLOAT_STEP;
+      const rect = { x: REHYDRATE_FLOAT_BASE.x + off, y: REHYDRATE_FLOAT_BASE.y + off, w: REHYDRATE_FLOAT_BASE.w, h: REHYDRATE_FLOAT_BASE.h };
+      l = applyOp(l, { op: "float", id, rect });
+    }
+    this.#layout = l;
+    this.#persist(l);
+    this.#deps.onNotice?.("panels.popoutRestoredFloating");
   }
 
   get layout(): PanelLayoutV1 {

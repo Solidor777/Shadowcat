@@ -68,6 +68,12 @@
       case "close":
         where = t("panels.close");
         break;
+      case "popOut":
+        where = t("panels.popOut");
+        break;
+      case "popIn":
+        where = t("panels.restore");
+        break;
       default:
         // resizeZone/resizeGroup/activeTab/compactView/open: not narrated —
         // see the doc comment above for why "open" specifically is excluded.
@@ -96,6 +102,9 @@
         // the seam a visible toast (e.g. a statusbar live region) hangs off
         // once that surface exists — a no-op until then.
         onReset: () => {},
+        onNotice: (key) => {
+          announce = t(key);
+        },
         onOp: (op) => {
           const text = describeOp(op);
           if (text !== null) announce = text;
@@ -198,8 +207,12 @@
     const unsubOp = eng.onOp((op) => {
       ctrl.dispatch(op);
     });
+    const unsubNotice = eng.onNotice?.((key) => {
+      announce = t(key);
+    });
     return () => {
       unsubOp();
+      unsubNotice?.();
       eng.destroy();
       stageHomeEl = null;
     };
