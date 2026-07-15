@@ -18,6 +18,8 @@ export const en: Messages = {
   "worlds.errorLoad": "Could not load worlds.",
   "worlds.errorCreate": "Could not create world.",
   "topbar.world": "world {world}",
+  "topbar.launcher": "Panels",
+  "topbar.presence": "Players",
   "settings.tab": "Settings",
   "settings.title": "Settings",
   "settings.role": "Role: {role}",
