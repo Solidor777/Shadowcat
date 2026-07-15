@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setAppContext, Surface, PanelsBridge, SheetsController } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
   import { consoleLogger } from "@shadowcat/core";
   import { createSubscriber } from "svelte/reactivity";
@@ -25,6 +25,10 @@
     panels,
     logger: consoleLogger(),
   });
+
+  // Scene "Configure" focus: the browser sets it, GameSettingsPanel reads it. Stable per Table,
+  // like `panels`/`sheets`.
+  const sceneSelection = new SceneSelection();
 
   // Boot restore (§7): re-open every persisted sheet whose document resolves. Sheets are
   // registered only when their doc is present, so this runs reactively — panels mount
@@ -59,6 +63,12 @@
     scene: session.sceneInteraction,
     actorSelection: session.actorSelection,
     tokenSelection: session.tokenSelection,
+    get viewedSceneId() {
+      return session.viewedSceneId;
+    },
+    setGmViewedScene: (id) => session.setGmViewedScene(id),
+    searchDocuments: (query, opts, onUpdate) => session.searchDocuments(query, opts, onUpdate),
+    sceneSelection,
     sendPing: (x, y) => session.sendPing(x, y),
     pathfind: (s, st, wp, fr) => session.pathfind(s, st, wp, fr),
     moveRequest: (s, tid, p) => session.moveRequest(s, tid, p),

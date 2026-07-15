@@ -10,6 +10,7 @@ import {
   MiddlewareChain,
   reconcileTopology,
   buildSceneDoc,
+  resolveViewedScene,
   consoleLogger,
   resolveCaps,
   canWritePath,
@@ -26,6 +27,8 @@ import {
   type MoveStream,
   type WireActorOwnerRef,
   type WireAudience,
+  type SubscriptionHandle,
+  type WireSearchHit,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
@@ -65,6 +68,10 @@ export class WorldSession {
   state = $state<ConnState>("closed");
   role = $state<WorldRole | null>(null);
   world = $state<string | null>(null);
+  /** Client-local GM override of the rendered/subscribed scene (M12d "GM roams"). Never set for
+   * a player (they follow `world-settings.activeScene`). Overrides `viewedSceneId` for THIS
+   * client's own render + vision + see-as channels only; the server is unaware of it. */
+  #gmViewedScene = $state<string | null>(null);
   /** userId → username for the world's members, fetched on every role's Welcome
    * (chat author/whisper-recipient name resolution; the GM additionally uses it
    * for see-as labels). A stable reactive Map (mutated in place, never reassigned)
@@ -91,6 +98,36 @@ export class WorldSession {
   /** The current user's id (ownership checks). */
   get selfId(): string {
     return this.opts.selfId;
+  }
+
+  /** The scene THIS client renders + subscribes to (M12d). A GM's local roam
+   * (`#gmViewedScene`) overrides; otherwise follows `world-settings.activeScene`, else the first
+   * scene. Reads the optimistic view + `#gmViewedScene` $state, so Svelte deriveds that read it
+   * (bridged through `documents.subscribe`) react to both scene-doc changes and roam changes. */
+  get viewedSceneId(): string | null {
+    return resolveViewedScene(this.#optimistic, { gmViewedScene: this.role === "gm" ? this.#gmViewedScene : null });
+  }
+
+  /** GM local roam (M12d): view any scene without moving players. Ignored (warned) for a non-GM —
+   * players have no local override. `null` clears the roam (follow `activeScene`). */
+  setGmViewedScene(id: string | null): void {
+    if (this.role !== "gm") {
+      this.#logger.warn("setGmViewedScene ignored: caller is not a GM");
+      return;
+    }
+    this.#gmViewedScene = id;
+  }
+
+  /** Live full-text search over documents (M6c subscription seam). Ephemeral: NOT re-established
+   * across reconnects (unlike `subscribeScene`) — the caller re-subscribes on the next query.
+   * Rejects immediately when there is no live transport. */
+  searchDocuments(
+    query: string,
+    opts: { limit?: number; timeoutMs?: number },
+    onUpdate: (hits: WireSearchHit[]) => void,
+  ): Promise<SubscriptionHandle> {
+    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    return this.#ws.subscribeSearch(query, opts, onUpdate);
   }
 
   /** Advisory client-side mirror of the server's Update-path check, for showing/hiding write
@@ -171,12 +208,13 @@ export class WorldSession {
     return () => this.#pingListeners.delete(cb);
   }
 
-  /** Broadcast a transient location ping at scene coords on the active scene. No-op when
+  /** Broadcast a transient location ping at scene coords on the currently-viewed scene
+   * (`viewedSceneId`: a GM's local roam override, else the followed `activeScene`). No-op when
    * disconnected or no scene exists; the server relays it back to all members (incl. us). */
   sendPing(x: number, y: number): void {
-    const scene = this.#optimistic.query("scene")[0];
-    if (!scene) return;
-    this.#ws?.send({ type: "scene_ping", scene: scene.id, x, y });
+    const sceneId = this.viewedSceneId;
+    if (!sceneId) return;
+    this.#ws?.send({ type: "scene_ping", scene: sceneId, x, y });
   }
 
   /** Request a grid A* path on the server. Thin delegate to `WsClient.pathfind`;
@@ -295,6 +333,11 @@ export class WorldSession {
           for (const cb of this.#assetListeners) cb(msg);
         },
         onScenePing: (msg) => {
+          // Cross-scene guard: a scene_ping broadcasts room-wide and must render only for
+          // recipients currently viewing that scene (a GM roaming scene B must not surface a
+          // ping for scene A superimposed on B's grid, and vice versa). Mirrors the onMoveStream
+          // scene filter above.
+          if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#pingListeners) cb(msg);
         },
       },
@@ -306,13 +349,12 @@ export class WorldSession {
     // Unsub return discarded: the listener's lifetime equals this WsClient instance
     // (a fresh WsClient is created per enter() and discarded on leave()).
     this.#ws.onMoveStream((stream) => {
-      // MoveStream broadcasts room-wide (not scoped to the viewer's active scene), and the wire
-      // frame carries no reconciler-level scene tag beyond `stream.scene` — mirrors the fog
-      // cross-scene guard in `engine.ts`'s `toVisibility`/`toLighting` (container-local coords
-      // reused across containers must be tagged + filtered to the active one). A stream for a
-      // non-active scene is ignored: fail-closed against a latent cross-scene fog/animation leak.
-      const activeScene = this.#optimistic.query("scene")[0]?.id;
-      if (stream.scene !== activeScene) return;
+      // Cross-scene guard: a MoveStream broadcasts room-wide and is animated only if it targets the
+      // scene THIS client is viewing (a GM roaming scene B must not animate scene A's move, and must
+      // animate B's). `viewedSceneId` is the GM's local view when roaming, else the followed
+      // `activeScene`. Fail-closed: a stream for any other scene is dropped (latent cross-scene
+      // fog/animation leak, mirrors engine.ts's toVisibility scene filter).
+      if (stream.scene !== this.viewedSceneId) return;
       this.sceneInteraction.animateSamples(
         stream.tokenId,
         stream.samples,
@@ -387,5 +429,6 @@ export class WorldSession {
     this.state = "closed";
     this.role = null;
     this.world = null;
+    this.#gmViewedScene = null;
   }
 }

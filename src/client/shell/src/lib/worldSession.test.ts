@@ -1,5 +1,15 @@
 import { test, expect, vi } from "vitest";
-import { ContributionRegistry, silentLogger, buildTokenDoc, buildActorDoc, type Connect, type WireDocument } from "@shadowcat/core";
+import {
+  ContributionRegistry,
+  silentLogger,
+  buildTokenDoc,
+  buildActorDoc,
+  buildWorldSettingsDoc,
+  buildSceneDoc,
+  DEFAULT_WORLD_SETTINGS,
+  type Connect,
+  type WireDocument,
+} from "@shadowcat/core";
 import { WorldSession } from "./worldSession.svelte";
 import { listWorldMembers } from "./api";
 
@@ -163,7 +173,10 @@ test("sendPing transmits a scene_ping for the active scene; onPing fires on an i
 
   const got: Array<{ user: string }> = [];
   session.onPing((m) => got.push(m));
-  push({ type: "scene_ping", scene: "s1", x: 1, y: 2, user: "u9" });
+  const sceneId = (
+    (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id
+  ) as string;
+  push({ type: "scene_ping", scene: sceneId, x: 1, y: 2, user: "u9" });
   await vi.waitFor(() => expect(got).toHaveLength(1));
   expect(got[0].user).toBe("u9");
 });
@@ -439,4 +452,135 @@ test("onMoveStream for a non-active scene is ignored (fail-closed cross-scene gu
   push(moveStreamFrame("some-other-scene-id"));
   await new Promise((r) => setTimeout(r, 20));
   expect(host.calls).toHaveLength(0);
+});
+
+test("viewedSceneId: player follows activeScene, else the first scene", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // player
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  // Predict two scenes + a world-settings doc into the optimistic view.
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "s0") }]);
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "s1") }]);
+  expect(session.viewedSceneId).toBe("s0"); // no activeScene yet ⇒ first scene
+
+  session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: "s1" }) }]);
+  expect(session.viewedSceneId).toBe("s1"); // follows activeScene
+});
+
+test("setGmViewedScene overrides only for a GM; a player call is ignored", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // player
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "s0") }]);
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "s1") }]);
+  session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: "s1" }) }]);
+
+  session.setGmViewedScene("s0"); // player: ignored
+  expect(session.viewedSceneId).toBe("s1");
+});
+
+test("a GM roams locally with gmViewedScene; clearing it follows activeScene again", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" }); // GM auto-creates one scene
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const first = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sB") }]);
+  session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: first }) }]);
+
+  session.setGmViewedScene("sB");
+  expect(session.viewedSceneId).toBe("sB"); // roaming
+  session.setGmViewedScene(null);
+  expect(session.viewedSceneId).toBe(first); // follows active again
+});
+
+test("onMoveStream gates on the GM's LOCAL viewed scene, not activeScene", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const active = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sB") }]);
+  session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: active }) }]);
+  session.setGmViewedScene("sB"); // roaming to sB while players stay on `active`
+
+  const host = fakeMoveHost();
+  session.sceneInteraction.attach(host);
+  push(moveStreamFrame(active)); // the players' scene — must NOT animate in the GM's local view
+  await new Promise((r) => setTimeout(r, 20));
+  expect(host.calls).toHaveLength(0);
+  push(moveStreamFrame("sB")); // the GM's viewed scene — animates
+  await vi.waitFor(() => expect(host.calls).toHaveLength(1));
+});
+
+test("sendPing targets the viewed scene", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const active = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sB") }]);
+  session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: active }) }]);
+  session.setGmViewedScene("sB");
+
+  session.sendPing(10, 20);
+  const ping = sent.find((m) => m.type === "scene_ping")!;
+  expect(ping.scene).toBe("sB");
+});
+
+test("role demotion mid-session excludes a stale gmViewedScene the instant role flips", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" }); // GM auto-creates one scene
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const first = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sB") }]);
+  session.setGmViewedScene("sB");
+  expect(session.viewedSceneId).toBe("sB"); // roaming as GM
+
+  // A second Welcome demotes the caller to player (e.g. GM role revoked mid-session).
+  push({ ...welcomeFrame, user_role: "player" });
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  // The stale roam value must be excluded the instant role flips — no activeScene is set,
+  // so the player follows the first scene, not the GM's abandoned roam target.
+  expect(session.viewedSceneId).toBe(first);
+});
+
+test("onScenePing cross-scene guard: a GM roaming scene B sees own pings for B, drops a ping for A", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const sceneA = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sceneB") }]);
+  session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: sceneA }) }]);
+  session.setGmViewedScene("sceneB"); // roaming B while players stay on A
+
+  const got: Array<{ scene: string }> = [];
+  session.onPing((m) => got.push(m));
+
+  push({ type: "scene_ping", scene: sceneA, x: 1, y: 2, user: "u9" }); // players' scene — dropped
+  await new Promise((r) => setTimeout(r, 20));
+  expect(got).toHaveLength(0);
+
+  push({ type: "scene_ping", scene: "sceneB", x: 3, y: 4, user: "u1" }); // the GM's own viewed scene — accepted
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0].scene).toBe("sceneB");
 });

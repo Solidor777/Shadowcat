@@ -1072,7 +1072,38 @@ Decomposed **M11a–d**:
 > follow-up for the already-shipped fallback sheet). T10 caught an i18n/a11y regression of the
 > exact pattern T9 had just fixed in a sibling file.
 > Plan: [`superpowers/plans/2026-07-15-m12c-sheets.md`](superpowers/plans/2026-07-15-m12c-sheets.md).
-- M12d: actor / scene browsers + `activeScene` multi-scene, built against the public API, each treated as an API bug report. (Chat panel superseded: the baseline chat display modules ship in **M11d**.)
+> **M12d DONE** (branch `m12d-browsers-multiscene`, 9 SDD tasks, 2 pre-authorized buddy-checks —
+> T2 `WorldSession` viewed-scene resolution + cross-scene-leak-guard rewiring, T4 render-engine
+> scene-filtering): actor browser grown with live FTS search (`ctx.searchDocuments`, the M6c
+> subscription seam newly wired through `AppContext`/`WorldSession` — ephemeral, not
+> reconnect-resilient by design) + an "Open sheet" button (`ctx.openDocument`, M12c); new
+> `@shadowcat/module-scene-browser` (GM-only panel: scene list + background thumbnails, create,
+> configure — deep-links the existing `GameSettingsPanel` per-scene section via a small
+> `SceneSelection` seam, no duplicate `sheetContract("scene")` — view, activate); multi-scene
+> closes the pre-M10 deferral via `world-settings.activeScene: string | null`
+> (GM-writable, real-OCC-pre-image) + a SINGLE pure resolver, `resolveViewedScene` (a resolvable
+> `gmViewedScene` GM-local roam → a resolvable `activeScene` players follow → the first scene,
+> fail-closed), threaded through every place that independently decided "the current scene"
+> before this milestone — `WorldSession`, the render engine (all five doc views + the background
+> reconciler + `toVisibility`/`toLighting`), Stage's grid driver, and scene-tools.
+> Buddy-check catches: **T2** — the GM-roam feature this task adds itself opened a NEW
+> cross-scene ping leak (`scene_ping` forwarded unconditionally; before this milestone all
+> clients rendered `activeScene` in lockstep so no divergence was possible) — closed by mirroring
+> the existing `MoveStream` guard onto `onScenePing`. **T4** — the milestone's most significant
+> catch: a fog-secrecy leak in the pre-existing watermark-deferral mechanism (`pendingDerived`
+> cached a pre-filtered visibility snapshot baked against whatever scene was viewed when a
+> deferred frame arrived; a later flush could silently paint that stale scene's fog onto a
+> since-switched-to scene) — found and independently traced by BOTH reviewers on the first pass,
+> fixed by caching the raw payload and re-filtering at flush time against the then-current viewed
+> scene, mirroring the existing `setViewAsUser` invalidation discipline. Additional review-cycle
+> catches (non-buddy-check tasks): an untested `Stage.svelte` scene-switch watcher (T5, closed
+> with a live-getter-monkeypatch test technique); a stale-query race in the actor search effect
+> (T7, traced against the real `WsClient.subscribeSearch` dispatch order); a wrong panel-open
+> contribution id that silently no-op'd the scene browser's "Configure" button (T8). One
+> pre-existing (not introduced by this milestone), non-secrecy frame-ordering monotonicity hole
+> in the vision-frame watermark surfaced during T4's fix-confirmation — logged to
+> `docs/OPEN_BUGS.md`. Plan:
+> [`superpowers/plans/2026-07-15-m12d-browsers-multiscene.md`](superpowers/plans/2026-07-15-m12d-browsers-multiscene.md).
 
 ### M12.5 · Backups + snapshot restore (gate precondition)
 - Basic world backup (SQLite snapshot / per-world export) + restore path; minimal manual scheduling. Distinct from Phase-4 backup *automation*.

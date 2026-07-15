@@ -2,6 +2,7 @@ import type { ReadableDocuments, WireDocument } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { ShapeNodeSpec } from "./types";
 import { parseColor, rectPoints, ellipsePoints } from "./geometry";
+import { sceneScopedDocs } from "./scene-scope";
 
 /** Client-owned `drawing.system` (M8 §9). `points` are path vertices for
  * freehand/line/polygon, or bbox corners `[x0,y0,x1,y1]` for rect/ellipse. */
@@ -18,11 +19,12 @@ export class DrawingView {
   constructor(
     private readonly store: ReadableDocuments,
     private readonly backend: DisplayBackend,
+    private readonly viewedSceneId: () => string | null = () => null,
   ) {}
 
   reconcile(): void {
     const seen = new Set<string>();
-    for (const doc of this.store.query("drawing")) {
+    for (const doc of sceneScopedDocs(this.store, "drawing", this.viewedSceneId)) {
       const spec = toSpec(doc);
       if (!spec) continue;
       seen.add(doc.id);

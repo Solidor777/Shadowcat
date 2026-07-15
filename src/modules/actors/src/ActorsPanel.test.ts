@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/svelte";
+import { tick } from "svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DocumentStore, buildActorDoc, buildTokenFromActor, type WireDocument, type WireOperation } from "@shadowcat/core";
 import { TokenSelection } from "@shadowcat/ui-kit";
@@ -428,5 +429,113 @@ describe("ActorsPanel — per-token face swap", () => {
     expect(dispatchIntent).toHaveBeenCalledWith([
       { op: "update", doc_id: "tok1", changes: [{ path: "/system/face", old: null, new: "bloodied" }] },
     ]);
+  });
+});
+
+describe("ActorsPanel — live search + open sheet", () => {
+  // Real (not identity) `t` for this describe block: the "Open sheet" assertion below matches
+  // the actual rendered label text, not the raw i18n key (the identity default the other
+  // describes in this file rely on has no space between "open" and "Sheet").
+  const realT = (k: string): string => ({ "actors.openSheet": "Open sheet", "actors.search": "Search actors" })[k as "actors.openSheet" | "actors.search"] ?? k;
+
+  function actorDoc(id: string): WireDocument {
+    return buildActorDoc(
+      "w1",
+      { name: "Goblin", displayName: "Goblin", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+      id,
+    );
+  }
+
+  it("opens a sheet for an actor row via ctx.openDocument", async () => {
+    const opened: unknown[] = [];
+    const store = storeWith(actorDoc("a1"));
+    const { getByRole } = render(ActorsPanel, {
+      context: setAppContextForTest({
+        role: "gm",
+        world: "w1",
+        documents: store,
+        store,
+        dispatchIntent: vi.fn(),
+        openDocument: (ref) => opened.push(ref),
+        t: realT,
+      }),
+    });
+    await fireEvent.click(getByRole("button", { name: /open sheet/i }));
+    expect(opened).toEqual([{ docId: "a1" }]);
+  });
+
+  it("runs a live search on a non-empty query and lists only actor hits", async () => {
+    let capturedOnUpdate: ((hits: unknown[]) => void) | null = null;
+    const emptyStore = new DocumentStore();
+    const { getByLabelText, findByText } = render(ActorsPanel, {
+      context: setAppContextForTest({
+        role: "gm",
+        world: "w1",
+        documents: emptyStore,
+        store: emptyStore,
+        dispatchIntent: vi.fn(),
+        searchDocuments: (_q, _o, onUpdate) => {
+          capturedOnUpdate = onUpdate as (hits: unknown[]) => void;
+          return Promise.resolve({ unsubscribe() {} });
+        },
+      }),
+    });
+    await fireEvent.input(getByLabelText(/search/i), { target: { value: "gob" } });
+    capturedOnUpdate!([
+      { document: { id: "a9", doc_type: "actor", system: { name: "Goblin", displayName: "Goblin" } }, score: 1, snippet: "" },
+      { document: { id: "i9", doc_type: "item", system: { name: "Gob-stopper" } }, score: 1, snippet: "" },
+    ]);
+    await findByText("Goblin");
+    expect(screen.queryByText("Gob-stopper")).toBeNull();
+  });
+
+  it("ignores a stale query's onUpdate firing after a newer query's subscription is active", async () => {
+    // Regression: WsClient.subscribeSearch's initial page fires `onUpdate` SYNCHRONOUSLY inside
+    // the pending-resolve handler, before `resolve({unsubscribe})` — so it beats the search
+    // effect's own `.then()`-based cancellation. Capture both queries' `onUpdate` callbacks and
+    // invoke the FIRST (stale) one only after the SECOND (current) query's subscription is
+    // already live and has already delivered results; the rendered list must reflect the
+    // second query, never the first's late-arriving stale hits.
+    const capturedOnUpdate: Array<{ q: string; onUpdate: (hits: unknown[]) => void }> = [];
+    const emptyStore = new DocumentStore();
+    render(ActorsPanel, {
+      context: setAppContextForTest({
+        role: "gm",
+        world: "w1",
+        documents: emptyStore,
+        store: emptyStore,
+        dispatchIntent: vi.fn(),
+        searchDocuments: (q, _o, onUpdate) => {
+          capturedOnUpdate.push({ q, onUpdate: onUpdate as (hits: unknown[]) => void });
+          return Promise.resolve({ unsubscribe() {} });
+        },
+      }),
+    });
+
+    const searchInput = screen.getByLabelText(/search/i);
+    await fireEvent.input(searchInput, { target: { value: "g" } });
+    await fireEvent.input(searchInput, { target: { value: "go" } });
+
+    expect(capturedOnUpdate).toHaveLength(2);
+    const [first, second] = capturedOnUpdate;
+    expect(first.q).toBe("g");
+    expect(second.q).toBe("go");
+
+    // Second (current) query's results arrive first.
+    second.onUpdate([
+      { document: { id: "a-go", doc_type: "actor", system: { name: "Goliath", displayName: "Goliath" } }, score: 1, snippet: "" },
+    ]);
+    await screen.findByText("Goliath");
+
+    // First (stale, abandoned) query's results arrive late. Flush reactivity via `tick()` after
+    // the call so a pre-fix regression (searchHits overwritten but not yet re-rendered) can't
+    // hide behind an un-flushed DOM and pass this assertion for the wrong reason.
+    first.onUpdate([
+      { document: { id: "a-g", doc_type: "actor", system: { name: "Ghoul", displayName: "Ghoul" } }, score: 1, snippet: "" },
+    ]);
+    await tick();
+
+    expect(screen.queryByText("Ghoul")).toBeNull();
+    expect(screen.getByText("Goliath")).toBeTruthy();
   });
 });

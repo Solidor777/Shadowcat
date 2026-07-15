@@ -2,7 +2,7 @@
   import { createSubscriber } from "svelte/reactivity";
   import type { Asset } from "@shadowcat/types";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildActorDoc, setNameHidden, actorDisplayName, listAssets, resolveTokenActor, type ActorSystem, type WireDocument, type FactionRegistrySystem, type Faction, type TokenVisual, type FaceVisual, type AnimatedSource, type ConditionRegistrySystem, type Condition } from "@shadowcat/core";
+  import { buildActorDoc, setNameHidden, actorDisplayName, listAssets, resolveTokenActor, type ActorSystem, type WireDocument, type FactionRegistrySystem, type Faction, type TokenVisual, type FaceVisual, type AnimatedSource, type ConditionRegistrySystem, type Condition, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -14,6 +14,33 @@
     subscribe();
     return ctx.documents.query("actor");
   });
+
+  // Live FTS search (M6c seam). Empty query renders the existing reactive full actor list;
+  // a non-empty query drives a top-N subscription keyed on the query string, torn down/recreated
+  // on every query change and on unmount (D-c: search is NOT reconnect-resilient, unlike scene
+  // subscriptions — a reconnect mid-search leaves the last-known hits until the next keystroke).
+  let query = $state("");
+  let searchHits = $state<WireDocument[]>([]);
+  $effect(() => {
+    const q = query.trim();
+    if (!q) { searchHits = []; return; }
+    let handle: SubscriptionHandle | null = null;
+    let cancelled = false;
+    void ctx
+      .searchDocuments(q, { limit: 20 }, (hits: WireSearchHit[]) => {
+        // INVARIANT: subscribeSearch's initial page resolves `onUpdate` SYNCHRONOUSLY, inside the
+        // pending-resolve handler, BEFORE `resolve({unsubscribe})` runs — so it fires before the
+        // `.then()` below (and thus before `cancelled`/`handle` teardown) ever executes. A stale
+        // query's callback can therefore still fire after this effect has re-run for a newer query
+        // and its own subscription is already active; guard `cancelled` here, not just in `.then()`.
+        if (cancelled) return;
+        searchHits = hits.filter((h) => h.document.doc_type === "actor").map((h) => h.document);
+      })
+      .then((h) => { if (cancelled) h.unsubscribe(); else handle = h; })
+      .catch(() => { /* no transport: leave last hits, re-subscribe on next keystroke */ });
+    return () => { cancelled = true; handle?.unsubscribe(); };
+  });
+  const visibleActors = $derived(query.trim() ? searchHits : actorDocs);
 
   let name = $state("");
   let displayName = $state("");
@@ -140,7 +167,10 @@
     return Object.entries(reg?.factions ?? {});
   });
 
-  const isHidden = (a: WireDocument): boolean => a.permissions.property_overrides["/system/name"] === "owner_or_gm";
+  // Optional chaining: a live-search hit's document (WireSearchHit.document) carries id/doc_type/
+  // system only, not the full permissions envelope — the GM per-row controls below must tolerate
+  // a search-sourced row, not just a store-resolved one.
+  const isHidden = (a: WireDocument): boolean => a.permissions?.property_overrides["/system/name"] === "owner_or_gm";
 
   function toggleHidden(a: WireDocument): void {
     const cur = a.permissions.property_overrides;
@@ -198,14 +228,24 @@
       {/each}
     </div>
   {/if}
+  <input
+    class="actor-search"
+    type="search"
+    placeholder={t("actors.search")}
+    aria-label={t("actors.search")}
+    bind:value={query}
+  />
   <ul class="list">
-    {#each actorDocs as a (a.id)}
+    {#each visibleActors as a (a.id)}
       <li>
         <button
           type="button"
           class:selected={ctx.actorSelection.selectedId === a.id}
           onclick={() => ctx.actorSelection.select(a.id)}
         >{actorDisplayName(a.system as { name?: string; displayName?: string })}</button>
+        <button type="button" class="open-sheet" onclick={() => ctx.openDocument({ docId: a.id })}>
+          {t("actors.openSheet")}
+        </button>
         {#if ctx.role === "gm"}
           <button type="button" class="hide-toggle" onclick={() => toggleHidden(a)}>
             {isHidden(a) ? t("actors.nameShown") : t("actors.hideName")}
@@ -407,6 +447,31 @@
     border-color: var(--accent);
     background: var(--accent);
     color: var(--on-accent);
+  }
+  .actor-search {
+    min-height: 44px;
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--surface-raised);
+    color: var(--text-primary);
+  }
+  .actor-search:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .open-sheet {
+    min-height: 44px;
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--surface-raised);
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+  .open-sheet:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .list {
     list-style: none;

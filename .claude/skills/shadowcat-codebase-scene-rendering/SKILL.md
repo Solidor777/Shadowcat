@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-scene-rendering
-description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, lighting, the server visibility/lit mask, movement restriction (the Room::publish move gate, supercover, visible_cells), the grid A* pathfinder (scene/pathfinding.rs, SceneEcs::pathfind, Pathfind/PathResult frames, diagonal rules), the continuous/navmesh router (movementModel axis, scene/navmesh.rs, polyanya, the navmesh cache, clip_to_visible_mask), streamed continuous vision (MoveStream, scene/move_stream.rs, player_vision_polygons_at, the per-recipient egress clip, client fog-sweep/cross-fade playback), regions (weighted/impassable/arrest zones, region docs, region-view.ts render layer), or scene-tools (place/select/move/draw/template/measure/ping/wall/region). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, lighting, the server visibility/lit mask, movement restriction (the Room::publish move gate, supercover, visible_cells), the grid A* pathfinder (scene/pathfinding.rs, SceneEcs::pathfind, Pathfind/PathResult frames, diagonal rules), the continuous/navmesh router (movementModel axis, scene/navmesh.rs, polyanya, the navmesh cache, clip_to_visible_mask), streamed continuous vision (MoveStream, scene/move_stream.rs, player_vision_polygons_at, the per-recipient egress clip, client fog-sweep/cross-fade playback), regions (weighted/impassable/arrest zones, region docs, region-view.ts render layer), multi-scene viewing (viewedSceneId, resolveViewedScene, world-settings.activeScene, GM local roam, scene-scope.ts), or scene-tools (place/select/move/draw/template/measure/ping/wall/region). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Scene & Rendering
@@ -513,6 +513,38 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   back to the deep-frozen `DEFAULT_SCENE_BOUNDS = {width:100,height:100}` on absent OR malformed
   (non-finite/≤0-on-either-axis) input — never a degenerate rectangle, never throws. Authored by
   `src/modules/game-settings/` (see `shadowcat-codebase-client-shell`).
+- **Multi-scene viewing / GM local roam (M12d).** `resolveViewedScene(store, {gmViewedScene?})`
+  (`scene-docs.ts`) is the single client-side answer to "which scene does THIS client render/
+  subscribe to". Resolution order: a resolvable `gmViewedScene` (GM-only local override) → a
+  resolvable `world-settings.system.activeScene` (`WorldSettingsSystem.activeScene: string |
+  null`, new field, deliberately EXCLUDED from `resolveSceneSettings`'s existing
+  structural-completeness triple so a pre-M12d world-settings doc missing this key stays
+  "complete") → the first scene (legacy single-scene fallback) → `null` only when no scene exists
+  at all. Fail-closed by construction: an id naming a scene that no longer exists is treated as
+  unresolvable and skipped to the next tier, never rendering nothing while scenes exist and never
+  leaking a stale scene's channel. `WorldSession.viewedSceneId` (`worldSession.svelte.ts`) is the
+  live getter (`resolveViewedScene(this.#optimistic, {gmViewedScene: role==="gm" ?
+  this.#gmViewedScene : null})`); `setGmViewedScene(id)` sets the GM-only `#gmViewedScene` $state
+  (warns + no-ops for a non-GM). `sendPing`, `onMoveStream`, and the `scene_ping` handler all
+  resolve through `viewedSceneId` (not a fixed `query("scene")[0]`) and drop a frame whose `scene`
+  doesn't match — closing a cross-scene leak (see Gotchas). `src/client/render/src/scene-scope.ts`
+  — `sceneScopedDocs(store, docType, viewedSceneId)` filters a doc-type query to `d.parent_id ===
+  viewedSceneId()`, or returns the unfiltered list when `viewedSceneId()` is `null` (the
+  degenerate pre-scene case). `RenderEngine` (`engine.ts`) takes `RenderEngineOpts.viewedSceneId?:
+  () => string | null` and exposes a private `viewedScene` resolver (falls back to
+  `store.query("scene")[0]?.id` when unset — legacy/test callers unaffected); every render-layer
+  view (`token-view.ts`, `wall-view.ts`, `drawing-view.ts`, `template-view.ts`, `region-view.ts`)
+  and `reconciler.ts` take a trailing `viewedSceneId: () => string | null = () => null`
+  constructor param and filter through `sceneScopedDocs`. `RenderEngine.reapplyViewedScene()` is
+  the client-local-switch seam: a scene switch (`activeScene` flip or GM roam) carries no new
+  server frame, so it re-runs every view's `reconcile()` (their `parent_id` filter target changed)
+  and re-filters the last cached vision payload against the newly-current scene. `Stage.svelte`
+  passes `viewedSceneId: () => ctx.viewedSceneId` into the engine and a `$effect` watches
+  `ctx.viewedSceneId`, calling `engine.reapplyViewedScene()` exactly once per change.
+  `scene-tools/controller.svelte.ts`'s private `activeScene(ctx)` helper resolves through
+  `ToolContext.viewedSceneId?.()` before falling back to the first scene — every doc-creating tool
+  (place/wall/region/drawing/template) stamps `parent_id` onto the viewed scene, not always the
+  first one.
 
 ## Hard invariants
 
@@ -523,6 +555,24 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   hiding already-delivered data must hide-everything on a missing/garbled signal; container-local
   coords reused across containers must be tagged + filtered to the active container
   [[fog-is-the-secrecy-gate-fail-closed]].
+- **A value cached across a client-local scene switch must never be pre-filtered against the
+  scene that was active when it was cached — recompute the scene filter at the point of
+  application, against whatever scene is current THEN (M12d).** This generalizes/complements the
+  fog-fail-closed invariant above to a NEW failure axis: multi-scene viewing means the "active
+  scene" a cached value should be filtered against can itself change before the cache is
+  consumed. `RenderEngine.pendingDerived` (`engine.ts`) is the concrete instance: a `vision` frame
+  arriving before `store.appliedSeq` catches up is held behind the watermark. The pre-M12d shape
+  cached an ALREADY-FILTERED `VisibilityInput` (the result of `toVisibility`/`toLighting` run at
+  frame-ARRIVAL time); once multi-scene viewing made a client-local scene switch
+  (`reapplyViewedScene`) possible while a frame sat pending, that stale pre-filtered snapshot could
+  be silently flushed and painted on top of the SWITCHED-TO scene once the watermark caught up —
+  a fog hole computed for scene A rendered on scene B. Two independent buddy-check reviewers traced
+  this to the same root cause. The fix: `pendingDerived` now caches the RAW `{payload, seq}` only;
+  `flushPendingDerived()` re-runs `toVisibility(p.payload)`/`toLighting` at FLUSH time, which reads
+  `viewedScene()` internally and therefore always filters against the scene that is current AT
+  FLUSH, not at arrival. Any future engine cache that spans a client-local scene switch (not just
+  vision/fog) must follow this same raw-payload-cache/filter-at-consumption shape — filtering
+  eagerly and caching the filtered result is the bug pattern to avoid.
 - **Vision is server-authoritative, no client prediction** (ARCHITECTURE §2 invariant 3); movement that
   crosses a `blocksMove` wall is rejected server-side before the write — validate the **post-image**
   position, not just the pre-move one [[m9-progress]].
@@ -711,6 +761,20 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `movement.rs`). Fails closed (never opens a forbidden move) but rejects a move a player might
   reasonably expect to succeed; logged `docs/TODO.md`, not fixed (out of scope for the checkpoint
   that found it).
+- **Cross-scene `MoveStream`/`ScenePing` leak class (M12d) — a NEW divergence axis, not a
+  pre-existing gap.** Before M12d every client rendered the SAME scene (`activeScene`, in
+  lockstep) — there was no per-client "which scene am I looking at" state for a broadcast
+  fan-out egress path to diverge against, so this leak class could not previously exist.
+  `gmViewedScene` (GM local roam, M12d) is what FIRST introduces per-client scene divergence: a
+  room-wide `MoveStream`/`ScenePing` broadcast now reaches connections that may be viewing
+  DIFFERENT scenes than the event targets. `WorldSession` closes it client-side by dropping any
+  frame whose `scene` doesn't equal `this.viewedSceneId` (`onMoveStream`/the `scene_ping` handler,
+  `worldSession.svelte.ts`) — a GM roaming scene B must not animate/ping-render scene A's event, and
+  vice versa. **Any future per-client "which scene am I looking at/subscribed to" feature must
+  re-audit EVERY broadcast fan-out egress path for this same divergence class, not just the render
+  layer** — `MoveStream`/`ScenePing` were the two found and fixed in M12d; a new room-wide
+  broadcast type added later (chat, pings, future presence/cursor frames) inherits the same risk
+  the instant any client can view something other than the room's single shared `activeScene`.
 
 ## Pointers
 

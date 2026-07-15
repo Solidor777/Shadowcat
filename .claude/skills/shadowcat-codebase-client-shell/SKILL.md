@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-client-shell
-description: "Use when touching the Shadowcat UI shell: the contribution/Surface module architecture, Contribution.panel metadata, AppContext (incl. the chat, uiState.panelLayout, and panels/PanelsBridge seams), the hash router + entry views, i18n/locale, or the shell/UI modules (entry, core-ui, topbar, statusbar, settings). Covers src/client/{shell,ui-kit} + those src/modules. For the panel-manager internals (module-panels, engines, layout tree) invoke shadowcat-codebase-panels. Invoke shadowcat-codebase-core first."
+description: "Use when touching the Shadowcat UI shell: the contribution/Surface module architecture, Contribution.panel metadata, AppContext (incl. the chat, uiState.panelLayout, panels/PanelsBridge, and multi-scene viewedSceneId/setGmViewedScene/searchDocuments/sceneSelection seams), the hash router + entry views, i18n/locale, or the shell/UI modules (entry, core-ui, topbar, statusbar, settings, scene-browser). Covers src/client/{shell,ui-kit} + those src/modules. For the panel-manager internals (module-panels, engines, layout tree) invoke shadowcat-codebase-panels; for the render-engine consumption of viewedSceneId invoke shadowcat-codebase-scene-rendering. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Client Shell & UI Modules
@@ -68,6 +68,30 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   activeTab) persist the per-world panel layout into `UiState.worlds[world].panelLayout` via
   the existing leading-edge-debounced PUT. The blob is OPAQUE to the shell — the panel host
   owns its shape/validation.
+- **Multi-scene / viewed-scene seams (M12d)** — `AppContext.viewedSceneId: string | null`
+  (a live getter, `Table.svelte`: `get viewedSceneId() { return session.viewedSceneId; }` —
+  NEVER destructure a snapshot of it), `AppContext.setGmViewedScene(id): void` (GM-only local
+  roam; no-ops+warns for a non-GM), `AppContext.searchDocuments(query, opts, onUpdate) ->
+  Promise<SubscriptionHandle>` (the M6c live-FTS subscription seam, newly exposed through
+  `AppContext`/`WorldSession` — wraps `WsClient.subscribeSearch`, ephemeral/NOT
+  reconnect-resilient), `AppContext.sceneSelection: SceneSelection`
+  (`src/client/ui-kit/src/sceneSelection.svelte.ts` — a small stable-ref class, `configureSceneId`
+  + `select(id)`, shell-constructed in `Table.svelte` like `panels`/`sheets`; distinct from BOTH
+  `viewedSceneId`/`activeScene` — configuring a scene's per-scene settings never moves any
+  camera/render target). `WorldSession.viewedSceneId` (getter) resolves via `resolveViewedScene`
+  (`@shadowcat/core`): a resolvable `gmViewedScene` (GM local roam, `WorldSession`-private
+  `#gmViewedScene` `$state`) → a resolvable `world-settings.activeScene` (players follow) → the
+  first scene (legacy fallback) → `null` only when no scene exists at all. See
+  `shadowcat-codebase-scene-rendering` for how the render engine consumes this seam.
+  `@shadowcat/module-scene-browser` (GM-only panel, `order: 6`) is the authoring surface: list +
+  background thumbnails, create, "Configure" (deep-links the EXISTING `game-settings` panel's
+  per-scene section via `ctx.sceneSelection.select(id)` +
+  `ctx.panels.open("game-settings:panel")` — the exact `"<module>:panel"` contribution-id
+  convention every `PANEL_CONTRACT` registration uses; a bare module id silently no-ops the open
+  call, found in M12d Task 8 review), "View" (`ctx.setGmViewedScene`), "Activate" (writes
+  `activeScene` via `ctx.dispatchIntent` with the REAL current value as OCC `old`). Scenes have
+  no `name` field — the browser labels rows by index + thumbnail, deliberately (not in the M12
+  spec).
 - AppContext seams (wired in `Table.svelte`): `uiState {getPanelLayout, setPanelLayout}`
   (narrow; the shell owns storage), `panels: PanelsApi & PanelsChipsView` — the shell
   constructs ONE `PanelsBridge` (`ui-kit/src/panelsBridge.svelte.ts`, `$state`-backed so
@@ -77,8 +101,8 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   these frames carry no correlation id; rejections are server-logged only, so composers
   pre-validate). `members` is now populated for EVERY role (chat name resolution; the
   roster endpoint was widened from GM-only), not just GM.
-- `src/modules/{entry,core-ui,panels,stage,topbar,statusbar,settings,game-settings,chat,
-  chat-composer,chat-card}/` — entry = `@shadowcat/module-entry` (login + world mgmt, behind
+- `src/modules/{entry,core-ui,panels,stage,topbar,statusbar,settings,game-settings,scene-browser,
+  chat,chat-composer,chat-card}/` — entry = `@shadowcat/module-entry` (login + world mgmt, behind
   `<Entry onEnterWorld>`); core-ui owns the layout grid + region surfaces into the singleton
   `root` (its main region hosts `shadowcat.surface:panel-host`; the grid cell carries
   `min-height: 0` + `overflow: hidden` — the growth cap that keeps tall content scrolling

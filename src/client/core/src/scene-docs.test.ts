@@ -1,8 +1,8 @@
 import { test, expect, describe, it } from "vitest";
 import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildItemDoc, ITEM_DOC_TYPE, type TokenSystem, type ActorSystem, type Faction, type Condition, type SceneSystem, type SceneDimensions, type TokenVisual, type FaceVisual, type AnimatedSource } from "./scene-docs";
 import {
-  buildWorldSettingsDoc, resolveSceneSettings, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
-  type WireDocument,
+  buildWorldSettingsDoc, resolveSceneSettings, resolveViewedScene, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
+  type WireDocument, type WorldSettingsSystem,
 } from "./scene-docs";
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc } from "./scene-docs";
 import { buildRegionDoc, setRegionVisibility, type RegionSystem } from "./scene-docs";
@@ -380,5 +380,54 @@ describe("buildItemDoc", () => {
     expect(doc.doc_type).toBe(ITEM_DOC_TYPE);
     expect(doc.parent_id).toBeNull();
     expect((doc.system as { name: string }).name).toBe("Sword");
+  });
+});
+
+function store(docs: WireDocument[]): DocumentStore {
+  const s = new DocumentStore();
+  s.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: docs.map((doc) => ({ op: "create", doc })) });
+  return s;
+}
+function ws(activeScene: string | null): WireDocument {
+  return buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene } as WorldSettingsSystem);
+}
+
+describe("resolveViewedScene", () => {
+  it("returns null when no scene exists", () => {
+    expect(resolveViewedScene(store([]))).toBeNull();
+    expect(resolveViewedScene(store([ws(null)]))).toBeNull();
+  });
+
+  it("falls back to the first scene when activeScene is absent/null (legacy behavior)", () => {
+    const s0 = buildSceneDoc("w1", {}, "s0");
+    const s1 = buildSceneDoc("w1", {}, "s1");
+    expect(resolveViewedScene(store([s0, s1]))).toBe("s0");
+    expect(resolveViewedScene(store([s0, s1, ws(null)]))).toBe("s0");
+  });
+
+  it("follows a resolvable activeScene (players)", () => {
+    const s0 = buildSceneDoc("w1", {}, "s0");
+    const s1 = buildSceneDoc("w1", {}, "s1");
+    expect(resolveViewedScene(store([s0, s1, ws("s1")]))).toBe("s1");
+  });
+
+  it("falls back to the first scene when activeScene dangles (deleted target)", () => {
+    const s0 = buildSceneDoc("w1", {}, "s0");
+    expect(resolveViewedScene(store([s0, ws("gone")]))).toBe("s0");
+  });
+
+  it("gmViewedScene overrides activeScene when it resolves", () => {
+    const s0 = buildSceneDoc("w1", {}, "s0");
+    const s1 = buildSceneDoc("w1", {}, "s1");
+    const s = store([s0, s1, ws("s1")]);
+    expect(resolveViewedScene(s, { gmViewedScene: "s0" })).toBe("s0");
+  });
+
+  it("ignores a dangling gmViewedScene and falls through to activeScene", () => {
+    const s0 = buildSceneDoc("w1", {}, "s0");
+    const s1 = buildSceneDoc("w1", {}, "s1");
+    const s = store([s0, s1, ws("s1")]);
+    expect(resolveViewedScene(s, { gmViewedScene: "gone" })).toBe("s1");
+    expect(resolveViewedScene(s, { gmViewedScene: null })).toBe("s1");
   });
 });

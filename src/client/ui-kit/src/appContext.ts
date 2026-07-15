@@ -1,10 +1,11 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, WireActorOwnerRef, WireAudience, SheetRef } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, WireActorOwnerRef, WireAudience, SheetRef, SubscriptionHandle, WireSearchHit } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
 import type { TokenSelection } from "./tokenSelection.svelte";
 import type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
+import type { SceneSelection } from "./sceneSelection.svelte";
 
 /**
  * Ambient app state contributed components read via Svelte context. Carries the
@@ -72,6 +73,23 @@ export interface AppContext {
   actorSelection: ActorSelection;
   /** Selected token ids for group-select; set by the factions panel, read by the select tool. */
   tokenSelection: TokenSelection;
+  /** The scene THIS client renders + subscribes to (M12d). Players follow
+   * `world-settings.activeScene`; a GM roaming via `setGmViewedScene` overrides locally. Getter —
+   * reactive when read through a `documents.subscribe` bridge. */
+  viewedSceneId: string | null;
+  /** GM local roam (M12d): view any scene without moving players. No-op for a non-GM. */
+  setGmViewedScene: (id: string | null) => void;
+  /** Live full-text document search (M6c seam). Resolves once the initial page arrives (and fires
+   * `onUpdate` for it); subsequent pushes fire `onUpdate`. Ephemeral — NOT reconnect-resilient;
+   * re-subscribe per query. Rejects when there is no transport. */
+  searchDocuments: (
+    query: string,
+    opts: { limit?: number; timeoutMs?: number },
+    onUpdate: (hits: WireSearchHit[]) => void,
+  ) => Promise<SubscriptionHandle>;
+  /** Which scene the game-settings per-scene section edits (M12d "Configure"); set by the scene
+   * browser, read by GameSettingsPanel. */
+  sceneSelection: SceneSelection;
   /** Broadcast a transient location ping at scene coords on the active scene. */
   sendPing: (x: number, y: number) => void;
   /** Request a grid A* path from `start` through `waypoints` on `scene`. Resolves

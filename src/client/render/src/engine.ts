@@ -57,6 +57,9 @@ export interface RenderEngineOpts {
   /** Called when a derived frame is applied (host observability hook); carries the applied
    * visibility so the host can surface the fog mode. */
   onDerivedApplied?: (input: VisibilityInput) => void;
+  /** Which scene to render/scene-filter by (M12d). From the host (Stage → `ctx.viewedSceneId`).
+   * Absent ⇒ the first scene, preserving single-scene behavior. */
+  viewedSceneId?: () => string | null;
 }
 
 /** Orchestrates the render model over a DisplayBackend: layers, camera, grid, and
@@ -95,7 +98,11 @@ export class RenderEngine implements SceneToolHost {
   /** The pointer that owns the in-flight gesture; events from other pointers
    * (multi-touch / pen+mouse) are ignored until it ends. Single-pointer by design. */
   private activePointerId: number | null = null;
-  private pendingDerived: { input: VisibilityInput; seq: number } | null = null;
+  /** Deferred visibility frame held behind the appliedSeq watermark. Caches the RAW payload (not a
+   * pre-filtered VisibilityInput): `toVisibility` is re-run at flush time against the THEN-current
+   * viewed scene, so a scene switch between defer and flush cannot paint a stale scene's fog holes
+   * onto the newly-viewed one (fog secrecy gate — fail closed). */
+  private pendingDerived: { payload: unknown; seq: number } | null = null;
   /** Highest computed_at_seq applied to the mask; guards against regressing to an
    * older derived frame (latest-wins). */
   private lastAppliedSeq = -1;
@@ -117,17 +124,25 @@ export class RenderEngine implements SceneToolHost {
    * non-empty, and only the mover's own MoveStream carries a non-null `moverVision`, per the M2
    * per-recipient egress clip). */
   private readonly visionSweeps = new Map<string, { samples: MoveVisionSample[]; elapsed: number; durationMs: number }>();
+  /** Resolved viewed scene, falling back to the first scene so single-scene tests/hosts are
+   * unaffected. The single definition every view + reconciler + fog filter reads. */
+  private readonly viewedScene = (): string | null =>
+    this.opts.viewedSceneId?.() ?? this.opts.store.query("scene")[0]?.id ?? null;
+  /** The last vision payload received, re-projected onto a new viewed scene by
+   * `reapplyViewedScene` (a scene switch has no new server frame — `activeScene`/roam are
+   * client-local). Undefined until the first frame. */
+  private lastRawPayload: unknown = undefined;
 
   constructor(private readonly opts: RenderEngineOpts) {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
-    this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend);
-    this.tokens = new TokenView(opts.store, opts.assets, opts.backend);
+    this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend, this.viewedScene);
+    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene);
     this.tokens.setCellSize(opts.grid.size);
-    this.drawings = new DrawingView(opts.store, opts.backend);
-    this.templates = new TemplateView(opts.store, opts.backend);
-    this.walls = new WallView(opts.store, opts.backend);
-    this.regions = new RegionView(opts.store, opts.backend);
+    this.drawings = new DrawingView(opts.store, opts.backend, this.viewedScene);
+    this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene);
+    this.walls = new WallView(opts.store, opts.backend, this.viewedScene);
+    this.regions = new RegionView(opts.store, opts.backend, this.viewedScene);
     this.compositor = new Compositor(opts.backend);
     this.lighting = new Lighting(opts.backend);
   }
@@ -193,15 +208,19 @@ export class RenderEngine implements SceneToolHost {
     // mask to an older derived state (defends the M9 consumer against reordering).
     if (frame.computedAtSeq <= this.lastAppliedSeq) return;
     if (this.pendingDerived && frame.computedAtSeq <= this.pendingDerived.seq) return;
-    const input = this.toVisibility(frame.payload);
+    this.lastRawPayload = frame.payload;
     // Lighting is cosmetic — applied eagerly here (monotonic order already honored by the
     // guards above), NOT held behind the appliedSeq watermark that fog uses for document
     // consistency. Exactly one setTarget call per non-dropped frame.
     this.lighting.setTarget(this.toLighting(frame.payload));
     if (this.opts.store.appliedSeq >= frame.computedAtSeq) {
-      this.applyDerived(input, frame.computedAtSeq);
+      // Immediate: filter against the CURRENT viewed scene now (toVisibility reads viewedScene()).
+      this.applyDerived(this.toVisibility(frame.payload), frame.computedAtSeq);
     } else {
-      this.pendingDerived = { input, seq: frame.computedAtSeq }; // watermark: defer visibility (fog secrecy gate)
+      // Watermark defer: cache the RAW payload, never a pre-filtered VisibilityInput. A scene
+      // switch (reapplyViewedScene) can change the viewed scene before this flushes, so re-run
+      // toVisibility at flush time against the then-current scene (fog secrecy gate).
+      this.pendingDerived = { payload: frame.payload, seq: frame.computedAtSeq };
     }
   }
 
@@ -209,7 +228,10 @@ export class RenderEngine implements SceneToolHost {
     const p = this.pendingDerived;
     if (p && this.opts.store.appliedSeq >= p.seq) {
       this.pendingDerived = null;
-      this.applyDerived(p.input, p.seq);
+      // Re-filter the raw payload against the CURRENT viewed scene at flush time (not the scene
+      // viewed when the frame was deferred): toVisibility reads this.viewedScene() internally, so a
+      // deferred scene-A frame flushing after a switch to scene B yields scene B's fog, not A's.
+      this.applyDerived(this.toVisibility(p.payload), p.seq);
     }
   }
 
@@ -242,6 +264,29 @@ export class RenderEngine implements SceneToolHost {
     this.renderVisibility();
   }
 
+  /** Re-project the render onto the CURRENT viewed scene after a client-local scene switch
+   * (`activeScene` flip or GM roam — neither carries a new server frame). Re-runs background + all
+   * doc views (their `parent_id` filter changed) and re-filters the last vision payload to the new
+   * scene. Fog secrecy across the switch: a cached frame is re-filtered to the new scene, so only
+   * that scene's polygons punch holes (a polygon tagged for another scene is dropped) — never the
+   * prior scene's. With no cached frame yet (`lastRawPayload === undefined`) visibility is left
+   * untouched; the initial `lastInput` default (`{mode:"all"}` = NO fog, the pre-vision bootstrap
+   * reveal) stands until the first frame arrives. A frame deferred in `pendingDerived` caches the
+   * raw payload and is likewise re-filtered against the then-current scene at flush time. */
+  reapplyViewedScene(): void {
+    this.reconciler.reconcile();
+    this.tokens.reconcile();
+    this.drawings.reconcile();
+    this.templates.reconcile();
+    this.walls.reconcile();
+    this.regions.reconcile();
+    if (this.lastRawPayload !== undefined) {
+      this.lighting.setTarget(this.toLighting(this.lastRawPayload));
+      this.lastInput = this.toVisibility(this.lastRawPayload);
+      this.renderVisibility();
+    }
+  }
+
   /** Parse a `vision` payload into a VisibilityInput. Fail CLOSED: fog is the only client-side
    * secrecy gate (the document layer still delivers non-`gm_only` token/wall positions to
    * players), so ONLY an explicit `{mode:"all"}` clears it and ONLY an explicit `{mode:"masked"}`
@@ -263,7 +308,7 @@ export class RenderEngine implements SceneToolHost {
     if (p?.mode === "all") return { mode: "all", visible: [], explored: [] };
     // Garbled/missing/unknown mode → full fog. Only a well-formed `masked` payload reveals.
     if (p?.mode !== "masked") return { mode: "masked", visible: [], explored: [] };
-    const activeScene = this.opts.store.query("scene")[0]?.id;
+    const activeScene = this.viewedScene();
     const polygons = Array.isArray(p.polygons) ? p.polygons : [];
     const visible = polygons
       .filter(
@@ -301,7 +346,7 @@ export class RenderEngine implements SceneToolHost {
       lit?: { scene?: string; cell?: number; cells?: number[] }[];
     } | null | undefined;
     if (p?.mode !== "masked" || !Array.isArray(p.lit)) return null;
-    const activeScene = this.opts.store.query("scene")[0]?.id;
+    const activeScene = this.viewedScene();
     const group = p.lit.find(
       (g): g is { scene?: string; cell: number; cells: number[] } =>
         !!g && g.scene === activeScene && typeof g.cell === "number" && g.cell > 0 && Array.isArray(g.cells),

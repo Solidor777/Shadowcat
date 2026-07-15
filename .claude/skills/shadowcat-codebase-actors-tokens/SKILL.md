@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-actors-tokens
-description: "Use when touching Shadowcat actors, tokens (linked vs instanced), token visual resolution, the factions/conditions registries, name privacy, or the actors/factions/conditions UI modules. Covers src/client/core/{actor.ts,scene-docs.ts} + src/modules/{actors,factions,conditions}. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat actors, tokens (linked vs instanced), token visual resolution, the factions/conditions registries, name privacy, the actor browser's live FTS search/open-sheet, or the actors/factions/conditions UI modules. Covers src/client/core/{actor.ts,scene-docs.ts} + src/modules/{actors,factions,conditions}. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Actors & Tokens
@@ -100,6 +100,18 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   config-doc field-toggle editors in this codebase (e.g. the M10f-3 `snapToGrid` toggle) — a
   resolved/defaulted `old` would mismatch the server's field-level optimistic-concurrency check
   after the first successful write.
+  **Actor browser (M12d):** a search input drives live FTS via `ctx.searchDocuments` (the M6c
+  subscription seam, wired through `AppContext`/`WorldSession` in this milestone) — an EMPTY
+  query renders the existing reactive full `ctx.documents.query("actor")` list; a NON-EMPTY query
+  opens a `subscribeSearch` handle keyed on the query string, torn down/recreated on every query
+  change and on unmount. Deliberately NOT reconnect-resilient (unlike `subscribeScene`) — a
+  dropped connection just means the next keystroke re-subscribes; no `#sceneSubs`-style
+  bookkeeping. The `onUpdate` callback MUST check its own `cancelled` flag as its first statement,
+  not only at the `.then()`/cleanup level — `WsClient.subscribeSearch`'s initial page resolves
+  SYNCHRONOUSLY inside the pending-resolve handler, strictly BEFORE the caller's `.then()` runs,
+  so an abandoned query's late first page can otherwise overwrite a newer query's results (found
+  during M12d Task 7 review, traced against the real `WsClient` dispatch order). Each row also
+  gets an "Open sheet" button (`ctx.openDocument({docId: a.id})`, [[shadowcat-codebase-sheets]]).
 - `src/modules/factions/{FactionsPanel.svelte,index.ts}` — GM editor + idempotent seed of the
   faction registry; faction-colored token border + select-by-faction.
 - `src/modules/conditions/{ConditionsPanel.svelte,index.ts}` — GM editor + idempotent emoji seed

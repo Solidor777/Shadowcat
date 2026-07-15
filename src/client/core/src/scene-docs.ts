@@ -91,6 +91,11 @@ export interface WorldSettingsSystem {
   scene: WorldSceneDefaults;
   pathfinding: { diagonalRule: DiagonalRule };
   animation: { speedCellsPerSec: number; easing: EasingMode };
+  /** The scene players render (M12d). GM-writable via the normal config-doc path. `null`/absent/
+   * dangling ⇒ the first scene (legacy behavior). Deliberately NOT part of the
+   * structural-completeness triple in `resolveSceneSettings`, so a pre-M12d world-settings doc
+   * missing this key is still "complete" and keeps its authored settings. */
+  activeScene: string | null;
 }
 
 /** Built-in defaults — used when no world-settings doc exists or a field is absent.
@@ -110,6 +115,7 @@ export const DEFAULT_WORLD_SETTINGS: WorldSettingsSystem = deepFreeze({
   },
   pathfinding: { diagonalRule: "chebyshev" },
   animation: { speedCellsPerSec: 6, easing: "easeInOut" },
+  activeScene: null,
 });
 
 // --- Resolved settings (M10e-1) ---
@@ -316,6 +322,25 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
     gridDistance: sys?.grid?.distance ?? { perCell: 5, unit: "ft" },
     bounds: resolveBounds(sys?.bounds),
   };
+}
+
+/** The single client-side answer to "which scene does THIS client render/subscribe to"
+ * (M12d). Resolution order: a resolvable `gmViewedScene` (GM local roam) → a resolvable
+ * `world-settings.activeScene` (players follow) → the first scene (legacy). `null` ONLY when
+ * no scene exists. Fail-closed by construction: an id that no longer names a scene is ignored
+ * (never renders nothing while scenes exist, never leaks a nonexistent scene's channel).
+ * Players never pass `gmViewedScene`, so they always follow `activeScene`. */
+export function resolveViewedScene(
+  store: ReadableDocuments,
+  opts: { gmViewedScene?: string | null } = {},
+): string | null {
+  const scenes = store.query("scene");
+  if (scenes.length === 0) return null;
+  const exists = (id: string | null | undefined): id is string => !!id && scenes.some((s) => s.id === id);
+  if (exists(opts.gmViewedScene)) return opts.gmViewedScene;
+  const ws = store.query("world-settings")[0]?.system as WorldSettingsSystem | undefined;
+  if (exists(ws?.activeScene)) return ws!.activeScene;
+  return scenes[0].id;
 }
 
 /** A top-level (world-scoped, parentless) actor document. */
