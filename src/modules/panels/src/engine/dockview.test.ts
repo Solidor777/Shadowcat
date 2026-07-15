@@ -856,7 +856,7 @@ test("apply seeds seenPanelIds with poppedOut so a live popout is never orphan-r
   expect(engine.debugApi?.getPanel("chat")).toBeTruthy();
 });
 
-test("Fix 1: a duplicate pop-out request on the same id before the first settles invokes the driver only once", async () => {
+test("a duplicate pop-out request on the same id before the first settles invokes the driver only once", async () => {
   const host = document.createElement("div");
   document.body.appendChild(host);
   attachedHost = host;
@@ -907,7 +907,7 @@ test("Fix 1: a duplicate pop-out request on the same id before the first settles
   expect(ops.filter((o) => o.op === "popOut")).toHaveLength(1);
 });
 
-test("Fix 2: a successful pop-out seeds its origin group so the next apply() does not orphan-remove it", async () => {
+test("a successful pop-out seeds its origin group so the next apply() does not orphan-remove it", async () => {
   await popOutViaMenu(() => Promise.resolve(true));
   const api = engine!.debugApi!;
   const originGroupId = "sc-group:chat";
