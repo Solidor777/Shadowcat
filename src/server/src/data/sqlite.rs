@@ -761,17 +761,32 @@ impl SqliteRepository {
         .bind(doc.updated_at)
         .execute(&mut *conn)
         .await?;
-        // Keep the FTS index in lockstep with the row, inside the same tx.
-        sqlx::query("DELETE FROM documents_fts WHERE doc_id = ?")
+        // Two SEPARATE single-column tables, not two columns of one table:
+        // bm25()'s row-length normalization is computed from the WHOLE ROW
+        // (all columns), so a shared table would let a non-GM query's score
+        // be shifted by the mere LENGTH of GM-only text on the same row even
+        // when column weights zero out that column's term-frequency
+        // contribution (see migrations/0008_fts_split.sql). Separate tables
+        // make each tier's row length genuinely isolated.
+        sqlx::query("DELETE FROM documents_fts_public WHERE doc_id = ?")
             .bind(doc.id.to_string())
             .execute(&mut *conn)
             .await?;
-        // Two visibility-split columns: `content` indexes only non-GM-readable
-        // text (GM-only properties stripped), `content_all` indexes everything.
+        sqlx::query("DELETE FROM documents_fts_gm WHERE doc_id = ?")
+            .bind(doc.id.to_string())
+            .execute(&mut *conn)
+            .await?;
         sqlx::query(
-            "INSERT INTO documents_fts (content, content_all, doc_id, world_id) VALUES (?, ?, ?, ?)",
+            "INSERT INTO documents_fts_public (content, doc_id, world_id) VALUES (?, ?, ?)",
         )
         .bind(crate::data::search::index_content_public(doc))
+        .bind(doc.id.to_string())
+        .bind(world_id.clone())
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query(
+            "INSERT INTO documents_fts_gm (content_all, doc_id, world_id) VALUES (?, ?, ?)",
+        )
         .bind(crate::data::search::index_content(doc))
         .bind(doc.id.to_string())
         .bind(world_id)
@@ -780,13 +795,18 @@ impl SqliteRepository {
         Ok(())
     }
 
-    /// Remove a document's FTS row. Call alongside every document delete so the
-    /// index never references a removed document.
+    /// Remove a document's FTS rows (both visibility-tier tables). Call
+    /// alongside every document delete so the index never references a
+    /// removed document.
     async fn delete_document_fts(
         conn: &mut sqlx::SqliteConnection,
         id: Uuid,
     ) -> Result<(), DataError> {
-        sqlx::query("DELETE FROM documents_fts WHERE doc_id = ?")
+        sqlx::query("DELETE FROM documents_fts_public WHERE doc_id = ?")
+            .bind(id.to_string())
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("DELETE FROM documents_fts_gm WHERE doc_id = ?")
             .bind(id.to_string())
             .execute(conn)
             .await?;
@@ -931,6 +951,7 @@ impl Repository for SqliteRepository {
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
                     validation::validate_system_size(doc)?;
+                    validation::validate_property_overrides(doc)?;
                     validation::validate_engine_tree(doc)?;
                     // A self-referential parent_id satisfies the self-FK and
                     // commits, then poisons the doc's deletion (the descendant
@@ -1261,6 +1282,7 @@ impl Repository for SqliteRepository {
                     // Body cap re-checked post-merge: the merged result, not the
                     // pre-image, is what gets stored.
                     validation::validate_system_size(&doc)?;
+                    validation::validate_property_overrides(&doc)?;
                     // Engine band re-validated + normalized post-merge (mutates
                     // `doc.engine` in place to the re-serialized validated
                     // struct — see `validate_engine_tree`'s doc comment).
@@ -1503,29 +1525,37 @@ impl Repository for SqliteRepository {
         };
         let world_defaults = self.world_cap_defaults(world_id).await?;
 
-        // Visibility-split index: a non-GM matches and snippets only the
-        // GM-only-stripped `content` column, so neither the MATCH (oracle), the
-        // bm25 score, nor the snippet can reveal GM-only text. A GM/admin
-        // searches the full `content_all` column. (Server admin resolves to the
-        // Gm world role in `permission_context`.)
+        // Visibility-split index: a non-GM matches, scores, and snippets only
+        // against `documents_fts_public` (GM-only properties stripped at
+        // index time), so neither the MATCH (oracle), the bm25 score, nor the
+        // snippet can reveal GM-only text. A GM/admin searches the separate
+        // `documents_fts_gm` table. (Server admin resolves to the Gm world
+        // role in `permission_context`.)
+        //
+        // TWO SEPARATE single-column tables (migrations/0008_fts_split.sql),
+        // not two columns of one table: SQLite FTS5's bm25() computes each
+        // row's document-length normalization term from the token count of
+        // the WHOLE ROW (every declared column combined), not just the
+        // matched/weighted column — a documented FTS5 characteristic. In a
+        // shared two-column table, per-column bm25() weight arguments zero a
+        // column's term-frequency*IDF CONTRIBUTION but cannot remove its
+        // tokens from that shared row-length denominator, so a non-GM
+        // searcher's score still shifts by the sheer LENGTH of GM-only text
+        // on the same row — even text that never matches the query. Separate
+        // tables make each tier's row length genuinely isolated: a non-GM
+        // query's table contains no GM-only text in any column of any row.
         let is_gm = ctx.world_role == WorldRole::Gm;
-        let column = if is_gm { "content_all" } else { "content" };
-        // Column-filter the MATCH to the chosen column. This whole expression is
-        // a bound parameter (?1) — `column` is a server-chosen literal, never user
-        // input. The snippet column index must be a literal in the SQL, so two
-        // static query strings are selected rather than building SQL at runtime.
-        let scoped_match = format!("{{{column}}} : ({match_expr})");
         let sql = if is_gm {
-            "SELECT doc_id, bm25(documents_fts) AS score, \
-             snippet(documents_fts, 1, '<mark>', '</mark>', '…', 16) AS snippet \
-             FROM documents_fts \
-             WHERE documents_fts MATCH ?1 AND world_id = ?2 \
+            "SELECT doc_id, bm25(documents_fts_gm) AS score, \
+             snippet(documents_fts_gm, 0, '<mark>', '</mark>', '…', 16) AS snippet \
+             FROM documents_fts_gm \
+             WHERE documents_fts_gm MATCH ?1 AND world_id = ?2 \
              ORDER BY score LIMIT ?3 OFFSET ?4"
         } else {
-            "SELECT doc_id, bm25(documents_fts) AS score, \
-             snippet(documents_fts, 0, '<mark>', '</mark>', '…', 16) AS snippet \
-             FROM documents_fts \
-             WHERE documents_fts MATCH ?1 AND world_id = ?2 \
+            "SELECT doc_id, bm25(documents_fts_public) AS score, \
+             snippet(documents_fts_public, 0, '<mark>', '</mark>', '…', 16) AS snippet \
+             FROM documents_fts_public \
+             WHERE documents_fts_public MATCH ?1 AND world_id = ?2 \
              ORDER BY score LIMIT ?3 OFFSET ?4"
         };
 
@@ -1542,7 +1572,7 @@ impl Repository for SqliteRepository {
 
         'outer: loop {
             let rows = sqlx::query(sql)
-                .bind(&scoped_match)
+                .bind(&match_expr)
                 .bind(world_id.to_string())
                 .bind(batch)
                 .bind(offset)
@@ -2379,6 +2409,266 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_with_trailing_slash_property_override_key_is_rejected() {
+        use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        d.permissions
+            .property_overrides
+            .insert("/engine/".into(), Visibility::GmOnly);
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadPath(_)));
+    }
+
+    #[tokio::test]
+    async fn create_with_missing_leading_slash_property_override_key_is_rejected() {
+        use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        d.permissions
+            .property_overrides
+            .insert("engine".into(), Visibility::GmOnly);
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadPath(_)));
+    }
+
+    #[tokio::test]
+    async fn create_with_valid_property_override_keys_succeeds() {
+        use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        d.permissions
+            .property_overrides
+            .insert("/engine".into(), Visibility::GmOnly);
+        d.permissions
+            .property_overrides
+            .insert("/engine/vision".into(), Visibility::GmOnly);
+        d.permissions
+            .property_overrides
+            .insert("/name".into(), Visibility::GmOnly);
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn update_with_trailing_slash_property_override_key_is_rejected() {
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        path: "/permissions/property_overrides".into(),
+                        old: serde_json::json!({}),
+                        new: serde_json::json!({ "/engine/": "gm_only" }),
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadPath(_)));
+    }
+
+    #[tokio::test]
+    async fn update_with_missing_leading_slash_property_override_key_is_rejected() {
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        path: "/permissions/property_overrides".into(),
+                        old: serde_json::json!({}),
+                        new: serde_json::json!({ "engine": "gm_only" }),
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadPath(_)));
+    }
+
+    #[tokio::test]
+    async fn update_with_valid_property_override_keys_succeeds() {
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    path: "/permissions/property_overrides".into(),
+                    old: serde_json::json!({}),
+                    new: serde_json::json!({ "/engine": "gm_only", "/name": "gm_only" }),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
     async fn update_writing_a_valid_engine_subpath_succeeds() {
         use crate::data::command::FieldChange;
         use crate::data::document::{DocRole, PermissionSet, Scope};
@@ -2991,7 +3281,7 @@ mod tests {
         .await
         .unwrap();
         let n: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM documents_fts WHERE documents_fts MATCH 'Goblin' AND world_id = ?",
+            "SELECT count(*) FROM documents_fts_public WHERE documents_fts_public MATCH 'Goblin' AND world_id = ?",
         )
         .bind(w.id.to_string())
         .fetch_one(r.pool())
@@ -3017,20 +3307,20 @@ mod tests {
         .await
         .unwrap();
         let goblin: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM documents_fts WHERE documents_fts MATCH 'Goblin'",
+            "SELECT count(*) FROM documents_fts_public WHERE documents_fts_public MATCH 'Goblin'",
         )
         .fetch_one(r.pool())
         .await
         .unwrap();
         let orc: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM documents_fts WHERE documents_fts MATCH 'Orc'",
+            "SELECT count(*) FROM documents_fts_public WHERE documents_fts_public MATCH 'Orc'",
         )
         .fetch_one(r.pool())
         .await
         .unwrap();
         assert_eq!((goblin, orc), (0, 1));
 
-        // Delete → removed.
+        // Delete → removed from both visibility-tier tables.
         r.apply_intent(
             &ctx,
             w.id,
@@ -3040,12 +3330,19 @@ mod tests {
         )
         .await
         .unwrap();
-        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM documents_fts WHERE doc_id = ?")
-            .bind(d.id.to_string())
-            .fetch_one(r.pool())
-            .await
-            .unwrap();
-        assert_eq!(after, 0);
+        let after_public: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM documents_fts_public WHERE doc_id = ?")
+                .bind(d.id.to_string())
+                .fetch_one(r.pool())
+                .await
+                .unwrap();
+        let after_gm: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM documents_fts_gm WHERE doc_id = ?")
+                .bind(d.id.to_string())
+                .fetch_one(r.pool())
+                .await
+                .unwrap();
+        assert_eq!((after_public, after_gm), (0, 0));
     }
 
     #[tokio::test]
@@ -3168,6 +3465,103 @@ mod tests {
         let gm_probe = r.search(&gm_ctx, w.id, "weakness", 10, None).await.unwrap();
         assert_eq!(gm_probe.hits.len(), 1);
         assert_eq!(gm_probe.hits[0].document.id, sheet.id);
+    }
+
+    #[tokio::test]
+    async fn search_score_unaffected_by_gm_only_match_non_gm() {
+        // Regression: bm25() without explicit per-column weights sums score
+        // over BOTH `content` and `content_all`, so a non-GM searcher's
+        // ranking would shift when the query term ALSO appears in GM-only
+        // text they can never see — leaking the existence of a hidden match
+        // through score/rank even though row selection and snippets are
+        // already correctly redacted. Pre-dates this task (present since
+        // M6c-1); widened by the M13-0 /engine+/name FTS re-root because
+        // `content_all` now also carries name/engine content.
+        use crate::auth::role::ServerRole;
+        use crate::data::command::Operation;
+        use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let pl_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // Two otherwise-identical readable docs, both matching "wolf" in
+        // publicly visible content. Only `hidden_extra` ALSO repeats "wolf"
+        // in a GM-only-redacted property — text the player can never see.
+        let mut plain = tests_doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "name": "Wolf Pack" }),
+        );
+        plain.scope = Scope::World { world_id: w.id };
+        let mut hidden_extra = tests_doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "name": "Wolf Pack", "secret": "wolf lair" }),
+        );
+        hidden_extra.scope = Scope::World { world_id: w.id };
+        hidden_extra
+            .permissions
+            .property_overrides
+            .insert("/system/secret".into(), Visibility::GmOnly);
+
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: plain.clone() }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: hidden_extra.clone(),
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let page = r.search(&pl_ctx, w.id, "wolf", 10, None).await.unwrap();
+        assert_eq!(page.hits.len(), 2);
+        let plain_hit = page
+            .hits
+            .iter()
+            .find(|h| h.document.id == plain.id)
+            .expect("plain doc present");
+        let hidden_hit = page
+            .hits
+            .iter()
+            .find(|h| h.document.id == hidden_extra.id)
+            .expect("hidden_extra doc present");
+        assert_eq!(
+            plain_hit.score, hidden_hit.score,
+            "GM-only text repeating the query term shifted a non-GM searcher's score"
+        );
     }
 
     #[tokio::test]

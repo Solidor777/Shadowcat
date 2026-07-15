@@ -201,6 +201,31 @@ mod tests {
     }
 
     #[test]
+    fn engine_leaf_gm_only_hides_from_public_index_but_gm_index_retains_it() {
+        // A redacted NESTED engine leaf (not the whole `/engine` band) must
+        // still be absent from the public index — proves `index_content_public`'s
+        // redaction-first property covers engine leaves, not just the band root.
+        let mut d = doc("actor", serde_json::json!({}));
+        d.engine = Some(serde_json::json!({ "x": 3, "faction": "undead" }));
+        d.permissions
+            .property_overrides
+            .insert("/engine/faction".into(), Visibility::GmOnly);
+
+        let public = index_content_public(&d);
+        assert!(
+            !public.contains("undead"),
+            "gm-only engine leaf leaked into the public index: {public}"
+        );
+        assert!(
+            public.contains('3'),
+            "unrestricted engine leaf must remain in the public index: {public}"
+        );
+
+        let full = index_content(&d);
+        assert!(full.contains("undead"), "GM index must retain the leaf");
+    }
+
+    #[test]
     fn build_match_quotes_terms_and_prefixes_last() {
         assert_eq!(build_match("gob scout").unwrap(), "\"gob\" \"scout\"*");
         assert_eq!(build_match("dragon").unwrap(), "\"dragon\"*");

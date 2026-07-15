@@ -78,6 +78,28 @@ pub fn validate_field_path(path: &str) -> Result<(), DataError> {
     Ok(())
 }
 
+/// Reject a `property_overrides` key that is not a well-formed non-empty JSON
+/// pointer: it must start with `/` and must NOT end with `/`. A trailing
+/// slash (e.g. `/engine/`) fails to exact-match its intended target AND fails
+/// to match as a valid nested pointer under it, so the override silently
+/// no-ops — a fail-OPEN footgun where a GM/author believes a property is
+/// hidden but `can_see` never consults the malformed key. Recurses into every
+/// embedded descendant's own `property_overrides`, mirroring
+/// `validate_system_size`'s embedded-tree walk.
+pub fn validate_property_overrides(doc: &Document) -> Result<(), DataError> {
+    for key in doc.permissions.property_overrides.keys() {
+        if key.is_empty() || !key.starts_with('/') || key.ends_with('/') {
+            return Err(DataError::BadPath(key.clone()));
+        }
+    }
+    for children in doc.embedded.values() {
+        for child in children {
+            validate_property_overrides(child)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +233,66 @@ mod tests {
         assert!(matches!(
             validate_system_size(&parent),
             Err(DataError::TooLarge(_))
+        ));
+    }
+
+    // --- validate_property_overrides: pointer-key well-formedness ---
+
+    #[test]
+    fn valid_property_override_keys_pass() {
+        use crate::data::document::Visibility;
+        let mut doc = doc_with_system(serde_json::json!({}));
+        doc.permissions
+            .property_overrides
+            .insert("/engine".into(), Visibility::GmOnly);
+        doc.permissions
+            .property_overrides
+            .insert("/engine/vision".into(), Visibility::GmOnly);
+        doc.permissions
+            .property_overrides
+            .insert("/name".into(), Visibility::GmOnly);
+        assert!(validate_property_overrides(&doc).is_ok());
+    }
+
+    #[test]
+    fn trailing_slash_override_key_is_rejected() {
+        use crate::data::document::Visibility;
+        let mut doc = doc_with_system(serde_json::json!({}));
+        doc.permissions
+            .property_overrides
+            .insert("/engine/".into(), Visibility::GmOnly);
+        assert!(matches!(
+            validate_property_overrides(&doc),
+            Err(DataError::BadPath(_))
+        ));
+    }
+
+    #[test]
+    fn missing_leading_slash_override_key_is_rejected() {
+        use crate::data::document::Visibility;
+        let mut doc = doc_with_system(serde_json::json!({}));
+        doc.permissions
+            .property_overrides
+            .insert("engine".into(), Visibility::GmOnly);
+        assert!(matches!(
+            validate_property_overrides(&doc),
+            Err(DataError::BadPath(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_override_key_in_embedded_child_is_rejected() {
+        use crate::data::document::Visibility;
+        let mut parent = doc_with_system(serde_json::json!({}));
+        let mut child = doc_with_system(serde_json::json!({}));
+        child
+            .permissions
+            .property_overrides
+            .insert("/system/secret/".into(), Visibility::GmOnly);
+        parent.embedded.insert("items".into(), vec![child]);
+        assert!(matches!(
+            validate_property_overrides(&parent),
+            Err(DataError::BadPath(_))
         ));
     }
 
