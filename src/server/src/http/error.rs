@@ -29,6 +29,7 @@ impl From<crate::data::DataError> for AppError {
             NotFound => AppError::NotFound,
             BadPath(m) => AppError::Unprocessable(format!("invalid field path: {m}")),
             TooLarge(n) => AppError::Unprocessable(format!("system body too large: {n} bytes")),
+            BadEngine(m) => AppError::Unprocessable(format!("invalid engine body: {m}")),
             OpFailed(m) => AppError::BadRequest(m),
             Sqlx(e) => {
                 tracing::error!(?e, "database error");
