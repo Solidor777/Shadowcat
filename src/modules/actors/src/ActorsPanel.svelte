@@ -28,6 +28,12 @@
     let cancelled = false;
     void ctx
       .searchDocuments(q, { limit: 20 }, (hits: WireSearchHit[]) => {
+        // INVARIANT: subscribeSearch's initial page resolves `onUpdate` SYNCHRONOUSLY, inside the
+        // pending-resolve handler, BEFORE `resolve({unsubscribe})` runs — so it fires before the
+        // `.then()` below (and thus before `cancelled`/`handle` teardown) ever executes. A stale
+        // query's callback can therefore still fire after this effect has re-run for a newer query
+        // and its own subscription is already active; guard `cancelled` here, not just in `.then()`.
+        if (cancelled) return;
         searchHits = hits.filter((h) => h.document.doc_type === "actor").map((h) => h.document);
       })
       .then((h) => { if (cancelled) h.unsubscribe(); else handle = h; })

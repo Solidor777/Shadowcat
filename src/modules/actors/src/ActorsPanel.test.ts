@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/svelte";
+import { tick } from "svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DocumentStore, buildActorDoc, buildTokenFromActor, type WireDocument, type WireOperation } from "@shadowcat/core";
 import { TokenSelection } from "@shadowcat/ui-kit";
@@ -486,5 +487,55 @@ describe("ActorsPanel — live search + open sheet", () => {
     ]);
     await findByText("Goblin");
     expect(screen.queryByText("Gob-stopper")).toBeNull();
+  });
+
+  it("ignores a stale query's onUpdate firing after a newer query's subscription is active", async () => {
+    // Regression: WsClient.subscribeSearch's initial page fires `onUpdate` SYNCHRONOUSLY inside
+    // the pending-resolve handler, before `resolve({unsubscribe})` — so it beats the search
+    // effect's own `.then()`-based cancellation. Capture both queries' `onUpdate` callbacks and
+    // invoke the FIRST (stale) one only after the SECOND (current) query's subscription is
+    // already live and has already delivered results; the rendered list must reflect the
+    // second query, never the first's late-arriving stale hits.
+    const capturedOnUpdate: Array<{ q: string; onUpdate: (hits: unknown[]) => void }> = [];
+    const emptyStore = new DocumentStore();
+    render(ActorsPanel, {
+      context: setAppContextForTest({
+        role: "gm",
+        world: "w1",
+        documents: emptyStore,
+        store: emptyStore,
+        dispatchIntent: vi.fn(),
+        searchDocuments: (q, _o, onUpdate) => {
+          capturedOnUpdate.push({ q, onUpdate: onUpdate as (hits: unknown[]) => void });
+          return Promise.resolve({ unsubscribe() {} });
+        },
+      }),
+    });
+
+    const searchInput = screen.getByLabelText(/search/i);
+    await fireEvent.input(searchInput, { target: { value: "g" } });
+    await fireEvent.input(searchInput, { target: { value: "go" } });
+
+    expect(capturedOnUpdate).toHaveLength(2);
+    const [first, second] = capturedOnUpdate;
+    expect(first.q).toBe("g");
+    expect(second.q).toBe("go");
+
+    // Second (current) query's results arrive first.
+    second.onUpdate([
+      { document: { id: "a-go", doc_type: "actor", system: { name: "Goliath", displayName: "Goliath" } }, score: 1, snippet: "" },
+    ]);
+    await screen.findByText("Goliath");
+
+    // First (stale, abandoned) query's results arrive late. Flush reactivity via `tick()` after
+    // the call so a pre-fix regression (searchHits overwritten but not yet re-rendered) can't
+    // hide behind an un-flushed DOM and pass this assertion for the wrong reason.
+    first.onUpdate([
+      { document: { id: "a-g", doc_type: "actor", system: { name: "Ghoul", displayName: "Ghoul" } }, score: 1, snippet: "" },
+    ]);
+    await tick();
+
+    expect(screen.queryByText("Ghoul")).toBeNull();
+    expect(screen.getByText("Goliath")).toBeTruthy();
   });
 });
