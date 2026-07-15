@@ -25,8 +25,16 @@ test("a panel opened from the launcher docks and survives a full page reload", a
 
   // Open it from the topbar launcher menu.
   await page.getByTestId("launcher-trigger").click();
+  // The layout persist is a leading-edge debounced fire-and-forget PUT
+  // (sessionState.svelte.ts schedulePersist); register the wait before the
+  // click that triggers it, then await the response before reloading, or the
+  // navigation can abort the in-flight PUT before it lands.
+  const persistResponse = page.waitForResponse(
+    (r) => /\/api\/me\/ui-state$/.test(r.url()) && r.request().method() === "PUT" && r.ok(),
+  );
   await page.getByTestId("launcher-item-assets:panel").click();
   await expect(uploadInput).toBeVisible();
+  await persistResponse;
 
   // Full reload re-runs module registration/activation from scratch.
   await page.reload();
