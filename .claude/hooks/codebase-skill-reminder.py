@@ -19,6 +19,7 @@ SUBSYSTEMS = [
     ("panels",               [r"src/modules/panels/", r"src/client/ui-kit/src/panelsBridge"]),
     ("sheets",               [r"src/client/core/src/sheets\.ts", r"src/client/ui-kit/src/(sheetsController|sheetEdit|SystemTreeEditor)", r"src/modules/sheet-(fallback|actor|item)/"]),
     ("client-shell",         [r"src/modules/entry/", r"src/modules/core-ui/", r"src/modules/topbar/", r"src/modules/statusbar/", r"src/modules/settings/", r"src/client/shell/", r"src/client/ui-kit/"]),
+    ("server-ops",           [r"src/server/src/main\.rs", r"src/server/src/config\.rs", r"src/server/src/db\.rs", r"src/server/src/backup\.rs", r"src/server/tests/backup_cli\.rs"]),
 ]
 
 
