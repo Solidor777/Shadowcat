@@ -14,7 +14,7 @@ SUBSYSTEMS = [
     ("assets",               [r"src/modules/assets/", r"src/server/src/data/asset\.rs", r"src/server/src/http/assets\.rs"]),
     ("documents-permissions", [r"src/server/src/data/", r"src/client/core/src/wire\.ts"]),
     ("actors-tokens",        [r"src/modules/actors/", r"src/modules/factions/", r"src/client/core/src/actor\.ts"]),
-    ("scene-rendering",      [r"src/server/src/scene/", r"src/modules/stage/", r"src/modules/scene-tools/", r"src/client/render/"]),
+    ("scene-rendering",      [r"src/server/src/scene/", r"src/modules/stage/", r"src/modules/scene-tools/", r"src/modules/scene-browser/", r"src/client/render/", r"src/client/core/src/scene-docs\.ts"]),
     ("realtime-sync",        [r"src/server/src/ws/", r"src/server/src/http/", r"src/server/src/auth/", r"src/client/core/src/(store|optimistic|ws-client)\.ts"]),
     ("panels",               [r"src/modules/panels/", r"src/client/ui-kit/src/panelsBridge"]),
     ("sheets",               [r"src/client/core/src/sheets\.ts", r"src/client/ui-kit/src/(sheetsController|sheetEdit|SystemTreeEditor)", r"src/modules/sheet-(fallback|actor|item)/"]),
