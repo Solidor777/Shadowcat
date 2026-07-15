@@ -202,4 +202,12 @@ export const en: Messages = {
   "sheets.tree.remove": "Remove",
   "sheets.tree.addField": "Add field",
   "sheets.tree.addItem": "Add item",
+  "sheets.title": "Sheet",
+  "sheets.close": "Close",
+  "sheets.missing": "This document is no longer available.",
+  "sheetFallback.title": "Document",
+  "sheetFallback.type": "Type",
+  "sheetFallback.id": "ID",
+  "sheetFallback.owner": "Owner",
+  "sheetFallback.system": "Data",
 };
