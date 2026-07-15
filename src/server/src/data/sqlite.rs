@@ -303,7 +303,8 @@ impl SqliteRepository {
         let rows = sqlx::query(
             "SELECT m.user_id, u.username, m.role \
              FROM world_members m JOIN users u ON u.id = m.user_id \
-             WHERE m.world_id = ?",
+             WHERE m.world_id = ? \
+             ORDER BY u.username",
         )
         .bind(world.to_string())
         .fetch_all(&self.pool)
@@ -1578,6 +1579,31 @@ mod tests {
         let w = r.create_world_owned("W", gm, 0).await.unwrap();
         let members = r.list_members(w.id).await.unwrap();
         assert!(members.iter().any(|(_, name, _)| name == "alice"));
+    }
+
+    #[tokio::test]
+    async fn list_members_orders_by_username() {
+        let r = repo().await;
+        let gm = r
+            .create_user("zeke", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        // Non-alphabetical insertion order: zeke (owner/GM), then mona, then abby.
+        let mona = r
+            .create_user("mona", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let abby = r
+            .create_user("abby", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        r.add_member(w.id, mona, WorldRole::Player).await.unwrap();
+        r.add_member(w.id, abby, WorldRole::Player).await.unwrap();
+
+        let members = r.list_members(w.id).await.unwrap();
+        let names: Vec<&str> = members.iter().map(|(_, name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["abby", "mona", "zeke"]);
     }
 
     #[tokio::test]
