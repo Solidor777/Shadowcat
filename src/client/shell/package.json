@@ -20,6 +20,7 @@
     "@shadowcat/module-conditions": "workspace:*",
     "@shadowcat/module-factions": "workspace:*",
     "@shadowcat/module-game-settings": "workspace:*",
+    "@shadowcat/module-scene-browser": "workspace:*",
     "@shadowcat/module-scene-tools": "workspace:*",
     "@shadowcat/module-panels": "workspace:*",
     "@shadowcat/module-sheet-fallback": "workspace:*",
