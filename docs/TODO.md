@@ -287,6 +287,13 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   broken. A future non-self-referential float trigger (a command palette, a chip-strip "float"
   action) gets full, working focus-return with no further change needed here.
 
+- TODO: `FakeEngine`'s plain tab strip has no `PanelMenu` (dock/float/minimize/pop-out commands)
+  — that menu is mounted by `DockviewEngine.createTabComponent` only. A panel docked under
+  `FakeEngine` (bespoke-fallback engine; production never reaches it) can only reach a
+  minimized/closed state going forward via `PanelsChipsView.restore`, not back out of a zone
+  through any UI affordance. Orthogonal to the width-containment fix (`docs/CLOSED_BUGS.md`):
+  giving `FakeEngine` its own menu is future work if a bespoke-fallback caller needs it.
+
 ## Client / panels (M12a whole-branch review deferrals)
 - TODO: Narrow `PanelHost.svelte`'s `PanelsBridgeLike` inline cast — either a runtime
   `typeof bridge.bind` guard or a narrower `AppContext.panels` type; today it rests on the

@@ -146,8 +146,13 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   late panel registration is the ROUTINE order, not an edge case.
 - dockview's `onDidRemovePanel` fires synchronously inside `removePanel` — transition guards
   must be armed before the call.
-- FakeEngine has a known width-containment defect (3rd docked group full-width) absent under
-  the production engine — see `docs/OPEN_BUGS.md` before "fixing" it in DockviewEngine terms.
+- RESOLVED: FakeEngine's zone width-containment defect (a zone `<div>` with no width of its own
+  stretched to `host`'s full cross-size, `align-items: stretch`, once enough docked content made
+  the always-present stretch visually register) — `init()` now nests a `row` flex container
+  (left/center/right) with `bottom` full-width below it, and `apply()` applies `ZoneNode.size` as
+  each zone's actual px width/height on every reconcile, with `min-width: 0`/`overflow: auto` on
+  the zone and `width: 100%; min-width: 0` on each group `<div>` so oversized content scrolls
+  within the zone instead of escaping it — see `docs/CLOSED_BUGS.md`.
 - jsdom cannot simulate a real pointer-drag gesture — `dockview.test.ts` unit-tests
   `DockviewEngine` directly under jsdom (init/apply/DOM adoption) with duck-typed
   `DockviewWillDropEvent`s standing in for drops. NO e2e test exercises a real dockview tab

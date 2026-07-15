@@ -52,3 +52,34 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   engine.test.ts`) — drives the exact repro sequence by mutating `store.appliedSeq` directly (a
   plain field) to isolate `RenderEngine`'s own watermark contract from `DocumentStore`'s incidental
   commit-triggers-flush coupling; confirmed failing against the pre-fix code before the fix landed.
+
+## Client / panels (FakeEngine bespoke-fallback only)
+
+- [Panels] `FakeEngine` (`src/modules/panels/src/engine/fake.ts`) lost width containment once a
+  third docked group was added to the same zone (`right`/`bottom`/`left`), rendering
+  full-viewport-width and covering the stage canvas underneath it. Root cause: `FakeEngine.apply`
+  never read `ZoneNode.size` — the zone's own px cross-size basis, already tracked by the
+  reducer (`layout/tree.ts`) and driven by dockview's real splitter for the production engine —
+  so a zone `<div>` carried no width of its own. `init()` built `host` as a single column flex
+  container with `centerEl` and all three zone `<div>`s as plain unstyled siblings; a flex item
+  with no explicit width, inside a column flex container, stretches to the container's full
+  cross-size (`align-items: stretch`, the flex default) regardless of how many groups are docked
+  into it — the "2 groups OK, 3rd breaks" threshold was purely a function of when a zone's
+  aggregate content first grew wide enough to visually register the always-present stretch, not a
+  structural change in the DOM/CSS at the 3rd group specifically. Fixed by giving `FakeEngine` a
+  real docked-layout geometry: `init()` now nests a `row` flex container (`left` zone / `centerEl`
+  / `right` zone side by side) inside `host`'s column flow, with `bottom` as a full-width row
+  below it; each zone `<div>` (`#makeZoneEl`) carries `flex: 0 0 auto`, `min-width: 0` (so its own
+  intrinsic content can never force it wider than its basis), and `overflow: auto` (oversized
+  content scrolls WITHIN the zone instead of escaping it). `apply()` now applies `ZoneNode.size`
+  as the zone's actual px width (right/left) or height (bottom) on every reconcile — 0 while the
+  zone has no groups, so an empty zone reserves no layout space — and each group `<div>` gets
+  `width: 100%; min-width: 0` so a wide panel's content can't push its own group wider than the
+  zone. Regression test: `"FakeEngine constrains a zone's cross-size to ZoneNode.size once it has
+  docked groups, past 2 groups"` (`src/modules/panels/src/engine/fake.test.ts`) — asserts the
+  zone container's inline `width`/`flex`/`overflow` styles both at 2 and at 3 docked groups
+  (jsdom has no layout engine, so this asserts the CSS containment contract, not computed
+  pixels); confirmed failing (`eng.zoneEl is not a function`, then a missing `width` once the
+  accessor was added) against the pre-fix code before the fix landed. Not present under the
+  production engine (`DockviewEngine`), which was already unaffected — see
+  `stage.spec.ts`'s "author an animated (frame-list) actor token" e2e.
