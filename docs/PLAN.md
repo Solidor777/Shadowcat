@@ -1149,6 +1149,22 @@ Decomposed **M11a–d**:
 > `superpowers/specs/2026-07-15-m12.5-backups-snapshot-restore-design.md`). Per-world
 > export/import and stronger in-flight-replace consistency logged to `docs/TODO.md`. Plan:
 > [`superpowers/plans/2026-07-15-m12.5-backups-snapshot-restore.md`](superpowers/plans/2026-07-15-m12.5-backups-snapshot-restore.md).
+>
+> **Phase-1 open-bugs/TODO sweep DONE** (branch `phase1-bugs-todo-sweep`, 4 fixes, no
+> buddy-check pre-authorized) — closed all 3 confirmed defects in `docs/OPEN_BUGS.md`
+> (`supercover_cells` lattice-corner-tie drift fixed via a per-axis remaining-step budget;
+> `RenderEngine.flushPendingDerived`'s frame-ordering monotonicity hole fixed with a
+> flush-time `seq > lastAppliedSeq` guard, the M12d fog-secrecy re-filter mechanism traced
+> and confirmed untouched; `FakeEngine`'s zone width-containment defect fixed by reading
+> `ZoneNode.size` per-reconcile into a proper row/bottom flex layout) plus one bug mis-filed
+> in `docs/TODO.md` (`FactionsPanel`/`ConditionsPanel` hardcoding `old: null`, causing every
+> field edit after the first per session to be silently rejected by the server's OCC check —
+> fixed to read the raw stored value, matching `GameSettingsPanel`'s established pattern).
+> Also removed 2 stale already-satisfied TODO entries and fixed a pre-existing
+> `AssetsHarness.svelte` `AppContext` typecheck gap surfaced while re-running the full gate.
+> The remainder of `docs/TODO.md`'s ~50-item backlog was deliberately left as-is — legitimate
+> deferrals gated on measurement, a future milestone, or a design decision not yet made, not
+> force-closable. Full Rust + JS/TS test suites, typecheck, lint, and clippy all green.
 
 ### M13 · Nightfox — first-party generic system module
 > Cross-cutting spec (approved 2026-07-15): [`superpowers/specs/2026-07-15-m13-nightfox-system-design.md`](superpowers/specs/2026-07-15-m13-nightfox-system-design.md).
