@@ -37,6 +37,17 @@
     return resolveActorOwnerName(owner);
   });
 
+  // §5.4: the actor name becomes an openDocument link when the referenced document is
+  // present in the per-recipient optimistic store (⇒ this recipient has READ — server-side
+  // redaction withholds it otherwise). A `token_instance` ref opens the token (its embedded
+  // actor); an `actor` ref opens the actor doc. Absent ⇒ plain text, no link.
+  const actorOpenRef = $derived.by((): { tokenId: string } | { docId: string } | null => {
+    const owner = sys?.actor_owner;
+    if (!owner) return null;
+    if (owner.kind === "actor") return ctx.documents.get(owner.actor_id) ? { docId: owner.actor_id } : null;
+    return ctx.documents.get(owner.token_id) ? { tokenId: owner.token_id } : null;
+  });
+
   function resolveActorOwnerName(owner: WireActorOwnerRef): string | null {
     if (owner.kind === "actor") {
       const synthetic = { system: { actor_id: owner.actor_id, overrides: {} } } as unknown as WireDocument;
@@ -168,7 +179,11 @@
     <header class="header">
       <span class="author">{authorName}</span>
       {#if actorName}
-        <em class="actor-name">({actorName})</em>
+        {#if actorOpenRef}
+          <button type="button" class="actor-name link" onclick={() => ctx.openDocument(actorOpenRef)} aria-label={t("chat.openActor", { name: actorName })}>({actorName})</button>
+        {:else}
+          <em class="actor-name">({actorName})</em>
+        {/if}
       {/if}
       <time datetime={new Date(message.created_at).toISOString()} title={timeTitle}>{timeLabel}</time>
       {#if showChannel}
@@ -328,6 +343,19 @@
   .tombstone {
     font-style: italic;
     opacity: 0.7;
+  }
+  .actor-name.link {
+    font-style: italic;
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    cursor: pointer;
+    font: inherit;
+  }
+  .actor-name.link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
   // Single hook for emote styling — anchored on .card (the class:emote binding), not a
   // second class on the inner <p>, so there is one source of truth for "this is an emote".

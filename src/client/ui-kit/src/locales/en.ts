@@ -174,6 +174,7 @@ export const en: Messages = {
   "chat.deleted": "Message deleted",
   "chat.whisperTo": "to {names}",
   "chat.gmBadge": "GM",
+  "chat.openActor": "Open {name}'s sheet",
   "chat.edit": "Edit",
   "chat.delete": "Delete",
   "chat.save": "Save",

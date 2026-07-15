@@ -71,6 +71,7 @@ function fakeT(key: string, params?: Record<string, string | number>): string {
     "chat.roll.successes": "{n} successes",
     "chat.roll.pass": "Success",
     "chat.roll.fail": "Failure",
+    "chat.openActor": "Open {name}'s sheet",
   };
   let s = templates[key] ?? key;
   if (params) for (const [k, v] of Object.entries(params)) s = s.replaceAll(`{${k}}`, String(v));
@@ -757,6 +758,43 @@ describe("MessageCard — delete", () => {
     });
     await fireEvent.click(screen.getByText("chat.delete"));
     expect(del).not.toHaveBeenCalled();
+  });
+});
+
+describe("MessageCard actor-name navigation (§5.4)", () => {
+  it("renders the actor name as a button that opens the actor doc when present in the store", async () => {
+    const actor = buildActorDoc("w1", actorSystem({ name: "Goblin" }), "a1");
+    const doc = msgDoc("m1", baseSystem({ actor_owner: { kind: "actor", actor_id: "a1" } }));
+    const opened: unknown[] = [];
+    const { getByRole } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(actor, doc), openDocument: (r) => opened.push(r), t: fakeT }),
+    });
+    await fireEvent.click(getByRole("button", { name: /Goblin/ }));
+    expect(opened).toEqual([{ docId: "a1" }]);
+  });
+
+  it("renders the token name as a button that opens the token when present in the store", async () => {
+    const actor = buildActorDoc("w1", actorSystem({ name: "Goblin" }), "a1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, 100, "token1");
+    const doc = msgDoc("m1", baseSystem({ actor_owner: { kind: "token_instance", token_id: "token1" } }));
+    const opened: unknown[] = [];
+    const { getByRole } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(actor, token, doc), openDocument: (r) => opened.push(r), t: fakeT }),
+    });
+    await fireEvent.click(getByRole("button", { name: /Goblin/ }));
+    expect(opened).toEqual([{ tokenId: "token1" }]);
+  });
+
+  it("renders plain text (no button) when the referenced actor is absent (no READ)", () => {
+    const doc = msgDoc("m1", baseSystem({ actor_owner: { kind: "actor", actor_id: "gone" } }));
+    const { queryByRole, container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), openDocument: () => {} }),
+    });
+    expect(queryByRole("button", { name: /Goblin/ })).toBeNull();
+    expect(container.querySelector(".actor-name")).toBeNull();
   });
 });
 
