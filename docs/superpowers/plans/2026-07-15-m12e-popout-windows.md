@@ -831,6 +831,15 @@ git commit -m "feat(panels/m12e): DockviewEngine pop-out lifecycle (gesture-time
 
 ### Task 6: Controller rehydration + host wiring + FakeEngine degradation — BUDDY-CHECK
 
+> **Dispatcher amendment (Task 1 review finding, 2026-07-15):** the `REHYDRATE_FLOAT_RECT`
+> single fixed rect below was found to duplicate a real bug the Task 1 reviewer caught in
+> `placeFromPersistedLocation`'s sibling code — every rehydrated id lands at the identical
+> `(x,y)`, invisibly stacked and distinguishable only by z-order. Corrected below to cascade
+> the same way `placeByPlacement`'s floating branch and the now-fixed `placeFromPersistedLocation`
+> "popped-out" case do. When implementing this task, add at least one assertion in the
+> rehydration test that rehydrates TWO popped-out ids and asserts their floating rects differ
+> (mirroring the reducer-level regression test added to `tree.test.ts` in Task 1).
+
 **Files:**
 - Modify: `src/modules/panels/src/controller.svelte.ts`
 - Modify: `src/modules/panels/src/controller.test.ts`
@@ -922,8 +931,14 @@ In `EMPTY_LAYOUT`, add `poppedOut: []`:
 Add a rehydrate rect constant (near `EMPTY_LAYOUT`):
 
 ```ts
-// Fixed rect a reload-rehydrated (formerly popped-out) panel floats at.
-const REHYDRATE_FLOAT_RECT = { x: 96, y: 96, w: 420, h: 520 };
+// Cascade base/step for a reload-rehydrated (formerly popped-out) panel's floating
+// rect (T1 buddy-review finding: a fixed, unoffset rect stacked every rehydrated
+// popout — and the first-ever floating panel — at the identical (x,y)). Mirrors
+// tree.ts's own SHEET_CASCADE_BASE/STEP formula (not imported — that pair is
+// layout-internal; this is the controller's own, deliberately separate constant
+// so the two call sites cannot silently drift together).
+const REHYDRATE_FLOAT_BASE = { x: 96, y: 96, w: 420, h: 520 };
+const REHYDRATE_FLOAT_STEP = 28;
 ```
 
 In the constructor, after `this.#persistedSource = source;` and the `reset` block, add:
@@ -944,7 +959,15 @@ Add the method (near `syncRegistrations`):
     const ids = [...this.#layout.expanded.poppedOut];
     if (ids.length === 0) return;
     let l = this.#layout;
-    for (const id of ids) l = applyOp(l, { op: "float", id, rect: REHYDRATE_FLOAT_RECT });
+    for (const id of ids) {
+      // Cascade off the CURRENT floating count each iteration (not the loop
+      // index) so rehydrated popouts interleave correctly with any panel
+      // that was already floating before rehydration ran.
+      const n = l.expanded.floating.length;
+      const off = (n % 6) * REHYDRATE_FLOAT_STEP;
+      const rect = { x: REHYDRATE_FLOAT_BASE.x + off, y: REHYDRATE_FLOAT_BASE.y + off, w: REHYDRATE_FLOAT_BASE.w, h: REHYDRATE_FLOAT_BASE.h };
+      l = applyOp(l, { op: "float", id, rect });
+    }
     this.#layout = l;
     this.#persist(l);
     this.#deps.onNotice?.("panels.popoutRestoredFloating");

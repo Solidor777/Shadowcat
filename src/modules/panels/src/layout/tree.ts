@@ -469,9 +469,16 @@ function placeFromPersistedLocation(l: PanelLayoutV1, id: string, source: PanelL
       // Popouts never survive reload (no gesture to reopen the window); a
       // persisted popped-out panel comes back as floating. Same rule as
       // `PanelsController.#rehydratePoppedOut`, applied to the not-yet-
-      // registered-panel path.
+      // registered-panel path. Cascade-offsets the rect the same way
+      // `placeByPlacement`'s floating branch does — an unoffset rect would
+      // stack every rehydrated popout (and the first-ever floating panel) on
+      // the identical (x,y), an invisible overlap distinguishable only by
+      // z-order.
+      const n = l.expanded.floating.length;
+      const off = (n % 6) * SHEET_CASCADE_STEP;
+      const rect: Rect = { x: SHEET_CASCADE_BASE.x + off, y: SHEET_CASCADE_BASE.y + off, w: SHEET_CASCADE_BASE.w, h: SHEET_CASCADE_BASE.h };
       const maxZ = l.expanded.floating.reduce((m, f) => Math.max(m, f.z), -1);
-      const floating = compactZ([...l.expanded.floating, { id, rect: { ...SHEET_CASCADE_BASE }, z: maxZ + 1 }]);
+      const floating = compactZ([...l.expanded.floating, { id, rect, z: maxZ + 1 }]);
       return { ...l, expanded: { ...l.expanded, floating } };
     }
 

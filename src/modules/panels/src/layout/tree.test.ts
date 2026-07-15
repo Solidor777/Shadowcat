@@ -651,4 +651,21 @@ describe("popOut / popIn", () => {
     const l = applyOp(docked(), { op: "popOut", id: "chat" });
     expect(prune(l, new Set(["chat"]))).toBe(l);
   });
+
+  it("rehydrating two persisted popped-out ids cascades their floating rects (never the identical (x,y))", () => {
+    let source = defaultLayout([{ id: "chat" }, { id: "assets" }]);
+    source = applyOp(source, { op: "dock", id: "chat", zone: "right", group: "new" });
+    source = applyOp(source, { op: "dock", id: "assets", zone: "right", group: "new" });
+    source = applyOp(source, { op: "popOut", id: "chat" });
+    source = applyOp(source, { op: "popOut", id: "assets" });
+
+    const rehydrated = placeNewRegistrations(defaultLayout([]), [{ id: "chat" }, { id: "assets" }], source);
+    expect(rehydrated.expanded.poppedOut).toEqual([]);
+    const rects = rehydrated.expanded.floating;
+    expect(rects).toHaveLength(2);
+    const [a, b] = rects;
+    expect(a.rect).not.toEqual(b.rect);
+    expect(b.rect.x).toBeGreaterThan(a.rect.x);
+    expect(b.rect.y).toBeGreaterThan(a.rect.y);
+  });
 });
