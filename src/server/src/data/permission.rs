@@ -25,7 +25,14 @@ pub mod cap {
 /// The capability required to write a document field at `path`, or `None` when
 /// the path targets an immutable envelope field (not patchable via `Update`).
 pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
-    if path == "/system" || path.starts_with("/system/") {
+    // `/name` is a leaf (a display string, not a container): `/name/...`
+    // does NOT match — there is no sub-path to write.
+    if path == "/system"
+        || path.starts_with("/system/")
+        || path == "/engine"
+        || path.starts_with("/engine/")
+        || path == "/name"
+    {
         Some(cap::WRITE_FIELDS)
     } else if path == "/embedded" || path.starts_with("/embedded/") {
         Some(cap::MANAGE_EMBEDDED)
@@ -33,6 +40,35 @@ pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
         Some(cap::EDIT_PERMISSIONS)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod required_cap_tests {
+    use super::*;
+
+    #[test]
+    fn engine_whole_and_subpaths_require_write_fields() {
+        assert_eq!(required_cap_for_path("/engine"), Some(cap::WRITE_FIELDS));
+        assert_eq!(required_cap_for_path("/engine/x"), Some(cap::WRITE_FIELDS));
+        assert_eq!(
+            required_cap_for_path("/engine/vision/0/range"),
+            Some(cap::WRITE_FIELDS)
+        );
+    }
+
+    #[test]
+    fn engine_boundary_neighbor_does_not_match() {
+        // `/engine_x` must not fall under the `/engine` prefix rule.
+        assert_eq!(required_cap_for_path("/engine_x"), None);
+    }
+
+    #[test]
+    fn name_requires_write_fields_but_is_a_leaf() {
+        assert_eq!(required_cap_for_path("/name"), Some(cap::WRITE_FIELDS));
+        // `/name` has no sub-paths — a leaf value, not a container.
+        assert_eq!(required_cap_for_path("/name/first"), None);
+        assert_eq!(required_cap_for_path("/named"), None);
     }
 }
 
@@ -509,7 +545,10 @@ mod tests {
             permissions: perms,
             embedded: Default::default(),
             parent_id: None,
-            engine: None,
+            // "actor" is engine-defined; a minimal valid body so `Create`
+            // clears the ingress gate. These tests exercise `/system`
+            // redaction only, unrelated to `engine`'s content.
+            engine: crate::data::document::tests::default_test_engine("actor"),
             system,
             created_at: 0,
             updated_at: 0,

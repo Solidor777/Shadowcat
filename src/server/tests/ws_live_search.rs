@@ -125,6 +125,17 @@ fn create_intent(world: Uuid, n: u128, name: &str, default_role: &str) -> serde_
                 "schema_version": 1,
                 "permissions": { "default": default_role, "users": {}, "property_overrides": {},
                                  "capabilities": { "by_role": {}, "by_user": {} } },
+                // "actor" is engine-defined; a minimal valid body clears the
+                // ingress gate. `system` below is what this suite exercises.
+                "engine": {
+                    "displayName": "Test",
+                    "visual": { "kind": "image", "asset": "a.png" },
+                    "size": { "w": 1.0, "h": 1.0 },
+                    "shape": "square",
+                    "faction": null,
+                    "conditions": [],
+                    "prototype": true
+                },
                 "system": { "name": name },
                 "created_at": 0,
                 "updated_at": 0,

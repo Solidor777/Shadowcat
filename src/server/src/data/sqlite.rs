@@ -907,7 +907,7 @@ impl Repository for SqliteRepository {
         &self,
         ctx: &crate::data::membership::PermissionContext,
         world_id: Uuid,
-        ops: Vec<Operation>,
+        mut ops: Vec<Operation>,
         ts: i64,
         origin: WriteOrigin,
     ) -> Result<Command, DataError> {
@@ -920,12 +920,16 @@ impl Repository for SqliteRepository {
 
         // Phase 1 — authorize, structurally validate, and check pre-images.
         // No row is mutated; any failure here drops the transaction, so the
-        // per-world seq is never consumed by a rejected intent.
-        for op in &ops {
+        // per-world seq is never consumed by a rejected intent. `Create`'s
+        // `doc` is mutated in place (`&mut ops`) so `validate_engine_tree`
+        // can normalize the engine band here and have that normalization
+        // survive into Phase 2 storage AND the returned `Command` (broadcast).
+        for op in &mut ops {
             match op {
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
                     validation::validate_system_size(doc)?;
+                    validation::validate_engine_tree(doc)?;
                     // A self-referential parent_id satisfies the self-FK and
                     // commits, then poisons the doc's deletion (the descendant
                     // walk would loop). Reject it; and when the parent already
@@ -986,7 +990,7 @@ impl Repository for SqliteRepository {
                     // requirement whose protected path is populated must be
                     // authorized — otherwise Create is a wholesale bypass of the
                     // declarative gate that Update enforces field-by-field.
-                    let doc_json = serde_json::to_value(doc)?;
+                    let doc_json = serde_json::to_value(&*doc)?;
                     for extra in declared_caps_for_document(&doc_json, &world_reqs) {
                         if !access.has(extra) {
                             tracing::debug!(
@@ -1243,6 +1247,10 @@ impl Repository for SqliteRepository {
                     // Body cap re-checked post-merge: the merged result, not the
                     // pre-image, is what gets stored.
                     validation::validate_system_size(&doc)?;
+                    // Engine band re-validated + normalized post-merge (mutates
+                    // `doc.engine` in place to the re-serialized validated
+                    // struct — see `validate_engine_tree`'s doc comment).
+                    validation::validate_engine_tree(&mut doc)?;
                     doc.updated_at = ts;
                     Self::upsert_document(&mut tx, &doc, seq).await?;
                 }
@@ -2171,11 +2179,278 @@ mod tests {
             permissions: perms,
             embedded: Default::default(),
             parent_id: None,
-            engine: None,
+            // "actor" is engine-defined; a minimal valid body so `Create`
+            // clears the ingress gate. Unrelated to `system` (opaque,
+            // caller-supplied) — this helper predates the engine band.
+            engine: crate::data::document::tests::default_test_engine("actor"),
             system,
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    /// A world-scoped document of `doc_type` carrying an `engine` body
+    /// (no `system` content — `engine`-typed docs in this battery don't
+    /// need one). Callers overwrite `scope` with the real world id.
+    fn tests_engine_doc(
+        perms: crate::data::document::PermissionSet,
+        doc_type: &str,
+        engine: serde_json::Value,
+    ) -> Document {
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.doc_type = doc_type.into();
+        d.engine = Some(engine);
+        d
+    }
+
+    #[tokio::test]
+    async fn create_with_invalid_engine_body_is_rejected() {
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "wall",
+            serde_json::json!({ "seg": { "x1": "not-a-number", "y1": 0.0, "x2": 1.0, "y2": 1.0 } }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadEngine(_)));
+    }
+
+    #[tokio::test]
+    async fn create_of_non_engine_doc_type_with_engine_body_is_rejected() {
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(perms, "item", serde_json::json!({ "anything": 1 }));
+        d.scope = Scope::World { world_id: w.id };
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadEngine(_)));
+    }
+
+    #[tokio::test]
+    async fn update_post_image_with_invalid_engine_is_rejected() {
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "wall",
+            serde_json::json!({ "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 } }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // A field write that leaves the post-image engine undeserializable
+        // (wrong type at /engine/seg/x1) must be rejected.
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        path: "/engine/seg/x1".into(),
+                        old: serde_json::json!(0.0),
+                        new: serde_json::json!("not-a-number"),
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadEngine(_)));
+    }
+
+    #[tokio::test]
+    async fn update_writing_a_valid_engine_subpath_succeeds() {
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "wall",
+            serde_json::json!({ "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 } }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    path: "/engine/seg/x1".into(),
+                    old: serde_json::json!(0.0),
+                    new: serde_json::json!(5.0),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let stored = r.get_document(doc_id).await.unwrap().unwrap();
+        assert_eq!(stored.engine.unwrap()["seg"]["x1"], serde_json::json!(5.0));
+    }
+
+    #[tokio::test]
+    async fn create_actor_omitting_faction_persists_explicit_null() {
+        // The stored/broadcast engine body is the RE-SERIALIZED validated
+        // struct: `ActorEngine.faction` deserializes an absent key to
+        // `None`, and normalization restores that as an explicit `null` on
+        // the stored side, matching the client's `faction: string | null`
+        // contract even though the ingress body omitted the key entirely.
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "actor",
+            serde_json::json!({
+                "displayName": "Goblin",
+                "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 },
+                "shape": "square",
+                "conditions": [],
+                "prototype": true
+                // "faction" intentionally omitted from the wire submission
+            }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+
+        let cmd = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+        // The returned Command (broadcast payload) already carries the
+        // normalized engine body.
+        let broadcast_engine = cmd
+            .ops
+            .iter()
+            .find_map(|o| match o {
+                Operation::Create { doc } if doc.id == doc_id => doc.engine.clone(),
+                _ => None,
+            })
+            .expect("create op present");
+        assert_eq!(broadcast_engine["faction"], serde_json::Value::Null);
+        assert!(broadcast_engine.get("faction").is_some());
+
+        // And the persisted row, independently re-fetched, matches.
+        let stored = r.get_document(doc_id).await.unwrap().unwrap();
+        let stored_engine = stored.engine.unwrap();
+        assert_eq!(stored_engine["faction"], serde_json::Value::Null);
+        assert!(stored_engine.get("faction").is_some());
     }
 
     #[tokio::test]
@@ -2853,7 +3128,10 @@ mod tests {
             permissions: Default::default(),
             embedded: Default::default(),
             parent_id: None,
-            engine: None,
+            // "actor" is engine-defined; a minimal valid body so `Create`
+            // clears the ingress gate. Callers that override `doc_type`
+            // afterward must also recompute `engine` for the new type.
+            engine: crate::data::document::tests::default_test_engine("actor"),
             system,
             created_at: 0,
             updated_at: 0,
@@ -2960,6 +3238,7 @@ mod tests {
 
         let mut tok = world_doc(1, w.id, serde_json::json!({}));
         tok.doc_type = "token".into();
+        tok.engine = crate::data::document::tests::default_test_engine("token");
         tok.permissions.users.insert(player, DocRole::Owner);
         assert!(r
             .apply_intent(
@@ -3041,6 +3320,9 @@ mod tests {
             2,
         );
         other.doc_type = "note".into();
+        // "note" is not engine-defined (unlike "message"); the engine body
+        // `build_message_doc` set must not follow the doc_type override.
+        other.engine = None;
         let err = r
             .apply_intent(
                 &pl_ctx,

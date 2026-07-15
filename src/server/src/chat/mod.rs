@@ -276,6 +276,7 @@ pub fn build_message_doc(
         edited_at: None,
         deleted_at: None,
     };
+    let system_json = serde_json::to_value(&system).expect("MessageSystem serializes");
     Document {
         id: Uuid::new_v4(),
         scope: Scope::World { world_id },
@@ -292,8 +293,13 @@ pub fn build_message_doc(
         },
         embedded: BTreeMap::new(),
         parent_id: None,
-        engine: None,
-        system: serde_json::to_value(system).expect("MessageSystem serializes"),
+        // `message` is engine-defined (`data::engine::is_engine_doc_type`);
+        // the actual rename to a dedicated `MessageEngine` band + `system`
+        // truncation is a later checkpoint. Duplicated (not moved) here so
+        // the ingress gate is satisfied without touching any of the
+        // existing `doc.system`-reading call sites above.
+        engine: Some(system_json.clone()),
+        system: system_json,
         created_at: now,
         updated_at: now,
     }
@@ -2812,7 +2818,7 @@ mod link_preview_ingest_tests {
                 permissions: PermissionSet::default(),
                 embedded: BTreeMap::new(),
                 parent_id: None,
-                engine: None,
+                engine: crate::data::document::tests::default_test_engine(CHAT_SETTINGS_DOC_TYPE),
                 system: serde_json::to_value(policy).unwrap(),
                 created_at: 0,
                 updated_at: 0,

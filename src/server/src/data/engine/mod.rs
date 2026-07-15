@@ -63,42 +63,63 @@ pub fn validate_engine(
     doc_type: &str,
     engine: Option<&serde_json::Value>,
 ) -> Result<(), DataError> {
-    fn check<T: serde::de::DeserializeOwned>(
-        v: &serde_json::Value,
-        t: &str,
-    ) -> Result<(), DataError> {
-        serde_json::from_value::<T>(v.clone())
-            .map(|_| ())
-            .map_err(|e| DataError::BadEngine(format!("{t}: {e}")))
-    }
+    normalize_engine_opt(doc_type, engine).map(|_| ())
+}
+
+/// Validate `engine` for `doc_type` (same contract as `validate_engine`) and
+/// return the RE-SERIALIZED validated engine (`None` for non-engine doc
+/// types), rather than validating the raw input in place. Single source of
+/// truth for the doc_type -> struct dispatch table; `validate_engine` and
+/// `data::validation::validate_engine_tree` both build on this.
+pub fn normalize_engine_opt(
+    doc_type: &str,
+    engine: Option<&serde_json::Value>,
+) -> Result<Option<serde_json::Value>, DataError> {
     match (is_engine_doc_type(doc_type), engine) {
-        (false, None) => Ok(()),
+        (false, None) => Ok(None),
         (false, Some(_)) => Err(DataError::BadEngine(format!(
             "doc_type '{doc_type}' is not engine-defined; `engine` must be absent"
         ))),
         (true, None) => Err(DataError::BadEngine(format!(
             "doc_type '{doc_type}' requires an `engine` body"
         ))),
-        (true, Some(v)) => match doc_type {
-            "token" => check::<TokenEngine>(v, "token"),
-            "scene" => check::<SceneEngine>(v, "scene"),
-            "wall" => check::<WallEngine>(v, "wall"),
-            "region" => check::<RegionEngine>(v, "region"),
-            "light" => check::<LightEngine>(v, "light"),
-            "drawing" => check::<DrawingEngine>(v, "drawing"),
-            "template" => check::<TemplateEngine>(v, "template"),
-            "actor" => check::<ActorEngine>(v, "actor"),
-            "message" => check::<crate::chat::MessageSystem>(v, "message"),
-            "world-settings" => check::<WorldSettingsEngine>(v, "world-settings"),
-            "vision-modes" => check::<VisionModesEngine>(v, "vision-modes"),
-            "light-gradation" => check::<LightGradationEngine>(v, "light-gradation"),
-            "chat-settings" => check::<ChatSettingsEngine>(v, "chat-settings"),
-            "dice-settings" => check::<DiceSettingsEngine>(v, "dice-settings"),
-            "channel-registry" => check::<ChannelRegistryEngine>(v, "channel-registry"),
-            "faction-registry" => check::<FactionRegistryEngine>(v, "faction-registry"),
-            "condition-registry" => check::<ConditionRegistryEngine>(v, "condition-registry"),
-            _ => unreachable!("is_engine_doc_type and this match must stay in sync"),
-        },
+        (true, Some(v)) => normalize_engine(doc_type, v).map(Some),
+    }
+}
+
+/// Deserialize `engine` into `doc_type`'s typed struct and re-serialize it,
+/// dropping any field the struct didn't retain (see
+/// `data::validation::validate_engine_tree` for why re-serialization, not
+/// pass-through, is required). `doc_type` MUST be a registered engine doc
+/// type (callers go through `normalize_engine_opt`, which enforces this).
+fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json::Value, DataError> {
+    fn round_trip<T>(v: &serde_json::Value, t: &str) -> Result<serde_json::Value, DataError>
+    where
+        T: serde::de::DeserializeOwned + serde::Serialize,
+    {
+        let typed: T = serde_json::from_value(v.clone())
+            .map_err(|e| DataError::BadEngine(format!("{t}: {e}")))?;
+        Ok(serde_json::to_value(typed)?)
+    }
+    match doc_type {
+        "token" => round_trip::<TokenEngine>(v, "token"),
+        "scene" => round_trip::<SceneEngine>(v, "scene"),
+        "wall" => round_trip::<WallEngine>(v, "wall"),
+        "region" => round_trip::<RegionEngine>(v, "region"),
+        "light" => round_trip::<LightEngine>(v, "light"),
+        "drawing" => round_trip::<DrawingEngine>(v, "drawing"),
+        "template" => round_trip::<TemplateEngine>(v, "template"),
+        "actor" => round_trip::<ActorEngine>(v, "actor"),
+        "message" => round_trip::<crate::chat::MessageSystem>(v, "message"),
+        "world-settings" => round_trip::<WorldSettingsEngine>(v, "world-settings"),
+        "vision-modes" => round_trip::<VisionModesEngine>(v, "vision-modes"),
+        "light-gradation" => round_trip::<LightGradationEngine>(v, "light-gradation"),
+        "chat-settings" => round_trip::<ChatSettingsEngine>(v, "chat-settings"),
+        "dice-settings" => round_trip::<DiceSettingsEngine>(v, "dice-settings"),
+        "channel-registry" => round_trip::<ChannelRegistryEngine>(v, "channel-registry"),
+        "faction-registry" => round_trip::<FactionRegistryEngine>(v, "faction-registry"),
+        "condition-registry" => round_trip::<ConditionRegistryEngine>(v, "condition-registry"),
+        _ => unreachable!("is_engine_doc_type and this match must stay in sync"),
     }
 }
 

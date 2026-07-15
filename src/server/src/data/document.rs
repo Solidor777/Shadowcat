@@ -355,7 +355,63 @@ pub(crate) mod tests {
         d.source = None;
         d.owner = None;
         d.parent_id = None;
+        d.engine = default_test_engine(doc_type);
         d
+    }
+
+    /// A minimal valid `engine` body for `doc_type` (mirrors
+    /// `data::engine::validate_engine`'s battery), `None` for a non-engine
+    /// doc type. `system` bodies built by shared test helpers are opaque
+    /// placeholders unrelated to `doc_type` (pre-dating the engine band) and
+    /// stay untouched — the read-path re-root that consumes `engine` instead
+    /// of `system` for scene/token/etc. is later checkpoint work; this only
+    /// satisfies the ingress gate so `apply_intent`-driven fixtures can still
+    /// Create/Update.
+    pub(crate) fn default_test_engine(doc_type: &str) -> Option<serde_json::Value> {
+        match doc_type {
+            "token" => Some(serde_json::json!({
+                "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0
+            })),
+            "scene" => Some(serde_json::json!({
+                "grid": { "kind": "square", "size": 100.0 }, "background": null
+            })),
+            "wall" => {
+                Some(serde_json::json!({ "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 } }))
+            }
+            "region" => Some(serde_json::json!({
+                "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+                "behavior": "terrain", "cost": 1.0, "enabled": true
+            })),
+            "light" => Some(serde_json::json!({
+                "x": 0.0, "y": 0.0, "color": "#fff", "intensity": 1.0,
+                "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true
+            })),
+            "drawing" => Some(serde_json::json!({
+                "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+                "stroke": null, "fill": null
+            })),
+            "template" => Some(serde_json::json!({
+                "shape": { "kind": "cone", "x": 0.0, "y": 0.0, "size": 5.0, "direction": 0.0 },
+                "color": "#f00"
+            })),
+            "actor" => Some(serde_json::json!({
+                "displayName": "Test", "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+                "faction": null, "conditions": [], "prototype": true
+            })),
+            "message" => None, // chat's own re-root builds this doc directly; see chat/mod.rs
+            "world-settings" => Some(
+                serde_json::to_value(crate::data::engine::WorldSettingsEngine::default()).unwrap(),
+            ),
+            "vision-modes" => Some(serde_json::json!({ "modes": {} })),
+            "light-gradation" => Some(serde_json::json!({ "bands": [] })),
+            "chat-settings" => Some(serde_json::json!({})),
+            "dice-settings" => Some(serde_json::json!({})),
+            "channel-registry" => Some(serde_json::json!({ "channels": {} })),
+            "faction-registry" => Some(serde_json::json!({ "factions": {} })),
+            "condition-registry" => Some(serde_json::json!({ "conditions": {} })),
+            _ => None,
+        }
     }
 
     #[test]

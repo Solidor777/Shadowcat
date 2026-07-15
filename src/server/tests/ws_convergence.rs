@@ -178,6 +178,17 @@ fn create_op(world: Uuid, doc_id: Uuid, system: serde_json::Value) -> serde_json
             "scope": { "kind": "world", "world_id": world },
             "doc_type": "actor",
             "schema_version": 1,
+            // "actor" is engine-defined; a minimal valid body clears the
+            // ingress gate. `system` above is what this suite exercises.
+            "engine": {
+                "displayName": "Test",
+                "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 },
+                "shape": "square",
+                "faction": null,
+                "conditions": [],
+                "prototype": true
+            },
             "system": system,
             "created_at": 0,
             "updated_at": 0,
@@ -593,6 +604,17 @@ async fn gm_only_property_hidden_from_player() {
             "default": "observer",
             "users": {},
             "property_overrides": { "/system/secret": "gm_only" }
+        },
+        // "actor" is engine-defined; a minimal valid body clears the
+        // ingress gate. `system` below is what this test exercises.
+        "engine": {
+            "displayName": "Test",
+            "visual": { "kind": "image", "asset": "a.png" },
+            "size": { "w": 1.0, "h": 1.0 },
+            "shape": "square",
+            "faction": null,
+            "conditions": [],
+            "prototype": true
         },
         "system": { "secret": 42, "public": 7 },
         "created_at": 0,

@@ -175,7 +175,12 @@ mod tests {
             permissions: PermissionSet::default(),
             embedded: BTreeMap::new(),
             parent_id: None,
-            engine: None,
+            // `chat-settings` is engine-defined; a minimal valid body clears
+            // the ingress gate. `resolve_content_policy` still reads
+            // `system` (untouched, deliberately malformed in some fixtures
+            // below to exercise its fail-closed fallback) — the read-path
+            // re-root onto `engine` is later checkpoint work.
+            engine: crate::data::document::tests::default_test_engine(CHAT_SETTINGS_DOC_TYPE),
             system,
             created_at: 0,
             updated_at: 0,
@@ -392,7 +397,9 @@ mod tests {
             permissions: PermissionSet::default(),
             embedded: BTreeMap::new(),
             parent_id: None,
-            engine: None,
+            // `dice-settings` is engine-defined; see `settings_doc`'s
+            // comment above for why `engine` and `system` diverge here.
+            engine: crate::data::document::tests::default_test_engine(DICE_SETTINGS_DOC_TYPE),
             system,
             created_at: 0,
             updated_at: 0,

@@ -92,7 +92,11 @@ impl Fixture {
                 permissions: PermissionSet::default(),
                 embedded: BTreeMap::new(),
                 parent_id: None,
-                engine: None,
+                // "chat-settings" is engine-defined; a minimal valid body so
+                // `Create` clears the ingress gate. `system` above (the
+                // policy under test) is what `resolve_content_policy`
+                // actually reads today.
+                engine: Some(serde_json::json!({})),
                 system: serde_json::to_value(policy).unwrap(),
                 created_at: 0,
                 updated_at: 0,

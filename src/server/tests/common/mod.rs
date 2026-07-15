@@ -218,6 +218,54 @@ pub fn intent_msg(intent_n: u64, ops: serde_json::Value) -> Message {
     )
 }
 
+/// A minimal valid `engine` body for `doc_type` (mirrors
+/// `data::engine::validate_engine`'s battery), `None` for a non-engine
+/// doc type. `system` above stays the opaque placeholder these fixtures
+/// pre-date the engine band with — the read-path re-root onto `engine` is
+/// later checkpoint work; this only satisfies the ingress gate.
+fn default_engine_for(doc_type: &str) -> Option<serde_json::Value> {
+    match doc_type {
+        "token" => Some(serde_json::json!({
+            "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0
+        })),
+        "scene" => Some(serde_json::json!({
+            "grid": { "kind": "square", "size": 100.0 }, "background": null
+        })),
+        "wall" => {
+            Some(serde_json::json!({ "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 } }))
+        }
+        "region" => Some(serde_json::json!({
+            "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+            "behavior": "terrain", "cost": 1.0, "enabled": true
+        })),
+        "light" => Some(serde_json::json!({
+            "x": 0.0, "y": 0.0, "color": "#fff", "intensity": 1.0,
+            "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true
+        })),
+        "drawing" => Some(serde_json::json!({
+            "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+            "stroke": null, "fill": null
+        })),
+        "template" => Some(serde_json::json!({
+            "shape": { "kind": "cone", "x": 0.0, "y": 0.0, "size": 5.0, "direction": 0.0 },
+            "color": "#f00"
+        })),
+        "actor" => Some(serde_json::json!({
+            "displayName": "Test", "visual": { "kind": "image", "asset": "a.png" },
+            "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+            "faction": null, "conditions": [], "prototype": true
+        })),
+        "world-settings" | "vision-modes" | "light-gradation" | "chat-settings"
+        | "dice-settings" | "channel-registry" | "faction-registry" | "condition-registry" => {
+            // These registry/settings singletons aren't constructed through
+            // this generic helper in the current suite; add a case here if
+            // a future fixture needs one.
+            None
+        }
+        _ => None,
+    }
+}
+
 /// A `create` op for a minimal world-scoped scene-entity document. `parent` set
 /// makes it a child; `None` + `doc_type == "scene"` makes it a scene.
 pub fn create_doc_op(
@@ -234,6 +282,7 @@ pub fn create_doc_op(
             "doc_type": doc_type,
             "schema_version": 1,
             "parent_id": parent.map(Uuid::from_u128),
+            "engine": default_engine_for(doc_type),
             "system": {},
             "created_at": 0,
             "updated_at": 0,
@@ -260,6 +309,7 @@ pub fn create_owned_token_op(
             "schema_version": 1,
             "owner": owner,
             "parent_id": Uuid::from_u128(scene),
+            "engine": { "x": x, "y": y, "w": 100.0, "h": 100.0, "rotation": 0.0 },
             "system": { "x": x, "y": y, "w": 100, "h": 100 },
             "created_at": 0,
             "updated_at": 0,
