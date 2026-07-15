@@ -49,7 +49,7 @@ export interface PanelsControllerDeps {
 
 const EMPTY_LAYOUT: PanelLayoutV1 = {
   version: 1,
-  expanded: { zones: { right: { groups: [], size: 320 }, bottom: { groups: [], size: 240 }, left: { groups: [], size: 320 } }, floating: [], minimized: [] },
+  expanded: { zones: { right: { groups: [], size: 320 }, bottom: { groups: [], size: 240 }, left: { groups: [], size: 320 } }, floating: [], minimized: [], poppedOut: [] },
   compact: { activeView: null, order: [] },
 };
 
