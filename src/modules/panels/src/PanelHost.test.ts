@@ -137,6 +137,17 @@ test("mount-counter: a docked panel's component mounts exactly once across the f
   mql.fire(true); // expanded
   await Promise.resolve();
   expect(mounts).toBe(1);
+
+  // Pop-out leg (M12e): dock⇄float⇄...⇄pop-out⇄pop-in never re-mounts. The
+  // FakeEngine degrades pop-out to a floating window, so the slot is re-parented
+  // (adopted), never recreated.
+  engine.emitOp({ op: "popOut", id: "chat:panel" });
+  await Promise.resolve();
+  expect(mounts).toBe(1);
+
+  engine.emitOp({ op: "popIn", id: "chat:panel" });
+  await Promise.resolve();
+  expect(mounts).toBe(1);
 });
 
 test("gmOnly: a gmOnly registration is absent from the compact switcher and dock chips when role is not gm", async () => {
