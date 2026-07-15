@@ -137,8 +137,8 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
 
 ## Pointers
 
-- Design: `docs/design/` M12 spec (approved f97dd62), §5; plan
-  `docs/superpowers/plans/2026-07-15-m12c-sheets.md`.
+- Design: `docs/superpowers/specs/2026-07-13-m12-dockable-panels-default-modules-design.md`
+  (approved f97dd62), §5; plan `docs/superpowers/plans/2026-07-15-m12c-sheets.md`.
 - Relationships: `graphify query "sheets registry openDocument SheetsController resolveDocRef pickSheet setField"`.
 - Panel-manager internals sheets mount into: [[shadowcat-codebase-panels]].
 - Document/permission model + the client-only `item` doc_type: [[shadowcat-codebase-documents-permissions]].

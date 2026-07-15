@@ -108,7 +108,7 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
 
 ## Pointers
 
-- Design: `docs/design/` M12 spec (approved f97dd62); plan
-  `docs/superpowers/plans/2026-07-13-m12a-panel-manager-core.md`.
+- Design: `docs/superpowers/specs/2026-07-13-m12-dockable-panels-default-modules-design.md`
+  (approved f97dd62); plan `docs/superpowers/plans/2026-07-13-m12a-panel-manager-core.md`.
 - Relationships: `graphify query "panels controller layout tree engine adapter dockview bridge chips"`.
 - Shell/AppContext side: [[shadowcat-codebase-client-shell]].
