@@ -1184,6 +1184,11 @@ Add the search state + effect after the existing `actorDocs` derived (~line 16):
     let cancelled = false;
     void ctx
       .searchDocuments(q, { limit: 20 }, (hits: WireSearchHit[]) => {
+        // The initial page resolves synchronously inside subscribeSearch's pending-resolve
+        // handler, BEFORE this effect's own .then() runs — so cancelled must be checked inside
+        // the callback itself, not only at unsubscribe time, or an abandoned query's late first
+        // page overwrites a newer query's results.
+        if (cancelled) return;
         searchHits = hits.filter((h) => h.document.doc_type === "actor").map((h) => h.document);
       })
       .then((h) => { if (cancelled) h.unsubscribe(); else handle = h; })
