@@ -105,13 +105,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   Chebyshev (where the diagonal step cost is 1.0); under any other diagonal rule they diverge. This
   is a deliberate v1 scoping decision (M10g Task 7), not a bug — nothing currently consumes or
   compares the two costs together. Resolve before any per-turn movement-budget system consumes
-  either `MoveOutcome.cost` or `MoveStream.cost`. **Gotcha (M10f-2):** `supercover_cells` can
-  fail-closed (return `None`, rejecting an otherwise-legal move) on a diagonal king-step whose leg
-  endpoints BOTH sit exactly on 4-way grid-line intersections — the Amanatides-Woo corner-crossing
-  branch fires repeatedly and drifts away from the target cell before `MAX_MOVE_CELLS` catches it;
-  fails closed (safe), never opens a forbidden move, but rejects a move a player might reasonably
-  expect to succeed (logged `docs/TODO.md`, discovered via an M10f-2 Task 6 fixture-derivation
-  error that surfaced it).
+  either `MoveOutcome.cost` or `MoveStream.cost`. **RESOLVED (Phase-1 sweep):** `supercover_cells`'s
+  lattice-corner-tie drift (a diagonal king-step whose leg endpoints both sit exactly on 4-way
+  grid-line intersections could spuriously fail-closed) is fixed via a per-axis remaining-step
+  budget gating the diagonal corner branch — see `docs/CLOSED_BUGS.md` for the root cause and fix.
 - `src/server/src/scene/mod.rs` — adds `SceneEcs::token_position(token) -> Option<(f64,f64)>` and
   `SceneEcs::resolved_animation_speed() -> f64` (`pub(crate)` seams; the latter sits alongside
   `resolved_diagonal_rule`, sources `world_settings.animation`, defaults to 6 cells/sec).

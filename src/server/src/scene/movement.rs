@@ -269,6 +269,10 @@ mod tests {
         let c = cells((200.0, 200.0), (330.0, 70.0), 100.0);
         assert!(c.contains(&(2, 2)), "start cell present");
         assert!(c.contains(&(3, 0)), "end cell present");
+        // The true corner crossing on this leg is (2,1)->(3,0); both flanking cells must
+        // be present, not just the start/end.
+        assert!(c.contains(&(3, 1)), "flanker cell present");
+        assert!(c.contains(&(2, 0)), "flanker cell present");
     }
 
     #[test]
