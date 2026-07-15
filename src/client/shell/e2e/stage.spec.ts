@@ -34,9 +34,10 @@ test("stage canvas mounts, renders, and tears down on leave", async ({ page }) =
   await page.mouse.up();
   await expect(host).toHaveAttribute("data-render-ready", "true");
 
-  // "Leave world" lives in the Settings panel, which starts minimized (M12a
-  // interim default); restore it from the statusbar's dock-chip strip first.
-  await page.getByTestId("chip-settings:panel").click();
+  // "Leave world" lives in the Settings panel, which starts launcher-closed;
+  // open it from the topbar launcher first.
+  await page.getByTestId("launcher-trigger").click();
+  await page.getByTestId("launcher-item-settings:panel").click();
   await page.getByRole("button", { name: /leave world/i }).click();
   await expect(page.getByTestId("stage-canvas")).toHaveCount(0);
 });
@@ -52,9 +53,10 @@ test("place a token via the tool rail, then drag it", async ({ page }) => {
   const host = page.locator(".stage-host");
   await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
 
-  // The Assets panel starts minimized (M12a interim default); restore it from
-  // the statusbar's dock-chip strip before uploading.
-  await page.getByTestId("chip-assets:panel").click();
+  // The Assets panel starts launcher-closed; open it from the topbar launcher
+  // before uploading.
+  await page.getByTestId("launcher-trigger").click();
+  await page.getByTestId("launcher-item-assets:panel").click();
 
   // Upload an image asset (the token art).
   await page
@@ -83,7 +85,7 @@ test("place a token via the tool rail, then drag it", async ({ page }) => {
   await expect(host).toHaveAttribute("data-token-count", "1");
 });
 
-// Docks assets+settings+actors into "right" across its lifetime, on top of
+// Opens assets+settings+actors into "right" across its lifetime, on top of
 // chat's permanent default dock (4 groups total in one zone) — exercises the
 // production `DockviewEngine`'s width containment past 2 groups in a zone.
 test("author an animated (frame-list) actor token; it places without error", async ({ page }) => {
@@ -97,9 +99,10 @@ test("author an animated (frame-list) actor token; it places without error", asy
   const host = page.locator(".stage-host");
   await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
 
-  // The Assets panel starts minimized (M12a interim default); restore it from
-  // the statusbar's dock-chip strip before uploading.
-  await page.getByTestId("chip-assets:panel").click();
+  // The Assets panel starts launcher-closed; open it from the topbar launcher
+  // before uploading.
+  await page.getByTestId("launcher-trigger").click();
+  await page.getByTestId("launcher-item-assets:panel").click();
 
   // Upload two frames for the animated actor.
   await page
@@ -115,15 +118,18 @@ test("author an animated (frame-list) actor token; it places without error", asy
   // leave and re-enter the same world so the panel remounts and its picker sees the
   // frames just uploaded — an already-exercised, unmodified product path (test 1
   // above already proves leave/re-enter works). "Leave world" lives in the Settings
-  // panel, minimized independently of Assets; restore it too.
-  await page.getByTestId("chip-settings:panel").click();
+  // panel, launcher-closed independently of Assets; open it too.
+  await page.getByTestId("launcher-trigger").click();
+  await page.getByTestId("launcher-item-settings:panel").click();
   await page.getByRole("button", { name: /leave world/i }).click();
   await page.getByRole("button", { name: /Animated Actor World/ }).click();
   await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
 
-  // The Actors panel also starts minimized; restore it (the panel layout persisted
-  // across leave/re-enter, so Assets is already docked from the restore above).
-  await page.getByTestId("chip-actors:panel").click();
+  // The Actors panel also starts launcher-closed; open it (the panel layout
+  // persisted across leave/re-enter, so Assets is already docked from the open
+  // above).
+  await page.getByTestId("launcher-trigger").click();
+  await page.getByTestId("launcher-item-actors:panel").click();
 
   // Author an animated (frame-list) actor via the Actors panel. Scoped to `.actors`
   // (ActorsPanel's root section) since the Factions/Conditions panels reuse the same
