@@ -1027,6 +1027,21 @@ Decomposed **M11a–d**:
 > `shadowcat-codebase-panels` skill CREATED + `shadowcat-codebase-client-shell` rewritten
 > (reviewed skill-update gate, adversarial pass + fix-confirmation).
 > Plan: [`superpowers/plans/2026-07-13-m12a-panel-manager-core.md`](superpowers/plans/2026-07-13-m12a-panel-manager-core.md).
+> **M12b DONE** (branch `m12b-layout-refresh`, 8 SDD tasks): topbar `LauncherMenu` (open/close
+> any panel by id, a11y menu + focus management) + `Presence` roster replace the interim panel
+> defaults; panel defaults flip from "chat docked, all else minimized to chips" to
+> launcher-closed for everything but chat; the core-ui grid drives compact/expanded off the
+> single `sizeClass` 48rem axis (the old 40rem toolrail media query is removed —
+> `Layout.svelte`/`sizeClass.svelte.ts` now share one breakpoint); statusbar row is 2rem; the
+> scene-tools `ToolRail` renders as a compact bottom strip below 48rem. Token re-audit
+> (bounded raw-color scan + token-existence check across the new/changed chrome): one new
+> semantic token, `--z-popover`, added to close a stacking-context gap between the launcher
+> menu and `PanelMenu`'s popover (applied to both); no new color token was needed — every
+> other value resolved against the existing `_semantic.scss`/`_primitives.scss` tiers. e2e
+> finale rewrote `panels.spec.ts` for the launcher-closed defaults (open→dock→reload survival,
+> re-toggle→minimize-to-chip, compact/expanded axis) and repaired `stage.spec.ts` +
+> `assets.spec.ts`'s chip-click setup steps to the launcher path.
+> Plan: [`superpowers/plans/2026-07-14-m12b-layout-refresh.md`](superpowers/plans/2026-07-14-m12b-layout-refresh.md).
 - Actor / scene browsers, generic actor / item sheets — built against the public API, each treated as an API bug report. (Chat panel superseded: the baseline chat display modules ship in **M11d**.)
 
 ### M12.5 · Backups + snapshot restore (gate precondition)

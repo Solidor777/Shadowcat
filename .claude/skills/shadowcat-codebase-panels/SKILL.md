@@ -58,8 +58,10 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   never dockable-over, never floatable, never minimizable — `STAGE_ID` vetoed in both the drop
   and menu paths.
 - Panel modules declare `Contribution.panel` metadata (`icon`, `labelKey`, `gmOnly?`,
-  `defaultPlacement`); interim defaults: chat docked right, everything else minimized (M12b
-  flips to launcher-closed).
+  `defaultPlacement`); defaults: chat docked right, every other panel launcher-closed (absent
+  from the layout tree, not a minimized chip) until opened from the topbar `LauncherMenu`
+  ([[shadowcat-codebase-client-shell]]) — toggling the same launcher item again minimizes it
+  back to a statusbar chip.
 
 ## Hard invariants
 

@@ -82,10 +82,20 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `<Entry onEnterWorld>`); core-ui owns the layout grid + region surfaces into the singleton
   `root` (its main region hosts `shadowcat.surface:panel-host`; the grid cell carries
   `min-height: 0` + `overflow: hidden` — the growth cap that keeps tall content scrolling
-  INSIDE panels instead of blowing the 1fr track past 100vh); panels = the panel manager
-  ([[shadowcat-codebase-panels]]); stage = the canvas stage well (inviolable — never docked/
-  floated/minimized); the panel modules each contribute one `shadowcat.panel` (interim
-  defaults: chat docked right, all others minimized to statusbar chips; game-settings gmOnly).
+  INSIDE panels instead of blowing the 1fr track past 100vh); the grid's compact/expanded
+  switch is keyed SOLELY off `sizeClass()` (48rem, `ui-kit`'s single breakpoint axis) — no
+  media query; `grid-template-rows` reserves a fixed `2rem` statusbar row in both states.
+  panels = the panel manager ([[shadowcat-codebase-panels]]); stage = the canvas stage well
+  (inviolable — never docked/floated/minimized); the panel modules each contribute one
+  `shadowcat.panel`; defaults are launcher-closed for every panel except chat (docked right
+  by default); game-settings gmOnly. `topbar` = `@shadowcat/module-topbar`: hosts
+  `LauncherMenu` (open/close any registered panel by id via `AppContext.panels.toggle`,
+  `launcher-item-{panelId}` testids, a11y menu + focus management) + `Presence` (member
+  roster) + a standing settings-entry button that toggles `settings:panel` through the same
+  `AppContext.panels` seam — imports NOTHING from `@shadowcat/module-panels` (ESLint-enforced
+  boundary; the launcher talks to panels only through `AppContext.panels`). Below 48rem the
+  topbar drops the world-name label and the scene-tools `ToolRail` collapses from a vertical
+  side rail into a horizontal bottom strip (`sizeClass()`-driven, same axis).
   `game-settings` = `@shadowcat/module-game-settings` (GM-only): idempotently seeds + edits
   the world's singleton config-docs — the vision/lighting trio
   (`world-settings`/`light-gradation`/`vision-modes`, resolvers in `core/scene-docs.ts`),

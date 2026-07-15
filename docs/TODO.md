@@ -248,13 +248,6 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   action) gets full, working focus-return with no further change needed here.
 
 ## Client / panels (M12a whole-branch review deferrals)
-- TODO: Flip the interim panel defaults when the M12b launcher lands — today chat is docked
-  right and every other panel starts `{kind:"minimized"}` (statusbar chips); M12b replaces
-  this with launcher-closed defaults.
-- TODO: Harmonize the core-ui toolrail-hide breakpoint (`Layout.svelte`, 40rem) with the
-  panel-host compact/expanded breakpoint (`sizeClass.svelte.ts`, min-width 48rem) — in the
-  40–48rem band the compact switcher renders while the 3rem toolrail column is still shown.
-  Land with the M12b toolrail/launcher rework. (M12a final spec review.)
 - TODO: Narrow `PanelHost.svelte`'s `PanelsBridgeLike` inline cast — either a runtime
   `typeof bridge.bind` guard or a narrower `AppContext.panels` type; today it rests on the
   composition-root convention (`Table.svelte` is the sole binding site).
