@@ -98,7 +98,11 @@ export class RenderEngine implements SceneToolHost {
   /** The pointer that owns the in-flight gesture; events from other pointers
    * (multi-touch / pen+mouse) are ignored until it ends. Single-pointer by design. */
   private activePointerId: number | null = null;
-  private pendingDerived: { input: VisibilityInput; seq: number } | null = null;
+  /** Deferred visibility frame held behind the appliedSeq watermark. Caches the RAW payload (not a
+   * pre-filtered VisibilityInput): `toVisibility` is re-run at flush time against the THEN-current
+   * viewed scene, so a scene switch between defer and flush cannot paint a stale scene's fog holes
+   * onto the newly-viewed one (fog secrecy gate — fail closed). */
+  private pendingDerived: { payload: unknown; seq: number } | null = null;
   /** Highest computed_at_seq applied to the mask; guards against regressing to an
    * older derived frame (latest-wins). */
   private lastAppliedSeq = -1;
@@ -205,15 +209,18 @@ export class RenderEngine implements SceneToolHost {
     if (frame.computedAtSeq <= this.lastAppliedSeq) return;
     if (this.pendingDerived && frame.computedAtSeq <= this.pendingDerived.seq) return;
     this.lastRawPayload = frame.payload;
-    const input = this.toVisibility(frame.payload);
     // Lighting is cosmetic — applied eagerly here (monotonic order already honored by the
     // guards above), NOT held behind the appliedSeq watermark that fog uses for document
     // consistency. Exactly one setTarget call per non-dropped frame.
     this.lighting.setTarget(this.toLighting(frame.payload));
     if (this.opts.store.appliedSeq >= frame.computedAtSeq) {
-      this.applyDerived(input, frame.computedAtSeq);
+      // Immediate: filter against the CURRENT viewed scene now (toVisibility reads viewedScene()).
+      this.applyDerived(this.toVisibility(frame.payload), frame.computedAtSeq);
     } else {
-      this.pendingDerived = { input, seq: frame.computedAtSeq }; // watermark: defer visibility (fog secrecy gate)
+      // Watermark defer: cache the RAW payload, never a pre-filtered VisibilityInput. A scene
+      // switch (reapplyViewedScene) can change the viewed scene before this flushes, so re-run
+      // toVisibility at flush time against the then-current scene (fog secrecy gate).
+      this.pendingDerived = { payload: frame.payload, seq: frame.computedAtSeq };
     }
   }
 
@@ -221,7 +228,10 @@ export class RenderEngine implements SceneToolHost {
     const p = this.pendingDerived;
     if (p && this.opts.store.appliedSeq >= p.seq) {
       this.pendingDerived = null;
-      this.applyDerived(p.input, p.seq);
+      // Re-filter the raw payload against the CURRENT viewed scene at flush time (not the scene
+      // viewed when the frame was deferred): toVisibility reads this.viewedScene() internally, so a
+      // deferred scene-A frame flushing after a switch to scene B yields scene B's fog, not A's.
+      this.applyDerived(this.toVisibility(p.payload), p.seq);
     }
   }
 
@@ -257,8 +267,12 @@ export class RenderEngine implements SceneToolHost {
   /** Re-project the render onto the CURRENT viewed scene after a client-local scene switch
    * (`activeScene` flip or GM roam — neither carries a new server frame). Re-runs background + all
    * doc views (their `parent_id` filter changed) and re-filters the last vision payload to the new
-   * scene. Fog secrecy across the switch: with no cached frame, `lastInput`'s full-fog default
-   * stands; a re-filter to an unknown scene yields empty holes (full fog), never the prior scene's. */
+   * scene. Fog secrecy across the switch: a cached frame is re-filtered to the new scene, so only
+   * that scene's polygons punch holes (a polygon tagged for another scene is dropped) — never the
+   * prior scene's. With no cached frame yet (`lastRawPayload === undefined`) visibility is left
+   * untouched; the initial `lastInput` default (`{mode:"all"}` = NO fog, the pre-vision bootstrap
+   * reveal) stands until the first frame arrives. A frame deferred in `pendingDerived` caches the
+   * raw payload and is likewise re-filtered against the then-current scene at flush time. */
   reapplyViewedScene(): void {
     this.reconciler.reconcile();
     this.tokens.reconcile();

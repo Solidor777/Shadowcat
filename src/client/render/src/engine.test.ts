@@ -927,4 +927,40 @@ describe("multi-scene render filtering", () => {
     expect(backend.background?.url).toContain("bgB");
     engine.destroy();
   });
+
+  it("a deferred scene-A vision frame flushing after a switch to scene B renders scene B's fog, not A's", () => {
+    // Fog secrecy across the pendingDerived watermark: a vision frame deferred while viewing scene
+    // A must NOT paint scene A's fog holes onto scene B once the store catches up and it flushes.
+    // pendingDerived caches the RAW payload and re-filters at flush time against the CURRENT scene.
+    const store = seed(); // scenes sA, sB seeded at seq 1 → appliedSeq 1
+    let viewed = "sA";
+    const backend = new MockBackend();
+    let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      viewedSceneId: () => viewed,
+      subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+    });
+    engine.start();
+
+    // A masked vision frame for scene sA at seq 5 (store at 1 → deferred into pendingDerived).
+    onUpdate({ payload: { mode: "masked", polygons: [{ scene: "sA", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 5 });
+    expect(backend.visibility).toBeNull(); // deferred, not yet applied
+
+    // Switch to scene sB (client-local, no new server frame): reapply re-filters the cached raw
+    // payload to sB → the sA polygon is dropped → full fog (fail-closed, no cross-scene hole).
+    viewed = "sB";
+    engine.reapplyViewedScene();
+    expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [] });
+
+    // Store advances past seq 5 → the deferred frame flushes. It must re-filter against the CURRENT
+    // scene (sB), NOT replay the stale sA-filtered input. Assert scene B's fog still stands (no sA
+    // hole leaking through). This assertion fails against the pre-fix code and passes after.
+    store.applyCommand({
+      seq: 5, world_id: "w1", author: "u", ts: 0,
+      ops: [{ op: "create", doc: buildSceneDoc("w1", {}, "sC") }],
+    });
+    expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [] });
+    engine.destroy();
+  });
 });
