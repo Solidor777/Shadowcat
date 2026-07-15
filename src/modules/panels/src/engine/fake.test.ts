@@ -52,6 +52,41 @@ test("poppedOut degrades to a floating window (bespoke-fallback, spec §10)", ()
   eng.destroy();
 });
 
+// Regression: `docs/OPEN_BUGS.md` "[Panels] The bespoke-fallback engine ...
+// loses width containment once a THIRD docked group is added". `ZoneNode.size`
+// (the zone's own px basis, already tracked by the reducer and driven by
+// dockview's real splitter) was never read by `FakeEngine.apply` — a docked
+// zone's container carried no width/height constraint at all, so it stretched
+// to the full `host` cross-size (flex `align-items: stretch` default) instead
+// of staying columned, regardless of group count. This asserts the zone
+// container now carries a fixed px cross-size (contained, overflow-managed)
+// once ANY groups are docked, unaffected by how many groups pile up.
+test("FakeEngine constrains a zone's cross-size to ZoneNode.size once it has docked groups, past 2 groups", () => {
+  const host = document.createElement("div");
+  const slotFor = makeSlots(["a", "b", "c"]);
+  const eng = new FakeEngine();
+  eng.init(host, slotFor, document.createElement("div"));
+
+  let l = defaultLayout([{ id: "a" }, { id: "b" }, { id: "c" }]);
+  l = applyOp(l, { op: "dock", id: "a", zone: "right", group: "new" });
+  l = applyOp(l, { op: "dock", id: "b", zone: "right", group: "new" });
+  eng.apply(l.expanded, new Map());
+
+  const zoneAfterTwo = eng.zoneEl("right")!;
+  expect(zoneAfterTwo.style.width).toBe(`${l.expanded.zones.right.size}px`);
+  expect(zoneAfterTwo.style.flex).toBe("0 0 auto");
+
+  l = applyOp(l, { op: "dock", id: "c", zone: "right", group: "new" });
+  eng.apply(l.expanded, new Map());
+
+  // A THIRD docked group must not widen the zone past its own px basis.
+  const zoneAfterThree = eng.zoneEl("right")!;
+  expect(zoneAfterThree.style.width).toBe(`${l.expanded.zones.right.size}px`);
+  expect(zoneAfterThree.style.flex).toBe("0 0 auto");
+  expect(zoneAfterThree.style.overflow).not.toBe("");
+  eng.destroy();
+});
+
 // A fixed (unoffset) fallback rect would stack every popped-out id fully
 // overlapping at the identical position — this asserts two simultaneously
 // popped-out ids render at distinct rects and z-indices under this

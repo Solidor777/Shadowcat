@@ -963,4 +963,47 @@ describe("multi-scene render filtering", () => {
     expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [] });
     engine.destroy();
   });
+
+  it("a stale deferred frame superseded by a later immediate-apply frame is discarded, not re-applied, on flush (no lastAppliedSeq regression)", () => {
+    // Frame-ordering monotonicity hole: seq 5 defers behind the watermark, then seq 7 arrives and
+    // takes the IMMEDIATE-apply branch (appliedSeq already caught up) without touching the still-set
+    // pendingDerived(5) entry. A later flush must discard that stale entry, never regress the mask
+    // back to seq 5's payload. `store.appliedSeq` is mutated directly (a plain field on
+    // DocumentStore) to isolate RenderEngine's own onSceneFrame/flushPendingDerived contract from
+    // DocumentStore's incidental commit-triggers-flush coupling — the engine's watermark logic must
+    // hold for any ReadableDocuments whose appliedSeq can advance independently of a flush trigger.
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+    });
+    engine.start();
+
+    // (a) seq 5 arrives while appliedSeq (0) is behind → deferred into pendingDerived.
+    onUpdate({ payload: { mode: "masked", polygons: [{ scene: null, points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 5 });
+    expect(backend.visibility).toBeNull(); // deferred, not yet applied
+
+    // (b) appliedSeq catches up to 7 (bypassing store.subscribe's flush trigger — see rationale
+    // above); seq 7 then arrives and takes the immediate-apply branch, advancing lastAppliedSeq to 7.
+    store.appliedSeq = 7;
+    onUpdate({ payload: { mode: "all" }, computedAtSeq: 7 });
+    expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [] });
+
+    // (c) A later store commit (any commit — flushPendingDerived runs on every one) re-checks the
+    // still-set pendingDerived(5). It must be discarded (5 <= lastAppliedSeq 7), never applied: the
+    // mask must stay at the seq-7 payload, and lastAppliedSeq must not regress to 5.
+    store.applyCommand({
+      seq: 8, world_id: "w1", author: "a", ts: 0,
+      ops: [{ op: "create", doc: buildSceneDoc("w1", {}, "s1") }],
+    });
+    expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [] }); // unchanged, not the stale masked payload
+
+    // A genuinely-newer frame at seq 8 must still apply normally afterward (monotonic forward
+    // progress is unaffected by the discard).
+    onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [1, 1, 11, 1, 11, 11] }] }, computedAtSeq: 8 });
+    expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [1, 1, 11, 1, 11, 11] }], explored: [] });
+    engine.destroy();
+  });
 });

@@ -227,11 +227,20 @@ export class RenderEngine implements SceneToolHost {
   private flushPendingDerived(): void {
     const p = this.pendingDerived;
     if (p && this.opts.store.appliedSeq >= p.seq) {
+      // Always clear the pending slot here — flushed or discarded, it must never linger past this
+      // watermark check (a lingering entry is exactly the monotonicity hole this guard closes).
       this.pendingDerived = null;
-      // Re-filter the raw payload against the CURRENT viewed scene at flush time (not the scene
-      // viewed when the frame was deferred): toVisibility reads this.viewedScene() internally, so a
-      // deferred scene-A frame flushing after a switch to scene B yields scene B's fog, not A's.
-      this.applyDerived(this.toVisibility(p.payload), p.seq);
+      // Monotonicity guard: a newer frame may have taken the IMMEDIATE-apply branch in onSceneFrame
+      // (its own computedAtSeq not ahead of appliedSeq at arrival) while this entry sat deferred,
+      // advancing lastAppliedSeq PAST p.seq without touching pendingDerived. Applying this now would
+      // regress the mask to a stale-but-superseded frame. Only a pending entry still newer than the
+      // highest already-applied seq is live; anything else is discarded, never applied.
+      if (p.seq > this.lastAppliedSeq) {
+        // Re-filter the raw payload against the CURRENT viewed scene at flush time (not the scene
+        // viewed when the frame was deferred): toVisibility reads this.viewedScene() internally, so a
+        // deferred scene-A frame flushing after a switch to scene B yields scene B's fog, not A's.
+        this.applyDerived(this.toVisibility(p.payload), p.seq);
+      }
     }
   }
 

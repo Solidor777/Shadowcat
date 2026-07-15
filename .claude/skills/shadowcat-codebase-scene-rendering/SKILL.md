@@ -105,13 +105,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   Chebyshev (where the diagonal step cost is 1.0); under any other diagonal rule they diverge. This
   is a deliberate v1 scoping decision (M10g Task 7), not a bug — nothing currently consumes or
   compares the two costs together. Resolve before any per-turn movement-budget system consumes
-  either `MoveOutcome.cost` or `MoveStream.cost`. **Gotcha (M10f-2):** `supercover_cells` can
-  fail-closed (return `None`, rejecting an otherwise-legal move) on a diagonal king-step whose leg
-  endpoints BOTH sit exactly on 4-way grid-line intersections — the Amanatides-Woo corner-crossing
-  branch fires repeatedly and drifts away from the target cell before `MAX_MOVE_CELLS` catches it;
-  fails closed (safe), never opens a forbidden move, but rejects a move a player might reasonably
-  expect to succeed (logged `docs/TODO.md`, discovered via an M10f-2 Task 6 fixture-derivation
-  error that surfaced it).
+  either `MoveOutcome.cost` or `MoveStream.cost`. **RESOLVED (Phase-1 sweep):** `supercover_cells`'s
+  lattice-corner-tie drift (a diagonal king-step whose leg endpoints both sit exactly on 4-way
+  grid-line intersections could spuriously fail-closed) is fixed via a per-axis remaining-step
+  budget gating the diagonal corner branch — see `docs/CLOSED_BUGS.md` for the root cause and fix.
 - `src/server/src/scene/mod.rs` — adds `SceneEcs::token_position(token) -> Option<(f64,f64)>` and
   `SceneEcs::resolved_animation_speed() -> f64` (`pub(crate)` seams; the latter sits alongside
   `resolved_diagonal_rule`, sources `world_settings.animation`, defaults to 6 cells/sec).
@@ -573,6 +570,20 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   FLUSH, not at arrival. Any future engine cache that spans a client-local scene switch (not just
   vision/fog) must follow this same raw-payload-cache/filter-at-consumption shape — filtering
   eagerly and caching the filtered result is the bug pattern to avoid.
+- **RESOLVED (`docs/CLOSED_BUGS.md`): `flushPendingDerived` no longer regresses `lastAppliedSeq` to
+  a stale `pendingDerived` entry superseded by an immediately-applied newer frame.** `onSceneFrame`'s
+  IMMEDIATE-apply branch (taken when a frame's `computedAtSeq` is not ahead of `store.appliedSeq` at
+  arrival) never touched `pendingDerived` — a still-set OLDER deferred entry (e.g. seq 5) could
+  survive past a newer frame's (seq 7) immediate apply advancing `lastAppliedSeq` to 7, then get
+  wrongly re-applied by a LATER `flushPendingDerived` call (any subsequent store commit), regressing
+  the mask back to seq 5. Fix: `flushPendingDerived` now applies a pending entry only when
+  `p.seq > this.lastAppliedSeq` at flush time (checked AFTER the pre-existing `store.appliedSeq >=
+  p.seq` watermark check, BEFORE the `toVisibility` re-filter) — otherwise discards it; the pending
+  slot is unconditionally cleared as soon as the watermark condition is met, applied or not. This is
+  a distinct guard from the M12d scene-refilter-at-flush fix directly above (that fix is about WHAT
+  scene a cached payload filters against; this one is about WHETHER a superseded payload should
+  apply at all) — both guards live in the same function and must both be preserved by any future
+  edit to `flushPendingDerived`.
 - **Vision is server-authoritative, no client prediction** (ARCHITECTURE §2 invariant 3); movement that
   crosses a `blocksMove` wall is rejected server-side before the write — validate the **post-image**
   position, not just the pre-move one [[m9-progress]].
@@ -753,14 +764,21 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   visibility override (only nested-property overrides existed); secret regions were the first doc
   type to exercise it, and the panic-on-strip bug was caught before it shipped. Any future doc type
   that wants whole-body secrecy (vs. per-field) must go through this same branch, not a new one.
-- **`supercover_cells` can fail-closed on a diagonal king-step whose leg endpoints BOTH sit exactly
-  on 4-way grid-line intersections** — the Amanatides-Woo corner-crossing branch fires repeatedly
-  and drifts away from the target cell until `MAX_MOVE_CELLS` catches it, returning `None` rather
-  than converging (M10f-2 discovery, via an M10f-2 Task 6 fixture-derivation error that surfaced
-  it; not a defect in M10f-2's own code — a pre-existing, already-buddy-checked property of
-  `movement.rs`). Fails closed (never opens a forbidden move) but rejects a move a player might
-  reasonably expect to succeed; logged `docs/TODO.md`, not fixed (out of scope for the checkpoint
-  that found it).
+- **RESOLVED (`docs/CLOSED_BUGS.md`): `supercover_cells`'s corner-crossing branch no longer drifts
+  past the target on a diagonal king-step whose leg endpoints both sit exactly on 4-way grid-line
+  intersections.** (M10f-2 discovered this via a Task 6 fixture-derivation error; a later fix
+  closed it.) Root cause: the branch stepped BOTH axes on every `tMax` tie without checking
+  whether an axis had already reached its target cell — a forced single-axis step early in the
+  traversal (from an endpoint sitting exactly on a grid line) could put `t_max_i`/`t_max_j` into
+  permanent lockstep, so every later tie re-stepped the already-arrived axis too, drifting past
+  `(ei,ej)` until `MAX_MOVE_CELLS` aborted with `None`. Fix: the diagonal corner-step is now gated
+  on a per-axis remaining-step budget (`remaining_i`/`remaining_j`) — it only fires when BOTH axes
+  still owe a grid-line crossing; once either budget hits zero, only the other axis steps
+  regardless of any tie. Convergence is now a property of the (bounded) step budget, not
+  floating-point tie-breaking; the existing safe-over-include behavior for genuine mid-path corner
+  crossings (both flankers emitted) is unchanged and covered by dedicated regression tests in
+  `movement.rs`. `execute_move`'s frozen-fixture "diagonal 3-step king path, full visible" case
+  (`move_exec.rs`) is updated to the now-correct non-truncated outcome.
 - **Cross-scene `MoveStream`/`ScenePing` leak class (M12d) — a NEW divergence axis, not a
   pre-existing gap.** Before M12d every client rendered the SAME scene (`activeScene`, in
   lockstep) — there was no per-client "which scene am I looking at" state for a broadcast

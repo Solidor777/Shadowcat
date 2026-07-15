@@ -36,6 +36,23 @@ export class FakeEngine implements EngineAdapter {
     host.style.flexDirection = "column";
     host.style.height = "100%";
     host.style.minHeight = "0";
+
+    // `row` places "left"/"right" as side columns flanking the center well
+    // (matching a real docked layout's geometry); "bottom" stacks below the
+    // row at full width. Without this nesting, `host`'s own column flow made
+    // every zone a full-width block sibling of the center well — the "loses
+    // width containment" defect (docs/OPEN_BUGS.md): a zone `<div>` with no
+    // width of its own, inside a column flex container, stretches to the
+    // container's full cross-size (`align-items: stretch`, the flex default)
+    // regardless of how many groups are docked into it.
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.flexDirection = "row";
+    row.style.flex = "1";
+    row.style.minWidth = "0";
+    row.style.minHeight = "0";
+    host.appendChild(row);
+
     // Adopts the shared stage/canvas element into a dedicated center-well
     // container — faithful to the adapter contract's reserved-layout-space
     // semantics (real engines lay dock zones out around this well).
@@ -43,16 +60,39 @@ export class FakeEngine implements EngineAdapter {
     const centerEl = document.createElement("div");
     centerEl.dataset.fakeCenter = "";
     centerEl.style.flex = "1";
+    centerEl.style.minWidth = "0";
     centerEl.style.minHeight = "0";
     centerEl.appendChild(stageEl);
-    host.appendChild(centerEl);
     this.#centerEl = centerEl;
-    for (const zone of ZONE_IDS) {
-      const el = document.createElement("div");
-      el.dataset.zone = zone;
-      host.appendChild(el);
-      this.#zoneEls.set(zone, el);
-    }
+
+    const leftEl = this.#makeZoneEl("left");
+    row.appendChild(leftEl);
+    row.appendChild(centerEl);
+    const rightEl = this.#makeZoneEl("right");
+    row.appendChild(rightEl);
+    const bottomEl = this.#makeZoneEl("bottom");
+    host.appendChild(bottomEl);
+  }
+
+  /** Builds a zone container with the containment properties `apply` relies
+   * on: a fixed flex-basis (never stretched by the row/column flex context),
+   * `min-width: 0` so its own intrinsic content can never force it wider than
+   * that basis, and `overflow: auto` so oversized group content scrolls
+   * WITHIN the zone rather than escaping it. `apply` sets the actual px
+   * cross-size (width for right/left, height for bottom) from
+   * `ZoneNode.size` on every reconcile — 0 while the zone has no groups, so
+   * an empty zone reserves no layout space. */
+  #makeZoneEl(zone: Zone): HTMLElement {
+    const el = document.createElement("div");
+    el.dataset.zone = zone;
+    el.style.display = "flex";
+    el.style.flexDirection = "column";
+    el.style.flex = "0 0 auto";
+    el.style.minWidth = "0";
+    el.style.minHeight = "0";
+    el.style.overflow = "auto";
+    this.#zoneEls.set(zone, el);
+    return el;
   }
 
   apply(expanded: ExpandedLayout, _meta: ReadonlyMap<string, PanelMeta>): void {
@@ -70,9 +110,25 @@ export class FakeEngine implements EngineAdapter {
       for (const key of [...this.#groupEls.keys()]) {
         if (key.startsWith(`${zone}:`)) this.#groupEls.delete(key);
       }
-      expanded.zones[zone].groups.forEach((group, i) => {
+      const zoneNode = expanded.zones[zone];
+      // Cross-size (width for right/left, height for bottom) from the
+      // reducer's own `ZoneNode.size` px basis; 0 while empty so a docked-
+      // into-elsewhere zone reserves no layout space. Re-applied on every
+      // `apply()` so a later `resizeZone` op (or a group count going 0->1)
+      // is reflected without a separate code path.
+      const crossSize = zoneNode.groups.length > 0 ? zoneNode.size : 0;
+      if (zone === "bottom") {
+        zoneEl.style.width = "100%";
+        zoneEl.style.height = `${crossSize}px`;
+      } else {
+        zoneEl.style.width = `${crossSize}px`;
+        zoneEl.style.height = "";
+      }
+      zoneNode.groups.forEach((group, i) => {
         const groupEl = document.createElement("div");
         groupEl.dataset.group = String(i);
+        groupEl.style.width = "100%";
+        groupEl.style.minWidth = "0";
         zoneEl.appendChild(groupEl);
         this.#groupEls.set(`${zone}:${i}`, groupEl);
         for (const id of group.tabs) {
@@ -162,6 +218,11 @@ export class FakeEngine implements EngineAdapter {
   /** Test helper: the DOM element hosting a given zone/group's tabs (or null). */
   groupEl(zone: Zone, index: number): HTMLElement | null {
     return this.#groupEls.get(`${zone}:${index}`) ?? null;
+  }
+
+  /** Test helper: the zone container itself (or null before `init`). */
+  zoneEl(zone: Zone): HTMLElement | null {
+    return this.#zoneEls.get(zone) ?? null;
   }
 
   /** Test helper: the DOM element hosting a floating panel (or null). */
