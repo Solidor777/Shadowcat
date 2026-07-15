@@ -75,6 +75,8 @@ export const en: Messages = {
   "actors.faceMapFace": "Face",
   "actors.faceMapAdd": "Add condition mapping",
   "actors.faceSwapHint": "Swap the selected token's active face.",
+  "actors.search": "Search actors",
+  "actors.openSheet": "Open sheet",
   "factions.tab": "Factions",
   "factions.title": "Factions",
   "factions.name": "Name",

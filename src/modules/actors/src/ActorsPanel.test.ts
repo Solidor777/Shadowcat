@@ -430,3 +430,61 @@ describe("ActorsPanel — per-token face swap", () => {
     ]);
   });
 });
+
+describe("ActorsPanel — live search + open sheet", () => {
+  // Real (not identity) `t` for this describe block: the "Open sheet" assertion below matches
+  // the actual rendered label text, not the raw i18n key (the identity default the other
+  // describes in this file rely on has no space between "open" and "Sheet").
+  const realT = (k: string): string => ({ "actors.openSheet": "Open sheet", "actors.search": "Search actors" })[k as "actors.openSheet" | "actors.search"] ?? k;
+
+  function actorDoc(id: string): WireDocument {
+    return buildActorDoc(
+      "w1",
+      { name: "Goblin", displayName: "Goblin", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+      id,
+    );
+  }
+
+  it("opens a sheet for an actor row via ctx.openDocument", async () => {
+    const opened: unknown[] = [];
+    const store = storeWith(actorDoc("a1"));
+    const { getByRole } = render(ActorsPanel, {
+      context: setAppContextForTest({
+        role: "gm",
+        world: "w1",
+        documents: store,
+        store,
+        dispatchIntent: vi.fn(),
+        openDocument: (ref) => opened.push(ref),
+        t: realT,
+      }),
+    });
+    await fireEvent.click(getByRole("button", { name: /open sheet/i }));
+    expect(opened).toEqual([{ docId: "a1" }]);
+  });
+
+  it("runs a live search on a non-empty query and lists only actor hits", async () => {
+    let capturedOnUpdate: ((hits: unknown[]) => void) | null = null;
+    const emptyStore = new DocumentStore();
+    const { getByLabelText, findByText } = render(ActorsPanel, {
+      context: setAppContextForTest({
+        role: "gm",
+        world: "w1",
+        documents: emptyStore,
+        store: emptyStore,
+        dispatchIntent: vi.fn(),
+        searchDocuments: (_q, _o, onUpdate) => {
+          capturedOnUpdate = onUpdate as (hits: unknown[]) => void;
+          return Promise.resolve({ unsubscribe() {} });
+        },
+      }),
+    });
+    await fireEvent.input(getByLabelText(/search/i), { target: { value: "gob" } });
+    capturedOnUpdate!([
+      { document: { id: "a9", doc_type: "actor", system: { name: "Goblin", displayName: "Goblin" } }, score: 1, snippet: "" },
+      { document: { id: "i9", doc_type: "item", system: { name: "Gob-stopper" } }, score: 1, snippet: "" },
+    ]);
+    await findByText("Goblin");
+    expect(screen.queryByText("Gob-stopper")).toBeNull();
+  });
+});
