@@ -491,4 +491,47 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, BackupError::InvalidBackupDir(_, _)));
     }
+
+    #[tokio::test]
+    async fn backup_and_restore_round_trip_preserves_nested_directory_structure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("shadowcat.db");
+        seed_db(&db_path).await;
+
+        // Multi-level nesting built exclusively via Path::join, never string
+        // concatenation — the portability property this test exists to prove.
+        let assets_dir = tmp.path().join("assets");
+        let deep_dir = assets_dir.join("world1").join("scenes").join("battlemap");
+        tokio::fs::create_dir_all(&deep_dir).await.unwrap();
+        let deep_file = deep_dir.join("token.png");
+        tokio::fs::write(&deep_file, b"DEEP").await.unwrap();
+
+        let out_dir = tmp.path().join("out");
+        let manifest = create_backup(&db_path, &assets_dir, &out_dir)
+            .await
+            .unwrap();
+        assert_eq!(manifest.asset_file_count, 1);
+
+        let backed_up_deep = out_dir
+            .join("assets")
+            .join("world1")
+            .join("scenes")
+            .join("battlemap")
+            .join("token.png");
+        assert_eq!(tokio::fs::read(&backed_up_deep).await.unwrap(), b"DEEP");
+
+        // Round-trip through restore into a third location.
+        let restored_db = tmp.path().join("restored.db");
+        let restored_assets = tmp.path().join("restored_assets");
+        restore_backup(&out_dir, &restored_db, &restored_assets, false)
+            .await
+            .unwrap();
+
+        let restored_deep = restored_assets
+            .join("world1")
+            .join("scenes")
+            .join("battlemap")
+            .join("token.png");
+        assert_eq!(tokio::fs::read(&restored_deep).await.unwrap(), b"DEEP");
+    }
 }

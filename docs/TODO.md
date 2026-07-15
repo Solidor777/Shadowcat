@@ -317,3 +317,7 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - Bundle the link-preview deps (`preview_client`/`cache`/`preview_rate`) into a `LinkPreviewDeps`
   struct to shrink `handle_send_message`/`handle_edit_message` signatures (~40 call sites now under
   `#[allow(clippy::too_many_arguments)]`) and reduce call-site arg-order risk.
+
+## Server / backups (M12.5)
+- TODO: Per-world granular export/import (sharing a single world between server instances without a whole-database snapshot) — M12.5 ships whole-server snapshot/restore only. Real complexity (world-scoped row subset while preserving referential integrity across cross-table FKs, shared asset references, admin/global tables) deferred as a distinct future feature, not required for the dogfood-alpha gate.
+- TODO: The backup mechanism's assets-copy step is not transactionally coupled to the `VACUUM INTO` DB snapshot. An asset REPLACE (not create) in flight during backup commits its DB row before renaming its temp file into place (`http/assets.rs` — `replace`), so a backup racing an in-flight replace can capture updated asset metadata with the pre-replace file bytes for a few milliseconds' window. Inherent property of any online (no-downtime) backup of a live mutable system; add a brief write-quiesce mode during backup if stronger consistency is ever needed in practice.
