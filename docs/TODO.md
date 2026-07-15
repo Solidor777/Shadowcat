@@ -176,6 +176,25 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   deps into a `LinkPreviewDeps`-style struct to shrink both signatures and reduce call-site
   arg-order risk.
 
+## Client / UI chrome (M12b whole-branch review deferrals)
+- TODO: `list_members` sorts with SQLite binary collation (`ORDER BY u.username`) — uppercase
+  sorts before lowercase in the Presence roster (`Bob` before `alice`). Switch to
+  `COLLATE NOCASE` if case-insensitive display order is wanted; the covering test uses
+  all-lowercase names so it won't catch the change either way.
+- TODO: `LauncherMenu.svelte` and `PanelMenu.svelte` duplicate the WAI-ARIA menu keyboard/focus
+  logic (arrows/Home/End/Escape/Tab + wrap-around focusItem). The seam boundary blocks direct
+  reuse across the modules; extract a shared menu primitive into ui-kit before a third menu
+  triplicates it.
+- TODO: `ToolRail` `.controls select/input` are 32px min-height — above the 24px a11y floor but
+  below the ~44px coarse-pointer aim, and now touch-reachable on phones via the compact strip.
+  Bump their coarse-pointer sizing in a density pass (`@media (pointer: coarse)` or a wrapper).
+- TODO: `panels.spec.ts` locates tool buttons via the styling class (`.tool-rail .tool`) instead
+  of the existing `data-testid="tool-{id}"` — swap to the testid form when next touched.
+- TODO: `LauncherMenu` has no handling/test for `metaMap` mutating while the menu is open (a
+  panel uninstall would drop focus out of the menu's closed loop). Modules only install/uninstall
+  at world entry today; add a focus-recovery path (or at least a pinning test) when live module
+  management lands.
+
 ## Client / panels (M12a Task 6 — DockviewEngine)
 - RESOLVED (M12a Task 6 buddy-check fix wave): live resize (`resizeZone`/`resizeGroup`)
   translation is now wired — `group.api.onDidDimensionsChange` (`DockviewGroupPanelApi`, inherited

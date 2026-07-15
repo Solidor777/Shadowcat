@@ -203,3 +203,11 @@ are observations awaiting triage, not committed work.
   (edge vs center vs tab-strip index) remains manual-QA-only (also logged as the
   `#toDropSite` fallback TODO). Status: Needs Review (a human mouse pass over dock/float/reorder
   gestures would close it; a synthetic-DragEvent harness is a possible future e2e investment).
+
+- Title: M12b compact toolrail DOM order precedes main content. Summary: with the compact toolrail
+  no longer display:none (M12b Task 1), markup order (topbar/toolrail/main/statusbar) diverges from
+  compact visual order (topbar/main/toolrail/statusbar) — tab/reading order hits toolrail controls
+  before panel content. Grid areas own visual placement in BOTH modes, so reordering the markup
+  (toolrail after main) fixes tab order without visual change. Status: Resolved — M12b Task 6
+  (commit fce8910) reordered the markup; grid areas kept both visual layouts identical.
+  (M12b Task 1 code review.)
