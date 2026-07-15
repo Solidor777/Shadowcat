@@ -37,8 +37,15 @@
 
   function update(id: string, patch: Partial<Faction>): void {
     if (!registry) return;
+    // `old` must be the field's REAL current stored value (or null when genuinely absent): the
+    // server's apply_intent enforces field-level OCC (actual != change.old -> Conflict), so a
+    // hardcoded `old: null` is only valid once and is rejected on every subsequent edit once the
+    // field holds a non-null value (mirrors GameSettingsPanel's `set` helper fix).
+    const sys = registry.system as FactionRegistrySystem;
+    const current = sys.factions[id] as Partial<Faction> | undefined;
     for (const [k, v] of Object.entries(patch)) {
-      ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/system/factions/${id}/${k}`, old: null, new: v }] }]);
+      const old = current?.[k as keyof Faction] ?? null;
+      ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/system/factions/${id}/${k}`, old, new: v }] }]);
     }
   }
   function add(): void {

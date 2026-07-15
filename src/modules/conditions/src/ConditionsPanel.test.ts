@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { tick } from "svelte";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { TokenSelection } from "@shadowcat/ui-kit";
@@ -59,5 +60,34 @@ describe("ConditionsPanel", () => {
     expect(dispatchIntent).toHaveBeenCalledTimes(1);
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
     expect(ops[0]).toMatchObject({ op: "update", doc_id: "act1", changes: [{ path: "/system/conditions", new: ["dead"] }] });
+  });
+
+  it("reads the raw stored value as `old` on a SECOND edit to the same field (OCC regression)", async () => {
+    const dispatchIntent = vi.fn();
+    const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1");
+    const store = storeWith(registry);
+    render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
+
+    const nameInput = screen.getByLabelText("conditions.name") as HTMLInputElement;
+
+    // First edit: pristine doc, `old` correctly matches the stored value.
+    await fireEvent.change(nameInput, { target: { value: "Deceased" } });
+    expect(dispatchIntent).toHaveBeenNthCalledWith(1, [
+      { op: "update", doc_id: "creg1", changes: [{ path: "/system/conditions/dead/name", old: "Dead", new: "Deceased" }] },
+    ]);
+
+    // Apply the first write to the store, as the server would on success, before the second edit.
+    store.applyCommand({
+      seq: 2, world_id: "w1", author: "a", ts: 0,
+      ops: [{ op: "update", doc_id: "creg1", changes: [{ path: "/system/conditions/dead/name", old: "Dead", new: "Deceased" }] }],
+    });
+    await tick();
+
+    // Second edit to the SAME field: `old` must reflect the first write's result, not stay
+    // hardcoded at null (a stale `old` gets rejected by the server's field-level OCC check).
+    await fireEvent.change(nameInput, { target: { value: "Deceased2" } });
+    expect(dispatchIntent).toHaveBeenNthCalledWith(2, [
+      { op: "update", doc_id: "creg1", changes: [{ path: "/system/conditions/dead/name", old: "Deceased", new: "Deceased2" }] },
+    ]);
   });
 });
