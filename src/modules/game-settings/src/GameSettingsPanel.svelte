@@ -101,6 +101,14 @@
     return ctx.documents.query("scene");
   });
   let selectedSceneId = $state<string | null>(null);
+
+  // Deep-link from the scene browser's "Configure" (M12d): adopt its focused scene. Only reacts to
+  // a non-null change, so a manual picker change afterward is preserved until the browser re-focuses.
+  $effect(() => {
+    const focus = ctx.sceneSelection.configureSceneId;
+    if (focus) selectedSceneId = focus;
+  });
+
   const scene = $derived.by((): WireDocument | undefined =>
     scenes.find((s) => s.id === (selectedSceneId ?? scenes[0]?.id)));
   const ssys = $derived.by((): SceneSystem | undefined => scene?.system as SceneSystem | undefined);

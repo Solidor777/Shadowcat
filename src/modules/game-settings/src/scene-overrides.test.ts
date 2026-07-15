@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
+import { tick } from "svelte";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
+import { SceneSelection } from "@shadowcat/ui-kit";
 import { DocumentStore, buildWorldSettingsDoc, buildSceneDoc, type WireDocument } from "@shadowcat/core";
 import GameSettingsPanel from "./GameSettingsPanel.svelte";
 
@@ -146,5 +148,21 @@ describe("per-scene overrides", () => {
     expect(dispatchIntent).toHaveBeenCalledWith([
       { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/movementModel", old: "continuous", new: null }] },
     ]);
+  });
+
+  it("presets the per-scene picker to ctx.sceneSelection.configureSceneId", async () => {
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const sA = buildSceneDoc("w1", {}, "sA");
+    const sB = buildSceneDoc("w1", {}, "sB");
+    const store = gmStoreWith(ws, sA, sB);
+    const selection = new SceneSelection();
+    const context = setAppContextForTest({ role: "gm", world: "w1", documents: store, sceneSelection: selection });
+    render(GameSettingsPanel, { context });
+
+    selection.select("sB");
+    await tick();
+
+    const sel = screen.getByLabelText("gameSettings.scene.pick") as HTMLSelectElement;
+    expect(sel.value).toBe("sB");
   });
 });
