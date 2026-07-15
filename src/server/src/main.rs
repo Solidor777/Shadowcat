@@ -10,7 +10,27 @@ use clap::Parser;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    if cli.backup_to.is_some() && cli.restore_from.is_some() {
+        anyhow::bail!("--backup-to and --restore-from are mutually exclusive");
+    }
+    let backup_to = cli.backup_to.clone();
+    let restore_from = cli.restore_from.clone();
+    let force = cli.force;
+
     let config = Config::load(cli)?;
+
+    if let Some(dir) = backup_to {
+        init_tracing();
+        run_backup(&config, std::path::Path::new(&dir), force).await?;
+        return Ok(());
+    }
+    if let Some(dir) = restore_from {
+        init_tracing();
+        run_restore(&config, std::path::Path::new(&dir), force).await?;
+        return Ok(());
+    }
+
     init_tracing();
 
     let repo = SqliteRepository::connect(&config.db).await?;
@@ -36,6 +56,56 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
     tracing::info!(bind = %config.bind, "shadowcat listening");
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// One-shot `--backup-to` mode: snapshot the resolved db + assets into
+/// `out_dir`, print a one-line summary, and return — the caller exits before
+/// any server startup runs. Refuses a non-empty `out_dir` unless `force`.
+async fn run_backup(config: &Config, out_dir: &std::path::Path, force: bool) -> anyhow::Result<()> {
+    if !force && !shadowcat::backup::dir_is_empty_or_absent(out_dir)? {
+        anyhow::bail!(
+            "refusing to write into non-empty directory {} without --force",
+            out_dir.display()
+        );
+    }
+    let manifest = shadowcat::backup::create_backup(
+        std::path::Path::new(&config.db),
+        &config.assets_path(),
+        out_dir,
+    )
+    .await?;
+    println!(
+        "backup written to {}: {} asset file(s), {} db byte(s), shadowcat {}",
+        out_dir.display(),
+        manifest.asset_file_count,
+        manifest.db_bytes,
+        manifest.shadowcat_version,
+    );
+    Ok(())
+}
+
+/// One-shot `--restore-from` mode: copy a prior `--backup-to` directory over
+/// the resolved db + assets, print a one-line summary, and return — never
+/// starts the server.
+async fn run_restore(
+    config: &Config,
+    backup_dir: &std::path::Path,
+    force: bool,
+) -> anyhow::Result<()> {
+    shadowcat::backup::restore_backup(
+        backup_dir,
+        std::path::Path::new(&config.db),
+        &config.assets_path(),
+        force,
+    )
+    .await?;
+    println!(
+        "restored {} into db={} assets={}",
+        backup_dir.display(),
+        config.db,
+        config.assets_path().display(),
+    );
     Ok(())
 }
 

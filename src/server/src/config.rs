@@ -26,6 +26,18 @@ pub struct Cli {
     pub session_key: Option<String>,
     #[arg(long)]
     pub assets_dir: Option<String>,
+    /// One-shot: snapshot the resolved db + assets into this directory, print
+    /// a summary, and exit before the server would otherwise start.
+    #[arg(long)]
+    pub backup_to: Option<String>,
+    /// One-shot: restore a prior `--backup-to` directory over the resolved db
+    /// + assets, print a summary, and exit. Never starts the server.
+    #[arg(long)]
+    pub restore_from: Option<String>,
+    /// Required to let `--backup-to` overwrite a non-empty output directory,
+    /// or `--restore-from` overwrite an existing destination db/assets dir.
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// Effective server configuration after layering. Precedence (high→low):
@@ -231,6 +243,9 @@ mod tests {
             setup_token: None,
             session_key: None,
             assets_dir: None,
+            backup_to: None,
+            restore_from: None,
+            force: false,
         };
         let cfg = Config::load(cli).expect("load");
         assert_eq!(cfg.bind, "0.0.0.0:8080");

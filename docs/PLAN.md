@@ -1141,6 +1141,14 @@ Decomposed **M11a–d**:
 ### M12.5 · Backups + snapshot restore (gate precondition)
 - Basic world backup (SQLite snapshot / per-world export) + restore path; minimal manual scheduling. Distinct from Phase-4 backup *automation*.
 - Satisfies the dogfood-alpha gate's data-safety precondition.
+> **M12.5 DONE** (branch `m12.5-backups-snapshot-restore`, 4 SDD tasks, no buddy-check
+> pre-authorized — file I/O + one SQL statement, not the security/concurrency/determinism class
+> of risk) — whole-server `VACUUM INTO` snapshot + ordered assets-directory copy + `manifest.json`,
+> restored via `shadowcat --backup-to <dir>` / `shadowcat --restore-from <dir> [--force]`
+> (CLI-only, no admin HTTP endpoint; design
+> `superpowers/specs/2026-07-15-m12.5-backups-snapshot-restore-design.md`). Per-world
+> export/import and stronger in-flight-replace consistency logged to `docs/TODO.md`. Plan:
+> [`superpowers/plans/2026-07-15-m12.5-backups-snapshot-restore.md`](superpowers/plans/2026-07-15-m12.5-backups-snapshot-restore.md).
 
 ### M13 · Nightfox — first-party generic system module
 > Cross-cutting spec (approved 2026-07-15): [`superpowers/specs/2026-07-15-m13-nightfox-system-design.md`](superpowers/specs/2026-07-15-m13-nightfox-system-design.md).
