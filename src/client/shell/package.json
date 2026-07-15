@@ -22,6 +22,9 @@
     "@shadowcat/module-game-settings": "workspace:*",
     "@shadowcat/module-scene-tools": "workspace:*",
     "@shadowcat/module-panels": "workspace:*",
+    "@shadowcat/module-sheet-fallback": "workspace:*",
+    "@shadowcat/module-sheet-actor": "workspace:*",
+    "@shadowcat/module-sheet-item": "workspace:*",
     "@shadowcat/types": "workspace:^",
     "@shadowcat/ui-kit": "workspace:*"
   },

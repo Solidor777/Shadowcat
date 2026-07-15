@@ -51,6 +51,27 @@ export function setPointer(
   }
 }
 
+/** Reads the value at JSON-pointer `pointer` in `root`; `undefined` for any missing
+ * segment or out-of-range array index. Never throws (the read-only mirror of
+ * `setPointer`). An empty pointer returns `root`. */
+export function getPointer(root: unknown, pointer: string): unknown {
+  if (pointer === "") return root;
+  const tokens = pointer.split("/").slice(1).map((t) => t.replace(/~1/g, "/").replace(/~0/g, "~"));
+  let cur: unknown = root;
+  for (const tok of tokens) {
+    if (Array.isArray(cur)) {
+      const idx = Number(tok);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= cur.length) return undefined;
+      cur = cur[idx];
+    } else if (cur !== null && typeof cur === "object") {
+      cur = (cur as Record<string, unknown>)[tok];
+    } else {
+      return undefined;
+    }
+  }
+  return cur;
+}
+
 /** Apply one operation to a document map (mutates it). Update clones the target
  * before mutating, so callers sharing document refs are not affected. */
 export function applyOperation(

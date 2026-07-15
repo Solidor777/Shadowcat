@@ -140,8 +140,10 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   narrow the subscription when long-session history makes it observable.
 - Unread badges / notification pips on the chat tab (and tab popout windows, if ever wanted) —
   Foundry-parity polish, deliberately out of M11d-1 scope.
-- Actor-name → sheet navigation and internal doc-link buttons on the message card — blocked on
-  M12 sheet infrastructure; names render as emphasized text meanwhile.
+- TODO: A generic in-body doc-link chat segment (`Segment::DocLink`) — actor-name → sheet
+  navigation shipped in M12c, but a free-form doc-link segment has no server producer or
+  client authoring path yet; add the segment kind + an authoring affordance when a use case
+  lands.
 - Speaking-as-actor composer UX (`actor_owner` picker) — lands with M11d-2 roll attribution;
   the wire field, storage, and card rendering already support it.
 - Send/edit/delete failure surfacing: the chat frames carry no correlation id, so server
@@ -194,6 +196,13 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   panel uninstall would drop focus out of the menu's closed loop). Modules only install/uninstall
   at world entry today; add a focus-recovery path (or at least a pinning test) when live module
   management lands.
+
+## Client / ui-kit forms (M12c Task 5 buddy check)
+- TODO: no ui-kit component has a coarse-pointer touch-sizing rule for text/number/checkbox
+  `<input>` elements (only buttons get the `@media (pointer: coarse)` 44px bump — see
+  `SystemTreeEditor.svelte` and the pre-existing gap in `GameSettingsPanel.svelte`). This is a
+  systemic ui-kit baseline gap, not a per-component one; fix with a shared input-height token/rule
+  rather than duplicating a media query into every form component.
 
 ## Client / panels (M12a Task 6 — DockviewEngine)
 - RESOLVED (M12a Task 6 buddy-check fix wave): live resize (`resizeZone`/`resizeGroup`)

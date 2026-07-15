@@ -14,6 +14,10 @@ import { gameSettings } from "@shadowcat/module-game-settings";
 import { sceneTools } from "@shadowcat/module-scene-tools";
 import { chat } from "@shadowcat/module-chat";
 import { defaultLayout } from "@shadowcat/module-panels";
+import { sheetFallback } from "@shadowcat/module-sheet-fallback";
+import { sheetActor } from "@shadowcat/module-sheet-actor";
+import { sheetItem } from "@shadowcat/module-sheet-item";
+import { SHEET_FALLBACK_CONTRACT, sheetContract } from "@shadowcat/core";
 
 // Every panel-contributing module in App.svelte's default set, registered in the
 // exact order enterWorld() passes to WorldSession. INVARIANT: exactly one
@@ -49,5 +53,17 @@ describe("default module set — default docked panel", () => {
     expect(layout.compact.order.sort()).toEqual(
       ["chat:panel", "assets:panel", "actors:panel", "factions:panel", "conditions:panel", "game-settings:panel", "settings:panel"].sort(),
     );
+  });
+});
+
+describe("sheet modules contribute sheets, not panels", () => {
+  it("the three sheet modules register sheet contracts and no shadowcat.panel", () => {
+    const contributions = new ContributionRegistry();
+    const ctx = { contributions } as never;
+    for (const m of [sheetFallback, sheetActor, sheetItem]) m.register(ctx);
+    expect(contributions.contributionsFor(PANEL_CONTRACT)).toHaveLength(0);
+    expect(contributions.entriesFor(SHEET_FALLBACK_CONTRACT)).toHaveLength(1);
+    expect(contributions.entriesFor(sheetContract("actor"))).toHaveLength(1);
+    expect(contributions.entriesFor(sheetContract("item"))).toHaveLength(1);
   });
 });

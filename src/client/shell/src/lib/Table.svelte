@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { setAppContext, Surface, PanelsBridge } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface, PanelsBridge, SheetsController } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
   import { consoleLogger } from "@shadowcat/core";
+  import { createSubscriber } from "svelte/reactivity";
   import { logout } from "./api";
   import { navigate } from "./route.svelte";
   import { getPanelLayout, setPanelLayout } from "./sessionState.svelte";
@@ -14,6 +15,28 @@
 
   let { session, leaveWorld }: { session: WorldSession; leaveWorld: () => void } =
     $props();
+
+  // Sheet panels: the controller registers `sheet:<docId>` contributions on demand; the
+  // panel host mounts + floats them. Constructed before setAppContext so `openDocument` is
+  // on the context from the first render.
+  const sheets = new SheetsController({
+    contributions: session.contributions,
+    documents: session.documents,
+    panels,
+    logger: consoleLogger(),
+  });
+
+  // Boot restore (§7): re-open every persisted sheet whose document resolves. Sheets are
+  // registered only when their doc is present, so this runs reactively — panels mount
+  // during #onWelcome BEFORE the resync stream fills the store, so a one-shot scan would
+  // find no resolvable docs. `createSubscriber` re-runs it as the store fills;
+  // `restoreFromPersisted` is idempotent, so re-runs never duplicate.
+  const subscribe = createSubscriber((update) => session.documents.subscribe(update));
+  $effect(() => {
+    subscribe();
+    sheets.restoreFromPersisted(getPanelLayout(session.world!));
+  });
+
   // App renders <Table> only once role+world are set (Welcome received), so these
   // are non-null at init. setContext must run during init, not in markup; the
   // session/leaveWorld are fixed per Table, so capturing them once is intended.
@@ -26,6 +49,7 @@
     role: session.role!,
     selfId: session.selfId,
     canEdit: (doc, path) => session.canEdit(doc, path),
+    openDocument: (ref) => sheets.openDocument(ref),
     members: session.members,
     t,
     assets: session.assets,

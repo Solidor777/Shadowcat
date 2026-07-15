@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DocumentStore, setPointer } from "./store";
+import { DocumentStore, setPointer, getPointer } from "./store";
 import type { WireCommand, WireDocument } from "./wire";
 
 function doc(id: string, system: unknown): WireDocument {
@@ -105,5 +105,19 @@ describe("setPointer", () => {
   it("rejects an out-of-range array index (no silent sparse extend)", () => {
     expect(() => setPointer({ a: [1, 2] }, "/a/5", 9)).toThrow();
     expect(() => setPointer({ a: [1, 2] }, "/a/x", 9)).toThrow();
+  });
+});
+
+describe("getPointer", () => {
+  const root = { system: { name: "x", stats: { hp: 5 }, tags: ["a", "b"] } };
+  it("reads nested object and array values", () => {
+    expect(getPointer(root, "/system")).toEqual(root.system);
+    expect(getPointer(root, "/system/stats/hp")).toBe(5);
+    expect(getPointer(root, "/system/tags/1")).toBe("b");
+  });
+  it("returns undefined for a missing path, never throws", () => {
+    expect(getPointer(root, "/system/nope/deep")).toBeUndefined();
+    expect(getPointer(root, "/system/tags/9")).toBeUndefined();
+    expect(getPointer(undefined, "/system")).toBeUndefined();
   });
 });

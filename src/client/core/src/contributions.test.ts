@@ -69,3 +69,18 @@ describe("ContributionRegistry", () => {
     expect(listener).not.toHaveBeenCalled();
   });
 });
+
+describe("ContributionRegistry.entriesFor", () => {
+  it("returns each contribution paired with its registering module id", () => {
+    const reg = new ContributionRegistry();
+    reg.contribute({ id: "a", contract: "c", component: 1, sheet: { priority: 5 } }, { module: "mod-a" });
+    reg.contribute({ id: "b", contract: "c", component: 2 }, { module: "mod-b" });
+    reg.contribute({ id: "z", contract: "other", component: 3 }, { module: "mod-z" });
+    const entries = reg.entriesFor("c");
+    expect(entries.map((e) => [e.contribution.id, e.module])).toEqual([
+      ["a", "mod-a"],
+      ["b", "mod-b"],
+    ]);
+    expect(entries[0].contribution.sheet?.priority).toBe(5);
+  });
+});

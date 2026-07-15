@@ -67,6 +67,12 @@ const ZONE_IDS: readonly ZoneId[] = ["right", "bottom", "left"];
 // via `resizeZone` once the user drags a splitter.
 const ZONE_DEFAULT_SIZE: Record<ZoneId, number> = { right: 320, bottom: 240, left: 320 };
 
+// Floating-sheet cascade: a fixed base rect, offset a step per already-floating panel,
+// wrapping every 6 so a burst of sheets never marches off-screen. Deterministic + pure
+// so the reducer stays unit-testable (no viewport read).
+const SHEET_CASCADE_BASE: Rect = { x: 80, y: 60, w: 420, h: 520 };
+const SHEET_CASCADE_STEP = 28;
+
 function emptyZones(): Record<ZoneId, ZoneNode> {
   return {
     right: { groups: [], size: ZONE_DEFAULT_SIZE.right },
@@ -148,6 +154,14 @@ function detach(l: PanelLayoutV1, id: string): [PanelLayoutV1, PanelLocation] {
  * `DefaultPlacement.order` is not consumed here: callers pass registrations pre-sorted
  * by contribution order; a docked default always opens its own group. */
 function placeByPlacement(l: PanelLayoutV1, id: string, placement?: DefaultPlacement): PanelLayoutV1 {
+  if (placement?.kind === "floating") {
+    const n = l.expanded.floating.length;
+    const off = (n % 6) * SHEET_CASCADE_STEP;
+    const rect: Rect = { x: SHEET_CASCADE_BASE.x + off, y: SHEET_CASCADE_BASE.y + off, w: SHEET_CASCADE_BASE.w, h: SHEET_CASCADE_BASE.h };
+    const maxZ = l.expanded.floating.reduce((m, f) => Math.max(m, f.z), -1);
+    const floating = compactZ([...l.expanded.floating, { id, rect, z: maxZ + 1 }]);
+    return { ...l, expanded: { ...l.expanded, floating } };
+  }
   if (placement?.kind === "minimized") {
     return { ...l, expanded: { ...l.expanded, minimized: [...l.expanded.minimized, id] } };
   }

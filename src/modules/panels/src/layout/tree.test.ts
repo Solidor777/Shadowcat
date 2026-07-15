@@ -580,3 +580,25 @@ describe("every op is total against a POPULATED layout (not just a fresh empty o
     }
   });
 });
+
+describe("floating default placement (sheets)", () => {
+  it("open with floating placement floats a closed panel with a base rect and a fresh z", () => {
+    const l0 = defaultLayout([]);
+    const l1 = applyOp(l0, { op: "open", id: "sheet:d1", placement: { kind: "floating" } });
+    expect(l1.expanded.floating).toHaveLength(1);
+    expect(l1.expanded.floating[0].id).toBe("sheet:d1");
+    expect(l1.expanded.floating[0].z).toBe(0);
+    expect(l1.expanded.floating[0].rect.w).toBeGreaterThan(0);
+    expect(l1.expanded.floating[0].rect.h).toBeGreaterThan(0);
+  });
+
+  it("cascades each subsequent floating sheet by a fixed step", () => {
+    let l = defaultLayout([]);
+    l = applyOp(l, { op: "open", id: "sheet:a", placement: { kind: "floating" } });
+    l = applyOp(l, { op: "open", id: "sheet:b", placement: { kind: "floating" } });
+    const a = l.expanded.floating.find((f) => f.id === "sheet:a")!;
+    const b = l.expanded.floating.find((f) => f.id === "sheet:b")!;
+    expect(b.rect.x).toBeGreaterThan(a.rect.x);
+    expect(b.rect.y).toBeGreaterThan(a.rect.y);
+  });
+});
