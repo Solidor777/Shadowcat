@@ -13,3 +13,5 @@ export { sizeClass } from "./sizeClass.svelte";
 export type { SizeClass } from "./sizeClass.svelte";
 export { PanelsBridge } from "./panelsBridge.svelte";
 export type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
+export { setField } from "./sheetEdit";
+export { default as SystemTreeEditor } from "./SystemTreeEditor.svelte";

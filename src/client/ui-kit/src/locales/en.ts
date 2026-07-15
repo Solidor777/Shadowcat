@@ -198,4 +198,8 @@ export const en: Messages = {
   "panels.layoutReset": "Panel layout was reset to default",
   "panels.menu": "Panel options",
   "panels.moved": "{panel} moved to {where}",
+  "sheets.tree.null": "(null)",
+  "sheets.tree.remove": "Remove",
+  "sheets.tree.addField": "Add field",
+  "sheets.tree.addItem": "Add item",
 };
