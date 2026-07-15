@@ -254,7 +254,7 @@
       {@const Comp = c.component as Component<Record<string, unknown>>}
       <div class="panel-slot" data-panel={c.id} use:registerSlot={c.id}>
         {#key remountKeys.get(c.id) ?? 0}
-          <svelte:boundary onerror={() => {}}>
+          <svelte:boundary onerror={(e) => log.error(`panel "${c.id}" crashed`, e)}>
             <Comp {...(c.props ?? {})} />
             {#snippet failed(_error, _reset)}
               <div class="crashed" data-testid="crashed-{c.id}">

@@ -114,8 +114,8 @@ test("gmOnly: a gmOnly registration is absent from the compact switcher and dock
 
   // Compact switcher: the gmOnly panel never reaches `compact.order` either.
   // (The dock-chip strip is now rendered solely by the statusbar's
-  // `panel-dock` Surface — `DockChipsContribution.test.ts` covers its
-  // gmOnly filtering via the same shared controller.)
+  // `panel-dock` Surface; its gmOnly filtering is enforced upstream by
+  // `regsForRole`, covered in `controller.test.ts`.)
   mql.fire(false);
   await Promise.resolve();
   expect(screen.queryByTestId("compact-switch-game-settings:panel")).toBeNull();

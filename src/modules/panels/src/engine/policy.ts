@@ -11,8 +11,8 @@ import type { ZoneId } from "@shadowcat/core";
  * at `init()` (W1) — so `"stage"` can never collide with a real panel id. */
 export const STAGE_ID = "stage";
 
-/** Our own drop-target vocabulary — a dockview `DockviewWillDropEvent`/
- * `DockviewDidDropEvent` is translated into this shape by `dockview.ts`
+/** Our own drop-target vocabulary — a dockview `DockviewWillDropEvent` is
+ * translated into this shape by `dockview.ts`
  * before reaching `classifyDrop`. `id` is the panel being dropped/dragged;
  * it must be carried here (rather than passed as a separate argument)
  * because `"any op whose subject is 'stage'"` is itself a veto rule this
