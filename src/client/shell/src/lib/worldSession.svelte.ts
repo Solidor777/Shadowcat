@@ -208,7 +208,8 @@ export class WorldSession {
     return () => this.#pingListeners.delete(cb);
   }
 
-  /** Broadcast a transient location ping at scene coords on the active scene. No-op when
+  /** Broadcast a transient location ping at scene coords on the currently-viewed scene
+   * (`viewedSceneId`: a GM's local roam override, else the followed `activeScene`). No-op when
    * disconnected or no scene exists; the server relays it back to all members (incl. us). */
   sendPing(x: number, y: number): void {
     const sceneId = this.viewedSceneId;
@@ -332,6 +333,11 @@ export class WorldSession {
           for (const cb of this.#assetListeners) cb(msg);
         },
         onScenePing: (msg) => {
+          // Cross-scene guard: a scene_ping broadcasts room-wide and must render only for
+          // recipients currently viewing that scene (a GM roaming scene B must not surface a
+          // ping for scene A superimposed on B's grid, and vice versa). Mirrors the onMoveStream
+          // scene filter above.
+          if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#pingListeners) cb(msg);
         },
       },
@@ -423,5 +429,6 @@ export class WorldSession {
     this.state = "closed";
     this.role = null;
     this.world = null;
+    this.#gmViewedScene = null;
   }
 }
