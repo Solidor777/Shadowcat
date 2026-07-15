@@ -29,9 +29,20 @@ test("a panel opened from the launcher docks and survives a full page reload", a
   // (sessionState.svelte.ts schedulePersist); register the wait before the
   // click that triggers it, then await the response before reloading, or the
   // navigation can abort the in-flight PUT before it lands.
-  const persistResponse = page.waitForResponse(
-    (r) => /\/api\/me\/ui-state$/.test(r.url()) && r.request().method() === "PUT" && r.ok(),
-  );
+  // The payload clause pins the wait to the PUT that carries the dock op —
+  // an earlier mount-time/registration-sync persist could otherwise satisfy a
+  // method+URL-only predicate and let the reload race the real write. A mere
+  // includes() check cannot discriminate: EVERY persist body lists
+  // "assets:panel" once in compact.order (launcher-closed panels stay in the
+  // compact switcher order). Docking adds the id to the expanded zone groups
+  // too, so >=2 occurrences marks the dock-carrying body.
+  const persistResponse = page.waitForResponse((r) => {
+    if (!/\/api\/me\/ui-state$/.test(r.url()) || r.request().method() !== "PUT" || !r.ok()) {
+      return false;
+    }
+    const body = JSON.stringify(r.request().postDataJSON());
+    return body.split('"assets:panel"').length - 1 >= 2;
+  });
   await page.getByTestId("launcher-item-assets:panel").click();
   await expect(uploadInput).toBeVisible();
   await persistResponse;
