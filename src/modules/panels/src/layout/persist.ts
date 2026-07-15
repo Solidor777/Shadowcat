@@ -70,7 +70,10 @@ function isExpandedLayout(v: unknown): v is ExpandedLayout {
   ) {
     return false;
   }
-  return isStringArray(e.minimized);
+  if (!isStringArray(e.minimized)) return false;
+  // Back-compat: a pre-M12e blob has no `poppedOut`; absent normalizes to []
+  // in `decodeLayout`. A present-but-malformed value fails the whole blob.
+  return e.poppedOut === undefined || isStringArray(e.poppedOut);
 }
 
 function isCompactLayout(v: unknown): v is CompactLayout {
@@ -122,11 +125,20 @@ function isReferentiallyConsistent(l: PanelLayoutV1): boolean {
  * set would otherwise permanently drop every not-yet-registered panel's saved position.
  * `PanelsController` retains `source` to reconstruct later-registering panels' persisted
  * locations via `placeNewRegistrations` instead of losing them to that race. */
+/** Fills an absent `poppedOut` (pre-M12e blob) with `[]` so reducer arithmetic
+ * (`prune`/`locate`/`detach`) never dereferences `undefined`. Returns the input
+ * untouched when the field is already an array (the common, current-version path). */
+function withPoppedOut(l: PanelLayoutV1): PanelLayoutV1 {
+  if (Array.isArray(l.expanded.poppedOut)) return l;
+  return { ...l, expanded: { ...l.expanded, poppedOut: [] } };
+}
+
 export function decodeLayout(
   raw: unknown,
   known: ReadonlySet<string>,
   fallback: () => PanelLayoutV1,
 ): { layout: PanelLayoutV1; reset: boolean; source: PanelLayoutV1 | null } {
   if (!isPanelLayoutV1(raw) || !isReferentiallyConsistent(raw)) return { layout: fallback(), reset: true, source: null };
-  return { layout: prune(raw, known), reset: false, source: raw };
+  const normalized = withPoppedOut(raw);
+  return { layout: prune(normalized, known), reset: false, source: normalized };
 }

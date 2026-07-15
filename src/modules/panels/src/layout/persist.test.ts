@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, test } from "vitest";
 import { decodeLayout, encodeLayout } from "./persist";
-import { defaultLayout, type PanelLayoutV1 } from "./tree";
+import { applyOp, defaultLayout, type PanelLayoutV1 } from "./tree";
 
 const REGS = [
   { id: "chat", placement: { kind: "docked" as const, zone: "right" as const } },
@@ -307,6 +307,36 @@ describe("decodeLayout referential consistency", () => {
     expect(reset).toBe(true);
     expect(layout).toBe(fb);
   });
+});
+
+test("decode round-trips poppedOut ids", () => {
+  let l = defaultLayout([{ id: "chat" }]);
+  l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+  l = applyOp(l, { op: "popOut", id: "chat" });
+  const { layout, reset } = decodeLayout(l, new Set(["chat"]), () => defaultLayout([]));
+  expect(reset).toBe(false);
+  expect(layout.expanded.poppedOut).toEqual(["chat"]);
+});
+
+test("decode of a pre-M12e blob (no poppedOut field) normalizes to []", () => {
+  const legacy = {
+    version: 1,
+    expanded: { zones: { right: { groups: [], size: 320 }, bottom: { groups: [], size: 240 }, left: { groups: [], size: 320 } }, floating: [], minimized: [] },
+    compact: { activeView: null, order: [] },
+  };
+  const { layout, reset } = decodeLayout(legacy, new Set(), () => defaultLayout([]));
+  expect(reset).toBe(false);
+  expect(layout.expanded.poppedOut).toEqual([]);
+});
+
+test("decode rejects a non-string-array poppedOut", () => {
+  const bad = {
+    version: 1,
+    expanded: { zones: { right: { groups: [], size: 320 }, bottom: { groups: [], size: 240 }, left: { groups: [], size: 320 } }, floating: [], minimized: [], poppedOut: [1, 2] },
+    compact: { activeView: null, order: [] },
+  };
+  const { reset } = decodeLayout(bad, new Set(), () => defaultLayout([]));
+  expect(reset).toBe(true);
 });
 
 describe("decodeLayout pruning", () => {
