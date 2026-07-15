@@ -39,6 +39,13 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   structural validation (size caps, field-path validity, `deny_unknown_fields`).
 - `src/client/core/src/wire.ts` — Zod mirror: `VisibilitySchema = z.enum(["all","gm_only",
   "owner_or_gm"])`, `property_overrides`. ts-rs generates the TS types from the Rust source.
+- `src/client/core/src/scene-docs.ts` — `ITEM_DOC_TYPE = "item"`, `ItemSystem`, `buildItemDoc`
+  (M12c): a **client-only doc_type** — the server has NO Rust-side knowledge of `item` and
+  requires none, since `doc_type` is an unconstrained wire string and `system` is opaque JSONB the
+  server never interprets. An item document lives standalone (top-level, `parent_id: null`) or
+  embedded in an actor's inventory (`actor.embedded.item[]`); write-site resolution for an embedded
+  item is `/embedded/item/<idx>/system`, the same one-level `embeddedPath` scheme
+  `resolveDocRef` uses for any embedded child ([[shadowcat-codebase-sheets]]).
 
 ## Hard invariants
 
