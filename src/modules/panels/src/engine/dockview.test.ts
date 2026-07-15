@@ -3,7 +3,7 @@ import { defaultLayout, applyOp, type LayoutOp, type PanelLayoutV1 } from "../la
 import { DockviewEngine } from "./dockview";
 import { STAGE_ID } from "./policy";
 import { silentLogger, type PanelMeta } from "@shadowcat/core";
-import type { DockviewWillDropEvent } from "dockview-core";
+import type { DockviewApi, DockviewWillDropEvent, IDockviewGroupPanel } from "dockview-core";
 
 let engine: DockviewEngine | null = null;
 // Hosts appended to `document.body` for focus-management tests (jsdom only
@@ -934,4 +934,126 @@ test("a successful pop-out seeds its origin group so the next apply() does not o
   // The empty origin group is seeded into seenGroupIds and survives the
   // orphan-group loop (without the seeding fix it would be removeGroup'd).
   expect(api.getGroup(originGroupId)).toBeTruthy();
+});
+
+/** Fires dockview's real `onDidRemovePopoutGroup` event by reaching into the
+ * component's internal emitter (`_onDidRemovePopoutGroup`, a plain field —
+ * not `#`-private — on `DockviewComponent`; `DockviewApi#onDidRemovePopoutGroup`
+ * is just `component.onDidRemovePopoutGroup`, its `.event` accessor). jsdom has
+ * no real `window.open`/popout-window lifecycle to drive this event from a
+ * genuine drag-out-a-window gesture, so — mirroring the existing
+ * `component.removePanel(...)` reach-in used above for the origin-group-seed
+ * test — this drives the SAME event shape (`{id, group, window}`,
+ * `dockviewComponent.js:444-448`) dockview's `popoutWindowService.onDidRemove`
+ * would fire, directly at `DockviewEngine#handleRemovePopoutGroup`. */
+function fireRemovePopoutGroup(api: DockviewApi, id: string, group: IDockviewGroupPanel): void {
+  (
+    api as unknown as {
+      component: { _onDidRemovePopoutGroup: { fire(e: { id: string; group: IDockviewGroupPanel; window: null }): void } };
+    }
+  ).component._onDidRemovePopoutGroup.fire({ id, group, window: null });
+}
+
+test("Finding 1: onDidRemovePopoutGroup (user-closed) emits one popIn per tracked member and clears tracking maps", async () => {
+  const { ops } = await popOutViaMenu(() => Promise.resolve(true));
+  const api = engine!.debugApi!;
+  const groupId = "sc-group:chat";
+  // The stub driver never calls dockview's real `addPopoutGroup`, so "chat"
+  // never actually moves group — `#requestPopOut` still records it as popped
+  // out under its (unchanged) current group id, giving a real, populated
+  // tracking-map entry to exercise the removal handler's tracked-lookup path.
+  expect(engine!.debugPoppedOutGroupPanels.get(groupId)).toEqual(["chat"]);
+  expect(engine!.debugPoppedOutOriginGroups.get("chat")).toBe(groupId);
+  ops.length = 0; // drop the setup `popOut` op — only the removal-handler's own ops matter below
+
+  fireRemovePopoutGroup(api, groupId, api.getGroup(groupId)!);
+
+  expect(ops).toEqual([{ op: "popIn", id: "chat" }]);
+  expect(engine!.debugPoppedOutGroupPanels.has(groupId)).toBe(false);
+  expect(engine!.debugPoppedOutOriginGroups.has("chat")).toBe(false);
+});
+
+test("Finding 1: onDidRemovePopoutGroup falls back to live group membership for an untracked group id", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  let l = defaultLayout([{ id: "chat" }]);
+  l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+  engine.apply(l.expanded, new Map());
+
+  const api = engine.debugApi!;
+  const groupId = "sc-group:chat";
+  // Never went through the pop-out flow, so `#poppedOutGroupPanels` has no
+  // entry for this id — exercises the `event.group.model.panels` fallback
+  // directly, distinct from the tracked-map path above.
+  fireRemovePopoutGroup(api, groupId, api.getGroup(groupId)!);
+
+  expect(ops).toEqual([{ op: "popIn", id: "chat" }]);
+});
+
+test("Finding 1: onDidRemovePopoutGroup skips a group whose sole (fallback-resolved) member is the stage panel", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots([]);
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  const api = engine.debugApi!;
+  // The stage's own group id (not exported by `dockview.ts`; mirrors the
+  // literal already asserted against at dockview.test.ts:782). The stage's
+  // group is never tracked in `#poppedOutGroupPanels` (the stage is never
+  // poppable), so this also exercises the fallback lookup — resolving to
+  // `[STAGE_ID]` — which the loop's `id === STAGE_ID` guard must then skip
+  // rather than emit a `popIn` for the stage.
+  const stageGroupId = "sc-stage-group";
+  fireRemovePopoutGroup(api, stageGroupId, api.getGroup(stageGroupId)!);
+
+  expect(ops).toEqual([]);
+});
+
+test("Finding 1: onDidRemovePopoutGroup fired mid-apply() (our own reconcile) suppresses popIn but still clears tracking maps", async () => {
+  const { ops } = await popOutViaMenu(() => Promise.resolve(true));
+  const api = engine!.debugApi!;
+  const groupId = "sc-group:chat";
+  const group = api.getGroup(groupId)!;
+  ops.length = 0;
+
+  // Simulates the top-risk scenario named by the plan: a "dock" command on a
+  // popped-out panel causes dockview to remove the popout group as a side
+  // effect of `apply()`'s own reconcile. `#applying` is true for the whole
+  // synchronous duration of `apply()`, so patching `api.addGroup` (which the
+  // zone loop below calls synchronously to create the new "assets" group)
+  // lets this fire the removal event from squarely inside that window,
+  // without needing a real dockview popout-window lifecycle.
+  let firedDuringApply = false;
+  const originalAddGroup = api.addGroup.bind(api);
+  (api as unknown as { addGroup: typeof api.addGroup }).addGroup = ((...args: Parameters<typeof api.addGroup>) => {
+    if (!firedDuringApply) {
+      firedDuringApply = true;
+      fireRemovePopoutGroup(api, groupId, group);
+    }
+    return originalAddGroup(...args);
+  }) as typeof api.addGroup;
+
+  let l = defaultLayout([{ id: "chat" }, { id: "assets" }]);
+  l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+  l = applyOp(l, { op: "popOut", id: "chat" });
+  l = applyOp(l, { op: "dock", id: "assets", zone: "bottom", group: "new" });
+  engine!.apply(l.expanded, new Map());
+
+  expect(firedDuringApply).toBe(true);
+  // Suppressed: no `popIn` op emitted for a removal `apply()` itself caused.
+  expect(ops.some((o) => o.op === "popIn")).toBe(false);
+  // Cleanup still runs unconditionally, regardless of the `#applying` guard.
+  expect(engine!.debugPoppedOutGroupPanels.has(groupId)).toBe(false);
+  expect(engine!.debugPoppedOutOriginGroups.has("chat")).toBe(false);
 });

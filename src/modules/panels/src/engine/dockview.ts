@@ -930,6 +930,20 @@ export class DockviewEngine implements EngineAdapter {
     return this.#api;
   }
 
+  /** Test helper: read-only view of `#poppedOutGroupPanels`, so a test can
+   * assert `#handleRemovePopoutGroup` actually clears the tracked entry for a
+   * closed popout group rather than merely inferring it from emitted ops.
+   * Never used by production callers. */
+  get debugPoppedOutGroupPanels(): ReadonlyMap<string, string[]> {
+    return this.#poppedOutGroupPanels;
+  }
+
+  /** Test helper: read-only view of `#poppedOutOriginGroups`, mirroring
+   * `debugPoppedOutGroupPanels` above. Never used by production callers. */
+  get debugPoppedOutOriginGroups(): ReadonlyMap<string, string> {
+    return this.#poppedOutOriginGroups;
+  }
+
   onOp(cb: (op: LayoutOp) => void): () => void {
     this.#opListeners.add(cb);
     return () => this.#opListeners.delete(cb);
