@@ -2,7 +2,7 @@ import { test, expect, vi } from "vitest";
 import { ContributionRegistry, PANEL_CONTRACT, silentLogger } from "@shadowcat/core";
 import type { PanelsApi } from "@shadowcat/ui-kit";
 import { PanelsController, regsForRole, type PanelsBridgeLike } from "./controller.svelte";
-import { locate } from "./layout/tree";
+import { applyOp, defaultLayout, locate } from "./layout/tree";
 import { encodeLayout } from "./layout/persist";
 
 function registry(): ContributionRegistry {
@@ -254,6 +254,91 @@ test("late registrations against an empty-registry construction restore their SA
     const assetsLoc = locate(blob as never, "assets");
     if (assetsLoc.where === "docked") expect(assetsLoc.zone).toBe("left");
   }
+});
+
+test("rehydratePoppedOut: a persisted popped-out id comes back as floating + a notice", () => {
+  let saved = defaultLayout([{ id: "chat", placement: { kind: "docked", zone: "right" } }]);
+  saved = applyOp(saved, { op: "dock", id: "chat", zone: "right", group: "new" });
+  saved = applyOp(saved, { op: "popOut", id: "chat" });
+
+  const contributions = new ContributionRegistry();
+  contributions.contribute({
+    id: "chat",
+    contract: PANEL_CONTRACT,
+    component: {},
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+
+  const notices: string[] = [];
+  const setPanelLayout = vi.fn();
+  const ctrl = new PanelsController({
+    contributions,
+    role: "gm",
+    getPanelLayout: () => saved,
+    setPanelLayout,
+    bridge: fakeBridge(),
+    logger: silentLogger,
+    onNotice: (key) => notices.push(key),
+  });
+
+  expect(ctrl.layout.expanded.poppedOut).toEqual([]);
+  expect(ctrl.layout.expanded.floating.map((f) => f.id)).toEqual(["chat"]);
+  // Finding 4 (buddy-check): the notice is QUEUED, not fired, at construction
+  // — `deps.onNotice` must not be invoked until a post-mount caller (`PanelHost`'s
+  // `$effect`) calls `flushPendingNotice()`. Firing it here, synchronously
+  // alongside construction, would set the a11y live region's text before its
+  // first paint; a `polite` live region only announces CHANGES.
+  expect(notices).toEqual([]);
+  // The converted layout must be PERSISTED, not just held in memory — otherwise
+  // this notice would fire again on every subsequent page load.
+  expect(setPanelLayout).toHaveBeenCalledWith(encodeLayout(ctrl.layout));
+
+  ctrl.flushPendingNotice();
+  expect(notices).toEqual(["panels.popoutRestoredFloating"]);
+
+  // Idempotent: a second flush must not re-announce.
+  ctrl.flushPendingNotice();
+  expect(notices).toEqual(["panels.popoutRestoredFloating"]);
+});
+
+// A fixed (unoffset) rehydration rect would stack every rehydrated popout at
+// the identical (x,y) — this asserts the cascade offset actually differs
+// across two rehydrated ids.
+test("rehydratePoppedOut: two persisted popped-out ids cascade to distinct floating rects", () => {
+  const contributions = new ContributionRegistry();
+  for (const id of ["chat", "assets"]) {
+    contributions.contribute({
+      id,
+      contract: PANEL_CONTRACT,
+      component: {},
+      panel: { icon: id, labelKey: `${id}.tab`, defaultPlacement: { kind: "docked", zone: "right" } },
+    });
+  }
+
+  let saved = defaultLayout([
+    { id: "chat", placement: { kind: "docked", zone: "right" } },
+    { id: "assets", placement: { kind: "docked", zone: "right" } },
+  ]);
+  saved = applyOp(saved, { op: "dock", id: "chat", zone: "right", group: "new" });
+  saved = applyOp(saved, { op: "popOut", id: "chat" });
+  saved = applyOp(saved, { op: "dock", id: "assets", zone: "right", group: "new" });
+  saved = applyOp(saved, { op: "popOut", id: "assets" });
+
+  const setPanelLayout = vi.fn();
+  const ctrl = new PanelsController({
+    contributions,
+    role: "gm",
+    getPanelLayout: () => saved,
+    setPanelLayout,
+    bridge: fakeBridge(),
+    logger: silentLogger,
+  });
+
+  expect(ctrl.layout.expanded.poppedOut).toEqual([]);
+  const rects = ctrl.layout.expanded.floating.map((f) => ({ x: f.rect.x, y: f.rect.y }));
+  expect(rects).toHaveLength(2);
+  expect(rects[0]).not.toEqual(rects[1]);
+  expect(setPanelLayout).toHaveBeenCalledWith(encodeLayout(ctrl.layout));
 });
 
 test("the controller binds itself into the supplied bridge at construction", () => {

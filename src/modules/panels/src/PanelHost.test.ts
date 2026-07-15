@@ -1,7 +1,10 @@
 import { test, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { ContributionRegistry, PANEL_CONTRACT } from "@shadowcat/core";
+import { ContributionRegistry, PANEL_CONTRACT, silentLogger } from "@shadowcat/core";
+import type { EngineAdapter } from "./engine/adapter";
+import { applyOp, defaultLayout } from "./layout/tree";
+import { PanelsController } from "./controller.svelte";
 
 /** Minimal fake MediaQueryList (mirrors ui-kit's sizeClass.test.ts) so
  * PanelHost's sizeClass()-driven presentation switch is deterministic under
@@ -43,6 +46,51 @@ afterEach(() => {
   cleanup();
   mql.fire(true); // reset to expanded between tests
 });
+
+/** Minimal `EngineAdapter` wrapping a `FakeEngine` and adding an `onNotice`
+ * source — `FakeEngine` itself intentionally omits `onNotice` (no notice
+ * source of its own; see `EngineAdapter`'s doc comment), so exercising
+ * PanelHost's `eng.onNotice?.()` subscription + `unsubNotice?.()` teardown
+ * needs a test double that actually implements it. */
+class NoticeEngine implements EngineAdapter {
+  #fake = new FakeEngine();
+  #noticeListeners = new Set<(key: string) => void>();
+
+  init(host: HTMLElement, slotFor: (id: string) => HTMLElement, stageEl: HTMLElement): void {
+    this.#fake.init(host, slotFor, stageEl);
+  }
+  apply(...args: Parameters<EngineAdapter["apply"]>): void {
+    this.#fake.apply(...args);
+  }
+  onOp(cb: Parameters<EngineAdapter["onOp"]>[0]): () => void {
+    return this.#fake.onOp(cb);
+  }
+  onNotice(cb: (key: string) => void): () => void {
+    this.#noticeListeners.add(cb);
+    return () => this.#noticeListeners.delete(cb);
+  }
+  /** Test helper: fires a notice exactly as a real engine's internal source would. */
+  emitNotice(key: string): void {
+    for (const cb of this.#noticeListeners) cb(key);
+  }
+  /** Test helper: direct observation of subscriber count, so teardown can be
+   * asserted without relying on a DOM side-effect (a post-unmount `$state`
+   * write does not re-trigger an already-unmounted template's effect in
+   * Svelte 5, regardless of whether the underlying listener was removed —
+   * so DOM text is not a valid proxy for "was `unsubNotice?.()` called"). */
+  get noticeListenerCount(): number {
+    return this.#noticeListeners.size;
+  }
+  focus(id: string): void {
+    this.#fake.focus(id);
+  }
+  /** Deliberately does NOT clear `#noticeListeners` — only the unsubscribe
+   * function returned by `onNotice` may remove a listener, so a listener
+   * left behind here is observable proof `unsubNotice?.()` did not run. */
+  destroy(): void {
+    this.#fake.destroy();
+  }
+}
 
 test("mount-counter: a docked panel's component mounts exactly once across the full op lifecycle", async () => {
   let mounts = 0;
@@ -89,6 +137,17 @@ test("mount-counter: a docked panel's component mounts exactly once across the f
   expect(mounts).toBe(1);
 
   mql.fire(true); // expanded
+  await Promise.resolve();
+  expect(mounts).toBe(1);
+
+  // Pop-out leg (M12e): dock⇄float⇄...⇄pop-out⇄pop-in never re-mounts. The
+  // FakeEngine degrades pop-out to a floating window, so the slot is re-parented
+  // (adopted), never recreated.
+  engine.emitOp({ op: "popOut", id: "chat:panel" });
+  await Promise.resolve();
+  expect(mounts).toBe(1);
+
+  engine.emitOp({ op: "popIn", id: "chat:panel" });
   await Promise.resolve();
   expect(mounts).toBe(1);
 });
@@ -358,4 +417,136 @@ test("FakeEngine.init adopts the stageEl into a center-well container", async ()
   const centerEl = engine.centerEl();
   expect(centerEl).toBeTruthy();
   expect(stageEl.parentElement!.isSameNode(centerEl)).toBe(true);
+});
+
+test("live region: an engine notice announces the resolved i18n text", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  const engine = new NoticeEngine();
+  // Real catalog-backed `i18n.t`, mirroring the op-driven live-region test
+  // above — proves the text is actually the RESOLVED i18n string, not the raw key.
+  const context = setAppContextForTest({ contributions: registry, role: "gm", t: (k, p) => i18n.t(k, p) });
+  const { container } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  const liveRegion = container.querySelector('[role="status"]')!;
+  expect(liveRegion.textContent).toBe("");
+
+  engine.emitNotice("panels.popoutRestoredFloating");
+  await Promise.resolve();
+
+  expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
+});
+
+test("Finding 4 (buddy-check): a reload-restored popout's notice reaches the live region", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+
+  // A persisted layout with "chat:panel" popped-out — `PanelsController`
+  // rehydrates it to floating + queues (but, per Finding 4's fix, does not
+  // yet FIRE) `panels.popoutRestoredFloating` at construction.
+  let saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
+  saved = applyOp(saved, { op: "dock", id: "chat:panel", zone: "right", group: "new" });
+  saved = applyOp(saved, { op: "popOut", id: "chat:panel" });
+
+  const engine = new FakeEngine();
+  const context = setAppContextForTest({
+    contributions: registry,
+    role: "gm",
+    t: (k, p) => i18n.t(k, p),
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {} },
+  });
+  const { container } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  // Proves the notice is actually OBSERVABLE by the live region a screen
+  // reader watches (not merely that some callback fired) — the gap Finding
+  // 4 named. `controller.test.ts` proves the narrower claim (construction
+  // alone must not call `onNotice`); the test below proves `PanelHost` is
+  // what performs the flush that makes this text appear.
+  const liveRegion = container.querySelector('[role="status"]')!;
+  expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
+});
+
+test("Finding 4 (buddy-check): PanelHost's post-mount effect — not PanelsController's constructor — is what flushes the reload notice", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+
+  let saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
+  saved = applyOp(saved, { op: "dock", id: "chat:panel", zone: "right", group: "new" });
+  saved = applyOp(saved, { op: "popOut", id: "chat:panel" });
+
+  const notices: string[] = [];
+  // Built OUTSIDE `PanelHost`, mirroring its own construction args exactly
+  // (mounted via the `controller` test-injection prop below) — isolates
+  // "did `onNotice` fire" from Svelte's internal template-effect scheduling,
+  // which the DOM-text assertion above can't distinguish timing-wise (jsdom
+  // + testing-library flush effects synchronously within `render()`, so a
+  // pre/post-render `textContent` snapshot alone cannot prove WHEN the
+  // notice fired relative to mount, only that it eventually did).
+  const ctrl = new PanelsController({
+    contributions: registry,
+    role: "gm",
+    getPanelLayout: () => saved,
+    setPanelLayout: () => {},
+    bridge: { bind: () => {} },
+    logger: silentLogger,
+    onNotice: (key) => notices.push(key),
+  });
+  // Construction alone must not have announced anything yet.
+  expect(notices).toEqual([]);
+
+  const engine = new FakeEngine();
+  const context = setAppContextForTest({ contributions: registry, role: "gm", t: (k, p) => i18n.t(k, p) });
+  render(PanelHost, { props: { engine, controller: ctrl }, context });
+
+  // Mounting `PanelHost` with this already-constructed controller is what
+  // triggers the flush — proving the post-mount `$effect`, not the
+  // constructor, is the actual firing point.
+  expect(notices).toEqual(["panels.popoutRestoredFloating"]);
+});
+
+test("live region: unmounting unsubscribes the engine's onNotice listener (unsubNotice teardown)", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  const engine = new NoticeEngine();
+  const context = setAppContextForTest({ contributions: registry, role: "gm", t: (k, p) => i18n.t(k, p) });
+  const { unmount } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  // Mounting subscribes exactly one listener to the engine's notice source.
+  expect(engine.noticeListenerCount).toBe(1);
+
+  unmount();
+
+  // Direct proof `unsubNotice?.()` ran: the engine's subscriber set is empty
+  // post-unmount. (A DOM-text assertion here would be vacuous — Svelte 5
+  // disposes a template's effect on unmount, so a post-unmount `$state`
+  // write never re-renders the detached node whether or not the listener
+  // was actually removed; see the getter's doc comment above.)
+  expect(engine.noticeListenerCount).toBe(0);
 });

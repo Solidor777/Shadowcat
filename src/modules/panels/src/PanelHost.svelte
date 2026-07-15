@@ -68,6 +68,12 @@
       case "close":
         where = t("panels.close");
         break;
+      case "popOut":
+        where = t("panels.popOut");
+        break;
+      case "popIn":
+        where = t("panels.restore");
+        break;
       default:
         // resizeZone/resizeGroup/activeTab/compactView/open: not narrated —
         // see the doc comment above for why "open" specifically is excluded.
@@ -96,12 +102,26 @@
         // the seam a visible toast (e.g. a statusbar live region) hangs off
         // once that surface exists — a no-op until then.
         onReset: () => {},
+        onNotice: (key) => {
+          announce = t(key);
+        },
         onOp: (op) => {
           const text = describeOp(op);
           if (text !== null) announce = text;
         },
       }),
   );
+
+  // Flushes any notice `PanelsController` queued during its own construction
+  // (currently only the reload-restore notice — see `flushPendingNotice`'s
+  // doc comment for why this can't fire from the constructor's `onNotice`
+  // callback itself). Reads no reactive state, so this `$effect` runs
+  // exactly once, after first mount — the live region below is guaranteed
+  // to have already painted its EMPTY initial value by the time this can
+  // possibly change it, which is what makes the change announced at all.
+  $effect(() => {
+    ctrl.flushPendingNotice();
+  });
 
   // gmOnly filtering happens once, in the controller — every downstream
   // consumer (switcher, chips, engine) sees only the already-filtered set.
@@ -198,8 +218,12 @@
     const unsubOp = eng.onOp((op) => {
       ctrl.dispatch(op);
     });
+    const unsubNotice = eng.onNotice?.((key) => {
+      announce = t(key);
+    });
     return () => {
       unsubOp();
+      unsubNotice?.();
       eng.destroy();
       stageHomeEl = null;
     };

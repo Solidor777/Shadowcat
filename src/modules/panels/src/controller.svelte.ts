@@ -45,13 +45,29 @@ export interface PanelsControllerDeps {
    * layout-changing op regardless of origin. `PanelHost` uses it to drive
    * the a11y live-region announcement. */
   onOp?: (op: LayoutOp) => void;
+  /** Fired with a user-facing i18n key for an engine/layout notice the caller
+   * surfaces (live region / toast) — e.g. `panels.popoutRestoredFloating` when
+   * reload rehydrates a popped-out panel to floating (a page load cannot reopen
+   * a popup), or `panels.popoutBlocked` forwarded from the engine. */
+  onNotice?: (key: string) => void;
 }
 
 const EMPTY_LAYOUT: PanelLayoutV1 = {
   version: 1,
-  expanded: { zones: { right: { groups: [], size: 320 }, bottom: { groups: [], size: 240 }, left: { groups: [], size: 320 } }, floating: [], minimized: [] },
+  expanded: { zones: { right: { groups: [], size: 320 }, bottom: { groups: [], size: 240 }, left: { groups: [], size: 320 } }, floating: [], minimized: [], poppedOut: [] },
   compact: { activeView: null, order: [] },
 };
+
+// Cascade base/step for a reload-rehydrated (formerly popped-out) panel's floating
+// rect — an unoffset rect would stack every rehydrated popout (and the first-ever
+// floating panel) at the identical (x,y). Value kept numerically aligned with
+// tree.ts's SHEET_CASCADE_BASE/STEP (not imported — that pair is layout-internal;
+// this is the controller's own, deliberately separate constant so the two modules
+// stay decoupled) so the SAME logical operation (reload -> float a persisted
+// popout) lands at the same screen position regardless of which of the two call
+// sites (already-registered vs late-registering panel) handles a given panel.
+const REHYDRATE_FLOAT_BASE = { x: 96, y: 96, w: 420, h: 520 };
+const REHYDRATE_FLOAT_STEP = 28;
 
 export class PanelsController implements PanelsApi, PanelsChipsView {
   #deps: PanelsControllerDeps;
@@ -66,6 +82,10 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
    * registration happens to run after the `panels` module's (routine, since every panel
    * module `requires` `PANEL_CONTRACT`, which topologically activates `panels` FIRST). */
   #persistedSource: PanelLayoutV1 | null = null;
+  /** A notice queued during construction, pending `flushPendingNotice()` —
+   * see that method's doc comment for why `#rehydratePoppedOut` cannot call
+   * `deps.onNotice` directly. */
+  #pendingNotice: string | null = null;
 
   constructor(deps: PanelsControllerDeps) {
     this.#deps = deps;
@@ -84,7 +104,54 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
       deps.onReset?.("panels.layoutReset");
     }
 
+    this.#rehydratePoppedOut();
+
     deps.bridge.bind(this);
+  }
+
+  /** Popouts cannot be reopened without a user gesture (a page load is not one
+   * — the browser blocks it), so every persisted popped-out id rehydrates to a
+   * floating window at construction, before the first `apply()`. The tree's
+   * `poppedOut` array persists across sessions; the live `Window` never does.
+   * Runs once; persists + queues a notice only if it actually converted
+   * anything — see `flushPendingNotice` for why the notice is QUEUED here
+   * rather than fired through `deps.onNotice` directly (this method runs
+   * synchronously inside the constructor, before the host has mounted). */
+  #rehydratePoppedOut(): void {
+    const ids = [...this.#layout.expanded.poppedOut];
+    if (ids.length === 0) return;
+    let l = this.#layout;
+    for (const id of ids) {
+      // Cascade off the CURRENT floating count each iteration (not the loop
+      // index) so rehydrated popouts interleave correctly with any panel
+      // that was already floating before rehydration ran.
+      const n = l.expanded.floating.length;
+      const off = (n % 6) * REHYDRATE_FLOAT_STEP;
+      const rect = { x: REHYDRATE_FLOAT_BASE.x + off, y: REHYDRATE_FLOAT_BASE.y + off, w: REHYDRATE_FLOAT_BASE.w, h: REHYDRATE_FLOAT_BASE.h };
+      l = applyOp(l, { op: "float", id, rect });
+    }
+    this.#layout = l;
+    this.#persist(l);
+    this.#pendingNotice = "panels.popoutRestoredFloating";
+  }
+
+  /** Flushes a notice queued during construction (currently only
+   * `#rehydratePoppedOut`'s reload-restore notice) through `deps.onNotice`.
+   * MUST be called from a post-mount hook (e.g. `PanelHost`'s `$effect`),
+   * never synchronously alongside construction: `PanelsController` is built
+   * in the host's `<script>` body, before the DOM is attached, so calling
+   * `deps.onNotice` directly from `#rehydratePoppedOut` would set the a11y
+   * live region's (`role="status" aria-live="polite"`) text before its FIRST
+   * render — a `polite` region only announces content CHANGES, so text
+   * already present at initial paint is silently swallowed by assistive
+   * tech. No-op when nothing is queued (the common case: most mounts have no
+   * persisted popout to rehydrate). Idempotent: a second call after the
+   * first is also a no-op, so a caller need not guard re-invocation. */
+  flushPendingNotice(): void {
+    if (this.#pendingNotice === null) return;
+    const key = this.#pendingNotice;
+    this.#pendingNotice = null;
+    this.#deps.onNotice?.(key);
   }
 
   get layout(): PanelLayoutV1 {

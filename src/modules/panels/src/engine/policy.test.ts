@@ -142,3 +142,12 @@ describe("opForMenuCommand — parity with classifyDrop", () => {
     }
   });
 });
+
+test("opForMenuCommand maps popOut to a popOut op", () => {
+  expect(opForMenuCommand("popOut", "chat")).toEqual({ op: "popOut", id: "chat" });
+});
+
+test("opForMenuCommand vetoes popOut on the stage", () => {
+  const result = opForMenuCommand("popOut", STAGE_ID);
+  expect("veto" in result).toBe(true);
+});

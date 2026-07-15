@@ -207,6 +207,17 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   systemic ui-kit baseline gap, not a per-component one; fix with a shared input-height token/rule
   rather than duplicating a media query into every form component.
 
+## Client / panels (M12e Task 5 buddy check)
+- TODO: an already-open popout window has no `onWillDrop` subscription wired
+  (`#groupWillDropSubs` is populated only inside `apply()`'s zone loop) — dockview-core's own
+  popout design supports drag-and-drop of a further panel into the popout's nested gridview, so a
+  same-origin cross-window drag into an open popout would bypass the reducer's veto/classify
+  pipeline entirely (`applyOp` invariant "all layout mutations flow through applyOp" would not
+  hold for that gesture), and `#poppedOutGroupPanels`'s single-panel-array assumption wouldn't be
+  updated to include the dragged-in panel — silently unaccounted for on window close. Out of the
+  M12e Task 5 brief's scope (menu pop-out + its own close translation only); wire it if/when
+  multi-panel popout groups become a supported gesture.
+
 ## Client / panels (M12a Task 6 — DockviewEngine)
 - RESOLVED (M12a Task 6 buddy-check fix wave): live resize (`resizeZone`/`resizeGroup`)
   translation is now wired — `group.api.onDidDimensionsChange` (`DockviewGroupPanelApi`, inherited

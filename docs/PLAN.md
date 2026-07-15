@@ -1104,6 +1104,39 @@ Decomposed **M11a–d**:
 > in the vision-frame watermark surfaced during T4's fix-confirmation — logged to
 > `docs/OPEN_BUGS.md`. Plan:
 > [`superpowers/plans/2026-07-15-m12d-browsers-multiscene.md`](superpowers/plans/2026-07-15-m12d-browsers-multiscene.md).
+> **M12e DONE — M12 MILESTONE COMPLETE** (branch `m12e-popout-windows`, 7 SDD tasks, 2
+> pre-authorized buddy-checks (T5 `DockviewEngine` pop-out lifecycle, T6 controller
+> rehydration/host wiring/`FakeEngine` degradation) + a whole-branch buddy-check (opus twins,
+> the plan's own post-execution gate): same-heap pop-out windows via dockview-core's native
+> `addPopoutGroup`/`onDidRemovePopoutGroup`/`addStyles`, gesture-time imperative dispatch (never
+> routed through the declarative `apply()` reconcile — a browser popup cannot open outside a
+> user gesture, so persisted `poppedOut` ids rehydrate to floating on reload instead of
+> re-opening); `ExpandedLayout.poppedOut: string[]` + `popOut`/`popIn` `LayoutOp`s; `/popout.html`
+> same-origin loader (rust-embed exact-match, verified NOT an SPA catch-all); keep-mounted
+> extends to pop-out (same mounted instance re-parented into the second window, never remounted
+> — Task 7's mount-counter guard grew a pop-out leg proving it). T5 buddy-check (the deepest
+> review of the whole M12 milestone, both reviewers tracing the vendored `dockview-core@7.0.2`
+> CJS source directly): a double-pop-out-click race (dockview's `mutation()` wrapper doesn't span
+> `addPopoutGroup`'s async gap) fixed via `#pendingPopouts`; an origin-group orphan-removal bug
+> (dockview keeps a popped-out panel's origin group alive-hidden internally; the reducer's tree
+> stops naming it once empty) fixed via `#poppedOutOriginGroups`, captured synchronously before
+> the gesture. T6 buddy-check + fix-confirmation: a rehydration test asserted nothing about the
+> persist call the brief named as the risk (fixed to a real `vi.fn()` assertion); a teardown
+> regression test proved vacuous by an empirical Svelte 5 probe (detached-DOM `textContent`
+> assertions can't detect a leaked listener post-unmount) — required two fix rounds, the second
+> of which found and fixed a THIRD vacuousness bug in the test double itself. Whole-branch buddy
+> check: both reviewers independently found the same gap (zero test coverage of
+> `#handleRemovePopoutGroup`'s three reentrancy branches — the exact scenario the milestone's
+> own §15 pre-authorized top-risk buddy-check surface), converged from a Minor/Important
+> severity split to Important after debate, plus three agreed Minors (a stale "no popout support"
+> comment, divergent rehydration-cascade base rects across two files, and a reload-restore notice
+> that fired before first mount and was therefore never announced by the `aria-live` region) —
+> all four fixed and the fixes independently confirmed load-bearing (not vacuous) by tracing the
+> real dockview-core event plumbing. Deferred (TODO.md): dragging a panel into an already-open
+> popout bypasses the reducer (`#groupWillDropSubs` not wired for popout groups — out of the
+> menu-only M12e scope per spec Decision 6). `shadowcat-codebase-panels` skill updated with the
+> pop-out seam (reviewed skill-update gate, `shadowcat-spec-reviewer` PASS, zero findings). Plan:
+> [`superpowers/plans/2026-07-15-m12e-popout-windows.md`](superpowers/plans/2026-07-15-m12e-popout-windows.md).
 
 ### M12.5 · Backups + snapshot restore (gate precondition)
 - Basic world backup (SQLite snapshot / per-world export) + restore path; minimal manual scheduling. Distinct from Phase-4 backup *automation*.
