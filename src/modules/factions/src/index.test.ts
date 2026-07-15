@@ -13,7 +13,6 @@ describe("factions module", () => {
     expect(list[0].panel).toEqual({
       icon: "🚩",
       labelKey: "factions.tab",
-      defaultPlacement: { kind: "minimized" },
     });
   });
 });

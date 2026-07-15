@@ -13,7 +13,6 @@ describe("conditions module", () => {
     expect(list[0].panel).toEqual({
       icon: "✨",
       labelKey: "conditions.tab",
-      defaultPlacement: { kind: "minimized" },
     });
   });
 });

@@ -14,7 +14,6 @@ describe("settings module", () => {
     expect(list[0].panel).toEqual({
       icon: "🔧",
       labelKey: "settings.tab",
-      defaultPlacement: { kind: "minimized" },
     });
   });
 });

@@ -13,7 +13,6 @@ describe("assets module", () => {
     expect(list[0].panel).toEqual({
       icon: "🖼️",
       labelKey: "assets.tab",
-      defaultPlacement: { kind: "minimized" },
     });
   });
 });

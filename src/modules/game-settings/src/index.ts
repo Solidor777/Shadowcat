@@ -4,7 +4,7 @@ import GameSettingsPanel from "./GameSettingsPanel.svelte";
 /** GM game configuration: scene vision/lighting defaults + per-scene overrides,
  * light gradation, vision modes, pathfinding + movement + animation settings.
  * Requires the panel-manager's contract; contributes a GM-only configuration
- * panel after the actor/faction/condition panels (order 5), minimized by default. */
+ * panel after the actor/faction/condition panels (order 5), launcher-closed by default. */
 export const gameSettings: Module = {
   manifest: {
     id: "game-settings",
@@ -19,7 +19,7 @@ export const gameSettings: Module = {
       contract: PANEL_CONTRACT,
       order: 5,
       component: GameSettingsPanel,
-      panel: { icon: "⚙️", labelKey: "gameSettings.tab", gmOnly: true, defaultPlacement: { kind: "minimized" } },
+      panel: { icon: "⚙️", labelKey: "gameSettings.tab", gmOnly: true },
     });
   },
 };
