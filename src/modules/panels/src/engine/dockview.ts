@@ -318,6 +318,23 @@ export class DockviewEngine implements EngineAdapter {
   // group id back into `popIn` ops without depending on the group's live panel
   // membership at fire time (dockview's teardown may have already moved them).
   #poppedOutGroupPanels = new Map<string, string[]>();
+  // Ids with a pop-out request currently in flight (driver called, promise not
+  // yet settled). dockview's `addPopoutGroup` is wrapped in `mutation()`, whose
+  // `finally` fires the instant the function RETURNS its pending promise — not
+  // when it settles — so it serializes only the synchronous portion, leaving the
+  // async `window.open` → re-parent gap unguarded. Without this set, a second
+  // "Pop out" click on the SAME id inside that gap opens a second window and
+  // re-keys `#poppedOutGroupPanels` to the first (now-orphaned) group id,
+  // corrupting the tree on the eventual window close. Refuse a duplicate until
+  // the first request settles.
+  #pendingPopouts = new Set<string>();
+  // Popped-out panel id -> the group id it lived in BEFORE pop-out (its ORIGIN
+  // group). dockview keeps that group alive-but-hidden (`setVisible(false)`) and
+  // its window-close path (`disposePopoutWindow`) hands the panel back to that
+  // exact group object; the `popOut` op meanwhile detaches the group from the
+  // persisted tree, so `apply()` seeds these ids into `seenGroupIds` to keep the
+  // orphan-group loop from destroying the group dockview still depends on.
+  #poppedOutOriginGroups = new Map<string, string>();
   // Gesture-time popout invoker. Defaults to dockview's native popout (verified
   // same-heap, content re-parented, stylesheets cloned — M12a-0 spike +
   // popoutWindow.js:136). Injectable so unit tests exercise the async-result →
@@ -421,9 +438,24 @@ export class DockviewEngine implements EngineAdapter {
     if (!api) return;
     const panel = api.getPanel(id);
     if (!panel) return;
+    // In-flight guard: dockview's `mutation()` bracket around `addPopoutGroup`
+    // does not span the async window.open → re-parent gap (see `#pendingPopouts`),
+    // so a duplicate request in that gap is refused here, mirroring the
+    // logged-warning-on-reentry style of the menu-command veto path.
+    if (this.#pendingPopouts.has(id)) {
+      this.#logger.warn("panels: pop-out already in flight; ignoring duplicate request", { id });
+      return;
+    }
+    this.#pendingPopouts.add(id);
+    // Origin group captured BEFORE the driver re-parents the panel: after a
+    // successful pop-out `panel.group.id` is the POPOUT group's own id, so the
+    // origin must be read now (see `#poppedOutOriginGroups`).
+    const originGroupId = panel.group.id;
     this.#popoutDriver(panel)
       .then((ok) => {
+        this.#pendingPopouts.delete(id);
         if (ok) {
+          this.#poppedOutOriginGroups.set(id, originGroupId);
           const gid = api.getPanel(id)?.group.id;
           if (gid) this.#poppedOutGroupPanels.set(gid, [id]);
           for (const cb of this.#opListeners) cb({ op: "popOut", id });
@@ -433,6 +465,7 @@ export class DockviewEngine implements EngineAdapter {
         }
       })
       .catch((err) => {
+        this.#pendingPopouts.delete(id);
         this.#logger.warn("panels: pop-out failed; falling back to floating", { id, err });
         for (const cb of this.#opListeners) cb({ op: "float", id, rect: MENU_FLOAT_RECT });
         this.#emitNotice("panels.popoutBlocked");
@@ -574,6 +607,11 @@ export class DockviewEngine implements EngineAdapter {
   #handleRemovePopoutGroup(event: { id: string; group: IDockviewGroupPanel }): void {
     const ids = this.#poppedOutGroupPanels.get(event.id) ?? event.group.model.panels.map((p) => p.id);
     this.#poppedOutGroupPanels.delete(event.id);
+    // Origin-group tracking clears unconditionally (like `#poppedOutGroupPanels`
+    // above), for both a user window-close and our own `apply()`-driven pop-in:
+    // once the panel leaves the popped-out state its origin group is a normal
+    // tree-owned group again.
+    for (const id of ids) this.#poppedOutOriginGroups.delete(id);
     if (this.#applying) return;
     for (const id of ids) {
       if (id === STAGE_ID) continue;
@@ -697,6 +735,17 @@ export class DockviewEngine implements EngineAdapter {
       // resulting onDidRemovePopoutGroup is `#applying`-suppressed).
       const seenPanelIds = new Set<string>([STAGE_ID, ...expanded.poppedOut]);
       const seenGroupIds = new Set<string>([STAGE_GROUP_ID]);
+      // A popped-out panel's ORIGIN group stays alive-but-hidden in dockview's
+      // model, but the `popOut` op has already stripped it from the persisted
+      // tree — so the zone walk below never re-lists it. Seed it (mirroring
+      // `seenPanelIds`'s `poppedOut` seed) so the orphan-group loop does not
+      // destroy the group dockview's own window-close path hands the panel back
+      // to. Untracked ids (e.g. a pop-out that never went through this engine)
+      // simply contribute nothing.
+      for (const id of expanded.poppedOut) {
+        const originGroupId = this.#poppedOutOriginGroups.get(id);
+        if (originGroupId) seenGroupIds.add(originGroupId);
+      }
       this.#zoneOfGroup.clear();
 
       for (const zone of ZONE_IDS) {
@@ -913,6 +962,8 @@ export class DockviewEngine implements EngineAdapter {
     this.#lastZonePx.clear();
     this.#lastGroupPx.clear();
     this.#poppedOutGroupPanels.clear();
+    this.#pendingPopouts.clear();
+    this.#poppedOutOriginGroups.clear();
     this.#noticeListeners.clear();
     this.#api?.dispose();
     this.#api = null;

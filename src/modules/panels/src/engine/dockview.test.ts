@@ -855,3 +855,83 @@ test("apply seeds seenPanelIds with poppedOut so a live popout is never orphan-r
   // The panel is NOT torn out of dockview's model by the orphan-removal loop.
   expect(engine.debugApi?.getPanel("chat")).toBeTruthy();
 });
+
+test("Fix 1: a duplicate pop-out request on the same id before the first settles invokes the driver only once", async () => {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  attachedHost = host;
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  // A driver whose promise is resolved manually, so a second click lands while
+  // the first request is still in flight (the async window.open → re-parent gap).
+  let resolveDriver: (ok: boolean) => void = () => {};
+  let driverCalls = 0;
+  const driver = (): Promise<boolean> => {
+    driverCalls += 1;
+    return new Promise<boolean>((res) => {
+      resolveDriver = res;
+    });
+  };
+
+  engine = new DockviewEngine(silentLogger, driver);
+  engine.init(host, slotFor, stageEl);
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  let l = defaultLayout([{ id: "chat" }]);
+  l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+  engine.apply(l.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]));
+
+  // Clicking the "Pop out" item closes the popover but leaves the tab
+  // renderer's toggle latch set; a fresh open therefore needs the menu button
+  // clicked until the item actually re-appears.
+  const clickPopOut = (): void => {
+    const menuBtn = host.querySelector<HTMLButtonElement>(".sc-tab-menu-btn")!;
+    menuBtn.click();
+    if (!document.querySelector('[data-testid="panel-menu-popOut"]')) menuBtn.click();
+    document.querySelector<HTMLButtonElement>('[data-testid="panel-menu-popOut"]')!.click();
+  };
+
+  clickPopOut();
+  clickPopOut(); // second request while the first is still pending
+
+  // Load-bearing: the in-flight guard blocked the second driver invocation.
+  expect(driverCalls).toBe(1);
+
+  resolveDriver(true);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // Exactly one popOut op emitted (one request ever reached the driver).
+  expect(ops.filter((o) => o.op === "popOut")).toHaveLength(1);
+});
+
+test("Fix 2: a successful pop-out seeds its origin group so the next apply() does not orphan-remove it", async () => {
+  await popOutViaMenu(() => Promise.resolve(true));
+  const api = engine!.debugApi!;
+  const originGroupId = "sc-group:chat";
+
+  // dockview's real `addPopoutGroup` keeps the origin group alive-but-hidden
+  // while emptying it (the panel now lives in the popout window). The injected
+  // driver can't produce that state, so reproduce it via the component's
+  // options-accepting `removePanel` (the public `DockviewApi.removePanel`
+  // forwards no options): strip the panel WITHOUT disposing the now-empty
+  // group — matching dockview's origin-group-survives design.
+  const chat = api.getPanel("chat")!;
+  (api as unknown as { component: { removePanel(p: unknown, o: object): void } }).component.removePanel(
+    chat,
+    { removeEmptyGroup: false, skipDispose: true },
+  );
+  expect(api.getGroup(originGroupId)?.model.panels.length).toBe(0);
+
+  // Reconcile the SAME popped-out tree: chat still marked poppedOut.
+  let l = defaultLayout([{ id: "chat" }]);
+  l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+  l = applyOp(l, { op: "popOut", id: "chat" });
+  engine!.apply(l.expanded, new Map());
+
+  // The empty origin group is seeded into seenGroupIds and survives the
+  // orphan-group loop (without the seeding fix it would be removeGroup'd).
+  expect(api.getGroup(originGroupId)).toBeTruthy();
+});
