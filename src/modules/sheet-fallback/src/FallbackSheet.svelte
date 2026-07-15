@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, SystemTreeEditor } from "@shadowcat/ui-kit";
   import { getPointer, type WireDocument } from "@shadowcat/core";
 
@@ -9,7 +10,16 @@
   const ctx = getAppContext();
   const t = ctx.t;
 
-  const doc = $derived.by((): WireDocument | undefined => ctx.documents.get(docId));
+  // Reactive subscription: `ctx.documents` (OptimisticClient) is a plain-callback store, not a
+  // Svelte rune — a $derived that reads it without this bridge freezes at first render. Mirrors
+  // GameSettingsPanel's `ws`/`wsys` pattern: subscribe() is called only in the `doc` derived (the
+  // sole direct `ctx.documents` read); `system`/`readOnly` derive from `doc` and re-derive with it.
+  const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
+
+  const doc = $derived.by((): WireDocument | undefined => {
+    subscribe();
+    return ctx.documents.get(docId);
+  });
   const system = $derived.by((): unknown => (doc ? getPointer(doc, systemPrefix) : undefined));
   const readOnly = $derived(!doc || !ctx.canEdit(doc, systemPrefix));
 </script>
