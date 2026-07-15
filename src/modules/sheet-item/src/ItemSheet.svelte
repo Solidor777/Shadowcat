@@ -52,13 +52,13 @@
 
   {#if doc && system}
     <label>{t("sheetItem.name")}
-      <input aria-label="sheetItem.name" value={system.name ?? ""} disabled={readOnly}
+      <input aria-label={t("sheetItem.name")} value={system.name ?? ""} disabled={readOnly}
         onchange={(e) => set("name", (e.currentTarget as HTMLInputElement).value)} /></label>
 
     {#if rollable.length > 0}
       <div class="rolls">
         {#each rollable as r (r.key)}
-          <button type="button" aria-label="sheetItem.roll" onclick={() => roll(r.formula)}>{r.key}: {r.formula}</button>
+          <button type="button" onclick={() => roll(r.formula)}>{r.key}: {r.formula}</button>
         {/each}
       </div>
     {/if}
