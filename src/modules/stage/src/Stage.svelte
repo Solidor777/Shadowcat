@@ -7,6 +7,7 @@
     type DisplayBackend,
     type Point,
   } from "@shadowcat/render";
+  import { createSubscriber } from "svelte/reactivity";
 
   /** Backend factory; defaults to the real Pixi backend. Tests inject a fake
    * (jsdom has no WebGL — real GL is covered by Playwright). */
@@ -17,7 +18,11 @@
     createBackend?: (canvas: HTMLCanvasElement) => Promise<DisplayBackend>;
   } = $props();
 
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, role, members } = getAppContext();
+  // `ctx` is a live object (AppContext.viewedSceneId reads the session's reactive
+  // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
+  // stay live; the other fields are stable references, safe to destructure.
+  const ctx = getAppContext();
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, role, members } = ctx;
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -66,6 +71,7 @@
     let offAsset: (() => void) | null = null;
     let offGrid: (() => void) | null = null;
     let offPing: (() => void) | null = null;
+    let offViewed: (() => void) | null = null;
     let detachScene: (() => void) | null = null;
     // Aborts all pointer/wheel listeners on teardown (and on any $effect re-run),
     // so a stale listener set can never call into a destroyed engine.
@@ -81,6 +87,7 @@
         grid: { kind: "square", size: 100 },
         gridColor: readColor("--grid-line", 0x363645),
         subscribeScene,
+        viewedSceneId: () => ctx.viewedSceneId,
         onDerivedApplied: (input) => { host.dataset.sceneDerived = "1"; host.dataset.visionMode = input.mode; },
       });
       const e = engine;
@@ -93,6 +100,20 @@
       detachScene = scene.attach(e);
       engineRef = e;
       if (gmView !== "all") applyGmView(); // survive an $effect re-run with a non-default view
+      // Re-project on a client-local viewed-scene switch (activeScene flip or GM roam). Neither
+      // carries a new server frame, so the engine must re-filter its views + last vision payload.
+      let lastViewed = ctx.viewedSceneId;
+      const vsSub = createSubscriber((update) => documents.subscribe(update));
+      offViewed = $effect.root(() => {
+        $effect(() => {
+          vsSub(); // track store changes (activeScene doc edits)
+          const now = ctx.viewedSceneId; // tracks gmViewedScene $state
+          if (now !== lastViewed) {
+            lastViewed = now;
+            e.reapplyViewedScene();
+          }
+        });
+      });
       wirePointer(e, controller.signal);
       // Drive the grid from the active scene's system.grid (M8d §15), updating only on
       // a real change so a token drag does not rebuild the grid each frame; also expose
@@ -100,7 +121,8 @@
       let lastGridKey = "";
       let lastAnimKey = "";
       const onDocs = (): void => {
-        const scene = documents.query("scene")[0];
+        const vsid = ctx.viewedSceneId;
+        const scene = vsid ? documents.get(vsid) : documents.query("scene")[0];
         // Resolved once so both diagonalRule and animation read from the same snapshot.
         const settings = resolveSceneSettings(scene, documents);
         const g = (scene?.system as { grid?: { kind: "square" | "hex"; size: number } } | undefined)?.grid;
@@ -125,7 +147,9 @@
           lastAnimKey = animKey;
           e.setAnimation({ speedCellsPerSec: anim.speedCellsPerSec, easing: anim.easing });
         }
-        host.dataset.tokenCount = String(documents.query("token").length);
+        host.dataset.tokenCount = String(
+          documents.query("token").filter((t) => !vsid || t.parent_id === vsid).length,
+        );
         host.dataset.shapeCount = String(documents.query("drawing").length + documents.query("template").length);
         host.dataset.wallCount = String(documents.query("wall").length);
         // See-as-player candidates: distinct token owners the GM sees (best-effort labels).
@@ -167,6 +191,7 @@
       offGrid?.();
       offPing?.();
       offAsset?.();
+      offViewed?.();
       controller.abort();
       observer?.disconnect();
       engine?.destroy();

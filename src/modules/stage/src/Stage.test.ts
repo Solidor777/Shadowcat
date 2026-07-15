@@ -3,6 +3,7 @@ import { render } from "@testing-library/svelte";
 import Stage from "./Stage.svelte";
 import type { DisplayBackend } from "@shadowcat/render";
 import { RenderEngine } from "@shadowcat/render";
+import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
 import type { ReadableDocuments } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 
@@ -129,4 +130,44 @@ test("pushes the resolved snapToGrid to the engine (continuous scene: default fa
   });
   await vi.waitFor(() => expect(spy).toHaveBeenCalledWith(false));
   spy.mockRestore();
+});
+
+test("drives the initial reconcile from ctx.viewedSceneId (M12d)", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100 } }, "sA") },
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 50 } }, "sB") },
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sB",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } },
+          "t-b",
+        ),
+      },
+    ],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  // sA is viewed, has no tokens (t-b is parented to sB); the Stage must filter tokenCount
+  // by the viewed scene, not report the whole store's token count.
+  expect(host.dataset.tokenCount).toBe("0");
 });
