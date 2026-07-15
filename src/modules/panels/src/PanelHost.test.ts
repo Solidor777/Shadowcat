@@ -71,12 +71,22 @@ class NoticeEngine implements EngineAdapter {
   emitNotice(key: string): void {
     for (const cb of this.#noticeListeners) cb(key);
   }
+  /** Test helper: direct observation of subscriber count, so teardown can be
+   * asserted without relying on a DOM side-effect (a post-unmount `$state`
+   * write does not re-trigger an already-unmounted template's effect in
+   * Svelte 5, regardless of whether the underlying listener was removed —
+   * so DOM text is not a valid proxy for "was `unsubNotice?.()` called"). */
+  get noticeListenerCount(): number {
+    return this.#noticeListeners.size;
+  }
   focus(id: string): void {
     this.#fake.focus(id);
   }
+  /** Deliberately does NOT clear `#noticeListeners` — only the unsubscribe
+   * function returned by `onNotice` may remove a listener, so a listener
+   * left behind here is observable proof `unsubNotice?.()` did not run. */
   destroy(): void {
     this.#fake.destroy();
-    this.#noticeListeners.clear();
   }
 }
 
@@ -421,7 +431,7 @@ test("live region: an engine notice announces the resolved i18n text", async () 
   expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
 });
 
-test("live region: unmounting stops further engine notices (unsubNotice teardown)", async () => {
+test("live region: unmounting unsubscribes the engine's onNotice listener (unsubNotice teardown)", async () => {
   const registry = new ContributionRegistry();
   registry.contribute({
     id: "chat:panel",
@@ -432,21 +442,18 @@ test("live region: unmounting stops further engine notices (unsubNotice teardown
   });
   const engine = new NoticeEngine();
   const context = setAppContextForTest({ contributions: registry, role: "gm", t: (k, p) => i18n.t(k, p) });
-  const { container, unmount } = render(PanelHost, { props: { engine }, context });
+  const { unmount } = render(PanelHost, { props: { engine }, context });
   await Promise.resolve();
 
-  const liveRegion = container.querySelector('[role="status"]')!;
-  engine.emitNotice("panels.popoutRestoredFloating");
-  await Promise.resolve();
-  expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
+  // Mounting subscribes exactly one listener to the engine's notice source.
+  expect(engine.noticeListenerCount).toBe(1);
 
   unmount();
 
-  // A dropped `unsubNotice?.()` would leave this listener live, so the
-  // destroyed component's `announce = t(key)` closure would still run and
-  // this text would flip to the new key's resolved string. Asserting it
-  // STAYS at the pre-unmount value proves the teardown actually ran.
-  engine.emitNotice("panels.popoutBlocked");
-  await Promise.resolve();
-  expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
+  // Direct proof `unsubNotice?.()` ran: the engine's subscriber set is empty
+  // post-unmount. (A DOM-text assertion here would be vacuous — Svelte 5
+  // disposes a template's effect on unmount, so a post-unmount `$state`
+  // write never re-renders the detached node whether or not the listener
+  // was actually removed; see the getter's doc comment above.)
+  expect(engine.noticeListenerCount).toBe(0);
 });
