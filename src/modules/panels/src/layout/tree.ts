@@ -30,6 +30,12 @@ export interface ExpandedLayout {
   zones: Record<ZoneId, ZoneNode>;
   floating: { id: string; rect: Rect; z: number }[];
   minimized: string[];
+  // Ids currently rendered in a same-heap child window (dockview popout). PERSISTED
+  // as ids only — the live `Window` handle is dockview's, never serialized. A page
+  // load cannot reopen a popup (no user gesture), so a persisted entry rehydrates to
+  // floating at controller construction; during a live session an id lands here only
+  // after a gesture-time `addPopoutGroup` succeeds.
+  poppedOut: string[];
 }
 
 export interface CompactLayout {
@@ -53,12 +59,15 @@ export type LayoutOp =
   | { op: "activeTab"; zone: ZoneId; group: number; id: string }
   | { op: "resizeZone"; zone: ZoneId; size: number }
   | { op: "resizeGroup"; zone: ZoneId; group: number; size: number }
-  | { op: "compactView"; id: string };
+  | { op: "compactView"; id: string }
+  | { op: "popOut"; id: string }
+  | { op: "popIn"; id: string };
 
 export type PanelLocation =
   | { where: "docked"; zone: ZoneId; group: number; tabIndex: number }
   | { where: "floating"; index: number }
   | { where: "minimized" }
+  | { where: "popped-out" }
   | { where: "closed" };
 
 const ZONE_IDS: readonly ZoneId[] = ["right", "bottom", "left"];
@@ -110,6 +119,7 @@ export function locate(l: PanelLayoutV1, id: string): PanelLocation {
   const fi = l.expanded.floating.findIndex((f) => f.id === id);
   if (fi !== -1) return { where: "floating", index: fi };
   if (l.expanded.minimized.includes(id)) return { where: "minimized" };
+  if (l.expanded.poppedOut.includes(id)) return { where: "popped-out" };
   return { where: "closed" };
 }
 
@@ -128,6 +138,10 @@ function detach(l: PanelLayoutV1, id: string): [PanelLayoutV1, PanelLocation] {
     case "floating": {
       const floating = compactZ(l.expanded.floating.filter((_, i) => i !== loc.index));
       return [{ ...l, expanded: { ...l.expanded, floating } }, loc];
+    }
+    case "popped-out": {
+      const poppedOut = l.expanded.poppedOut.filter((p) => p !== id);
+      return [{ ...l, expanded: { ...l.expanded, poppedOut } }, loc];
     }
     case "docked": {
       const zoneNode = l.expanded.zones[loc.zone];
@@ -309,6 +323,28 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
       if (!l.compact.order.includes(o.id) || l.compact.activeView === o.id) return l;
       return { ...l, compact: { ...l.compact, activeView: o.id } };
     }
+
+    case "popOut": {
+      // Same-reference no-op for an already-popped-out id, mirroring "float"'s
+      // already-floating guard. The gesture-time `addPopoutGroup` in
+      // `DockviewEngine` only emits this op AFTER a successful async open, so a
+      // popped-out id here is always backed by a live child window.
+      const loc = locate(l, o.id);
+      if (loc.where === "popped-out") return l;
+      const [l1] = detach(l, o.id);
+      return { ...l1, expanded: { ...l1.expanded, poppedOut: [...l1.expanded.poppedOut, o.id] } };
+    }
+
+    case "popIn": {
+      // Returns a popped-out panel to a new docked "right" group (mirrors
+      // "restore"). Emitted by the engine when a popout window closes; the
+      // menu's dock/float/minimize commands pop a panel in via their own ops
+      // (detach handles the "popped-out" source location).
+      const loc = locate(l, o.id);
+      if (loc.where !== "popped-out") return l;
+      const [l1] = detach(l, o.id);
+      return placeByPlacement(l1, o.id, { kind: "docked", zone: "right" });
+    }
   }
 }
 
@@ -361,6 +397,10 @@ export function prune(l: PanelLayoutV1, known: ReadonlySet<string>): PanelLayout
   const minimizedChanged = minimizedKept.length !== l.expanded.minimized.length;
   if (minimizedChanged) changed = true;
 
+  const poppedOutKept = l.expanded.poppedOut.filter((id) => known.has(id));
+  const poppedOutChanged = poppedOutKept.length !== l.expanded.poppedOut.length;
+  if (poppedOutChanged) changed = true;
+
   const orderKept = l.compact.order.filter((id) => known.has(id));
   const orderChanged = orderKept.length !== l.compact.order.length;
   if (orderChanged) changed = true;
@@ -378,6 +418,7 @@ export function prune(l: PanelLayoutV1, known: ReadonlySet<string>): PanelLayout
       zones,
       floating,
       minimized: minimizedChanged ? minimizedKept : l.expanded.minimized,
+      poppedOut: poppedOutChanged ? poppedOutKept : l.expanded.poppedOut,
     },
     compact: { activeView, order: orderChanged ? orderKept : l.compact.order },
   };
@@ -422,6 +463,16 @@ function placeFromPersistedLocation(l: PanelLayoutV1, id: string, source: PanelL
         groups = zoneNode.groups.map((g, i) => (i === gi ? { ...g, tabs, active } : g));
       }
       return { ...l, expanded: { ...l.expanded, zones: { ...l.expanded.zones, [loc.zone]: { ...zoneNode, groups } } } };
+    }
+
+    case "popped-out": {
+      // Popouts never survive reload (no gesture to reopen the window); a
+      // persisted popped-out panel comes back as floating. Same rule as
+      // `PanelsController.#rehydratePoppedOut`, applied to the not-yet-
+      // registered-panel path.
+      const maxZ = l.expanded.floating.reduce((m, f) => Math.max(m, f.z), -1);
+      const floating = compactZ([...l.expanded.floating, { id, rect: { ...SHEET_CASCADE_BASE }, z: maxZ + 1 }]);
+      return { ...l, expanded: { ...l.expanded, floating } };
     }
 
     case "closed":
@@ -512,7 +563,7 @@ export function placeNewRegistrations(
 export function defaultLayout(regs: { id: string; placement?: DefaultPlacement }[]): PanelLayoutV1 {
   const empty: PanelLayoutV1 = {
     version: 1,
-    expanded: { zones: emptyZones(), floating: [], minimized: [] },
+    expanded: { zones: emptyZones(), floating: [], minimized: [], poppedOut: [] },
     compact: { activeView: null, order: [] },
   };
   return placeNewRegistrations(empty, regs);

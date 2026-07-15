@@ -602,3 +602,53 @@ describe("floating default placement (sheets)", () => {
     expect(b.rect.y).toBeGreaterThan(a.rect.y);
   });
 });
+
+describe("popOut / popIn", () => {
+  function docked(): PanelLayoutV1 {
+    let l = defaultLayout([{ id: "chat" }]);
+    return applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+  }
+
+  it("popOut detaches from its zone and records the id in poppedOut", () => {
+    const l = applyOp(docked(), { op: "popOut", id: "chat" });
+    expect(l.expanded.poppedOut).toEqual(["chat"]);
+    expect(l.expanded.zones.right.groups).toEqual([]);
+    expect(locate(l, "chat")).toEqual({ where: "popped-out" });
+  });
+
+  it("popOut on an already-popped-out id is a same-reference no-op", () => {
+    const l1 = applyOp(docked(), { op: "popOut", id: "chat" });
+    const l2 = applyOp(l1, { op: "popOut", id: "chat" });
+    expect(l2).toBe(l1);
+  });
+
+  it("popIn removes the id from poppedOut and docks it right", () => {
+    const l1 = applyOp(docked(), { op: "popOut", id: "chat" });
+    const l2 = applyOp(l1, { op: "popIn", id: "chat" });
+    expect(l2.expanded.poppedOut).toEqual([]);
+    expect(l2.expanded.zones.right.groups[0].tabs).toEqual(["chat"]);
+  });
+
+  it("popIn on a non-popped-out id is a same-reference no-op", () => {
+    const l = docked();
+    expect(applyOp(l, { op: "popIn", id: "chat" })).toBe(l);
+  });
+
+  it("float on a popped-out id detaches it from poppedOut", () => {
+    const l1 = applyOp(docked(), { op: "popOut", id: "chat" });
+    const l2 = applyOp(l1, { op: "float", id: "chat", rect: { x: 1, y: 2, w: 3, h: 4 } });
+    expect(l2.expanded.poppedOut).toEqual([]);
+    expect(l2.expanded.floating.map((f) => f.id)).toEqual(["chat"]);
+  });
+
+  it("prune drops an unknown popped-out id", () => {
+    const l = applyOp(docked(), { op: "popOut", id: "chat" });
+    const pruned = prune(l, new Set());
+    expect(pruned.expanded.poppedOut).toEqual([]);
+  });
+
+  it("prune with all ids known is a same-reference no-op", () => {
+    const l = applyOp(docked(), { op: "popOut", id: "chat" });
+    expect(prune(l, new Set(["chat"]))).toBe(l);
+  });
+});
