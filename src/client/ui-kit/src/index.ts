@@ -15,3 +15,5 @@ export { PanelsBridge } from "./panelsBridge.svelte";
 export type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
 export { setField } from "./sheetEdit";
 export { default as SystemTreeEditor } from "./SystemTreeEditor.svelte";
+export { SheetsController } from "./sheetsController.svelte";
+export type { SheetsControllerDeps } from "./sheetsController.svelte";
