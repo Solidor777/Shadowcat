@@ -86,15 +86,18 @@ export function resolveDocRef(ref: SheetRef, store: ReadableDocuments): SheetTar
  * precedent). `-Infinity` keeps the fallback below every real provider. Null only when
  * nothing (not even a fallback) is registered. */
 export function pickSheet(registry: ContributionRegistry, doc: WireDocument): unknown | null {
-  const seen = new Set<string>();
+  const seen = new Set<unknown>();
   const candidates = [
     ...registry.entriesFor(sheetContract(doc.doc_type)),
     // A doc_type of literally "*" collides with the fallback contract by construction —
-    // both entriesFor calls would return the same entries; dedupe below by contribution id.
+    // both entriesFor calls would return the same entries. Dedupe by Contribution object
+    // identity (entriesFor wraps entries fresh per call, but wraps the SAME contribution),
+    // never by id string: the registry does not guarantee id uniqueness across contracts,
+    // so an id-keyed dedupe could drop a legitimate distinct provider.
     ...registry.entriesFor(SHEET_FALLBACK_CONTRACT),
   ]
     .filter((e) => e.contribution.sheet && (!e.contribution.sheet.match || e.contribution.sheet.match(doc)))
-    .filter((e) => (seen.has(e.contribution.id) ? false : (seen.add(e.contribution.id), true)));
+    .filter((e) => (seen.has(e.contribution) ? false : (seen.add(e.contribution), true)));
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => {
     const pa = a.contribution.sheet!.priority, pb = b.contribution.sheet!.priority;
