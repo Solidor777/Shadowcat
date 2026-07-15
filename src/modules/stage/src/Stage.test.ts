@@ -6,6 +6,7 @@ import { RenderEngine } from "@shadowcat/render";
 import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
 import type { ReadableDocuments } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
+import { __APP_CONTEXT_KEY__ } from "@shadowcat/ui-kit";
 
 const OWNER = "11111111-2222-3333-4444-555555555555";
 
@@ -170,4 +171,85 @@ test("drives the initial reconcile from ctx.viewedSceneId (M12d)", async () => {
   // sA is viewed, has no tokens (t-b is parented to sB); the Stage must filter tokenCount
   // by the viewed scene, not report the whole store's token count.
   expect(host.dataset.tokenCount).toBe("0");
+});
+
+test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per genuine change (M12d review)", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100 } }, "sA") },
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100 } }, "sB") },
+    ],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const context = setAppContextForTest({
+    documents: store,
+    store,
+    assets: new AssetResolver(),
+    viewedSceneId: "sA",
+    subscribeScene: () => ({ unsubscribe() {} }),
+  });
+  // Install a LIVE getter on the actual ctx object so the Stage's `ctx.viewedSceneId` reads
+  // reflect this closure variable, mirroring how the real session's reactive `gmViewedScene`
+  // $state is read live rather than snapshotted at context-creation time.
+  let viewed = "sA";
+  Object.defineProperty(context.get(__APP_CONTEXT_KEY__), "viewedSceneId", {
+    get: () => viewed,
+    configurable: true,
+  });
+  const spy = vi.spyOn(RenderEngine.prototype, "reapplyViewedScene");
+  const { container } = render(Stage, { props: { createBackend }, context });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(spy).not.toHaveBeenCalled();
+
+  // Change the viewed scene, then drive a real document-store mutation (the thing
+  // `vsSub()`'s `createSubscriber(documents.subscribe)` bridge actually observes) to fire
+  // the watcher's $effect re-run.
+  viewed = "sB";
+  store.applyCommand({
+    seq: 2,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sA",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } },
+          "t1",
+        ),
+      },
+    ],
+  } as never);
+  await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+
+  // A second, unrelated doc mutation with `viewed` unchanged must NOT re-trigger the watcher
+  // (the `if (now !== lastViewed)` guard).
+  store.applyCommand({
+    seq: 3,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sA",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } },
+          "t2",
+        ),
+      },
+    ],
+  } as never);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(spy).toHaveBeenCalledTimes(1);
+  spy.mockRestore();
 });
