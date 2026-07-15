@@ -1,5 +1,5 @@
 import { test, expect, describe, it } from "vitest";
-import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, type TokenSystem, type ActorSystem, type Faction, type Condition, type SceneSystem, type SceneDimensions, type TokenVisual, type FaceVisual, type AnimatedSource } from "./scene-docs";
+import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildItemDoc, ITEM_DOC_TYPE, type TokenSystem, type ActorSystem, type Faction, type Condition, type SceneSystem, type SceneDimensions, type TokenVisual, type FaceVisual, type AnimatedSource } from "./scene-docs";
 import {
   buildWorldSettingsDoc, resolveSceneSettings, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
   type WireDocument,
@@ -371,5 +371,14 @@ describe("TokenVisual union (M10h)", () => {
       faceMap: { bleeding: "bloodied" },
     };
     expect(Object.keys(v.faces)).toEqual(["normal", "bloodied"]);
+  });
+});
+
+describe("buildItemDoc", () => {
+  it("builds a top-level client-only item document", () => {
+    const doc = buildItemDoc("w1", { name: "Sword", damage: "1d8" });
+    expect(doc.doc_type).toBe(ITEM_DOC_TYPE);
+    expect(doc.parent_id).toBeNull();
+    expect((doc.system as { name: string }).name).toBe("Sword");
   });
 });

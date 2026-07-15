@@ -323,6 +323,21 @@ export function buildActorDoc(worldId: string, system: ActorSystem, id?: string)
   return envelope(worldId, "actor", null, system, id);
 }
 
+/** Client-only `item` doc_type (M12c): the server stays structural — no server change,
+ * mirroring `movementModel`/`bounds`/`visual`. An item lives standalone (top-level,
+ * parentless) or embedded in an actor's inventory. `system.name` is the only shape the
+ * item sheet requires; every other field is opaque, edited via the tree editor. */
+export const ITEM_DOC_TYPE = "item";
+
+export interface ItemSystem {
+  name: string;
+  [key: string]: unknown;
+}
+
+export function buildItemDoc(worldId: string, system: ItemSystem, id?: string): WireDocument {
+  return envelope(worldId, ITEM_DOC_TYPE, null, system, id);
+}
+
 /** Build a token from an actor. `link` references the shared actor; `instance` embeds an
  * independent copy with `source` provenance (the deferred merge engine consumes it). Size/
  * shape resolve from the actor (M10d); `w`/`h` seed the rendered cell size now. */
