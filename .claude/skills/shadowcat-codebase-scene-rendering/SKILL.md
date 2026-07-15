@@ -570,6 +570,20 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   FLUSH, not at arrival. Any future engine cache that spans a client-local scene switch (not just
   vision/fog) must follow this same raw-payload-cache/filter-at-consumption shape — filtering
   eagerly and caching the filtered result is the bug pattern to avoid.
+- **RESOLVED (`docs/CLOSED_BUGS.md`): `flushPendingDerived` no longer regresses `lastAppliedSeq` to
+  a stale `pendingDerived` entry superseded by an immediately-applied newer frame.** `onSceneFrame`'s
+  IMMEDIATE-apply branch (taken when a frame's `computedAtSeq` is not ahead of `store.appliedSeq` at
+  arrival) never touched `pendingDerived` — a still-set OLDER deferred entry (e.g. seq 5) could
+  survive past a newer frame's (seq 7) immediate apply advancing `lastAppliedSeq` to 7, then get
+  wrongly re-applied by a LATER `flushPendingDerived` call (any subsequent store commit), regressing
+  the mask back to seq 5. Fix: `flushPendingDerived` now applies a pending entry only when
+  `p.seq > this.lastAppliedSeq` at flush time (checked AFTER the pre-existing `store.appliedSeq >=
+  p.seq` watermark check, BEFORE the `toVisibility` re-filter) — otherwise discards it; the pending
+  slot is unconditionally cleared as soon as the watermark condition is met, applied or not. This is
+  a distinct guard from the M12d scene-refilter-at-flush fix directly above (that fix is about WHAT
+  scene a cached payload filters against; this one is about WHETHER a superseded payload should
+  apply at all) — both guards live in the same function and must both be preserved by any future
+  edit to `flushPendingDerived`.
 - **Vision is server-authoritative, no client prediction** (ARCHITECTURE §2 invariant 3); movement that
   crosses a `blocksMove` wall is rejected server-side before the write — validate the **post-image**
   position, not just the pre-move one [[m9-progress]].

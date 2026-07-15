@@ -27,3 +27,28 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   king path, full visible" (`src/server/src/scene/move_exec.rs`) — previously frozen at the
   buggy `truncated: true, cost: 2.0` outcome with an explicit comment marking it as a known,
   pre-existing defect — is now updated to the correct `truncated: false, cost: 3.0` outcome.
+
+## Client / scene-rendering
+
+- [Vision] `RenderEngine.onSceneFrame`/`flushPendingDerived` (`src/client/render/src/engine.ts`)
+  had a frame-ordering monotonicity hole: if a vision frame at seq 5 deferred into `pendingDerived`
+  (its `computedAtSeq` ahead of `store.appliedSeq`) and a NEWER frame at seq 7 subsequently arrived
+  and took the IMMEDIATE-apply branch (its own `computedAtSeq` no longer ahead), `lastAppliedSeq`
+  advanced to 7 without clearing the still-set seq-5 entry — `onSceneFrame`'s immediate branch never
+  touched `pendingDerived`. A later `flushPendingDerived` call (triggered by any subsequent store
+  commit) re-checked only `store.appliedSeq >= p.seq`, found it satisfied, and re-applied the stale
+  seq-5 payload — regressing `lastAppliedSeq` back to 5 and overwriting the newer seq-7 mask with an
+  older-but-valid one. Not a secrecy leak (both frames re-filter to the current viewed scene, per
+  the M12d fog-secrecy fix in `74165e4`), only a momentary/self-correcting flicker. Fixed by adding
+  a monotonicity guard to `flushPendingDerived`: a pending entry is now applied only when its `seq`
+  is still greater than `lastAppliedSeq` at flush time — otherwise it is DISCARDED, never applied.
+  The pending slot is unconditionally cleared as soon as the watermark condition
+  (`store.appliedSeq >= p.seq`) is met, whether the entry is applied or discarded, so a superseded
+  entry never lingers past this check. The pre-existing scene re-filter-at-flush-time behavior
+  (M12d) is untouched — this fix only adds the seq-ordering guard, applied AFTER the existing
+  `store.appliedSeq >= p.seq` watermark check and BEFORE the `toVisibility` re-filter call.
+  Regression test: `"a stale deferred frame superseded by a later immediate-apply frame is
+  discarded, not re-applied, on flush (no lastAppliedSeq regression)"` (`src/client/render/src/
+  engine.test.ts`) — drives the exact repro sequence by mutating `store.appliedSeq` directly (a
+  plain field) to isolate `RenderEngine`'s own watermark contract from `DocumentStore`'s incidental
+  commit-triggers-flush coupling; confirmed failing against the pre-fix code before the fix landed.
