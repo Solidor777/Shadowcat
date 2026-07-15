@@ -8,6 +8,9 @@
   // object). Editing a leaf dispatches against `doc.id` at `basePath + subpointer`, reading
   // the REAL current value as the OCC pre-image. `readOnly` (advisory `canEdit` = false)
   // disables every control; the server stays authoritative.
+  // INVARIANT: `doc` must be sourced from `ctx.documents` (the optimistic view), never
+  // `ctx.store` (the rollback base) — otherwise every OCC pre-image read here is stale and
+  // edits spuriously conflict [[render-from-optimistic-view]].
   let { doc, basePath, root, readOnly }: { doc: WireDocument; basePath: string; root: unknown; readOnly: boolean } =
     $props();
 
@@ -21,7 +24,10 @@
   });
 
   function kindOf(v: unknown): "string" | "number" | "boolean" | "object" | "array" | "null" {
-    if (v === null) return "null";
+    // `undefined` collapses to the same "null" kind as a real null: JSON never produces
+    // `undefined`, so this branch is defensive-only, but without it a stray undefined would
+    // fall through to "string" and render as an uneditable empty text input.
+    if (v === null || typeof v === "undefined") return "null";
     if (Array.isArray(v)) return "array";
     const tp = typeof v;
     if (tp === "number") return "number";
@@ -38,7 +44,11 @@
   function addField(): void {
     // A new object field seeds an empty string; array grow is not supported (set_pointer
     // cannot extend arrays — the sheet writes the WHOLE array to grow it, below).
-    const key = crypto.randomUUID().slice(0, 8);
+    // Loop until the generated key is not already present in `root` — always terminates in
+    // practice since `root` has finitely many keys.
+    const existing = root !== null && typeof root === "object" && !Array.isArray(root) ? (root as Record<string, unknown>) : {};
+    let key = crypto.randomUUID().slice(0, 8);
+    while (key in existing) key = crypto.randomUUID().slice(0, 8);
     editLeaf(key, "");
   }
 
@@ -54,7 +64,15 @@
   }
 
   function addArrayItem(): void {
-    const next = [...(root as unknown[]), ""];
+    // Seeds the new element matching the LAST existing element's kind (empty array defaults
+    // to string). `system` is opaque JSON with no schema layer downstream to catch a
+    // heterogeneous array, so an always-string seed would permanently type-pollute e.g. a
+    // number[] with a stray "" that has no UI path back to a numeric type.
+    const arr = root as unknown[];
+    const lastKind = arr.length > 0 ? kindOf(arr[arr.length - 1]) : "string";
+    const seed: unknown =
+      lastKind === "number" ? 0 : lastKind === "boolean" ? false : lastKind === "array" ? [] : lastKind === "object" ? {} : "";
+    const next = [...arr, seed];
     setField(ctx, doc.id, basePath, getPointer(doc, basePath), next);
   }
 </script>
