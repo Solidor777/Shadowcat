@@ -1042,7 +1042,37 @@ Decomposed **M11a–d**:
 > re-toggle→minimize-to-chip, compact/expanded axis) and repaired `stage.spec.ts` +
 > `assets.spec.ts`'s chip-click setup steps to the launcher path.
 > Plan: [`superpowers/plans/2026-07-14-m12b-layout-refresh.md`](superpowers/plans/2026-07-14-m12b-layout-refresh.md).
-- Actor / scene browsers, generic actor / item sheets — built against the public API, each treated as an API bug report. (Chat panel superseded: the baseline chat display modules ship in **M11d**.)
+> **M12c DONE** (branch `m12c-sheets`, 13 SDD tasks, 4 pre-authorized buddy-checks — T2 write-site
+> resolution, T5 OCC pre-image helper, T9 actor-sheet edit sites, T10 item-sheet edit sites):
+> sheet registry (`shadowcat.sheet:<doc_type>` multi contract family + always-registered
+> `shadowcat.sheet:*` fallback at `priority: -Infinity`, priority-desc + lowest-module-id
+> tie-break via `pickSheet`); `ctx.openDocument(ref)` (`{docId, embeddedPath?}|{tokenId}` →
+> write-site-resolved `SheetTarget` — linked token ⇒ shared actor `/system`, instanced token ⇒
+> `/embedded/actor/0/system`, embedded child ⇒ `/embedded/<coll>/<idx>/system`; fail-closed null
+> on every dangling/raw ref, never a throw); each open document is a runtime `sheet:<docId>`
+> `Contribution` under the existing `shadowcat.panel` contract (dynamic-panel-id design,
+> verified against the panel manager's existing arbitrary-string-id + late-registration
+> machinery — no new content-swap host needed), floating by default via a new
+> `{kind:"floating"}` `DefaultPlacement` + deterministic cascade in the pure layout reducer;
+> generic actor sheet (engine-known fields + `SystemTreeEditor` type-aware tree body +
+> embedded-items inventory), item sheet (client-only `item` doc_type — NO server change — +
+> dice-notation roll-to-chat), fallback sheet (envelope metadata + tree editor); every edit a
+> real-pre-image `setField` OCC dispatch; sheets read the optimistic store reactively via a
+> `createSubscriber`/`subscribe()` bridge (see the Task 9 buddy-check catch below); chat actor
+> names → `openDocument` links, permission-gated by per-recipient store presence (server
+> redaction is the sole gate — no client-side permission check). The doc-link CHAT SEGMENT half
+> of the original M11d-1 deferral stays open (no server producer exists yet); logged to TODO.md.
+> Buddy-check catches: T2 an ambiguous instanced-token `panelId` (string-identical to a
+> top-level docId id) that would have silently mis-resolved on layout-reload — fixed
+> self-describing; a NaN-unsafe `-Infinity` priority tie-break and a throw-on-malformed-ref
+> fail-open gap. T9 (systemic, highest-value catch of the checkpoint) — sheet components reading
+> `ctx.documents` directly inside `$derived` freeze at mount (a plain-callback store, not a
+> Svelte rune) and silently corrupt the OCC pre-image on any second edit; found, empirically
+> reproduced, fixed across all three sheet components (in-task for actor/item, a merged-code
+> follow-up for the already-shipped fallback sheet). T10 caught an i18n/a11y regression of the
+> exact pattern T9 had just fixed in a sibling file.
+> Plan: [`superpowers/plans/2026-07-15-m12c-sheets.md`](superpowers/plans/2026-07-15-m12c-sheets.md).
+- M12d: actor / scene browsers + `activeScene` multi-scene, built against the public API, each treated as an API bug report. (Chat panel superseded: the baseline chat display modules ship in **M11d**.)
 
 ### M12.5 · Backups + snapshot restore (gate precondition)
 - Basic world backup (SQLite snapshot / per-world export) + restore path; minimal manual scheduling. Distinct from Phase-4 backup *automation*.
