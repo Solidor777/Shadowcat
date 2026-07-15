@@ -1033,6 +1033,30 @@ Decomposed **M11a–d**:
 - Basic world backup (SQLite snapshot / per-world export) + restore path; minimal manual scheduling. Distinct from Phase-4 backup *automation*.
 - Satisfies the dogfood-alpha gate's data-safety precondition.
 
+### M13 · Nightfox — first-party generic system module
+> Cross-cutting spec (approved 2026-07-15): [`superpowers/specs/2026-07-15-m13-nightfox-system-design.md`](superpowers/specs/2026-07-15-m13-nightfox-system-design.md).
+> Decomposed **M13a** (`@shadowcat/formula` shared formula library: free-form parser/evaluator,
+> fail-closed error values, DoS caps, cycle guard, dice-notation-template mode) → **M13b**
+> (`@shadowcat/module-nightfox` headless rules: `system.nightfox` stat model — number/resource/
+> text/boolean as maps, Zod tier-1 write validation, one-dependency-graph resolver, typed
+> commutative modifier buckets `add → mulAdditive → mulCompound`, `effect` doc_type with opt-in
+> transfer + active gating) → **M13c** (`@shadowcat/module-nightfox-sheets` over the M12c sheet
+> registry) → **M13d** (per-stat roll templates → labeled M11 notation via `/roll`; zero new wire
+> frames) → **M13e** (templates: provenance stamp + on-command 3-way pull/push/revert merge
+> engine — engine-level, own sub-spec; closes the deferred document-inheritance model) →
+> **M13f** (declarative server-side schema registry, subtree-scoped, data-only enforcement —
+> own sub-spec; invariant 6 intact).
+- Purpose: (1) a playable generic system (stats, derived formulas, rolls to chat, items/effects
+  modifying stats, template documents); (2) the reference implementation for system builders —
+  built only against public seams, every friction point logged as an API bug report; second
+  internal system toward the Phase-4 freeze gate.
+- Load-bearing invariant: modifier application is order-independent by construction (commutative
+  buckets; permutation property test) — reordering inventory/embeds never changes stats.
+- M13a/b are headless and startable before M12 completes; only M13c gates on M12c.
+- Excludes: comparison/conditional grammar, `override` bucket, effect durations/triggers
+  (Phase-2 combat), server-side formula evaluation (Phase-3 sandboxed validators), live
+  template inheritance.
+
 **▶ Dogfood alpha gate** — backups (M12.5) must exist before real worlds accrue.
 
 ## Phase 2 — Full table
