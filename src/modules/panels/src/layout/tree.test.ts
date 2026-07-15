@@ -605,7 +605,7 @@ describe("floating default placement (sheets)", () => {
 
 describe("popOut / popIn", () => {
   function docked(): PanelLayoutV1 {
-    let l = defaultLayout([{ id: "chat" }]);
+    const l = defaultLayout([{ id: "chat" }]);
     return applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
   }
 
