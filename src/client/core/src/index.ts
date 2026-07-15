@@ -75,9 +75,12 @@ export type {
 export { AssetResolver } from "./assets";
 export type { AssetOp } from "./assets";
 export { listAssets, uploadAsset, replaceAsset, deleteAsset } from "./asset-rest";
-export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildWorldSettingsDoc, DEFAULT_WORLD_SETTINGS, resolveSceneSettings, DEFAULT_GRADATION, buildLightGradationDoc, resolveGradation, SEED_VISION_MODES, buildVisionModesDoc, resolveVisionModes, buildLightDoc, buildRegionDoc, setRegionVisibility, DEFAULT_SCENE_BOUNDS } from "./scene-docs";
+export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildWorldSettingsDoc, DEFAULT_WORLD_SETTINGS, resolveSceneSettings, DEFAULT_GRADATION, buildLightGradationDoc, resolveGradation, SEED_VISION_MODES, buildVisionModesDoc, resolveVisionModes, buildLightDoc, buildRegionDoc, setRegionVisibility, DEFAULT_SCENE_BOUNDS, envelope } from "./scene-docs";
 export type { SceneSystem, TokenSystem, ActorSystem, TokenOverrides, RenderVisual, AnimatedSource, FaceVisual, TokenVisual, Faction, FactionStance, FactionRegistrySystem, Condition, ConditionRegistrySystem, MovementRestriction, MovementModel, LightMode, DiagonalRule, EasingMode, EnvironmentLight, GridDistance, SceneVisionOverrides, SceneLightingOverrides, WorldSceneDefaults, WorldSettingsSystem, ResolvedSceneSettings, GradationBand, LightGradationSystem, VisionMode, VisionModesSystem, VisionAssignment, LightSystem, RegionShapeKind, RegionShape, RegionBehavior, RegionSystem, SceneDimensions } from "./scene-docs";
 export { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, footprintRadius, resolveTokenVisual } from "./actor";
 export type { EffectiveActor, ConditionTarget, TokenBox } from "./actor";
+export { SHEET_CONTRACT_PREFIX, SHEET_FALLBACK_CONTRACT, sheetContract, resolveDocRef, pickSheet, isDiceNotation } from "./sheets";
+export type { SheetRef, SheetTarget } from "./sheets";
+export type { SheetMeta } from "./contributions";
 export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, CHAT_SETTINGS_DOC_TYPE, MAX_MESSAGE_CHARS, MessageKindSchema, DieRecordSchema, RollOutcomeSchema, ChatSegmentSchema, ChatMessageSystemSchema, parseMessageSystem, isKnownSegment, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc } from "./chat-docs";
 export type { MessageKind, DieRecord, RollOutcome, ChatSegment, UnknownSegment, ChatMessageSystem, ChatChannel, ChannelRegistrySystem, DiceSettingsSystem, ChatSettingsSystem } from "./chat-docs";
