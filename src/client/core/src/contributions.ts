@@ -15,7 +15,8 @@ export type ZoneId = "right" | "bottom" | "left";
  * Absent `defaultPlacement` on a `PanelMeta` means launcher-only (closed). */
 export type DefaultPlacement =
   | { kind: "docked"; zone: ZoneId; order?: number }
-  | { kind: "minimized" };
+  | { kind: "minimized" }
+  | { kind: "floating" };
 
 /** Panel metadata for the `shadowcat.panel` contract (M12a panel-manager host).
  * Plain data — framework-neutral. `labelKey` is an i18n key the HOST resolves at
