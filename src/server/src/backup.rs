@@ -53,6 +53,16 @@ pub fn dir_is_empty_or_absent(path: &Path) -> std::io::Result<bool> {
     }
 }
 
+/// True when `path` does not exist. Used to gate overwrite of the single-file
+/// restore destination (`world.db`).
+fn file_absent(path: &Path) -> std::io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(_) => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(e) => Err(e),
+    }
+}
+
 /// Recursively copy every file under `src` into `dst` (creating directories as
 /// needed) and return the number of files copied. A missing `src` copies zero
 /// files and still creates an empty `dst` — a fresh install may have no assets
@@ -146,6 +156,70 @@ pub async fn create_backup(
     tokio::fs::write(out_dir.join("manifest.json"), manifest_json).await?;
 
     Ok(manifest)
+}
+
+/// Restores a `backup_dir` matching the [`create_backup`] output layout:
+/// validates `manifest.json` and `world.db` are present (fails closed on a
+/// missing/malformed/foreign directory before touching any destination file),
+/// then copies `backup_dir/world.db` to `db_path` and `backup_dir/assets/` to
+/// `assets_dir`. Without `force`, refuses when `db_path` already exists or
+/// `assets_dir` already exists and is non-empty. With `force`, the destination
+/// assets directory is fully replaced (removed then recopied) rather than
+/// merged, so restore is a true point-in-time reset, not an overlay. Never
+/// starts the server — callers own that separation.
+pub async fn restore_backup(
+    backup_dir: &Path,
+    db_path: &Path,
+    assets_dir: &Path,
+    force: bool,
+) -> Result<(), BackupError> {
+    let manifest_path = backup_dir.join("manifest.json");
+    let manifest_bytes = tokio::fs::read(&manifest_path).await.map_err(|_| {
+        BackupError::InvalidBackupDir(
+            backup_dir.display().to_string(),
+            "missing manifest.json".to_string(),
+        )
+    })?;
+    let _manifest: BackupManifest = serde_json::from_slice(&manifest_bytes).map_err(|e| {
+        BackupError::InvalidBackupDir(
+            backup_dir.display().to_string(),
+            format!("malformed manifest.json: {e}"),
+        )
+    })?;
+
+    let backup_db = backup_dir.join("world.db");
+    if tokio::fs::metadata(&backup_db).await.is_err() {
+        return Err(BackupError::InvalidBackupDir(
+            backup_dir.display().to_string(),
+            "missing world.db".to_string(),
+        ));
+    }
+
+    if !force {
+        if !file_absent(db_path)? {
+            return Err(BackupError::DestinationNotEmpty(
+                db_path.display().to_string(),
+            ));
+        }
+        if !dir_is_empty_or_absent(assets_dir)? {
+            return Err(BackupError::DestinationNotEmpty(
+                assets_dir.display().to_string(),
+            ));
+        }
+    }
+
+    if let Some(parent) = db_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::copy(&backup_db, db_path).await?;
+
+    if tokio::fs::metadata(assets_dir).await.is_ok() {
+        tokio::fs::remove_dir_all(assets_dir).await?;
+    }
+    let backup_assets = backup_dir.join("assets");
+    copy_dir_recursive(&backup_assets, assets_dir).await?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -288,5 +362,133 @@ mod tests {
             .unwrap();
         assert!(manifest.db_bytes > 0);
         assert!(out_dir.join("world.db").is_file());
+    }
+
+    #[tokio::test]
+    async fn restore_backup_round_trips_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("shadowcat.db");
+        seed_db(&db_path).await;
+        let assets_dir = tmp.path().join("assets");
+        tokio::fs::create_dir_all(&assets_dir).await.unwrap();
+        tokio::fs::write(assets_dir.join("a.png"), b"AAA")
+            .await
+            .unwrap();
+
+        let out_dir = tmp.path().join("out");
+        create_backup(&db_path, &assets_dir, &out_dir)
+            .await
+            .unwrap();
+
+        let restored_db = tmp.path().join("restored.db");
+        let restored_assets = tmp.path().join("restored_assets");
+        restore_backup(&out_dir, &restored_db, &restored_assets, false)
+            .await
+            .unwrap();
+
+        let restored_url = format!("sqlite://{}", restored_db.to_string_lossy());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&restored_url)
+            .await
+            .unwrap();
+        let row = sqlx::query("SELECT val FROM t WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let val: String = row.get("val");
+        assert_eq!(val, "hello");
+        pool.close().await;
+
+        assert_eq!(
+            tokio::fs::read(restored_assets.join("a.png"))
+                .await
+                .unwrap(),
+            b"AAA"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_backup_refuses_nonempty_destination_without_force() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("shadowcat.db");
+        seed_db(&db_path).await;
+        let assets_dir = tmp.path().join("assets");
+        tokio::fs::create_dir_all(&assets_dir).await.unwrap();
+        tokio::fs::write(assets_dir.join("a.png"), b"AAA")
+            .await
+            .unwrap();
+        let out_dir = tmp.path().join("out");
+        create_backup(&db_path, &assets_dir, &out_dir)
+            .await
+            .unwrap();
+
+        // An existing destination db file blocks a force-less restore.
+        let restored_db = tmp.path().join("restored.db");
+        tokio::fs::write(&restored_db, b"pre-existing bytes")
+            .await
+            .unwrap();
+        let restored_assets = tmp.path().join("restored_assets");
+
+        let err = restore_backup(&out_dir, &restored_db, &restored_assets, false)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BackupError::DestinationNotEmpty(_)));
+        // The pre-existing file is untouched.
+        assert_eq!(
+            tokio::fs::read(&restored_db).await.unwrap(),
+            b"pre-existing bytes"
+        );
+
+        // --force proceeds and overwrites it.
+        restore_backup(&out_dir, &restored_db, &restored_assets, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read(restored_assets.join("a.png"))
+                .await
+                .unwrap(),
+            b"AAA"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_backup_fails_closed_on_missing_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty_backup_dir = tmp.path().join("not_a_backup");
+        tokio::fs::create_dir_all(&empty_backup_dir).await.unwrap();
+
+        let err = restore_backup(
+            &empty_backup_dir,
+            &tmp.path().join("db.sqlite"),
+            &tmp.path().join("assets"),
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, BackupError::InvalidBackupDir(_, _)));
+    }
+
+    #[tokio::test]
+    async fn restore_backup_fails_closed_on_malformed_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backup_dir = tmp.path().join("bad_backup");
+        tokio::fs::create_dir_all(&backup_dir).await.unwrap();
+        tokio::fs::write(backup_dir.join("manifest.json"), b"{ not valid json")
+            .await
+            .unwrap();
+        tokio::fs::write(backup_dir.join("world.db"), b"fake db bytes")
+            .await
+            .unwrap();
+
+        let err = restore_backup(
+            &backup_dir,
+            &tmp.path().join("db.sqlite"),
+            &tmp.path().join("assets"),
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, BackupError::InvalidBackupDir(_, _)));
     }
 }
