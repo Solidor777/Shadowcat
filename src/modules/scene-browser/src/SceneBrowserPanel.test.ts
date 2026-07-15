@@ -61,7 +61,7 @@ describe("SceneBrowserPanel", () => {
     const { getAllByRole } = render(SceneBrowserPanel, { context });
     await fireEvent.click(getAllByRole("button", { name: /configure/i })[1]);
     expect(selection.configureSceneId).toBe("sB");
-    expect(opened).toEqual(["game-settings"]);
+    expect(opened).toEqual(["game-settings:panel"]);
   });
 
   it("Create dispatches a new scene document", async () => {

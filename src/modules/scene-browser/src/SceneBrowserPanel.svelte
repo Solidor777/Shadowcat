@@ -34,8 +34,9 @@
   }
 
   /** Set the scene players render. OCC pre-image is the REAL current activeScene (or null when
-   * genuinely absent) — never a defaulted value. No-op with a debug hint if world-settings is
-   * absent (game-settings seeds it on the same GM Welcome). */
+   * genuinely absent) — never a defaulted value. Silent no-op if world-settings is absent
+   * (game-settings seeds it on the same GM Welcome, so this is a narrow startup race, not a
+   * steady-state condition). */
   function activate(sceneId: string): void {
     if (!ws) return;
     const old = (ws.system as WorldSettingsSystem | undefined)?.activeScene ?? null;
@@ -53,7 +54,7 @@
   /** Deep-link the game-settings per-scene section to this scene. */
   function configure(sceneId: string): void {
     ctx.sceneSelection.select(sceneId);
-    ctx.panels.open("game-settings");
+    ctx.panels.open("game-settings:panel");
   }
 
   function create(): void {
