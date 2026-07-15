@@ -220,4 +220,8 @@ export const en: Messages = {
   "sheetActor.inventory": "Inventory",
   "sheetActor.unnamedItem": "Item",
   "sheetActor.system": "All data",
+  "sheetItem.title": "Item",
+  "sheetItem.name": "Name",
+  "sheetItem.roll": "Roll",
+  "sheetItem.system": "All data",
 };
