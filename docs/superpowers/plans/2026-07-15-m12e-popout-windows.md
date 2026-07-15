@@ -932,11 +932,11 @@ Add a rehydrate rect constant (near `EMPTY_LAYOUT`):
 
 ```ts
 // Cascade base/step for a reload-rehydrated (formerly popped-out) panel's floating
-// rect (T1 buddy-review finding: a fixed, unoffset rect stacked every rehydrated
-// popout — and the first-ever floating panel — at the identical (x,y)). Mirrors
-// tree.ts's own SHEET_CASCADE_BASE/STEP formula (not imported — that pair is
-// layout-internal; this is the controller's own, deliberately separate constant
-// so the two call sites cannot silently drift together).
+// rect — an unoffset rect would stack every rehydrated popout (and the first-ever
+// floating panel) at the identical (x,y). Mirrors tree.ts's own
+// SHEET_CASCADE_BASE/STEP formula (not imported — that pair is layout-internal;
+// this is the controller's own, deliberately separate constant so the two call
+// sites cannot silently drift together).
 const REHYDRATE_FLOAT_BASE = { x: 96, y: 96, w: 420, h: 520 };
 const REHYDRATE_FLOAT_STEP = 28;
 ```
