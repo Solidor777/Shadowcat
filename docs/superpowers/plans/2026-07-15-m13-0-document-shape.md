@@ -301,7 +301,7 @@ pub fn engine_of<T: serde::de::DeserializeOwned + Default>(doc: &Document) -> T 
 }
 ```
 
-(Note: `message` arm forward-references Task 6's `MessageEngine` rename — implement the arm with the CURRENT struct name `MessageSystem` re-exported, and let Task 6 rename it; both tasks compile independently.)
+(Note: `message` arm forward-references Task 7's `MessageEngine` rename — implement the arm with the CURRENT struct name `MessageSystem` re-exported, and let Task 7 rename it; both tasks compile independently. Task 7 MUST add `#[serde(deny_unknown_fields)]` to the renamed `MessageEngine` — `MessageSystem` lacks it today, so until then message engine bodies do not reject unknown fields; Task 7's reviewer verifies it landed.)
 
 - [ ] **Step 2: Unit battery** (`engine/mod.rs` tests) — for EVERY doc_type in the registry: (a) a minimal valid body deserializes; (b) an unknown field is rejected (struct-level; skip for tagged-enum-only bodies); (c) a wrong-typed field (`"x": "12"`) is rejected; (d) `validate_engine("item", Some(&json!({})))` and `validate_engine("custom-thing", Some(&json!({})))` are `Err`; (e) `validate_engine("item", None)` and `validate_engine("custom-thing", None)` are `Ok`; (f) `validate_engine("token", None)` is `Err`. For token/actor visuals: all three `TokenVisual` kinds + both `AnimatedSource` types round-trip. Literal-set assertions: every string the CLIENT writers emit today (`"square"`, `"circle"`, region `"rect"|"circle"|"polygon"`, behaviors used by scene-tools) deserializes.
 - [ ] **Step 3: Run** full `cargo test`: PASS. Verify `src/types/generated/engine/` now holds the exported TS types.
