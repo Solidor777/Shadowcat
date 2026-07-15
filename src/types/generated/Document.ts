@@ -6,10 +6,20 @@ import type { Source } from "./Source";
 /**
  * The persisted document: typed envelope around an opaque `system` body.
  */
-export type Document = { id: string, scope: Scope, doc_type: string, schema_version: number, source: Source | null, owner: string | null, permissions: PermissionSet, embedded: { [key in string]: Array<Document> }, 
+export type Document = { id: string, scope: Scope, doc_type: string, schema_version: number, 
+/**
+ * Universal display name (S2). Redacts to `null` under a `/name` override.
+ */
+name: string | null, source: Source | null, owner: string | null, permissions: PermissionSet, embedded: { [key in string]: Array<Document> }, 
 /**
  * Scene-entity link: the id of the scene (or other parent) this document
  * belongs to. `None` for top-level documents (actors, compendium entries,
  * scenes themselves). Immutable via field-path Update (envelope field).
  */
-parent_id: string | null, system: unknown, created_at: bigint, updated_at: bigint, };
+parent_id: string | null, 
+/**
+ * Engine band (S1/S3): present iff `doc_type` is engine-defined; validated
+ * against the doc_type's typed struct at ingress (data/engine). Stored
+ * post-validation. `None` for community/system doc types.
+ */
+engine: unknown, system: unknown, created_at: bigint, updated_at: bigint, };

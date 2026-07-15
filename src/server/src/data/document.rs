@@ -206,6 +206,9 @@ pub struct Document {
     pub scope: Scope,
     pub doc_type: String,
     pub schema_version: u32,
+    /// Universal display name (S2). Redacts to `null` under a `/name` override.
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub source: Option<Source>,
     #[serde(default)]
@@ -219,6 +222,12 @@ pub struct Document {
     /// scenes themselves). Immutable via field-path Update (envelope field).
     #[serde(default)]
     pub parent_id: Option<Uuid>,
+    /// Engine band (S1/S3): present iff `doc_type` is engine-defined; validated
+    /// against the doc_type's typed struct at ingress (data/engine). Stored
+    /// post-validation. `None` for community/system doc types.
+    #[serde(default)]
+    #[ts(type = "unknown")]
+    pub engine: Option<serde_json::Value>,
     #[ts(type = "unknown")]
     pub system: serde_json::Value,
     pub created_at: i64,
@@ -238,6 +247,35 @@ pub struct World {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn document_carries_name_and_engine_and_rejects_modules_key() {
+        let json = serde_json::json!({
+            "id": Uuid::from_u128(1), "scope": {"kind": "world", "world_id": Uuid::from_u128(9)},
+            "doc_type": "token", "schema_version": 1,
+            "name": "Goblin", "engine": {"x": 1.0},
+            "system": {}, "created_at": 0, "updated_at": 0
+        });
+        let doc: Document = serde_json::from_value(json).unwrap();
+        assert_eq!(doc.name.as_deref(), Some("Goblin"));
+        assert!(doc.engine.is_some());
+
+        // absent name/engine default to None (serde default)
+        let bare = serde_json::json!({
+            "id": Uuid::from_u128(1), "scope": {"kind": "world", "world_id": Uuid::from_u128(9)},
+            "doc_type": "note", "schema_version": 1, "system": {}, "created_at": 0, "updated_at": 0
+        });
+        let doc: Document = serde_json::from_value(bare).unwrap();
+        assert!(doc.name.is_none() && doc.engine.is_none());
+
+        // S4 reservation: unknown root key `modules` is rejected
+        let with_modules = serde_json::json!({
+            "id": Uuid::from_u128(1), "scope": {"kind": "world", "world_id": Uuid::from_u128(9)},
+            "doc_type": "note", "schema_version": 1, "system": {}, "modules": {},
+            "created_at": 0, "updated_at": 0
+        });
+        assert!(serde_json::from_value::<Document>(with_modules).is_err());
+    }
 
     #[test]
     fn grants_for_merges_all_and_by_type() {
@@ -290,6 +328,7 @@ pub(crate) mod tests {
             },
             doc_type: "actor".to_string(),
             schema_version: 1,
+            name: None,
             source: Some(Source {
                 id: Uuid::from_u128(2),
                 pack: Some("dnd5e".into()),
@@ -299,6 +338,7 @@ pub(crate) mod tests {
             permissions: PermissionSet::default(),
             embedded: BTreeMap::new(),
             parent_id: None,
+            engine: None,
             system: serde_json::json!({ "hp": 10 }),
             created_at: 100,
             updated_at: 100,
