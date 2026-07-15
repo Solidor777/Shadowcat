@@ -38,8 +38,15 @@ pub fn validate_system_size(doc: &Document) -> Result<(), DataError> {
 /// and — on success — REPLACE `doc.engine` (and each descendant's) with the
 /// re-serialized validated struct rather than the raw submitted JSON. This
 /// is the single chokepoint every persistence path (Create; Update
-/// post-image; embedded mutation) calls before storing or returning a
-/// document for broadcast.
+/// post-image; embedded mutation) calls before storing a document.
+///
+/// For `Update`, `apply_intent`'s Phase 2 additionally re-derives every
+/// `/engine`(/*) `FieldChange.new` from this SAME normalized `doc` before the
+/// `world_events` INSERT, so the normalized form reaches not just the
+/// persisted row but also the broadcast delta and the permanent event log
+/// (and therefore every future `events_since` replay) — never the raw
+/// client-submitted JSON. `/system`-prefixed changes are untouched by that
+/// step; only the structurally-typed engine band goes through this function.
 ///
 /// Re-serializing (not pass-through) compensates for two ingress gaps:
 /// (a) internally-tagged enums (`TokenVisual`/`RenderVisual`/`AnimatedSource`)

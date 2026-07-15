@@ -211,3 +211,20 @@ are observations awaiting triage, not committed work.
   (toolrail after main) fixes tab order without visual change. Status: Resolved — M12b Task 6
   (commit fce8910) reordered the markup; grid areas kept both visual layouts identical.
   (M12b Task 1 code review.)
+
+- Title: M13-0 Task 3 — message doc `/engine` copy goes stale on edit/delete (interim, pre-Task-7).
+  Summary: `build_message_doc` (`chat/mod.rs`) intentionally writes the SAME `MessageSystem` body
+  into both `/system` and `/engine` — the `system` copy stays load-bearing because chat reads still
+  deserialize `cur.system` until Task 7 re-roots them, so setting `system: {}` now would break live
+  chat. `handle_edit_message`/`handle_delete_message` only construct a `/system` `FieldChange`
+  (`WriteOrigin::ServerMessageRevision`); they never touch `/engine`. So a message's `/engine` copy
+  reflects only its ORIGINAL Create body — any subsequent edit or soft-delete leaves it stale,
+  diverging from the authoritative `/system` body. Nothing reads the message `/engine` band today
+  (dead data until Task 7), and this is pre-v1 with a zero-migration policy (no shipped worlds), so
+  no cleanup is required — Task 7 must simply not trust any pre-Task-7 `/engine` copy of a
+  previously-edited message when it re-roots chat. Separately: `apply_command`
+  (`data/sqlite.rs::apply_command`) — an ungated trusted substrate with zero production callers
+  today — does NOT carry the same broadcast/event-log `/engine` normalization gate added to
+  `apply_intent` by this fix; if `apply_command` is ever wired to real undo/replay functionality,
+  it must gain the identical gate first. Status: Accepted (interim divergence, no action needed
+  before Task 7); Task 7 tracking note added to the M13-0 plan.

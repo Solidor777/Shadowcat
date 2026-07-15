@@ -466,6 +466,18 @@ let bounds = scene.bounds
 - [ ] **Step 1:** Rename + re-root; fixtures move bodies to `engine`. The ingest caps (`MAX_MESSAGE_CHARS`, inline-roll caps) and `ops_target_message` ingress guard are UNCHANGED in behavior — they now read/inspect `engine`. `ops_target_message`'s block on client-authored message ops must also cover `/engine` paths (it blocked `/system` writes before; verify and re-point its path checks).
 - [ ] **Step 2: Run** full `cargo test`: PASS. **Step 3: Commit** — `refactor(m13-0): chat message + settings bodies on engine band`
 
+**Post-Task-3-review note (2026-07-15):** this task must re-root BOTH chat READS and chat WRITES to
+`engine` — `handle_edit_message`/`handle_delete_message` currently write only `/system`
+(`WriteOrigin::ServerMessageRevision`), so once reads move to `engine` those handlers' `Operation::Update`
+must target `/engine`, not `/system`, and `build_message_doc`'s post-re-root Create must empty out
+`system: {}` for message docs (see `docs/POST_WORK_FINDINGS.md`, "M13-0 Task 3 — message doc `/engine`
+copy goes stale on edit/delete"). Do NOT trust any pre-Task-7 `/engine` copy of a previously-edited
+message as authoritative — it reflects only the message's ORIGINAL Create body, not any subsequent
+edit/delete (those only touched `/system` before this task). This task's reviewer must also check the
+diff against the same broadcast/event-log normalization chokepoint fixed in `apply_intent`'s Phase 2
+(`data/sqlite.rs`, T3-review fix): confirm the re-rooted chat message `Operation::Update`'s `/engine`
+`FieldChange.new` is what gets normalized/broadcast/logged, not a stale pre-normalization value.
+
 ---
 
 ### Task 8: Client core re-root

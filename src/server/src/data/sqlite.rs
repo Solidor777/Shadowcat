@@ -4,7 +4,9 @@ use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::auth::role::ServerRole;
-use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand, WriteOrigin};
+use crate::data::command::{
+    set_pointer, Command, FieldChange, Operation, UnsequencedCommand, WriteOrigin,
+};
 use crate::data::document::{
     CapabilityRequirement, ContractDeclaration, Document, Scope, World, WorldCapDefaults, WorldRole,
 };
@@ -1208,7 +1210,7 @@ impl Repository for SqliteRepository {
             .ok_or(DataError::NotFound)?
             .get("seq");
 
-        let sequenced = Command {
+        let mut sequenced = Command {
             seq,
             world_id,
             author: ctx.user_id,
@@ -1216,15 +1218,27 @@ impl Repository for SqliteRepository {
             ops: authoritative_ops,
         };
 
+        // Rebuilt in place of `sequenced.ops`: identical to the input ops
+        // except an Update's `FieldChange.new` under `/engine`(/*) is
+        // renormalized to the validated post-image (see below). Since
+        // `sequenced` is what gets broadcast AND logged to `world_events`
+        // (INSERT further down) AND replayed by `events_since`, this is the
+        // single chokepoint that keeps all three in sync with the persisted
+        // row.
+        let mut normalized_ops = Vec::with_capacity(sequenced.ops.len());
         for op in &sequenced.ops {
             match op {
-                Operation::Create { doc } => Self::upsert_document(&mut tx, doc, seq).await?,
+                Operation::Create { doc } => {
+                    Self::upsert_document(&mut tx, doc, seq).await?;
+                    normalized_ops.push(op.clone());
+                }
                 Operation::Delete { doc } => {
                     sqlx::query("DELETE FROM documents WHERE id = ?")
                         .bind(doc.id.to_string())
                         .execute(&mut *tx)
                         .await?;
                     Self::delete_document_fts(&mut tx, doc.id).await?;
+                    normalized_ops.push(op.clone());
                 }
                 Operation::Update { doc_id, changes } => {
                     let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
@@ -1253,9 +1267,45 @@ impl Repository for SqliteRepository {
                     validation::validate_engine_tree(&mut doc)?;
                     doc.updated_at = ts;
                     Self::upsert_document(&mut tx, &doc, seq).await?;
+
+                    // `validate_engine_tree` above normalizes `doc.engine` (a
+                    // JSON-number literal coerced to its typed f64
+                    // representation; an unknown key smuggled into a
+                    // tagged-enum sub-object dropped by the
+                    // deserialize-then-reserialize round trip) but that
+                    // normalization only reached the persisted row until now.
+                    // Re-derive each `/engine`(/*) `FieldChange.new` from the
+                    // SAME validated post-image so the broadcast delta and the
+                    // `world_events` log entry (and therefore every future
+                    // `events_since` replay) carry the identical normalized
+                    // value the row was stored with — never the raw
+                    // client-submitted JSON. `/system`-prefixed changes are
+                    // untouched: only the structurally-typed engine band goes
+                    // through `validate_engine_tree`.
+                    let normalized_doc_json = serde_json::to_value(&doc)?;
+                    let normalized_changes: Vec<FieldChange> = changes
+                        .iter()
+                        .map(|ch| {
+                            if ch.path == "/engine" || ch.path.starts_with("/engine/") {
+                                if let Some(v) = normalized_doc_json.pointer(&ch.path) {
+                                    return FieldChange {
+                                        path: ch.path.clone(),
+                                        old: ch.old.clone(),
+                                        new: v.clone(),
+                                    };
+                                }
+                            }
+                            ch.clone()
+                        })
+                        .collect();
+                    normalized_ops.push(Operation::Update {
+                        doc_id: *doc_id,
+                        changes: normalized_changes,
+                    });
                 }
             }
         }
+        sequenced.ops = normalized_ops;
 
         sqlx::query("INSERT INTO world_events (world_id, seq, author_id, ts, command_json) VALUES (?, ?, ?, ?, ?)")
             .bind(sequenced.world_id.to_string())
@@ -2451,6 +2501,242 @@ mod tests {
         let stored_engine = stored.engine.unwrap();
         assert_eq!(stored_engine["faction"], serde_json::Value::Null);
         assert!(stored_engine.get("faction").is_some());
+    }
+
+    #[tokio::test]
+    async fn apply_intent_update_normalizes_engine_broadcast_and_event_log_smuggled_key() {
+        // `validate_engine_tree` re-serializes the post-image `doc.engine`,
+        // dropping an unknown key smuggled into a tagged-enum sub-object
+        // (`TokenVisual` cannot carry `deny_unknown_fields` -- a serde
+        // limitation), but that normalization must reach the broadcast
+        // `Command` AND the permanent `world_events` log entry, not just the
+        // persisted row. Assert both: the returned `Command`'s `FieldChange`
+        // is clean, and a fresh `events_since` replay of that same seq
+        // (an independent disk round trip, not the in-memory return value)
+        // is clean too.
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "actor",
+            serde_json::json!({
+                "displayName": "Goblin",
+                "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 },
+                "shape": "square",
+                "faction": null,
+                "conditions": [],
+                "prototype": true
+            }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        // OCC pre-image must be the STORED (post-normalization) engine, not
+        // the raw submitted body -- the two may already diverge (e.g. key
+        // ordering / explicit-null carry-forward) even before this test's
+        // own smuggled-key mutation.
+        let old_engine = r
+            .get_document(doc_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .engine
+            .unwrap();
+
+        // Wholesale /engine replacement smuggling an unknown key into the
+        // `visual` tagged-enum sub-object.
+        let smuggled_engine = serde_json::json!({
+            "displayName": "Goblin",
+            "visual": { "kind": "image", "asset": "b.png", "smuggled": "evil" },
+            "size": { "w": 1.0, "h": 1.0 },
+            "shape": "square",
+            "faction": null,
+            "conditions": [],
+            "prototype": true
+        });
+        let cmd = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        path: "/engine".into(),
+                        old: old_engine,
+                        new: smuggled_engine,
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+        // (i) The returned Command's FieldChange.new is already normalized.
+        let broadcast_new = cmd
+            .ops
+            .iter()
+            .find_map(|o| match o {
+                Operation::Update {
+                    doc_id: id,
+                    changes,
+                } if *id == doc_id => changes
+                    .iter()
+                    .find(|c| c.path == "/engine")
+                    .map(|c| c.new.clone()),
+                _ => None,
+            })
+            .expect("update op with /engine change present");
+        assert!(
+            broadcast_new["visual"].get("smuggled").is_none(),
+            "broadcast Command must not carry the smuggled key"
+        );
+
+        // (ii) events_since replay (an independent disk round trip through
+        // `world_events.command_json`, not the in-memory `cmd` above) is
+        // ALSO clean.
+        let replayed = r.events_since(w.id, 1).await.unwrap();
+        let replayed_cmd = replayed
+            .iter()
+            .find(|c| c.seq == cmd.seq)
+            .expect("replayed command present");
+        let replayed_new = replayed_cmd
+            .ops
+            .iter()
+            .find_map(|o| match o {
+                Operation::Update {
+                    doc_id: id,
+                    changes,
+                } if *id == doc_id => changes
+                    .iter()
+                    .find(|c| c.path == "/engine")
+                    .map(|c| c.new.clone()),
+                _ => None,
+            })
+            .expect("replayed update op with /engine change present");
+        assert!(
+            replayed_new["visual"].get("smuggled").is_none(),
+            "events_since replay must not carry the smuggled key"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_intent_update_normalizes_engine_integer_literal_to_stored_float() {
+        // A raw JSON integer literal (`5`, no decimal) submitted for an
+        // f64-typed engine field must normalize to the SAME serde_json
+        // representation the persisted row round-trips to -- not remain a
+        // raw JSON integer Number variant, which would mismatch a
+        // client-side float comparison once resync/replay carries it.
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "actor",
+            serde_json::json!({
+                "displayName": "Goblin",
+                "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 },
+                "shape": "square",
+                "faction": null,
+                "conditions": [],
+                "prototype": true
+            }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // Submit a bare integer literal (`5`, not `5.0`) for /engine/size/w.
+        let cmd = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        path: "/engine/size/w".into(),
+                        old: serde_json::json!(1.0),
+                        new: serde_json::json!(5),
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+        let broadcast_new = cmd
+            .ops
+            .iter()
+            .find_map(|o| match o {
+                Operation::Update {
+                    doc_id: id,
+                    changes,
+                } if *id == doc_id => changes
+                    .iter()
+                    .find(|c| c.path == "/engine/size/w")
+                    .map(|c| c.new.clone()),
+                _ => None,
+            })
+            .expect("update op with /engine/size/w change present");
+
+        let stored = r.get_document(doc_id).await.unwrap().unwrap();
+        let stored_w = stored.engine.unwrap()["size"]["w"].clone();
+
+        // Broadcast value must equal the stored, typed-f64-round-tripped
+        // representation -- and its wire form must be the float form, not
+        // the raw integer literal that was submitted.
+        assert_eq!(broadcast_new, stored_w);
+        assert_eq!(
+            serde_json::to_string(&broadcast_new).unwrap(),
+            "5.0",
+            "must be the float serialization, not the raw integer literal"
+        );
     }
 
     #[tokio::test]
