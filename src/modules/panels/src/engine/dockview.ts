@@ -19,7 +19,7 @@ import { consoleLogger, type Logger, type PanelMeta, type ZoneId } from "@shadow
 import { i18n } from "@shadowcat/ui-kit";
 import type { EngineAdapter } from "./adapter";
 import type { ExpandedLayout, LayoutOp } from "../layout/tree";
-import { classifyDrop, opForMenuCommand, STAGE_ID, type DropSite, type MenuCommand } from "./policy";
+import { classifyDrop, opForMenuCommand, MENU_FLOAT_RECT, STAGE_ID, type DropSite, type MenuCommand } from "./policy";
 import PanelMenu from "../PanelMenu.svelte";
 // Minimal wiring: imports dockview's base stylesheet + our token overrides —
 // only paid for when a real docking engine is actually instantiated, never
@@ -312,9 +312,26 @@ export class DockviewEngine implements EngineAdapter {
   // Finding 1: the invoker entry now survives the transient churn intact,
   // available to a LATER, real close of the floating panel.
   #floatTransitionIds = new Set<string>();
+  #noticeListeners = new Set<(key: string) => void>();
+  // Popout group id -> the panel ids it hosts, recorded when a pop-out succeeds
+  // so `onDidRemovePopoutGroup` (window closed by the user) can translate a
+  // group id back into `popIn` ops without depending on the group's live panel
+  // membership at fire time (dockview's teardown may have already moved them).
+  #poppedOutGroupPanels = new Map<string, string[]>();
+  // Gesture-time popout invoker. Defaults to dockview's native popout (verified
+  // same-heap, content re-parented, stylesheets cloned — M12a-0 spike +
+  // popoutWindow.js:136). Injectable so unit tests exercise the async-result →
+  // op translation without a real `window.open` (jsdom has none).
+  #popoutDriver: (panel: IDockviewPanel) => Promise<boolean>;
 
-  constructor(logger?: Logger) {
+  constructor(logger?: Logger, popoutDriver?: (panel: IDockviewPanel) => Promise<boolean>) {
     this.#logger = logger ?? consoleLogger();
+    // `/popout.html` is the same-origin loader document dockview's popout
+    // window navigates to; passed explicitly to document the dependency
+    // rather than relying on dockview's own default drifting.
+    // `assertSameOriginPopoutUrl` (popoutWindow.js) rejects
+    // `about:blank`/cross-origin, so this URL is load-bearing.
+    this.#popoutDriver = popoutDriver ?? ((panel) => this.#api!.addPopoutGroup(panel, { popoutUrl: "/popout.html" }));
   }
 
   init(host: HTMLElement, slotFor: (id: string) => HTMLElement, stageEl: HTMLElement): void {
@@ -355,6 +372,7 @@ export class DockviewEngine implements EngineAdapter {
       api.onWillDrop((event) => this.#handleWillDrop(event)),
       api.onDidRemovePanel((panel) => this.#handleDidRemovePanel(panel)),
       api.onDidActivePanelChange((event) => this.#handleActivePanelChange(event)),
+      api.onDidRemovePopoutGroup((event) => this.#handleRemovePopoutGroup(event)),
     );
   }
 
@@ -380,7 +398,45 @@ export class DockviewEngine implements EngineAdapter {
       return;
     }
     if (cmd === "float") this.#floatInvokers.set(id, invoker);
+    if (cmd === "popOut") {
+      // Pop-out is imperative + gesture-timed: `window.open` (inside
+      // addPopoutGroup, synchronous before its first await) must run in THIS
+      // click's tick or the browser blocks it. The tree op is emitted only
+      // after the async open resolves — unlike every other menu command, which
+      // reduces declaratively through `apply()`. Same gesture-timing reason
+      // `#floatInvokers` is captured synchronously above.
+      this.#requestPopOut(id);
+      return;
+    }
     for (const cb of this.#opListeners) cb(result);
+  }
+
+  /** Gesture-time pop-out: drives dockview's native `addPopoutGroup`
+   * synchronously (preserving the user gesture), then translates the async
+   * result into a tree op. Success ⇒ `popOut` (records the id + its live popout
+   * group for close-translation). Block/throw ⇒ spec §10 fallback: `float` +
+   * a `panels.popoutBlocked` notice. */
+  #requestPopOut(id: string): void {
+    const api = this.#api;
+    if (!api) return;
+    const panel = api.getPanel(id);
+    if (!panel) return;
+    this.#popoutDriver(panel)
+      .then((ok) => {
+        if (ok) {
+          const gid = api.getPanel(id)?.group.id;
+          if (gid) this.#poppedOutGroupPanels.set(gid, [id]);
+          for (const cb of this.#opListeners) cb({ op: "popOut", id });
+        } else {
+          for (const cb of this.#opListeners) cb({ op: "float", id, rect: MENU_FLOAT_RECT });
+          this.#emitNotice("panels.popoutBlocked");
+        }
+      })
+      .catch((err) => {
+        this.#logger.warn("panels: pop-out failed; falling back to floating", { id, err });
+        for (const cb of this.#opListeners) cb({ op: "float", id, rect: MENU_FLOAT_RECT });
+        this.#emitNotice("panels.popoutBlocked");
+      });
   }
 
   /** W1: mounts the stage into its own dedicated group — headerless (no tab
@@ -508,6 +564,23 @@ export class DockviewEngine implements EngineAdapter {
     }
   }
 
+  /** A popout window closed — by the user (OS window close, funneled through
+   * dockview's single removal path), or by our own reconcile (`apply()` moving
+   * a panel out of its popout because the tree no longer marks it popped-out).
+   * The map cleanup runs unconditionally; the `popIn` redispatch is suppressed
+   * during `#applying` — that removal is our own reconciliation of a tree the
+   * reducer already updated (identical reasoning to `#handleDidRemovePanel`/
+   * `#handleActivePanelChange`), so re-emitting would replay a stale op. */
+  #handleRemovePopoutGroup(event: { id: string; group: IDockviewGroupPanel }): void {
+    const ids = this.#poppedOutGroupPanels.get(event.id) ?? event.group.model.panels.map((p) => p.id);
+    this.#poppedOutGroupPanels.delete(event.id);
+    if (this.#applying) return;
+    for (const id of ids) {
+      if (id === STAGE_ID) continue;
+      for (const cb of this.#opListeners) cb({ op: "popIn", id });
+    }
+  }
+
   /** W2 + intercept-and-redispatch: the ONLY place a dockview drag event is
    * translated into `DropSite` and fed to `classifyDrop` (pure/engine-free).
    * `event.preventDefault()` is now called UNCONDITIONALLY once a layout and
@@ -614,7 +687,15 @@ export class DockviewEngine implements EngineAdapter {
     this.#meta = meta;
     this.#applying = true;
     try {
-      const seenPanelIds = new Set<string>([STAGE_ID]);
+      // Popped-out ids stay in dockview's model (a same-heap popout group), so
+      // seed them here — otherwise the orphan-removal loop below tears the live
+      // popout panel out of its window. The zone/floating placement loops never
+      // list a popped-out id, so `apply()` leaves the popout untouched (hands-
+      // off). A menu dock/float on a popped-out panel drops the id from
+      // `poppedOut` first, so it is NOT seeded and the placement loops move it
+      // back (removePanel of the popout's last panel disposes the window — the
+      // resulting onDidRemovePopoutGroup is `#applying`-suppressed).
+      const seenPanelIds = new Set<string>([STAGE_ID, ...expanded.poppedOut]);
       const seenGroupIds = new Set<string>([STAGE_GROUP_ID]);
       this.#zoneOfGroup.clear();
 
@@ -805,6 +886,15 @@ export class DockviewEngine implements EngineAdapter {
     return () => this.#opListeners.delete(cb);
   }
 
+  onNotice(cb: (key: string) => void): () => void {
+    this.#noticeListeners.add(cb);
+    return () => this.#noticeListeners.delete(cb);
+  }
+
+  #emitNotice(key: string): void {
+    for (const cb of this.#noticeListeners) cb(key);
+  }
+
   focus(id: string): void {
     if (id === STAGE_ID) return; // W2 defense-in-depth: never a normal focus subject
     this.#api?.getPanel(id)?.api.setActive();
@@ -822,6 +912,8 @@ export class DockviewEngine implements EngineAdapter {
     this.#floatInvokers.clear();
     this.#lastZonePx.clear();
     this.#lastGroupPx.clear();
+    this.#poppedOutGroupPanels.clear();
+    this.#noticeListeners.clear();
     this.#api?.dispose();
     this.#api = null;
     this.#expanded = null;

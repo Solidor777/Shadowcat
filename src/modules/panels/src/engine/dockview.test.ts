@@ -785,3 +785,73 @@ test("Finding 4b (T9 review): the stage's own tab never renders a .sc-tab-menu-b
   const stageGroupEl = stagePanel.group.element;
   expect(stageGroupEl.querySelector(".sc-tab-menu-btn")).toBeNull();
 });
+
+/** Mounts an engine on a body-attached host with one docked panel and clicks
+ * its tab menu's "Pop out" item, returning the ops emitted. `driver` stands in
+ * for `addPopoutGroup` (jsdom has no real `window.open`). */
+async function popOutViaMenu(driver: () => Promise<boolean>): Promise<{ ops: LayoutOp[]; notices: string[] }> {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  attachedHost = host;
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+  engine = new DockviewEngine(silentLogger, driver);
+  engine.init(host, slotFor, stageEl);
+
+  const ops: LayoutOp[] = [];
+  const notices: string[] = [];
+  engine.onOp((op) => ops.push(op));
+  engine.onNotice?.((key) => notices.push(key));
+
+  let l = defaultLayout([{ id: "chat" }]);
+  l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+  engine.apply(l.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]));
+
+  const menuBtn = host.querySelector<HTMLButtonElement>(".sc-tab-menu-btn");
+  menuBtn?.click();
+  const popOutItem = document.querySelector<HTMLButtonElement>('[data-testid="panel-menu-popOut"]');
+  popOutItem?.click();
+  // Let the injected driver's promise resolve.
+  await Promise.resolve();
+  await Promise.resolve();
+  return { ops, notices };
+}
+
+test("pop-out: a successful driver emits a popOut op (no float, no notice)", async () => {
+  const { ops, notices } = await popOutViaMenu(() => Promise.resolve(true));
+  expect(ops).toContainEqual({ op: "popOut", id: "chat" });
+  expect(ops.some((o) => o.op === "float")).toBe(false);
+  expect(notices).toEqual([]);
+});
+
+test("pop-out blocked: a false driver falls back to a float op + a notice (spec §10)", async () => {
+  const { ops, notices } = await popOutViaMenu(() => Promise.resolve(false));
+  expect(ops.some((o) => o.op === "float" && o.id === "chat")).toBe(true);
+  expect(ops.some((o) => o.op === "popOut")).toBe(false);
+  expect(notices).toEqual(["panels.popoutBlocked"]);
+});
+
+test("pop-out rejected: a throwing driver falls back to a float op + a notice", async () => {
+  const { ops, notices } = await popOutViaMenu(() => Promise.reject(new Error("boom")));
+  expect(ops.some((o) => o.op === "float" && o.id === "chat")).toBe(true);
+  expect(notices).toEqual(["panels.popoutBlocked"]);
+});
+
+test("apply seeds seenPanelIds with poppedOut so a live popout is never orphan-removed", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+  engine = new DockviewEngine(silentLogger, () => Promise.resolve(true));
+  engine.init(host, slotFor, stageEl);
+
+  // Establish the panel, then a tree that marks it popped-out.
+  let l = defaultLayout([{ id: "chat" }]);
+  l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+  engine.apply(l.expanded, new Map());
+  expect(engine.debugApi?.getPanel("chat")).toBeTruthy();
+
+  l = applyOp(l, { op: "popOut", id: "chat" });
+  engine.apply(l.expanded, new Map());
+  // The panel is NOT torn out of dockview's model by the orphan-removal loop.
+  expect(engine.debugApi?.getPanel("chat")).toBeTruthy();
+});
