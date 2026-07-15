@@ -3,6 +3,8 @@
 // Svelte <Surface> adapter) renders them. Same subscribe/snapshot reactivity as
 // DocumentStore — no framework runtime here; `component` is opaque to core.
 
+import type { WireDocument } from "./wire";
+
 /** One provider or many for a surface contract. */
 export type Cardinality = "singleton" | "multi";
 
@@ -29,6 +31,15 @@ export interface PanelMeta {
 /** Contract id panel modules contribute under for the panel-manager host. */
 export const PANEL_CONTRACT = "shadowcat.panel";
 
+/** Provider metadata for the `shadowcat.sheet:<doc_type>` contract family (M12c).
+ * `priority` selects among competing providers (higher wins; the always-registered
+ * generic fallback registers at `-Infinity`). `match` is an optional per-document
+ * predicate — a provider that returns `false` is not a candidate for that doc. */
+export interface SheetMeta {
+  priority: number;
+  match?: (doc: WireDocument) => boolean;
+}
+
 export interface Contribution {
   id: string;
   contract: string;
@@ -38,6 +49,7 @@ export interface Contribution {
   /** Opaque host-rendered component handle. */
   component: unknown;
   panel?: PanelMeta;
+  sheet?: SheetMeta;
 }
 
 interface Entry {
@@ -73,6 +85,16 @@ export class ContributionRegistry {
       .filter((e) => e.c.contract === contract)
       .sort((a, b) => (a.c.order ?? 0) - (b.c.order ?? 0) || a.seq - b.seq)
       .map((e) => e.c);
+  }
+
+  /** Contributions for a contract paired with the module id that registered each,
+   * in `order` (default 0) then insertion sequence — the sheet registry needs the
+   * module id for its deterministic lowest-module-id tie-break. */
+  entriesFor(contract: string): readonly { contribution: Contribution; module?: string }[] {
+    return this.entries
+      .filter((e) => e.c.contract === contract)
+      .sort((a, b) => (a.c.order ?? 0) - (b.c.order ?? 0) || a.seq - b.seq)
+      .map((e) => ({ contribution: e.c, module: e.module }));
   }
 
   subscribe(listener: Listener): () => void {
