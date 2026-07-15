@@ -111,6 +111,15 @@ importers:
       '@shadowcat/module-settings':
         specifier: workspace:*
         version: link:../../modules/settings
+      '@shadowcat/module-sheet-actor':
+        specifier: workspace:*
+        version: link:../../modules/sheet-actor
+      '@shadowcat/module-sheet-fallback':
+        specifier: workspace:*
+        version: link:../../modules/sheet-fallback
+      '@shadowcat/module-sheet-item':
+        specifier: workspace:*
+        version: link:../../modules/sheet-item
       '@shadowcat/module-stage':
         specifier: workspace:*
         version: link:../../modules/stage

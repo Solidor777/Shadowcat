@@ -19,6 +19,9 @@
   import { chat } from "@shadowcat/module-chat";
   import { chatComposer } from "@shadowcat/module-chat-composer";
   import { chatCard } from "@shadowcat/module-chat-card";
+  import { sheetFallback } from "@shadowcat/module-sheet-fallback";
+  import { sheetActor } from "@shadowcat/module-sheet-actor";
+  import { sheetItem } from "@shadowcat/module-sheet-item";
   import { WorldSession } from "./lib/worldSession.svelte";
   import Table from "./lib/Table.svelte";
 
@@ -86,7 +89,7 @@
     const wsUrl =
       (location.protocol === "https:" ? "wss:" : "ws:") +
       "//" + location.host + "/ws?world=" + worldId;
-    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, assets, actors, factions, conditions, sceneTools, chat, chatComposer, chatCard] });
+    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, assets, actors, factions, conditions, sceneTools, chat, chatComposer, chatCard, sheetFallback, sheetActor, sheetItem] });
     session = s;
     void s.enter(worldId);
     setLastWorld(worldId);
