@@ -28,7 +28,7 @@ export { resolveCaps, canWritePath } from "./capabilities";
 export { DocumentStore, setPointer, applyOperation } from "./store";
 export type { Listener, ReadableDocuments } from "./store";
 export { ContributionRegistry, PANEL_CONTRACT } from "./contributions";
-export type { Contribution, Cardinality, PanelMeta, DefaultPlacement, ZoneId } from "./contributions";
+export type { Contribution, Cardinality, PanelMeta, DefaultPlacement, ZoneId, SheetMeta } from "./contributions";
 export { reconcileTopology } from "./topology";
 export { I18n } from "./i18n";
 export type { Messages, I18nParams } from "./i18n";
@@ -81,6 +81,5 @@ export { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget
 export type { EffectiveActor, ConditionTarget, TokenBox } from "./actor";
 export { SHEET_CONTRACT_PREFIX, SHEET_FALLBACK_CONTRACT, sheetContract, resolveDocRef, pickSheet, isDiceNotation } from "./sheets";
 export type { SheetRef, SheetTarget } from "./sheets";
-export type { SheetMeta } from "./contributions";
 export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, CHAT_SETTINGS_DOC_TYPE, MAX_MESSAGE_CHARS, MessageKindSchema, DieRecordSchema, RollOutcomeSchema, ChatSegmentSchema, ChatMessageSystemSchema, parseMessageSystem, isKnownSegment, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc } from "./chat-docs";
 export type { MessageKind, DieRecord, RollOutcome, ChatSegment, UnknownSegment, ChatMessageSystem, ChatChannel, ChannelRegistrySystem, DiceSettingsSystem, ChatSettingsSystem } from "./chat-docs";

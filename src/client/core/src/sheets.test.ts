@@ -33,10 +33,22 @@ describe("resolveDocRef", () => {
     const token = envelope("w1", "token", "sc1", { x: 0, y: 0 }, "t2");
     token.embedded = { actor: [embedded] };
     const t = resolveDocRef({ tokenId: "t2" }, store([token]));
-    expect(t?.panelId).toBe("sheet:t2");
+    expect(t?.panelId).toBe("sheet:t2/embedded/actor/0");
     expect(t?.writeDocId).toBe("t2");
     expect(t?.writePrefix).toBe("/embedded/actor/0/system");
     expect((t?.doc.system as { name: string }).name).toBe("Copy");
+  });
+
+  it("round-trips the instanced-token panelId through the embedded-child docId form", () => {
+    const embedded = envelope("w1", "actor", null, { name: "Copy" }, "e1");
+    const token = envelope("w1", "token", "sc1", { x: 0, y: 0 }, "t2");
+    token.embedded = { actor: [embedded] };
+    const s = store([token]);
+    const fromToken = resolveDocRef({ tokenId: "t2" }, s);
+    const fromDocId = resolveDocRef({ docId: "t2", embeddedPath: "/embedded/actor/0" }, s);
+    expect(fromDocId?.writeDocId).toBe(fromToken?.writeDocId);
+    expect(fromDocId?.writePrefix).toBe(fromToken?.writePrefix);
+    expect(fromDocId?.panelId).toBe(fromToken?.panelId);
   });
 
   it("resolves a one-level embedded child ref, /embedded/<coll>/<idx>/system write site", () => {
@@ -58,6 +70,13 @@ describe("resolveDocRef", () => {
     expect(resolveDocRef({ tokenId: "t4" }, s)).toBeNull();
     expect(resolveDocRef({ docId: "nope" }, s)).toBeNull();
     expect(resolveDocRef({ docId: "t4", embeddedPath: "/embedded/actor/9" }, s)).toBeNull();
+  });
+
+  it("fails closed on non-object refs from untyped runtime callers", () => {
+    const s = store([]);
+    expect(resolveDocRef(null as never, s)).toBeNull();
+    expect(resolveDocRef(undefined as never, s)).toBeNull();
+    expect(resolveDocRef("x" as never, s)).toBeNull();
   });
 });
 
@@ -89,6 +108,19 @@ describe("pickSheet", () => {
     const reg = new ContributionRegistry();
     reg.contribute({ id: "fb", contract: SHEET_FALLBACK_CONTRACT, component: "FB", sheet: { priority: -Infinity } });
     expect(pickSheet(reg, envelope("w1", "widget", null, {}, "d9"))).toBe("FB");
+  });
+
+  it("tie-breaks two -Infinity fallbacks by module id despite NaN from subtraction", () => {
+    const reg = new ContributionRegistry();
+    reg.contribute(
+      { id: "b", contract: SHEET_FALLBACK_CONTRACT, component: "B", sheet: { priority: -Infinity } },
+      { module: "mod-b" },
+    );
+    reg.contribute(
+      { id: "a", contract: SHEET_FALLBACK_CONTRACT, component: "A", sheet: { priority: -Infinity } },
+      { module: "mod-a" },
+    );
+    expect(pickSheet(reg, envelope("w1", "widget", null, {}, "d9"))).toBe("A");
   });
 
   it("returns null when nothing (not even a fallback) is registered", () => {

@@ -42,6 +42,8 @@ function readEmbeddedChild(top: WireDocument, embeddedPath: string): WireDocumen
 }
 
 export function resolveDocRef(ref: SheetRef, store: ReadableDocuments): SheetTarget | null {
+  // Fail-closed for untyped runtime callers — the `in` operator below throws on primitives.
+  if (!ref || typeof ref !== "object") return null;
   if ("tokenId" in ref) {
     const token = store.get(ref.tokenId);
     if (!token) return null;
@@ -56,7 +58,17 @@ export function resolveDocRef(ref: SheetRef, store: ReadableDocuments): SheetTar
     // Instanced: write the TOKEN doc's embedded copy at /embedded/actor/0/system.
     const embedded = token.embedded?.actor?.[0];
     if (!embedded) return null; // raw/actorless token — nothing to open
-    return { panelId: "sheet:" + token.id, doc: embedded, writeDocId: token.id, writePrefix: "/embedded/actor/0/system" };
+    // Self-describing panelId: the bare "sheet:" + token.id is string-identical to a
+    // top-level docId panelId, so a persisted-layout reverse-parse (docId + embeddedPath
+    // recovered from the id string) would rebind this panel to the token's own /system
+    // instead of its embedded actor. Encoding the embedded path in the id lets it round-trip
+    // through the embedded-child branch below.
+    return {
+      panelId: "sheet:" + token.id + "/embedded/actor/0",
+      doc: embedded,
+      writeDocId: token.id,
+      writePrefix: "/embedded/actor/0/system",
+    };
   }
   const top = store.get(ref.docId);
   if (!top) return null;
@@ -74,14 +86,22 @@ export function resolveDocRef(ref: SheetRef, store: ReadableDocuments): SheetTar
  * precedent). `-Infinity` keeps the fallback below every real provider. Null only when
  * nothing (not even a fallback) is registered. */
 export function pickSheet(registry: ContributionRegistry, doc: WireDocument): unknown | null {
+  const seen = new Set<string>();
   const candidates = [
     ...registry.entriesFor(sheetContract(doc.doc_type)),
+    // A doc_type of literally "*" collides with the fallback contract by construction —
+    // both entriesFor calls would return the same entries; dedupe below by contribution id.
     ...registry.entriesFor(SHEET_FALLBACK_CONTRACT),
-  ].filter((e) => e.contribution.sheet && (!e.contribution.sheet.match || e.contribution.sheet.match(doc)));
+  ]
+    .filter((e) => e.contribution.sheet && (!e.contribution.sheet.match || e.contribution.sheet.match(doc)))
+    .filter((e) => (seen.has(e.contribution.id) ? false : (seen.add(e.contribution.id), true)));
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => {
-    const pd = b.contribution.sheet!.priority - a.contribution.sheet!.priority;
-    if (pd !== 0) return pd;
+    const pa = a.contribution.sheet!.priority, pb = b.contribution.sheet!.priority;
+    // Explicit relational comparison (not subtraction): -Infinity - -Infinity is NaN, which
+    // a subtraction comparator treats as "equal" but Array.sort's NaN handling is
+    // unspecified — relational comparison always falls through correctly to the tie-break.
+    if (pb !== pa) return pb > pa ? 1 : -1;
     return (a.module ?? a.contribution.id).localeCompare(b.module ?? b.contribution.id);
   });
   return candidates[0].contribution.component;
