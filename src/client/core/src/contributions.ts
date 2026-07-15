@@ -6,14 +6,28 @@
 /** One provider or many for a surface contract. */
 export type Cardinality = "singleton" | "multi";
 
-/** Optional tab metadata a tabbed host (e.g. the sidebar) renders for a contribution.
+/** Dock zone a panel targets under the panel-manager host. */
+export type ZoneId = "right" | "bottom" | "left";
+
+/** Where a panel starts when its module first contributes it.
+ * Absent `defaultPlacement` on a `PanelMeta` means launcher-only (closed). */
+export type DefaultPlacement =
+  | { kind: "docked"; zone: ZoneId; order?: number }
+  | { kind: "minimized" };
+
+/** Panel metadata for the `shadowcat.panel` contract (M12a panel-manager host).
  * Plain data — framework-neutral. `labelKey` is an i18n key the HOST resolves at
- * render (locale-reactive); `gmOnly` tabs are hidden from non-GM users by the host. */
-export interface ContributionTab {
+ * render (locale-reactive); `gmOnly` panels are hidden from non-GM users by the host. */
+export interface PanelMeta {
   icon: string;
   labelKey: string;
+  /** Advisory UI filter only; the host is responsible for hiding gmOnly panels. */
   gmOnly?: boolean;
+  defaultPlacement?: DefaultPlacement;
 }
+
+/** Contract id panel modules contribute under for the panel-manager host. */
+export const PANEL_CONTRACT = "shadowcat.panel";
 
 export interface Contribution {
   id: string;
@@ -23,7 +37,7 @@ export interface Contribution {
   props?: Record<string, unknown>;
   /** Opaque host-rendered component handle. */
   component: unknown;
-  tab?: ContributionTab;
+  panel?: PanelMeta;
 }
 
 interface Entry {

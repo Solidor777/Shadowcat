@@ -1,15 +1,19 @@
 import { describe, it, expect } from "vitest";
-import { ContributionRegistry } from "@shadowcat/core";
+import { ContributionRegistry, PANEL_CONTRACT } from "@shadowcat/core";
 import { conditions } from "./index";
 
 describe("conditions module", () => {
-  it("contributes a sidebar panel and requires the sidebar surface", () => {
+  it("contributes a panel and requires the panel-manager contract", () => {
     expect(conditions.manifest.id).toBe("conditions");
-    expect(conditions.manifest.requires).toContain("shadowcat.surface:sidebar");
+    expect(conditions.manifest.requires).toContain(PANEL_CONTRACT);
     const contributions = new ContributionRegistry();
     conditions.register({ contributions } as never);
-    const list = contributions.contributionsFor("shadowcat.surface:sidebar");
+    const list = contributions.contributionsFor(PANEL_CONTRACT);
     expect(list.length).toBe(1);
-    expect(list[0].tab).toEqual({ icon: "✨", labelKey: "conditions.tab" });
+    expect(list[0].panel).toEqual({
+      icon: "✨",
+      labelKey: "conditions.tab",
+      defaultPlacement: { kind: "minimized" },
+    });
   });
 });

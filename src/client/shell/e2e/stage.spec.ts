@@ -34,7 +34,9 @@ test("stage canvas mounts, renders, and tears down on leave", async ({ page }) =
   await page.mouse.up();
   await expect(host).toHaveAttribute("data-render-ready", "true");
 
-  // Leave-world tears the canvas down.
+  // "Leave world" lives in the Settings panel, which starts minimized (M12a
+  // interim default); restore it from the statusbar's dock-chip strip first.
+  await page.getByTestId("chip-settings:panel").click();
   await page.getByRole("button", { name: /leave world/i }).click();
   await expect(page.getByTestId("stage-canvas")).toHaveCount(0);
 });
@@ -49,6 +51,10 @@ test("place a token via the tool rail, then drag it", async ({ page }) => {
 
   const host = page.locator(".stage-host");
   await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  // The Assets panel starts minimized (M12a interim default); restore it from
+  // the statusbar's dock-chip strip before uploading.
+  await page.getByTestId("chip-assets:panel").click();
 
   // Upload an image asset (the token art).
   await page
@@ -77,6 +83,9 @@ test("place a token via the tool rail, then drag it", async ({ page }) => {
   await expect(host).toHaveAttribute("data-token-count", "1");
 });
 
+// Docks assets+settings+actors into "right" across its lifetime, on top of
+// chat's permanent default dock (4 groups total in one zone) — exercises the
+// production `DockviewEngine`'s width containment past 2 groups in a zone.
 test("author an animated (frame-list) actor token; it places without error", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("Username").fill("ops");
@@ -87,6 +96,10 @@ test("author an animated (frame-list) actor token; it places without error", asy
 
   const host = page.locator(".stage-host");
   await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  // The Assets panel starts minimized (M12a interim default); restore it from
+  // the statusbar's dock-chip strip before uploading.
+  await page.getByTestId("chip-assets:panel").click();
 
   // Upload two frames for the animated actor.
   await page
@@ -101,10 +114,16 @@ test("author an animated (frame-list) actor token; it places without error", asy
   // hook for newly-created assets (only replace/delete broadcast an AssetChanged);
   // leave and re-enter the same world so the panel remounts and its picker sees the
   // frames just uploaded — an already-exercised, unmodified product path (test 1
-  // above already proves leave/re-enter works).
+  // above already proves leave/re-enter works). "Leave world" lives in the Settings
+  // panel, minimized independently of Assets; restore it too.
+  await page.getByTestId("chip-settings:panel").click();
   await page.getByRole("button", { name: /leave world/i }).click();
   await page.getByRole("button", { name: /Animated Actor World/ }).click();
   await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  // The Actors panel also starts minimized; restore it (the panel layout persisted
+  // across leave/re-enter, so Assets is already docked from the restore above).
+  await page.getByTestId("chip-actors:panel").click();
 
   // Author an animated (frame-list) actor via the Actors panel. Scoped to `.actors`
   // (ActorsPanel's root section) since the Factions/Conditions panels reuse the same
@@ -232,4 +251,32 @@ test("GM vision dropdown: see-all / preview-fog drive the fog in real GL", async
   await page.getByTestId("gm-view-select").selectOption("all");
   await expect(host).toHaveAttribute("data-gm-view", "all");
   await expect(host).toHaveAttribute("data-vision-mode", "all");
+});
+
+// Buddy-check finding 1: below the 48rem/768px breakpoint the panel host switches to its
+// compact presentation, which hides `.engine-host` — the stage canvas must be relocated
+// into the persistent `.compact-stage` well (kept mounted, never inside a hidden ancestor)
+// rather than buried and invisible.
+test("compact viewport (mobile width): the stage canvas stays visible, outside any hidden ancestor", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 375, height: 700 });
+  await page.goto("/");
+  await page.getByLabel("Username").fill("ops");
+  await page.getByLabel("Password").fill("pw-boot");
+  await page.getByRole("button", { name: "Log in" }).click();
+  await page.getByLabel("New world name").fill("Compact Stage World");
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = page.locator(".stage-host");
+  await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  await expect(page.locator(".engine-host")).toBeHidden();
+  await expect(page.locator(".compact-stage")).toBeVisible();
+
+  const canvas = page.getByTestId("stage-canvas");
+  await expect(canvas).toBeVisible();
+  const box = await canvas.boundingBox();
+  expect(box?.width ?? 0).toBeGreaterThan(0);
+  expect(box?.height ?? 0).toBeGreaterThan(0);
 });

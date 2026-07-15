@@ -4,8 +4,8 @@ import Layout from "./Layout.svelte";
 /** First-party layout module: owns the responsive region grid (Layout) and
  * declares the region surfaces. Contributes Layout into the singleton `root`
  * surface the shell hosts; each region's content is contributed by its own
- * per-element module (topbar / statusbar / stage / settings / assets / tools).
- * Replace this module to swap the whole layout. */
+ * per-element module (topbar / statusbar / stage / settings / assets / tools /
+ * panels). Replace this module to swap the whole layout. */
 export const coreUi: Module = {
   manifest: {
     id: "core-ui",
@@ -17,7 +17,7 @@ export const coreUi: Module = {
       { contract: "shadowcat.surface:stage", cardinality: "singleton" },
       { contract: "shadowcat.surface:statusbar", cardinality: "singleton" },
       { contract: "shadowcat.surface:toolrail", cardinality: "multi" },
-      { contract: "shadowcat.surface:sidebar-host", cardinality: "singleton" },
+      { contract: "shadowcat.surface:panel-host", cardinality: "singleton" },
     ],
   },
   register(ctx) {

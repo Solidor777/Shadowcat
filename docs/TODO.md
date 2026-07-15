@@ -147,9 +147,10 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - Send/edit/delete failure surfacing: the chat frames carry no correlation id, so server
   rejections (e.g. flood limit) are invisible to the sender beyond client pre-validation —
   needs a protocol-level reason channel (pre-existing M11c deferral, re-affirmed).
-- TabbedSurface: WAI-ARIA APG roving-tabindex keyboard model for the tab rail
-  (Left/Right/Home/End; only the active tab in the Tab order) — plain focusable buttons today.
-- Sidebar collapse state is session-local (not persisted in ui_state) — persist if users ask.
+- RESOLVED (M12a): the TabbedSurface roving-tabindex and sidebar-collapse-persistence entries
+  are obsolete — the tabbed sidebar and `TabbedSurface` were deleted wholesale; panels now dock/
+  float/minimize via `module-panels` (dockview supplies the tab keyboard model; layout persists
+  per-world in `ui_state.worlds[w].panelLayout`).
 - Server shortcodes: pre-parse replacement also fires inside markdown code spans; refine to
   skip code spans if it ever matters in practice.
 
@@ -174,6 +175,97 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   (preview_client/preview_cache/preview_rate) across ~40 call sites: bundle the link-preview
   deps into a `LinkPreviewDeps`-style struct to shrink both signatures and reduce call-site
   arg-order risk.
+
+## Client / panels (M12a Task 6 — DockviewEngine)
+- RESOLVED (M12a Task 6 buddy-check fix wave): live resize (`resizeZone`/`resizeGroup`)
+  translation is now wired — `group.api.onDidDimensionsChange` (`DockviewGroupPanelApi`, inherited
+  from `PanelApi` via `GridviewPanelApi`) fires per managed group; `DockviewEngine` subscribes one
+  listener per group at creation (disposed on removal/`destroy()`) and emits `resizeZone`/
+  `resizeGroup` ops, guarded by `#applying` and a sub-pixel-delta dedupe. The original entry's
+  premise ("no event surface found") was false — a buddy-check reviewer traced the event through
+  `dockview-core`'s own source.
+- TODO: Whole-GROUP drag transfers (a titlebar drag of an entire tab group, `PanelTransfer`'s
+  `panelId === null`) are vetoed outright in v1 rather than translated into per-tab dock ops.
+  `DockviewEngine#handleWillDrop` fails closed on any payload it cannot classify into a
+  `DropSite` — container-edge transfers via the component-level `api.onWillDrop` wire, and
+  group-onto-group transfers via a per-group `group.model.onWillDrop` subscription
+  (`#groupWillDropSubs`, added because the component never forwards a group's `onWillDrop`
+  on its own — see `DockviewEngine`'s doc comments for the citation). Translate whole-group
+  transfers into per-tab dock ops to re-enable the group-drag gesture.
+  (Surfaced by the Task 6 buddy-check: an untranslated group transfer previously fell through
+  `#handleWillDrop` WITHOUT vetoing, letting a group land above the stage on a top-edge drop.)
+- TODO: Floating-panel position/size sync in `DockviewEngine.apply()` for an ALREADY-floating
+  panel — creation is handled (`api.addPanel({..., floating: {...}})`), but a live re-drag or
+  resize of an existing floating window is not mirrored back into the tree, so the persisted
+  `Rect` can drift from what the user sees.
+- RESOLVED (M12a Task 6 fix round 3): `DockviewEngine`'s gesture contract is now uniformly
+  "classify → veto or redispatch; dockview never self-mutates from drops" — `#handleWillDrop`
+  `preventDefault()`s an ALLOWED classification too and emits the classified `LayoutOp` itself,
+  so dockview's own internal move machinery (`_onMove`) is never reached for a completed
+  same-instance drag, and `onDidRemovePanel` can no longer see an internal-move removal outside
+  `apply()`'s `#applying` window (closing the spurious-close-op defect a real browser drag used
+  to hit). `onDidDrop`/`#handleDidDrop` are removed: `onDidDrop` only fires when a drop's
+  `PanelTransfer.viewId` doesn't match this instance's own `accessor.id`, which no drag reaching
+  this class (one `DockviewApi` per `PanelHost`, no popout/multi-instance support) can ever
+  satisfy.
+- TODO: `DockviewEngine#toDropSite`'s one remaining fallback branch (a drop's target group
+  falling outside the engine's own zone bookkeeping) is a best-effort approximation (falls back
+  to an edge-zone dock), not exhaustively verified against every dockview drag path. The
+  intercept-and-redispatch translation mechanism itself (preventDefault + emit + reconcile
+  through `apply()`) IS exercised directly by unit tests now, not approximated. Real drag-and-drop
+  still cannot be simulated under jsdom (no native `DragEvent`/`PointerEvent` gesture) — the
+  residual manual-QA item narrows to drop-position classification fidelity for real pointer
+  geometry (edge vs center vs tab-strip index resolution against an actual drag gesture) before
+  shipping.
+- TODO: `DockviewEngine.apply()`'s group-identity scheme keys a dockview group id off its
+  first tab's id (`groupIdFor`), not a stable positional/structural id — reordering a group's
+  first tab, or emptying then refilling a group, causes that group to be torn down and
+  recreated rather than patched in place (harmless: content survives via the persistent slot
+  element; only the dockview chrome/tab-order animation resets). A finer, content-independent
+  diff is future work if this churn becomes visible in practice.
+- RESOLVED (M12a Task 9): docked-panel-to-floating was itself a latent gap in `apply()`'s
+  floating loop — it only handled floating-panel CREATION (`!api.getPanel(f.id)`), never a
+  panel already docked that the tree newly lists under `expanded.floating`, leaving it
+  stranded in its old (tree-orphaned) group. Fixed with the same remove+re-add-under-groupId
+  pattern the zone loop already used for cross-group moves, keyed on
+  `existing.group.api.location.type !== "floating"` (dockview's own public location
+  discriminant). Surfaced by wiring the `PanelMenu`'s "Float" command — the first UI affordance
+  to ever trigger a "float" op against the production engine.
+- TODO: `PanelMenu`'s "Float" command is the ONLY current trigger for a `float` `LayoutOp`, and
+  floating a panel via its OWN tab menu necessarily destroys that same tab (and its menu
+  button) as part of the docked→floating transition. `DockviewEngine`'s focus-return-to-invoker
+  mechanism (`#floatInvokers`/`#teardownFloatingA11y`) is correct and general: the T9 review
+  (Finding 1) fixed a bug where the transient remove/re-add inside `apply()`'s floating loop
+  discarded the `#floatInvokers` entry BEFORE the new floating dialog was even created —
+  `#floatTransitionIds` now brackets that transient removal so the entry survives, and focus
+  correctly returns to any invoker still attached to the document when the panel is later
+  closed (`dockview.test.ts`'s Finding 1 test proves this by reattaching a captured invoker).
+  For THIS milestone's only reachable trigger, the invoker is always the tab's own menu button,
+  which dockview detaches from the DOM synchronously as part of the SAME transition (before
+  `onDidRemovePanel` even fires) — so focus-return still degrades to a safe no-op in practice
+  for the self-referential case specifically, by construction, not because the mechanism is
+  broken. A future non-self-referential float trigger (a command palette, a chip-strip "float"
+  action) gets full, working focus-return with no further change needed here.
+
+## Client / panels (M12a whole-branch review deferrals)
+- TODO: Flip the interim panel defaults when the M12b launcher lands — today chat is docked
+  right and every other panel starts `{kind:"minimized"}` (statusbar chips); M12b replaces
+  this with launcher-closed defaults.
+- TODO: Harmonize the core-ui toolrail-hide breakpoint (`Layout.svelte`, 40rem) with the
+  panel-host compact/expanded breakpoint (`sizeClass.svelte.ts`, min-width 48rem) — in the
+  40–48rem band the compact switcher renders while the 3rem toolrail column is still shown.
+  Land with the M12b toolrail/launcher rework. (M12a final spec review.)
+- TODO: Narrow `PanelHost.svelte`'s `PanelsBridgeLike` inline cast — either a runtime
+  `typeof bridge.bind` guard or a narrower `AppContext.panels` type; today it rests on the
+  composition-root convention (`Table.svelte` is the sole binding site).
+- TODO: `DockChips.svelte` falls back to the raw untranslated panel id when `metaMap` lacks an
+  entry (same class: `PanelHost.describeOp`'s aria-live fallback) — unreachable today (`prune`
+  keeps layout ids ⊆ registered); give it an i18n fallback if a reachable path ever appears.
+- TODO: `sizeClass.svelte.ts` teardown path (createSubscriber removeEventListener) has no test —
+  matches the pre-existing i18n teardown-test gap; cover both together.
+- TODO: `controller.test.ts` boot-race test asserts `compact.order` membership (`toContain`)
+  but not full order equality (per-panel `locate()` placements ARE exactly pinned); tighten to
+  a full-sequence assert when next touched.
 
 ## Chat / link previews (M11d-3)
 - Preview images: v1 stores title+description only. An image URL rendered as `<img src>` would

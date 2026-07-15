@@ -29,7 +29,7 @@ test("getUiState normalizes an empty server blob to defaults", async () => {
 });
 
 test("getUiState passes through a stored blob", async () => {
-  mockFetch(200, { global: { locale: "en", lastWorld: "w1" }, worlds: { w1: { activeTab: "settings" } } });
+  mockFetch(200, { global: { locale: "en", lastWorld: "w1" }, worlds: { w1: { panelLayout: { version: 1 } } } });
   const s = await api.getUiState();
   expect(s.global.lastWorld).toBe("w1");
 });

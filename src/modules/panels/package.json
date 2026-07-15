@@ -1,5 +1,5 @@
 {
-  "name": "@shadowcat/module-sidebar",
+  "name": "@shadowcat/module-panels",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -7,7 +7,8 @@
   "dependencies": {
     "@shadowcat/core": "workspace:*",
     "@shadowcat/ui-kit": "workspace:*",
-    "@shadowcat/types": "workspace:^"
+    "@shadowcat/types": "workspace:^",
+    "dockview-core": "7.0.2"
   },
   "devDependencies": {
     "@testing-library/svelte": "^5.3.1",

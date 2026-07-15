@@ -139,9 +139,10 @@
     showNewMessagesPill = false;
     pendingScrollToBottom = false;
   }
-  // Cheap display:none check: TabbedSurface hides an inactive panel via
-  // `[hidden] { display: none }` on an ancestor, which forces every descendant's
-  // offsetParent to null — the standard proxy for "this chat tab is not active."
+  // Cheap display:none check: the panel host hides an inactive/compact-mode
+  // panel via `display: none` on an ancestor (never `{#if}`), which forces
+  // every descendant's offsetParent to null — the standard proxy for "this
+  // chat panel is not currently visible."
   function isVisible(el: HTMLElement): boolean {
     return el.offsetParent !== null;
   }

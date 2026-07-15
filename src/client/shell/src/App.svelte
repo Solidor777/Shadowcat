@@ -5,7 +5,7 @@
   import { loadSessionState, setLastWorld, flushOnUnload } from "./lib/sessionState.svelte";
   import { currentRoute, navigate } from "./lib/route.svelte";
   import { coreUi } from "@shadowcat/module-core-ui";
-  import { sidebar } from "@shadowcat/module-sidebar";
+  import { panels } from "@shadowcat/module-panels";
   import { topBar } from "@shadowcat/module-topbar";
   import { statusBar } from "@shadowcat/module-statusbar";
   import { stage } from "@shadowcat/module-stage";
@@ -86,7 +86,7 @@
     const wsUrl =
       (location.protocol === "https:" ? "wss:" : "ws:") +
       "//" + location.host + "/ws?world=" + worldId;
-    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [sidebar, coreUi, topBar, statusBar, stage, settings, gameSettings, assets, actors, factions, conditions, sceneTools, chat, chatComposer, chatCard] });
+    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, assets, actors, factions, conditions, sceneTools, chat, chatComposer, chatCard] });
     session = s;
     void s.enter(worldId);
     setLastWorld(worldId);

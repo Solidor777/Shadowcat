@@ -1984,7 +1984,7 @@ mod tests {
             module_id: "core-ui".into(),
             version: "0.1.0".into(),
             provides: vec![ContractProvide {
-                contract: "shadowcat.surface:sidebar".into(),
+                contract: "example.surface:widget".into(),
                 cardinality: Cardinality::Singleton,
             }],
             requires: vec![],

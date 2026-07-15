@@ -1,10 +1,16 @@
 <script lang="ts">
-  import { setAppContext, Surface } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface, PanelsBridge } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
+  import { consoleLogger } from "@shadowcat/core";
   import { logout } from "./api";
   import { navigate } from "./route.svelte";
-  import { getActiveTab, setActiveTab } from "./sessionState.svelte";
+  import { getPanelLayout, setPanelLayout } from "./sessionState.svelte";
   import type { WorldSession } from "./worldSession.svelte";
+
+  // `PanelHost` binds the real implementation into this bridge at its own
+  // mount (later than `Table`'s own init); calls made before that bind are
+  // a no-op, warned once via the injected logger.
+  const panels = new PanelsBridge(consoleLogger());
 
   let { session, leaveWorld }: { session: WorldSession; leaveWorld: () => void } =
     $props();
@@ -39,9 +45,10 @@
       delete: (id) => session.deleteChatMessage(id),
     },
     uiState: {
-      getActiveTab: () => getActiveTab(session.world!),
-      setActiveTab: (id) => setActiveTab(session.world!, id),
+      getPanelLayout: () => getPanelLayout(session.world!),
+      setPanelLayout: (blob) => setPanelLayout(session.world!, blob),
     },
+    panels,
     leaveWorld,
     logout: async () => {
       await logout();

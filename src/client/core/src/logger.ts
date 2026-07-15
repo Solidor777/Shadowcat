@@ -13,7 +13,7 @@ export const silentLogger: Logger = {
   error() {},
 };
 
-/** A development logger that prefixes the project tag; not used in the bundle. */
+/** The production console logger; prefixes the project tag. Shell entry points (worldSession, sessionState, Table) construct it per consumer. */
 export function consoleLogger(): Logger {
   return {
     debug: (m, meta) => console.debug(`[shadowcat] ${m}`, meta),

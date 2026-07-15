@@ -4,9 +4,12 @@
 export { getAppContext, setAppContext, __APP_CONTEXT_KEY__ } from "./appContext";
 export type { AppContext, TFunc } from "./appContext";
 export { default as Surface } from "./Surface.svelte";
-export { default as TabbedSurface } from "./TabbedSurface.svelte";
 export { t, locale, i18n } from "./i18n.svelte";
 export { SceneInteractionBridge } from "./sceneInteraction";
 export type { SceneInteraction } from "./sceneInteraction";
 export { ActorSelection } from "./actorSelection.svelte";
 export { TokenSelection } from "./tokenSelection.svelte";
+export { sizeClass } from "./sizeClass.svelte";
+export type { SizeClass } from "./sizeClass.svelte";
+export { PanelsBridge } from "./panelsBridge.svelte";
+export type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";

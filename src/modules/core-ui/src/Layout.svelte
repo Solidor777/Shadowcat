@@ -5,8 +5,7 @@
 <div class="layout">
   <div class="topbar"><Surface contract="shadowcat.surface:topbar" /></div>
   <div class="toolrail"><Surface contract="shadowcat.surface:toolrail" /></div>
-  <div class="stage"><Surface contract="shadowcat.surface:stage" /></div>
-  <div class="sidebar"><Surface contract="shadowcat.surface:sidebar-host" /></div>
+  <div class="main"><Surface contract="shadowcat.surface:panel-host" /></div>
   <div class="statusbar"><Surface contract="shadowcat.surface:statusbar" /></div>
 </div>
 
@@ -14,12 +13,12 @@
   .layout {
     display: grid;
     height: 100vh;
-    grid-template-columns: 3rem 1fr 20rem;
+    grid-template-columns: 3rem 1fr;
     grid-template-rows: 2.5rem 1fr 1.5rem;
     grid-template-areas:
-      "topbar topbar sidebar"
-      "toolrail stage sidebar"
-      "statusbar statusbar sidebar";
+      "topbar topbar"
+      "toolrail main"
+      "statusbar statusbar";
     background: var(--surface-base);
     color: var(--text-primary);
   }
@@ -33,18 +32,13 @@
     background: var(--surface-overlay);
     border-right: 1px solid var(--border);
   }
-  .stage {
-    grid-area: stage;
-  }
-  .sidebar {
-    grid-area: sidebar;
-    /* Growth cap: zeroes the grid item's automatic minimum size so tall tab
-     * content scrolls inside the host's panels instead of growing the 1fr
-     * track past 100vh. Scrolling itself is owned by the tab host's panels. */
+  .main {
+    grid-area: main;
+    /* Growth cap: zeroes the grid item's automatic minimum size so tall panel
+     * content scrolls inside the panel host's panels instead of growing the
+     * 1fr track past 100vh. Scrolling itself is owned by the panel host. */
     min-height: 0;
     overflow: hidden;
-    background: var(--surface-raised);
-    border-left: 1px solid var(--border);
   }
   .statusbar {
     grid-area: statusbar;
@@ -54,12 +48,12 @@
     font-size: 0.8rem;
   }
 
-  /* Phone: stack regions, sidebar below the stage. */
+  /* Phone: toolrail hidden (M12b replaces it with a touch-appropriate launcher). */
   @media (max-width: 40rem) {
     .layout {
       grid-template-columns: 1fr;
-      grid-template-rows: 2.5rem 1fr auto 1.5rem;
-      grid-template-areas: "topbar" "stage" "sidebar" "statusbar";
+      grid-template-rows: 2.5rem 1fr 1.5rem;
+      grid-template-areas: "topbar" "main" "statusbar";
     }
     .toolrail {
       display: none;
