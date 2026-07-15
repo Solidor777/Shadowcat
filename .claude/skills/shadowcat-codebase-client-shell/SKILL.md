@@ -92,8 +92,11 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `LauncherMenu` (open/close any registered panel by id via `AppContext.panels.toggle`,
   `launcher-item-{panelId}` testids, a11y menu + focus management) + `Presence` (member
   roster) + a standing settings-entry button that toggles `settings:panel` through the same
-  `AppContext.panels` seam — imports NOTHING from `@shadowcat/module-panels` (ESLint-enforced
-  boundary; the launcher talks to panels only through `AppContext.panels`). Below 48rem the
+  `AppContext.panels` seam — imports NOTHING from `@shadowcat/module-panels` (seam boundary by
+  design: topbar's package.json declares no module-panels dependency and the launcher talks to
+  panels only through `AppContext.panels`; NOT lint-enforced — the repo's sole
+  `no-restricted-imports` rule covers `dockview-core` only, and .svelte files are unlinted).
+  Below 48rem the
   topbar drops the world-name label and the scene-tools `ToolRail` collapses from a vertical
   side rail into a horizontal bottom strip (`sizeClass()`-driven, same axis).
   `game-settings` = `@shadowcat/module-game-settings` (GM-only): idempotently seeds + edits
