@@ -80,4 +80,30 @@ describe("ActorSheet edits", () => {
       [{ op: "update", doc_id: "a1", changes: [{ path: "/system/name", old: "Orc", new: "Orc Warlord" }] }],
     ]);
   });
+
+  // Combines the compound-field and repeat-edit scenarios: editing sizeH after sizeW must
+  // read the FIRST edit's w back as old/new, not the pre-render snapshot. Fails against the
+  // pre-fix frozen doc because the second dispatch would revert w to its original value.
+  it("editing sizeH after sizeW preserves the first edit's w, not the frozen pre-render value", async () => {
+    const calls: unknown[] = [];
+    const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" } });
+    const dispatchIntent = (ops: unknown) => {
+      calls.push(ops);
+      const changes = (ops as { changes: { path: string; new: unknown }[] }[])[0].changes;
+      documents.applyCommand({
+        seq: documents.appliedSeq + 1, world_id: "w1", author: "u", ts: 0,
+        ops: [{ op: "update", doc_id: "a1", changes }],
+      });
+    };
+    const context = setAppContextForTest({ documents, dispatchIntent, canEdit: () => true });
+    const { getByLabelText } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+
+    await fireEvent.change(getByLabelText("sheetActor.sizeW"), { target: { value: "5" } });
+    await fireEvent.change(getByLabelText("sheetActor.sizeH"), { target: { value: "9" } });
+
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/system/size", old: { w: 1, h: 1 }, new: { w: 5, h: 1 } }] }],
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/system/size", old: { w: 5, h: 1 }, new: { w: 5, h: 9 } }] }],
+    ]);
+  });
 });

@@ -42,7 +42,8 @@ describe("FallbackSheet reactive doc", () => {
 
     const input2 = screen.getByLabelText("foo") as HTMLInputElement;
     await fireEvent.change(input2, { target: { value: "qux" } });
-    // Pre-fix (frozen doc): this would still read "bar" as `old`, silently rejected server-side.
+    // Asserts old reflects the confirmed first edit — a doc that fails to re-derive would
+    // still read the stale "bar" here, silently rejected by the server's OCC check.
     expect(dispatchIntent).toHaveBeenLastCalledWith([
       { op: "update", doc_id: "d1", changes: [{ path: "/system/foo", old: "baz", new: "qux" }] },
     ]);
