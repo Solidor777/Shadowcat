@@ -31,7 +31,7 @@ describe("default module set — default docked panel", () => {
     expect(list[0]?.id).toBe("chat:panel");
   });
 
-  it("the built default layout docks exactly chat:panel; every other panel starts minimized", () => {
+  it("the built default layout docks exactly chat:panel; every other panel starts closed in the launcher", () => {
     const contributions = new ContributionRegistry();
     const ctx = { contributions } as never;
     for (const m of [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, assets, actors, factions, conditions, sceneTools, chat]) {
@@ -40,10 +40,14 @@ describe("default module set — default docked panel", () => {
     const regs = contributions.contributionsFor(PANEL_CONTRACT).map((c) => ({ id: c.id, placement: c.panel?.defaultPlacement }));
     const layout = defaultLayout(regs);
 
+    // Only chat:panel carries a defaultPlacement (docked right); every other panel has
+    // none, so placeNewRegistrations records them in compact.order without placing them
+    // in expanded — they start closed (reachable via the launcher), not minimized chips.
     const docked = Object.values(layout.expanded.zones).flatMap((z) => z.groups.flatMap((g) => g.tabs));
     expect(docked).toEqual(["chat:panel"]);
-    expect(layout.expanded.minimized.sort()).toEqual(
-      ["assets:panel", "actors:panel", "factions:panel", "conditions:panel", "game-settings:panel", "settings:panel"].sort(),
+    expect(layout.expanded.minimized).toEqual([]);
+    expect(layout.compact.order.sort()).toEqual(
+      ["chat:panel", "assets:panel", "actors:panel", "factions:panel", "conditions:panel", "game-settings:panel", "settings:panel"].sort(),
     );
   });
 });
