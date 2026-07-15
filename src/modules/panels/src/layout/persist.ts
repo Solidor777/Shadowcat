@@ -107,6 +107,14 @@ function isReferentiallyConsistent(l: PanelLayoutV1): boolean {
   return l.compact.activeView === null || l.compact.order.includes(l.compact.activeView);
 }
 
+/** Fills an absent `poppedOut` (pre-M12e blob) with `[]` so reducer arithmetic
+ * (`prune`/`locate`/`detach`) never dereferences `undefined`. Returns the input
+ * untouched when the field is already an array (the common, current-version path). */
+function withPoppedOut(l: PanelLayoutV1): PanelLayoutV1 {
+  if (Array.isArray(l.expanded.poppedOut)) return l;
+  return { ...l, expanded: { ...l.expanded, poppedOut: [] } };
+}
+
 /** Decodes a persisted blob. Returns `reset: true` with a freshly-built `fallback()` layout
  * on ANY structural mismatch (non-object, wrong version, malformed shape, non-string id) or
  * referential inconsistency (`active`/`activeView` pointing at an id absent from its own
@@ -125,14 +133,6 @@ function isReferentiallyConsistent(l: PanelLayoutV1): boolean {
  * set would otherwise permanently drop every not-yet-registered panel's saved position.
  * `PanelsController` retains `source` to reconstruct later-registering panels' persisted
  * locations via `placeNewRegistrations` instead of losing them to that race. */
-/** Fills an absent `poppedOut` (pre-M12e blob) with `[]` so reducer arithmetic
- * (`prune`/`locate`/`detach`) never dereferences `undefined`. Returns the input
- * untouched when the field is already an array (the common, current-version path). */
-function withPoppedOut(l: PanelLayoutV1): PanelLayoutV1 {
-  if (Array.isArray(l.expanded.poppedOut)) return l;
-  return { ...l, expanded: { ...l.expanded, poppedOut: [] } };
-}
-
 export function decodeLayout(
   raw: unknown,
   known: ReadonlySet<string>,

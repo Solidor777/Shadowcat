@@ -922,7 +922,9 @@ In `controller.svelte.ts`, add to `PanelsControllerDeps` (after `onOp`):
   onNotice?: (key: string) => void;
 ```
 
-In `EMPTY_LAYOUT`, add `poppedOut: []`:
+In `EMPTY_LAYOUT`, add `poppedOut: []` — **already applied** (Task 2's own typecheck-gate
+fix, commit `93a45c2`, ratified in review); this step is a no-op, verify it reads as below
+rather than re-applying it:
 
 ```ts
   expanded: { zones: { right: { groups: [], size: 320 }, bottom: { groups: [], size: 240 }, left: { groups: [], size: 320 } }, floating: [], minimized: [], poppedOut: [] },
