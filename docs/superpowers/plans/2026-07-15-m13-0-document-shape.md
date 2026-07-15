@@ -83,7 +83,7 @@ and between `parent_id` and `system`:
     pub engine: Option<serde_json::Value>,
 ```
 
-- [ ] **Step 4: Compile-driven fixture sweep** — `cargo test` will now fail to compile every `Document { … }` literal; add `name: None, engine: None,` to each (tests + any constructor in non-test code, e.g. server-side doc builders in `chat/mod.rs`). Run full `cargo test`: PASS (bindings regenerate as a side effect of the ts-rs export tests; verify `src/types/generated/Document.ts` now contains `name: string | null` and `engine?: unknown`).
+- [ ] **Step 4: Compile-driven fixture sweep** — `cargo test` will now fail to compile every `Document { … }` literal; add `name: None, engine: None,` to each (tests + any constructor in non-test code, e.g. server-side doc builders in `chat/mod.rs`). Run full `cargo test`: PASS (bindings regenerate as a side effect of the ts-rs export tests; verify `src/types/generated/Document.ts` now contains `name: string | null` and `engine: unknown` — NOTE: `#[ts(type = "unknown")]` overrides ts-rs's `Option` handling, so the generated key is REQUIRED and un-unioned, same as `system` today; Task 8 must not assume `engine` is omittable in the generated type — the Zod schema's `z.unknown()` inferring optional is the runtime-tolerant side).
 - [ ] **Step 5: Commit** — `feat(m13-0): envelope name + engine band on Document (server)`
 
 ---
