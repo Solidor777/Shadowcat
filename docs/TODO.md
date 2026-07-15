@@ -147,9 +147,10 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - Send/edit/delete failure surfacing: the chat frames carry no correlation id, so server
   rejections (e.g. flood limit) are invisible to the sender beyond client pre-validation —
   needs a protocol-level reason channel (pre-existing M11c deferral, re-affirmed).
-- TabbedSurface: WAI-ARIA APG roving-tabindex keyboard model for the tab rail
-  (Left/Right/Home/End; only the active tab in the Tab order) — plain focusable buttons today.
-- Sidebar collapse state is session-local (not persisted in ui_state) — persist if users ask.
+- RESOLVED (M12a): the TabbedSurface roving-tabindex and sidebar-collapse-persistence entries
+  are obsolete — the tabbed sidebar and `TabbedSurface` were deleted wholesale; panels now dock/
+  float/minimize via `module-panels` (dockview supplies the tab keyboard model; layout persists
+  per-world in `ui_state.worlds[w].panelLayout`).
 - Server shortcodes: pre-parse replacement also fires inside markdown code spans; refine to
   skip code spans if it ever matters in practice.
 
@@ -245,6 +246,26 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   for the self-referential case specifically, by construction, not because the mechanism is
   broken. A future non-self-referential float trigger (a command palette, a chip-strip "float"
   action) gets full, working focus-return with no further change needed here.
+
+## Client / panels (M12a whole-branch review deferrals)
+- TODO: Flip the interim panel defaults when the M12b launcher lands — today chat is docked
+  right and every other panel starts `{kind:"minimized"}` (statusbar chips); M12b replaces
+  this with launcher-closed defaults.
+- TODO: Harmonize the core-ui toolrail-hide breakpoint (`Layout.svelte`, 40rem) with the
+  panel-host compact/expanded breakpoint (`sizeClass.svelte.ts`, min-width 48rem) — in the
+  40–48rem band the compact switcher renders while the 3rem toolrail column is still shown.
+  Land with the M12b toolrail/launcher rework. (M12a final spec review.)
+- TODO: Narrow `PanelHost.svelte`'s `PanelsBridgeLike` inline cast — either a runtime
+  `typeof bridge.bind` guard or a narrower `AppContext.panels` type; today it rests on the
+  composition-root convention (`Table.svelte` is the sole binding site).
+- TODO: `DockChips.svelte` falls back to the raw untranslated panel id when `metaMap` lacks an
+  entry (same class: `PanelHost.describeOp`'s aria-live fallback) — unreachable today (`prune`
+  keeps layout ids ⊆ registered); give it an i18n fallback if a reachable path ever appears.
+- TODO: `sizeClass.svelte.ts` teardown path (createSubscriber removeEventListener) has no test —
+  matches the pre-existing i18n teardown-test gap; cover both together.
+- TODO: `controller.test.ts` boot-race test asserts `compact.order` membership (`toContain`)
+  but not full order equality (per-panel `locate()` placements ARE exactly pinned); tighten to
+  a full-sequence assert when next touched.
 
 ## Chat / link previews (M11d-3)
 - Preview images: v1 stores title+description only. An image URL rendered as `<img src>` would

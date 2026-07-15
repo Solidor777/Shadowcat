@@ -27,8 +27,9 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   center well — the suspect rendering path. Deterministic and reproducible with generous
   real-time waits between each dock (NOT a same-tick/rapid-fire timing race). No UI affordance
   currently exists to un-dock/minimize a panel back out of a zone once docked under FakeEngine
-  (M12a ships no minimize/close control on a docked panel's tab — the interim default-placement
-  design is `{kind:"minimized"}` for non-chat panels, restored only forward via
+  (the M12a Task 9 `PanelMenu` — dock/float/minimize commands on a tab's menu button — is
+  mounted by `DockviewEngine.createTabComponent` only; `FakeEngine`'s plain tab strip has no
+  menu, and non-chat panels default to `{kind:"minimized"}`, restored only forward via
   `PanelsChipsView.restore`), so once a `FakeEngine` session docks 3 panels into one zone there is
   no way back.
   **Not present under the production engine**: `panels/src/index.ts` now wires `DockviewEngine`

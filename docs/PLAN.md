@@ -1002,6 +1002,31 @@ Decomposed **M11a–d**:
 > **M12a** (spike gate + panel-manager core + sidebar swap) → **M12b** (layout refresh) →
 > **M12c** (sheet registry + generic actor/item/fallback sheets + `openDocument` + chat doc-link
 > closure) → **M12d** (actor/scene browsers + `activeScene` multi-scene) → **M12e** (pop-out).
+>
+> **M12a DONE** (branch `m12a-panel-core`, 10 SDD tasks — Sonnet implementers, per-task
+> spec+code reviews, 2 pre-authorized buddy-checks (T2 reducer, T6 DockviewEngine), two-opus
+> whole-branch final review: spec PASS + code Approved, zero Critical/Important at branch
+> level) — the unified dockable panel system: `@shadowcat/module-panels` with a PURE layout
+> tree (`PanelLayoutV1` + `LayoutOp` reducer `applyOp`, same-reference no-op contract) as the
+> single source of truth; dockview-core@7.0.2 (EXACT pin, source-verified spike) behind the
+> project-owned `EngineAdapter` seam — imports confined to `engine/dockview.ts`, now
+> ESLint-enforced (`no-restricted-imports`); every engine gesture intercept-and-redispatched
+> through the reducer (dockview never owns state); stage well inviolable (W1–W3 + STAGE_ID
+> vetoes at policy AND handler layers, defense-in-depth verified unbreakable by the final spec
+> review); keep-mounted panels via CSS-hide/slot adoption (never `{#if}`); per-world
+> persistence in `ui_state.worlds[w].panelLayout` with pre-prune `source` retention so late
+> registrations restore their saved spot; `PanelsBridge` (`AppContext.panels`) cross-surface
+> seam feeding the statusbar chip strip; compact (<48rem) `CompactSwitcher`; `PanelMenu`
+> keyboard/touch command layer + aria-live announcements; gmOnly = client-advisory filter.
+> Sidebar + `TabbedSurface` deleted wholesale; 7 panel modules re-targeted to `shadowcat.panel`.
+> Interim defaults: chat docked right, all else minimized to chips (M12b flips to
+> launcher-closed). Review catches along the way: mobile-canvas-loss Critical, layout-wipe-
+> on-reload regression, engine-never-wired plan gap, group-drag stage bypass (buddy-check),
+> float-invoker teardown race. Deferred (TODO.md): whole-group drag translation, floating
+> live-drag sync, 40/48rem breakpoint harmonization, minor test-coverage niceties.
+> `shadowcat-codebase-panels` skill CREATED + `shadowcat-codebase-client-shell` rewritten
+> (reviewed skill-update gate, adversarial pass + fix-confirmation).
+> Plan: [`superpowers/plans/2026-07-13-m12a-panel-manager-core.md`](superpowers/plans/2026-07-13-m12a-panel-manager-core.md).
 - Actor / scene browsers, generic actor / item sheets — built against the public API, each treated as an API bug report. (Chat panel superseded: the baseline chat display modules ship in **M11d**.)
 
 ### M12.5 · Backups + snapshot restore (gate precondition)

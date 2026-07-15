@@ -182,3 +182,24 @@ are observations awaiting triage, not committed work.
   boundaries only; the route itself remains valid (footprint-clear, mask-bounded, gate-passable). The
   spec §4.2 requires parity carry across legs, not global optimality. Documented in-code. Status:
   Recorded.
+
+- Title: M12a module-API friction — `register()` cannot reach AppContext, forcing lazy controller
+  construction. Summary: `Module.register(ctx)` runs in the framework-neutral `ModuleContext`
+  (no role, no `uiState`, no `PanelsBridge`), so the panels module cannot construct its
+  layout-owning `PanelsController` at registration; `PanelHost` builds it lazily at mount from
+  AppContext and binds it into the shell's `PanelsBridge`, and the chip strip must read the SAME
+  bridge reactively instead of holding a controller. Workable (documented in
+  `panels/src/index.ts`), but every future stateful module that needs session context will repeat
+  this construct-at-mount + bridge dance — treated as an API bug report per the M12 "built against
+  the public API" rule. Status: Needs Review (candidate: a session-scoped module hook or
+  context-bearing activation phase, weigh at M12c sheet-registry design time).
+
+- Title: M12a verification gap — native pointer tab-drag not exercisable by automation. Summary:
+  Task 10's sweep could not fire a REAL native drag of a dockview tab (CDP does not synthesize
+  `dragstart`; the coarse-pointer backend engaged dockview's drop overlay but committed no move).
+  Coverage substitutes the `PanelMenu` a11y commands, which share the identical classified-
+  `LayoutOp` pipeline (parity documented in `dockview.ts`), plus geometric assertion of the zone
+  move through a reload; drop-POSITION classification fidelity against real pointer geometry
+  (edge vs center vs tab-strip index) remains manual-QA-only (also logged as the
+  `#toDropSite` fallback TODO). Status: Needs Review (a human mouse pass over dock/float/reorder
+  gestures would close it; a synthetic-DragEvent harness is a possible future e2e investment).

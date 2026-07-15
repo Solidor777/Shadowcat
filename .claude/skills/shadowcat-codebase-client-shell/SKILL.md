@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-client-shell
-description: "Use when touching the Shadowcat UI shell: the contribution/Surface/TabbedSurface module architecture, Contribution.tab metadata, AppContext (incl. the chat + uiState seams), the tabbed sidebar (module-sidebar + the sidebar-host contract + per-world activeTab persistence), the hash router + entry views, i18n/locale, or the shell/panel modules (entry, core-ui, sidebar, topbar, statusbar, settings). Covers src/client/{shell,ui-kit} + those src/modules. Invoke shadowcat-codebase-core first."
+description: "Use when touching the Shadowcat UI shell: the contribution/Surface module architecture, Contribution.panel metadata, AppContext (incl. the chat, uiState.panelLayout, and panels/PanelsBridge seams), the hash router + entry views, i18n/locale, or the shell/UI modules (entry, core-ui, topbar, statusbar, settings). Covers src/client/{shell,ui-kit} + those src/modules. For the panel-manager internals (module-panels, engines, layout tree) invoke shadowcat-codebase-panels. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Client Shell & UI Modules
@@ -17,24 +17,16 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 ## Key files & seams
 
 - `src/client/core/src/contributions.ts` — `Contribution`, `ContributionRegistry` (modules
-  contribute UI into named surfaces). `Contribution.tab?: ContributionTab {icon, labelKey,
-  gmOnly?}` (M11d-1) is optional plain-data tab metadata a tabbed host renders (fallback:
-  first char of id / raw id); `labelKey` is an i18n key the HOST resolves (locale-reactive).
-- **The sidebar is itself a module** (M11d-1): `src/modules/sidebar/` (`@shadowcat/
-  module-sidebar`) PROVIDES the multi `shadowcat.surface:sidebar` contract (ownership moved
-  out of core-ui) and requires the new singleton `shadowcat.surface:sidebar-host` that
-  core-ui's Layout region hosts — swapping the sidebar's presentation (tabs → anything)
-  replaces this one module, never core-ui or any panel. Its `SidebarHost` restores the active
-  tab once at mount from `ctx.uiState.getActiveTab()` and writes through on change.
-- `src/client/ui-kit/src/TabbedSurface.svelte` (M11d-1) — the generic tabbed host primitive
-  (sibling of `Surface`): vertical icon rail, `tab.gmOnly` filtered for non-GM, sorted by
-  `order` (ties = insertion order — chat holds the UNIQUE order 0 so it is the default tab;
-  `settings` moved to order 6; pinned by `shell/src/lib/defaultModuleOrder.test.ts`).
-  **Every panel stays mounted**: tab switching AND collapse hide via `hidden`/CSS, never
-  `{#if}` — panel state and GM seed `$effects` survive both (a collapse `{#if}` was a
-  reviewed-and-fixed defect; a mount-counter test guards its reintroduction). Content inside
-  a hidden tab reads `scrollHeight = 0` — a panel measuring scroll must bail while hidden and
-  re-sync on visibility (module-chat's IntersectionObserver pattern).
+  contribute UI into named surfaces). `Contribution.panel?` (M12a, replaced `tab`) is optional
+  plain-data panel metadata (`icon`, `labelKey`, `gmOnly?`, `defaultPlacement`) the panel host
+  renders; `labelKey` is an i18n key the HOST resolves (locale-reactive).
+- **Panels replaced the tabbed sidebar** (M12a): the sidebar module and ui-kit
+  `TabbedSurface` are DELETED. `@shadowcat/module-panels` provides the multi
+  `shadowcat.panel` contract every panel module contributes into, hosts `PanelHost` in
+  core-ui's singleton `shadowcat.surface:panel-host` region and the minimized-chips strip in
+  statusbar's `shadowcat.surface:panel-dock`. Keep-mounted rule carries over: panels hide via
+  CSS/slot adoption, never `{#if}`; hidden content reads `scrollHeight = 0` (module-chat's
+  IntersectionObserver pattern still applies). Internals → [[shadowcat-codebase-panels]].
 - `src/client/core/src/modules.ts` — `ModuleRegistry`; `services.ts` — `ServiceRegistry`;
   `topology.ts` — `reconcileTopology(...)` resolves `provides`/`requires` contracts (singleton
   loud-fail). Contract schemas in `wire.ts` (`ContractProvideSchema`).
@@ -72,23 +64,28 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `shadowcat-codebase-scene-rendering`).
 - `src/client/shell/src/` — `App.svelte`, `main.ts`, `lib/` (hash router, api client, session,
   WorldSession controller, default-module wiring). `sessionState.svelte.ts` owns the
-  `ui_state` blob: `getActiveTab(world)`/`setActiveTab(world, id)` (M11d-1) persist the
-  per-world active sidebar tab into the reserved `UiState.worlds[world].activeTab` field via
-  the existing leading-edge-debounced PUT.
-- New AppContext seams (M11d-1, wired in `Table.svelte`): `uiState {getActiveTab,
-  setActiveTab}` (narrow; the shell owns storage) and `chat: ChatApi {send, edit, delete}`
+  `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` (M12a, replaced
+  activeTab) persist the per-world panel layout into `UiState.worlds[world].panelLayout` via
+  the existing leading-edge-debounced PUT. The blob is OPAQUE to the shell — the panel host
+  owns its shape/validation.
+- AppContext seams (wired in `Table.svelte`): `uiState {getPanelLayout, setPanelLayout}`
+  (narrow; the shell owns storage), `panels: PanelsApi & PanelsChipsView` — the shell
+  constructs ONE `PanelsBridge` (`ui-kit/src/panelsBridge.svelte.ts`, `$state`-backed so
+  pre-bind readers unfreeze at bind; details → [[shadowcat-codebase-panels]]) — and
+  `chat: ChatApi {send, edit, delete}`
   (fire-and-forget over `WsClient.sendChatMessage`/`editChatMessage`/`deleteChatMessage` —
   these frames carry no correlation id; rejections are server-logged only, so composers
   pre-validate). `members` is now populated for EVERY role (chat name resolution; the
   roster endpoint was widened from GM-only), not just GM.
-- `src/modules/{entry,core-ui,sidebar,topbar,statusbar,settings,game-settings,chat,
+- `src/modules/{entry,core-ui,panels,stage,topbar,statusbar,settings,game-settings,chat,
   chat-composer,chat-card}/` — entry = `@shadowcat/module-entry` (login + world mgmt, behind
   `<Entry onEnterWorld>`); core-ui owns the layout grid + region surfaces into the singleton
-  `root` (its sidebar region hosts `sidebar-host`; the grid cell carries `min-height: 0` +
-  `overflow: hidden` — the growth cap that keeps tall tab content scrolling INSIDE panels
-  instead of blowing the 1fr track past 100vh; scrolling is owned by the tab host's panels);
-  sidebar = the tab host (above); the panel modules each contribute one tab (orders: chat 0,
-  assets 1, actors 2, factions 3, conditions 4, game-settings 5 gmOnly, settings 6).
+  `root` (its main region hosts `shadowcat.surface:panel-host`; the grid cell carries
+  `min-height: 0` + `overflow: hidden` — the growth cap that keeps tall content scrolling
+  INSIDE panels instead of blowing the 1fr track past 100vh); panels = the panel manager
+  ([[shadowcat-codebase-panels]]); stage = the canvas stage well (inviolable — never docked/
+  floated/minimized); the panel modules each contribute one `shadowcat.panel` (interim
+  defaults: chat docked right, all others minimized to statusbar chips; game-settings gmOnly).
   `game-settings` = `@shadowcat/module-game-settings` (GM-only): idempotently seeds + edits
   the world's singleton config-docs — the vision/lighting trio
   (`world-settings`/`light-gradation`/`vision-modes`, resolvers in `core/scene-docs.ts`),
