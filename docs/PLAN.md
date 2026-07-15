@@ -1050,9 +1050,17 @@ Decomposed **M11a–d**:
 
 ### M13 · Nightfox — first-party generic system module
 > Cross-cutting spec (approved 2026-07-15): [`superpowers/specs/2026-07-15-m13-nightfox-system-design.md`](superpowers/specs/2026-07-15-m13-nightfox-system-design.md).
+> **Nightfox is an external project (D16)**: its own GitHub repository + project folder,
+> consuming engine packages through the real third-party path (dependency + packaging + M6b
+> dynamic-loader install) — the strongest form of the reference-implementation purpose. Engine
+> work (M13-0/M13-1/M13a/M13e/M13f) stays in this repo; the Nightfox packages (M13b/c/d) live
+> in the Nightfox repo, filing API friction back into `POST_WORK_FINDINGS.md`.
 > Decomposed **M13-0** (three-category document shape D15: envelope / `engine` / `system` —
 > engine-known fields relocate from the system-body root to a typed, ts-rs-generated `engine`
 > block; pre-v1 hard cutover, NO migration code; own spec cycle after M12 completes) →
+> **M13-1** (external-module toolchain: engine-package consumption for out-of-tree modules,
+> module build/packaging, world install/load via the M6b loader, dev-server + e2e-harness
+> access for external repos; own spec cycle; bootstraps the Nightfox repo) →
 > **M13a** (`@shadowcat/formula` shared formula library: free-form parser/evaluator,
 > fail-closed error values, DoS caps, cycle guard, dice-notation-template mode; plan
 > `superpowers/plans/2026-07-15-m13a-formula-library.md`) → **M13b**

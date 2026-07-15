@@ -17,9 +17,10 @@ Nightfox is Shadowcat's first-party generic game system. Two purposes, in priori
    freeze gate wants as evidence.
 
 **Placement: M13**, after M12 (needs M12c's sheet registry + `item` doc_type) and after M12.5,
-so the dogfood-alpha gate opens with backups *and* a playable system. M13a/M13b are pure
-headless packages with zero M12 dependency and may start while M12 wraps up; only M13c gates on
-M12c.
+so the dogfood-alpha gate opens with backups *and* a playable system. M13a is a pure headless
+Shadowcat package with zero M12 dependency and may start while M12 wraps up. The Nightfox
+packages themselves live in their **own repository and project folder** (D16) and gate on the
+M13-1 toolchain; only M13c additionally gates on M12c + M13-0.
 
 ## 2. Decisions locked
 
@@ -40,6 +41,7 @@ M12c.
 | D13 | **`system.stats` is the engine-reserved variables directory** (user decision 2026-07-15): the universal, system-agnostic *location* where the active game system keeps its dereferenceable variables — the contract is location-only; entry SHAPE is system-defined and validated by the system's registered schema (D6/M13f). Variables and model data are never mixed (the Foundry dual-meaning `system` problem, avoided one level down too). The formula library stays path-agnostic (resolver-injected); the convention binds the *system's* resolver. |
 | D14 | **One system per world; `system.mechanics` is the system's non-variable directory** (user decision 2026-07-15). The system role is singleton — a new convention this milestone establishes (manifest `system` flag + loader enforcement deferred, §12) — so system data is NOT module-branded: no `system.nightfox`. Non-variable model data (Nightfox: `version`, `modifiers`, `active`, `transfer`) lives in the sibling reserved `system.mechanics` directory: location universal, shape system-defined + schema-validated (M13f registers both directories). Per-doc `version` stays inside it because documents travel across worlds and system versions (compendium copies must self-describe). |
 | D15 | **Three-category document shape** (user decision 2026-07-15, checkpoint **M13-0**): the document separates by schema ownership into **envelope** (engine-structural: identity/authz/provenance/containment), **`engine`** (engine game data — the engine-known + server-enforced band today squatting the system-body root: position, size/shape, visionModes, conditions, grid, bounds, wall flags, …; Rust-typed per doc_type, ts-rs-generated, ending the hand-mirrored client Zod / server resolver drift risk), and **`system`** (exclusively the game system's directory: `stats` + `mechanics`, engine-opaque, schema-validated as data). Kills the root-collision hazard structurally; server-gated fields gain one authz prefix. Pre-v1 hard cutover — NO migration code (no shipped worlds exist; the M2 no-migrations-in-v1 stance holds). M13-0 gets its own spec cycle after M12 completes; M13a/b/d do not depend on it, M13c does. |
+| D16 | **Nightfox is an external project: its own GitHub repository and project folder** (user decision 2026-07-15) — the purpose is to **validate and harden the community-project pipeline**: by forcing Nightfox to operate exactly as a community project would, every distribution/install/load mechanism gets exercised by a real consumer before any third party depends on it. The Nightfox packages (M13b rules, M13c sheets, M13d roll wire) are developed OUT-OF-TREE and consumed through the real third-party path — dependency on engine packages, module build/packaging, install/load via the M6b dynamic loader — never compiled into the first-party bundle. Repo + folder are created at M13-1 time (its first deliverable), not before. Engine-owned work stays in the Shadowcat repo: `@shadowcat/formula` (D1), M13-0, M13e, M13f. API friction found while building Nightfox externally is filed into Shadowcat's `POST_WORK_FINDINGS.md` as cross-repo API bug reports (purpose 2, strengthened). Forces checkpoint **M13-1 · external-module toolchain** (own spec cycle): how an out-of-tree module consumes engine packages (`@shadowcat/formula`/`@shadowcat/core` are private workspace packages today), builds, is installed into a world, and runs against a dev server + the e2e harness. The M13b/M13d plans' package scaffolding re-targets the Nightfox repo once M13-1 locks the mechanism (their task bodies — schemas, resolver, buckets, tests — are repo-agnostic and survive unchanged). |
 
 ## 3. `@shadowcat/formula` (M13a)
 
@@ -332,15 +334,16 @@ server-guarded system data.
 
 ## 13. Checkpoint decomposition
 
-| Checkpoint | Contents | Depends on |
-|---|---|---|
-| **M13-0** | Three-category document shape (D15): `engine` block relocation, typed + ts-rs-generated, hard cutover, no migration — own spec cycle | M12 complete (avoids the running M12 session; M12c sheets read these fields) |
-| **M13a** | `@shadowcat/formula`: grammar, evaluator, caps, cycle guard, notation-template mode | nothing (startable pre-M12-completion) |
-| **M13b** | `@shadowcat/module-nightfox`: schema + Zod (tier-1), dependency-graph resolver, buckets, items/effects semantics (`active`/`transfer`), `effect` doc_type | M13a |
-| **M13c** | `@shadowcat/module-nightfox-sheets`: actor/item/effect sheets, stat editors, drag/drop order, warning/error chips | M13b, **M12c**, **M13-0** |
-| **M13d** | Roll wire: per-stat roll templates → `/roll` posts, blocked-on-error, attribution | M13b, M11 (done) |
-| **M13e** | Templates + 3-way merge engine (pull/push/revert) — own sub-spec first | M13b (consumer exists) |
-| **M13f** | Declarative server schema registry + Nightfox schemas — own sub-spec first | M13b (schemas exist to declare) |
+| Checkpoint | Repo | Contents | Depends on |
+|---|---|---|---|
+| **M13-0** | Shadowcat | Three-category document shape (D15): `engine` block relocation, typed + ts-rs-generated, hard cutover, no migration — own spec cycle | M12 complete (avoids the running M12 session; M12c sheets read these fields) |
+| **M13-1** | Shadowcat (+ Nightfox repo bootstrap) | External-module toolchain (D16): engine-package consumption mechanism, module build/packaging, world install/load via the M6b loader, dev-server + e2e-harness access for external repos — own spec cycle; bootstraps the Nightfox repository | M12 complete |
+| **M13a** | Shadowcat | `@shadowcat/formula`: grammar, evaluator, caps, cycle guard, notation-template mode | nothing (startable pre-M12-completion) |
+| **M13b** | **Nightfox** | Nightfox rules package: schema + Zod (tier-1), dependency-graph resolver, buckets, items/effects semantics (`active`/`transfer`), `effect` doc_type | M13a, **M13-1** |
+| **M13c** | **Nightfox** | Nightfox sheets: actor/item/effect sheets, stat editors, drag/drop order, warning/error chips | M13b, **M12c**, **M13-0** |
+| **M13d** | **Nightfox** | Roll wire: per-stat roll templates → inline-embed chat posts, blocked-on-error, attribution | M13b, M11 (done) |
+| **M13e** | Shadowcat | Templates + 3-way merge engine (pull/push/revert) — own sub-spec first | M13b (consumer exists) |
+| **M13f** | Shadowcat | Declarative server schema registry (+ Nightfox declares its schemas from its repo) — own sub-spec first | M13b (schemas exist to declare) |
 
 Each checkpoint: plan → execute per project conventions (per-task review gates; buddy-check
 pre-authorization recommended for the M13a evaluator core, the M13e merge engine, and the M13f

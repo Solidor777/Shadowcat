@@ -1,5 +1,13 @@
 # M13b · `@shadowcat/module-nightfox` — Headless Rules Package Implementation Plan
 
+> **⚠ RE-TARGET BEFORE EXECUTION (D16, 2026-07-15):** Nightfox is an external project — its own
+> GitHub repository and project folder, consuming engine packages through the real third-party
+> path. Task 1's scaffolding (paths, package.json dependency mechanism, workspace/install steps)
+> and every `src/modules/nightfox/...` path in this plan re-target the Nightfox repo once the
+> **M13-1 external-module toolchain** spec locks the consumption mechanism. The task BODIES
+> (schemas, contribution collection, resolver, buckets, tests) are repo-agnostic and stand as
+> written. Do not execute this plan until it has been revised against the M13-1 spec.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The Nightfox rules engine as a headless module package: the `system.stats` + `system.mechanics` data model (Zod tier-1 validation), the one-dependency-graph resolver with typed commutative modifier buckets, and `item`/`effect` semantics (`active`/`transfer`) — spec §§4–5 (`docs/superpowers/specs/2026-07-15-m13-nightfox-system-design.md`, decisions D2–D4, D7–D9, D11–D14).
