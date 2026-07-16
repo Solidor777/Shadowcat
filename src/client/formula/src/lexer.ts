@@ -52,12 +52,23 @@ export function tokenize(src: string): Tok[] | FormulaError {
           if (sawDot) {
             return { error: "parse", detail: `unexpected '.' at position ${i}` };
           }
+          // Grammar: digits, optional '.' + digits — a dot not followed by a
+          // digit is not part of this numeric literal.
+          if (!(i + 1 < n && isDigit(src[i + 1]))) {
+            return { error: "parse", detail: `unexpected '.' at position ${i}` };
+          }
           sawDot = true;
         }
         i++;
       }
       const text = src.slice(start, i);
-      toks.push({ kind: "num", value: Number(text), pos: start });
+      const value = Number(text);
+      // INVARIANT: library never emits Infinity/NaN — an over-long digit run
+      // that overflows f64 is a DoS-shaped cap violation, not a valid literal.
+      if (!Number.isFinite(value)) {
+        return { error: "cap", detail: `numeric literal at position ${start} is out of range` };
+      }
+      toks.push({ kind: "num", value, pos: start });
       continue;
     }
 
@@ -75,7 +86,11 @@ export function tokenize(src: string): Tok[] | FormulaError {
       continue;
     }
 
-    return { error: "parse", detail: `unexpected '${ch}' at position ${i}` };
+    // Position/scanning stays UTF-16-code-unit-based; only the message uses
+    // the full code point so an astral character (e.g. an emoji) is not
+    // truncated to a lone, unpaired surrogate half.
+    const displayCh = String.fromCodePoint(src.codePointAt(i)!);
+    return { error: "parse", detail: `unexpected '${displayCh}' at position ${i}` };
   }
 
   return toks;
