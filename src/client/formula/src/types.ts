@@ -12,6 +12,21 @@ export type FormulaErrorKind =
   | "resolver-error"; // resolver threw, or returned a value that is neither a number
                       // nor a well-formed FormulaError (consumer-originated boundary fault)
 
+/** Runtime mirror of `FormulaErrorKind`, kept in sync by hand — the single source of truth
+ * consumers use to validate an untrusted `error` tag against the actual union (rather than
+ * merely checking `typeof === "string"`, which admits any string). */
+export const FORMULA_ERROR_KINDS = [
+  "parse",
+  "unknown-ref",
+  "type",
+  "div-zero",
+  "non-finite",
+  "cycle",
+  "cap",
+  "ref-error",
+  "resolver-error",
+] as const satisfies readonly FormulaErrorKind[];
+
 export interface FormulaError {
   readonly error: FormulaErrorKind;
   /** Player-presentable, e.g. "unexpected '?' at position 4". Never internal dumps. */

@@ -1,4 +1,6 @@
-import type { FormulaError, FormulaValue } from "./types";
+import { FORMULA_ERROR_KINDS, type FormulaError, type FormulaValue } from "./types";
+
+const FORMULA_ERROR_KIND_SET: ReadonlySet<string> = new Set(FORMULA_ERROR_KINDS);
 
 /** Not part of the package's public surface (`index.ts` does not re-export
  * this module) — shared trust-boundary helpers for `evaluate.ts` and
@@ -13,6 +15,7 @@ export function isWellFormedError(v: unknown): v is FormulaError {
     typeof v === "object" &&
     v !== null &&
     typeof (v as { error?: unknown }).error === "string" &&
+    FORMULA_ERROR_KIND_SET.has((v as { error: string }).error) &&
     typeof (v as { detail?: unknown }).detail === "string"
   );
 }
