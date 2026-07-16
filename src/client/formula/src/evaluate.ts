@@ -23,10 +23,13 @@ export function evaluate(
       let v: unknown;
       try {
         v = resolve(expr.path);
-      } catch (e) {
+      } catch {
+        // Never interpolate the caught exception's message: `detail` is
+        // player-presentable (types.ts), and a consumer resolver's thrown
+        // message is an internal implementation detail, not for players.
         return {
           error: "resolver-error",
-          detail: `resolver threw: ${e instanceof Error ? e.message : String(e)}`,
+          detail: `resolver threw for '${expr.path.join(".")}'`,
         };
       }
       return validateResolverOutput(v);

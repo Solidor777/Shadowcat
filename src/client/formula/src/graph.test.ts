@@ -45,6 +45,16 @@ describe("resolveAll", () => {
     expect(r.get("x")).toMatchObject({ error: "resolver-error" });
   });
 
+  it("an evalNode's thrown exception message never leaks into detail (player-presentable field)", () => {
+    const throwing = (): FormulaValue => {
+      throw new Error("SECRET_INTERNAL_DETAIL");
+    };
+    const r = resolveAll(["x"], throwing);
+    const result = r.get("x");
+    expect(result).toMatchObject({ error: "resolver-error" });
+    expect((result as { detail: string }).detail).not.toContain("SECRET_INTERNAL_DETAIL");
+  });
+
   it("turns a malformed evalNode return value into a resolver-error", () => {
     // returns a value that is neither a finite number nor a well-formed FormulaError
     const malformed = () => "not a FormulaValue" as unknown as FormulaValue;

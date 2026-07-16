@@ -70,6 +70,15 @@ describe("evaluate", () => {
       expect(evaluate(ast("dex"), resolve)).toMatchObject({ error: "resolver-error" });
     });
 
+    it("a resolver's thrown exception message never leaks into detail (player-presentable field)", () => {
+      const resolve = (): FormulaValue => {
+        throw new Error("SECRET_INTERNAL_DETAIL");
+      };
+      const result = evaluate(ast("dex"), resolve);
+      expect(result).toMatchObject({ error: "resolver-error" });
+      expect((result as { detail: string }).detail).not.toContain("SECRET_INTERNAL_DETAIL");
+    });
+
     it("a resolver returning undefined becomes a resolver-error FormulaError", () => {
       const resolve = (): FormulaValue => undefined as unknown as FormulaValue;
       expect(evaluate(ast("dex"), resolve)).toMatchObject({ error: "resolver-error" });
