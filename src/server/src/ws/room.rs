@@ -438,19 +438,14 @@ impl Room {
         let restriction;
         let cell;
         let start;
-        let system_start;
         let visible_cells;
         let is_revealed;
         {
             let scene = self.scene.read().await;
 
-            // Verify the token exists and get its committed position.
+            // Verify the token exists and get its committed position (the `/engine/x,y` band —
+            // the sole position source since this task; `/system` never carries position).
             start = scene.token_position(token).ok_or(DataError::Forbidden)?;
-            // The token's own current stored `/system` (x,y) — see `pos_ops` below for why
-            // this must be read separately from the `/engine`-sourced `start`. Falls back to
-            // `start` only if the token has no `/system` x/y at all (degenerate fixture/doc;
-            // preserves the pre-fix behavior for that unreachable-in-practice case).
-            system_start = scene.token_system_position(token).unwrap_or(start);
 
             let settings = scene.resolve_scene(scene_id);
             cell = scene
@@ -593,38 +588,14 @@ impl Room {
         // PRECONDITION: commit_ops_locked requires the caller to hold publish_guard for its
         // full duration. The guard was acquired at the top of this function and is still held
         // here — no re-acquisition needed or allowed (tokio Mutex is non-reentrant; re-acquiring
-        // would deadlock). The position ops mirror the field paths that `token_move` / `publish`
-        // write (/system/x and /system/y), keyed on the authoritative ECS-read old values so the
-        // optimistic-concurrency check in apply_intent passes as defense-in-depth.
-        //
-        // `SceneEcs::token_position` reads the token's `/engine/x,y`, so `start` above is already
-        // the current engine position, not the system one. Writing only `/system/x,y` here would
-        // leave `/engine/x,y` frozen at its creation-time value, since nothing else advances it —
-        // every subsequent read of the committed position via `token_position` would silently
-        // return that stale value. `token_move` still reads `/system/x,y` for its own logic, so
-        // that pair is kept alongside the new `/engine/x,y` pair.
-        //
-        // INTERIM DUAL-WRITE: this write bridges the two position bands while a second,
-        // `/system`-only movement path (`Room::publish`) also still exists, so `/system` and
-        // `/engine` can DIVERGE for a token. Each band's FieldChange `old` is therefore sourced
-        // from that band's OWN current stored value, never shared — reusing the engine-sourced
-        // `start` as `old` for the `/system` FieldChange would desync from the actually-stored
-        // `/system` value the instant a divergence occurs, permanently Conflicting (OCC
-        // pre-image mismatch) every subsequent call for that token. This op re-converges the two
-        // bands whenever it runs.
+        // would deadlock). The position ops write ONLY `/engine/x,y` — position lives
+        // exclusively in the engine band since this task; `/system` is game-system data and is
+        // never touched by movement. `old` is keyed on the authoritative ECS-read `start`
+        // (`SceneEcs::token_position`, itself `/engine/x,y`) so the optimistic-concurrency check
+        // in `apply_intent` passes as defense-in-depth.
         let pos_ops = vec![Operation::Update {
             doc_id: token,
             changes: vec![
-                FieldChange {
-                    path: "/system/x".into(),
-                    old: serde_json::json!(system_start.0),
-                    new: serde_json::json!(outcome.stop.0),
-                },
-                FieldChange {
-                    path: "/system/y".into(),
-                    old: serde_json::json!(system_start.1),
-                    new: serde_json::json!(outcome.stop.1),
-                },
                 FieldChange {
                     path: "/engine/x".into(),
                     old: serde_json::json!(start.0),
@@ -1021,7 +992,6 @@ mod room_tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 0, "y": 0 });
         token.engine = Some(token_engine(0.0, 0.0));
         room.publish(
             &repo,
@@ -1037,9 +1007,8 @@ mod room_tests {
         let mut wall = wdoc(world_id, wall_id, "wall");
         wall.parent_id = Some(scene_id);
         wall.owner = Some(gm.user_id);
-        wall.system =
-            json!({ "seg": { "x1": 0, "y1": 10, "x2": 10, "y2": 0 }, "blocksMove": true });
-        wall.engine = Some(wall.system.clone());
+        wall.engine =
+            Some(json!({ "seg": { "x1": 0, "y1": 10, "x2": 10, "y2": 0 }, "blocksMove": true }));
         room.publish(
             &repo,
             &gm,
@@ -1050,31 +1019,34 @@ mod room_tests {
         .await
         .unwrap();
 
+        // `/engine/x,y` are stored as `f64` (`TokenEngine`); the pre-image `old` must be typed
+        // identically or the OCC check's `serde_json::Value` equality (which distinguishes an
+        // integer `Number` variant from a float one) spuriously reports staleness.
         let mv = |nx: i64, ny: i64, ox: i64, oy: i64| Operation::Update {
             doc_id: token_id,
             changes: vec![
                 FieldChange {
-                    path: "/system/x".into(),
-                    old: json!(ox),
-                    new: json!(nx),
+                    path: "/engine/x".into(),
+                    old: json!(ox as f64),
+                    new: json!(nx as f64),
                 },
                 FieldChange {
-                    path: "/system/y".into(),
-                    old: json!(oy),
-                    new: json!(ny),
+                    path: "/engine/y".into(),
+                    old: json!(oy as f64),
+                    new: json!(ny as f64),
                 },
             ],
         };
 
         let seq_before = room.current_seq();
-        // Forged bypass A: a single wholesale `/system` write that relocates the token past the
+        // Forged bypass A: a single wholesale `/engine` write that relocates the token past the
         // wall must be caught (the post-image, not a leaf-path match, is validated).
         let whole = Operation::Update {
             doc_id: token_id,
             changes: vec![FieldChange {
-                path: "/system".into(),
-                old: json!({ "x": 0, "y": 0 }),
-                new: json!({ "x": 10, "y": 10 }),
+                path: "/engine".into(),
+                old: json!({ "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
+                new: json!({ "x": 10.0, "y": 10.0, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
             }],
         };
         assert!(matches!(
@@ -1083,20 +1055,20 @@ mod room_tests {
             Err(crate::data::DataError::Forbidden)
         ));
         assert_eq!(room.current_seq(), seq_before);
-        // Forged bypass B: duplicate `/system/x` (safe-then-unsafe) — last write wins, so the
+        // Forged bypass B: duplicate `/engine/x` (safe-then-unsafe) — last write wins, so the
         // committed x=11 crosses; the gate validates against that, not the first change.
         let dup = Operation::Update {
             doc_id: token_id,
             changes: vec![
                 FieldChange {
-                    path: "/system/x".into(),
-                    old: json!(0),
-                    new: json!(1),
+                    path: "/engine/x".into(),
+                    old: json!(0.0),
+                    new: json!(1.0),
                 },
                 FieldChange {
-                    path: "/system/x".into(),
-                    old: json!(0),
-                    new: json!(11),
+                    path: "/engine/x".into(),
+                    old: json!(0.0),
+                    new: json!(11.0),
                 },
             ],
         };
@@ -1135,6 +1107,42 @@ mod room_tests {
         room.publish(&repo, &gm, vec![mv(10, 10, 1, 1)], 0, WriteOrigin::Client)
             .await
             .unwrap();
+    }
+
+    /// A `/system/x` write on a token is game-system data — it must not be treated as a move
+    /// by `Room::publish`'s M9a/M10e-4 gate (which reads `/engine` exclusively), and the
+    /// write must not desync the ECS's committed `/engine` position.
+    #[tokio::test]
+    async fn system_field_write_bypasses_the_move_gate_and_does_not_desync_the_engine_band() {
+        let h = movement_scene_with_wall().await;
+
+        // A value that would cross the wall if (wrongly) interpreted as a position — the wall
+        // gate must not even see this write, since it targets `/system`, not `/engine`.
+        let write = Operation::Update {
+            doc_id: h.token_id,
+            changes: vec![FieldChange {
+                path: "/system/hp".into(),
+                old: serde_json::json!(10), // `sample_doc`'s fixture default `system.hp`
+                new: serde_json::json!(999),
+            }],
+        };
+        h.room
+            .publish(
+                &h.repo,
+                &h.player,
+                vec![write],
+                now_millis(),
+                WriteOrigin::Client,
+            )
+            .await
+            .expect("a /system write must not be rejected by the movement gate");
+
+        // The engine-band position is untouched by the /system write.
+        let pos = h.committed_pos(h.token_id).await;
+        assert_eq!(
+            pos, h.start,
+            "/system write must not move the token's /engine position"
+        );
     }
 
     #[tokio::test]
@@ -1201,7 +1209,6 @@ mod room_tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 50, "y": 50 });
         token.engine = Some(token_engine(50.0, 50.0));
         room1
             .publish(
@@ -1395,12 +1402,12 @@ mod room_tests {
                 doc_id: self.token_id,
                 changes: vec![
                     FieldChange {
-                        path: "/system/x".into(),
+                        path: "/engine/x".into(),
                         old: serde_json::json!(ox),
                         new: serde_json::json!(x),
                     },
                     FieldChange {
-                        path: "/system/y".into(),
+                        path: "/engine/y".into(),
                         old: serde_json::json!(oy),
                         new: serde_json::json!(y),
                     },
@@ -1496,7 +1503,6 @@ mod room_tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 50.0, "y": 50.0 });
         token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
@@ -1621,7 +1627,6 @@ mod room_tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 50.0, "y": 50.0 });
         token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
@@ -1766,7 +1771,6 @@ mod room_tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 50.0, "y": 50.0 });
         token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
@@ -2089,7 +2093,6 @@ mod room_tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 50.0, "y": 50.0 });
         token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
@@ -2105,9 +2108,9 @@ mod room_tests {
         let mut wall = wdoc(world_id, wall_id, "wall");
         wall.parent_id = Some(scene_id);
         wall.owner = Some(gm.user_id);
-        wall.system =
-            json!({ "seg": { "x1": 100, "y1": 100, "x2": 200, "y2": 100 }, "blocksMove": true });
-        wall.engine = Some(wall.system.clone());
+        wall.engine = Some(
+            json!({ "seg": { "x1": 100, "y1": 100, "x2": 200, "y2": 100 }, "blocksMove": true }),
+        );
         room.publish(
             &repo,
             &gm,
@@ -2195,74 +2198,6 @@ mod room_tests {
         assert!(
             matches!(again, Err(DataError::Forbidden)),
             "second execute_move on a moving token must be Forbidden"
-        );
-    }
-
-    #[tokio::test]
-    async fn execute_move_reconverges_a_diverged_system_and_engine_band() {
-        // Regression for the `pos_ops` OCC-pre-image bug: the still-shipping `Room::publish`
-        // drag-move path writes `/system` only, so `/system` and `/engine` can diverge for a
-        // token. Simulate exactly that divergence by moving the token via `publish` with a
-        // `/system`-only Update (leaving `/engine` stale at its creation-time value), then
-        // assert `execute_move` still SUCCEEDS (no Conflict) and re-converges both bands to
-        // the move's stop position.
-        let h = movement_scene("unrestricted", false).await;
-
-        // `/system` moves to `adj` (150,50); `/engine` is left stale at `start` (50,50) —
-        // publish's own move-gate operates on the `/system` band via `token_move`, and
-        // `apply_op` mirrors ONLY the field paths present in `changes`.
-        let mv = h.mv_to(h.adj.0, h.adj.1).await;
-        h.room
-            .publish(
-                &h.repo,
-                &h.player,
-                vec![mv],
-                now_millis(),
-                WriteOrigin::Client,
-            )
-            .await
-            .unwrap();
-
-        // Sanity: the divergence is real before exercising the fix.
-        {
-            let scene = h.room.scene().read().await;
-            assert_eq!(
-                scene.token_position(h.token_id),
-                Some(h.start),
-                "engine band unmoved"
-            );
-            assert_eq!(
-                scene.token_system_position(h.token_id),
-                Some(h.adj),
-                "system band moved"
-            );
-        }
-
-        // `execute_move`'s own `start` is engine-sourced (h.start); the path must begin there.
-        let res = h
-            .room
-            .execute_move(
-                &h.repo,
-                &h.player,
-                h.scene_id,
-                h.token_id,
-                vec![h.start, h.adj2],
-                now_millis(),
-            )
-            .await
-            .expect("execute_move must succeed despite the pre-existing band divergence");
-        assert_eq!(res.stop, h.adj2);
-
-        let scene = h.room.scene().read().await;
-        assert_eq!(
-            scene.token_position(h.token_id),
-            Some(h.adj2),
-            "engine band converges to the move's stop"
-        );
-        assert_eq!(
-            scene.token_system_position(h.token_id),
-            Some(h.adj2),
-            "system band converges to the move's stop"
         );
     }
 
@@ -2363,8 +2298,7 @@ mod room_tests {
         let mut token = wdoc(world_id, token_id, "token");
         token.parent_id = Some(scene_id);
         token.owner = Some(player.user_id);
-        token.system = json!({ "x": 0.0, "y": 0.0, "w": 100, "h": 100, "rotation": 0 });
-        token.engine = Some(token.system.clone());
+        token.engine = Some(json!({ "x": 0.0, "y": 0.0, "w": 100, "h": 100, "rotation": 0 }));
         room.publish(
             &repo,
             &gm,
@@ -2378,11 +2312,10 @@ mod room_tests {
         let mut region = wdoc(world_id, region_id, "region");
         region.parent_id = Some(scene_id);
         region.owner = Some(gm.user_id);
-        region.system = json!({
+        region.engine = Some(json!({
             "shape": { "kind": "rect", "points": [50.0, 0.0, 150.0, 100.0] },
             "behavior": "impassable", "cost": 1.0, "enabled": true,
-        });
-        region.engine = Some(region.system.clone());
+        }));
         region
             .permissions
             .property_overrides
@@ -2567,7 +2500,6 @@ mod room_tests {
             .permissions
             .users
             .insert(p, crate::data::document::DocRole::Owner);
-        token.system = json!({ "x": 50.0, "y": 50.0 });
         token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,

@@ -657,25 +657,14 @@ impl SceneEcs {
     /// client drag-move path (`Room::publish`) writes `/system` only, so `/system` and
     /// `/engine` can diverge on this branch — reusing the engine-sourced `start` as `old` for
     /// the `/system` FieldChange would desync from the actually-stored `/system` value and
-    /// permanently Conflict every subsequent `execute_move`. `None` if `token` is not a token
-    /// entity or has no `(x, y)` in its `system` body.
-    pub(crate) fn token_system_position(&self, token: Uuid) -> Option<(f64, f64)> {
-        let &e = self.index.get(&token)?;
-        let tok = self.world.get::<&SceneEntity>(e).ok()?;
-        if tok.doc.doc_type != "token" {
-            return None;
-        }
-        let x = sys_f64(&tok.doc, "/x")?;
-        let y = sys_f64(&tok.doc, "/y")?;
-        Some((x, y))
-    }
-
     /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,
-    /// post_image_end)`. The end is the committed `system` with **all** changes applied in
+    /// post_image_end)`. The end is the committed `engine` band with **all** changes applied in
     /// array order (last-write-wins) — exactly what `apply_intent` commits — so a wholesale
-    /// `/system` write or duplicate `/system/x` changes cannot evade the collision check by
-    /// presenting a safe target while committing an unsafe one. `None` if `token_id` is not a
-    /// token with `(x,y)`. Reads the authoritative ECS state, never the client's `old`.
+    /// `/engine` write or duplicate `/engine/x` changes cannot evade the collision check by
+    /// presenting a safe target while committing an unsafe one. A `/system/x` write on a token
+    /// (game-system data) never reaches this gate — position lives exclusively in `/engine`.
+    /// `None` if `token_id` is not a token with `(x,y)`. Reads the authoritative ECS state,
+    /// never the client's `old`.
     pub fn token_move(
         &self,
         token_id: Uuid,
@@ -690,17 +679,16 @@ impl SceneEcs {
                 return None;
             }
             let scene = tok.doc.parent_id?;
-            let cx = sys_f64(&tok.doc, "/x")?;
-            let cy = sys_f64(&tok.doc, "/y")?;
+            let t: eng::TokenEngine = engine_as(&tok.doc)?;
             let v = serde_json::to_value(&tok.doc).ok()?;
-            (scene, cx, cy, v)
+            (scene, t.x, t.y, v)
         };
         let mut v = doc_value;
         for ch in changes {
             let _ = set_pointer(&mut v, &ch.path, ch.new.clone());
         }
-        let nx = v.pointer("/system/x").and_then(|x| x.as_f64())?;
-        let ny = v.pointer("/system/y").and_then(|x| x.as_f64())?;
+        let nx = v.pointer("/engine/x").and_then(|x| x.as_f64())?;
+        let ny = v.pointer("/engine/y").and_then(|x| x.as_f64())?;
         Some((scene, (cx, cy), (nx, ny)))
     }
 
@@ -1775,11 +1763,6 @@ fn source_los_poly(
     }
 }
 
-/// Read an `f64` from a document's opaque `system` body via JSON pointer (ints coerce).
-fn sys_f64(doc: &Document, pointer: &str) -> Option<f64> {
-    doc.system.pointer(pointer).and_then(|v| v.as_f64())
-}
-
 /// Signed area ×2 of triangle abc; >0 = ccw, <0 = cw, 0 = collinear.
 fn orient(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
     (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
@@ -1951,21 +1934,10 @@ mod tests {
         assert_eq!(ecs.entity_count(), 0);
     }
 
-    /// Builds a scene-entity fixture with a `system`-only body. Reserved for the handful of
-    /// fixtures still exercising code this task does not re-root: `token_move`'s own tests
-    /// (movement-gate post-image, out of this task's scope) and the generic `apply_op`
-    /// Update-mechanism test (a doc-round-trip mechanism check with no engine-band reader).
-    /// Every fixture whose doc_type this file's readers now consume through the typed `engine`
-    /// band uses `entity_doc_eng` below instead.
-    fn entity_doc(id: u128, parent: u128, ty: &str, system: serde_json::Value) -> Document {
-        let mut d = doc(id, Some(parent), ty);
-        d.system = system;
-        d
-    }
-
-    /// Builds a scene-entity fixture with `engine` set to `body` (`system` stays `{}`) — the
-    /// typed-read counterpart of `entity_doc`, used by every fixture whose doc_type this file's
-    /// production code now reads through `engine_as`/a typed `*Engine` struct.
+    /// Builds a scene-entity fixture with `engine` set to `body` (`system` stays `{}`), used by
+    /// every fixture whose doc_type this file's production code reads through `engine_as`/a
+    /// typed `*Engine` struct — every derivation reader in this file, including `token_move`
+    /// as of this task (movement position lives exclusively in `/engine`).
     fn entity_doc_eng(id: u128, parent: u128, ty: &str, body: serde_json::Value) -> Document {
         let mut d = doc(id, Some(parent), ty);
         d.engine = Some(body);
@@ -2095,7 +2067,12 @@ mod tests {
         let ecs = SceneEcs::from_documents(
             vec![
                 doc(10, None, "scene"),
-                entity_doc(11, 10, "token", json!({ "x": 0, "y": 0 })),
+                entity_doc_eng(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
+                ),
             ],
             0,
         );
@@ -2104,23 +2081,35 @@ mod tests {
         let (s, a0, a1) = ecs
             .token_move(
                 id,
-                &[fc("/system/x", json!(10)), fc("/system/y", json!(10))],
+                &[fc("/engine/x", json!(10)), fc("/engine/y", json!(10))],
             )
             .unwrap();
         assert_eq!(s, Uuid::from_u128(10));
         assert_eq!(a0, (0.0, 0.0));
         assert_eq!(a1, (10.0, 10.0));
-        // Bypass A: a wholesale `/system` write — the post-image reads the new x/y.
-        let whole = fc("/system", json!({ "x": 50, "y": 50 }));
+        // Bypass A: a wholesale `/engine` write — the post-image reads the new x/y.
+        let whole = fc(
+            "/engine",
+            json!({ "x": 50, "y": 50, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
+        );
         assert_eq!(ecs.token_move(id, &[whole]).unwrap().2, (50.0, 50.0));
-        // Bypass B: duplicate `/system/x` — last write wins, mirroring apply_intent.
+        // Bypass B: duplicate `/engine/x` — last write wins, mirroring apply_intent.
         let dup = ecs
-            .token_move(id, &[fc("/system/x", json!(5)), fc("/system/x", json!(50))])
+            .token_move(id, &[fc("/engine/x", json!(5)), fc("/engine/x", json!(50))])
             .unwrap();
         assert_eq!(dup.2 .0, 50.0);
         // A non-position update is a no-op move (committed == post-image).
-        let noop = ecs.token_move(id, &[fc("/system/hp", json!(5))]).unwrap();
+        let noop = ecs
+            .token_move(id, &[fc("/engine/rotation", json!(1.5))])
+            .unwrap();
         assert_eq!(noop.1, noop.2);
+        // A `/system/x` write on a token never touches the gate — position lives exclusively
+        // in `/engine`; this is game-system data the movement gate must not see.
+        let system_decoy = ecs.token_move(id, &[fc("/system/x", json!(999))]).unwrap();
+        assert_eq!(
+            system_decoy.1, system_decoy.2,
+            "/system writes are not position and must not move the gate's post-image"
+        );
         // A non-token id resolves to nothing.
         assert!(ecs.token_move(Uuid::from_u128(99), &[]).is_none());
     }
