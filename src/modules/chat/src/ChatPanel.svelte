@@ -5,8 +5,8 @@
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
     buildChannelRegistryDoc,
-    parseMessageSystem,
-    type ChannelRegistrySystem,
+    parseMessageEngine,
+    type ChannelRegistryEngine,
     type WireAudience,
     type WireDocument,
   } from "@shadowcat/core";
@@ -27,7 +27,7 @@
     const inViewDocs = ctx.documents
       .query("message")
       .filter((doc) => {
-        const sys = parseMessageSystem(doc);
+        const sys = parseMessageEngine(doc);
         return sys !== null && inView(view, sys);
       })
       .sort(byCreation);
@@ -43,7 +43,7 @@
   // directly-edited or legacy doc could still contain one; filter defensively
   // rather than crash on render.
   const channelEntries = $derived.by((): [string, { name: string }][] => {
-    const sys = registry?.system as ChannelRegistrySystem | undefined;
+    const sys = registry?.engine as ChannelRegistryEngine | undefined;
     return Object.entries(sys?.channels ?? {}).filter((e): e is [string, { name: string }] => e[1] != null);
   });
 
@@ -76,19 +76,19 @@
     if (!registry) return;
     const id = crypto.randomUUID();
     const name = newChannelName.trim() || t("chat.channels.newName");
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/system/channels/${id}`, old: null, new: { name } }] }]);
+    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/channels/${id}`, old: null, new: { name } }] }]);
     newChannelName = "";
   }
   function renameChannel(id: string, name: string): void {
     if (!registry) return;
-    const sys = registry.system as ChannelRegistrySystem;
+    const sys = registry.engine as ChannelRegistryEngine;
     const cur = sys.channels[id];
     if (!cur) return;
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/system/channels/${id}`, old: cur, new: { ...cur, name } }] }]);
+    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/channels/${id}`, old: cur, new: { ...cur, name } }] }]);
   }
   function removeChannel(id: string): void {
     if (!registry) return;
-    const sys = registry.system as ChannelRegistrySystem;
+    const sys = registry.engine as ChannelRegistryEngine;
     const cur = sys.channels[id];
     if (!cur) return;
     if (view.kind === "channel" && view.id === id) view = { kind: "all" };
@@ -97,7 +97,7 @@
     // removed key as one update on the parent path, OCC pre-image included.
     const next = { ...sys.channels };
     delete next[id];
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/system/channels", old: sys.channels, new: next }] }]);
+    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/engine/channels", old: sys.channels, new: next }] }]);
   }
 
   // Card + composer instantiation: read the singleton contributions directly

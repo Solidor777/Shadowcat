@@ -35,7 +35,7 @@ test("a circle drag previews then persists a circle template sized by the drag",
   if (op.op === "create") {
     expect(op.doc.doc_type).toBe("template");
     expect(op.doc.parent_id).toBe("scene-1");
-    expect(op.doc.system).toMatchObject({ shape: { kind: "circle", x: 0, y: 0, size: 50 }, color: "#3388ff" }); // circle: direction irrelevant
+    expect(op.doc.engine).toMatchObject({ shape: { kind: "circle", x: 0, y: 0, size: 50 }, color: "#3388ff" }); // circle: direction irrelevant
   }
 });
 
@@ -44,7 +44,7 @@ test("a cone drag records the drag direction", () => {
   tool.onPointerDown({ x: 0, y: 0 }, ev);
   tool.onPointerUp({ x: 10, y: 0 }, ev); // due +x → direction 0
   const op = sent[0][0];
-  if (op.op === "create") expect(op.doc.system).toMatchObject({ shape: { kind: "cone", direction: 0, size: 10 } });
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ shape: { kind: "cone", direction: 0, size: 10 } });
 });
 
 test("a click (no drag) places a default one-cell template", () => {
@@ -52,5 +52,5 @@ test("a click (no drag) places a default one-cell template", () => {
   tool.onPointerDown({ x: 0, y: 0 }, ev);
   tool.onPointerUp({ x: 0, y: 0 }, ev); // zero drag
   const op = sent[0][0];
-  if (op.op === "create") expect(op.doc.system).toMatchObject({ shape: { kind: "circle", size: 100 } }); // default grid cell
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ shape: { kind: "circle", size: 100 } }); // default grid cell
 });

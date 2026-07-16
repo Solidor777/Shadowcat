@@ -42,6 +42,14 @@ import type {
   LightGradationEngine,
   VisionMode,
   VisionModesEngine,
+  DrawingEngine,
+  DrawingShape,
+  TemplateEngine,
+  TemplateShape,
+  Stroke,
+  Fill,
+  WallEngine,
+  Seg,
 } from "@shadowcat/types";
 
 // --- Re-exported generated engine types (ts-rs output, `@shadowcat/types`) ---
@@ -85,6 +93,14 @@ export type {
   LightGradationEngine,
   VisionMode,
   VisionModesEngine,
+  DrawingEngine,
+  DrawingShape,
+  TemplateEngine,
+  TemplateShape,
+  Stroke,
+  Fill,
+  WallEngine,
+  Seg,
 };
 
 /** A face's own visual. Deliberately never itself `{kind:"faces"}` — no nesting — so an

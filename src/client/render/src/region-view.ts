@@ -1,15 +1,8 @@
-import type { ReadableDocuments, WireDocument } from "@shadowcat/core";
+import type { ReadableDocuments, WireDocument, RegionEngine } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { ShapeNodeSpec } from "./types";
 import { rectPoints, circlePoints } from "./geometry";
 import { sceneScopedDocs } from "./scene-scope";
-
-/** Client-owned `region.system` (M10g spec §3): a vector shape + gameplay behavior. The server
- * also reads this (structural-only, #6 exception) to build its `RegionField`. */
-interface RegionSystemLike {
-  shape?: { kind?: string; points?: number[] };
-  behavior?: string;
-}
 
 /** Fill tint per behavior — distinct from walls (red stroke) and drawings, so a GM can tell a
  * hazard's kind at a glance. Alpha kept low: regions must not visually dominate the token layer. */
@@ -51,7 +44,7 @@ export class RegionView {
 }
 
 function toSpec(doc: WireDocument): ShapeNodeSpec | null {
-  const s = doc.system as RegionSystemLike | undefined;
+  const s = doc.engine as RegionEngine | undefined;
   const shape = s?.shape;
   if (!shape?.kind || !Array.isArray(shape.points)) return null;
   const pts = shape.points;

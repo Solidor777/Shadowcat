@@ -9,6 +9,7 @@ import { z } from "zod";
 import { ActorOwnerRefSchema, AudienceSchema, type WireDocument } from "./wire";
 import { envelope } from "./scene-docs";
 import type { ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine } from "@shadowcat/types";
+export type { ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine };
 
 export const MESSAGE_DOC_TYPE = "message";
 export const CHANNEL_REGISTRY_DOC_TYPE = "channel-registry";

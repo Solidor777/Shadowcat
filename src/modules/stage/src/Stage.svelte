@@ -125,7 +125,7 @@
         const scene = vsid ? documents.get(vsid) : documents.query("scene")[0];
         // Resolved once so both diagonalRule and animation read from the same snapshot.
         const settings = resolveSceneSettings(scene, documents);
-        const g = (scene?.system as { grid?: { kind: "square" | "hex"; size: number } } | undefined)?.grid;
+        const g = (scene?.engine as { grid?: { kind: "square" | "hex"; size: number } } | undefined)?.grid;
         // Diagonal rule is world-scoped (world-settings.pathfinding.diagonalRule); resolved
         // here so the ruler reflects the GM's active rule choice without requiring a page reload.
         const diagonalRule = settings.diagonalRule;

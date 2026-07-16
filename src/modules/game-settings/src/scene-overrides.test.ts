@@ -23,7 +23,7 @@ describe("per-scene overrides", () => {
     await fireEvent.change(sel, { target: { value: "unrestricted" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/movementRestriction", old: null, new: "unrestricted" }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/movementRestriction", old: null, new: "unrestricted" }] },
     ]);
   });
 
@@ -34,7 +34,7 @@ describe("per-scene overrides", () => {
     const input = screen.getByLabelText("gameSettings.scene.distancePerCell") as HTMLInputElement;
     await fireEvent.change(input, { target: { value: "1.5" } });
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/system/grid/distance", old: null, new: { perCell: 1.5, unit: "ft" } }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/grid/distance", old: null, new: { perCell: 1.5, unit: "ft" } }] },
     ]);
   });
 
@@ -50,7 +50,7 @@ describe("per-scene overrides", () => {
     await fireEvent.change(sel, { target: { value: "true" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/fog", old: null, new: true }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/fog", old: null, new: true }] },
     ]);
   });
 
@@ -61,7 +61,7 @@ describe("per-scene overrides", () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     // Pre-populate scene with fog explicitly set to true; selecting inherit clears it with null.
-    const scene = buildSceneDoc("w1", { vision: { fog: true } }, "scene1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: true, observerVision: null, movementRestriction: null, movementModel: null } }, "scene1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
 
     const sel = screen.getByLabelText("gameSettings.scene.fog") as HTMLSelectElement;
@@ -69,7 +69,7 @@ describe("per-scene overrides", () => {
     await fireEvent.change(sel, { target: { value: "" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/fog", old: true, new: null }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/fog", old: true, new: null }] },
     ]);
   });
 
@@ -79,7 +79,7 @@ describe("per-scene overrides", () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     // Pre-populate the scene with a movementRestriction override already set.
-    const scene = buildSceneDoc("w1", { vision: { movementRestriction: "unrestricted" } }, "scene1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: "unrestricted", movementModel: null } }, "scene1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
 
     const sel = screen.getByLabelText("gameSettings.scene.movementRestriction") as HTMLSelectElement;
@@ -87,7 +87,7 @@ describe("per-scene overrides", () => {
     await fireEvent.change(sel, { target: { value: "" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/movementRestriction", old: "unrestricted", new: null }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/movementRestriction", old: "unrestricted", new: null }] },
     ]);
   });
 
@@ -102,7 +102,7 @@ describe("per-scene overrides", () => {
 
     // No prior bounds → height falls back to DEFAULT_SCENE_BOUNDS.height (100).
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/system/bounds", old: null, new: { width: 40, height: 100 } }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/bounds", old: null, new: { width: 40, height: 100 } }] },
     ]);
   });
 
@@ -116,7 +116,7 @@ describe("per-scene overrides", () => {
     await fireEvent.change(input, { target: { value: "50" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/system/bounds", old: { width: 30, height: 30 }, new: { width: 30, height: 50 } }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/bounds", old: { width: 30, height: 30 }, new: { width: 30, height: 50 } }] },
     ]);
   });
 
@@ -130,7 +130,7 @@ describe("per-scene overrides", () => {
     await fireEvent.change(sel, { target: { value: "continuous" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/movementModel", old: null, new: "continuous" }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/movementModel", old: null, new: "continuous" }] },
     ]);
   });
 
@@ -138,7 +138,7 @@ describe("per-scene overrides", () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     // Pre-populate the scene with a movementModel override already set.
-    const scene = buildSceneDoc("w1", { vision: { movementModel: "continuous" } }, "scene1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: "continuous" } }, "scene1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
 
     const sel = screen.getByLabelText("gameSettings.scene.movementModel") as HTMLSelectElement;
@@ -146,7 +146,7 @@ describe("per-scene overrides", () => {
     await fireEvent.change(sel, { target: { value: "" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/system/vision/movementModel", old: "continuous", new: null }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/movementModel", old: "continuous", new: null }] },
     ]);
   });
 

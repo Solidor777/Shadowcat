@@ -1,15 +1,7 @@
-import type { ReadableDocuments, WireDocument } from "@shadowcat/core";
+import type { ReadableDocuments, WireDocument, WallEngine } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { ShapeNodeSpec } from "./types";
 import { sceneScopedDocs } from "./scene-scope";
-
-/** Client-owned `wall.system` (M9 §4): a segment + sight/movement flags. The server
- * also reads `seg` + `blocksMove` for its authoritative collision check (#6 exception). */
-interface WallSystem {
-  seg: { x1: number; y1: number; x2: number; y2: number };
-  blocksSight?: boolean;
-  blocksMove?: boolean;
-}
 
 /** Walls render as a distinct stroked segment (GMs author + see them; per-recipient
  * hidden walls are a later permission refinement). */
@@ -44,7 +36,7 @@ export class WallView {
 }
 
 function toSpec(doc: WireDocument): ShapeNodeSpec | null {
-  const s = doc.system as WallSystem | undefined;
+  const s = doc.engine as WallEngine | undefined;
   if (!s?.seg) return null;
   const { x1, y1, x2, y2 } = s.seg;
   // The opaque `system` is server-structural-only, so guard the coords (a malformed

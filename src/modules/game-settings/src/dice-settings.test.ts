@@ -20,7 +20,7 @@ describe("dice settings editor", () => {
     await fireEvent.change(sel, { target: { value: "success_count" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "dice1", changes: [{ path: "/system/mode", old: "total", new: "success_count" }] },
+      { op: "update", doc_id: "dice1", changes: [{ path: "/engine/mode", old: "total", new: "success_count" }] },
     ]);
   });
 
@@ -33,7 +33,7 @@ describe("dice settings editor", () => {
     await fireEvent.change(sel, { target: { value: "low_wins" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "dice1", changes: [{ path: "/system/direction", old: "high_wins", new: "low_wins" }] },
+      { op: "update", doc_id: "dice1", changes: [{ path: "/engine/direction", old: "high_wins", new: "low_wins" }] },
     ]);
   });
 

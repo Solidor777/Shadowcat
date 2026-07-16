@@ -18,7 +18,7 @@ function storeWith(...docs: WireDocument[]): DocumentStore {
 /** `buildActorDoc` seeds `owner: null` (M10a); tests that need an owned actor
  * set it directly, mirroring how the server stamps `owner` on Create. */
 function ownedActor(id: string, owner: string, name: string): WireDocument {
-  return { ...buildActorDoc("w1", { name, displayName: name, visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false }, id), owner };
+  return { ...buildActorDoc("w1", name, { displayName: name, visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, id), owner };
 }
 
 function renderComposer(

@@ -110,7 +110,7 @@ describe("ActorsPanel — shape + size", () => {
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
     const op = ops[0] as { op: string; doc: WireDocument };
     expect(op.op).toBe("create");
-    const sys = op.doc.system as { shape: string; size: { w: number; h: number } };
+    const sys = op.doc.engine as { shape: string; size: { w: number; h: number } };
     expect(sys.shape).toBe("circle");
     expect(sys.size).toEqual({ w: 2, h: 2 });
   });
@@ -119,7 +119,8 @@ describe("ActorsPanel — shape + size", () => {
     const dispatchIntent = vi.fn();
     const actor = buildActorDoc(
       "w1",
-      { name: "Troll", displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+      "Troll",
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
       "act1",
     );
     const store = storeWith(actor);
@@ -144,7 +145,7 @@ describe("ActorsPanel — shape + size", () => {
     expect(ops[0]).toMatchObject({
       op: "update",
       doc_id: "act1",
-      changes: [{ path: "/system/shape", old: "square", new: "circle" }],
+      changes: [{ path: "/engine/shape", old: "square", new: "circle" }],
     });
   });
 
@@ -152,7 +153,8 @@ describe("ActorsPanel — shape + size", () => {
     const dispatchIntent = vi.fn();
     const actor = buildActorDoc(
       "w1",
-      { name: "Troll", displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+      "Troll",
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
       "act1",
     );
     const store = storeWith(actor);
@@ -177,7 +179,7 @@ describe("ActorsPanel — shape + size", () => {
     expect(ops[0]).toMatchObject({
       op: "update",
       doc_id: "act1",
-      changes: [{ path: "/system/size", old: { w: 1, h: 1 }, new: { w: 3, h: 1 } }],
+      changes: [{ path: "/engine/size", old: { w: 1, h: 1 }, new: { w: 3, h: 1 } }],
     });
   });
 
@@ -185,7 +187,8 @@ describe("ActorsPanel — shape + size", () => {
     const dispatchIntent = vi.fn();
     const actor = buildActorDoc(
       "w1",
-      { name: "Troll", displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+      "Troll",
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
       "act1",
     );
     const store = storeWith(actor);
@@ -210,7 +213,7 @@ describe("ActorsPanel — shape + size", () => {
     expect(ops[0]).toMatchObject({
       op: "update",
       doc_id: "act1",
-      changes: [{ path: "/system/size", old: { w: 2, h: 1 }, new: { w: 2, h: 3 } }],
+      changes: [{ path: "/engine/size", old: { w: 2, h: 1 }, new: { w: 2, h: 3 } }],
     });
   });
 });
@@ -232,7 +235,7 @@ describe("ActorsPanel — darkvision authoring", () => {
     await fireEvent.click(screen.getByText("actors.create"));
 
     const ops = dispatchIntent.mock.calls[0][0];
-    expect(ops[0].doc.system).toMatchObject({ vision: [{ mode: "darkvision", range: 12 }] });
+    expect(ops[0].doc.engine).toMatchObject({ vision: [{ mode: "darkvision", range: 12 }] });
   });
 
   it("create omits vision when darkvision range is 0", async () => {
@@ -248,7 +251,9 @@ describe("ActorsPanel — darkvision authoring", () => {
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Human" } });
     await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
     await fireEvent.click(screen.getByText("actors.create"));
-    expect(dispatchIntent.mock.calls[0][0][0].doc.system.vision).toBeUndefined();
+    // `vision` is required-nullable on the generated `ActorEngine` — omitted becomes an
+    // explicit `null` (never `undefined`, and never a genuinely-absent key).
+    expect(dispatchIntent.mock.calls[0][0][0].doc.engine.vision).toBeNull();
   });
 });
 
@@ -268,7 +273,7 @@ describe("ActorsPanel — visual kind editor", () => {
     await fireEvent.click(screen.getByText("actors.create"));
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
     const op = ops[0] as { doc: WireDocument };
-    expect(op.doc.system).toMatchObject({ visual: { kind: "image", asset: "asset-1" } });
+    expect(op.doc.engine).toMatchObject({ visual: { kind: "image", asset: "asset-1" } });
   });
 
   it("switching to the animated kind and choosing frames + fps creates an animated visual", async () => {
@@ -290,7 +295,7 @@ describe("ActorsPanel — visual kind editor", () => {
     await fireEvent.click(screen.getByText("actors.create"));
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
     const op = ops[0] as { doc: WireDocument };
-    expect(op.doc.system).toMatchObject({ visual: { kind: "animated", source: { type: "frames", frames: ["f1", "f2"] }, fps: 10, loop: true } });
+    expect(op.doc.engine).toMatchObject({ visual: { kind: "animated", source: { type: "frames", frames: ["f1", "f2"] }, fps: 10, loop: true } });
   });
 
   it("switching to the faces kind with two image faces + a default creates a faces visual", async () => {
@@ -323,7 +328,7 @@ describe("ActorsPanel — visual kind editor", () => {
     await fireEvent.click(screen.getByText("actors.create"));
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
     const op = ops[0] as { doc: WireDocument };
-    expect(op.doc.system).toMatchObject({
+    expect(op.doc.engine).toMatchObject({
       visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } }, default: "normal" },
     });
   });
@@ -389,7 +394,8 @@ describe("ActorsPanel — per-token face swap", () => {
   function facesActor(): WireDocument {
     return buildActorDoc(
       "w1",
-      { name: "Goblin", displayName: "Goblin", visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } }, default: "normal" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+      "Goblin",
+      { displayName: "Goblin", visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } }, default: "normal", faceMap: null }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
       "act1",
     );
   }
@@ -427,7 +433,7 @@ describe("ActorsPanel — per-token face swap", () => {
     });
     await fireEvent.click(screen.getByRole("button", { name: "bloodied" }));
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "tok1", changes: [{ path: "/system/face", old: null, new: "bloodied" }] },
+      { op: "update", doc_id: "tok1", changes: [{ path: "/engine/face", old: null, new: "bloodied" }] },
     ]);
   });
 });
@@ -441,7 +447,8 @@ describe("ActorsPanel — live search + open sheet", () => {
   function actorDoc(id: string): WireDocument {
     return buildActorDoc(
       "w1",
-      { name: "Goblin", displayName: "Goblin", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+      "Goblin",
+      { displayName: "Goblin", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
       id,
     );
   }
@@ -482,8 +489,8 @@ describe("ActorsPanel — live search + open sheet", () => {
     });
     await fireEvent.input(getByLabelText(/search/i), { target: { value: "gob" } });
     capturedOnUpdate!([
-      { document: { id: "a9", doc_type: "actor", system: { name: "Goblin", displayName: "Goblin" } }, score: 1, snippet: "" },
-      { document: { id: "i9", doc_type: "item", system: { name: "Gob-stopper" } }, score: 1, snippet: "" },
+      { document: { id: "a9", doc_type: "actor", name: "Goblin", engine: { displayName: "Goblin" } }, score: 1, snippet: "" },
+      { document: { id: "i9", doc_type: "item", name: "Gob-stopper", system: {} }, score: 1, snippet: "" },
     ]);
     await findByText("Goblin");
     expect(screen.queryByText("Gob-stopper")).toBeNull();
@@ -523,7 +530,7 @@ describe("ActorsPanel — live search + open sheet", () => {
 
     // Second (current) query's results arrive first.
     second.onUpdate([
-      { document: { id: "a-go", doc_type: "actor", system: { name: "Goliath", displayName: "Goliath" } }, score: 1, snippet: "" },
+      { document: { id: "a-go", doc_type: "actor", name: "Goliath", engine: { displayName: "Goliath" } }, score: 1, snippet: "" },
     ]);
     await screen.findByText("Goliath");
 
@@ -531,7 +538,7 @@ describe("ActorsPanel — live search + open sheet", () => {
     // the call so a pre-fix regression (searchHits overwritten but not yet re-rendered) can't
     // hide behind an un-flushed DOM and pass this assertion for the wrong reason.
     first.onUpdate([
-      { document: { id: "a-g", doc_type: "actor", system: { name: "Ghoul", displayName: "Ghoul" } }, score: 1, snippet: "" },
+      { document: { id: "a-g", doc_type: "actor", name: "Ghoul", engine: { displayName: "Ghoul" } }, score: 1, snippet: "" },
     ]);
     await tick();
 

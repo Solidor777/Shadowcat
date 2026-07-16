@@ -1,7 +1,7 @@
 <script lang="ts">
   import { AssetResolver, silentLogger } from "@shadowcat/core";
   import { setAppContext } from "@shadowcat/ui-kit";
-  import { SceneInteractionBridge, ActorSelection, TokenSelection, PanelsBridge } from "@shadowcat/ui-kit";
+  import { SceneInteractionBridge, ActorSelection, TokenSelection, PanelsBridge, SceneSelection } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
   import Assets from "../Assets.svelte";
 
@@ -35,6 +35,11 @@
     logout: async () => {},
     uiState: { getPanelLayout: () => null, setPanelLayout: () => {} },
     panels: new PanelsBridge(silentLogger),
+    openDocument: () => {},
+    viewedSceneId: null,
+    setGmViewedScene: () => {},
+    searchDocuments: () => Promise.reject(new Error("not connected")),
+    sceneSelection: new SceneSelection(),
   });
 </script>
 

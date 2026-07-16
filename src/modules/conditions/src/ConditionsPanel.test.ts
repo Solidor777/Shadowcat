@@ -12,7 +12,7 @@ function storeWith(...docs: WireDocument[]): DocumentStore {
   return s;
 }
 const actorDoc = (id: string, conditions: string[]) =>
-  buildActorDoc("w1", { name: "G", displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions, prototype: false }, id);
+  buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions, prototype: false, vision: null }, id);
 
 describe("ConditionsPanel", () => {
   it("seeds the condition registry once on GM mount when absent", async () => {
@@ -23,7 +23,7 @@ describe("ConditionsPanel", () => {
     expect(ops[0].op).toBe("create");
     const doc = (ops[0] as { doc: WireDocument }).doc;
     expect(doc.doc_type).toBe("condition-registry");
-    const conds = (doc.system as { conditions: Record<string, unknown> }).conditions;
+    const conds = (doc.engine as { conditions: Record<string, unknown> }).conditions;
     expect(Object.keys(conds).sort()).toEqual(["blinded", "dead", "hasted", "invisible", "poisoned", "prone", "slowed", "stunned", "unconscious"]);
   });
 
@@ -58,6 +58,6 @@ describe("ConditionsPanel", () => {
     await fireEvent.click(screen.getByTitle("Dead"));
     expect(dispatchIntent).toHaveBeenCalledTimes(1);
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
-    expect(ops[0]).toMatchObject({ op: "update", doc_id: "act1", changes: [{ path: "/system/conditions", new: ["dead"] }] });
+    expect(ops[0]).toMatchObject({ op: "update", doc_id: "act1", changes: [{ path: "/engine/conditions", new: ["dead"] }] });
   });
 });

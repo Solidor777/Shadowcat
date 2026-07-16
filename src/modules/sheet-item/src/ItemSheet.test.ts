@@ -5,9 +5,15 @@ import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import ItemSheet from "./ItemSheet.svelte";
 import { sheetItem } from "./index";
 
-function storeWith(system: unknown) {
+/** Builds an item doc on the three-band shape: `name` is pulled out onto the envelope
+ * (matching `buildItemDoc`'s contract), the rest stays in the opaque `system` tree. */
+function storeWith(fields: Record<string, unknown>) {
+  const { name, ...system } = fields;
   const s = new DocumentStore();
-  s.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: envelope("w1", "item", null, system, "i1") }] });
+  s.applyCommand({
+    seq: 1, world_id: "w1", author: "u", ts: 0,
+    ops: [{ op: "create", doc: envelope("w1", "item", null, system, "i1", undefined, (name as string | null) ?? null) }],
+  });
   return s;
 }
 
@@ -43,7 +49,7 @@ describe("ItemSheet dice roll-to-chat", () => {
     const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
     const { getByLabelText } = render(ItemSheet, { props: { docId: "i1", systemPrefix: "/system", close: () => {} }, context });
     await fireEvent.change(getByLabelText("sheetItem.name"), { target: { value: "Axe" } });
-    expect(calls).toEqual([[{ op: "update", doc_id: "i1", changes: [{ path: "/system/name", old: "Sword", new: "Axe" }] }]]);
+    expect(calls).toEqual([[{ op: "update", doc_id: "i1", changes: [{ path: "/name", old: "Sword", new: "Axe" }] }]]);
   });
 
   // Regression test for the reactive-subscription fix: a second edit in the same rendered
@@ -71,8 +77,8 @@ describe("ItemSheet dice roll-to-chat", () => {
     await fireEvent.change(getByLabelText("sheetItem.name"), { target: { value: "Battle Axe" } });
 
     expect(calls).toEqual([
-      [{ op: "update", doc_id: "i1", changes: [{ path: "/system/name", old: "Sword", new: "Axe" }] }],
-      [{ op: "update", doc_id: "i1", changes: [{ path: "/system/name", old: "Axe", new: "Battle Axe" }] }],
+      [{ op: "update", doc_id: "i1", changes: [{ path: "/name", old: "Sword", new: "Axe" }] }],
+      [{ op: "update", doc_id: "i1", changes: [{ path: "/name", old: "Axe", new: "Battle Axe" }] }],
     ]);
   });
 });

@@ -5,7 +5,7 @@ import {
   DocumentStore,
   buildActorDoc,
   buildTokenFromActor,
-  type ActorSystem,
+  type ActorEngine,
   type WireDocument,
   type WireOperation,
 } from "@shadowcat/core";
@@ -18,18 +18,20 @@ function storeWith(...docs: WireDocument[]): DocumentStore {
   return s;
 }
 
-function msgDoc(id: string, system: Record<string, unknown>): WireDocument {
+function msgDoc(id: string, engine: Record<string, unknown>): WireDocument {
   return {
     id,
     scope: { kind: "world", world_id: "w1" },
     doc_type: "message",
     schema_version: 1,
+    name: null,
     source: null,
     owner: "u1",
     permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
     embedded: {},
     parent_id: null,
-    system,
+    engine,
+    system: {},
     created_at: Date.UTC(2026, 0, 1, 14, 30),
     updated_at: Date.UTC(2026, 0, 1, 14, 30),
   };
@@ -46,10 +48,10 @@ function baseSystem(over: Record<string, unknown> = {}): Record<string, unknown>
   };
 }
 
-/** A minimal ActorSystem builder — every field ActorSystem needs, overridable per test. */
-function actorSystem(over: Partial<ActorSystem> = {}): ActorSystem {
+/** A minimal ActorEngine builder — every field ActorEngine needs, overridable per test.
+ * The actor's real `name` lives on the envelope (buildActorDoc's second argument), not here. */
+function actorEngine(over: Partial<ActorEngine> = {}): ActorEngine {
   return {
-    name: "Real Name",
     displayName: "The Mysterious Figure",
     visual: { kind: "image", asset: "a1" },
     size: { w: 1, h: 1 },
@@ -57,6 +59,7 @@ function actorSystem(over: Partial<ActorSystem> = {}): ActorSystem {
     faction: null,
     conditions: [],
     prototype: false,
+    vision: null,
     ...over,
   };
 }
@@ -763,7 +766,7 @@ describe("MessageCard — delete", () => {
 
 describe("MessageCard actor-name navigation (§5.4)", () => {
   it("renders the actor name as a button that opens the actor doc when present in the store", async () => {
-    const actor = buildActorDoc("w1", actorSystem({ name: "Goblin" }), "a1");
+    const actor = buildActorDoc("w1", "Goblin", actorEngine(), "a1");
     const doc = msgDoc("m1", baseSystem({ actor_owner: { kind: "actor", actor_id: "a1" } }));
     const opened: unknown[] = [];
     const { getByRole } = render(MessageCard, {
@@ -775,7 +778,7 @@ describe("MessageCard actor-name navigation (§5.4)", () => {
   });
 
   it("renders the token name as a button that opens the token when present in the store", async () => {
-    const actor = buildActorDoc("w1", actorSystem({ name: "Goblin" }), "a1");
+    const actor = buildActorDoc("w1", "Goblin", actorEngine(), "a1");
     const token = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, 100, "token1");
     const doc = msgDoc("m1", baseSystem({ actor_owner: { kind: "token_instance", token_id: "token1" } }));
     const opened: unknown[] = [];
@@ -800,27 +803,25 @@ describe("MessageCard actor-name navigation (§5.4)", () => {
 
 describe("MessageCard — actor attribution + redaction fixtures (real resolveTokenActor inputs)", () => {
   it("resolves an actor_owner{kind:'actor'} to the actor's real name", () => {
-    const actor = buildActorDoc("w1", actorSystem({ name: "Grog" }), "actor1");
+    const actor = buildActorDoc("w1", "Grog", actorEngine(), "actor1");
     const doc = msgDoc("m1", baseSystem({ actor_owner: { kind: "actor", actor_id: "actor1" } }));
     const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(actor, doc) }) });
     expect(container.querySelector(".actor-name")?.textContent).toBe("(Grog)");
   });
 
   it("resolves an actor_owner{kind:'token_instance'} to the embedded instance's real name", () => {
-    const actor = buildActorDoc("w1", actorSystem({ name: "Grog" }), "actor1");
+    const actor = buildActorDoc("w1", "Grog", actorEngine(), "actor1");
     const token = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, 100, "token1");
     const doc = msgDoc("m1", baseSystem({ actor_owner: { kind: "token_instance", token_id: "token1" } }));
     const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(actor, token, doc) }) });
     expect(container.querySelector(".actor-name")?.textContent).toBe("(Grog)");
   });
 
-  it("a hidden actor name (server-redacted: /system/name absent) renders the displayName fallback for a non-GM viewer", () => {
+  it("a hidden actor name (server-redacted: /name nulled) renders the displayName fallback for a non-GM viewer", () => {
     // Simulates what a non-owner, non-GM player actually receives on the wire once the
-    // server strips an OwnerOrGm-tiered /system/name — the key is ABSENT, not empty, per
-    // the documents-permissions redaction invariant (stripped before transmission).
-    const redactedSystem = actorSystem({ displayName: "The Mysterious Figure" });
-    delete (redactedSystem as Partial<ActorSystem>).name;
-    const actor = buildActorDoc("w1", redactedSystem, "actor1");
+    // server nulls an OwnerOrGm-tiered `/name` (envelope field) — redaction nulls the
+    // field, it does not strip the key (documents-permissions redaction invariant).
+    const actor = buildActorDoc("w1", null, actorEngine({ displayName: "The Mysterious Figure" }), "actor1");
     const doc = msgDoc("m1", baseSystem({ actor_owner: { kind: "actor", actor_id: "actor1" } }));
     const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(actor, doc), role: "player", selfId: "someone-else" }) });
     expect(container.querySelector(".actor-name")?.textContent).toBe("(The Mysterious Figure)");

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildConditionRegistryDoc, conditionTarget, type Condition, type ConditionRegistrySystem, type WireDocument } from "@shadowcat/core";
+  import { buildConditionRegistryDoc, conditionTarget, type Condition, type ConditionRegistryEngine, type WireDocument } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -12,7 +12,7 @@
     return ctx.documents.query("condition-registry")[0];
   });
   const conditionEntries = $derived.by((): [string, Condition][] => {
-    const sys = registry?.system as ConditionRegistrySystem | undefined;
+    const sys = registry?.engine as ConditionRegistryEngine | undefined;
     return Object.entries(sys?.conditions ?? {});
   });
 
@@ -52,21 +52,21 @@
   function update(id: string, patch: Partial<Condition>): void {
     if (!registry) return;
     for (const [k, v] of Object.entries(patch)) {
-      ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/system/conditions/${id}/${k}`, old: null, new: v }] }]);
+      ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/conditions/${id}/${k}`, old: null, new: v }] }]);
     }
   }
   function add(): void {
     if (!registry) return;
     const id = crypto.randomUUID();
     const c: Condition = { name: "New condition", icon: "⭐" };
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/system/conditions/${id}`, old: null, new: c }] }]);
+    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/conditions/${id}`, old: null, new: c }] }]);
   }
   function remove(id: string): void {
-    const sys = registry?.system as ConditionRegistrySystem | undefined;
+    const sys = registry?.engine as ConditionRegistryEngine | undefined;
     if (!registry || !sys) return;
     const next = { ...sys.conditions };
     delete next[id];
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/system/conditions", old: sys.conditions, new: next }] }]);
+    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/engine/conditions", old: sys.conditions, new: next }] }]);
   }
 
   /** Whether the condition is set on every editable selected token (chip active state). */

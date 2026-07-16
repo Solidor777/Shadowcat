@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildSceneDoc, type WireDocument, type WorldSettingsSystem, type SceneSystem } from "@shadowcat/core";
+  import { buildSceneDoc, type WireDocument, type WorldSettingsEngine, type SceneEngine } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -19,7 +19,7 @@
     return ctx.documents.query("world-settings")[0];
   });
   const activeSceneId = $derived.by((): string | null => {
-    return (ws?.system as WorldSettingsSystem | undefined)?.activeScene ?? null;
+    return (ws?.engine as WorldSettingsEngine | undefined)?.activeScene ?? null;
   });
   // The GM's own rendered scene (roam or followed active). Reading the getter tracks the doc store
   // (via subscribe above) + the session's gmViewedScene state.
@@ -30,7 +30,7 @@
   const roaming = $derived(viewedSceneId !== null && viewedSceneId !== activeSceneId);
 
   function bgOf(scene: WireDocument): string | null {
-    return (scene.system as SceneSystem | undefined)?.background ?? null;
+    return (scene.engine as SceneEngine | undefined)?.background ?? null;
   }
 
   /** Set the scene players render. OCC pre-image is the REAL current activeScene (or null when
@@ -39,8 +39,8 @@
    * steady-state condition). */
   function activate(sceneId: string): void {
     if (!ws) return;
-    const old = (ws.system as WorldSettingsSystem | undefined)?.activeScene ?? null;
-    ctx.dispatchIntent([{ op: "update", doc_id: ws.id, changes: [{ path: "/system/activeScene", old, new: sceneId }] }]);
+    const old = (ws.engine as WorldSettingsEngine | undefined)?.activeScene ?? null;
+    ctx.dispatchIntent([{ op: "update", doc_id: ws.id, changes: [{ path: "/engine/activeScene", old, new: sceneId }] }]);
   }
 
   /** GM local roam (no effect on players). */

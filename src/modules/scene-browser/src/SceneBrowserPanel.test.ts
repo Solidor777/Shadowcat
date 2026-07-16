@@ -32,7 +32,7 @@ describe("SceneBrowserPanel", () => {
     await fireEvent.click(getAllByRole("button", { name: /activate/i })[1]); // activate sB
     const op = (sent[0] as { op: string; doc_id: string; changes: { path: string; old: unknown; new: unknown }[] }[])[0];
     expect(op.op).toBe("update");
-    expect(op.changes[0].path).toBe("/system/activeScene");
+    expect(op.changes[0].path).toBe("/engine/activeScene");
     expect(op.changes[0].old).toBe("sA"); // REAL current value, not null
     expect(op.changes[0].new).toBe("sB");
   });

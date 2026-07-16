@@ -90,7 +90,7 @@ test("the snap toggle reflects the resolved snapToGrid (grid-stepped default: pr
   expect(toggle.getAttribute("aria-pressed")).toBe("true"); // grid-stepped default
   await fireEvent.click(toggle);
   expect(dispatched.at(-1)).toEqual([
-    { op: "update", doc_id: "s1", changes: [{ path: "/system/snapToGrid", old: null, new: false }] },
+    { op: "update", doc_id: "s1", changes: [{ path: "/engine/snapToGrid", old: null, new: false }] },
   ]);
 });
 
@@ -107,7 +107,7 @@ test("the snap toggle sends the ACTUAL stored value as `old`, not null, when sna
   expect(toggle.getAttribute("aria-pressed")).toBe("true");
   await fireEvent.click(toggle);
   expect(dispatched.at(-1)).toEqual([
-    { op: "update", doc_id: "s1", changes: [{ path: "/system/snapToGrid", old: true, new: false }] },
+    { op: "update", doc_id: "s1", changes: [{ path: "/engine/snapToGrid", old: true, new: false }] },
   ]);
 });
 

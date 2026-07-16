@@ -1,16 +1,24 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, SystemTreeEditor, setField } from "@shadowcat/ui-kit";
-  import { getPointer, actorDisplayName, type WireDocument, type ActorSystem, type FactionRegistrySystem } from "@shadowcat/core";
+  import { getPointer, actorDisplayName, type WireDocument, type ActorEngine, type FactionRegistryEngine } from "@shadowcat/core";
 
-  // Actor sheet: engine-known fields (name, display name, faction, shape, size) as real
-  // controls + the opaque `system` body as a tree editor + the embedded-items inventory
-  // (opens each via openDocument). Reads the OPTIMISTIC store (per-recipient redaction +
-  // OwnerOrGm naming are free). Every edit's `old` is the RAW current stored value.
+  // Actor sheet: envelope `name` + engine-known fields (displayName, faction, shape, size)
+  // as real controls + the opaque `system` body as a tree editor + the embedded-items
+  // inventory (opens each via openDocument). Reads the OPTIMISTIC store (per-recipient
+  // redaction + OwnerOrGm naming are free). Every edit's `old` is the RAW current stored
+  // value. `systemPrefix` (from `resolveDocRef`'s `writePrefix`) always ends in `/system`
+  // (top-level `/system`, or `/embedded/actor/0/system` for an instanced token) — the
+  // engine/name bands live at the SAME node, so `basePrefix` (the prefix with the trailing
+  // `/system` stripped) is the sibling root for `/engine` and `/name`.
   let { docId, systemPrefix, close }: { docId: string; systemPrefix: string; close: () => void } = $props();
 
   const ctx = getAppContext();
   const t = ctx.t;
+
+  const basePrefix = $derived(systemPrefix.replace(/\/system$/, ""));
+  const enginePrefix = $derived(`${basePrefix}/engine`);
+  const namePrefix = $derived(`${basePrefix}/name`);
 
   // Reactive subscription: ctx.documents (OptimisticClient) is a plain-callback store, not a
   // Svelte rune — every $derived.by that reads it directly must call subscribe() itself
@@ -22,12 +30,16 @@
     subscribe();
     return ctx.documents.get(docId);
   });
-  const system = $derived.by((): ActorSystem | undefined => (doc ? (getPointer(doc, systemPrefix) as ActorSystem | undefined) : undefined));
+  const name = $derived.by((): string | null => (doc ? (getPointer(doc, namePrefix) as string | null | undefined) ?? null : null));
+  const engine = $derived.by((): ActorEngine | undefined => (doc ? (getPointer(doc, enginePrefix) as ActorEngine | undefined) : undefined));
+  // The genuinely game-system-owned `system` body (untouched by the three-band re-root),
+  // still the SystemTreeEditor's root — distinct from the engine band above.
+  const sysBody = $derived.by((): unknown => (doc ? getPointer(doc, systemPrefix) : undefined));
   const readOnly = $derived(!doc || !ctx.canEdit(doc, systemPrefix));
 
   const factions = $derived.by((): [string, { name: string }][] => {
     subscribe();
-    const reg = ctx.documents.query("faction-registry")[0]?.system as FactionRegistrySystem | undefined;
+    const reg = ctx.documents.query("faction-registry")[0]?.engine as FactionRegistryEngine | undefined;
     return Object.entries(reg?.factions ?? {});
   });
 
@@ -38,56 +50,63 @@
     subscribe();
     if (!doc || systemPrefix !== "/system") return [];
     return (doc.embedded?.item ?? []).map((it, i) => ({
-      name: (it.system as { name?: string } | undefined)?.name ?? t("sheetActor.unnamedItem"),
+      name: it.name ?? t("sheetActor.unnamedItem"),
       path: `/embedded/item/${i}`,
     }));
   });
 
-  function set(field: string, value: unknown): void {
+  /** Update an engine-owned field (`/engine/<field>`). */
+  function setEngine(field: string, value: unknown): void {
     if (!doc) return;
-    const path = `${systemPrefix}/${field}`;
+    const path = `${enginePrefix}/${field}`;
     setField(ctx, docId, path, getPointer(doc, path), value);
+  }
+
+  /** Update the envelope `name` field. */
+  function setName(value: string): void {
+    if (!doc) return;
+    setField(ctx, docId, namePrefix, name, value);
   }
 </script>
 
 <div class="sheet" role="dialog" aria-label={t("sheets.title")}>
   <header class="sheet-header">
-    <h2>{system ? actorDisplayName(system) : t("sheets.title")}</h2>
+    <h2>{engine ? actorDisplayName({ name, displayName: engine.displayName }) : t("sheets.title")}</h2>
     <button type="button" class="close" aria-label={t("sheets.close")} onclick={close}>×</button>
   </header>
 
-  {#if doc && system}
+  {#if doc && engine}
     <div class="fields">
       <label>{t("sheetActor.name")}
-        <input aria-label={t("sheetActor.name")} value={system.name ?? ""} disabled={readOnly}
-          onchange={(e) => set("name", (e.currentTarget as HTMLInputElement).value)} /></label>
+        <input aria-label={t("sheetActor.name")} value={name ?? ""} disabled={readOnly}
+          onchange={(e) => setName((e.currentTarget as HTMLInputElement).value)} /></label>
       <label>{t("sheetActor.displayName")}
-        <input aria-label={t("sheetActor.displayName")} value={system.displayName ?? ""} disabled={readOnly}
-          onchange={(e) => set("displayName", (e.currentTarget as HTMLInputElement).value)} /></label>
+        <input aria-label={t("sheetActor.displayName")} value={engine.displayName ?? ""} disabled={readOnly}
+          onchange={(e) => setEngine("displayName", (e.currentTarget as HTMLInputElement).value)} /></label>
       <label>{t("sheetActor.faction")}
-        <select aria-label={t("sheetActor.faction")} value={system.faction ?? ""} disabled={readOnly}
-          onchange={(e) => set("faction", (e.currentTarget as HTMLSelectElement).value || null)}>
+        <select aria-label={t("sheetActor.faction")} value={engine.faction ?? ""} disabled={readOnly}
+          onchange={(e) => setEngine("faction", (e.currentTarget as HTMLSelectElement).value || null)}>
           <option value="">{t("sheetActor.noFaction")}</option>
           {#each factions as [id, f] (id)}<option value={id}>{f.name}</option>{/each}
         </select></label>
       <label>{t("sheetActor.shape")}
-        <select aria-label={t("sheetActor.shape")} value={system.shape} disabled={readOnly}
-          onchange={(e) => set("shape", (e.currentTarget as HTMLSelectElement).value)}>
+        <select aria-label={t("sheetActor.shape")} value={engine.shape} disabled={readOnly}
+          onchange={(e) => setEngine("shape", (e.currentTarget as HTMLSelectElement).value)}>
           <option value="square">{t("actors.shapeSquare")}</option><option value="circle">{t("actors.shapeCircle")}</option>
         </select></label>
       <label>{t("sheetActor.sizeW")}
-        <input type="number" min="0" step="0.5" aria-label={t("sheetActor.sizeW")} value={system.size?.w ?? 1} disabled={readOnly}
+        <input type="number" min="0" step="0.5" aria-label={t("sheetActor.sizeW")} value={engine.size?.w ?? 1} disabled={readOnly}
           onchange={(e) => {
             const w = Number((e.currentTarget as HTMLInputElement).value);
             if (Number.isNaN(w)) return;
-            set("size", { w, h: system.size?.h ?? 1 });
+            setEngine("size", { w, h: engine.size?.h ?? 1 });
           }} /></label>
       <label>{t("sheetActor.sizeH")}
-        <input type="number" min="0" step="0.5" aria-label={t("sheetActor.sizeH")} value={system.size?.h ?? 1} disabled={readOnly}
+        <input type="number" min="0" step="0.5" aria-label={t("sheetActor.sizeH")} value={engine.size?.h ?? 1} disabled={readOnly}
           onchange={(e) => {
             const h = Number((e.currentTarget as HTMLInputElement).value);
             if (Number.isNaN(h)) return;
-            set("size", { w: system.size?.w ?? 1, h });
+            setEngine("size", { w: engine.size?.w ?? 1, h });
           }} /></label>
     </div>
 
@@ -102,7 +121,7 @@
 
     <details>
       <summary>{t("sheetActor.system")}</summary>
-      <SystemTreeEditor {doc} basePath={systemPrefix} root={system} {readOnly} />
+      <SystemTreeEditor {doc} basePath={systemPrefix} root={sysBody} {readOnly} />
     </details>
   {:else}
     <p class="missing">{t("sheets.missing")}</p>

@@ -38,7 +38,7 @@ test("freehand drag previews the path then persists a freehand drawing", () => {
   if (op.op === "create") {
     expect(op.doc.doc_type).toBe("drawing");
     expect(op.doc.parent_id).toBe("scene-1");
-    expect(op.doc.system).toMatchObject({ shape: { kind: "freehand", points: [0, 0, 5, 5, 10, 0] }, stroke: { width: 2 } });
+    expect(op.doc.engine).toMatchObject({ shape: { kind: "freehand", points: [0, 0, 5, 5, 10, 0] }, stroke: { width: 2 } });
   }
 });
 
@@ -48,7 +48,7 @@ test("a rect drag persists a rect drawing with its two corner points", () => {
   tool.onPointerMove({ x: 10, y: 20 }, ev);
   tool.onPointerUp({ x: 10, y: 20 }, ev);
   const op = sent[0][0];
-  if (op.op === "create") expect(op.doc.system).toMatchObject({ shape: { kind: "rect", points: [0, 0, 10, 20] } });
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ shape: { kind: "rect", points: [0, 0, 10, 20] } });
 });
 
 test("a pure click (no extent) persists nothing but still clears the preview", () => {

@@ -1,16 +1,8 @@
-import type { ReadableDocuments, WireDocument } from "@shadowcat/core";
+import type { ReadableDocuments, WireDocument, DrawingEngine } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { ShapeNodeSpec } from "./types";
 import { parseColor, rectPoints, ellipsePoints } from "./geometry";
 import { sceneScopedDocs } from "./scene-scope";
-
-/** Client-owned `drawing.system` (M8 §9). `points` are path vertices for
- * freehand/line/polygon, or bbox corners `[x0,y0,x1,y1]` for rect/ellipse. */
-interface DrawingSystem {
-  shape: { kind: string; points: number[] };
-  stroke: { color: string; width: number } | null;
-  fill: { color: string; alpha?: number } | null;
-}
 
 /** Reconciles `doc_type:"drawing"` documents into the `drawings` layer as shape nodes. */
 export class DrawingView {
@@ -40,7 +32,7 @@ export class DrawingView {
 }
 
 function toSpec(doc: WireDocument): ShapeNodeSpec | null {
-  const s = doc.system as DrawingSystem | undefined;
+  const s = doc.engine as DrawingEngine | undefined;
   if (!s?.shape) return null;
   const { kind, points } = s.shape;
   let pts = points;

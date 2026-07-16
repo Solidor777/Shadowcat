@@ -35,7 +35,7 @@ test("rect mode: drag persists a region doc with the configured behavior/cost", 
   if (op.op === "create") {
     expect(op.doc.doc_type).toBe("region");
     expect(op.doc.parent_id).toBe("scene-1");
-    expect(op.doc.system).toMatchObject({ behavior: "impassable", shape: { kind: "rect", points: [0, 0, 100, 100] } });
+    expect(op.doc.engine).toMatchObject({ behavior: "impassable", shape: { kind: "rect", points: [0, 0, 100, 100] } });
   }
 });
 
@@ -49,7 +49,7 @@ test("secret toggle declares default:none and /system gm_only on the created doc
   const op = sent[0][0];
   expect(op.op).toBe("create");
   if (op.op === "create") {
-    expect(op.doc.permissions.property_overrides["/system"]).toBe("gm_only");
+    expect(op.doc.permissions.property_overrides["/engine"]).toBe("gm_only");
     expect(op.doc.permissions.default).toBe("none");
   }
 });

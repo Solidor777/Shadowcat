@@ -5,9 +5,15 @@ import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import ActorSheet from "./ActorSheet.svelte";
 import { sheetActor } from "./index";
 
-function storeWith(system: unknown) {
+/** Builds an actor doc on the three-band shape: `name` (envelope) is pulled out of the
+ * legacy flat fixture object, the rest lands in `engine` (the actor's engine-owned body). */
+function storeWith(fields: Record<string, unknown>) {
+  const { name, ...engine } = fields;
   const s = new DocumentStore();
-  s.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: envelope("w1", "actor", null, system, "a1") }] });
+  s.applyCommand({
+    seq: 1, world_id: "w1", author: "u", ts: 0,
+    ops: [{ op: "create", doc: envelope("w1", "actor", null, {}, "a1", engine, (name as string | null) ?? null) }],
+  });
   return s;
 }
 
@@ -33,7 +39,7 @@ describe("ActorSheet edits", () => {
     const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
     const { getByLabelText } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
     await fireEvent.change(getByLabelText("sheetActor.name"), { target: { value: "Orc" } });
-    expect(calls).toEqual([[{ op: "update", doc_id: "a1", changes: [{ path: "/system/name", old: "Goblin", new: "Orc" }] }]]);
+    expect(calls).toEqual([[{ op: "update", doc_id: "a1", changes: [{ path: "/name", old: "Goblin", new: "Orc" }] }]]);
   });
 
   it("disables controls for a non-editor (canEdit false)", () => {
@@ -49,7 +55,7 @@ describe("ActorSheet edits", () => {
     const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
     const { getByLabelText } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
     await fireEvent.change(getByLabelText("sheetActor.sizeW"), { target: { value: "5" } });
-    expect(calls).toEqual([[{ op: "update", doc_id: "a1", changes: [{ path: "/system/size", old: { w: 2, h: 3 }, new: { w: 5, h: 3 } }] }]]);
+    expect(calls).toEqual([[{ op: "update", doc_id: "a1", changes: [{ path: "/engine/size", old: { w: 2, h: 3 }, new: { w: 5, h: 3 } }] }]]);
   });
 
   // Regression test for the reactive-subscription fix: a second edit in the same rendered
@@ -76,8 +82,8 @@ describe("ActorSheet edits", () => {
     await fireEvent.change(getByLabelText("sheetActor.name"), { target: { value: "Orc Warlord" } });
 
     expect(calls).toEqual([
-      [{ op: "update", doc_id: "a1", changes: [{ path: "/system/name", old: "Goblin", new: "Orc" }] }],
-      [{ op: "update", doc_id: "a1", changes: [{ path: "/system/name", old: "Orc", new: "Orc Warlord" }] }],
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/name", old: "Goblin", new: "Orc" }] }],
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/name", old: "Orc", new: "Orc Warlord" }] }],
     ]);
   });
 
@@ -102,8 +108,8 @@ describe("ActorSheet edits", () => {
     await fireEvent.change(getByLabelText("sheetActor.sizeH"), { target: { value: "9" } });
 
     expect(calls).toEqual([
-      [{ op: "update", doc_id: "a1", changes: [{ path: "/system/size", old: { w: 1, h: 1 }, new: { w: 5, h: 1 } }] }],
-      [{ op: "update", doc_id: "a1", changes: [{ path: "/system/size", old: { w: 5, h: 1 }, new: { w: 5, h: 9 } }] }],
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/size", old: { w: 1, h: 1 }, new: { w: 5, h: 1 } }] }],
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/size", old: { w: 5, h: 1 }, new: { w: 5, h: 9 } }] }],
     ]);
   });
 });

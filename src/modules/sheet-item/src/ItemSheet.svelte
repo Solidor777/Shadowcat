@@ -3,10 +3,12 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getPointer, isDiceNotation, type WireDocument, type ItemSystem } from "@shadowcat/core";
 
-  // Item sheet: name control + dice-notation string values get a roll-to-chat affordance
-  // (posts `/roll <formula>` on the default "general" channel over the M11 chat wire — the
-  // server executes it) + the `system` tree editor. Reads the OPTIMISTIC store; edits use
-  // the RAW current value as the OCC pre-image.
+  // Item sheet: envelope `name` control + dice-notation string values get a roll-to-chat
+  // affordance (posts `/roll <formula>` on the default "general" channel over the M11 chat
+  // wire — the server executes it) + the `system` tree editor. `buildItemDoc`'s contract
+  // (scene-docs.ts) puts an item's real display name on the envelope, same as every other
+  // doc_type — `system` carries only the opaque, genuinely game-system-owned fields. Reads
+  // the OPTIMISTIC store; edits use the RAW current value as the OCC pre-image.
   let { docId, systemPrefix, close }: { docId: string; systemPrefix: string; close: () => void } = $props();
 
   const ctx = getAppContext();
@@ -22,6 +24,7 @@
     subscribe();
     return ctx.documents.get(docId);
   });
+  const name = $derived.by((): string | null => doc?.name ?? null);
   const system = $derived.by((): ItemSystem | undefined => (doc ? (getPointer(doc, systemPrefix) as ItemSystem | undefined) : undefined));
   const readOnly = $derived(!doc || !ctx.canEdit(doc, systemPrefix));
 
@@ -33,10 +36,11 @@
       .map(([key, v]) => ({ key, formula: (v as string).trim() }));
   });
 
-  function set(field: string, value: unknown): void {
+  /** Update the envelope `name` field (distinct from the opaque `system` tree, which the
+   * `SystemTreeEditor` below edits directly via its own setField calls). */
+  function setName(value: string): void {
     if (!doc) return;
-    const path = `${systemPrefix}/${field}`;
-    setField(ctx, docId, path, getPointer(doc, path), value);
+    setField(ctx, docId, "/name", name, value);
   }
 
   function roll(formula: string): void {
@@ -46,14 +50,14 @@
 
 <div class="sheet" role="dialog" aria-label={t("sheets.title")}>
   <header class="sheet-header">
-    <h2>{system?.name ?? t("sheetItem.title")}</h2>
+    <h2>{name ?? t("sheetItem.title")}</h2>
     <button type="button" class="close" aria-label={t("sheets.close")} onclick={close}>×</button>
   </header>
 
   {#if doc && system}
     <label>{t("sheetItem.name")}
-      <input aria-label={t("sheetItem.name")} value={system.name ?? ""} disabled={readOnly}
-        onchange={(e) => set("name", (e.currentTarget as HTMLInputElement).value)} /></label>
+      <input aria-label={t("sheetItem.name")} value={name ?? ""} disabled={readOnly}
+        onchange={(e) => setName((e.currentTarget as HTMLInputElement).value)} /></label>
 
     {#if rollable.length > 0}
       <div class="rolls">

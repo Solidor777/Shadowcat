@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
-import type { ChatMessageSystem, WireDocument } from "@shadowcat/core";
+import type { ChatMessageEngine, WireDocument } from "@shadowcat/core";
 import { postTarget, inView, byCreation, RENDER_CAP, type ChatView } from "./channels";
 
-function sys(over: Partial<ChatMessageSystem> = {}): ChatMessageSystem {
+function sys(over: Partial<ChatMessageEngine> = {}): ChatMessageEngine {
   return {
     channel: "general",
     user_owner: "u1",
@@ -13,7 +13,7 @@ function sys(over: Partial<ChatMessageSystem> = {}): ChatMessageSystem {
   };
 }
 
-const AUDIENCES: ChatMessageSystem["audience"][] = [
+const AUDIENCES: ChatMessageEngine["audience"][] = [
   { kind: "public" },
   { kind: "whisper", recipients: ["u2"] },
   { kind: "gm_only" },
@@ -75,6 +75,7 @@ function doc(id: string, created_at: number): WireDocument {
     scope: { kind: "world", world_id: "w1" },
     doc_type: "message",
     schema_version: 1,
+    name: null,
     source: null,
     owner: "u1",
     permissions: { default: "observer", users: {} } as WireDocument["permissions"],

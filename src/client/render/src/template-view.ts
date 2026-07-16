@@ -1,15 +1,8 @@
-import type { ReadableDocuments, WireDocument } from "@shadowcat/core";
+import type { ReadableDocuments, WireDocument, TemplateEngine } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { ShapeNodeSpec } from "./types";
 import { parseColor, circlePoints, conePoints, squarePoints } from "./geometry";
 import { sceneScopedDocs } from "./scene-scope";
-
-/** Client-owned `template.system` (M8 §9): an area anchored at `(x,y)` with a `size`
- * and `direction` (degrees), tessellated per `kind`. */
-interface TemplateSystem {
-  shape: { kind: string; x: number; y: number; size: number; direction: number };
-  color: string;
-}
 
 /** Templates render as translucent filled areas. */
 const FILL_ALPHA = 0.25;
@@ -43,7 +36,7 @@ export class TemplateView {
 }
 
 function toSpec(doc: WireDocument): ShapeNodeSpec | null {
-  const s = doc.system as TemplateSystem | undefined;
+  const s = doc.engine as TemplateEngine | undefined;
   if (!s?.shape) return null;
   const { kind, x, y, size, direction } = s.shape;
   let points: number[];

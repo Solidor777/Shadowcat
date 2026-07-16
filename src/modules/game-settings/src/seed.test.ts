@@ -27,11 +27,11 @@ describe("game-settings seed", () => {
     expect(created).toContain("dice-settings");
     expect(created).toContain("chat-settings");
     const diceOp = ops.find((op) => (op as { op: "create"; doc: { doc_type: string } }).doc.doc_type === "dice-settings") as
-      { op: "create"; doc: { system: unknown } };
-    expect(diceOp.doc.system).toEqual({ mode: "total", direction: "high_wins" });
+      { op: "create"; doc: { engine: unknown } };
+    expect(diceOp.doc.engine).toEqual({ mode: "total", direction: "high_wins" });
     const chatOp = ops.find((op) => (op as { op: "create"; doc: { doc_type: string } }).doc.doc_type === "chat-settings") as
-      { op: "create"; doc: { system: unknown } };
-    expect(chatOp.doc.system).toEqual({});
+      { op: "create"; doc: { engine: unknown } };
+    expect(chatOp.doc.engine).toEqual({ markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null });
   });
 
   it("non-GM seeds nothing", () => {
@@ -49,7 +49,7 @@ describe("game-settings seed", () => {
       buildLightGradationDoc("w1"),
       buildVisionModesDoc("w1"),
       buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins" }),
-      buildChatSettingsDoc("w1", {}),
+      buildChatSettingsDoc("w1", { markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null }),
     );
     render(GameSettingsPanel, {
       context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }),
