@@ -236,9 +236,18 @@ are observations awaiting triage, not committed work.
   `/engine/x,y` on a token the ECS hasn't yet hydrated (e.g. a same-batch Create+Update sequence,
   or an Update racing ECS hydration) would commit UNGATED — the gate is skipped (returns `None`,
   falls through to the ordinary write path), not rejected. This is a PRE-EXISTING shape, unchanged
-  by Task 6 itself (Task 6 only moved the gate's read target from `/system` to `/engine`), and
-  believed unreachable in steady state because of the ingress validation guarantee (Task 3) — but
-  it is structurally a fail-open pattern sitting on a security-critical gate. Status: Needs Review
-  (flagged by the spec reviewer for the upcoming adversarial buddy-check to probe reachability —
-  specifically whether a same-batch Create+Update or an Update arriving before ECS hydration
-  completes can actually reach `apply_intent` with the gate skipped).
+  by Task 6 itself (Task 6 only moved the gate's read target from `/system` to `/engine`).
+  Status: Investigated — unreachable: `apply_intent`'s Phase 1 (`data/sqlite.rs`) validates every
+  op in a single batch sequentially, in array order, BEFORE any Phase 2 row mutation runs — an
+  `Operation::Update`'s Phase 1 branch calls `Self::load_document(&mut *tx, *doc_id)` and rejects
+  with `DataError::Conflict` if it returns `None`; a same-batch `Create` for that same `doc_id`
+  has not yet inserted its row (insertion is Phase 2 only), so a `[Create(token),
+  Update(token, /engine/x=...)]` batch is rejected outright at Phase 1, never reaching commit.
+  Separately, `Room::publish` acquires `publish_guard` (a `tokio::sync::Mutex<()>`) for its ENTIRE
+  gate→`apply_intent`→ECS-hydrate critical section (guard taken at function entry, held through
+  `commit_ops_locked`, never re-entered or released early) — every `publish` call for a room is
+  therefore fully serialized against every other `publish` call for that same room, including
+  across separate WS requests, so an `Update` racing a DIFFERENT publish call's ECS hydration for
+  the same token cannot land mid-hydration either: the racing publish cannot even begin its own
+  Phase 1 validation (which needs the same guard, via `commit_ops_locked`) until the prior
+  publish's hydration has fully completed. No code change required.

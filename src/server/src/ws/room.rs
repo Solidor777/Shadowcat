@@ -1112,20 +1112,35 @@ mod room_tests {
 
     /// A `/system/x` write on a token is game-system data — it must not be treated as a move
     /// by `Room::publish`'s M9a/M10e-4 gate (which reads `/engine` exclusively), and the
-    /// write must not desync the ECS's committed `/engine` position.
+    /// write must not desync the ECS's committed `/engine` position. This is the integration-
+    /// level counterpart of `scene::mod::tests::token_move_uses_post_image_resisting_forged_
+    /// bypasses`'s `/system/x` decoy assertion (same naming-collision decoy: `/system/x` vs.
+    /// `/engine/x`), proved end-to-end through `Room::publish` rather than the bare ECS method.
     #[tokio::test]
     async fn system_field_write_bypasses_the_move_gate_and_does_not_desync_the_engine_band() {
         let h = movement_scene_with_wall().await;
 
-        // A value that would cross the wall if (wrongly) interpreted as a position — the wall
-        // gate must not even see this write, since it targets `/system`, not `/engine`.
+        // A `/system/x` + `/system/y` decoy pair targeting `(200,150)`. If the gate mistakenly
+        // read these `/system/*` paths as `/engine/x,y` (the naming-collision decoy this test
+        // targets), the resulting straight-line move from the committed start `(50,50)` to
+        // `(200,150)` crosses `movement_scene_with_wall`'s horizontal wall (y=100, x∈[100,200])
+        // at x=125 — well clear of both wall endpoints, no corner-touch ambiguity — and would be
+        // rejected. The gate must not even see this write, since it targets `/system`, not
+        // `/engine`.
         let write = Operation::Update {
             doc_id: h.token_id,
-            changes: vec![FieldChange {
-                path: "/system/hp".into(),
-                old: serde_json::json!(10), // `sample_doc`'s fixture default `system.hp`
-                new: serde_json::json!(999),
-            }],
+            changes: vec![
+                FieldChange {
+                    path: "/system/x".into(),
+                    old: serde_json::Value::Null, // absent key reads as Null (no `system.x` default)
+                    new: serde_json::json!(200.0),
+                },
+                FieldChange {
+                    path: "/system/y".into(),
+                    old: serde_json::Value::Null,
+                    new: serde_json::json!(150.0),
+                },
+            ],
         };
         h.room
             .publish(
@@ -1144,6 +1159,123 @@ mod room_tests {
             pos, h.start,
             "/system write must not move the token's /engine position"
         );
+    }
+
+    /// Defense-in-depth: a single `Update`'s FieldChange list combining a wholesale `/engine`
+    /// replace AND a leaf `/engine/x` change must produce the SAME post-image whether the
+    /// gate's replay (`SceneEcs::token_move`, consulted by `Room::publish`'s movement gate) or
+    /// the commit path's replay (`apply_intent`'s sequential `set_pointer` application) computes
+    /// it — in BOTH possible orderings of the two changes. Both replay implementations apply
+    /// `changes` via `set_pointer` in array order independently; this pins them against silently
+    /// diverging (which would let the gate validate one post-image while a different one
+    /// actually lands).
+    #[tokio::test]
+    async fn mixed_wholesale_and_leaf_engine_changes_agree_between_gate_and_commit_in_both_orderings(
+    ) {
+        use crate::data::command::FieldChange;
+        use serde_json::json;
+
+        // The wholesale `old` pre-image must equal the ACTUAL stored `/engine` value, which
+        // includes `TokenEngine`'s `#[serde(default)]` `null` fields (visual/actor_id/
+        // overrides/face) beyond the `token_engine(50.0, 50.0)` fixture's x/y/w/h/rotation —
+        // read it back rather than hand-constructing it, mirroring `mv_to`'s convention.
+        async fn stored_engine(h: &MovementHandle) -> serde_json::Value {
+            h.repo
+                .get_document(h.token_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .engine
+                .unwrap()
+        }
+        let wholesale_new = json!({
+            "x": 10.0, "y": 10.0, "w": 1.0, "h": 1.0, "rotation": 0.0,
+            "visual": null, "actor_id": null, "overrides": null, "face": null
+        });
+
+        // Ordering A: wholesale replace, then a leaf x-overwrite. Expected final: (20,10).
+        {
+            let h = movement_scene_with_wall().await;
+            let start_engine = stored_engine(&h).await;
+            let changes = vec![
+                FieldChange {
+                    path: "/engine".into(),
+                    old: start_engine.clone(),
+                    new: wholesale_new.clone(),
+                },
+                FieldChange {
+                    path: "/engine/x".into(),
+                    old: json!(50.0),
+                    new: json!(20.0),
+                },
+            ];
+            let gate_post = {
+                let scene = h.room.scene().read().await;
+                scene.token_move(h.token_id, &changes).unwrap().2
+            };
+            h.room
+                .publish(
+                    &h.repo,
+                    &h.player,
+                    vec![Operation::Update {
+                        doc_id: h.token_id,
+                        changes,
+                    }],
+                    now_millis(),
+                    WriteOrigin::Client,
+                )
+                .await
+                .unwrap();
+            let committed = h.committed_pos(h.token_id).await;
+            assert_eq!(gate_post, (20.0, 10.0), "ordering A gate post-image");
+            assert_eq!(committed, (20.0, 10.0), "ordering A committed post-image");
+            assert_eq!(
+                gate_post, committed,
+                "ordering A: gate and commit post-images must agree"
+            );
+        }
+
+        // Ordering B: leaf x-overwrite, then wholesale replace. Expected final: (10,10).
+        {
+            let h = movement_scene_with_wall().await;
+            let start_engine = stored_engine(&h).await;
+            let changes = vec![
+                FieldChange {
+                    path: "/engine/x".into(),
+                    old: json!(50.0),
+                    new: json!(20.0),
+                },
+                FieldChange {
+                    path: "/engine".into(),
+                    old: start_engine.clone(),
+                    new: wholesale_new.clone(),
+                },
+            ];
+            let gate_post = {
+                let scene = h.room.scene().read().await;
+                scene.token_move(h.token_id, &changes).unwrap().2
+            };
+            h.room
+                .publish(
+                    &h.repo,
+                    &h.player,
+                    vec![Operation::Update {
+                        doc_id: h.token_id,
+                        changes,
+                    }],
+                    now_millis(),
+                    WriteOrigin::Client,
+                )
+                .await
+                .unwrap();
+            let committed = h.committed_pos(h.token_id).await;
+            assert_eq!(gate_post, (10.0, 10.0), "ordering B gate post-image");
+            assert_eq!(committed, (10.0, 10.0), "ordering B committed post-image");
+            assert_eq!(
+                gate_post, committed,
+                "ordering B: gate and commit post-images must agree"
+            );
+        }
     }
 
     #[tokio::test]

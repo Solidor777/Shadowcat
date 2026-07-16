@@ -4679,6 +4679,62 @@ mod tests {
         );
     }
 
+    /// Regression pin: a single intent batching `[Create(token), Update(token,
+    /// /engine/x=...)]` must be rejected wholesale, never partially committed. The `Update`
+    /// validation branch loads the CURRENT stored document (`Self::load_document`) before any
+    /// row is mutated, so a same-batch `Create` for the same id has not yet inserted its row,
+    /// and the `Update` finds no document to load. This pins the ordering `Room::publish`'s
+    /// movement gate depends on: the gate only runs when `SceneEcs::token_move` finds the token
+    /// already hydrated, and this ordering guarantee is what prevents a same-batch Create+Update
+    /// from committing ungated and unhydrated. Any future refactor that mutates rows per-op
+    /// instead of validating the whole batch up front could silently reopen this gap.
+    #[tokio::test]
+    async fn apply_intent_same_batch_create_then_engine_update_is_rejected() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut tok = world_doc(1, w.id, serde_json::json!({}));
+        tok.doc_type = "token".into();
+        tok.engine = crate::data::document::tests::default_test_engine("token");
+
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![
+                    Operation::Create { doc: tok.clone() },
+                    Operation::Update {
+                        doc_id: tok.id,
+                        changes: vec![FieldChange {
+                            path: "/engine/x".into(),
+                            old: serde_json::json!(0.0),
+                            new: serde_json::json!(999.0),
+                        }],
+                    },
+                ],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DataError::Conflict(_)),
+            "expected Conflict (Update's existence check rejecting the not-yet-inserted Create \
+             target), got: {err:?}"
+        );
+        // Nothing committed: the whole batch (including the Create) was rejected, no partial
+        // commit of just the Create half.
+        assert!(r.get_document(tok.id).await.unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn apply_intent_rejects_unauthorized_and_oversized() {
         use crate::data::document::{DocRole, PermissionSet};
