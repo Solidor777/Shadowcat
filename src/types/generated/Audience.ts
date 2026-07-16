@@ -3,7 +3,7 @@
 /**
  * The intended readership of a message, beyond the ordinary world-readable
  * default. Carried on the `SendMessage` frame and stored verbatim in
- * `MessageSystem`; drives the document's `PermissionSet` in
+ * `MessageEngine`; drives the document's `PermissionSet` in
  * `build_message_doc` (see that function for the exact mapping). `channel`
  * stays a purely client-chosen label — the server never validates it or
  * derives audience from it; a client module choosing to post into a "GM"

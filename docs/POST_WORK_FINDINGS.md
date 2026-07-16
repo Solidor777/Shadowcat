@@ -226,8 +226,13 @@ are observations awaiting triage, not committed work.
   (`data/sqlite.rs::apply_command`) — an ungated trusted substrate with zero production callers
   today — does NOT carry the same broadcast/event-log `/engine` normalization gate added to
   `apply_intent` by this fix; if `apply_command` is ever wired to real undo/replay functionality,
-  it must gain the identical gate first. Status: Accepted (interim divergence, no action needed
-  before Task 7); Task 7 tracking note added to the M13-0 plan.
+  it must gain the identical gate first. Status: Resolved — M13-0 Task 7 re-rooted both chat READS
+  and WRITES onto `/engine` (`handle_edit_message`/`handle_delete_message` now construct an
+  `/engine` `FieldChange`, not `/system`; `build_message_doc` writes `system: {}`); `/engine` is now
+  the sole source of truth and the staleness window is closed. Re-confirmed at Task 7: `apply_command`
+  still has zero production callers (grep across `src/server/src`), so it was not accidentally wired
+  into the chat re-root; its missing `/engine` normalization gate remains inert until a real
+  undo/replay caller is added, at which point it needs the same gate as `apply_intent`.
 
 - Title: Movement gate: token_move gate-dispatch is opt-in on ECS hydration (fail-open shape,
   reachability unconfirmed). Summary: `Room::publish`'s per-operation movement gate only runs when

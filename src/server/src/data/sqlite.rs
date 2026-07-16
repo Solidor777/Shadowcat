@@ -1097,18 +1097,19 @@ impl Repository for SqliteRepository {
                     // reviewed against this invariant.
                     //
                     // Grant only READ + WRITE_FIELDS (never `all: true`) —
-                    // both existing handlers construct a single `/system`
-                    // FieldChange and never touch `/permissions` or
-                    // `/embedded`, so the exemption is scoped to exactly what
-                    // it is used for. This still authorizes the GM-not-
-                    // addressed moderation edit/delete of `/system` while
-                    // denying `/permissions`/`/embedded` writes by
-                    // construction, closing the gap even for a hypothetical
-                    // future `ServerMessageRevision` caller with a broader op.
+                    // both existing handlers construct a single `/engine`
+                    // FieldChange (M13-0: re-rooted from `/system`) and never
+                    // touch `/permissions` or `/embedded`, so the exemption is
+                    // scoped to exactly what it is used for. This still
+                    // authorizes the GM-not-addressed moderation edit/delete
+                    // of `/engine` while denying `/permissions`/`/embedded`
+                    // writes by construction, closing the gap even for a
+                    // hypothetical future `ServerMessageRevision` caller with
+                    // a broader op.
                     // CAVEAT: unlike the prior unconditional `all: true`, this
                     // concrete cap set does NOT auto-satisfy an ADDITIVE
                     // `declared_caps_for_path` world/module requirement on a
-                    // message `/system` (sub-)path (checked further below).
+                    // message `/engine` (sub-)path (checked further below).
                     // No first-party module declares one today, so this is
                     // inert; if one is ever added for `doc_type: "message"`,
                     // it would block a GM's already-vetted moderation write —
@@ -4239,7 +4240,7 @@ mod tests {
     async fn message_update_rejected_for_client_allowed_for_server_revision() {
         let (repo, world, owner_ctx, msg_id) = seed_owned_message().await;
         let change = FieldChange {
-            path: "/system/content".into(),
+            path: "/engine/content".into(),
             old: serde_json::json!([{ "kind": "text", "text": "hi" }]),
             new: serde_json::json!([{ "kind": "text", "text": "edited" }]),
         };

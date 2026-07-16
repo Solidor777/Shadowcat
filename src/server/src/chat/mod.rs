@@ -1,8 +1,10 @@
 //! Chat domain: the server-authoritative message model and ingest.
 //!
-//! Messages are ordinary sequenced `Document`s with an opaque `system` body
-//! (this module's `MessageSystem`), authored and revised ONLY by the server —
-//! never built or mutated by a client directly. A `message` doc_type reaches
+//! Messages are ordinary sequenced `Document`s with a typed, ingress-validated
+//! `engine` body (this module's `MessageEngine`, M13-0: re-rooted from the
+//! opaque `system` band `MessageSystem` used pre-M13-0); `system` stays
+//! reserved-empty (`{}`) for message docs. Authored and revised ONLY by the
+//! server — never built or mutated by a client directly. A `message` doc_type reaches
 //! `apply_intent` only via `handle_send_message` (Create), `handle_edit_message`,
 //! or `handle_delete_message` (both Update, the latter a soft tombstone). Four
 //! chokepoints jointly enforce this: the create-gate baseline-message exemption
@@ -79,7 +81,7 @@ pub fn ops_target_message(ops: &[Operation]) -> bool {
 
 /// Attribution of a message to an actor: a linked canonical `Actor` document,
 /// or an instanced actor resolved through its token. Carried on the
-/// `SendMessage` frame and stored in `MessageSystem`. No ID newtypes exist —
+/// `SendMessage` frame and stored in `MessageEngine`. No ID newtypes exist —
 /// identifiers are bare `Uuid` (rendered `string` in TS).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
@@ -91,7 +93,7 @@ pub enum ActorOwnerRef {
 
 /// The intended readership of a message, beyond the ordinary world-readable
 /// default. Carried on the `SendMessage` frame and stored verbatim in
-/// `MessageSystem`; drives the document's `PermissionSet` in
+/// `MessageEngine`; drives the document's `PermissionSet` in
 /// `build_message_doc` (see that function for the exact mapping). `channel`
 /// stays a purely client-chosen label — the server never validates it or
 /// derives audience from it; a client module choosing to post into a "GM"
@@ -180,10 +182,15 @@ pub fn plain_text_content(raw: &str) -> Vec<Segment> {
     }]
 }
 
-/// The message document's `system` body. Opaque on the wire (no ts-rs); the
-/// client declares its own Zod mirror in M11d.
+/// The message document's `engine` body (M13-0: re-rooted from `system`).
+/// Opaque on the WIRE (no ts-rs — the client declares its own Zod mirror,
+/// M11d's `chat-docs.ts`), but ingress-validated server-side same as every
+/// other engine-defined doc_type: `deny_unknown_fields` closes the gap a
+/// pre-M13-0 `MessageSystem` left open (an unknown key on this body used to
+/// pass through the opaque `system` band unrejected).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MessageSystem {
+#[serde(deny_unknown_fields)]
+pub struct MessageEngine {
     pub channel: String,
     /// The owning user; server-set to the authenticated poster (== `Document.owner`).
     pub user_owner: Uuid,
@@ -265,7 +272,7 @@ pub fn build_message_doc(
         Audience::GmOnly => (DocRole::None, Some(DocRole::Observer), BTreeMap::new()),
     };
     users.insert(user, DocRole::Owner);
-    let system = MessageSystem {
+    let engine = MessageEngine {
         channel,
         user_owner: user,
         actor_owner,
@@ -276,12 +283,14 @@ pub fn build_message_doc(
         edited_at: None,
         deleted_at: None,
     };
-    let system_json = serde_json::to_value(&system).expect("MessageSystem serializes");
+    let engine_json = serde_json::to_value(&engine).expect("MessageEngine serializes");
     Document {
         id: Uuid::new_v4(),
         scope: Scope::World { world_id },
         doc_type: MESSAGE_DOC_TYPE.to_string(),
         schema_version: 1,
+        // Messages have no envelope display name — `name` is `None` for the
+        // entire doc lifetime (never set on edit/delete either).
         name: None,
         source: None,
         owner: Some(user),
@@ -293,13 +302,12 @@ pub fn build_message_doc(
         },
         embedded: BTreeMap::new(),
         parent_id: None,
-        // `message` is engine-defined (`data::engine::is_engine_doc_type`);
-        // the actual rename to a dedicated `MessageEngine` band + `system`
-        // truncation is a later checkpoint. Duplicated (not moved) here so
-        // the ingress gate is satisfied without touching any of the
-        // existing `doc.system`-reading call sites above.
-        engine: Some(system_json.clone()),
-        system: system_json,
+        // `message` is engine-defined (`data::engine::is_engine_doc_type`):
+        // the real content lives in `engine` only; `system` stays
+        // reserved-empty (`{}`) for message docs — there is no game-system
+        // data on a chat message.
+        engine: Some(engine_json),
+        system: serde_json::json!({}),
         created_at: now,
         updated_at: now,
     }
@@ -697,9 +705,10 @@ pub async fn handle_send_message(
 }
 
 /// Server-authoritative message edit: owner-or-GM only, and rewrites ONLY
-/// `content`/`kind`/`edited_at` on the stored `/system` body — `channel`/
-/// `user_owner`/`actor_owner`/`audience`/`deleted_at` are copied verbatim from
-/// the stored document, never re-derived from the edit request.
+/// `content`/`kind`/`edited_at` on the stored `/engine` body (M13-0:
+/// re-rooted from `/system`) — `channel`/`user_owner`/`actor_owner`/
+/// `audience`/`deleted_at` are copied verbatim from the stored document,
+/// never re-derived from the edit request.
 ///
 /// For a NON-WHISPER message, this re-runs the same command-parse + sanitize
 /// pipeline `handle_send_message` uses; a `/w` (or any whisper-targeting
@@ -763,7 +772,7 @@ pub async fn handle_edit_message(
     // could resurrect `content` (re-indexed into FTS) on a doc whose
     // `deleted_at` marker stays set — simultaneously "deleted" and
     // content-bearing, defeating the soft-delete's content-clearing intent.
-    let mut sys: MessageSystem = serde_json::from_value(cur.system.clone())
+    let mut sys: MessageEngine = serde_json::from_value(cur.engine.clone().unwrap_or_default())
         .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
     if sys.deleted_at.is_some() {
         return Err(SendMessageError::NotFound);
@@ -848,8 +857,9 @@ pub async fn handle_edit_message(
         .await;
     }
 
-    // Build the revised system: new content + kind, edited_at=now; preserve
-    // channel/user_owner/actor_owner/audience/deleted_at from the stored doc.
+    // Build the revised engine band: new content + kind, edited_at=now;
+    // preserve channel/user_owner/actor_owner/audience/deleted_at from the
+    // stored doc.
     sys.content = segments;
     sys.kind = kind;
     // Whisper edits skip parsing (body IS the literal content above); non-
@@ -857,15 +867,15 @@ pub async fn handle_edit_message(
     // way the full raw content is the correct source here, no strip needed.
     sys.source = Some(content.clone());
     sys.edited_at = Some(now);
-    let new_system = serde_json::to_value(&sys)
+    let new_engine = serde_json::to_value(&sys)
         .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
 
     let op = Operation::Update {
         doc_id: message_id,
         changes: vec![FieldChange {
-            path: "/system".into(),
-            old: cur.system,
-            new: new_system,
+            path: "/engine".into(),
+            old: cur.engine.unwrap_or_default(),
+            new: new_engine,
         }],
     };
     room.publish(repo, ctx, vec![op], now, WriteOrigin::ServerMessageRevision)
@@ -877,7 +887,7 @@ pub async fn handle_edit_message(
 /// tombstone — no command parsing or sanitization runs. Clears `content` and
 /// sets `deleted_at`; `channel`/`user_owner`/`actor_owner`/`audience`/`kind`/
 /// `edited_at` are left untouched. Like `handle_edit_message`, the write is
-/// an `Operation::Update` on `/system` under `WriteOrigin::ServerMessageRevision`
+/// an `Operation::Update` on `/engine` under `WriteOrigin::ServerMessageRevision`
 /// (not a hard `Operation::Delete`) — the doc stays in the sequenced log, so
 /// resync and per-recipient redaction both continue to apply to it unchanged.
 ///
@@ -914,22 +924,22 @@ pub async fn handle_delete_message(
         return Err(SendMessageError::Forbidden);
     }
 
-    let mut sys: MessageSystem = serde_json::from_value(cur.system.clone())
+    let mut sys: MessageEngine = serde_json::from_value(cur.engine.clone().unwrap_or_default())
         .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
     sys.content = Vec::new();
     // Clear alongside content — a retained source would leak deleted content
     // through the envelope (edit-prefill data is otherwise unredacted).
     sys.source = None;
     sys.deleted_at = Some(now);
-    let new_system = serde_json::to_value(&sys)
+    let new_engine = serde_json::to_value(&sys)
         .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
 
     let op = Operation::Update {
         doc_id: message_id,
         changes: vec![FieldChange {
-            path: "/system".into(),
-            old: cur.system,
-            new: new_system,
+            path: "/engine".into(),
+            old: cur.engine.unwrap_or_default(),
+            new: new_engine,
         }],
     };
     room.publish(repo, ctx, vec![op], now, WriteOrigin::ServerMessageRevision)
@@ -957,7 +967,7 @@ mod tests {
 
     #[test]
     fn message_system_omits_absent_edit_delete_markers() {
-        let sys = MessageSystem {
+        let sys = MessageEngine {
             channel: "all".into(),
             user_owner: Uuid::from_u128(1),
             actor_owner: None,
@@ -994,7 +1004,7 @@ mod tests {
             None,
             1,
         );
-        let sys: MessageSystem = serde_json::from_value(doc.system).unwrap();
+        let sys: MessageEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
         assert_eq!(sys.kind, MessageKind::Emote);
     }
 
@@ -1072,8 +1082,8 @@ mod tests {
         // default Observer so every world member can read it.
         assert_eq!(doc.permissions.default, DocRole::Observer);
         assert_eq!(doc.permissions.users.get(&user), Some(&DocRole::Owner));
-        // Body round-trips back to a MessageSystem with server-set user_owner.
-        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        // Body round-trips back to a MessageEngine with server-set user_owner.
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
         assert_eq!(sys.user_owner, user);
         assert_eq!(sys.channel, "all");
         assert_eq!(sys.kind, MessageKind::Normal);
@@ -1717,7 +1727,7 @@ mod tests {
             Operation::Create { doc } => doc,
             other => panic!("expected Create, got {other:?}"),
         };
-        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
         assert_eq!(sys.source, Some("hello".into()));
 
         // Command message: source keeps the command prefix (re-parses identically).
@@ -1742,7 +1752,7 @@ mod tests {
             Operation::Create { doc } => doc,
             other => panic!("expected Create, got {other:?}"),
         };
-        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
         assert_eq!(sys.source, Some("/me waves".into()));
 
         // Whisper via content /w: source has the /w prefix STRIPPED.
@@ -1767,7 +1777,7 @@ mod tests {
             Operation::Create { doc } => doc,
             other => panic!("expected Create, got {other:?}"),
         };
-        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
         assert_eq!(sys.source, Some("hi".into()));
     }
 
@@ -1837,14 +1847,14 @@ mod tests {
         .await
         .unwrap();
         let stored = repo.get_document(message_id).await.unwrap().unwrap();
-        let sys: MessageSystem = serde_json::from_value(stored.system.clone()).unwrap();
+        let sys: MessageEngine = serde_json::from_value(stored.engine.clone().unwrap()).unwrap();
         assert_eq!(sys.source, Some("goodbye".into()));
 
         handle_delete_message(&room, &repo, &ctx, &rate, message_id, 102, 30)
             .await
             .unwrap();
         let stored = repo.get_document(message_id).await.unwrap().unwrap();
-        let sys: MessageSystem = serde_json::from_value(stored.system).unwrap();
+        let sys: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
         assert_eq!(sys.source, None, "delete tombstone must clear source");
         assert!(
             sys.content.is_empty(),
@@ -1912,7 +1922,7 @@ mod tests {
             other => panic!("expected Create, got {other:?}"),
         };
         let stored = repo.get_document(message_id).await.unwrap().unwrap();
-        let sys: MessageSystem = serde_json::from_value(stored.system.clone()).unwrap();
+        let sys: MessageEngine = serde_json::from_value(stored.engine.clone().unwrap()).unwrap();
         assert_eq!(sys.kind, MessageKind::Normal);
         assert_eq!(sys.source, Some("/me waves".into()));
         assert!(matches!(sys.audience, Audience::Whisper { .. }));
@@ -1936,7 +1946,7 @@ mod tests {
         .await
         .unwrap();
         let stored = repo.get_document(message_id).await.unwrap().unwrap();
-        let sys2: MessageSystem = serde_json::from_value(stored.system.clone()).unwrap();
+        let sys2: MessageEngine = serde_json::from_value(stored.engine.clone().unwrap()).unwrap();
         assert_eq!(
             sys2.kind,
             MessageKind::Normal,
@@ -1974,7 +1984,8 @@ mod tests {
             other => panic!("expected Create, got {other:?}"),
         };
         let stored2 = repo.get_document(message_id2).await.unwrap().unwrap();
-        let sys2_pre: MessageSystem = serde_json::from_value(stored2.system.clone()).unwrap();
+        let sys2_pre: MessageEngine =
+            serde_json::from_value(stored2.engine.clone().unwrap()).unwrap();
         assert_eq!(sys2_pre.source, Some("hi".into()));
 
         // Edit-resubmit of a whisper's stored body that itself reads as a /w
@@ -1996,7 +2007,7 @@ mod tests {
         .await
         .expect("a whisper edit must never reject a literal /w-shaped body");
         let stored2 = repo.get_document(message_id2).await.unwrap().unwrap();
-        let sys2_post: MessageSystem = serde_json::from_value(stored2.system).unwrap();
+        let sys2_post: MessageEngine = serde_json::from_value(stored2.engine.unwrap()).unwrap();
         assert_eq!(sys2_post.kind, MessageKind::Normal);
         assert_eq!(sys2_post.source, Some("/w @bob hi".into()));
         // Audience must remain the ORIGINAL whisper's recipients — frozen, not
@@ -2064,7 +2075,7 @@ mod tests {
         .await
         .unwrap();
         let stored2 = repo.get_document(message_id2).await.unwrap().unwrap();
-        let sys2_final: MessageSystem = serde_json::from_value(stored2.system).unwrap();
+        let sys2_final: MessageEngine = serde_json::from_value(stored2.engine.unwrap()).unwrap();
         assert_eq!(sys2_final.source, Some("bye now".into()));
         match &sys2_final.content[..] {
             [Segment::Text { text }] => assert_eq!(text, "bye now"),
@@ -2127,7 +2138,7 @@ mod tests {
             Operation::Create { doc } => (doc.id, doc),
             other => panic!("expected Create, got {other:?}"),
         };
-        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
         assert_eq!(sys.kind, MessageKind::Normal);
         assert!(
             sys.content
@@ -2256,7 +2267,7 @@ mod tests {
             Operation::Create { doc } => (doc.id, doc),
             other => panic!("expected Create, got {other:?}"),
         };
-        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
         assert_eq!(
             sys.kind,
             MessageKind::Roll,
@@ -2284,7 +2295,7 @@ mod tests {
 
     #[test]
     fn stored_pre_source_message_still_deserializes() {
-        // A stored c-3 (pre-`source`) MessageSystem JSON has no `source` key at all.
+        // A stored c-3 (pre-`source`) MessageEngine JSON has no `source` key at all.
         let j = serde_json::json!({
             "channel": "all",
             "user_owner": Uuid::from_u128(1),
@@ -2292,7 +2303,7 @@ mod tests {
             "audience": { "kind": "public" },
             "content": [],
         });
-        let sys: MessageSystem = serde_json::from_value(j).unwrap();
+        let sys: MessageEngine = serde_json::from_value(j).unwrap();
         assert_eq!(sys.source, None);
     }
 
@@ -2438,7 +2449,7 @@ mod tests {
             Operation::Create { doc } => doc,
             other => panic!("expected Create, got {other:?}"),
         };
-        let sys: MessageSystem = serde_json::from_value(doc.system.clone()).unwrap();
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
         assert_eq!(sys.actor_owner, Some(ActorOwnerRef::Actor { actor_id }));
     }
 
@@ -2818,8 +2829,8 @@ mod link_preview_ingest_tests {
                 permissions: PermissionSet::default(),
                 embedded: BTreeMap::new(),
                 parent_id: None,
-                engine: crate::data::document::tests::default_test_engine(CHAT_SETTINGS_DOC_TYPE),
-                system: serde_json::to_value(policy).unwrap(),
+                engine: Some(serde_json::to_value(policy).unwrap()),
+                system: serde_json::json!({}),
                 created_at: 0,
                 updated_at: 0,
             };
@@ -2897,14 +2908,14 @@ mod link_preview_ingest_tests {
             .await
         }
 
-        async fn stored_system(&self, cmd: &Command) -> MessageSystem {
+        async fn stored_engine(&self, cmd: &Command) -> MessageEngine {
             let doc_id = match &cmd.ops[0] {
                 Operation::Create { doc } => doc.id,
                 Operation::Update { doc_id, .. } => *doc_id,
                 Operation::Delete { doc } => doc.id,
             };
             let doc = self.repo.get_document(doc_id).await.unwrap().unwrap();
-            serde_json::from_value(doc.system).unwrap()
+            serde_json::from_value(doc.engine.unwrap()).unwrap()
         }
     }
 
@@ -2916,8 +2927,8 @@ mod link_preview_ingest_tests {
     /// use that syntax accordingly.
     fn hyperlinks_on() -> ChatContentPolicy {
         ChatContentPolicy {
-            markdown: true,
-            hyperlinks: true,
+            markdown: Some(true),
+            hyperlinks: Some(true),
             ..Default::default()
         }
     }
@@ -2934,7 +2945,7 @@ mod link_preview_ingest_tests {
             .send(&format!("check out [link](http://stub.test:{addr}/)"), 1)
             .await
             .unwrap();
-        let sys = f.stored_system(&cmd).await;
+        let sys = f.stored_engine(&cmd).await;
         match sys.content.last() {
             Some(Segment::LinkPreview { url, title, .. }) => {
                 assert!(url.contains(&addr.to_string()));
@@ -2962,7 +2973,7 @@ mod link_preview_ingest_tests {
         let first = f.send(&format!("one [x]({url})"), 1).await.unwrap();
         let second = f.send(&format!("two [x]({url})"), 2).await.unwrap();
         for cmd in [&first, &second] {
-            let sys = f.stored_system(cmd).await;
+            let sys = f.stored_engine(cmd).await;
             assert!(matches!(
                 sys.content.last(),
                 Some(Segment::LinkPreview { .. })
@@ -2987,7 +2998,7 @@ mod link_preview_ingest_tests {
             "[a](http://stub.test:{addr}/a) [b](http://stub.test:{addr}/b) [c](http://stub.test:{addr}/c) [d](http://stub.test:{addr}/d)"
         );
         let cmd = f.send(&body, 1).await.unwrap();
-        let sys = f.stored_system(&cmd).await;
+        let sys = f.stored_engine(&cmd).await;
         let preview_count = sys
             .content
             .iter()
@@ -3012,7 +3023,7 @@ mod link_preview_ingest_tests {
             .send(&format!("broken [link](http://stub.test:{addr}/)"), 1)
             .await
             .unwrap();
-        let sys = f.stored_system(&cmd).await;
+        let sys = f.stored_engine(&cmd).await;
         assert!(
             !sys.content
                 .iter()
@@ -3039,7 +3050,7 @@ mod link_preview_ingest_tests {
             )
             .await
             .unwrap();
-        let sys = f.stored_system(&cmd).await;
+        let sys = f.stored_engine(&cmd).await;
         assert!(
             !sys.content
                 .iter()
@@ -3057,8 +3068,8 @@ mod link_preview_ingest_tests {
         ))
         .await;
         let f = Fixture::new(ChatContentPolicy {
-            markdown: true,
-            hyperlinks: true,
+            markdown: Some(true),
+            hyperlinks: Some(true),
             link_previews: Some(false),
             ..Default::default()
         })
@@ -3067,7 +3078,7 @@ mod link_preview_ingest_tests {
             .send(&format!("check [link](http://stub.test:{addr}/)"), 1)
             .await
             .unwrap();
-        let sys = f.stored_system(&cmd).await;
+        let sys = f.stored_engine(&cmd).await;
         // Sanity: the link is still rendered as a real anchor — proving the
         // suppression below is `link_previews`-specific, not a side effect
         // of the link never becoming an `<a>` in the first place.
@@ -3102,7 +3113,7 @@ mod link_preview_ingest_tests {
                 "[a](http://stub.test:{addr}/{i}a) [b](http://stub.test:{addr}/{i}b) [c](http://stub.test:{addr}/{i}c)"
             );
             let cmd = f.send(&body, 1_000).await.unwrap();
-            let sys = f.stored_system(&cmd).await;
+            let sys = f.stored_engine(&cmd).await;
             total_previews += sys
                 .content
                 .iter()
@@ -3143,14 +3154,14 @@ mod link_preview_ingest_tests {
             Operation::Create { doc } => doc.id,
             _ => unreachable!(),
         };
-        let sys_before = f.stored_system(&sent).await;
+        let sys_before = f.stored_engine(&sent).await;
         assert!(matches!(
             sys_before.content.last(),
             Some(Segment::LinkPreview { .. })
         ));
 
         let edited = f.edit(doc_id, "no links here anymore", 2).await.unwrap();
-        let sys_after = f.stored_system(&edited).await;
+        let sys_after = f.stored_engine(&edited).await;
         assert!(
             !sys_after
                 .content
@@ -3172,7 +3183,7 @@ mod link_preview_ingest_tests {
     async fn roll_message_never_gets_a_link_preview_even_when_previews_enabled() {
         let f = Fixture::new(hyperlinks_on()).await;
         let cmd = f.send("/roll 1d6", 1).await.unwrap();
-        let sys = f.stored_system(&cmd).await;
+        let sys = f.stored_engine(&cmd).await;
         assert_eq!(sys.kind, MessageKind::Roll);
         assert_eq!(
             sys.content.len(),
@@ -3223,7 +3234,7 @@ mod link_preview_ingest_tests {
             )
             .await
             .unwrap();
-        let sys = f.stored_system(&cmd).await;
+        let sys = f.stored_engine(&cmd).await;
         assert!(matches!(sys.content.first(), Some(Segment::Html { .. })));
         assert!(
             !sys.content
@@ -3239,7 +3250,7 @@ mod link_preview_ingest_tests {
         );
     }
 
-    /// A stored pre-M11d-3 `MessageSystem` (no `LinkPreview` segments) still
+    /// A stored pre-M11d-3 `MessageEngine` (no `LinkPreview` segments) still
     /// round-trips through the deserializer — the new segment variant is
     /// purely additive, not a breaking schema change.
     #[test]
@@ -3251,7 +3262,7 @@ mod link_preview_ingest_tests {
             "audience": { "kind": "public" },
             "content": [{ "kind": "text", "text": "hi" }],
         });
-        let sys: MessageSystem = serde_json::from_value(j).unwrap();
+        let sys: MessageEngine = serde_json::from_value(j).unwrap();
         assert_eq!(sys.kind, MessageKind::Normal);
         assert_eq!(sys.content, vec![Segment::Text { text: "hi".into() }]);
     }

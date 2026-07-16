@@ -3,7 +3,7 @@
 /**
  * Attribution of a message to an actor: a linked canonical `Actor` document,
  * or an instanced actor resolved through its token. Carried on the
- * `SendMessage` frame and stored in `MessageSystem`. No ID newtypes exist —
+ * `SendMessage` frame and stored in `MessageEngine`. No ID newtypes exist —
  * identifiers are bare `Uuid` (rendered `string` in TS).
  */
 export type ActorOwnerRef = { "kind": "actor", actor_id: string, } | { "kind": "token_instance", token_id: string, };

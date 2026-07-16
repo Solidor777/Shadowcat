@@ -110,7 +110,7 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
         "drawing" => round_trip::<DrawingEngine>(v, "drawing"),
         "template" => round_trip::<TemplateEngine>(v, "template"),
         "actor" => round_trip::<ActorEngine>(v, "actor"),
-        "message" => round_trip::<crate::chat::MessageSystem>(v, "message"),
+        "message" => round_trip::<crate::chat::MessageEngine>(v, "message"),
         "world-settings" => round_trip::<WorldSettingsEngine>(v, "world-settings"),
         "vision-modes" => round_trip::<VisionModesEngine>(v, "vision-modes"),
         "light-gradation" => round_trip::<LightGradationEngine>(v, "light-gradation"),
@@ -431,10 +431,17 @@ mod tests {
         .is_err());
     }
 
-    // NOTE: no `message_unknown_field_is_rejected` test — `chat::MessageSystem`
-    // does not carry `#[serde(deny_unknown_fields)]` today (out of scope
-    // here; its rename to `MessageEngine` + strictness is a chat-subsystem
-    // change, not this module's).
+    #[test]
+    fn message_unknown_field_is_rejected() {
+        assert!(validate_engine(
+            "message",
+            Some(&json!({
+                "channel": "ic", "user_owner": "00000000-0000-0000-0000-000000000000",
+                "kind": "normal", "content": [], "bogus": 1
+            }))
+        )
+        .is_err());
+    }
 
     // --- (c) wrong-typed field rejected (all 17 registered doc_types) ---
 
