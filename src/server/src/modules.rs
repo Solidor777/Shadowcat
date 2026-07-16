@@ -11,7 +11,12 @@ use crate::data::document::CapabilityRequirement;
 /// forward-compatible no-ops, mirroring the client Zod schema's tolerance.
 #[derive(Debug, Clone, Deserialize)]
 struct ModuleManifestMirror {
+    // Deserialization presence-validates id/version (a manifest missing either
+    // fails parse and is skipped); the fields themselves are never read past
+    // that point, since `InstalledModule::id` is the folder name, not this one.
+    #[allow(dead_code)]
     id: String,
+    #[allow(dead_code)]
     version: String,
     #[serde(default)]
     requirements: Vec<CapabilityRequirement>,
@@ -50,9 +55,11 @@ pub struct InstalledModule {
 /// Scan `<modules_dir>/*/module.json`, parse + validate each. An invalid
 /// manifest (missing/malformed `id`/`version`, or malformed JSON) is logged
 /// (warn) and skipped — one broken module must not prevent startup or hide the
-/// others (ARCHITECTURE invariant 2: structural authority only, fail-open on
-/// discovery). A missing `modules_dir` (nothing installed yet) yields an empty
-/// list, not an error. Deterministic id-sorted order.
+/// others (ARCHITECTURE invariant 6: server authority over a community-authored
+/// body is structural only; fail-open on discovery is this plan's own Global
+/// Constraint 4, not itself an ARCHITECTURE invariant). A missing `modules_dir`
+/// (nothing installed yet) yields an empty list, not an error. Deterministic
+/// id-sorted order.
 pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
     let mut out = Vec::new();
     let entries = match std::fs::read_dir(modules_dir) {
@@ -65,9 +72,15 @@ pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
             continue;
         }
         let manifest_path = dir.join("module.json");
+        if !manifest_path.is_file() {
+            continue; // no module.json: not a module folder
+        }
         let contents = match std::fs::read_to_string(&manifest_path) {
             Ok(c) => c,
-            Err(_) => continue, // no module.json: not a module folder
+            Err(e) => {
+                tracing::warn!(path = %manifest_path.display(), error = %e, "module.json exists but could not be read; skipping");
+                continue;
+            }
         };
         let raw: serde_json::Value = match serde_json::from_str(&contents) {
             Ok(v) => v,
@@ -87,7 +100,6 @@ pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
             Some(n) => n.to_string(),
             None => continue,
         };
-        let _ = (&mirror.id, &mirror.version); // presence-validated by the mirror parse; not otherwise used here
         let entry_url = format!("/modules/{folder_id}/{}", mirror.entry);
         out.push(InstalledModule {
             id: folder_id,

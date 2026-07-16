@@ -194,9 +194,11 @@ pub struct InstalledModule {
 /// Scan `<modules_dir>/*/module.json`, parse + validate each. An invalid
 /// manifest (missing/malformed `id`/`version`, or malformed JSON) is logged
 /// (warn) and skipped — one broken module must not prevent startup or hide the
-/// others (ARCHITECTURE invariant 2: structural authority only, fail-open on
-/// discovery). A missing `modules_dir` (nothing installed yet) yields an empty
-/// list, not an error. Deterministic id-sorted order.
+/// others (ARCHITECTURE invariant 6: server authority over a community-authored
+/// body is structural only; fail-open on discovery is this plan's own Global
+/// Constraint 4, not itself an ARCHITECTURE invariant). A missing `modules_dir`
+/// (nothing installed yet) yields an empty list, not an error. Deterministic
+/// id-sorted order.
 pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
     let mut out = Vec::new();
     let entries = match std::fs::read_dir(modules_dir) {
