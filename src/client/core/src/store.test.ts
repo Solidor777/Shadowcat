@@ -8,6 +8,7 @@ function doc(id: string, system: unknown): WireDocument {
     scope: { kind: "world", world_id: "w1" },
     doc_type: "actor",
     schema_version: 1,
+    name: null,
     source: null,
     owner: null,
     permissions: {

@@ -39,6 +39,7 @@ function createIntent(world: string, id: string, name: string, role: "observer" 
           scope: { kind: "world", world_id: world },
           doc_type: "actor",
           schema_version: 1,
+          name: null,
           source: null,
           owner: null,
           permissions: {

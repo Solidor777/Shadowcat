@@ -47,11 +47,13 @@ export function resolveDocRef(ref: SheetRef, store: ReadableDocuments): SheetTar
   if ("tokenId" in ref) {
     const token = store.get(ref.tokenId);
     if (!token) return null;
-    const sys = token.system as { actor_id?: string | null } | undefined;
+    // `actor_id` is engine-owned (TokenEngine); the sheet itself still reads/writes the
+    // actor's `/system` (game-system data — untouched by the three-band re-root).
+    const eng = token.engine as { actor_id?: string | null } | undefined;
     // Linked: write the SHARED actor doc's /system (mirrors conditionTarget). A dangling
     // link (actor gone) fails closed — never a phantom sheet over a missing doc.
-    if (sys?.actor_id) {
-      const actor = store.get(sys.actor_id);
+    if (eng?.actor_id) {
+      const actor = store.get(eng.actor_id);
       if (!actor) return null;
       return { panelId: "sheet:" + actor.id, doc: actor, writeDocId: actor.id, writePrefix: "/system" };
     }

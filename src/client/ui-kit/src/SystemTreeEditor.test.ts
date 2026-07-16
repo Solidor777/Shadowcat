@@ -5,7 +5,7 @@ import { setAppContextForTest } from "./__fixtures__/appContextTest";
 import type { WireDocument } from "@shadowcat/core";
 
 function doc(system: unknown): WireDocument {
-  return { id: "d1", scope: { kind: "world", world_id: "w1" }, doc_type: "actor", schema_version: 1, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null }, embedded: {}, parent_id: null, system, created_at: 0, updated_at: 0 };
+  return { id: "d1", scope: { kind: "world", world_id: "w1" }, doc_type: "actor", schema_version: 1, name: null, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null }, embedded: {}, parent_id: null, system, created_at: 0, updated_at: 0 };
 }
 
 describe("SystemTreeEditor", () => {

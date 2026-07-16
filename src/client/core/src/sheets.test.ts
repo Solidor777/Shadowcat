@@ -20,7 +20,8 @@ describe("resolveDocRef", () => {
 
   it("resolves a linked token to its actor doc, /system write site", () => {
     const actor = envelope("w1", "actor", null, { name: "Goblin" }, "a1");
-    const token = envelope("w1", "token", "sc1", { actor_id: "a1", overrides: {} }, "t1");
+    // `actor_id` is engine-owned (TokenEngine) — the token's `system` stays empty here.
+    const token = envelope("w1", "token", "sc1", {}, "t1", { actor_id: "a1", overrides: null });
     const t = resolveDocRef({ tokenId: "t1" }, store([actor, token]));
     expect(t?.panelId).toBe("sheet:a1");
     expect(t?.writeDocId).toBe("a1");
@@ -63,8 +64,8 @@ describe("resolveDocRef", () => {
   });
 
   it("fails closed on a dangling link, a raw token, a missing doc, and a bad embedded index", () => {
-    const linked = envelope("w1", "token", "sc1", { actor_id: "gone" }, "t3");
-    const raw = envelope("w1", "token", "sc1", { x: 0, y: 0 }, "t4");
+    const linked = envelope("w1", "token", "sc1", {}, "t3", { actor_id: "gone" });
+    const raw = envelope("w1", "token", "sc1", {}, "t4", { x: 0, y: 0 });
     const s = store([linked, raw]);
     expect(resolveDocRef({ tokenId: "t3" }, s)).toBeNull();
     expect(resolveDocRef({ tokenId: "t4" }, s)).toBeNull();

@@ -48,9 +48,19 @@ export function resolveCaps(
   return caps;
 }
 
-/** The structural base capability for a field path (mirrors the server). */
+/** The structural base capability for a field path (mirrors the server's
+ * `required_cap_for_path`, `data/permission.rs`). `/name` is a leaf (a display string,
+ * not a container): `/name/...` does NOT match — there is no sub-path to write. */
 function baseCapForPath(path: string): string | null {
-  if (path === "/system" || path.startsWith("/system/")) return "core:write_fields";
+  if (
+    path === "/system" ||
+    path.startsWith("/system/") ||
+    path === "/engine" ||
+    path.startsWith("/engine/") ||
+    path === "/name"
+  ) {
+    return "core:write_fields";
+  }
   if (path === "/embedded" || path.startsWith("/embedded/")) return "core:manage_embedded";
   if (path === "/permissions" || path.startsWith("/permissions/")) return "core:edit_permissions";
   return null;

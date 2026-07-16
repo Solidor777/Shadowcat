@@ -1,11 +1,11 @@
 import { test, expect, describe, it } from "vitest";
-import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildItemDoc, ITEM_DOC_TYPE, type TokenSystem, type ActorSystem, type Faction, type Condition, type SceneSystem, type SceneDimensions, type TokenVisual, type FaceVisual, type AnimatedSource } from "./scene-docs";
+import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildItemDoc, ITEM_DOC_TYPE, type TokenEngine, type ActorEngine, type Faction, type Condition, type SceneEngine, type SceneDimensions, type TokenVisual, type FaceVisual, type AnimatedSource } from "./scene-docs";
 import {
   buildWorldSettingsDoc, resolveSceneSettings, resolveViewedScene, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
-  type WireDocument, type WorldSettingsSystem,
+  type WireDocument, type WorldSettingsEngine,
 } from "./scene-docs";
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc } from "./scene-docs";
-import { buildRegionDoc, setRegionVisibility, type RegionSystem } from "./scene-docs";
+import { buildRegionDoc, setRegionVisibility, type RegionEngine } from "./scene-docs";
 import { DocumentStore } from "./store";
 
 function storeWith(...docs: WireDocument[]): DocumentStore {
@@ -39,7 +39,7 @@ describe("resolveSceneSettings", () => {
   it("malformed bounds fail closed to the default", () => {
     const scene = buildSceneDoc("w1", {}, "scene1");
     // Non-positive on either axis is degenerate for a navmesh rectangle → default.
-    (scene.system as SceneSystem).bounds = { width: 0, height: -5 } as SceneDimensions;
+    (scene.engine as SceneEngine).bounds = { width: 0, height: -5 } as SceneDimensions;
     const r = resolveSceneSettings(scene, storeWith(scene));
     expect(r.bounds).toEqual(DEFAULT_SCENE_BOUNDS);
   });
@@ -58,8 +58,8 @@ describe("resolveSceneSettings", () => {
 
   it("scene overrides win over world defaults", () => {
     const scene = buildSceneDoc("w1", {
-      vision: { movementRestriction: "revealed", losRestriction: false },
-      lighting: { enabled: false },
+      vision: { movementRestriction: "revealed", losRestriction: false, fog: null, observerVision: null, movementModel: null },
+      lighting: { enabled: false, mode: null, environment: null },
       grid: { kind: "square", size: 100, distance: { perCell: 1.5, unit: "m" } },
     }, "scene1");
     const ws = buildWorldSettingsDoc("w1", DEFAULT_WORLD_SETTINGS, "ws1");
@@ -74,16 +74,16 @@ describe("resolveSceneSettings", () => {
     const ws = buildWorldSettingsDoc("w1");
     expect(ws.doc_type).toBe("world-settings");
     expect(ws.parent_id).toBeNull();
-    expect((ws.system as { scene: unknown }).scene).toBeTruthy();
+    expect((ws.engine as { scene: unknown }).scene).toBeTruthy();
   });
 
   it("fail-closed: partial world-settings wire doc (missing scene/pathfinding/animation) falls back to built-in defaults and does not throw", () => {
     // Simulates a future partial wire payload where a set_pointer removed `scene`,
-    // leaving a non-null but structurally incomplete world-settings system object.
+    // leaving a non-null but structurally incomplete world-settings engine object.
     const scene = buildSceneDoc("w1", {}, "scene-partial");
     const partialWs: WireDocument = {
       ...buildWorldSettingsDoc("w1", DEFAULT_WORLD_SETTINGS, "ws-partial"),
-      system: {} as unknown, // missing scene, pathfinding, animation
+      engine: {} as unknown, // missing scene, pathfinding, animation
     };
     const r = resolveSceneSettings(scene, storeWith(scene, partialWs));
     // Must not throw and must return built-in defaults, not access undefined fields.
@@ -112,7 +112,7 @@ describe("resolveSceneSettings", () => {
   it("movementModel: scene override beats world", () => {
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     const scene = buildSceneDoc("w1", {
-      vision: { movementModel: "continuous" },
+      vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null },
     }, "scene1");
     const r = resolveSceneSettings(scene, storeWith(ws));
     expect(r.movementModel).toBe("continuous");
@@ -124,7 +124,7 @@ describe("resolveSceneSettings", () => {
       scene: { ...DEFAULT_WORLD_SETTINGS.scene, movementModel: "continuous" },
     }, "ws1");
     const scene = buildSceneDoc("w1", {
-      vision: { movementModel: null },
+      vision: { movementModel: null, losRestriction: null, fog: null, observerVision: null, movementRestriction: null },
     }, "scene1");
     const r = resolveSceneSettings(scene, storeWith(ws));
     expect(r.movementModel).toBe("continuous");
@@ -138,7 +138,7 @@ describe("resolveSceneSettings", () => {
   });
 
   it("snapToGrid defaults to false for a continuous scene (derived default, spec §4.1)", () => {
-    const scene = buildSceneDoc("w1", { vision: { movementModel: "continuous" } }, "scene1");
+    const scene = buildSceneDoc("w1", { vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null } }, "scene1");
     const r = resolveSceneSettings(scene, storeWith(scene));
     expect(r.movementModel).toBe("continuous");
     expect(r.snapToGrid).toBe(false);
@@ -147,7 +147,7 @@ describe("resolveSceneSettings", () => {
   it("snapToGrid: an explicit true overrides the continuous default", () => {
     const scene = buildSceneDoc(
       "w1",
-      { vision: { movementModel: "continuous" }, snapToGrid: true },
+      { vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null }, snapToGrid: true },
       "scene1",
     );
     const r = resolveSceneSettings(scene, storeWith(scene));
@@ -162,8 +162,7 @@ describe("resolveSceneSettings", () => {
   });
 });
 
-const actorSys: ActorSystem = {
-  name: "Goblin",
+const actorEngine: ActorEngine = {
   displayName: "Goblin",
   visual: { kind: "image", asset: "a1" },
   size: { w: 1, h: 1 },
@@ -171,6 +170,7 @@ const actorSys: ActorSystem = {
   faction: null,
   conditions: [],
   prototype: true,
+  vision: null,
 };
 
 test("buildSceneDoc makes a top-level world scene with a default square grid", () => {
@@ -178,70 +178,82 @@ test("buildSceneDoc makes a top-level world scene with a default square grid", (
   expect(doc.doc_type).toBe("scene");
   expect(doc.parent_id).toBeNull();
   expect(doc.scope).toEqual({ kind: "world", world_id: "w1" });
-  expect(doc.system).toEqual({ grid: { kind: "square", size: 100 }, background: null });
+  expect(doc.system).toEqual({});
+  expect(doc.engine).toEqual({
+    grid: { kind: "square", size: 100, distance: null },
+    background: null,
+    bounds: null,
+    snapToGrid: null,
+    vision: null,
+    lighting: null,
+  });
   expect(typeof doc.id).toBe("string");
   expect(doc.id.length).toBeGreaterThan(0);
   expect(typeof doc.created_at).toBe("number");
 });
 
-test("buildSceneDoc honors a partial system override and an explicit id", () => {
-  const doc = buildSceneDoc("w1", { grid: { kind: "hex", size: 50 } }, "scene-fixed");
+test("buildSceneDoc honors a partial engine override and an explicit id", () => {
+  const doc = buildSceneDoc("w1", { grid: { kind: "hex", size: 50, distance: null } }, "scene-fixed");
   expect(doc.id).toBe("scene-fixed");
-  expect(doc.system).toEqual({ grid: { kind: "hex", size: 50 }, background: null });
+  expect((doc.engine as SceneEngine).grid).toEqual({ kind: "hex", size: 50, distance: null });
+  expect((doc.engine as SceneEngine).background).toBeNull();
 });
 
 test("buildSceneDoc persists an explicit snapToGrid:false (not omitted as falsy)", () => {
   const doc = buildSceneDoc("w1", { snapToGrid: false });
-  expect((doc.system as SceneSystem).snapToGrid).toBe(false);
+  expect((doc.engine as SceneEngine).snapToGrid).toBe(false);
 });
 
-test("buildTokenDoc parents to the scene and preserves the token system", () => {
-  const sys: TokenSystem = { x: 140, y: 160, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "img-1" } };
-  const doc = buildTokenDoc("w1", "scene-1", sys);
+test("buildTokenDoc parents to the scene and preserves the token engine body", () => {
+  const eng: TokenEngine = { x: 140, y: 160, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "img-1" }, actor_id: null, overrides: null, face: null };
+  const doc = buildTokenDoc("w1", "scene-1", eng);
   expect(doc.doc_type).toBe("token");
   expect(doc.parent_id).toBe("scene-1");
   expect(doc.scope).toEqual({ kind: "world", world_id: "w1" });
-  expect(doc.system).toEqual(sys);
+  expect(doc.engine).toEqual(eng);
+  expect(doc.system).toEqual({});
   expect(doc.permissions.default).toBe("observer");
 });
 
-test("buildActorDoc makes a top-level, parentless actor document", () => {
-  const doc = buildActorDoc("w1", actorSys, "act1");
+test("buildActorDoc makes a top-level, parentless actor document with the name on the envelope", () => {
+  const doc = buildActorDoc("w1", "Goblin", actorEngine, "act1");
   expect(doc.doc_type).toBe("actor");
   expect(doc.parent_id).toBeNull();
   expect(doc.scope).toEqual({ kind: "world", world_id: "w1" });
-  expect(doc.system).toEqual(actorSys);
+  expect(doc.name).toBe("Goblin");
+  expect(doc.engine).toEqual(actorEngine);
   expect(doc.id).toBe("act1");
 });
 
 test("buildTokenFromActor link mode references the actor by id, no embedded copy", () => {
-  const actor = buildActorDoc("w1", actorSys, "act1");
+  const actor = buildActorDoc("w1", "Goblin", actorEngine, "act1");
   const t = buildTokenFromActor("w1", "scene1", actor, "link", { x: 50, y: 50 }, 100);
   expect(t.doc_type).toBe("token");
   expect(t.parent_id).toBe("scene1");
-  expect((t.system as { actor_id?: string }).actor_id).toBe("act1");
-  expect((t.system as { overrides?: object }).overrides).toEqual({});
+  expect((t.engine as TokenEngine).actor_id).toBe("act1");
+  expect((t.engine as TokenEngine).overrides).toBeNull();
   expect(t.embedded.actor).toBeUndefined();
 });
 
 test("buildTokenFromActor instance mode embeds an independent copy with provenance", () => {
-  const actor = buildActorDoc("w1", actorSys, "act1");
+  const actor = buildActorDoc("w1", "Goblin", actorEngine, "act1");
   const t = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, 100);
-  expect((t.system as { actor_id?: string | null }).actor_id ?? null).toBeNull();
+  expect((t.engine as TokenEngine).actor_id).toBeNull();
   expect(t.embedded.actor).toHaveLength(1);
   const copy = t.embedded.actor[0];
   expect(copy.id).not.toBe(actor.id);
   expect(copy.source).toEqual({ id: "act1", pack: null, version: 1 });
-  expect(copy.system).toEqual(actorSys);
-  expect(copy.system).not.toBe(actor.system); // independent by value, not aliased
+  expect(copy.name).toBe("Goblin");
+  expect(copy.engine).toEqual(actorEngine);
+  expect(copy.engine).not.toBe(actor.engine); // independent by value, not aliased
 });
 
-test("setNameHidden sets and clears the OwnerOrGm override on /system/name", () => {
-  const d = buildActorDoc("w1", actorSys, "act1");
+test("setNameHidden sets and clears the OwnerOrGm override on /name", () => {
+  const d = buildActorDoc("w1", "Goblin", actorEngine, "act1");
   setNameHidden(d, true);
-  expect(d.permissions.property_overrides["/system/name"]).toBe("owner_or_gm");
+  expect(d.permissions.property_overrides["/name"]).toBe("owner_or_gm");
   setNameHidden(d, false);
-  expect(d.permissions.property_overrides["/system/name"]).toBeUndefined();
+  expect(d.permissions.property_overrides["/name"]).toBeUndefined();
 });
 
 test("buildFactionRegistryDoc builds a world-scoped, parentless registry with an id-keyed map", () => {
@@ -250,7 +262,7 @@ test("buildFactionRegistryDoc builds a world-scoped, parentless registry with an
   expect(d.doc_type).toBe("faction-registry");
   expect(d.parent_id).toBeNull();
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
-  expect((d.system as { factions: unknown }).factions).toEqual(factions);
+  expect((d.engine as { factions: unknown }).factions).toEqual(factions);
 });
 
 test("buildConditionRegistryDoc builds a world-scoped, parentless registry with an id-keyed map", () => {
@@ -259,7 +271,7 @@ test("buildConditionRegistryDoc builds a world-scoped, parentless registry with 
   expect(d.doc_type).toBe("condition-registry");
   expect(d.parent_id).toBeNull();
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
-  expect((d.system as { conditions: unknown }).conditions).toEqual(conditions);
+  expect((d.engine as { conditions: unknown }).conditions).toEqual(conditions);
   expect(d.id).toBe("creg1");
 });
 
@@ -276,13 +288,13 @@ describe("light-gradation registry", () => {
     expect(Object.isFrozen(DEFAULT_GRADATION)).toBe(true);
     expect(Object.isFrozen(DEFAULT_GRADATION.bands)).toBe(true);
   });
-  it("buildLightGradationDoc system is value-independent of DEFAULT_GRADATION", () => {
+  it("buildLightGradationDoc engine is value-independent of DEFAULT_GRADATION", () => {
     const doc = buildLightGradationDoc("w1");
     // Must not alias the constant — a fresh clone so set_pointer edits do not mutate the seed.
-    expect(doc.system).not.toBe(DEFAULT_GRADATION);
-    expect((doc.system as { bands: unknown }).bands).not.toBe(DEFAULT_GRADATION.bands);
+    expect(doc.engine).not.toBe(DEFAULT_GRADATION);
+    expect((doc.engine as { bands: unknown }).bands).not.toBe(DEFAULT_GRADATION.bands);
     // Values must be preserved.
-    expect(doc.system).toEqual(DEFAULT_GRADATION);
+    expect(doc.engine).toEqual(DEFAULT_GRADATION);
   });
 });
 
@@ -299,9 +311,9 @@ describe("vision-modes registry", () => {
     expect(Object.isFrozen(SEED_VISION_MODES)).toBe(true);
     expect(Object.isFrozen(SEED_VISION_MODES.normal)).toBe(true);
   });
-  it("buildVisionModesDoc system.modes is value-independent of SEED_VISION_MODES", () => {
+  it("buildVisionModesDoc engine.modes is value-independent of SEED_VISION_MODES", () => {
     const doc = buildVisionModesDoc("w1");
-    const modes = (doc.system as { modes: Record<string, unknown> }).modes;
+    const modes = (doc.engine as { modes: Record<string, unknown> }).modes;
     // Must not alias the constant — a fresh clone so set_pointer edits do not mutate the seed.
     expect(modes).not.toBe(SEED_VISION_MODES);
     // Values must be preserved.
@@ -310,28 +322,30 @@ describe("vision-modes registry", () => {
 });
 
 it("builds a light doc parented to its scene", () => {
-  const l = buildLightDoc("w1", "scene1", { x: 10, y: 20, color: "#ffd9a0", intensity: 1, brightRadius: 4, dimRadius: 8, enabled: true });
+  const l = buildLightDoc("w1", "scene1", { x: 10, y: 20, color: "#ffd9a0", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true });
   expect(l.doc_type).toBe("light");
   expect(l.parent_id).toBe("scene1");
-  expect((l.system as { brightRadius: number }).brightRadius).toBe(4);
+  expect((l.engine as { brightRadius: number }).brightRadius).toBe(4);
+  expect(l.system).toEqual({});
 });
 
 describe("buildRegionDoc", () => {
-  it("builds a region doc parented to the scene with the given system", () => {
-    const sys: RegionSystem = {
+  it("builds a region doc parented to the scene with the given engine body", () => {
+    const eng: RegionEngine = {
       shape: { kind: "rect", points: [0, 0, 100, 100] },
       behavior: "terrain",
       cost: 2,
       enabled: true,
     };
-    const doc = buildRegionDoc("world1", "scene1", sys);
+    const doc = buildRegionDoc("world1", "scene1", eng);
     expect(doc.doc_type).toBe("region");
     expect(doc.parent_id).toBe("scene1");
-    expect(doc.system).toEqual(sys);
+    expect(doc.engine).toEqual(eng);
+    expect(doc.system).toEqual({});
     expect(doc.permissions.property_overrides).toEqual({});
   });
 
-  it("setRegionVisibility(true) declares /system as gm_only; false clears it", () => {
+  it("setRegionVisibility(true) declares /engine as gm_only; false clears it", () => {
     const doc = buildRegionDoc("world1", "scene1", {
       shape: { kind: "circle", points: [50, 50, 25] },
       behavior: "arrest",
@@ -339,9 +353,9 @@ describe("buildRegionDoc", () => {
       enabled: true,
     });
     setRegionVisibility(doc, true);
-    expect(doc.permissions.property_overrides["/system"]).toBe("gm_only");
+    expect(doc.permissions.property_overrides["/engine"]).toBe("gm_only");
     setRegionVisibility(doc, false);
-    expect(doc.permissions.property_overrides["/system"]).toBeUndefined();
+    expect(doc.permissions.property_overrides["/engine"]).toBeUndefined();
   });
 });
 
@@ -375,11 +389,14 @@ describe("TokenVisual union (M10h)", () => {
 });
 
 describe("buildItemDoc", () => {
-  it("builds a top-level client-only item document", () => {
-    const doc = buildItemDoc("w1", { name: "Sword", damage: "1d8" });
+  it("builds a top-level client-only item document with the name on the envelope", () => {
+    const doc = buildItemDoc("w1", "Sword", { damage: "1d8" });
     expect(doc.doc_type).toBe(ITEM_DOC_TYPE);
     expect(doc.parent_id).toBeNull();
-    expect((doc.system as { name: string }).name).toBe("Sword");
+    expect(doc.name).toBe("Sword");
+    expect((doc.system as { damage: string }).damage).toBe("1d8");
+    // "item" is not engine-defined — no `engine` key is written on the wire.
+    expect(doc.engine).toBeUndefined();
   });
 });
 
@@ -389,7 +406,7 @@ function store(docs: WireDocument[]): DocumentStore {
   return s;
 }
 function ws(activeScene: string | null): WireDocument {
-  return buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene } as WorldSettingsSystem);
+  return buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene } as WorldSettingsEngine);
 }
 
 describe("resolveViewedScene", () => {

@@ -10,6 +10,7 @@ import {
   ResyncSourceSchema,
   WsErrorCodeSchema,
   SendMessageSchema,
+  DocumentSchema,
   type ServerMsg,
   type ClientMsg,
   type WireOperation,
@@ -266,12 +267,14 @@ describe("parseServerMsg", () => {
       scope: { kind: "world", world_id: "w1" },
       doc_type: "token",
       schema_version: 1,
+      name: null,
       source: null,
       owner: null,
       permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
       embedded: {},
       parent_id,
-      system: { x: 0, y: 0 },
+      engine: { x: 0, y: 0, w: 0, h: 0, rotation: 0, visual: null, actor_id: null, overrides: null, face: null },
+      system: {},
       created_at: 0,
       updated_at: 0,
     });
@@ -297,6 +300,40 @@ describe("parseServerMsg", () => {
       if (tokenOp.op === "create") expect(tokenOp.doc.parent_id).toBe("scene-1");
       if (sceneOp.op === "create") expect(sceneOp.doc.parent_id).toBeNull();
     }
+  });
+});
+
+describe("DocumentSchema — envelope name + engine band", () => {
+  const base = {
+    id: "00000000-0000-0000-0000-000000000001",
+    scope: { kind: "world", world_id: "w1" },
+    doc_type: "actor",
+    schema_version: 1,
+    source: null,
+    owner: null,
+    permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
+    embedded: {},
+    parent_id: null,
+    system: {},
+    created_at: 0,
+    updated_at: 0,
+  };
+
+  it("parses a document carrying a real name + engine body", () => {
+    const parsed = DocumentSchema.parse({ ...base, name: "Strahd", engine: { displayName: "Vampire" } });
+    expect(parsed.name).toBe("Strahd");
+    expect(parsed.engine).toEqual({ displayName: "Vampire" });
+  });
+
+  it("parses a redacted document — name and engine nulled, never stripped", () => {
+    const parsed = DocumentSchema.parse({ ...base, name: null, engine: null });
+    expect(parsed.name).toBeNull();
+    expect(parsed.engine).toBeNull();
+  });
+
+  it("rejects a document with no `name` key at all", () => {
+    const { name: _name, ...withoutName } = { ...base, name: null, engine: {} };
+    expect(DocumentSchema.safeParse(withoutName).success).toBe(false);
   });
 });
 

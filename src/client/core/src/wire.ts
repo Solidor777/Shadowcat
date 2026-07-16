@@ -92,6 +92,8 @@ export type WireDocument = {
   scope: z.infer<typeof ScopeSchema>;
   doc_type: string;
   schema_version: number;
+  // Universal display name. Redacts to `null` under a `/name` override.
+  name: string | null;
   source: z.infer<typeof SourceSchema> | null;
   owner: string | null;
   permissions: z.infer<typeof PermissionSetSchema>;
@@ -99,6 +101,10 @@ export type WireDocument = {
   // Scene-entity link: the parent scene's id (or other parent); null for top-level
   // docs (actors, compendium entries, scenes). Immutable via field-path Update.
   parent_id: string | null;
+  // Engine band: present iff `doc_type` is engine-defined; validated + typed via the
+  // generated `*Engine` structs (`@shadowcat/types`). `z.unknown()` infers an optional
+  // property, so an absent/non-engine doc_type's `engine` key is simply undefined.
+  engine?: unknown;
   // `z.unknown()` infers an optional property; the value is the opaque system body.
   system?: unknown;
   created_at: number;
@@ -112,11 +118,13 @@ export const DocumentSchema: z.ZodType<WireDocument> = z.lazy(() =>
     scope: ScopeSchema,
     doc_type: z.string(),
     schema_version: int,
+    name: z.string().nullable(),
     source: SourceSchema.nullable(),
     owner: z.string().nullable(),
     permissions: PermissionSetSchema,
     embedded: z.record(z.array(DocumentSchema)),
     parent_id: z.string().nullable(),
+    engine: z.unknown(),
     system: z.unknown(),
     created_at: int,
     updated_at: int,

@@ -1,10 +1,14 @@
 // Client mirror of the chat message content model (src/server/src/chat/mod.rs).
-// The body types are serde-only on the server (NO ts-rs) — this file is the
-// manually-kept-in-sync Zod mirror; a Rust body-shape change MUST update it.
-// Fail-closed: a body that does not parse renders as nothing, never partially.
+// `MessageEngine` is deliberately NOT ts-rs-exported (server comment: "Opaque on the
+// WIRE" — the server enforces `deny_unknown_fields` structurally, the exact segment/
+// outcome union is the client's own concern) — this file is the manually-kept-in-sync
+// Zod mirror; a Rust body-shape change MUST update it. Fail-closed: a body that does
+// not parse renders as nothing, never partially. Re-rooted onto the three-band
+// document shape: the message body lives in `doc.engine`, `doc.system` stays `{}`.
 import { z } from "zod";
 import { ActorOwnerRefSchema, AudienceSchema, type WireDocument } from "./wire";
 import { envelope } from "./scene-docs";
+import type { ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine } from "@shadowcat/types";
 
 export const MESSAGE_DOC_TYPE = "message";
 export const CHANNEL_REGISTRY_DOC_TYPE = "channel-registry";
@@ -105,7 +109,7 @@ export function isKnownSegment(s: ChatSegment | UnknownSegment): s is ChatSegmen
   );
 }
 
-export const ChatMessageSystemSchema = z.object({
+export const ChatMessageEngineSchema = z.object({
   channel: z.string(),
   user_owner: z.string(),
   actor_owner: ActorOwnerRefSchema.nullish(),
@@ -116,75 +120,56 @@ export const ChatMessageSystemSchema = z.object({
   edited_at: z.number().nullish(),
   deleted_at: z.number().nullish(),
 });
-export type ChatMessageSystem = z.infer<typeof ChatMessageSystemSchema>;
+export type ChatMessageEngine = z.infer<typeof ChatMessageEngineSchema>;
 
-/** Fail-closed body parse: null unless `doc` is a message with a valid body. */
-export function parseMessageSystem(doc: WireDocument): ChatMessageSystem | null {
+/** Fail-closed body parse: null unless `doc` is a message with a valid `engine` body. */
+export function parseMessageEngine(doc: WireDocument): ChatMessageEngine | null {
   if (doc.doc_type !== MESSAGE_DOC_TYPE) return null;
-  const r = ChatMessageSystemSchema.safeParse(doc.system);
+  const r = ChatMessageEngineSchema.safeParse(doc.engine);
   return r.success ? r.data : null;
 }
 
-/** A chat channel's display config. Channels are a purely client-side label
- * taxonomy — the server never validates `channel` (chat skill: audience, not
- * channel, is the only server-enforced visibility). */
-export interface ChatChannel {
-  name: string;
-}
 /** Singleton config doc (doc_type "channel-registry"): id→channel MAP, so
- * add/rename/remove are single-key field Updates (set_pointer cannot grow arrays). */
-export interface ChannelRegistrySystem {
-  channels: Record<string, ChatChannel>;
-}
+ * add/rename/remove are single-key field Updates (set_pointer cannot grow arrays).
+ * `doc_type: "channel-registry"` is engine-defined — the map lands in `engine`. */
 export function buildChannelRegistryDoc(
   worldId: string,
-  channels: Record<string, ChatChannel>,
+  channels: ChannelRegistryEngine["channels"],
   id?: string,
 ): WireDocument {
-  return envelope(worldId, CHANNEL_REGISTRY_DOC_TYPE, null, { channels } satisfies ChannelRegistrySystem, id);
+  return envelope(worldId, CHANNEL_REGISTRY_DOC_TYPE, null, {}, id, { channels } satisfies ChannelRegistryEngine, null);
 }
 
 /** Doc_type for the single per-world dice-settings config `Document`
- * (server: chat/settings.rs DICE_SETTINGS_DOC_TYPE). */
+ * (server: chat/settings.rs DICE_SETTINGS_DOC_TYPE). `doc_type: "dice-settings"` is
+ * engine-defined — the body lands in `engine`, `DiceSettingsEngine` mirrors
+ * chat::settings::DiceSettingsBody 1:1 (both fields serde-default on the server:
+ * Total / high_wins), so a partial body is still safe — the panel always writes the
+ * full shape via the reactive seed. */
 export const DICE_SETTINGS_DOC_TYPE = "dice-settings";
 
-/** Mirror of chat::settings::DiceSettingsBody. Both fields serde-default on
- * the server (Total / high_wins), so a partial body is still safe there —
- * the panel always writes the full shape via the reactive seed. */
-export interface DiceSettingsSystem {
-  mode: "total" | "success_count";
-  direction: "high_wins" | "low_wins";
-}
 export function buildDiceSettingsDoc(
   worldId: string,
-  body: DiceSettingsSystem,
+  engine: DiceSettingsEngine,
   id?: string,
 ): WireDocument {
-  return envelope(worldId, DICE_SETTINGS_DOC_TYPE, null, body satisfies DiceSettingsSystem, id);
+  return envelope(worldId, DICE_SETTINGS_DOC_TYPE, null, {}, id, engine satisfies DiceSettingsEngine, null);
 }
 
 /** Doc_type for the single per-world chat-settings config `Document`
- * (server: chat/settings.rs CHAT_SETTINGS_DOC_TYPE). */
+ * (server: chat/settings.rs CHAT_SETTINGS_DOC_TYPE). `doc_type: "chat-settings"` is
+ * engine-defined — the body lands in `engine`, `ChatSettingsEngine` mirrors
+ * chat::settings::ChatContentPolicy: every field `#[serde(default)]` on the server
+ * (false), except `link_previews` which is tri-state: absent/`null` is the spec'd
+ * default-on-when-hyperlinks-on behavior (`ChatContentPolicy::previews_enabled`),
+ * `true`/`false` is an explicit GM override. The panel writes single fields via
+ * JSON-pointer update, never the whole doc. */
 export const CHAT_SETTINGS_DOC_TYPE = "chat-settings";
 
-/** Mirror of chat::settings::ChatContentPolicy. Every field `#[serde(default)]`
- * on the server (false), except `link_previews` which is tri-state: `undefined`
- * (absent) is the spec'd default-on-when-hyperlinks-on behavior
- * (`ChatContentPolicy::previews_enabled`), `true`/`false` are an explicit GM
- * override. A partial body is safe on the server; the panel writes single
- * fields via JSON-pointer update, never the whole doc. */
-export interface ChatSettingsSystem {
-  markdown?: boolean;
-  html?: boolean;
-  images?: boolean;
-  hyperlinks?: boolean;
-  emails?: boolean;
-  link_previews?: boolean;
-}
 export function buildChatSettingsDoc(
   worldId: string,
-  body: ChatSettingsSystem,
+  engine: ChatSettingsEngine,
   id?: string,
 ): WireDocument {
-  return envelope(worldId, CHAT_SETTINGS_DOC_TYPE, null, body satisfies ChatSettingsSystem, id);
+  return envelope(worldId, CHAT_SETTINGS_DOC_TYPE, null, {}, id, engine satisfies ChatSettingsEngine, null);
 }

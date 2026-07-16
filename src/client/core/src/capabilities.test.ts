@@ -45,6 +45,17 @@ test("canWritePath enforces the base cap", () => {
   expect(canWritePath("/id", caps, false, [])).toBe(false); // immutable envelope
 });
 
+test("canWritePath treats /engine and /name like /system (write_fields, /name is a leaf)", () => {
+  const caps = new Set(["core:read", "core:write_fields"]);
+  expect(canWritePath("/engine", caps, false, [])).toBe(true);
+  expect(canWritePath("/engine/x", caps, false, [])).toBe(true);
+  expect(canWritePath("/engine_x", caps, false, [])).toBe(false); // boundary neighbor, not a match
+  expect(canWritePath("/name", caps, false, [])).toBe(true);
+  const noWrite = new Set(["core:read"]);
+  expect(canWritePath("/engine/x", noWrite, false, [])).toBe(false);
+  expect(canWritePath("/name", noWrite, false, [])).toBe(false);
+});
+
 test("canWritePath enforces a declared requirement additively", () => {
   const caps = new Set(["core:read", "core:write_fields"]);
   const reqs = [{ path_prefix: "/system/vision", caps: ["dnd5e:gm_vision"] }];
