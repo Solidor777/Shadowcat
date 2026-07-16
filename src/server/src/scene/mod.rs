@@ -18,6 +18,12 @@ use uuid::Uuid;
 
 use crate::data::command::{set_pointer, Operation};
 use crate::data::document::Document;
+// The typed, ingress-validated engine band, imported under a namespace alias: this module
+// declares its own `LightMode`/`MovementRestriction`/`MovementModel` (the RESOLVED
+// representation `ResolvedScene` exposes to callers elsewhere in `scene/`); the engine crate's
+// identically-named enums are the wire representation read off a document's `engine` field.
+// Keeping the two distinct avoids widening this file's already-declared public enum surface.
+use crate::data::engine as eng;
 use crate::data::membership::PermissionContext;
 use crate::scene::lighting::Band;
 
@@ -37,16 +43,6 @@ pub enum MovementRestriction {
     Unrestricted,
 }
 
-/// Parse a movement-restriction string; any unknown/missing value fails closed to `Visible`
-/// (the most restrictive non-frozen mode — never silently widens to `Unrestricted`).
-fn parse_movement_restriction(s: &str) -> MovementRestriction {
-    match s {
-        "revealed" => MovementRestriction::Revealed,
-        "unrestricted" => MovementRestriction::Unrestricted,
-        _ => MovementRestriction::Visible,
-    }
-}
-
 /// Per-scene movement/pathfinding engine choice (M10f-1). Mirrors `MovementModel` in
 /// `scene-docs.ts`. `GridStepped` = the existing grid A* router; `Continuous` = the polyanya
 /// navmesh router.
@@ -54,16 +50,6 @@ fn parse_movement_restriction(s: &str) -> MovementRestriction {
 pub enum MovementModel {
     GridStepped,
     Continuous,
-}
-
-/// Parse a movement-model string; any unknown/missing value fails closed to `GridStepped` —
-/// the pre-existing, fully-proven engine. A scene is never silently switched to the newer
-/// navmesh router without an explicit author choice.
-fn parse_movement_model(s: &str) -> MovementModel {
-    match s {
-        "continuous" => MovementModel::Continuous,
-        _ => MovementModel::GridStepped,
-    }
 }
 
 /// Fail-safe finite default scene size (grid units) when a scene has no authored `bounds`.
@@ -120,9 +106,46 @@ fn parse_hex_color(s: &str) -> u32 {
     }
 }
 
-/// Read a bool from a `system` JSON pointer; `null`/absent/non-bool ⇒ `None` (⇒ inherit).
-fn opt_bool(v: &serde_json::Value, ptr: &str) -> Option<bool> {
-    v.pointer(ptr).and_then(|x| x.as_bool())
+/// Deserialize a document's ingress-validated `engine` body into `T`; `None` when the document
+/// carries no `engine` (non-engine doc type, or an engine doc type whose entity predates ingress
+/// validation in a test fixture) or the stored value fails to parse. Mirrors the pre-M13-0
+/// per-field `sys_f64`/pointer-walk contract (a `None` result, not a struct default) so every
+/// caller keeps applying its own existing field-level fail-closed backstop unchanged.
+fn engine_as<T: serde::de::DeserializeOwned>(doc: &Document) -> Option<T> {
+    doc.engine
+        .as_ref()
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+fn conv_light_mode(v: eng::LightMode) -> LightMode {
+    match v {
+        eng::LightMode::GlobalIllumination => LightMode::GlobalIllumination,
+        eng::LightMode::EnvironmentLight => LightMode::EnvironmentLight,
+    }
+}
+
+fn conv_movement_restriction(v: eng::MovementRestriction) -> MovementRestriction {
+    match v {
+        eng::MovementRestriction::Visible => MovementRestriction::Visible,
+        eng::MovementRestriction::Revealed => MovementRestriction::Revealed,
+        eng::MovementRestriction::Unrestricted => MovementRestriction::Unrestricted,
+    }
+}
+
+fn conv_movement_model(v: eng::MovementModel) -> MovementModel {
+    match v {
+        eng::MovementModel::GridStepped => MovementModel::GridStepped,
+        eng::MovementModel::Continuous => MovementModel::Continuous,
+    }
+}
+
+fn conv_diagonal_rule(v: eng::DiagonalRule) -> pathfinding::DiagonalRule {
+    match v {
+        eng::DiagonalRule::Chebyshev => pathfinding::DiagonalRule::Chebyshev,
+        eng::DiagonalRule::Manhattan => pathfinding::DiagonalRule::Manhattan,
+        eng::DiagonalRule::Euclidean => pathfinding::DiagonalRule::Euclidean,
+        eng::DiagonalRule::Alternating => pathfinding::DiagonalRule::Alternating,
+    }
 }
 
 /// A hydrated scene-entity document, one per hecs entity.
@@ -423,149 +446,95 @@ impl SceneEcs {
         }
     }
 
-    /// The validated world-settings `system` body, or `None` when the doc is absent or structurally
-    /// incomplete. Mirrors the TS `ws?.scene && ws?.pathfinding && ws?.animation` guard in
-    /// `resolveSceneSettings` — all three top-level keys must be non-null objects; a partial doc
-    /// falls back to built-in defaults rather than partially resolving. Used by all resolvers that
-    /// read from world-settings so partial-doc handling is consistent.
-    fn validated_world_settings_system(&self) -> Option<&serde_json::Value> {
-        let s = self.world_settings.as_ref().map(|d| &d.system)?;
-        if s.get("scene").and_then(|v| v.as_object()).is_some()
-            && s.get("pathfinding").and_then(|v| v.as_object()).is_some()
-            && s.get("animation").and_then(|v| v.as_object()).is_some()
-        {
-            Some(s)
-        } else {
-            None
-        }
+    /// The validated world-settings engine body, or `None` when the doc is absent or its stored
+    /// `engine` fails to deserialize into `WorldSettingsEngine`. Ingress validation
+    /// (`data::engine::validate_engine`) already requires every persisted "world-settings" doc's
+    /// `engine` to be a complete, `deny_unknown_fields`-checked `WorldSettingsEngine` — this is
+    /// the direct successor of the pre-M13-0 `scene`+`pathfinding`+`animation`-all-present
+    /// structural guard (mirrors the TS `ws?.scene && ws?.pathfinding && ws?.animation` check),
+    /// now enforced at write time instead of read time. A doc that predates that guard (e.g. a
+    /// test fixture built without going through the ingress gate) still falls back to built-in
+    /// defaults exactly as before. Used by every resolver that reads world-settings so partial/
+    /// malformed-doc handling stays consistent across all of them.
+    fn validated_world_settings_engine(&self) -> Option<eng::WorldSettingsEngine> {
+        self.world_settings
+            .as_ref()
+            .and_then(engine_as::<eng::WorldSettingsEngine>)
     }
 
     /// Resolve a scene's effective lighting/vision settings: built-in defaults < world-settings doc
     /// < per-scene override. Fail-closed and `null ⇒ inherit` (mirrors `resolveSceneSettings`).
     pub fn resolve_scene(&self, scene: Uuid) -> ResolvedScene {
-        // World layer — structural guard via validated_world_settings_system: a partial doc falls
-        // back to built-ins (mirrors TS `ws?.scene && ws?.pathfinding && ws?.animation` check).
-        let ws_scene = self
-            .validated_world_settings_system()
-            .and_then(|s| s.pointer("/scene"));
-        // Built-in defaults (mirror DEFAULT_WORLD_SETTINGS.scene).
-        let d_los = ws_scene
-            .and_then(|s| s.get("losRestriction"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-        let d_fog = ws_scene
-            .and_then(|s| s.get("fog"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-        let d_obs = ws_scene
-            .and_then(|s| s.get("observerVision"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let d_lit = ws_scene
-            .and_then(|s| s.get("lightingEnabled"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+        // World layer: `validated_world_settings_engine` already enforces the pre-M13-0
+        // scene+pathfinding+animation-all-present structural guard at write time (ingress),
+        // so a `None` here means the same "fall back to built-ins" case the old guard covered.
+        let ws = self.validated_world_settings_engine();
+        let ws_scene = ws.as_ref().map(|w| &w.scene);
+        // Built-in defaults (mirror DEFAULT_WORLD_SETTINGS.scene / WorldSettingsEngine::default).
+        let d_los = ws_scene.map(|s| s.los_restriction).unwrap_or(true);
+        let d_fog = ws_scene.map(|s| s.fog).unwrap_or(true);
+        let d_obs = ws_scene.map(|s| s.observer_vision).unwrap_or(false);
+        let d_lit = ws_scene.map(|s| s.lighting_enabled).unwrap_or(true);
         let d_mode = ws_scene
-            .and_then(|s| s.get("lightMode"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("environmentLight");
-        // A pointer on a `null` `environment` value returns `None`, so both sub-fields
-        // inherit the world default (same behaviour as an absent `environment` key).
+            .map(|s| s.light_mode)
+            .unwrap_or(eng::LightMode::EnvironmentLight);
         let d_env_color = ws_scene
-            .and_then(|s| s.pointer("/environment/color"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("#0a0e1a");
-        let d_env_int = ws_scene
-            .and_then(|s| s.pointer("/environment/intensity"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        // movementRestriction: scene `vision.movementRestriction` ?? world ?? "visible".
+            .map(|s| s.environment.color.clone())
+            .unwrap_or_else(|| "#0a0e1a".to_string());
+        let d_env_int = ws_scene.map(|s| s.environment.intensity).unwrap_or(0.0);
         let d_move = ws_scene
-            .and_then(|s| s.get("movementRestriction"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("visible");
-        // movementModel (M10f-1): scene `vision.movementModel` ?? world ?? "grid-stepped".
+            .map(|s| s.movement_restriction)
+            .unwrap_or(eng::MovementRestriction::Visible);
         let d_model = ws_scene
-            .and_then(|s| s.get("movementModel"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("grid-stepped");
-        // partialCellLeniency: world-only (no per-scene override; mirrors `d.scene.partialCellLeniency`).
-        let d_lenient = ws_scene
-            .and_then(|s| s.get("partialCellLeniency"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+            .map(|s| s.movement_model)
+            .unwrap_or(eng::MovementModel::GridStepped);
+        let d_lenient = ws_scene.map(|s| s.partial_cell_leniency).unwrap_or(true);
 
-        // Scene override layer (per-scene `vision`/`lighting`; null/absent ⇒ inherit).
-        let scene_sys = self
+        // Scene override layer (per-scene `vision`/`lighting`; absent/`null` ⇒ inherit — an
+        // `Option<T>` field with `#[serde(default)]` deserializes a missing OR explicit-`null`
+        // key to `None` identically, matching the pointer-on-null semantics of the pointer-walk
+        // this replaces).
+        let scene_eng: Option<eng::SceneEngine> = self
             .index
             .get(&scene)
             .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
-            .map(|c| c.doc.system.clone());
-        let s = scene_sys.as_ref();
-        let los = s
-            .and_then(|s| opt_bool(s, "/vision/losRestriction"))
-            .unwrap_or(d_los);
-        let fog = s.and_then(|s| opt_bool(s, "/vision/fog")).unwrap_or(d_fog);
-        let obs = s
-            .and_then(|s| opt_bool(s, "/vision/observerVision"))
-            .unwrap_or(d_obs);
-        let lit = s
-            .and_then(|s| opt_bool(s, "/lighting/enabled"))
-            .unwrap_or(d_lit);
-        let mode_str = s
-            .and_then(|s| s.pointer("/lighting/mode"))
-            .and_then(|v| v.as_str())
-            .unwrap_or(d_mode);
-        let env_color = s
-            .and_then(|s| s.pointer("/lighting/environment/color"))
-            .and_then(|v| v.as_str())
-            .unwrap_or(d_env_color);
-        let env_int = s
-            .and_then(|s| s.pointer("/lighting/environment/intensity"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(d_env_int);
-        // Scene may override movementRestriction (string); null/absent ⇒ inherit world. Mirrors
-        // `v.movementRestriction ?? d.scene.movementRestriction`. partialCellLeniency has no scene override.
-        let move_str = s
-            .and_then(|s| s.pointer("/vision/movementRestriction"))
-            .and_then(|v| v.as_str())
+            .and_then(|c| engine_as::<eng::SceneEngine>(&c.doc));
+        let s = scene_eng.as_ref();
+        let vision_ov = s.and_then(|s| s.vision.as_ref());
+        let lighting_ov = s.and_then(|s| s.lighting.as_ref());
+        let los = vision_ov.and_then(|v| v.los_restriction).unwrap_or(d_los);
+        let fog = vision_ov.and_then(|v| v.fog).unwrap_or(d_fog);
+        let obs = vision_ov.and_then(|v| v.observer_vision).unwrap_or(d_obs);
+        let lit = lighting_ov.and_then(|l| l.enabled).unwrap_or(d_lit);
+        let mode = lighting_ov.and_then(|l| l.mode).unwrap_or(d_mode);
+        let env = lighting_ov.and_then(|l| l.environment.as_ref());
+        let env_color = env.map(|e| e.color.clone()).unwrap_or(d_env_color);
+        let env_int = env.map(|e| e.intensity).unwrap_or(d_env_int);
+        let move_r = vision_ov
+            .and_then(|v| v.movement_restriction)
             .unwrap_or(d_move);
-        let model_str = s
-            .and_then(|s| s.pointer("/vision/movementModel"))
-            .and_then(|v| v.as_str())
-            .unwrap_or(d_model);
+        let mmodel = vision_ov.and_then(|v| v.movement_model).unwrap_or(d_model);
 
         // Scene bounds (M10f-0): per-scene, no world default — a fixed finite fallback. A
         // non-finite or non-positive axis is degenerate for a navmesh rectangle → fail closed.
-        let bounds = {
-            let w = s
-                .and_then(|s| s.pointer("/bounds/width"))
-                .and_then(|v| v.as_f64());
-            let h = s
-                .and_then(|s| s.pointer("/bounds/height"))
-                .and_then(|v| v.as_f64());
-            match (w, h) {
-                (Some(w), Some(h)) if w.is_finite() && w > 0.0 && h.is_finite() && h > 0.0 => {
-                    (w, h)
-                }
-                _ => DEFAULT_SCENE_BOUNDS_UNITS,
-            }
-        };
+        let bounds = s
+            .and_then(|s| s.bounds.as_ref())
+            .filter(|b| {
+                b.width.is_finite() && b.width > 0.0 && b.height.is_finite() && b.height > 0.0
+            })
+            .map(|b| (b.width, b.height))
+            .unwrap_or(DEFAULT_SCENE_BOUNDS_UNITS);
 
         ResolvedScene {
             los_restriction: los,
             fog,
             observer_vision: obs,
             lighting_enabled: lit,
-            light_mode: if mode_str == "globalIllumination" {
-                LightMode::GlobalIllumination
-            } else {
-                LightMode::EnvironmentLight
-            },
-            env_color: parse_hex_color(env_color),
+            light_mode: conv_light_mode(mode),
+            env_color: parse_hex_color(&env_color),
             env_intensity: env_int.clamp(0.0, 1.0),
-            movement_restriction: parse_movement_restriction(move_str),
-            movement_model: parse_movement_model(model_str),
+            movement_restriction: conv_movement_restriction(move_r),
+            movement_model: conv_movement_model(mmodel),
             partial_cell_leniency: d_lenient,
             bounds,
         }
@@ -576,15 +545,13 @@ impl SceneEcs {
         let bands = self
             .gradation
             .as_ref()
-            .and_then(|d| d.system.pointer("/bands"))
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|b| {
-                        Some(Band {
-                            name: b.get("name")?.as_str()?.to_string(),
-                            min_illumination: b.get("minIllumination")?.as_f64()?,
-                        })
+            .and_then(engine_as::<eng::LightGradationEngine>)
+            .map(|g| {
+                g.bands
+                    .into_iter()
+                    .map(|b| Band {
+                        name: b.name,
+                        min_illumination: b.min_illumination,
                     })
                     .collect::<Vec<_>>()
             })
@@ -594,15 +561,12 @@ impl SceneEcs {
 
     /// The world's pathfinding diagonal-cost rule. World-scoped (no per-scene override; the scene doc
     /// overrides only vision/lighting/grid — parent §5.2). Reads `world-settings.pathfinding.diagonalRule`.
-    /// Uses `validated_world_settings_system` so a structurally incomplete doc falls back to `Chebyshev`,
-    /// consistent with `resolve_scene`'s handling of the same partial-doc case.
+    /// Uses `validated_world_settings_engine` so a structurally incomplete/absent doc falls back to
+    /// `Chebyshev`, consistent with `resolve_scene`'s handling of the same partial-doc case.
     pub(crate) fn resolved_diagonal_rule(&self) -> pathfinding::DiagonalRule {
-        let s = self
-            .validated_world_settings_system()
-            .and_then(|sys| sys.pointer("/pathfinding/diagonalRule"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("chebyshev");
-        pathfinding::parse_diagonal_rule(s)
+        self.validated_world_settings_engine()
+            .map(|w| conv_diagonal_rule(w.pathfinding.diagonal_rule))
+            .unwrap_or(pathfinding::DiagonalRule::Chebyshev)
     }
 
     /// Resolved animation token speed in cells/second. World-scoped (no per-scene override;
@@ -611,9 +575,8 @@ impl SceneEcs {
     /// structurally incomplete. The floor of 0.001 prevents a zero/negative config from causing
     /// a division-by-zero in the duration formula.
     pub(crate) fn resolved_animation_speed(&self) -> f64 {
-        self.validated_world_settings_system()
-            .and_then(|s| s.pointer("/animation/speedCellsPerSec"))
-            .and_then(|v| v.as_f64())
+        self.validated_world_settings_engine()
+            .map(|w| w.animation.speed_cells_per_sec)
             .unwrap_or(6.0)
             .max(0.001)
     }
@@ -625,33 +588,23 @@ impl SceneEcs {
     /// returned as-is rather than silently re-granting built-in modes the GM may have removed.
     pub fn resolved_vision_modes(&self) -> BTreeMap<String, VisionMode> {
         let mut out = BTreeMap::new();
-        // Seed only on the None (absent) branch — a present doc's modes being all malformed
-        // must not silently replace a GM-authored registry with the built-in seed.
+        // Seed only on the None (absent/malformed) branch — a present doc's modes being all
+        // malformed must not silently replace a GM-authored registry with the built-in seed.
         let parsed = self
             .vision_modes
             .as_ref()
-            .and_then(|d| d.system.pointer("/modes"))
-            .and_then(|v| v.as_object());
+            .and_then(engine_as::<eng::VisionModesEngine>);
         match parsed {
-            Some(modes) => {
-                for (id, m) in modes {
-                    if let Some(floor) = m.get("illuminationFloor").and_then(|v| v.as_str()) {
-                        let range = m
-                            .get("defaultRange")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.0);
-                        out.insert(
-                            id.clone(),
-                            VisionMode {
-                                illumination_floor: floor.to_string(),
-                                default_range: range,
-                                render_hint: m
-                                    .get("renderHint")
-                                    .and_then(|v| v.as_str())
-                                    .map(str::to_string),
-                            },
-                        );
-                    }
+            Some(vme) => {
+                for (id, m) in vme.modes {
+                    out.insert(
+                        id,
+                        VisionMode {
+                            illumination_floor: m.illumination_floor,
+                            default_range: m.default_range,
+                            render_hint: m.render_hint,
+                        },
+                    );
                 }
             }
             None => {
@@ -684,7 +637,7 @@ impl SceneEcs {
     }
 
     /// The token's current committed position `(x, y)` in scene coordinates.
-    /// `None` if `token` is not a token entity or has no `(x, y)` in its `system`.
+    /// `None` if `token` is not a token entity or has no `(x, y)` in its `engine` band.
     /// Coupling: `move_exec::execute_move` calls this to verify `path[0]` against the
     /// authoritative ECS state; `Room::execute_move` calls it to read the committed start
     /// position before dispatching to the executor.
@@ -694,9 +647,8 @@ impl SceneEcs {
         if tok.doc.doc_type != "token" {
             return None;
         }
-        let cx = sys_f64(&tok.doc, "/x")?;
-        let cy = sys_f64(&tok.doc, "/y")?;
-        Some((cx, cy))
+        let t = engine_as::<eng::TokenEngine>(&tok.doc)?;
+        Some((t.x, t.y))
     }
 
     /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,
@@ -747,12 +699,9 @@ impl SceneEcs {
             if e.doc.doc_type != "token" || e.doc.owner != Some(user_id) {
                 continue;
             }
-            if let (Some(x), Some(y), Some(scene)) = (
-                sys_f64(&e.doc, "/x"),
-                sys_f64(&e.doc, "/y"),
-                e.doc.parent_id,
-            ) {
-                viewpoints.push((scene, (x, y)));
+            if let (Some(t), Some(scene)) = (engine_as::<eng::TokenEngine>(&e.doc), e.doc.parent_id)
+            {
+                viewpoints.push((scene, (t.x, t.y)));
             }
         }
         let mut out = Vec::with_capacity(viewpoints.len());
@@ -792,8 +741,8 @@ impl SceneEcs {
             if e.doc.id == moving_token {
                 continue; // mover's viewpoint varies per sample; skip here
             }
-            if let (Some(x), Some(y)) = (sys_f64(&e.doc, "/x"), sys_f64(&e.doc, "/y")) {
-                static_vps.push((x, y));
+            if let Some(t) = engine_as::<eng::TokenEngine>(&e.doc) {
+                static_vps.push((t.x, t.y));
             }
         }
         if !has_owned {
@@ -845,11 +794,8 @@ impl SceneEcs {
             if e.doc.doc_type != "scene" {
                 continue;
             }
-            let size = e
-                .doc
-                .system
-                .pointer("/grid/size")
-                .and_then(|v| v.as_f64())
+            let size = engine_as::<eng::SceneEngine>(&e.doc)
+                .map(|s| s.grid.size)
                 .filter(|s| *s > 0.0)
                 .unwrap_or(100.0);
             out.insert(e.doc.id, size);
@@ -864,25 +810,16 @@ impl SceneEcs {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
             }
-            if w.doc
-                .system
-                .pointer("/blocksSight")
-                .and_then(|v| v.as_bool())
-                != Some(true)
-            {
+            let Some(wall) = engine_as::<eng::WallEngine>(&w.doc) else {
+                continue;
+            };
+            if wall.blocks_sight != Some(true) {
                 continue;
             }
-            if let (Some(x1), Some(y1), Some(x2), Some(y2)) = (
-                sys_f64(&w.doc, "/seg/x1"),
-                sys_f64(&w.doc, "/seg/y1"),
-                sys_f64(&w.doc, "/seg/x2"),
-                sys_f64(&w.doc, "/seg/y2"),
-            ) {
-                out.push(vision::Seg {
-                    a: (x1, y1),
-                    b: (x2, y2),
-                });
-            }
+            out.push(vision::Seg {
+                a: (wall.seg.x1, wall.seg.y1),
+                b: (wall.seg.x2, wall.seg.y2),
+            });
         }
         out
     }
@@ -894,32 +831,23 @@ impl SceneEcs {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
             }
-            if w.doc
-                .system
-                .pointer("/blocksLight")
-                .and_then(|v| v.as_bool())
-                != Some(true)
-            {
+            let Some(wall) = engine_as::<eng::WallEngine>(&w.doc) else {
+                continue;
+            };
+            if wall.blocks_light != Some(true) {
                 continue;
             }
-            if let (Some(x1), Some(y1), Some(x2), Some(y2)) = (
-                sys_f64(&w.doc, "/seg/x1"),
-                sys_f64(&w.doc, "/seg/y1"),
-                sys_f64(&w.doc, "/seg/x2"),
-                sys_f64(&w.doc, "/seg/y2"),
-            ) {
-                out.push(vision::Seg {
-                    a: (x1, y1),
-                    b: (x2, y2),
-                });
-            }
+            out.push(vision::Seg {
+                a: (wall.seg.x1, wall.seg.y1),
+                b: (wall.seg.x2, wall.seg.y2),
+            });
         }
         out
     }
 
     /// The scene's `blocksMove` wall segments. Mirrors the wall filter in `blocks_move`
-    /// (doc_type "wall", parent = scene, `system.blocksMove == true`, endpoints at
-    /// `system.seg.{x1,y1,x2,y2}`). INVARIANT: same filter as `blocks_move` — any divergence
+    /// (doc_type "wall", parent = scene, `engine.blocksMove == true`, endpoints at
+    /// `engine.seg.{x1,y1,x2,y2}`). INVARIANT: same filter as `blocks_move` — any divergence
     /// would allow the pathfinder to route through walls the movement gate would then reject.
     pub(crate) fn move_walls(&self, scene: Uuid) -> Vec<vision::Seg> {
         let mut out = Vec::new();
@@ -927,25 +855,16 @@ impl SceneEcs {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
             }
-            if w.doc
-                .system
-                .pointer("/blocksMove")
-                .and_then(|v| v.as_bool())
-                != Some(true)
-            {
+            let Some(wall) = engine_as::<eng::WallEngine>(&w.doc) else {
+                continue;
+            };
+            if wall.blocks_move != Some(true) {
                 continue;
             }
-            if let (Some(x1), Some(y1), Some(x2), Some(y2)) = (
-                sys_f64(&w.doc, "/seg/x1"),
-                sys_f64(&w.doc, "/seg/y1"),
-                sys_f64(&w.doc, "/seg/x2"),
-                sys_f64(&w.doc, "/seg/y2"),
-            ) {
-                out.push(vision::Seg {
-                    a: (x1, y1),
-                    b: (x2, y2),
-                });
-            }
+            out.push(vision::Seg {
+                a: (wall.seg.x1, wall.seg.y1),
+                b: (wall.seg.x2, wall.seg.y2),
+            });
         }
         out
     }
@@ -1148,11 +1067,13 @@ impl SceneEcs {
     /// enabled region, no filtering) — used by the GM and by `move_exec` (which springs secret
     /// regions on execution regardless of what the mover could see). `viewer: Some(user)` is the
     /// PER-REQUESTER view used by the grid A* router: a region is included only when `user` can
-    /// see the visibility tier declared on its `/system` (defaults to `All` when undeclared) —
+    /// see the visibility tier declared on its `/engine` (defaults to `All` when undeclared) —
     /// the SAME `resolve_access`/`property_overrides` mechanism that already gates every other
-    /// document's egress (spec §3: "no new secrecy machinery"). Callers MUST pass `None` for a
-    /// GM requester (a GM always sees the authoritative field, mirroring `visible_cells`'s
-    /// GM-skips-the-mask convention in `pathfind`).
+    /// document's egress (spec §3: "no new secrecy machinery"). A secret region's whole geometry
+    /// lives in the `engine` band (M13-0), so the visibility-tier lookup targets the `/engine`
+    /// property-override pointer, not `/system`. Callers MUST pass `None` for a GM requester (a
+    /// GM always sees the authoritative field, mirroring `visible_cells`'s GM-skips-the-mask
+    /// convention in `pathfind`).
     pub(crate) fn region_field(&self, scene: Uuid, viewer: Option<Uuid>) -> regions::RegionField {
         let cell = self
             .scene_grid_sizes()
@@ -1165,14 +1086,17 @@ impl SceneEcs {
             if doc.doc_type != "region" || doc.parent_id != Some(scene) {
                 continue;
             }
-            if doc.system.pointer("/enabled").and_then(|v| v.as_bool()) != Some(true) {
+            let Some(region_eng) = engine_as::<eng::RegionEngine>(doc) else {
+                continue;
+            };
+            if !region_eng.enabled {
                 continue;
             }
             if let Some(user) = viewer {
                 let tier = doc
                     .permissions
                     .property_overrides
-                    .get("/system")
+                    .get("/engine")
                     .copied()
                     .unwrap_or(crate::data::document::Visibility::All);
                 let access = crate::data::permission::resolve_access(
@@ -1184,20 +1108,15 @@ impl SceneEcs {
                     continue;
                 }
             }
-            let Some(shape) = regions::parse_region_shape(&doc.system) else {
+            let Some(shape) = regions::parse_region_shape(&region_eng.shape) else {
                 continue;
             };
-            let behavior = match doc.system.pointer("/behavior").and_then(|v| v.as_str()) {
-                Some("impassable") => regions::RegionBehavior::Impassable,
-                Some("arrest") => regions::RegionBehavior::Arrest,
+            let behavior = match region_eng.behavior.as_str() {
+                "impassable" => regions::RegionBehavior::Impassable,
+                "arrest" => regions::RegionBehavior::Arrest,
                 _ => regions::RegionBehavior::Terrain,
             };
-            let cost = doc
-                .system
-                .pointer("/cost")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(1.0)
-                .max(1.0);
+            let cost = region_eng.cost.max(1.0);
             builder.add(&shape, behavior, cost, cell);
         }
         builder.build()
@@ -1212,51 +1131,23 @@ impl SceneEcs {
             if e.doc.doc_type != "light" || e.doc.parent_id != Some(scene) {
                 continue;
             }
-            if e.doc.system.pointer("/enabled").and_then(|v| v.as_bool()) != Some(true) {
-                continue;
-            }
-            let (Some(x), Some(y)) = (sys_f64(&e.doc, "/x"), sys_f64(&e.doc, "/y")) else {
+            let Some(le) = engine_as::<eng::LightEngine>(&e.doc) else {
                 continue;
             };
-            let color = e
-                .doc
-                .system
-                .pointer("/color")
-                .and_then(|v| v.as_str())
-                .map(parse_hex_color)
-                .unwrap_or(0xFFFFFF);
-            let falloff = match e
-                .doc
-                .system
-                .pointer("/falloff/curve")
-                .and_then(|v| v.as_str())
-            {
+            if !le.enabled {
+                continue;
+            }
+            let falloff = match le.falloff.as_ref().map(|f| f.curve.as_str()) {
                 Some("quadratic") => Falloff::Quadratic,
                 Some("none") => Falloff::None,
                 _ => Falloff::Linear,
             };
             out.push(Light {
-                pos: (x, y),
-                color,
-                intensity: e
-                    .doc
-                    .system
-                    .pointer("/intensity")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(1.0)
-                    .clamp(0.0, 1.0),
-                bright_radius: e
-                    .doc
-                    .system
-                    .pointer("/brightRadius")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0),
-                dim_radius: e
-                    .doc
-                    .system
-                    .pointer("/dimRadius")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0),
+                pos: (le.x, le.y),
+                color: parse_hex_color(&le.color),
+                intensity: le.intensity.clamp(0.0, 1.0),
+                bright_radius: le.bright_radius,
+                dim_radius: le.dim_radius,
                 falloff,
                 enabled: true, // INVARIANT: only enabled lights reach this push (disabled filtered above).
             });
@@ -1279,55 +1170,46 @@ impl SceneEcs {
     /// actor.ts): a LINKED token (`actor_id` present) resolves the shared actor and applies
     /// `overrides.vision` as a wholesale replacement when present; a dangling link (actor absent)
     /// yields normal, ignoring overrides. An INSTANCED token (no `actor_id`) uses its
-    /// `embedded.actor[0].system.vision` without overrides. An unknown mode id is dropped
+    /// `embedded.actor[0].engine.vision` without overrides. An unknown mode id is dropped
     /// (fail-closed: it contributes no vision floor). Always returns ≥1 triple (normal fallback
     /// with `render_hint: None`).
     pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64, Option<String>)> {
         let modes = self.resolved_vision_modes();
         let bands = self.resolved_bands();
 
+        let token_eng = engine_as::<eng::TokenEngine>(token);
+
         // Mirror actor.ts resolveTokenActor: a LINKED token (actor_id) resolves the shared actor and
         // applies the per-token override whitelist (overrides.vision REPLACES the actor's vision); a
         // dangling link (actor absent) yields normal, ignoring overrides. An INSTANCED token (no
         // actor_id) uses its embedded copy's vision; overrides do not apply to instanced tokens.
-        let assignments: Option<&serde_json::Value> = match token
-            .system
-            .pointer("/actor_id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok())
-        {
-            Some(id) => match self.actors.get(&id) {
-                Some(actor) => token
-                    .system
-                    .pointer("/overrides/vision")
-                    .filter(|v| v.is_array())
-                    .or_else(|| actor.system.pointer("/vision").filter(|v| v.is_array())),
-                None => None, // dangling link → normal (overrides ignored, per resolveTokenActor)
-            },
-            None => token
-                .embedded
-                .get("actor")
-                .and_then(|v| v.first())
-                .and_then(|a| a.system.pointer("/vision"))
-                .filter(|v| v.is_array()),
-        };
+        let assignments: Option<Vec<eng::VisionAssignment>> =
+            match token_eng.as_ref().and_then(|t| t.actor_id) {
+                Some(id) => match self.actors.get(&id) {
+                    Some(actor) => token_eng
+                        .as_ref()
+                        .and_then(|t| t.overrides.as_ref())
+                        .and_then(|o| o.vision.clone())
+                        .or_else(|| engine_as::<eng::ActorEngine>(actor).and_then(|a| a.vision)),
+                    None => None, // dangling link → normal (overrides ignored, per resolveTokenActor)
+                },
+                None => token
+                    .embedded
+                    .get("actor")
+                    .and_then(|v| v.first())
+                    .and_then(engine_as::<eng::ActorEngine>)
+                    .and_then(|a| a.vision),
+            };
 
         let mut out: Vec<(f64, f64, Option<String>)> = Vec::new();
-        if let Some(arr) = assignments.and_then(|v| v.as_array()) {
+        if let Some(arr) = assignments {
             for a in arr {
-                let Some(mode_id) = a.get("mode").and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                let Some(vm) = modes.get(mode_id) else {
+                let Some(vm) = modes.get(&a.mode) else {
                     continue;
                 }; // unknown mode → drop (fail-closed)
-                let range = a
-                    .get("range")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(vm.default_range);
                 out.push((
                     crate::scene::lighting::floor_min(&bands, &vm.illumination_floor),
-                    range,
+                    a.range,
                     vm.render_hint.clone(),
                 ));
             }
@@ -1444,10 +1326,10 @@ impl SceneEcs {
             if !is_source {
                 continue;
             }
-            if let (Some(x), Some(y)) = (sys_f64(&e.doc, "/x"), sys_f64(&e.doc, "/y")) {
+            if let Some(t) = engine_as::<eng::TokenEngine>(&e.doc) {
                 sources.push(Src {
                     scene,
-                    vp: (x, y),
+                    vp: (t.x, t.y),
                     floors: self.token_vision_floors(&e.doc),
                 });
             }
@@ -1660,9 +1542,9 @@ impl SceneEcs {
             if !is_source {
                 continue;
             }
-            if let (Some(x), Some(y)) = (sys_f64(&e.doc, "/x"), sys_f64(&e.doc, "/y")) {
+            if let Some(t) = engine_as::<eng::TokenEngine>(&e.doc) {
                 sources.push(Src {
-                    vp: (x, y),
+                    vp: (t.x, t.y),
                     floors: self.token_vision_floors(&e.doc),
                 });
             }
@@ -1766,23 +1648,18 @@ impl SceneEcs {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
             }
-            if w.doc
-                .system
-                .pointer("/blocksMove")
-                .and_then(|v| v.as_bool())
-                != Some(true)
-            {
-                continue;
-            }
-            let (Some(x1), Some(y1), Some(x2), Some(y2)) = (
-                sys_f64(&w.doc, "/seg/x1"),
-                sys_f64(&w.doc, "/seg/y1"),
-                sys_f64(&w.doc, "/seg/x2"),
-                sys_f64(&w.doc, "/seg/y2"),
-            ) else {
+            let Some(wall) = engine_as::<eng::WallEngine>(&w.doc) else {
                 continue;
             };
-            if segments_cross(a0, a1, (x1, y1), (x2, y2)) {
+            if wall.blocks_move != Some(true) {
+                continue;
+            }
+            if segments_cross(
+                a0,
+                a1,
+                (wall.seg.x1, wall.seg.y1),
+                (wall.seg.x2, wall.seg.y2),
+            ) {
                 return true;
             }
         }
@@ -2055,16 +1932,48 @@ mod tests {
         assert_eq!(ecs.entity_count(), 0);
     }
 
+    /// Builds a scene-entity fixture with a `system`-only body. Reserved for the handful of
+    /// fixtures still exercising code this task does not re-root: `token_move`'s own tests
+    /// (movement-gate post-image, out of this task's scope) and the generic `apply_op`
+    /// Update-mechanism test (a doc-round-trip mechanism check with no engine-band reader).
+    /// Every fixture whose doc_type this file's readers now consume through the typed `engine`
+    /// band uses `entity_doc_eng` below instead.
     fn entity_doc(id: u128, parent: u128, ty: &str, system: serde_json::Value) -> Document {
         let mut d = doc(id, Some(parent), ty);
         d.system = system;
         d
     }
 
-    fn entity_doc_top(id: u128, ty: &str, system: serde_json::Value) -> Document {
-        let mut d = doc(id, None, ty);
-        d.system = system;
+    /// Builds a scene-entity fixture with `engine` set to `body` (`system` stays `{}`) — the
+    /// typed-read counterpart of `entity_doc`, used by every fixture whose doc_type this file's
+    /// production code now reads through `engine_as`/a typed `*Engine` struct.
+    fn entity_doc_eng(id: u128, parent: u128, ty: &str, body: serde_json::Value) -> Document {
+        let mut d = doc(id, Some(parent), ty);
+        d.engine = Some(body);
         d
+    }
+
+    /// World-scoped (parentless) counterpart of `entity_doc_eng`, for config-docs
+    /// (`world-settings`/`vision-modes`/`light-gradation`) and `actor` docs.
+    fn entity_doc_top_eng(id: u128, ty: &str, body: serde_json::Value) -> Document {
+        let mut d = doc(id, None, ty);
+        d.engine = Some(body);
+        d
+    }
+
+    /// A minimal, structurally-complete `ActorEngine` body (`displayName`/`visual`/`size`/
+    /// `shape`/`conditions`/`prototype` are all required, non-`Option` fields) with `vision` set
+    /// to the caller's assignment array — this file's vision-floor tests only ever vary `vision`.
+    fn actor_body(vision: serde_json::Value) -> serde_json::Value {
+        json!({
+            "displayName": "Fixture Actor",
+            "visual": { "kind": "image", "asset": "a.png" },
+            "size": { "w": 1.0, "h": 1.0 },
+            "shape": "square",
+            "conditions": [],
+            "prototype": true,
+            "vision": vision,
+        })
     }
 
     #[test]
@@ -2125,7 +2034,7 @@ mod tests {
         let ecs = SceneEcs::from_documents(
             vec![
                 doc(10, None, "scene"),
-                entity_doc(12, 10, "wall", cross.clone()),
+                entity_doc_eng(12, 10, "wall", cross.clone()),
             ],
             0,
         );
@@ -2139,7 +2048,7 @@ mod tests {
             vec![
                 doc(10, None, "scene"),
                 doc(20, None, "scene"),
-                entity_doc(24, 20, "wall", cross.clone()),
+                entity_doc_eng(24, 20, "wall", cross.clone()),
             ],
             0,
         );
@@ -2150,7 +2059,7 @@ mod tests {
         let ecs2 = SceneEcs::from_documents(
             vec![
                 doc(10, None, "scene"),
-                entity_doc(
+                entity_doc_eng(
                     13,
                     10,
                     "wall",
@@ -2201,13 +2110,18 @@ mod tests {
     fn vision_channel_is_per_recipient() {
         use crate::data::document::WorldRole;
         let player = Uuid::from_u128(7);
-        let mut token = entity_doc(11, 10, "token", json!({ "x": 0, "y": 0 }));
+        let mut token = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         token.owner = Some(player);
         let ecs = SceneEcs::from_documents(
             vec![
                 doc(10, None, "scene"),
                 token,
-                entity_doc(
+                entity_doc_eng(
                     12,
                     10,
                     "wall",
@@ -2251,9 +2165,14 @@ mod tests {
         use crate::data::document::WorldRole;
         use serde_json::json;
         let player = Uuid::from_u128(7);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(player);
-        let light = entity_doc(
+        let light = entity_doc_eng(
             20,
             10,
             "light",
@@ -2308,13 +2227,18 @@ mod tests {
         use crate::data::document::WorldRole;
         use serde_json::json;
         let player = Uuid::from_u128(7);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(player);
         tok.embedded.insert(
             "actor".into(),
             vec![{
                 let mut a = doc(99, None, "actor");
-                a.system = json!({ "vision": [{ "mode": "darkvision", "range": 6 }] });
+                a.engine = Some(actor_body(json!([{ "mode": "darkvision", "range": 6 }])));
                 a
             }],
         );
@@ -2354,12 +2278,14 @@ mod tests {
 
         // World default: lighting OFF, global illumination.
         let mut ws = doc(100, None, "world-settings");
-        ws.system = json!({
-            "scene": { "lightingEnabled": false, "lightMode": "globalIllumination",
-                       "environment": { "color": "#0a0e1a", "intensity": 0.25 } },
-            "pathfinding": { "diagonalRule": "chebyshev" },
-            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
-        });
+        ws.engine = Some(ws_body(&[
+            ("/scene/lightingEnabled", json!(false)),
+            ("/scene/lightMode", json!("globalIllumination")),
+            (
+                "/scene/environment",
+                json!({ "color": "#0a0e1a", "intensity": 0.25 }),
+            ),
+        ]));
         ecs.set_world_config(Some(ws), None, None);
         let r1 = ecs.resolve_scene(scene_id);
         assert!(!r1.lighting_enabled);
@@ -2369,14 +2295,16 @@ mod tests {
 
         // Per-scene override re-enables lighting (null/absent ⇒ inherit; a present value wins).
         let mut scene = doc(10, None, "scene");
-        scene.system = json!({ "grid": { "kind": "square", "size": 100 },
-                               "lighting": { "enabled": true } });
+        scene.engine = Some(
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                               "lighting": { "enabled": true } }),
+        );
         ecs.apply_op(&Operation::Update {
             doc_id: scene_id,
             changes: vec![crate::data::command::FieldChange {
-                path: "/system".into(),
+                path: "/engine".into(),
                 old: json!(null),
-                new: scene.system.clone(),
+                new: scene.engine.clone().unwrap(),
             }],
         });
         assert!(ecs.resolve_scene(scene_id).lighting_enabled); // scene override beats world default
@@ -2388,7 +2316,10 @@ mod tests {
         let mut ecs = SceneEcs::new();
         // A doc with ONLY a custom mode → returned as-is; normal/darkvision are NOT re-seeded.
         let mut vm = doc(101, None, "vision-modes");
-        vm.system = json!({ "modes": { "blindsight": { "illuminationFloor": "dark", "defaultRange": 4 } } });
+        vm.engine = Some(json!({ "modes": { "blindsight": {
+            "id": "blindsight", "name": "Blindsight",
+            "illuminationFloor": "dark", "defaultRange": 4
+        } } }));
         ecs.set_world_config(None, None, Some(vm));
         let modes = ecs.resolved_vision_modes();
         assert!(modes.contains_key("blindsight"));
@@ -2406,38 +2337,46 @@ mod tests {
         use serde_json::json;
         let mut ecs = SceneEcs::new();
         // An actor granting darkvision range 6.
-        ecs.set_actors(vec![entity_doc_top(
+        ecs.set_actors(vec![entity_doc_top_eng(
             200,
             "actor",
-            json!({ "vision": [{ "mode": "darkvision", "range": 6 }] }),
+            actor_body(json!([{ "mode": "darkvision", "range": 6 }])),
         )]);
 
         // Linked token referencing the actor → darkvision floor (dark=0.0), range 6.
-        let mut linked = entity_doc(
+        let mut linked = entity_doc_eng(
             11,
             10,
             "token",
-            json!({ "x": 0, "y": 0, "actor_id": Uuid::from_u128(200).to_string() }),
+            json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": Uuid::from_u128(200).to_string() }),
         );
         let floors = ecs.token_vision_floors(&linked);
         assert_eq!(floors.len(), 1);
         assert_eq!(floors[0], (0.0, 6.0, Some("desaturate".to_string()))); // dark floor, 6-cell range, darkvision hint
 
         // A per-token override REPLACES the actor's vision entirely.
-        linked.system["overrides"] = json!({ "vision": [{ "mode": "normal", "range": 0 }] });
+        linked.engine.as_mut().unwrap()["overrides"] =
+            json!({ "vision": [{ "mode": "normal", "range": 0 }] });
         let f2 = ecs.token_vision_floors(&linked);
         assert_eq!(f2[0], (0.34, 0.0, None)); // dim floor, unlimited range, no hint (normal mode has render_hint: None)
 
         // An actorless token → normal only.
-        let raw = entity_doc(12, 10, "token", json!({ "x": 0, "y": 0 }));
+        let raw = entity_doc_eng(
+            12,
+            10,
+            "token",
+            json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         assert_eq!(ecs.token_vision_floors(&raw), vec![(0.34, 0.0, None)]);
 
         // An explicit EMPTY override REPLACES (no fall-through to the linked actor → normal).
-        let mut linked_empty = entity_doc(
+        let mut linked_empty = entity_doc_eng(
             13,
             10,
             "token",
-            json!({ "x": 0, "y": 0, "actor_id": Uuid::from_u128(200).to_string(),
+            json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": Uuid::from_u128(200).to_string(),
                     "overrides": { "vision": [] } }),
         );
         assert_eq!(
@@ -2447,13 +2386,13 @@ mod tests {
 
         // A token with BOTH actor_id AND an embedded actor resolves the LINKED actor (matches the
         // client's actor_id-first resolveTokenActor), NOT the embedded copy.
-        linked_empty.system["overrides"] = json!({}); // no vision override
+        linked_empty.engine.as_mut().unwrap()["overrides"] = json!({}); // no vision override
         linked_empty.embedded.insert(
             "actor".into(),
-            vec![entity_doc_top(
+            vec![entity_doc_top_eng(
                 201,
                 "actor",
-                json!({ "vision": [{ "mode": "normal", "range": 0 }] }),
+                actor_body(json!([{ "mode": "normal", "range": 0 }])),
             )],
         );
         // actor 200 grants darkvision range 6 → linked wins → (0.0, 6.0), not the embedded normal.
@@ -2464,11 +2403,12 @@ mod tests {
 
         // A DANGLING link (actor_id with no matching actor) + an overrides.vision is normal — the
         // client ignores overrides when the linked actor is absent.
-        let dangling = entity_doc(
+        let dangling = entity_doc_eng(
             14,
             10,
             "token",
-            json!({ "x": 0, "y": 0, "actor_id": Uuid::from_u128(999).to_string(),
+            json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": Uuid::from_u128(999).to_string(),
                     "overrides": { "vision": [{ "mode": "darkvision", "range": 9 }] } }),
         );
         assert_eq!(ecs.token_vision_floors(&dangling), vec![(0.34, 0.0, None)]);
@@ -2481,7 +2421,7 @@ mod tests {
         let ecs = SceneEcs::from_documents(
             vec![
                 doc(10, None, "scene"),
-                entity_doc(
+                entity_doc_eng(
                     20,
                     10,
                     "light",
@@ -2490,20 +2430,20 @@ mod tests {
                         "brightRadius": 2.0, "dimRadius": 6.0, "enabled": true
                     }),
                 ),
-                entity_doc(
+                entity_doc_eng(
                     21,
                     10,
                     "light",
                     json!({ "x": 0.0, "y": 0.0, "color": "#fff",
                     "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 2.0, "enabled": false }),
                 ),
-                entity_doc(
+                entity_doc_eng(
                     22,
                     10,
                     "wall",
                     json!({ "seg": {"x1":0,"y1":0,"x2":10,"y2":0}, "blocksLight": true }),
                 ),
-                entity_doc(
+                entity_doc_eng(
                     23,
                     10,
                     "wall",
@@ -2525,7 +2465,7 @@ mod tests {
         let ecs2 = SceneEcs::from_documents(
             vec![
                 doc(10, None, "scene"),
-                entity_doc(
+                entity_doc_eng(
                     20,
                     10,
                     "light",
@@ -2534,14 +2474,14 @@ mod tests {
                         "brightRadius": 2.0, "dimRadius": 6.0, "enabled": true
                     }),
                 ),
-                entity_doc(
+                entity_doc_eng(
                     22,
                     10,
                     "wall",
                     json!({ "seg": {"x1":0,"y1":0,"x2":10,"y2":0}, "blocksLight": true }),
                 ),
                 doc(30, None, "scene"), // scene id 20 (doc id 30 → Uuid 30; parent is None)
-                entity_doc(
+                entity_doc_eng(
                     31,
                     30,
                     "light",
@@ -2550,7 +2490,7 @@ mod tests {
                         "brightRadius": 3.0, "dimRadius": 8.0, "enabled": true
                     }),
                 ),
-                entity_doc(
+                entity_doc_eng(
                     32,
                     30,
                     "wall",
@@ -2593,7 +2533,12 @@ mod tests {
         // A normal-vision token at origin in a walled-open scene. lightingEnabled defaults true,
         // environmentLight, env intensity 0 → with NO lights the scene is dark → normal vision sees
         // nothing (fail-closed): the lit mask is empty.
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(player);
         let dark = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone()], 0);
         assert!(
@@ -2604,7 +2549,7 @@ mod tests {
         );
 
         // Add a bright light covering the token's cell → that cell becomes visible at the bright band.
-        let light = entity_doc(
+        let light = entity_doc_eng(
             20,
             10,
             "light",
@@ -2628,9 +2573,16 @@ mod tests {
         // all_bright: a scene with lighting disabled makes every LOS cell visible at the bright
         // band even for a normal-vision token with NO lights present (spec §3/§6).
         let mut bright_scene = doc(10, None, "scene");
-        bright_scene.system = json!({ "grid": { "kind": "square", "size": 100 },
-                                      "lighting": { "enabled": false } });
-        let mut ntok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        bright_scene.engine = Some(
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                                      "lighting": { "enabled": false } }),
+        );
+        let mut ntok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         ntok.owner = Some(player);
         let ab = SceneEcs::from_documents(vec![bright_scene, ntok], 0).player_lit_mask(player);
         let s = ab.iter().find(|s| s.scene == scene).expect("scene present");
@@ -2644,13 +2596,18 @@ mod tests {
         // Darkvision token in the SAME dark scene (no light) sees within range despite darkness.
         // Uses an embedded actor (instanced token path) because overrides.vision only applies to
         // linked tokens with a resolved actor_id; an instanced token reads embedded.actor[0].system.vision.
-        let mut dv = entity_doc(12, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut dv = entity_doc_eng(
+            12,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         dv.embedded.insert(
             "actor".into(),
-            vec![entity_doc_top(
+            vec![entity_doc_top_eng(
                 900,
                 "actor",
-                json!({ "vision": [{ "mode": "darkvision", "range": 6 }] }),
+                actor_body(json!([{ "mode": "darkvision", "range": 6 }])),
             )],
         );
         dv.owner = Some(player);
@@ -2667,13 +2624,18 @@ mod tests {
         use serde_json::json;
         let player = Uuid::from_u128(7);
         // Dark scene (no lights, environmentLight, lighting on) → only darkvision admits cells.
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(player);
         tok.embedded.insert(
             "actor".into(),
             vec![{
                 let mut a = doc(99, None, "actor");
-                a.system = json!({ "vision": [{ "mode": "darkvision", "range": 6 }] });
+                a.engine = Some(actor_body(json!([{ "mode": "darkvision", "range": 6 }])));
                 a
             }],
         );
@@ -2694,9 +2656,14 @@ mod tests {
 
         // Bright cell under a light, seen by normal vision → no hint (normal floor suppresses it).
         let player2 = Uuid::from_u128(8);
-        let mut tok2 = entity_doc(12, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok2 = entity_doc_eng(
+            12,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok2.owner = Some(player2); // no embedded vision → normal fallback
-        let light = entity_doc(
+        let light = entity_doc_eng(
             20,
             10,
             "light",
@@ -2731,7 +2698,11 @@ mod tests {
         let mut ws = doc(100, None, "world-settings");
         ws.system = json!({ "scene": { "lightingEnabled": false } });
         ecs.set_world_config(Some(ws), None, None);
-        ecs.set_actors(vec![entity_doc_top(200, "actor", json!({ "vision": [] }))]);
+        ecs.set_actors(vec![entity_doc_top_eng(
+            200,
+            "actor",
+            json!({ "vision": [] }),
+        )]);
         assert!(ecs.actor(&Uuid::from_u128(200)).is_some());
 
         // A live Create of a vision-modes doc lands in the side table.
@@ -2780,13 +2751,15 @@ mod tests {
         assert_eq!(m["darkvision"].render_hint.as_deref(), Some("desaturate"));
 
         // Present doc → renderHint parsed; absent field → None.
-        let mut vm = entity_doc(30, 10, "vision-modes", json!({}));
+        let mut vm = entity_doc_eng(30, 10, "vision-modes", json!({}));
         vm.doc_type = "vision-modes".into();
         vm.parent_id = None;
-        vm.system = json!({ "modes": {
-            "truesight": { "illuminationFloor": "dark", "defaultRange": 8, "renderHint": "outline" },
-            "plain":     { "illuminationFloor": "dim",  "defaultRange": 0 }
-        }});
+        vm.engine = Some(json!({ "modes": {
+            "truesight": { "id": "truesight", "name": "Truesight",
+                           "illuminationFloor": "dark", "defaultRange": 8, "renderHint": "outline" },
+            "plain":     { "id": "plain", "name": "Plain",
+                           "illuminationFloor": "dim",  "defaultRange": 0 }
+        }}));
         let mut ecs = SceneEcs::new();
         ecs.set_world_config(None, None, Some(vm));
         let m = ecs.resolved_vision_modes();
@@ -2798,15 +2771,20 @@ mod tests {
     fn token_vision_floors_include_render_hint() {
         use serde_json::json;
         // Instanced token with embedded actor granting normal + darkvision.
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 0, "y": 0 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.embedded.insert(
             "actor".into(),
             vec![{
                 let mut a = doc(99, None, "actor");
-                a.system = json!({ "vision": [
+                a.engine = Some(actor_body(json!([
                     { "mode": "normal", "range": 0 },
                     { "mode": "darkvision", "range": 6 }
-                ]});
+                ])));
                 a
             }],
         );
@@ -2821,31 +2799,31 @@ mod tests {
 
     // --- Test helpers for movement-restriction resolution tests ---
 
-    /// Set `world_settings` to a doc whose `system` is `json_system` (test-only).
+    /// Set `world_settings` to a doc whose `engine` is `json_engine` (test-only).
     /// Mirrors how `room.rs` builds a world-settings config doc.
     #[cfg(test)]
     impl SceneEcs {
-        pub(crate) fn set_world_settings_for_test(&mut self, json_system: serde_json::Value) {
+        pub(crate) fn set_world_settings_for_test(&mut self, json_engine: serde_json::Value) {
             let mut d = crate::data::document::tests::world_scoped_doc(
                 Uuid::from_u128(9),
                 Uuid::from_u128(100),
                 "world-settings",
             );
-            d.system = json_system;
+            d.engine = Some(json_engine);
             self.world_settings = Some(d);
         }
 
         pub(crate) fn insert_scene_for_test(
             &mut self,
             scene_id: Uuid,
-            json_system: serde_json::Value,
+            json_engine: serde_json::Value,
         ) {
             let mut d = crate::data::document::tests::world_scoped_doc(
                 Uuid::from_u128(9),
                 scene_id,
                 "scene",
             );
-            d.system = json_system;
+            d.engine = Some(json_engine);
             // Remove stale entity if re-inserting.
             if let Some(old_e) = self.index.remove(&scene_id) {
                 let _ = self.world.despawn(old_e);
@@ -2853,6 +2831,18 @@ mod tests {
             let e = self.world.spawn((SceneEntity { doc: d },));
             self.index.insert(scene_id, e);
         }
+    }
+
+    /// A COMPLETE `WorldSettingsEngine` body (all `WorldSceneDefaults` fields present, per the
+    /// ingress-validated struct's `deny_unknown_fields` contract) with `patches` applied over the
+    /// built-in default via JSON-pointer `set_pointer` — lets each test express only the field(s)
+    /// it cares about instead of re-typing the full 9-field `scene` object every time.
+    fn ws_body(patches: &[(&str, serde_json::Value)]) -> serde_json::Value {
+        let mut v = serde_json::to_value(eng::WorldSettingsEngine::default()).unwrap();
+        for (path, val) in patches {
+            let _ = set_pointer(&mut v, path, val.clone());
+        }
+        v
     }
 
     #[test]
@@ -2899,11 +2889,10 @@ mod tests {
     fn diagonal_rule_reads_world_settings_and_unknown_falls_back() {
         use serde_json::json;
         let mut ecs = SceneEcs::new();
-        ecs.set_world_settings_for_test(json!({
-            "scene": { "movementRestriction": "visible", "partialCellLeniency": true },
-            "pathfinding": { "diagonalRule": "alternating" },
-            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
-        }));
+        ecs.set_world_settings_for_test(ws_body(&[(
+            "/pathfinding/diagonalRule",
+            json!("alternating"),
+        )]));
         assert_eq!(
             ecs.resolved_diagonal_rule(),
             crate::scene::pathfinding::DiagonalRule::Alternating
@@ -2932,14 +2921,10 @@ mod tests {
     fn resolve_scene_movement_restriction_world_override_and_leniency_off() {
         use serde_json::json;
         let mut ecs = SceneEcs::new();
-        // A complete world-settings system (scene+pathfinding+animation) so the structural guard passes.
-        ecs.set_world_settings_for_test(json!({
-            "scene": { "losRestriction": true, "fog": true, "lightingEnabled": true,
-                       "lightMode": "environmentLight", "environment": {"color":"#0a0e1a","intensity":0.0},
-                       "observerVision": false, "movementRestriction": "revealed", "partialCellLeniency": false },
-            "pathfinding": { "diagonalRule": "chebyshev" },
-            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
-        }));
+        ecs.set_world_settings_for_test(ws_body(&[
+            ("/scene/movementRestriction", json!("revealed")),
+            ("/scene/partialCellLeniency", json!(false)),
+        ]));
         let r = ecs.resolve_scene(Uuid::from_u128(1));
         assert_eq!(r.movement_restriction, MovementRestriction::Revealed);
         assert!(
@@ -2953,16 +2938,16 @@ mod tests {
         use serde_json::json;
         let mut ecs = SceneEcs::new();
         let scene_id = Uuid::from_u128(7);
-        ecs.set_world_settings_for_test(json!({
-            "scene": { "movementRestriction": "visible", "partialCellLeniency": true },
-            "pathfinding": { "diagonalRule": "chebyshev" },
-            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
-        }));
+        ecs.set_world_settings_for_test(ws_body(&[(
+            "/scene/movementRestriction",
+            json!("visible"),
+        )]));
         // Scene overrides vision.movementRestriction to "unrestricted".
         ecs.insert_scene_for_test(
             scene_id,
             json!({
                 "grid": { "kind": "square", "size": 100 },
+                "background": null,
                 "vision": { "movementRestriction": "unrestricted" }
             }),
         );
@@ -2977,16 +2962,16 @@ mod tests {
         use serde_json::json;
         let mut ecs = SceneEcs::new();
         let scene_id = Uuid::from_u128(8);
-        ecs.set_world_settings_for_test(json!({
-            "scene": { "movementRestriction": "revealed", "partialCellLeniency": true },
-            "pathfinding": { "diagonalRule": "chebyshev" },
-            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
-        }));
+        ecs.set_world_settings_for_test(ws_body(&[(
+            "/scene/movementRestriction",
+            json!("revealed"),
+        )]));
         // null clears the override → inherit world "revealed" (mirrors `?? d.scene.movementRestriction`).
         ecs.insert_scene_for_test(
             scene_id,
             json!({
                 "grid": { "kind": "square", "size": 100 },
+                "background": null,
                 "vision": { "movementRestriction": null }
             }),
         );
@@ -3024,7 +3009,7 @@ mod tests {
     #[test]
     fn resolve_scene_movement_model_scene_override_beats_world() {
         let mut ecs = SceneEcs::from_documents(
-            vec![entity_doc_top(
+            vec![entity_doc_top_eng(
                 10,
                 "scene",
                 json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -3052,7 +3037,7 @@ mod tests {
     #[test]
     fn resolve_scene_movement_model_null_scene_override_inherits_world() {
         let mut ecs = SceneEcs::from_documents(
-            vec![entity_doc_top(
+            vec![entity_doc_top_eng(
                 10,
                 "scene",
                 json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -3125,21 +3110,26 @@ mod tests {
         // cell (light placed at the token), normal's floor (0.34) is higher than darkvision's (0.0),
         // so normal is the highest-admitting mode → its hint (None) wins → lit cells carry no hint.
         let player = Uuid::from_u128(42);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(player);
         tok.embedded.insert(
             "actor".into(),
             vec![{
                 let mut a = doc(99, None, "actor");
-                a.system = json!({ "vision": [
+                a.engine = Some(actor_body(json!([
                     { "mode": "normal",     "range": 0 },
                     { "mode": "darkvision", "range": 6 }
-                ]});
+                ])));
                 a
             }],
         );
         // A bright light at the token location illuminates the cell at (0,0) above dim threshold.
-        let light = entity_doc(
+        let light = entity_doc_eng(
             20,
             10,
             "light",
@@ -3190,9 +3180,14 @@ mod tests {
     fn scene_with_lit_player_token() -> (SceneEcs, Uuid, Uuid) {
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(user);
-        let light = entity_doc(
+        let light = entity_doc_eng(
             20,
             10,
             "light",
@@ -3215,11 +3210,16 @@ mod tests {
     fn scene_with_boundary_crossing_light() -> (SceneEcs, Uuid, Uuid) {
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(user);
         // dimRadius = 1.4 cells (140 scene units): center of (1,1) at distance ≈141.4 > 140 (strict miss);
         // corner (100,100) at distance ≈70.7 < 140 (lenient hit).
-        let light = entity_doc(
+        let light = entity_doc_eng(
             20,
             10,
             "light",
@@ -3284,7 +3284,12 @@ mod tests {
         use serde_json::json;
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(user);
         // lightMode = globalIllumination: lighting_enabled true, all cells bright, env tint applied.
         // No placed lights — confirms the all_bright short-circuit path in both player_lit_mask
@@ -3297,6 +3302,7 @@ mod tests {
                 "environment": { "color": "#ffffff", "intensity": 1.0 },
                 "observerVision": false,
                 "movementRestriction": "visible",
+                "movementModel": "grid-stepped",
                 "partialCellLeniency": false
             },
             "pathfinding": { "diagonalRule": "chebyshev" },
@@ -3313,14 +3319,19 @@ mod tests {
         use serde_json::json;
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(user);
         // Embedded actor granting darkvision range 6 (mirrors lit_mask_gates_los test pattern).
         tok.embedded.insert(
             "actor".into(),
             vec![{
                 let mut a = doc(99, None, "actor");
-                a.system = json!({ "vision": [{ "mode": "darkvision", "range": 6 }] });
+                a.engine = Some(actor_body(json!([{ "mode": "darkvision", "range": 6 }])));
                 a
             }],
         );
@@ -3351,18 +3362,23 @@ mod tests {
         use serde_json::json;
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(user);
         // A blocksSight wall at x=200 (column 2) cuts off the right half of the scene from
         // the token at (50,50). Combined with a bright light at the token, cells to the left of
         // the wall are lit+visible; cells beyond the wall are occluded by LOS.
-        let wall = entity_doc(
+        let wall = entity_doc_eng(
             30,
             10,
             "wall",
             json!({ "seg": { "x1": 200, "y1": -200, "x2": 200, "y2": 400 }, "blocksSight": true }),
         );
-        let light = entity_doc(
+        let light = entity_doc_eng(
             20,
             10,
             "light",
@@ -3435,8 +3451,8 @@ mod tests {
         let ecs = SceneEcs::from_documents(
             vec![
                 doc(10, None, "scene"),
-                entity_doc(11, 10, "wall", blocking),
-                entity_doc(12, 10, "wall", non_blocking),
+                entity_doc_eng(11, 10, "wall", blocking),
+                entity_doc_eng(12, 10, "wall", non_blocking),
             ],
             0,
         );
@@ -3457,16 +3473,16 @@ mod tests {
         );
         secret.parent_id = Some(scene_id);
         secret.owner = Some(owner);
-        secret.system = serde_json::json!({
+        secret.engine = Some(serde_json::json!({
             "shape": { "kind": "rect", "points": [0.0, 0.0, 100.0, 100.0] },
             "behavior": "impassable",
             "cost": 1.0,
             "enabled": true,
-        });
+        }));
         secret
             .permissions
             .property_overrides
-            .insert("/system".into(), Visibility::GmOnly);
+            .insert("/engine".into(), Visibility::GmOnly);
 
         let mut visible = crate::data::document::tests::world_scoped_doc(
             Uuid::from_u128(9),
@@ -3474,12 +3490,12 @@ mod tests {
             "region",
         );
         visible.parent_id = Some(scene_id);
-        visible.system = serde_json::json!({
+        visible.engine = Some(serde_json::json!({
             "shape": { "kind": "rect", "points": [200.0, 0.0, 300.0, 100.0] },
             "behavior": "terrain",
             "cost": 2.0,
             "enabled": true,
-        });
+        }));
 
         let ecs = SceneEcs::from_documents(
             vec![
@@ -3522,12 +3538,12 @@ mod tests {
             "region",
         );
         disabled.parent_id = Some(scene_id);
-        disabled.system = serde_json::json!({
+        disabled.engine = Some(serde_json::json!({
             "shape": { "kind": "rect", "points": [0.0, 0.0, 100.0, 100.0] },
             "behavior": "impassable",
             "cost": 1.0,
             "enabled": false,
-        });
+        }));
         let ecs = SceneEcs::from_documents(
             vec![
                 crate::data::document::tests::world_scoped_doc(
@@ -3609,7 +3625,7 @@ mod tests {
         let scene = Uuid::from_u128(10);
         let a = ecs.navmesh_for(scene, 0.4).expect("navmesh builds");
         ecs.apply_op(&Operation::Create {
-            doc: entity_doc(
+            doc: entity_doc_eng(
                 20,
                 10,
                 "wall",
@@ -3627,7 +3643,7 @@ mod tests {
     #[test]
     fn bounds_mutation_invalidates_the_navmesh_cache() {
         let mut ecs = SceneEcs::from_documents(
-            vec![entity_doc_top(
+            vec![entity_doc_top_eng(
                 10,
                 "scene",
                 json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
@@ -3639,7 +3655,7 @@ mod tests {
         ecs.apply_op(&Operation::Update {
             doc_id: scene,
             changes: vec![crate::data::command::FieldChange {
-                path: "/system/bounds".into(),
+                path: "/engine/bounds".into(),
                 old: json!(null),
                 new: json!({ "width": 40, "height": 40 }),
             }],
@@ -3658,7 +3674,12 @@ mod tests {
     fn scene_revealed_player_token() -> (SceneEcs, Uuid, Uuid) {
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(user);
         let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
         // Dark scene + revealed restriction: visible cells = ∅, so only explored memory admits moves.
@@ -3669,6 +3690,7 @@ mod tests {
                 "environment": { "color": "#000000", "intensity": 0.0 },
                 "observerVision": false,
                 "movementRestriction": "revealed",
+                "movementModel": "grid-stepped",
                 "partialCellLeniency": false
             },
             "pathfinding": { "diagonalRule": "chebyshev" },
@@ -3698,7 +3720,7 @@ mod tests {
     #[test]
     fn pathfind_dispatches_to_the_navmesh_router_for_a_continuous_scene() {
         let mut ecs = SceneEcs::from_documents(
-            vec![entity_doc_top(
+            vec![entity_doc_top_eng(
                 10,
                 "scene",
                 json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -3746,7 +3768,7 @@ mod tests {
         // already standing on must succeed with a single-point, zero-cost route, not
         // `PathFail::Unreachable`.
         let mut ecs = SceneEcs::from_documents(
-            vec![entity_doc_top(
+            vec![entity_doc_top_eng(
                 10,
                 "scene",
                 json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -3790,9 +3812,14 @@ mod tests {
     fn scene_with_lit_player_token_continuous() -> (SceneEcs, Uuid, Uuid) {
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(user);
-        let light = entity_doc(
+        let light = entity_doc_eng(
             20,
             10,
             "light",
@@ -3801,7 +3828,7 @@ mod tests {
                 "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
             }),
         );
-        let scene = entity_doc_top(
+        let scene = entity_doc_top_eng(
             10,
             "scene",
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -3812,7 +3839,7 @@ mod tests {
     }
 
     fn continuous_scene_docs() -> Vec<crate::data::document::Document> {
-        vec![entity_doc_top(
+        vec![entity_doc_top_eng(
             10,
             "scene",
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -3847,7 +3874,7 @@ mod tests {
         x1: f64,
         y1: f64,
     ) -> Document {
-        entity_doc(
+        entity_doc_eng(
             id,
             parent,
             "region",
@@ -3964,13 +3991,13 @@ mod tests {
         // the straight polyanya line (no bend, ~200 scene units). The GM's route bends (weighted).
         let mut docs = continuous_scene_docs();
         let mut secret = region_doc_top(12, 10, "terrain", 5.0, 100.0, 0.0, 200.0, 100.0);
-        // Mark the region gm_only via the SAME `/system` property-visibility override
+        // Mark the region gm_only via the SAME `/engine` property-visibility override
         // `region_field`'s per-requester filter checks (`move_exec.rs` uses the identical
         // convention for its own gm_only region fixtures).
         secret
             .permissions
             .property_overrides
-            .insert("/system".into(), crate::data::document::Visibility::GmOnly);
+            .insert("/engine".into(), crate::data::document::Visibility::GmOnly);
         docs.push(secret);
         let mut ecs = SceneEcs::from_documents(docs, 0);
         ecs.set_world_settings_for_test(continuous_world_settings());
@@ -4061,9 +4088,14 @@ mod tests {
         // fail-closed `MovementRestriction::Visible`, same fixture as the pure-polyanya test —
         // its default settings already yield a small, genuinely restricting mask).
         let user = Uuid::from_u128(7);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50, "y": 50 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(user);
-        let light = entity_doc(
+        let light = entity_doc_eng(
             20,
             10,
             "light",
@@ -4072,7 +4104,7 @@ mod tests {
                 "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
             }),
         );
-        let scene = entity_doc_top(
+        let scene = entity_doc_top_eng(
             10,
             "scene",
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -4140,10 +4172,15 @@ mod tests {
         secret
             .permissions
             .property_overrides
-            .insert("/system".into(), crate::data::document::Visibility::GmOnly);
+            .insert("/engine".into(), crate::data::document::Visibility::GmOnly);
         docs.push(secret);
         let player = Uuid::from_u128(2);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(player);
         docs.push(tok);
         let mut ecs = SceneEcs::from_documents(docs, 0);
@@ -4295,9 +4332,14 @@ mod tests {
         let scene = Uuid::from_u128(10);
         let user = Uuid::from_u128(7);
         let token_id = Uuid::from_u128(11);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(user);
-        let wall = entity_doc(
+        let wall = entity_doc_eng(
             12,
             10,
             "wall",
@@ -4343,13 +4385,18 @@ mod tests {
         let scene = Uuid::from_u128(10);
         let user = Uuid::from_u128(7);
         let token_id = Uuid::from_u128(11);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(user);
         let wall_sys =
             json!({ "seg": {"x1": 100, "y1": -200, "x2": 100, "y2": 200}, "blocksSight": true });
 
         // Normal wall (default permissions): occludes from (50,50).
-        let normal_wall = entity_doc(12, 10, "wall", wall_sys.clone());
+        let normal_wall = entity_doc_eng(12, 10, "wall", wall_sys.clone());
         let ecs_normal =
             SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone(), normal_wall], 0);
         let polys_normal =
@@ -4357,7 +4404,7 @@ mod tests {
         assert!(!polys_normal.is_empty());
 
         // gm_only wall (DocRole::None): players cannot access this doc, but must occlude equally.
-        let mut gm_wall = entity_doc(12, 10, "wall", wall_sys);
+        let mut gm_wall = entity_doc_eng(12, 10, "wall", wall_sys);
         gm_wall.permissions.default = DocRole::None;
         let ecs_gm = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, gm_wall], 0);
         let polys_gm = ecs_gm.player_vision_polygons_at(user, scene, token_id, (50.0, 50.0));
@@ -4384,7 +4431,12 @@ mod tests {
         let user = Uuid::from_u128(7);
         let stranger = Uuid::from_u128(999);
         let token_id = Uuid::from_u128(11);
-        let mut tok = entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 }));
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
         tok.owner = Some(user); // owned by user, NOT stranger
         let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
 
