@@ -438,6 +438,7 @@ impl Room {
         let restriction;
         let cell;
         let start;
+        let system_start;
         let visible_cells;
         let is_revealed;
         {
@@ -445,6 +446,11 @@ impl Room {
 
             // Verify the token exists and get its committed position.
             start = scene.token_position(token).ok_or(DataError::Forbidden)?;
+            // The token's own current stored `/system` (x,y) — see `pos_ops` below for why
+            // this must be read separately from the `/engine`-sourced `start`. Falls back to
+            // `start` only if the token has no `/system` x/y at all (degenerate fixture/doc;
+            // preserves the pre-fix behavior for that unreachable-in-practice case).
+            system_start = scene.token_system_position(token).unwrap_or(start);
 
             let settings = scene.resolve_scene(scene_id);
             cell = scene
@@ -596,19 +602,27 @@ impl Room {
         // leave `/engine/x,y` frozen at its creation-time value, since nothing else advances it —
         // every subsequent read of the committed position via `token_position` would silently
         // return that stale value. `token_move` still reads `/system/x,y` for its own logic, so
-        // that pair is kept unchanged alongside the new `/engine/x,y` pair; `start` is reused as
-        // `old` for the engine changes because it was already sourced from the engine band.
+        // that pair is kept alongside the new `/engine/x,y` pair.
+        //
+        // INTERIM DUAL-WRITE: this write bridges the two position bands while a second,
+        // `/system`-only movement path (`Room::publish`) also still exists, so `/system` and
+        // `/engine` can DIVERGE for a token. Each band's FieldChange `old` is therefore sourced
+        // from that band's OWN current stored value, never shared — reusing the engine-sourced
+        // `start` as `old` for the `/system` FieldChange would desync from the actually-stored
+        // `/system` value the instant a divergence occurs, permanently Conflicting (OCC
+        // pre-image mismatch) every subsequent call for that token. This op re-converges the two
+        // bands whenever it runs.
         let pos_ops = vec![Operation::Update {
             doc_id: token,
             changes: vec![
                 FieldChange {
                     path: "/system/x".into(),
-                    old: serde_json::json!(start.0),
+                    old: serde_json::json!(system_start.0),
                     new: serde_json::json!(outcome.stop.0),
                 },
                 FieldChange {
                     path: "/system/y".into(),
-                    old: serde_json::json!(start.1),
+                    old: serde_json::json!(system_start.1),
                     new: serde_json::json!(outcome.stop.1),
                 },
                 FieldChange {
@@ -894,26 +908,9 @@ mod room_tests {
     use std::sync::atomic::Ordering;
     use uuid::Uuid;
 
-    /// Dual-write helpers: world-settings/scene/token/wall/region/light `.system` fixture
-    /// values in this file are already field-name/casing-parity with the corresponding
-    /// `engine` band shapes (the scene/vision/region/lighting readers consume `engine`;
-    /// `token_move` still reads `system`). `token_engine` fills the `w`/`h`/`rotation` fields
-    /// `TokenEngine` requires that fixture `system` values never carry. `ws_engine` fills
-    /// `scene.movementModel`, a field `WorldSceneDefaults` requires that fixture `system`
-    /// values never carry. Every other doc type's `engine` is a verbatim clone of its
-    /// `system` fixture value.
-    fn ws_engine(mut system: serde_json::Value) -> serde_json::Value {
-        if let Some(scene) = system.get_mut("scene").and_then(|s| s.as_object_mut()) {
-            scene
-                .entry("movementModel")
-                .or_insert(serde_json::json!("grid-stepped"));
-        }
-        system
-    }
-
-    fn token_engine(x: f64, y: f64) -> serde_json::Value {
-        serde_json::json!({ "x": x, "y": y, "w": 1.0, "h": 1.0, "rotation": 0.0 })
-    }
+    // Dual-write fixture helpers (`ws_engine`/`token_engine`) live in `ws::test_support`,
+    // shared with `ws::conn`'s test module.
+    use crate::ws::test_support::{token_engine, ws_engine};
 
     async fn repo_with_world() -> (SqliteRepository, Uuid, PermissionContext) {
         let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
@@ -2202,6 +2199,74 @@ mod room_tests {
     }
 
     #[tokio::test]
+    async fn execute_move_reconverges_a_diverged_system_and_engine_band() {
+        // Regression for the `pos_ops` OCC-pre-image bug: the still-shipping `Room::publish`
+        // drag-move path writes `/system` only, so `/system` and `/engine` can diverge for a
+        // token. Simulate exactly that divergence by moving the token via `publish` with a
+        // `/system`-only Update (leaving `/engine` stale at its creation-time value), then
+        // assert `execute_move` still SUCCEEDS (no Conflict) and re-converges both bands to
+        // the move's stop position.
+        let h = movement_scene("unrestricted", false).await;
+
+        // `/system` moves to `adj` (150,50); `/engine` is left stale at `start` (50,50) —
+        // publish's own move-gate operates on the `/system` band via `token_move`, and
+        // `apply_op` mirrors ONLY the field paths present in `changes`.
+        let mv = h.mv_to(h.adj.0, h.adj.1).await;
+        h.room
+            .publish(
+                &h.repo,
+                &h.player,
+                vec![mv],
+                now_millis(),
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+        // Sanity: the divergence is real before exercising the fix.
+        {
+            let scene = h.room.scene().read().await;
+            assert_eq!(
+                scene.token_position(h.token_id),
+                Some(h.start),
+                "engine band unmoved"
+            );
+            assert_eq!(
+                scene.token_system_position(h.token_id),
+                Some(h.adj),
+                "system band moved"
+            );
+        }
+
+        // `execute_move`'s own `start` is engine-sourced (h.start); the path must begin there.
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                vec![h.start, h.adj2],
+                now_millis(),
+            )
+            .await
+            .expect("execute_move must succeed despite the pre-existing band divergence");
+        assert_eq!(res.stop, h.adj2);
+
+        let scene = h.room.scene().read().await;
+        assert_eq!(
+            scene.token_position(h.token_id),
+            Some(h.adj2),
+            "engine band converges to the move's stop"
+        );
+        assert_eq!(
+            scene.token_system_position(h.token_id),
+            Some(h.adj2),
+            "system band converges to the move's stop"
+        );
+    }
+
+    #[tokio::test]
     async fn execute_move_truncates_at_a_wall_atomically() {
         // Path: start → corner → beyond_wall. Wall blocks the second step; executor
         // truncates at corner and commits atomically at that stop.
@@ -2321,7 +2386,7 @@ mod room_tests {
         region
             .permissions
             .property_overrides
-            .insert("/system".into(), Visibility::GmOnly);
+            .insert("/engine".into(), Visibility::GmOnly);
         room.publish(
             &repo,
             &gm,

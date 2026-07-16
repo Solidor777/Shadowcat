@@ -651,6 +651,25 @@ impl SceneEcs {
         Some((t.x, t.y))
     }
 
+    /// The token's current STORED `/system` `(x, y)` — as opposed to `token_position`'s
+    /// `/engine` band. Coupling: `Room::execute_move`'s dual-write `pos_ops` needs each band's
+    /// own current value as that band's own OCC pre-image (`old`), because the still-shipping
+    /// client drag-move path (`Room::publish`) writes `/system` only, so `/system` and
+    /// `/engine` can diverge on this branch — reusing the engine-sourced `start` as `old` for
+    /// the `/system` FieldChange would desync from the actually-stored `/system` value and
+    /// permanently Conflict every subsequent `execute_move`. `None` if `token` is not a token
+    /// entity or has no `(x, y)` in its `system` body.
+    pub(crate) fn token_system_position(&self, token: Uuid) -> Option<(f64, f64)> {
+        let &e = self.index.get(&token)?;
+        let tok = self.world.get::<&SceneEntity>(e).ok()?;
+        if tok.doc.doc_type != "token" {
+            return None;
+        }
+        let x = sys_f64(&tok.doc, "/x")?;
+        let y = sys_f64(&tok.doc, "/y")?;
+        Some((x, y))
+    }
+
     /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,
     /// post_image_end)`. The end is the committed `system` with **all** changes applied in
     /// array order (last-write-wins) — exactly what `apply_intent` commits — so a wholesale
@@ -2690,6 +2709,12 @@ mod tests {
         assert_eq!(ecs.committed_seq(), 7);
     }
 
+    /// Exercises the world-settings/vision-modes side tables and the `actor` table's
+    /// `set_actors`/`apply_op` mirroring. Deliberately stays on `/system`, not the typed
+    /// `engine` band: `world_settings_doc()`/`vision_modes_doc()` return the raw side-table
+    /// `Document`, and this test's own `apply_op` Update targets `/system/scene/...` and asserts
+    /// against `.system.pointer(...)` directly — a doc-round-trip mechanism check against the
+    /// side-table storage itself, with no engine-band reader in the loop to exercise.
     #[test]
     fn config_and_actor_side_tables_track_ops() {
         use serde_json::json;
