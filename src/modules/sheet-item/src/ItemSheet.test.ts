@@ -17,6 +17,20 @@ function storeWith(fields: Record<string, unknown>) {
   return s;
 }
 
+/** Builds a PARENT actor doc ("a1") with a single embedded item at `/embedded/item/0`
+ * (mirrors `resolveDocRef`'s embedded-child resolution: `docId` resolves to the parent,
+ * `systemPrefix` to `/embedded/item/0/system`). Also seeds a top-level item ("i1") with a
+ * DIFFERENT name so a bug that reads/writes the parent's own `/name` band is distinguishable
+ * from a bug that reads/writes the wrong item. */
+function storeWithEmbeddedItem(actorName: string, itemFields: Record<string, unknown>) {
+  const { name: itemName, ...itemSystem } = itemFields;
+  const s = new DocumentStore();
+  const actor = envelope("w1", "actor", null, {}, "a1", { displayName: actorName }, actorName);
+  actor.embedded = { item: [envelope("w1", "item", null, itemSystem, "embedded-i0", undefined, (itemName as string | null) ?? null)] };
+  s.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: actor }] });
+  return s;
+}
+
 describe("module-sheet-item registration", () => {
   it("registers ItemSheet under shadowcat.sheet:item at priority 0", () => {
     const contributions = new ContributionRegistry();
@@ -79,6 +93,32 @@ describe("ItemSheet dice roll-to-chat", () => {
     expect(calls).toEqual([
       [{ op: "update", doc_id: "i1", changes: [{ path: "/name", old: "Sword", new: "Axe" }] }],
       [{ op: "update", doc_id: "i1", changes: [{ path: "/name", old: "Axe", new: "Battle Axe" }] }],
+    ]);
+  });
+
+  // For an item opened from an actor's inventory, `docId` resolves to the PARENT actor's
+  // document id and `systemPrefix` to `/embedded/item/0/system`. Reading `doc?.name` directly
+  // (the parent actor's own envelope name) or writing the literal `/name` path renames the
+  // PARENT ACTOR instead of the item. Asserts both the displayed name comes from the embedded
+  // item's own node and an edit targets `/embedded/item/0/name`, never `/name`.
+  it("reads and writes the embedded item's own name, not the parent actor's", async () => {
+    const calls: unknown[] = [];
+    const documents = storeWithEmbeddedItem("Aria the Wizard", { name: "Wand of Fire" });
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByLabelText } = render(ItemSheet, {
+      props: { docId: "a1", systemPrefix: "/embedded/item/0/system", close: () => {} },
+      context,
+    });
+
+    // (a) displayed name is the embedded item's, not the parent actor's.
+    const input = getByLabelText("sheetItem.name") as HTMLInputElement;
+    expect(input.value).toBe("Wand of Fire");
+
+    // (b) an edit writes /embedded/item/0/name, never the literal /name (which would rename
+    // the parent actor "Aria the Wizard").
+    await fireEvent.change(input, { target: { value: "Staff of Fire" } });
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/embedded/item/0/name", old: "Wand of Fire", new: "Staff of Fire" }] }],
     ]);
   });
 });

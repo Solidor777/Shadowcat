@@ -3,16 +3,26 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getPointer, isDiceNotation, type WireDocument, type ItemSystem } from "@shadowcat/core";
 
-  // Item sheet: envelope `name` control + dice-notation string values get a roll-to-chat
-  // affordance (posts `/roll <formula>` on the default "general" channel over the M11 chat
-  // wire — the server executes it) + the `system` tree editor. `buildItemDoc`'s contract
-  // (scene-docs.ts) puts an item's real display name on the envelope, same as every other
-  // doc_type — `system` carries only the opaque, genuinely game-system-owned fields. Reads
-  // the OPTIMISTIC store; edits use the RAW current value as the OCC pre-image.
+  // Item sheet: `name` control (resolved via `namePrefix`, sibling of `systemPrefix` — see
+  // below) + dice-notation string values get a roll-to-chat affordance (posts `/roll <formula>`
+  // on the default "general" channel over the M11 chat wire — the server executes it) + the
+  // `system` tree editor. `buildItemDoc`'s contract (scene-docs.ts) puts an item's real display
+  // name alongside `system`, same as every other doc_type — `system` carries only the opaque,
+  // genuinely game-system-owned fields. Reads the OPTIMISTIC store; edits use the RAW current
+  // value as the OCC pre-image.
   let { docId, systemPrefix, close }: { docId: string; systemPrefix: string; close: () => void } = $props();
 
   const ctx = getAppContext();
   const t = ctx.t;
+
+  // `systemPrefix` (from `resolveDocRef`'s `writePrefix`) always ends in `/system` — for a
+  // top-level (linked) item that's `/system`; for an embedded item (opened from an actor's
+  // inventory) it's `/embedded/item/<i>/system`, and `docId` resolves to the PARENT document's
+  // id either way. The envelope `name` band lives at the SAME node as `system`, so `basePrefix`
+  // (the prefix with the trailing `/system` stripped) is the sibling root for `/name` — reading
+  // or writing the literal `/name` for an embedded item would hit the PARENT ACTOR's own name.
+  const basePrefix = $derived(systemPrefix.replace(/\/system$/, ""));
+  const namePrefix = $derived(`${basePrefix}/name`);
 
   // Reactive subscription: ctx.documents is a plain-callback store, not a rune — a $derived
   // reading it directly freezes at first read and never observes later edits, corrupting
@@ -24,7 +34,7 @@
     subscribe();
     return ctx.documents.get(docId);
   });
-  const name = $derived.by((): string | null => doc?.name ?? null);
+  const name = $derived.by((): string | null => (doc ? (getPointer(doc, namePrefix) as string | null | undefined) ?? null : null));
   const system = $derived.by((): ItemSystem | undefined => (doc ? (getPointer(doc, systemPrefix) as ItemSystem | undefined) : undefined));
   const readOnly = $derived(!doc || !ctx.canEdit(doc, systemPrefix));
 
@@ -36,11 +46,12 @@
       .map(([key, v]) => ({ key, formula: (v as string).trim() }));
   });
 
-  /** Update the envelope `name` field (distinct from the opaque `system` tree, which the
-   * `SystemTreeEditor` below edits directly via its own setField calls). */
+  /** Update the `name` field at `namePrefix` (the sibling of `systemPrefix`, correctly
+   * embedded-aware — distinct from the opaque `system` tree, which the `SystemTreeEditor`
+   * below edits directly via its own setField calls). */
   function setName(value: string): void {
     if (!doc) return;
-    setField(ctx, docId, "/name", name, value);
+    setField(ctx, docId, namePrefix, name, value);
   }
 
   function roll(formula: string): void {

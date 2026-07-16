@@ -17,6 +17,19 @@ function storeWith(fields: Record<string, unknown>) {
   return s;
 }
 
+/** Builds a TOKEN doc ("t1") with an embedded, instanced actor copy at `/embedded/actor/0`
+ * (mirrors `resolveDocRef`'s instanced-token resolution: `docId` resolves to the token,
+ * `systemPrefix` to `/embedded/actor/0/system`). */
+function storeWithEmbeddedActor(fields: Record<string, unknown>) {
+  const { name, ...engine } = fields;
+  const s = new DocumentStore();
+  const embeddedActor = envelope("w1", "actor", null, {}, "embedded-a0", engine, (name as string | null) ?? null);
+  const token = envelope("w1", "token", "scene1", {}, "t1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: null, overrides: null, face: null }, null);
+  token.embedded = { actor: [embeddedActor] };
+  s.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: token }] });
+  return s;
+}
+
 describe("module-sheet-actor registration", () => {
   it("registers ActorSheet under shadowcat.sheet:actor at priority 0", () => {
     const contributions = new ContributionRegistry();
@@ -110,6 +123,27 @@ describe("ActorSheet edits", () => {
     expect(calls).toEqual([
       [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/size", old: { w: 1, h: 1 }, new: { w: 5, h: 1 } }] }],
       [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/size", old: { w: 5, h: 1 }, new: { w: 5, h: 9 } }] }],
+    ]);
+  });
+
+  // An instanced token's embedded actor copy: `docId` resolves to the TOKEN, `systemPrefix`
+  // to `/embedded/actor/0/system`. Asserts `basePrefix`'s `/system`-suffix strip correctly
+  // derives `/embedded/actor/0/name` as the sibling name path for this shape too.
+  it("edits the name of an embedded (instanced-token) actor copy, not a top-level actor", async () => {
+    const calls: unknown[] = [];
+    const documents = storeWithEmbeddedActor({
+      name: "Goblin", displayName: "Creature", faction: null, shape: "square",
+      size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" },
+    });
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByLabelText } = render(ActorSheet, {
+      props: { docId: "t1", systemPrefix: "/embedded/actor/0/system", close: () => {} },
+      context,
+    });
+    expect((getByLabelText("sheetActor.name") as HTMLInputElement).value).toBe("Goblin");
+    await fireEvent.change(getByLabelText("sheetActor.name"), { target: { value: "Orc" } });
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "t1", changes: [{ path: "/embedded/actor/0/name", old: "Goblin", new: "Orc" }] }],
     ]);
   });
 });

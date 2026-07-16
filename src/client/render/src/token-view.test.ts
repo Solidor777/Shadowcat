@@ -220,6 +220,27 @@ test("renders an animated grid-sheet visual with a resolved sheet URL", () => {
   });
 });
 
+test("renders an animated grid-sheet visual with a null count coalesced to undefined", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const actor = buildActorDoc(
+    "w1",
+    "Torch",
+    { displayName: "Torch", visual: { kind: "animated", source: { type: "sheet", asset: "sheet1", rows: 2, cols: 4, count: null }, fps: 12, loop: false }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, assets, backend).reconcile();
+  expect(backend.tokens.get("tok1")!.visual).toEqual({
+    kind: "animated",
+    source: { type: "sheet", url: assets.url("sheet1"), rows: 2, cols: 4, count: undefined },
+    fps: 12,
+    loop: false,
+  });
+});
+
 test("a token whose visual fails to resolve (empty faces) is skipped, not crashed", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
