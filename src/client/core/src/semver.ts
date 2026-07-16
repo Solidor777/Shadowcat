@@ -23,7 +23,13 @@ export function satisfies(version: string, range: string): boolean {
   if (r === "*") return true;
   if (r.startsWith("^")) {
     const b = parse(r.slice(1));
-    return v[0] === b[0] && gte(v, b);
+    // Caret's upper bound is set by the LEFTMOST non-zero component
+    // (npm-semver semantics): major>0 -> next major is breaking;
+    // major===0 with minor>0 -> next minor is breaking (0.x.y line);
+    // major===0 and minor===0 -> next patch is breaking (0.0.y line).
+    if (b[0] > 0) return v[0] === b[0] && gte(v, b);
+    if (b[1] > 0) return v[0] === b[0] && v[1] === b[1] && gte(v, b);
+    return v[0] === b[0] && v[1] === b[1] && v[2] === b[2];
   }
   if (r.startsWith("~")) {
     const b = parse(r.slice(1));

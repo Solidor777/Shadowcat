@@ -137,7 +137,17 @@ pub fn semver_satisfies(version: &str, range: &str) -> bool {
     }
     if let Some(rest) = r.strip_prefix('^') {
         let Some(b) = parse(rest) else { return false };
-        return v.0 == b.0 && v >= b;
+        // Caret's upper bound is set by the LEFTMOST non-zero component
+        // (npm-semver semantics): major>0 -> next major is breaking;
+        // major==0 with minor>0 -> next minor is breaking (0.x.y line);
+        // major==0 and minor==0 -> next patch is breaking (0.0.y line).
+        if b.0 > 0 {
+            return v.0 == b.0 && v >= b;
+        }
+        if b.1 > 0 {
+            return v.0 == b.0 && v.1 == b.1 && v >= b;
+        }
+        return v.0 == b.0 && v.1 == b.1 && v.2 == b.2;
     }
     if let Some(rest) = r.strip_prefix('~') {
         let Some(b) = parse(rest) else { return false };
@@ -147,7 +157,7 @@ pub fn semver_satisfies(version: &str, range: &str) -> bool {
     v == b
 }
 
-/// T6 engine-compat gate: the running server's `CARGO_PKG_VERSION` must satisfy
+/// Engine-compat gate: the running server's `CARGO_PKG_VERSION` must satisfy
 /// the module's declared `engines.shadowcat` range. A module with NO declared
 /// range fails closed (never enables) — the field is optional on the shared
 /// client `ModuleManifest` TS type (first-party modules never set it) but is
@@ -263,6 +273,18 @@ mod tests {
     }
 
     #[test]
+    fn semver_caret_0_x_y_boundary_is_minor_when_major_is_zero() {
+        assert!(semver_satisfies("0.2.5", "^0.2.3"));
+        assert!(!semver_satisfies("0.3.0", "^0.2.3"));
+    }
+
+    #[test]
+    fn semver_caret_0_0_y_boundary_is_patch_when_major_and_minor_are_zero() {
+        assert!(semver_satisfies("0.0.3", "^0.0.3"));
+        assert!(!semver_satisfies("0.0.4", "^0.0.3"));
+    }
+
+    #[test]
     fn semver_tilde_allows_same_major_minor_gte_patch() {
         assert!(semver_satisfies("1.2.9", "~1.2.3"));
         assert!(!semver_satisfies("1.3.0", "~1.2.3"));
@@ -278,7 +300,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_module(dir.path(), "no-engines", r#"{"id":"no-engines","version":"1.0.0"}"#);
         let m = &scan_installed_modules(dir.path())[0];
-        // A module with no declared compat range never enables (T6: mandatory
+        // A module with no declared compat range never enables (mandatory
         // going forward for the modules-folder pipeline).
         assert!(!engine_compat_ok(m));
     }
