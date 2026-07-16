@@ -8,7 +8,9 @@ export type FormulaErrorKind =
   | "non-finite"   // arithmetic overflowed to Infinity/NaN
   | "cycle"        // reference cycle in graph resolution
   | "cap"          // a DoS bound tripped
-  | "ref-error";   // referenced value was itself an error (propagation wrapper)
+  | "ref-error"    // referenced value was itself an error (propagation wrapper)
+  | "resolver-error"; // resolver threw, or returned a value that is neither a number
+                      // nor a well-formed FormulaError (consumer-originated boundary fault)
 
 export interface FormulaError {
   readonly error: FormulaErrorKind;

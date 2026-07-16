@@ -38,4 +38,52 @@ describe("evaluate", () => {
   it("min/max n-ary", () => {
     expect(evaluate(ast("max(1, dex, 2)"), env({ dex: 9 }))).toBe(9);
   });
+
+  it("round ties toward +Infinity (JS-native Math.round behavior)", () => {
+    expect(evaluate(ast("round(-2.5)"), env({}))).toBe(-2);
+  });
+
+  it("both operands erroring short-circuits on the left, never evaluating the right", () => {
+    let rightCalls = 0;
+    const resolve = (path: string[]): FormulaValue => {
+      if (path.join(".") === "dex") {
+        return { error: "unknown-ref", detail: "unknown reference 'dex'" };
+      }
+      rightCalls++;
+      return { error: "unknown-ref", detail: "unknown reference 'str'" };
+    };
+    const result = evaluate(ast("dex + str"), resolve);
+    expect(result).toMatchObject({ error: "unknown-ref", detail: "unknown reference 'dex'" });
+    expect(rightCalls).toBe(0);
+  });
+
+  describe("resolver boundary hardening", () => {
+    it("a resolver returning Infinity is gated through the same finite() check", () => {
+      const resolve = (): FormulaValue => Infinity as unknown as FormulaValue;
+      expect(evaluate(ast("dex"), resolve)).toMatchObject({ error: "non-finite" });
+    });
+
+    it("a resolver throwing becomes a resolver-error FormulaError", () => {
+      const resolve = (): FormulaValue => {
+        throw new Error("boom");
+      };
+      expect(evaluate(ast("dex"), resolve)).toMatchObject({ error: "resolver-error" });
+    });
+
+    it("a resolver returning undefined becomes a resolver-error FormulaError", () => {
+      const resolve = (): FormulaValue => undefined as unknown as FormulaValue;
+      expect(evaluate(ast("dex"), resolve)).toMatchObject({ error: "resolver-error" });
+    });
+
+    it("a resolver returning a raw string becomes a resolver-error FormulaError", () => {
+      const resolve = (): FormulaValue => "not a formula value" as unknown as FormulaValue;
+      expect(evaluate(ast("dex"), resolve)).toMatchObject({ error: "resolver-error" });
+    });
+
+    it("a resolver returning a well-formed FormulaError still propagates unchanged", () => {
+      const err: FormulaValue = { error: "cycle", detail: "dex -> str -> dex" };
+      const resolve = (): FormulaValue => err;
+      expect(evaluate(ast("dex"), resolve)).toEqual(err);
+    });
+  });
 });
