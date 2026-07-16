@@ -1214,6 +1214,26 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Dual-write helpers (mirrors `ws::room::room_tests`'s own copies): world-settings/token
+    /// `.system` fixture values in this file are already field-name/casing-parity with the
+    /// corresponding `engine` band shapes (the scene/vision/region/lighting readers consume
+    /// `engine`; `token_move` still reads `system`). `token_engine` fills the `w`/`h`/`rotation`
+    /// fields `TokenEngine` requires that fixture `system` values never carry. `ws_engine` fills
+    /// `scene.movementModel`, a field `WorldSceneDefaults` requires that fixture `system` values
+    /// never carry.
+    fn ws_engine(mut system: serde_json::Value) -> serde_json::Value {
+        if let Some(scene) = system.get_mut("scene").and_then(|s| s.as_object_mut()) {
+            scene
+                .entry("movementModel")
+                .or_insert(serde_json::json!("grid-stepped"));
+        }
+        system
+    }
+
+    fn token_engine(x: f64, y: f64) -> serde_json::Value {
+        serde_json::json!({ "x": x, "y": y, "w": 1.0, "h": 1.0, "rotation": 0.0 })
+    }
+
     /// Deterministic broadcast-`Lagged` → resync guard, driven directly against the
     /// generic `egress_loop` with a credit-gated in-process sink — no real socket, so
     /// it does not depend on any OS's TCP buffer sizing (the prior socket-backpressure
@@ -1685,6 +1705,7 @@ mod tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             repo.as_ref(),
             &gm_ctx,
@@ -1715,6 +1736,7 @@ mod tests {
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
         token.system = json!({ "x": 50.0, "y": 50.0 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             repo.as_ref(),
             &gm_ctx,

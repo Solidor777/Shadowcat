@@ -590,6 +590,14 @@ impl Room {
         // would deadlock). The position ops mirror the field paths that `token_move` / `publish`
         // write (/system/x and /system/y), keyed on the authoritative ECS-read old values so the
         // optimistic-concurrency check in apply_intent passes as defense-in-depth.
+        //
+        // `SceneEcs::token_position` reads the token's `/engine/x,y`, so `start` above is already
+        // the current engine position, not the system one. Writing only `/system/x,y` here would
+        // leave `/engine/x,y` frozen at its creation-time value, since nothing else advances it —
+        // every subsequent read of the committed position via `token_position` would silently
+        // return that stale value. `token_move` still reads `/system/x,y` for its own logic, so
+        // that pair is kept unchanged alongside the new `/engine/x,y` pair; `start` is reused as
+        // `old` for the engine changes because it was already sourced from the engine band.
         let pos_ops = vec![Operation::Update {
             doc_id: token,
             changes: vec![
@@ -600,6 +608,16 @@ impl Room {
                 },
                 FieldChange {
                     path: "/system/y".into(),
+                    old: serde_json::json!(start.1),
+                    new: serde_json::json!(outcome.stop.1),
+                },
+                FieldChange {
+                    path: "/engine/x".into(),
+                    old: serde_json::json!(start.0),
+                    new: serde_json::json!(outcome.stop.0),
+                },
+                FieldChange {
+                    path: "/engine/y".into(),
                     old: serde_json::json!(start.1),
                     new: serde_json::json!(outcome.stop.1),
                 },
@@ -876,6 +894,27 @@ mod room_tests {
     use std::sync::atomic::Ordering;
     use uuid::Uuid;
 
+    /// Dual-write helpers: world-settings/scene/token/wall/region/light `.system` fixture
+    /// values in this file are already field-name/casing-parity with the corresponding
+    /// `engine` band shapes (the scene/vision/region/lighting readers consume `engine`;
+    /// `token_move` still reads `system`). `token_engine` fills the `w`/`h`/`rotation` fields
+    /// `TokenEngine` requires that fixture `system` values never carry. `ws_engine` fills
+    /// `scene.movementModel`, a field `WorldSceneDefaults` requires that fixture `system`
+    /// values never carry. Every other doc type's `engine` is a verbatim clone of its
+    /// `system` fixture value.
+    fn ws_engine(mut system: serde_json::Value) -> serde_json::Value {
+        if let Some(scene) = system.get_mut("scene").and_then(|s| s.as_object_mut()) {
+            scene
+                .entry("movementModel")
+                .or_insert(serde_json::json!("grid-stepped"));
+        }
+        system
+    }
+
+    fn token_engine(x: f64, y: f64) -> serde_json::Value {
+        serde_json::json!({ "x": x, "y": y, "w": 1.0, "h": 1.0, "rotation": 0.0 })
+    }
+
     async fn repo_with_world() -> (SqliteRepository, Uuid, PermissionContext) {
         let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
         let author = repo
@@ -957,6 +996,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -985,6 +1025,7 @@ mod room_tests {
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
         token.system = json!({ "x": 0, "y": 0 });
+        token.engine = Some(token_engine(0.0, 0.0));
         room.publish(
             &repo,
             &gm,
@@ -1001,6 +1042,7 @@ mod room_tests {
         wall.owner = Some(gm.user_id);
         wall.system =
             json!({ "seg": { "x1": 0, "y1": 10, "x2": 10, "y2": 0 }, "blocksMove": true });
+        wall.engine = Some(wall.system.clone());
         room.publish(
             &repo,
             &gm,
@@ -1132,6 +1174,7 @@ mod room_tests {
                        "observerVision": false, "movementRestriction": "visible", "partialCellLeniency": true },
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" } });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room1
             .publish(
                 &repo,
@@ -1162,6 +1205,7 @@ mod room_tests {
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
         token.system = json!({ "x": 50, "y": 50 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room1
             .publish(
                 &repo,
@@ -1180,6 +1224,7 @@ mod room_tests {
             "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
             "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
         });
+        light.engine = Some(light.system.clone());
         room1
             .publish(
                 &repo,
@@ -1426,6 +1471,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -1454,6 +1500,7 @@ mod room_tests {
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
         token.system = json!({ "x": 50.0, "y": 50.0 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
             &gm,
@@ -1474,6 +1521,7 @@ mod room_tests {
                 "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
                 "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true
             });
+            light.engine = Some(light.system.clone());
             room.publish(
                 &repo,
                 &gm,
@@ -1548,6 +1596,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -1576,6 +1625,7 @@ mod room_tests {
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
         token.system = json!({ "x": 50.0, "y": 50.0 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
             &gm,
@@ -1594,6 +1644,7 @@ mod room_tests {
             "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
             "brightRadius": 1.5, "dimRadius": 1.5, "enabled": true
         });
+        l1.engine = Some(l1.system.clone());
         room.publish(
             &repo,
             &gm,
@@ -1613,6 +1664,7 @@ mod room_tests {
             "x": 950.0, "y": 950.0, "color": "#ffffff", "intensity": 1.0,
             "brightRadius": 1.5, "dimRadius": 1.5, "enabled": true
         });
+        l2.engine = Some(l2.system.clone());
         room.publish(
             &repo,
             &gm,
@@ -1689,6 +1741,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -1717,6 +1770,7 @@ mod room_tests {
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
         token.system = json!({ "x": 50.0, "y": 50.0 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
             &gm,
@@ -1737,6 +1791,7 @@ mod room_tests {
             "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
             "brightRadius": 1.4, "dimRadius": 1.4, "enabled": true
         });
+        light.engine = Some(light.system.clone());
         room.publish(
             &repo,
             &gm,
@@ -2009,6 +2064,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -2037,6 +2093,7 @@ mod room_tests {
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
         token.system = json!({ "x": 50.0, "y": 50.0 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
             &gm,
@@ -2053,6 +2110,7 @@ mod room_tests {
         wall.owner = Some(gm.user_id);
         wall.system =
             json!({ "seg": { "x1": 100, "y1": 100, "x2": 200, "y2": 100 }, "blocksMove": true });
+        wall.engine = Some(wall.system.clone());
         room.publish(
             &repo,
             &gm,
@@ -2213,6 +2271,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" },
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -2240,6 +2299,7 @@ mod room_tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(player.user_id);
         token.system = json!({ "x": 0.0, "y": 0.0, "w": 100, "h": 100, "rotation": 0 });
+        token.engine = Some(token.system.clone());
         room.publish(
             &repo,
             &gm,
@@ -2257,6 +2317,7 @@ mod room_tests {
             "shape": { "kind": "rect", "points": [50.0, 0.0, 150.0, 100.0] },
             "behavior": "impassable", "cost": 1.0, "enabled": true,
         });
+        region.engine = Some(region.system.clone());
         region
             .permissions
             .property_overrides
@@ -2401,6 +2462,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -2419,6 +2481,7 @@ mod room_tests {
             "grid": { "kind": "square", "size": 100 },
             "vision": { "movementModel": "continuous" }
         });
+        scene.engine = Some(scene.system.clone());
         room.publish(
             &repo,
             &gm,
@@ -2440,6 +2503,7 @@ mod room_tests {
             .users
             .insert(p, crate::data::document::DocRole::Owner);
         token.system = json!({ "x": 50.0, "y": 50.0 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
             &gm,
@@ -2459,6 +2523,7 @@ mod room_tests {
                 "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
                 "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true
             });
+            light.engine = Some(light.system.clone());
             room.publish(
                 &repo,
                 &gm,

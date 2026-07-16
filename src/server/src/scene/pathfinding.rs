@@ -16,17 +16,6 @@ pub enum DiagonalRule {
     Alternating,
 }
 
-/// Parse the diagonal-rule string; unknown/missing ⇒ `Chebyshev` (mirrors the client
-/// `DEFAULT_WORLD_SETTINGS.pathfinding.diagonalRule` in `scene-docs.ts`).
-pub fn parse_diagonal_rule(s: &str) -> DiagonalRule {
-    match s {
-        "manhattan" => DiagonalRule::Manhattan,
-        "euclidean" => DiagonalRule::Euclidean,
-        "alternating" => DiagonalRule::Alternating,
-        _ => DiagonalRule::Chebyshev,
-    }
-}
-
 use crate::scene::movement;
 use crate::scene::vision::{self, point_segment_distance};
 use std::collections::BTreeSet;
