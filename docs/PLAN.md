@@ -1197,7 +1197,20 @@ Decomposed **M11a–d**:
 > access for external repos; own spec cycle; bootstraps the Nightfox repo) →
 > **M13a** (`@shadowcat/formula` shared formula library: free-form parser/evaluator,
 > fail-closed error values, DoS caps, cycle guard, dice-notation-template mode; plan
-> `superpowers/plans/2026-07-15-m13a-formula-library.md`) → **M13b**
+> `superpowers/plans/2026-07-15-m13a-formula-library.md`) →
+> **M13a DONE** (branch `m13a-formula-library`, 8 SDD tasks, 3 pre-authorized buddy-checks —
+> Task 3 parser, Task 4 evaluator, Task 6 notation-template): `@shadowcat/formula` (`src/client/
+> formula/`) shipped as a pure-TS, zero-runtime-dep package with no Nightfox concepts baked in —
+> lexer → recursive-descent parser (`Expr` AST) → `evaluate` (injected `resolve` callback) →
+> `resolveAll` (restart-based trampoline over a named dependency graph, O(1) JS-stack-depth by
+> construction, cycle-guarded) → `resolveNotationTemplate` (dice-notation-template rewrite mode,
+> reusing M11's `d`/`kh`/`kl`/`dh`/`dl`/`r`/`ro`/`cs`/`cf`/`t`/`e` keyword set). Every failure path
+> is a `FormulaError` value (never a throw, never NaN/Infinity); three shared trust-boundary
+> helpers in `internal.ts` (not re-exported from the public barrel) validate every
+> consumer-supplied callback's return value at each injected-callback seam. Caps:
+> `MAX_FORMULA_LENGTH=512`, `MAX_AST_NODES=256`, `MAX_PARSE_DEPTH=32` (true structural nesting,
+> not grammar-production depth), `MAX_GRAPH_VISITS=2048`. →
+> **M13b**
 > (`@shadowcat/module-nightfox` headless rules: the reserved `system.stats` variables
 > directory + `system.mechanics` model directory (D13/D14; singleton system per world) —
 > number/resource/text/boolean stats as maps, Zod tier-1 write validation,
