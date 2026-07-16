@@ -26,6 +26,8 @@ pub struct Cli {
     pub session_key: Option<String>,
     #[arg(long)]
     pub assets_dir: Option<String>,
+    #[arg(long)]
+    pub modules_dir: Option<String>,
     /// One-shot: snapshot the resolved db + assets into this directory, print
     /// a summary, and exit before the server would otherwise start.
     #[arg(long)]
@@ -53,6 +55,8 @@ pub struct Config {
     pub session_key: Option<String>,
     /// Asset storage root. `None` → sibling `assets/` beside the db file.
     pub assets_dir: Option<String>,
+    /// Installed-module discovery root. `None` → sibling `modules/` dir beside the db file.
+    pub modules_dir: Option<String>,
     /// Regular-uploader size cap (bytes). Default 25 MiB.
     pub upload_max_bytes: u64,
     /// Regular-uploader uploads per minute. Default 20.
@@ -73,6 +77,7 @@ impl Default for Config {
             setup_token: "auto".into(),
             session_key: None,
             assets_dir: None,
+            modules_dir: None,
             upload_max_bytes: 25 * 1024 * 1024,
             upload_rate_per_min: 20,
             upload_max_bytes_gm: None,
@@ -126,6 +131,9 @@ impl Config {
         if let Some(v) = cli.assets_dir {
             cfg.assets_dir = Some(v);
         }
+        if let Some(v) = cli.modules_dir {
+            cfg.modules_dir = Some(v);
+        }
         Ok(cfg)
     }
 
@@ -140,6 +148,22 @@ impl Config {
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("assets")
+    }
+
+    /// Resolve the installed-module discovery root: explicit `modules_dir`, else a
+    /// sibling `modules/` directory beside the db file (built via std::path, #2).
+    /// Unlike `assets_path`, nothing writes here server-side (install is manual
+    /// filesystem extract, T2) — the directory need not exist; a missing dir
+    /// scans as "no modules installed" (see `modules::scan_installed_modules`).
+    pub fn modules_path(&self) -> std::path::PathBuf {
+        if let Some(dir) = &self.modules_dir {
+            return std::path::PathBuf::from(dir);
+        }
+        std::path::Path::new(&self.db)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("modules")
     }
 
     /// Role-tiered upload size cap (GM defaults to 2× the regular value).
@@ -224,6 +248,23 @@ mod tests {
     }
 
     #[test]
+    fn modules_path_defaults_to_db_sibling() {
+        let mut cfg = Config {
+            db: "/data/shadowcat.db".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            cfg.modules_path(),
+            std::path::PathBuf::from("/data").join("modules")
+        );
+        cfg.modules_dir = Some("/custom/modules".into());
+        assert_eq!(
+            cfg.modules_path(),
+            std::path::PathBuf::from("/custom/modules")
+        );
+    }
+
+    #[test]
     fn defaults_apply_when_nothing_set() {
         let cfg = Config::default();
         assert_eq!(cfg.bind, "127.0.0.1:30000");
@@ -243,6 +284,7 @@ mod tests {
             setup_token: None,
             session_key: None,
             assets_dir: None,
+            modules_dir: None,
             backup_to: None,
             restore_from: None,
             force: false,
