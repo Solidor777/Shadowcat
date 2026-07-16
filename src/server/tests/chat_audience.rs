@@ -200,7 +200,7 @@ async fn whisper_reaches_only_the_named_recipient() {
         .await
         .unwrap();
     let recipient_doc = recv_next_message_create(&mut ws_recipient).await;
-    assert_eq!(recipient_doc["system"]["content"][0]["text"], "secret");
+    assert_eq!(recipient_doc["engine"]["content"][0]["text"], "secret");
 
     ws_sender
         .send(send_message_frame(
@@ -212,7 +212,7 @@ async fn whisper_reaches_only_the_named_recipient() {
         .unwrap();
     let bystander_doc = recv_next_message_create(&mut ws_bystander).await;
     assert_eq!(
-        bystander_doc["system"]["content"][0]["text"], "marker",
+        bystander_doc["engine"]["content"][0]["text"], "marker",
         "the bystander's first observed message-create is the PUBLIC marker, \
          proving the whisper was never delivered to them at all"
     );
@@ -249,7 +249,7 @@ async fn whisper_excludes_the_gm_unless_named() {
     .unwrap();
     let gm_doc = recv_next_message_create(&mut ws_gm).await;
     assert_eq!(
-        gm_doc["system"]["content"][0]["text"], "marker",
+        gm_doc["engine"]["content"][0]["text"], "marker",
         "the GM's first observed message-create is the PUBLIC marker — the \
          unnamed whisper never reached them"
     );
@@ -277,7 +277,7 @@ async fn whisper_reaches_the_gm_when_named() {
 
     let gm_doc = recv_next_message_create(&mut ws_gm).await;
     assert_eq!(
-        gm_doc["system"]["content"][0]["text"],
+        gm_doc["engine"]["content"][0]["text"],
         "for the GM's eyes too"
     );
 }
@@ -312,7 +312,7 @@ async fn whisper_to_unknown_recipient_is_rejected_and_nothing_persists() {
         .await
         .unwrap();
     let doc = recv_next_message_create(&mut ws_sender).await;
-    assert_eq!(doc["system"]["content"][0]["text"], "marker");
+    assert_eq!(doc["engine"]["content"][0]["text"], "marker");
 
     let seqs = h.repo.events_since(h.world, 0).await.unwrap();
     assert_eq!(
@@ -351,7 +351,7 @@ async fn whisper_is_hidden_from_a_non_recipients_resync_but_visible_to_the_recip
     let recipient_docs = h.list_messages(&cookie_recipient).await;
     let matching: Vec<_> = recipient_docs
         .iter()
-        .filter(|d| d["system"]["content"][0]["text"] == "resync-only secret")
+        .filter(|d| d["engine"]["content"][0]["text"] == "resync-only secret")
         .collect();
     assert_eq!(
         matching.len(),
@@ -452,7 +452,7 @@ async fn gm_only_channel_visible_to_gm_hidden_from_regular_member() {
     .unwrap();
     let gm_doc = recv_next_message_create(&mut ws_gm).await;
     assert_eq!(
-        gm_doc["system"]["content"][0]["text"],
+        gm_doc["engine"]["content"][0]["text"],
         "for the GM's eyes only"
     );
 
@@ -465,7 +465,7 @@ async fn gm_only_channel_visible_to_gm_hidden_from_regular_member() {
     .unwrap();
     let b_doc = recv_next_message_create(&mut ws_b).await;
     assert_eq!(
-        b_doc["system"]["content"][0]["text"], "marker",
+        b_doc["engine"]["content"][0]["text"], "marker",
         "a regular member's first observed message-create is the PUBLIC \
          marker — the GM-only message never reached them"
     );
@@ -522,7 +522,7 @@ async fn gm_only_channel_promotion_immediately_grants_backlog_access() {
          GM-only backlog — dynamic resolution, not a frozen roster"
     );
     assert_eq!(
-        after[0]["system"]["content"][0]["text"],
+        after[0]["engine"]["content"][0]["text"],
         "posted before promotion"
     );
 }

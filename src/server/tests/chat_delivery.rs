@@ -154,12 +154,12 @@ async fn send_message_is_broadcast_as_message_document_event() {
     let op = &evt["command"]["ops"][0];
     assert_eq!(op["op"], "create");
     assert_eq!(op["doc"]["doc_type"], "message");
-    assert_eq!(op["doc"]["system"]["channel"], "all");
+    assert_eq!(op["doc"]["engine"]["channel"], "all");
     assert_eq!(
-        op["doc"]["system"]["content"][0]["kind"], "text",
+        op["doc"]["engine"]["content"][0]["kind"], "text",
         "content segment is the plain-text producer's Segment::Text"
     );
-    assert_eq!(op["doc"]["system"]["content"][0]["text"], "hello");
+    assert_eq!(op["doc"]["engine"]["content"][0]["text"], "hello");
 
     // The authoritative log agrees: exactly one durable event, a message create.
     let seqs = h.repo.events_since(h.world, 0).await.unwrap();

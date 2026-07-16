@@ -2,9 +2,10 @@
 //! `faction-registry`, `condition-registry`, `chat-settings`, `dice-settings`.
 //! Field shapes transcribed verbatim from `chat-docs.ts` / `scene-docs.ts`.
 //!
-//! `ChatSettingsEngine`/`DiceSettingsEngine` are independent struct
-//! definitions: `chat::settings::ChatContentPolicy`/`DiceSettingsBody` are a
-//! separate, structurally-equivalent definition that reads `system` today.
+//! `chat::settings::ChatContentPolicy` is a type alias onto
+//! `ChatSettingsEngine`; `chat::rolls`/`chat::settings` read `DiceSettingsEngine`
+//! directly. Both bodies live on the `engine` band, ingress-validated same as
+//! every other engine-defined doc_type (see `chat/settings.rs`).
 
 use std::collections::BTreeMap;
 
