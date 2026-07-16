@@ -412,11 +412,11 @@ describe("resolveNotationTemplate", () => {
   });
   it("a word that merely STARTS with a keyword letter is a stat (dex, damage, total)", () => {
     expect(resolveNotationTemplate("d6 + damage", env({ damage: 2 })))
-      .toEqual({ notation: "d6 + 2[damage]" });
+      .toEqual({ notation: "1d6 + 2[damage]" });
   });
   it("dotted refs substitute with the full path as label", () => {
     expect(resolveNotationTemplate("d20 + hp.max", env({ "hp.max": 12 })))
-      .toEqual({ notation: "d20 + 12[hp.max]" });
+      .toEqual({ notation: "1d20 + 12[hp.max]" });
   });
   it("existing [labels] pass through verbatim, even containing keywords", () => {
     expect(resolveNotationTemplate("2d6[kh fire] + str", env({ str: 1 })))
