@@ -33,7 +33,21 @@ class NeedsDependency {
  * completion after at most (its count of distinct dependencies) restarts,
  * all driven by the same `while` loop. `MAX_GRAPH_VISITS` is the only bound
  * that can trip: it is charged once per newly discovered key, at first
- * attempt. */
+ * attempt.
+ *
+ * INVARIANT: `evalNode` implementations MUST NOT wrap their own call(s) to
+ * the injected `get` in try/catch. `get` uses an internal thrown signal
+ * (`NeedsDependency`) to unwind `evalNode` and drive the restart-based
+ * trampoline above; a surrounding try/catch inside `evalNode` intercepts
+ * that signal instead of letting it propagate to the driver, so the
+ * dependency is never actually resolved and the catch branch's return value
+ * silently becomes the memoized result — no error, no crash, no signal that
+ * anything went wrong. Nothing needs to be done to defend against `get`
+ * itself failing: `get` never throws in the failure sense — division by
+ * zero, cycles, unresolvable references, and all other evaluation faults
+ * are returned through `get`'s normal return value as `FormulaValue` errors,
+ * not thrown. Only this one internal control-flow signal must never be
+ * intercepted. */
 export function resolveAll(
   keys: readonly string[],
   evalNode: (key: string, get: (dep: string) => FormulaValue) => FormulaValue,
