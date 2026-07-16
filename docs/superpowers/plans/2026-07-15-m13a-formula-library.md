@@ -229,7 +229,7 @@ describe("parseFormula", () => {
 });
 ```
 
-- [ ] **Step 2: Run — expect FAIL. Step 3: Implement** recursive descent over `tokenize` output: `additive := multiplicative (("+"|"-") multiplicative)*`; `multiplicative := unary (("*"|"/"|"%") unary)*`; `unary := "-" unary | primary`; `primary := num | "(" additive ")" | word ("(" args ")")? ("." word)*`. A word followed by `(` must be one of the five function names (else parse error); otherwise the word starts a ref path extended by `.` + word segments (a dotted segment is never a call). Track a node counter (`MAX_AST_NODES` → cap error) and recursion depth (`MAX_PARSE_DEPTH` → cap error). After `additive`, any remaining token is a parse error. Number literal that is non-finite (`1e999`) → cap error.
+- [ ] **Step 2: Run — expect FAIL. Step 3: Implement** recursive descent over `tokenize` output: `additive := multiplicative (("+"|"-") multiplicative)*`; `multiplicative := unary (("*"|"/"|"%") unary)*`; `unary := "-" unary | primary`; `primary := num | "(" additive ")" | word ("(" args ")")? ("." word)*`. A word followed by `(` must be one of the five function names (else parse error); otherwise the word starts a ref path extended by `.` + word segments (a dotted segment is never a call). Track a node counter (`MAX_AST_NODES` → cap error) and recursion depth (`MAX_PARSE_DEPTH` → cap error). After `additive`, any remaining token is a parse error. The grammar has no exponent notation: `1e999` lexes as `num(1)` + `word("e999")` and fails as a trailing-input parse error, not a cap error.
 
 - [ ] **Step 4: Run tests (PASS). Step 5: typecheck + commit** — `feat(formula): recursive-descent parser + Expr AST with caps`
 
@@ -278,7 +278,9 @@ describe("evaluate", () => {
     expect(evaluate(ast("ghost + 1"), env({}))).toMatchObject({ error: "unknown-ref" });
   });
   it("non-finite results are error values", () => {
-    expect(evaluate(ast("1e308 * 1e308"), env({}))).toMatchObject({ error: "non-finite" });
+    // Digit-run literals: the grammar has no exponent notation ("1e308" would lex as num(1)+word).
+    const big = "1" + "0".repeat(160); // 1e160 as a pure digit run; product overflows f64
+    expect(evaluate(ast(`${big} * ${big}`), env({}))).toMatchObject({ error: "non-finite" });
   });
   it("min/max n-ary", () => {
     expect(evaluate(ast("max(1, dex, 2)"), env({ dex: 9 }))).toBe(9);
@@ -410,11 +412,11 @@ describe("resolveNotationTemplate", () => {
   });
   it("a word that merely STARTS with a keyword letter is a stat (dex, damage, total)", () => {
     expect(resolveNotationTemplate("d6 + damage", env({ damage: 2 })))
-      .toEqual({ notation: "d6 + 2[damage]" });
+      .toEqual({ notation: "1d6 + 2[damage]" });
   });
   it("dotted refs substitute with the full path as label", () => {
     expect(resolveNotationTemplate("d20 + hp.max", env({ "hp.max": 12 })))
-      .toEqual({ notation: "d20 + 12[hp.max]" });
+      .toEqual({ notation: "1d20 + 12[hp.max]" });
   });
   it("existing [labels] pass through verbatim, even containing keywords", () => {
     expect(resolveNotationTemplate("2d6[kh fire] + str", env({ str: 1 })))

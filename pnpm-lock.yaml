@@ -58,6 +58,12 @@ importers:
         specifier: ^8.18.0
         version: 8.21.0
 
+  src/client/formula:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.21
+
   src/client/render:
     dependencies:
       '@shadowcat/core':
