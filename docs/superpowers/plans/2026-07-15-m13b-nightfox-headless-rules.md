@@ -1,12 +1,18 @@
-# M13b · `@shadowcat/module-nightfox` — Headless Rules Package Implementation Plan
+# M13b · Nightfox — Headless Rules Package Implementation Plan
 
-> **⚠ RE-TARGET BEFORE EXECUTION (D16, 2026-07-15):** Nightfox is an external project — its own
-> GitHub repository and project folder, consuming engine packages through the real third-party
-> path. Task 1's scaffolding (paths, package.json dependency mechanism, workspace/install steps)
-> and every `src/modules/nightfox/...` path in this plan re-target the Nightfox repo once the
-> **M13-1 external-module toolchain** spec locks the consumption mechanism. The task BODIES
-> (schemas, contribution collection, resolver, buckets, tests) are repo-agnostic and stand as
-> written. Do not execute this plan until it has been revised against the M13-1 spec.
+> **Re-targeted 2026-07-16 to the Nightfox repo (M13-1 toolchain locked, decision D16).** Nightfox
+> is a standalone repository (`C:\Dev\Nightfox`), bootstrapped by the **M13-1 external-module
+> toolchain** plan's Task 18. Execution happens in the **nested dev location**: the Nightfox repo
+> is cloned a second time into a Shadowcat checkout at `src/modules/nightfox/` so the pnpm
+> workspace resolves `@shadowcat/core`/`@shadowcat/formula` (both already declared in Task 18's
+> `package.json`). All commands run `pnpm --filter nightfox <script>` from the **nested Shadowcat
+> checkout root**. All commits in this plan are made **inside the Nightfox repo**
+> (`cd "C:\Dev\Nightfox"`) — **never** `git push` there (the user owns the remote) — except the
+> Shadowcat-repo doc rows in Task 7, which commit in the Shadowcat checkout as usual. Every
+> `src/modules/nightfox/src/...` path below is now Nightfox-repo-relative (`src/...`). Task 1's
+> original scaffold (package.json/tsconfig/vite/vitest configs) is superseded by M13-1 Task 18 and
+> reduced below to a verification-only step — nothing is scaffolded twice. Task bodies (schemas,
+> contribution collection, resolver, buckets, tests) are unchanged from the original design.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -18,65 +24,43 @@
 
 ## Global Constraints
 
-- New package `src/modules/nightfox/`, name `@shadowcat/module-nightfox` (workspace glob `src/modules/*` picks it up).
+- Package: the Nightfox repo root (`C:\Dev\Nightfox`), pnpm package name `"nightfox"` (M13-1 Task 18) — nested into a Shadowcat checkout at `src/modules/nightfox/` for development so the pnpm workspace glob `src/modules/*` resolves it.
 - Nightfox data lives ONLY in `system.stats` and `system.mechanics` (D13/D14) — never other system keys, never the envelope, never the `engine` band.
 - Readers fail closed: `parseNightfox` returns `null` when BOTH directories are absent (not a Nightfox-bearing doc) or when EITHER present directory is malformed; an absent side defaults (`stats: {}` / `mechanics: {version: 1}`). The resolver treats `null` blocks as "no Nightfox data", never throws.
 - Caps (tier-1 validation): `MAX_STATS = 128`, `MAX_MODIFIERS = 128` per document; `label` ≤ 64 chars; `text.value` ≤ 1024 chars; formula strings ≤ `MAX_FORMULA_LENGTH` (512, re-exported from `@shadowcat/formula`).
 - Stat keys: `/^[a-z][a-z0-9_]*$/`, max 32 chars, not in `RESERVED_STAT_KEYS`, no dice-notation collision (rules in Task 2).
 - The permutation invariant (spec D3/D12) is a tested property: shuffling embed arrays, modifier-record insertion order, and stat-record insertion order never changes any resolved value.
 - Booleans coerce to 1/0 in formulas; text references are `type` errors; `%`/`/` semantics live in the library — this package adds no arithmetic.
-- Commit per task once green (`pnpm --filter @shadowcat/module-nightfox test` + `typecheck`).
+- Commit per task once green (`pnpm --filter nightfox test` + `pnpm --filter nightfox typecheck`, run from the nested Shadowcat checkout root; every commit happens inside the Nightfox repo).
 
 ---
 
-### Task 1: Package scaffold
+### Task 1: Package scaffold — superseded by M13-1 Task 18
 
-**Files:**
-- Create: `src/modules/nightfox/package.json`
-- Create: `src/modules/nightfox/tsconfig.json` (copy `src/client/core/tsconfig.json` verbatim — this is a pure-TS package, not a Svelte one)
-- Create: `src/modules/nightfox/vitest.config.ts`
-- Create: `src/modules/nightfox/src/index.ts` (placeholder barrel: `export {};`)
+**Files:** none created or modified by this task.
 
-- [ ] **Step 1: package.json:**
+**Consumes:** the scaffold M13-1 Task 18 already delivered in the Nightfox repo — `package.json`
+(name `"nightfox"`, `dependencies` already including `@shadowcat/core` and `@shadowcat/formula`,
+`scripts.typecheck = "svelte-check --tsconfig ./tsconfig.json"`, `scripts.test = "vitest run"`),
+`tsconfig.json`, `vite.config.ts`, `svelte.config.js`, `vitest.config.ts` (`include:
+["src/**/*.test.ts"]` — covers every M13b test file below), `vitest.setup.ts`, `module.json`,
+`src/index.ts` (placeholder manifest + `register()`), `.gitignore`, `LICENSE`, `README.md`. No new
+dependency is needed here — `@shadowcat/core` and `@shadowcat/formula` are already present; nothing
+is scaffolded twice.
 
-```json
-{
-  "name": "@shadowcat/module-nightfox",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "main": "src/index.ts",
-  "dependencies": {
-    "@shadowcat/core": "workspace:*",
-    "@shadowcat/formula": "workspace:*",
-    "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0"
-  },
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
-  }
-}
-```
-
-- [ ] **Step 2: vitest.config.ts:**
-
-```ts
-import { defineConfig } from "vitest/config";
-export default defineConfig({ test: { include: ["src/**/*.test.ts"] } });
-```
-
-- [ ] **Step 3:** `pnpm install`; then `pnpm --filter @shadowcat/module-nightfox typecheck`. Expected: green (empty barrel). Commit — `feat(nightfox): scaffold @shadowcat/module-nightfox package`
+- [ ] **Step 1:** Confirm the Nightfox repo is nested at `<Shadowcat checkout>/src/modules/nightfox/`
+(per the Task 18 README's dev flow) and that `pnpm install` from the nested checkout root has
+resolved `@shadowcat/core` and `@shadowcat/formula`. Run (from the nested checkout root):
+`pnpm --filter nightfox typecheck`. Expected: green (Task 18's placeholder `src/index.ts` +
+`Hello.svelte` still typecheck). No commit — nothing changed in this task; proceed to Task 2.
 
 ---
 
 ### Task 2: Schema, fail-closed parse, key validation (`nightfox-docs.ts`)
 
 **Files:**
-- Create: `src/modules/nightfox/src/nightfox-docs.ts`
-- Test: `src/modules/nightfox/src/nightfox-docs.test.ts`
+- Create: `src/nightfox-docs.ts` (Nightfox repo root)
+- Test: `src/nightfox-docs.test.ts`
 
 **Interfaces:**
 - Produces (exact exported surface later tasks and M13c/M13d consume):
@@ -180,15 +164,22 @@ describe("validateNightfox", () => {
 
 - [ ] **Step 2: Run — expect FAIL. Step 3: Implement.** Zod: `StatSchema` discriminated union on `type`, every numeric field `z.number().finite()`; `StatsDirSchema = z.record(StatSchema)` with `superRefine` applying `validateStatKey` to every key + the `MAX_STATS` cap; `MechanicsSchema = z.object({ version: z.literal(1), modifiers: z.record(ModifierSchema).optional(), active: z.boolean().optional(), transfer: z.boolean().optional() }).strict()` with the `MAX_MODIFIERS` cap; `.strict()` on all objects (unknown fields fail closed — mirrors `deny_unknown_fields`). `parseNightfox`: read `(doc?.system as {stats?: unknown; mechanics?: unknown})`; both `undefined` → `null`; safeParse each present side, either failing → `null`; absent sides default (`{}` / `{version: 1}`). `validateStatKey`: pattern `/^[a-z][a-z0-9_]*$/` + length ≤ 32 + `RESERVED_STAT_KEYS` membership + notation collision — a key collides when its maximal `[a-z_]+` prefix ∈ `NOTATION_KEYWORDS` (import from `@shadowcat/formula`) AND (the prefix is the whole key OR the next char is a digit). `RESERVED_STAT_KEYS = new Set(["parent","base","current","min","max","floor","ceil","round", ...NOTATION_KEYWORDS])`. `validateNightfox` = same schemas, returning issue strings (sheet-facing).
 
-- [ ] **Step 4: Run (PASS). Step 5: Commit** — `feat(nightfox): system.stats/system.mechanics Zod schema + fail-closed parse + reserved-key validation`
+- [ ] **Step 4: Run (PASS).**
+- [ ] **Step 5: Commit (inside the Nightfox repo):**
+
+```bash
+cd "C:\Dev\Nightfox"
+git add src/nightfox-docs.ts src/nightfox-docs.test.ts
+git commit -m "feat(nightfox): system.stats/system.mechanics Zod schema + fail-closed parse + reserved-key validation"
+```
 
 ---
 
 ### Task 3: Contribution collection (`contributions.ts`)
 
 **Files:**
-- Create: `src/modules/nightfox/src/contributions.ts`
-- Test: `src/modules/nightfox/src/contributions.test.ts`
+- Create: `src/contributions.ts` (Nightfox repo root)
+- Test: `src/contributions.test.ts`
 
 **Interfaces:**
 - Consumes: `parseNightfox`, `NightfoxBlock`, `Modifier` (Task 2); `WireDocument` from `@shadowcat/core`.
@@ -275,15 +266,22 @@ describe("collectNightfox", () => {
 
 - [ ] **Step 2: Run — expect FAIL. Step 3: Implement.** Walk exactly: host → `embedded["item"] ?? []` → each item's `embedded["effect"] ?? []`, plus host's `embedded["effect"] ?? []`. `parseNightfox` each doc; `null` ⇒ the doc is skipped entirely (fail-closed). Effective activity: `mechanics.active !== false` AND carrier-chain active. Targets per spec §5.3 (the test table above is normative). Host-level `mechanics.modifiers` ⇒ `host-modifiers-inert` warning, except a host of doc_type `item`/`effect` (standalone sheet preview) ⇒ `dangling-modifiers`.
 
-- [ ] **Step 4: Run (PASS). Step 5: Commit** — `feat(nightfox): modifier contribution collection with active/transfer gating`
+- [ ] **Step 4: Run (PASS).**
+- [ ] **Step 5: Commit (inside the Nightfox repo):**
+
+```bash
+cd "C:\Dev\Nightfox"
+git add src/contributions.ts src/contributions.test.ts
+git commit -m "feat(nightfox): modifier contribution collection with active/transfer gating"
+```
 
 ---
 
 ### Task 4: The resolver (`resolve.ts`)
 
 **Files:**
-- Create: `src/modules/nightfox/src/resolve.ts`
-- Test: `src/modules/nightfox/src/resolve.test.ts`
+- Create: `src/resolve.ts` (Nightfox repo root)
+- Test: `src/resolve.test.ts`
 
 **Interfaces:**
 - Consumes: `Collected` (Task 3); `parseFormula`, `evaluate`, `resolveAll`, `FormulaValue`, `isFormulaError` from `@shadowcat/formula`.
@@ -415,45 +413,83 @@ describe("resolveNightfox — spec §5 semantics", () => {
 
 - [ ] **Step 2: Run — expect FAIL. Step 3: Implement.** One `resolveAll` call over node keys `f:<docId>#<key>` (final) and `c:<docId>#<key>` (resource effectiveCurrent). Node eval for `f:` — (1) *derived*: `formula` present ⇒ `evaluate(parseFormula(formula), derivedRefs)` else `base` (`maxFormula`/`maxBase` for resources); (2) *buckets*: partition this stat's contributions by op, magnitudes evaluated with `magnitudeRefs` (a numeric `value` is used directly); any errored magnitude poisons the final (propagate — never silently drop a belt); (3) fold `(derived + Σadd) * (1 + ΣmulAdd) * ΠmulComp`, `Number.isFinite` gate ⇒ `non-finite`. `derivedRefs` (spec §5.2/§5.3): `[selfKey]` ⇒ own base directly (NOT via `get`); `["base", k]` ⇒ k's base (resource ⇒ `maxBase`); `[k]` ⇒ boolean 1/0 · text `{error:"type"}` · resource `get("c:…")` · number `get("f:…")`; `[k,"max"]` ⇒ `get("f:…")`; `[k,"current"]` ⇒ `get("c:…")`; `["parent",...rest]` ⇒ same rules against the embed parent (host ⇒ `unknown-ref`). `magnitudeRefs`: identical EXCEPT bare identifiers scope to the CARRIER doc and `parent.*` scopes to the TARGET doc. `c:` node: `clampToMax !== false` ⇒ min(current, final-max) with error propagation, else `current`. Inert rules (§5.4) checked at partition time (target stat missing / text / boolean ⇒ skip + `ResolveWarning`; resource target ⇒ applies to max). `statRefResolver` reuses `derivedRefs` over the finished maps.
 
-- [ ] **Step 4: Run (PASS). Step 5: Commit** — `feat(nightfox): one-graph stat resolver with commutative bucket pipeline`
+- [ ] **Step 4: Run (PASS).**
+- [ ] **Step 5: Commit (inside the Nightfox repo):**
+
+```bash
+cd "C:\Dev\Nightfox"
+git add src/resolve.ts src/resolve.test.ts
+git commit -m "feat(nightfox): one-graph stat resolver with commutative bucket pipeline"
+```
 
 ---
 
 ### Task 5: Permutation + property battery
 
 **Files:**
-- Test: `src/modules/nightfox/src/permutation.test.ts`
+- Test: `src/permutation.test.ts` (Nightfox repo root)
 
 - [ ] **Step 1: Write the suite** (seeded PRNG — copy the 10-line `rng` helper from the M13a plan's Task 7 into this file). Build a randomized actor: 8 number/resource stats (formulas drawn from a safe DAG template over earlier keys), 4 items × up to 3 effects with random modifiers (random target key, random op, magnitude from `{literal, "parent.<k>", "<carrierStat>"}`, random `active`/`transfer`). For 100 seeds, construct the SAME logical document three ways — (a) shuffled `embedded.item`/`embedded.effect` array orders, (b) shuffled object-key insertion order for `stats` and `modifiers` records (`Object.fromEntries(shuffledEntries)`), (c) shuffled `order` field values — and assert `resolveNightfox` output deep-equals across all three (Maps converted to sorted arrays). This is the D3/D12 invariant — the test the bucket revision exists for.
 - [ ] **Step 2:** Also assert: no construction throws; every resolved value is `number | FormulaError`.
-- [ ] **Step 3: Run (PASS — a failure is a Task 4 bug; fix the source). Commit** — `test(nightfox): permutation-invariance property battery`
+- [ ] **Step 3: Run (PASS — a failure is a Task 4 bug; fix the source).**
+- [ ] **Step 4: Commit (inside the Nightfox repo):**
+
+```bash
+cd "C:\Dev\Nightfox"
+git add src/permutation.test.ts
+git commit -m "test(nightfox): permutation-invariance property battery"
+```
 
 ---
 
-### Task 6: Module export + barrel + full gate
+### Task 6: Rules-engine barrel added to the M13-1 Task 18 module export
 
 **Files:**
-- Modify: `src/modules/nightfox/src/index.ts`
-- Test: `src/modules/nightfox/src/index.test.ts`
+- Modify: `src/index.ts` (Nightfox repo root — M13-1 Task 18 already created this file with the
+  module manifest `{ id: "nightfox", version: "0.1.0", dependencies: {}, engines: { shadowcat:
+  "^0.1.0" }, capabilities: [], requirements: [], provides: [{ contract:
+  "nightfox.example:hello", cardinality: "singleton" }], requires: [] }` and a `register()` that
+  contributes the placeholder `Hello.svelte`. This task ADDS the pure rules-engine API barrel on
+  top of that — it does NOT touch the manifest or `register()`, which are superseded later by
+  M13c Task 10 when the real sheets are registered.)
+- Modify: `src/index.test.ts` (Nightfox repo root — Task 18 already asserts
+  `nightfox.manifest.id === "nightfox"` and the placeholder registration; this task ADDS an
+  assertion that the barrel re-exports resolve, without removing Task 18's existing tests.)
 
 **Interfaces:**
-- Produces: `export const nightfox: Module` (manifest `{ id: "nightfox", version: "0.1.0", dependencies: {}, requires: [], provides: [] }`, empty `register()` — headless; M13c's sheets package will declare `dependencies: { nightfox: "^0.1.0" }`), plus the full pure API barrel: Tasks 2–4 exports and re-exports of `NOTATION_KEYWORDS`, `MAX_FORMULA_LENGTH`.
+- Consumes: `export const nightfox: Module` (already produced by M13-1 Task 18 — unchanged here).
+- Produces (added to the existing `src/index.ts` barrel): re-exports of Tasks 2–4's full pure API
+  surface (`parseNightfox`, `validateStatKey`, `validateNightfox`, `RESERVED_STAT_KEYS`,
+  `NIGHTFOX_VERSION`, the `Stat`/`Modifier`/`NightfoxBlock`/`NightfoxMechanics` types,
+  `collectNightfox` + its types, `resolveNightfox`, `statRefResolver` + its types) plus
+  re-exports of `NOTATION_KEYWORDS`, `MAX_FORMULA_LENGTH` (from `@shadowcat/formula`).
 
-- [ ] **Step 1: Test** — import `{ nightfox }`, assert it typechecks as `Module` (from `@shadowcat/core`, same import as `src/modules/factions/src/index.ts`) and `nightfox.manifest.id === "nightfox"`.
-- [ ] **Step 2: Implement barrel. Step 3: Full gate:** `pnpm -r typecheck && pnpm -r test && pnpm lint`. Expected: green.
-- [ ] **Step 4: Commit** — `feat(nightfox): module manifest + public API barrel`
+- [ ] **Step 1: Test** — add to the existing `src/index.test.ts` (do not remove Task 18's
+  `nightfox.manifest.id`/registration assertions): import `{ parseNightfox, resolveNightfox }`
+  from `./index` and assert both are functions (proves the barrel re-export resolves).
+- [ ] **Step 2: Implement** — add the re-exports listed above to `src/index.ts`, alongside the
+  existing manifest/`register()`/default export (do not remove or alter them).
+- [ ] **Step 3: Full gate** (from the nested Shadowcat checkout root):
+  `pnpm --filter nightfox typecheck && pnpm --filter nightfox test`. Expected: green.
+- [ ] **Step 4: Commit (inside the Nightfox repo):**
+
+```bash
+cd "C:\Dev\Nightfox"
+git add src/index.ts src/index.test.ts
+git commit -m "feat(nightfox): re-export the rules-engine public API barrel from the module entry"
+```
 
 ---
 
-### Task 7: Docs + codebase-skill gate
+### Task 7: Docs + codebase-skill gate (Shadowcat repo)
 
-**Files:**
+**Files (all in the Shadowcat checkout, NOT the Nightfox repo):**
 - Modify: `docs/PLAN.md` (M13b done-entry, house style)
 - Modify: `docs/design/ARCHITECTURE.md` (document the D13/D14/D15 conventions: the reserved `system.stats`/`system.mechanics` directories, the singleton-system premise, and — once M13-0 lands — the three-band document shape; ARCHITECTURE is the durable home since CLAUDE.md is git-ignored)
-- Modify: `.claude/skills/shadowcat-codebase-nightfox/SKILL.md` (extend with: stat model, bucket pipeline + permutation invariant, §5.2/§5.3 scope rules, tolerance rules, fail-closed parse conventions)
+- Modify: `.claude/skills/shadowcat-codebase-nightfox/SKILL.md` (extend with: stat model, bucket pipeline + permutation invariant, §5.2/§5.3 scope rules, tolerance rules, fail-closed parse conventions — point every source reference at the Nightfox repo's own paths, e.g. `src/nightfox-docs.ts` at `C:\Dev\Nightfox`, nested at `src/modules/nightfox/` for local dev, not an in-tree Shadowcat path)
 
 - [ ] **Step 1:** Update all three; dispatch `shadowcat-spec-reviewer` on the skill diff (reviewed skill-update gate).
-- [ ] **Step 2:** Commit — `docs(m13b): PLAN + ARCHITECTURE sync, nightfox codebase-skill update`
+- [ ] **Step 2:** Commit (in the Shadowcat checkout — this task's files never touch the Nightfox repo) — `docs(m13b): PLAN + ARCHITECTURE sync, nightfox codebase-skill update`
 
 ---
 
@@ -461,7 +497,7 @@ describe("resolveNightfox — spec §5 semantics", () => {
 
 - Plan authored mainline on Fable 5, effort high (user directive 2026-07-15; tier-switch checkpoint outcome).
 - Execution: **subagent-driven-development** — implementers `shadowcat-coder` (sonnet, `effort: medium`), reviewers `shadowcat-spec-reviewer` + `shadowcat-code-reviewer` (`effort: high`), `-opus` twins on BLOCKED/shallow findings (project CLAUDE.md tiering).
-- **Execution gated on M12 completion and M13a merged** (user decision 2026-07-15) — per-checkpoint branch in a git worktree (shared tree with the M12 session).
+- **Execution gated on M12 completion, M13a merged, and M13-1 Task 18** (Nightfox repo bootstrapped at `C:\Dev\Nightfox`) — per-checkpoint branch in a git worktree for the Shadowcat-repo doc rows (shared tree with the M12 session); work on the rules-engine files in the nested dev clone (`<shadowcat-checkout>/src/modules/nightfox/`). Never push the Nightfox repo.
 
 ## Buddy-check directives
 
