@@ -2542,7 +2542,7 @@ mod room_tests {
         assert_eq!(h.committed_pos(h.token_id).await, res.stop);
     }
 
-    /// Identical to `movement_scene`, but the scene doc's `system.vision.movementModel` is
+    /// Identical to `movement_scene`, but the scene doc's `engine.vision.movementModel` is
     /// explicitly `"continuous"` (M10f-3 §6): proves `execute_move` gates an any-angle route
     /// from a scene genuinely marked continuous, not just incidentally sent a diagonal path.
     /// Functionally inert on the server today — `execute_move` has no `movementModel` branch

@@ -246,8 +246,8 @@
 
   {#if ctx.role === "gm" && dicesys && diceDoc}
     <!-- Ambient dice-notation context: mode (Total/Success count) and direction
-         (High/Low wins). JSON-pointer paths: /system/mode, /system/direction.
-         Matches the server body shape (chat/settings.rs DiceSettingsBody) exactly:
+         (High/Low wins). JSON-pointer paths: /engine/mode, /engine/direction.
+         Matches the server body shape (data/engine/registries.rs DiceSettingsEngine) exactly:
          mode "total"|"success_count", direction "high_wins"|"low_wins". -->
     <fieldset>
       <legend>{ctx.t("gameSettings.dice.title")}</legend>
@@ -275,8 +275,9 @@
 
   {#if ctx.role === "gm" && chatsys && chatDoc}
     <!-- Chat content policy: hyperlinks toggle + link-preview tri-state.
-         JSON-pointer paths: /system/hyperlinks, /system/link_previews.
-         Matches the server body shape (chat/settings.rs ChatContentPolicy) exactly:
+         JSON-pointer paths: /engine/hyperlinks, /engine/link_previews.
+         Matches the server body shape (chat/settings.rs ChatContentPolicy, a type
+         alias onto data/engine/registries.rs ChatSettingsEngine) exactly:
          hyperlinks is a plain bool (default false); link_previews is TRI-STATE
          (absent/null = default-on-when-hyperlinks-on, true/false = explicit override) —
          the "" option writes null, mirroring the scene-override inherit pattern above. -->

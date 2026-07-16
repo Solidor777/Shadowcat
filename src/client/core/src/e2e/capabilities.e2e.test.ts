@@ -60,7 +60,7 @@ test("player is rejected writing a GM-gated path; Welcome carries projected caps
   expect(welcome).not.toBeNull();
   const w = welcome as unknown as WireWelcome;
   expect(w.user_role).toBe("player");
-  expect(w.capability_requirements.some((r) => r.path_prefix === "/system/vision")).toBe(true);
+  expect(w.capability_requirements.some((r) => r.path_prefix === "/engine/vision")).toBe(true);
   // Projection: the grant map must not leak other users' ids. by_user is keyed
   // by uuid; the only permissible key is the connecting player.
   for (const id of Object.keys(w.world_default_grants.by_user)) {
@@ -75,7 +75,13 @@ test("player is rejected writing a GM-gated path; Welcome carries projected caps
       {
         op: "update",
         doc_id: doc,
-        changes: [{ path: "/system/vision/range", old: 30, new: 60 }],
+        changes: [
+          {
+            path: "/engine/vision",
+            old: [{ mode: "darkvision", range: 30.5 }],
+            new: [{ mode: "darkvision", range: 60.5 }],
+          },
+        ],
       },
     ],
   };

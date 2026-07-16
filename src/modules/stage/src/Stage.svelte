@@ -115,7 +115,7 @@
         });
       });
       wirePointer(e, controller.signal);
-      // Drive the grid from the viewed scene's system.grid (M8d §15), updating only on
+      // Drive the grid from the viewed scene's engine.grid (M8d §15), updating only on
       // a real change so a token drag does not rebuild the grid each frame; also expose
       // the rendered token count as a test/observability signal (mirrors render-ready).
       let lastGridKey = "";

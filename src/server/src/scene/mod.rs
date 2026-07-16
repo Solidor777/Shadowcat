@@ -791,7 +791,7 @@ impl SceneEcs {
         inputs.polygons_at(viewpoint)
     }
 
-    /// Each scene's grid cell size (`system.grid.size`), defaulting to 100 — the unit the M9c
+    /// Each scene's grid cell size (`engine.grid.size`), defaulting to 100 — the unit the M9c
     /// explored-fog accumulation quantizes vision into. Read once per dispatch (cheap doc scan).
     pub fn scene_grid_sizes(&self) -> std::collections::HashMap<Uuid, f64> {
         let mut out = std::collections::HashMap::new();
@@ -2601,7 +2601,7 @@ mod tests {
 
         // Darkvision token in the SAME dark scene (no light) sees within range despite darkness.
         // Uses an embedded actor (instanced token path) because overrides.vision only applies to
-        // linked tokens with a resolved actor_id; an instanced token reads embedded.actor[0].system.vision.
+        // linked tokens with a resolved actor_id; an instanced token reads embedded.actor[0].engine.vision.
         let mut dv = entity_doc_eng(
             12,
             10,

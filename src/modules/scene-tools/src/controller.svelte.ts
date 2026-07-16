@@ -265,7 +265,7 @@ function regionShapePath(mode: RegionShapeMode, a: Point, b: Point, freehand: nu
   }
 }
 
-/** The persisted `system.shape.points` layout for `mode`: rect=[x0,y0,x1,y1], circle=[cx,cy,r],
+/** The persisted `engine.shape.points` layout for `mode`: rect=[x0,y0,x1,y1], circle=[cx,cy,r],
  * polygon=[x0,y0,x1,y1,...] — matches the server's region shape parser expectations. */
 function regionShapeGeometry(mode: RegionShapeMode, a: Point, b: Point, freehand: number[]): number[] {
   switch (mode) {

@@ -1,7 +1,7 @@
 //! Throwaway WS server for manual/external clients and the Node<->Rust e2e
 //! harness. In-memory DB seeded with a GM (gm/pw) and a player (pl/pw), one
 //! world, a player-owned document, and a declarative capability requirement on
-//! `/system/vision`. Prints the bind address and a machine-readable
+//! `/engine/vision`. Prints the bind address and a machine-readable
 //! `e2e-fixture:` JSON line the harness parses.
 
 use std::sync::atomic::AtomicBool;
@@ -36,7 +36,9 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     repo.add_member(world.id, player, WorldRole::Player).await?;
 
-    // A player-owned actor carrying a populated /system/vision subtree.
+    // A player-owned actor (engine-defined per M13-0 S1) carrying a populated
+    // /engine/vision subtree; `name` lives on the envelope (S2), `hp` stays
+    // opaque game-system data.
     let mut perms = PermissionSet::default();
     perms.users.insert(player, DocRole::Owner);
     let doc = Document {
@@ -44,14 +46,26 @@ async fn main() -> anyhow::Result<()> {
         scope: Scope::World { world_id: world.id },
         doc_type: "actor".into(),
         schema_version: 1,
-        name: None,
+        name: Some("Player Dragon".into()),
         source: None,
         owner: Some(player),
         permissions: perms,
         embedded: Default::default(),
         parent_id: None,
-        engine: None,
-        system: serde_json::json!({ "name": "Player Dragon", "vision": { "range": 30 }, "hp": 10 }),
+        engine: Some(serde_json::json!({
+            "displayName": "Player Dragon",
+            "visual": { "kind": "image", "asset": "dragon.png" },
+            "size": { "w": 1.0, "h": 1.0 },
+            "shape": "square",
+            "faction": null,
+            "conditions": [],
+            "prototype": true,
+            // Non-integer so JSON round-tripping never collides the client's
+            // "old" pre-image (a plain JS number) with the server's PosInt-vs-
+            // Float serde_json::Number variant split on whole numbers.
+            "vision": [{ "mode": "darkvision", "range": 30.5 }]
+        })),
+        system: serde_json::json!({ "hp": 10 }),
         created_at: 0,
         updated_at: 0,
     };
@@ -76,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
         scope: Scope::World { world_id: world.id },
         doc_type: "actor".into(),
         schema_version: 1,
-        name: None,
+        name: Some("Secret Dragon".into()),
         source: None,
         owner: Some(gm),
         permissions: PermissionSet {
@@ -85,8 +99,16 @@ async fn main() -> anyhow::Result<()> {
         },
         embedded: Default::default(),
         parent_id: None,
-        engine: None,
-        system: serde_json::json!({ "name": "Secret Dragon" }),
+        engine: Some(serde_json::json!({
+            "displayName": "Secret Dragon",
+            "visual": { "kind": "image", "asset": "dragon.png" },
+            "size": { "w": 1.0, "h": 1.0 },
+            "shape": "square",
+            "faction": null,
+            "conditions": [],
+            "prototype": true
+        })),
+        system: serde_json::json!({}),
         created_at: 0,
         updated_at: 0,
     };
@@ -99,11 +121,11 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    // Writing /system/vision requires dnd5e:gm_vision (which the player lacks).
+    // Writing /engine/vision requires dnd5e:gm_vision (which the player lacks).
     repo.set_world_cap_requirements(
         world.id,
         &[CapabilityRequirement {
-            path_prefix: "/system/vision".into(),
+            path_prefix: "/engine/vision".into(),
             caps: ["dnd5e:gm_vision".to_string()].into_iter().collect(),
         }],
     )

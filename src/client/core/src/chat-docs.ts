@@ -144,7 +144,7 @@ export function buildChannelRegistryDoc(
 /** Doc_type for the single per-world dice-settings config `Document`
  * (server: chat/settings.rs DICE_SETTINGS_DOC_TYPE). `doc_type: "dice-settings"` is
  * engine-defined — the body lands in `engine`, `DiceSettingsEngine` mirrors
- * chat::settings::DiceSettingsBody 1:1 (both fields serde-default on the server:
+ * data::engine::registries::DiceSettingsEngine 1:1 (both fields serde-default on the server:
  * Total / high_wins), so a partial body is still safe — the panel always writes the
  * full shape via the reactive seed. */
 export const DICE_SETTINGS_DOC_TYPE = "dice-settings";
