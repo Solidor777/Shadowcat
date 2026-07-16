@@ -113,6 +113,52 @@ pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
     out
 }
 
+/// Minimal semver range matcher mirroring the client's `satisfies` in
+/// `src/client/core/src/semver.ts` (exact / `^` / `~` / `*`) — both sides must
+/// agree on `engines.shadowcat` compatibility (enable-time here, load-time
+/// there), so the tiny algorithm is duplicated intentionally rather than
+/// shared across the Rust/TS boundary. Fails closed (false) on a malformed
+/// version or range rather than panicking.
+pub fn semver_satisfies(version: &str, range: &str) -> bool {
+    fn parse(v: &str) -> Option<(u64, u64, u64)> {
+        let mut parts = v.trim().split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next()?.parse().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some((major, minor, patch))
+    }
+    let r = range.trim();
+    let Some(v) = parse(version) else { return false };
+    if r == "*" {
+        return true;
+    }
+    if let Some(rest) = r.strip_prefix('^') {
+        let Some(b) = parse(rest) else { return false };
+        return v.0 == b.0 && v >= b;
+    }
+    if let Some(rest) = r.strip_prefix('~') {
+        let Some(b) = parse(rest) else { return false };
+        return v.0 == b.0 && v.1 == b.1 && v >= b;
+    }
+    let Some(b) = parse(r) else { return false };
+    v == b
+}
+
+/// T6 engine-compat gate: the running server's `CARGO_PKG_VERSION` must satisfy
+/// the module's declared `engines.shadowcat` range. A module with NO declared
+/// range fails closed (never enables) — the field is optional on the shared
+/// client `ModuleManifest` TS type (first-party modules never set it) but is
+/// effectively mandatory for anything going through this pipeline.
+pub fn engine_compat_ok(m: &InstalledModule) -> bool {
+    match &m.engines_shadowcat {
+        Some(range) => semver_satisfies(env!("CARGO_PKG_VERSION"), range),
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +242,64 @@ mod tests {
         write_module(dir.path(), "aaa", r#"{"id":"aaa","version":"1.0.0"}"#);
         let found = scan_installed_modules(dir.path());
         assert_eq!(found.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["aaa", "zzz"]);
+    }
+
+    #[test]
+    fn semver_wildcard_matches_anything() {
+        assert!(semver_satisfies("9.9.9", "*"));
+    }
+
+    #[test]
+    fn semver_exact_match() {
+        assert!(semver_satisfies("1.2.3", "1.2.3"));
+        assert!(!semver_satisfies("1.2.4", "1.2.3"));
+    }
+
+    #[test]
+    fn semver_caret_allows_same_major_gte_patch_minor() {
+        assert!(semver_satisfies("1.4.0", "^1.2.3"));
+        assert!(!semver_satisfies("1.2.2", "^1.2.3"));
+        assert!(!semver_satisfies("2.0.0", "^1.2.3"));
+    }
+
+    #[test]
+    fn semver_tilde_allows_same_major_minor_gte_patch() {
+        assert!(semver_satisfies("1.2.9", "~1.2.3"));
+        assert!(!semver_satisfies("1.3.0", "~1.2.3"));
+    }
+
+    #[test]
+    fn semver_invalid_version_fails_closed() {
+        assert!(!semver_satisfies("not-a-version", "*"));
+    }
+
+    #[test]
+    fn engine_compat_ok_requires_the_engines_field() {
+        let dir = tempfile::tempdir().unwrap();
+        write_module(dir.path(), "no-engines", r#"{"id":"no-engines","version":"1.0.0"}"#);
+        let m = &scan_installed_modules(dir.path())[0];
+        // A module with no declared compat range never enables (T6: mandatory
+        // going forward for the modules-folder pipeline).
+        assert!(!engine_compat_ok(m));
+    }
+
+    #[test]
+    fn engine_compat_ok_checks_the_running_server_version() {
+        let dir = tempfile::tempdir().unwrap();
+        write_module(
+            dir.path(),
+            "compatible",
+            &format!(r#"{{"id":"compatible","version":"1.0.0","engines":{{"shadowcat":"^{}"}}}}"#, env!("CARGO_PKG_VERSION")),
+        );
+        write_module(
+            dir.path(),
+            "incompatible",
+            r#"{"id":"incompatible","version":"1.0.0","engines":{"shadowcat":"^99.0.0"}}"#,
+        );
+        let found = scan_installed_modules(dir.path());
+        let compatible = found.iter().find(|m| m.id == "compatible").unwrap();
+        let incompatible = found.iter().find(|m| m.id == "incompatible").unwrap();
+        assert!(engine_compat_ok(compatible));
+        assert!(!engine_compat_ok(incompatible));
     }
 }
