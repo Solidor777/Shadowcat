@@ -1154,6 +1154,20 @@ Decomposed **M11a–d**:
 > block; pre-v1 hard cutover, NO migration code; spec
 > `docs/superpowers/specs/2026-07-15-m13-0-document-shape-design.md`, plan
 > `docs/superpowers/plans/2026-07-15-m13-0-document-shape.md`) →
+> **M13-0 DONE** (branch `m13-0-document-shape`, 11 SDD tasks, 2 pre-authorized buddy-checks —
+> Task 4 redaction chokepoint, Task 6 movement gate — + a Task-10 cross-boundary gate: e2e
+> re-root, ingress-rejection battery, whole-tree stale-ref sweep): envelope gains `name` +
+> `engine`; `src/server/src/data/engine/` (17 typed, `deny_unknown_fields` engine structs +
+> `validate_engine`/`validate_engine_tree`/`is_engine_doc_type` registry); strict ingress gate +
+> per-block size caps + writable `/name`; `/engine` + `/name` redact to `null` (never strip) and
+> FTS indexes `name ∪ engine ∪ system`, visibility-partitioned; scene derivations, the movement
+> gate, and chat (`MessageEngine`) all re-rooted onto `engine`; client core + render + modules
+> re-rooted onto the generated `*Engine` types and envelope `name`; `system` stays exactly
+> `/system` (untouched, game-system-owned) throughout. A T3-review-caught fix folded in:
+> `apply_intent`'s Phase-1 OCC pre-image comparison is numeric-variant-aware
+> (`values_semantically_eq`), not raw equality — same-variant integers compare exactly as `i128`
+> with no magnitude limit, mixed integer/Float pairs compare via `f64` only within the
+> `|n| <= 2^53` exact range. →
 > **M13-1** (external-module toolchain: engine-package consumption for out-of-tree modules,
 > module build/packaging, world install/load via the M6b loader, dev-server + e2e-harness
 > access for external repos; own spec cycle; bootstraps the Nightfox repo) →
