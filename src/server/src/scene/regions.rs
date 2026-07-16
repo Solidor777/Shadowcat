@@ -250,18 +250,14 @@ impl RegionFieldBuilder {
     }
 }
 
-/// Parse a region doc's `system` body (client-owned shape, spec §3 / scene-docs.ts
-/// `RegionSystem`) into `RegionShape`. Structural-only: any malformed/missing field fails
-/// closed to `None` (the caller then drops the region entirely, never half-parses it).
-pub(crate) fn parse_region_shape(system: &serde_json::Value) -> Option<RegionShape> {
-    let kind = system.pointer("/shape/kind")?.as_str()?;
-    let points: Vec<f64> = system
-        .pointer("/shape/points")?
-        .as_array()?
-        .iter()
-        .map(|v| v.as_f64())
-        .collect::<Option<Vec<f64>>>()?;
-    match kind {
+/// Parse a region doc's ingress-validated `engine.shape` (`data::engine::RegionShape` — a raw
+/// `{kind, points}` pair, `deny_unknown_fields`-checked at write time) into this module's
+/// `RegionShape` enum. Still structural-only past the kind/point-count dispatch below: an
+/// unrecognized `kind` or a `points` length that doesn't match the kind fails closed to `None`
+/// (the caller then drops the region entirely, never half-parses it).
+pub(crate) fn parse_region_shape(shape: &crate::data::engine::RegionShape) -> Option<RegionShape> {
+    let points = &shape.points;
+    match shape.kind.as_str() {
         "rect" if points.len() == 4 => Some(RegionShape::Rect {
             x0: points[0],
             y0: points[1],
@@ -544,12 +540,17 @@ mod tests {
         );
     }
 
+    fn eng_shape(kind: &str, points: Vec<f64>) -> crate::data::engine::RegionShape {
+        crate::data::engine::RegionShape {
+            kind: kind.to_string(),
+            points,
+        }
+    }
+
     #[test]
     fn parse_region_shape_rect_circle_polygon() {
         assert_eq!(
-            parse_region_shape(
-                &serde_json::json!({"shape": {"kind": "rect", "points": [0.0, 0.0, 100.0, 100.0]}})
-            ),
+            parse_region_shape(&eng_shape("rect", vec![0.0, 0.0, 100.0, 100.0])),
             Some(RegionShape::Rect {
                 x0: 0.0,
                 y0: 0.0,
@@ -558,9 +559,7 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_region_shape(
-                &serde_json::json!({"shape": {"kind": "circle", "points": [50.0, 50.0, 25.0]}})
-            ),
+            parse_region_shape(&eng_shape("circle", vec![50.0, 50.0, 25.0])),
             Some(RegionShape::Circle {
                 cx: 50.0,
                 cy: 50.0,
@@ -568,37 +567,34 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_region_shape(
-                &serde_json::json!({"shape": {"kind": "polygon", "points": [0.0,0.0, 100.0,0.0, 0.0,100.0]}})
-            ),
+            parse_region_shape(&eng_shape(
+                "polygon",
+                vec![0.0, 0.0, 100.0, 0.0, 0.0, 100.0]
+            )),
             Some(RegionShape::Polygon {
                 points: vec![(0.0, 0.0), (100.0, 0.0), (0.0, 100.0)]
             })
         );
     }
 
+    // A raw `system`-body shape with a missing `/shape` key or a non-numeric point entry can no
+    // longer reach this function at all: `parse_region_shape` now takes the typed, already
+    // ingress-validated `engine::RegionShape { kind: String, points: Vec<f64> }` directly (a
+    // document carrying either defect fails ingress validation before persistence, so no caller
+    // of this function can ever hand it one). Only the two structural checks internal to this
+    // function's own dispatch — an unrecognized `kind`, or a `points` length that doesn't match
+    // the kind — remain reachable.
     #[test]
     fn parse_region_shape_malformed_is_none() {
-        assert_eq!(parse_region_shape(&serde_json::json!({})), None);
         assert_eq!(
-            parse_region_shape(
-                &serde_json::json!({"shape": {"kind": "rect", "points": [1.0, 2.0]}})
-            ),
+            parse_region_shape(&eng_shape("rect", vec![1.0, 2.0])),
             None,
             "rect requires exactly 4 points"
         );
         assert_eq!(
-            parse_region_shape(&serde_json::json!({"shape": {"kind": "hexagon", "points": []}})),
+            parse_region_shape(&eng_shape("hexagon", vec![])),
             None,
             "unknown kind"
-        );
-        assert_eq!(
-            parse_region_shape(
-                &serde_json::json!({"shape": {"kind": "rect", "points": [0.0, 0.0, 100.0, "bad"]}})
-            ),
-            None,
-            "a non-numeric entry anywhere must fail the whole parse, never shift/drop into a \
-             coincidentally-valid-length Rect"
         );
     }
 }

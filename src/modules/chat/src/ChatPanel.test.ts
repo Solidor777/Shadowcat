@@ -13,18 +13,20 @@ function storeWith(...docs: WireDocument[]): DocumentStore {
   s.applyCommand(cmd(docs.map((doc) => ({ op: "create" as const, doc }))));
   return s;
 }
-function msgDoc(id: string, created_at: number, system: Record<string, unknown>): WireDocument {
+function msgDoc(id: string, created_at: number, engine: Record<string, unknown>): WireDocument {
   return {
     id,
     scope: { kind: "world", world_id: "w1" },
     doc_type: "message",
     schema_version: 1,
+    name: null,
     source: null,
     owner: "u1",
     permissions: { default: "observer", users: {} } as WireDocument["permissions"],
     embedded: {},
     parent_id: null,
-    system,
+    engine,
+    system: {},
     created_at,
     updated_at: created_at,
   };
@@ -108,7 +110,7 @@ describe("ChatPanel — GM channel registry seed", () => {
     expect(ops[0].op).toBe("create");
     const doc = (ops[0] as { doc: WireDocument }).doc;
     expect(doc.doc_type).toBe("channel-registry");
-    expect((doc.system as { channels: Record<string, { name: string }> }).channels.general.name).toBe("General");
+    expect((doc.engine as { channels: Record<string, { name: string }> }).channels.general.name).toBe("General");
   });
 
   it("does not re-seed when a registry already exists", async () => {
@@ -137,7 +139,7 @@ describe("ChatPanel — GM channel editor visibility", () => {
     expect(queryByLabelText("chat.channels.edit")).toBeNull();
   });
 
-  it("GM add-channel dispatches a single-key update at /system/channels/<uuid>", async () => {
+  it("GM add-channel dispatches a single-key update at /engine/channels/<uuid>", async () => {
     const dispatchIntent = vi.fn();
     const store = storeWith(buildChannelRegistryDoc("w1", { general: { name: "General" } }, "creg1"));
     render(ChatPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, store, dispatchIntent, contributions: new ContributionRegistry() }) });
@@ -152,7 +154,7 @@ describe("ChatPanel — GM channel editor visibility", () => {
     expect(ops[0].op).toBe("update");
     expect((ops[0] as { doc_id: string }).doc_id).toBe("creg1");
     const change = (ops[0] as { changes: { path: string; old: unknown; new: unknown }[] }).changes[0];
-    expect(change.path).toMatch(/^\/system\/channels\/[0-9a-f-]+$/);
+    expect(change.path).toMatch(/^\/engine\/channels\/[0-9a-f-]+$/);
     expect(change.old).toBeNull();
     expect(change.new).toEqual({ name: "OOC" });
   });
@@ -168,7 +170,7 @@ describe("ChatPanel — GM channel editor visibility", () => {
     expect(change.new).toEqual({ name: "chat.channels.newName" });
   });
 
-  it("GM remove-channel dispatches a whole-field replace on /system/channels with the key physically absent", async () => {
+  it("GM remove-channel dispatches a whole-field replace on /engine/channels with the key physically absent", async () => {
     const dispatchIntent = vi.fn();
     const channels = { general: { name: "General" }, ooc: { name: "OOC" } };
     const store = storeWith(buildChannelRegistryDoc("w1", channels, "creg1"));
@@ -181,7 +183,7 @@ describe("ChatPanel — GM channel editor visibility", () => {
     expect(ops[0].op).toBe("update");
     expect((ops[0] as { doc_id: string }).doc_id).toBe("creg1");
     const change = (ops[0] as { changes: { path: string; old: unknown; new: unknown }[] }).changes[0];
-    expect(change.path).toBe("/system/channels");
+    expect(change.path).toBe("/engine/channels");
     expect(change.old).toEqual(channels);
     expect(change.new).toEqual({ general: { name: "General" } });
     expect(Object.prototype.hasOwnProperty.call(change.new, "ooc")).toBe(false);

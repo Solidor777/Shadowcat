@@ -1,60 +1,62 @@
 //! Per-world chat content policy: a single `chat-settings` config `Document`
 //! read by the message sanitizer to decide which enrichment producers are
-//! allowed. Resolution is fail-closed: an absent doc, a query error, or a
-//! `system` body that does not deserialize into `ChatContentPolicy` all yield
-//! `ChatContentPolicy::default()` (every toggle off, i.e. plain text). The
-//! toggles only ever WIDEN enrichment from that safe baseline, so any failure
-//! mode degrades safe rather than open.
+//! allowed. Resolution is fail-closed: an absent doc, a query error, or an
+//! `engine` body that does not deserialize into `ChatSettingsEngine` all
+//! yield `ChatContentPolicy::default()` (every toggle absent, i.e. plain
+//! text). The toggles only ever WIDEN enrichment from that safe baseline, so
+//! any failure mode degrades safe rather than open.
 
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::data::engine::{
+    ChatSettingsEngine, DiceDirectionSetting, DiceModeSetting, DiceSettingsEngine,
+};
 use crate::data::repository::Repository;
 use crate::dice::{Direction, ModeKind, ParseContext};
 
 /// Doc_type for the single per-world chat-settings config `Document`.
 pub const CHAT_SETTINGS_DOC_TYPE: &str = "chat-settings";
 
-/// GM-configured chat content policy, stored as the `system` body of the
-/// `chat-settings` doc. Every field defaults `false`. `#[serde(default)]` on
-/// the struct means a partial body (only some fields set) fills the rest with
-/// `false` rather than failing deserialization — a partial policy still
-/// degrades safe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ChatContentPolicy {
-    pub markdown: bool,
-    pub html: bool,
-    pub images: bool,
-    pub hyperlinks: bool,
-    pub emails: bool,
-    /// Tri-state, unlike every other toggle here: `None` (absent) is the
-    /// spec'd DEFAULT-ON behavior (design doc §6), resolved by
-    /// `previews_enabled` to ON only when `hyperlinks` is also on — a
-    /// preview is meaningless without a rendered link to attach it to.
-    /// `Some(false)`/`Some(true)` are an explicit GM override either way.
-    /// A bare `bool` defaulting `false` (matching every sibling field)
-    /// cannot express "absent means on, explicit-false means off"; this is
-    /// the one field in this struct that widens the fail-closed baseline.
-    #[serde(default)]
-    pub link_previews: Option<bool>,
-}
+/// GM-configured chat content policy, stored as the `engine` body of the
+/// `chat-settings` doc (M13-0: re-rooted from `system`). The ONE definition —
+/// `data::engine::registries::ChatSettingsEngine` (the ts-rs-exported, ingress-
+/// validated struct) — re-exported under this chat-domain name rather than
+/// duplicated. Every field is `Option<bool>`; absent (`None`) resolves to
+/// `false` via the accessor methods below, EXCEPT `link_previews`, whose
+/// tri-state semantics are documented on `previews_enabled`.
+pub type ChatContentPolicy = ChatSettingsEngine;
 
 impl ChatContentPolicy {
+    pub fn markdown(&self) -> bool {
+        self.markdown.unwrap_or(false)
+    }
+    pub fn html(&self) -> bool {
+        self.html.unwrap_or(false)
+    }
+    pub fn images(&self) -> bool {
+        self.images.unwrap_or(false)
+    }
+    pub fn hyperlinks(&self) -> bool {
+        self.hyperlinks.unwrap_or(false)
+    }
+    pub fn emails(&self) -> bool {
+        self.emails.unwrap_or(false)
+    }
+
     /// Resolved link-preview enablement (design doc §6): previews require
     /// `hyperlinks` to be on (a preview with no rendered link is
     /// meaningless), and within that, `link_previews` defaults ON when
     /// absent — a GM must explicitly write `link_previews: false` to opt
     /// out once hyperlinks are enabled. A fail-closed empty/default policy
-    /// (`hyperlinks: false`) always resolves to `false` regardless of
+    /// (`hyperlinks` absent) always resolves to `false` regardless of
     /// `link_previews`.
     pub fn previews_enabled(&self) -> bool {
-        self.hyperlinks && self.link_previews.unwrap_or(true)
+        self.hyperlinks() && self.link_previews.unwrap_or(true)
     }
 }
 
 /// Read the world's chat content policy, fail-closed. A query error, an
-/// absent `chat-settings` doc, or a `system` body that fails to deserialize
+/// absent `chat-settings` doc, or an `engine` body that fails to deserialize
 /// into `ChatContentPolicy` all yield `ChatContentPolicy::default()`.
 ///
 /// SINGLETON RESOLUTION: `chat-settings` is a per-world singleton, but nothing
@@ -73,46 +75,17 @@ pub async fn resolve_content_policy(repo: &dyn Repository, world_id: Uuid) -> Ch
     let Some(doc) = docs.into_iter().next() else {
         return ChatContentPolicy::default();
     };
-    serde_json::from_value(doc.system).unwrap_or_default()
+    doc.engine
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default()
 }
 
 /// Doc_type for the single per-world dice-settings config `Document`.
 pub const DICE_SETTINGS_DOC_TYPE: &str = "dice-settings";
 
-/// Wire-shape mirror of `dice::ModeKind`, stored in the `dice-settings` body.
-/// Kept separate from `ModeKind` (no serde derive there — the `dice` crate is
-/// pure, no wire coupling) rather than deriving serde directly on it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum DiceModeSetting {
-    #[default]
-    Total,
-    SuccessCount,
-}
-
-/// Wire-shape mirror of `dice::Direction`, stored in the `dice-settings` body.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum DiceDirectionSetting {
-    #[default]
-    HighWins,
-    LowWins,
-}
-
-/// GM-configured ambient dice-notation context, stored as the `system` body of
-/// the `dice-settings` doc. `#[serde(default)]` on both fields (and the struct)
-/// means a partial or absent body fills the rest with the safe default
-/// (Total + HighWins) rather than failing deserialization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(default)]
-struct DiceSettingsBody {
-    mode: DiceModeSetting,
-    direction: DiceDirectionSetting,
-}
-
 /// Read the world's ambient dice-notation `ParseContext`, fail-closed. A query
-/// error, an absent `dice-settings` doc, or a `system` body that fails to
-/// deserialize into `DiceSettingsBody` all yield `ParseContext { mode: Total,
+/// error, an absent `dice-settings` doc, or an `engine` body that fails to
+/// deserialize into `DiceSettingsEngine` all yield `ParseContext { mode: Total,
 /// direction: HighWins }` — the same safe baseline `resolve_content_policy`
 /// uses for chat enrichment.
 pub async fn resolve_dice_context(repo: &dyn Repository, world: Uuid) -> ParseContext {
@@ -124,9 +97,9 @@ pub async fn resolve_dice_context(repo: &dyn Repository, world: Uuid) -> ParseCo
     let Some(doc) = docs.into_iter().next() else {
         return default;
     };
-    let body: DiceSettingsBody = match serde_json::from_value(doc.system) {
-        Ok(b) => b,
-        Err(_) => return default,
+    let body: DiceSettingsEngine = match doc.engine.and_then(|v| serde_json::from_value(v).ok()) {
+        Some(b) => b,
+        None => return default,
     };
     ParseContext {
         mode: match body.mode {
@@ -144,9 +117,8 @@ pub async fn resolve_dice_context(repo: &dyn Repository, world: Uuid) -> ParseCo
 mod tests {
     use super::*;
     use crate::auth::role::ServerRole;
-    use crate::data::command::{Operation, WriteOrigin};
-    use crate::data::document::{Document, PermissionSet, Scope, WorldRole};
-    use crate::data::membership::PermissionContext;
+    use crate::data::command::{Operation, UnsequencedCommand};
+    use crate::data::document::{Document, PermissionSet, Scope};
     use crate::data::sqlite::SqliteRepository;
     use std::collections::BTreeMap;
 
@@ -161,29 +133,52 @@ mod tests {
         (repo, w.id, gm)
     }
 
-    /// A `chat-settings` `Document` in `world_id` with the given `system` body,
-    /// owned by `gm`.
-    fn settings_doc(world_id: Uuid, gm: Uuid, system: serde_json::Value) -> Document {
+    /// A `chat-settings` `Document` in `world_id` with the given `engine`
+    /// body, owned by `gm`. `system` stays empty — `chat-settings` is
+    /// engine-defined, and only `resolve_content_policy`'s `engine` read
+    /// matters here.
+    fn settings_doc(world_id: Uuid, gm: Uuid, engine: serde_json::Value) -> Document {
         Document {
             id: Uuid::new_v4(),
             scope: Scope::World { world_id },
             doc_type: CHAT_SETTINGS_DOC_TYPE.to_string(),
             schema_version: 1,
+            name: None,
             source: None,
             owner: Some(gm),
             permissions: PermissionSet::default(),
             embedded: BTreeMap::new(),
             parent_id: None,
-            system,
+            engine: Some(engine),
+            system: serde_json::json!({}),
             created_at: 0,
             updated_at: 0,
         }
     }
 
+    /// Seed a `chat-settings`/`dice-settings` doc via the trusted
+    /// `apply_command` substrate (mirrors `chat::mod::seed_actor_doc`) —
+    /// bypasses the `validate_engine_tree` ingress gate, so a deliberately
+    /// malformed `engine` body can still be persisted to exercise
+    /// `resolve_content_policy`/`resolve_dice_context`'s own runtime
+    /// fail-closed fallback (a well-formed body would never reach a
+    /// malformed-engine test case if `apply_intent`'s ingress gate rejected
+    /// the Create outright before it was ever stored).
+    async fn seed_settings_doc(repo: &SqliteRepository, world_id: Uuid, gm: Uuid, doc: Document) {
+        repo.apply_command(UnsequencedCommand {
+            world_id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Create { doc }],
+        })
+        .await
+        .unwrap();
+    }
+
     #[test]
     fn default_policy_is_all_off() {
         let p = ChatContentPolicy::default();
-        assert!(!p.markdown && !p.html && !p.images && !p.hyperlinks && !p.emails);
+        assert!(!p.markdown() && !p.html() && !p.images() && !p.hyperlinks() && !p.emails());
         assert_eq!(p.link_previews, None);
         assert!(
             !p.previews_enabled(),
@@ -194,7 +189,7 @@ mod tests {
     #[test]
     fn previews_enabled_hyperlinks_off_is_always_false() {
         let mut p = ChatContentPolicy {
-            hyperlinks: false,
+            hyperlinks: Some(false),
             ..Default::default()
         };
         assert!(!p.previews_enabled());
@@ -208,7 +203,7 @@ mod tests {
     #[test]
     fn previews_enabled_hyperlinks_on_absent_link_previews_defaults_true() {
         let p = ChatContentPolicy {
-            hyperlinks: true,
+            hyperlinks: Some(true),
             link_previews: None,
             ..Default::default()
         };
@@ -218,7 +213,7 @@ mod tests {
     #[test]
     fn previews_enabled_hyperlinks_on_explicit_false_disables() {
         let p = ChatContentPolicy {
-            hyperlinks: true,
+            hyperlinks: Some(true),
             link_previews: Some(false),
             ..Default::default()
         };
@@ -228,7 +223,7 @@ mod tests {
     #[test]
     fn previews_enabled_hyperlinks_on_explicit_true_enables() {
         let p = ChatContentPolicy {
-            hyperlinks: true,
+            hyperlinks: Some(true),
             link_previews: Some(true),
             ..Default::default()
         };
@@ -247,27 +242,17 @@ mod tests {
     #[tokio::test]
     async fn malformed_settings_body_resolves_to_default() {
         let (repo, world_id, gm) = world().await;
-        let gm_ctx = PermissionContext {
-            user_id: gm,
-            world_role: WorldRole::Gm,
-        };
         // `markdown` is a type mismatch (string, not bool), so
         // `serde_json::from_value::<ChatContentPolicy>` errors even with
         // `#[serde(default)]` — a merely-missing field would NOT error.
+        // Seeded via `apply_command` (bypasses ingress validation) since
+        // `apply_intent` would now reject this Create outright.
         let doc = settings_doc(
             world_id,
             gm,
             serde_json::json!({ "markdown": "not-a-bool" }),
         );
-        repo.apply_intent(
-            &gm_ctx,
-            world_id,
-            vec![Operation::Create { doc }],
-            0,
-            WriteOrigin::Client,
-        )
-        .await
-        .unwrap();
+        seed_settings_doc(&repo, world_id, gm, doc).await;
         assert_eq!(
             resolve_content_policy(&repo, world_id).await,
             ChatContentPolicy::default()
@@ -281,27 +266,15 @@ mod tests {
         // `previews_enabled` follows the default-on-when-hyperlinks rule — a
         // parse failure here would fail-close the WHOLE policy to all-off.
         let (repo, world_id, gm) = world().await;
-        let gm_ctx = PermissionContext {
-            user_id: gm,
-            world_role: WorldRole::Gm,
-        };
         let doc = settings_doc(
             world_id,
             gm,
             serde_json::json!({ "hyperlinks": true, "link_previews": null }),
         );
-        repo.apply_intent(
-            &gm_ctx,
-            world_id,
-            vec![Operation::Create { doc }],
-            0,
-            WriteOrigin::Client,
-        )
-        .await
-        .unwrap();
+        seed_settings_doc(&repo, world_id, gm, doc).await;
         let p = resolve_content_policy(&repo, world_id).await;
         assert_eq!(p.link_previews, None);
-        assert!(p.hyperlinks && p.previews_enabled());
+        assert!(p.hyperlinks() && p.previews_enabled());
     }
 
     #[tokio::test]
@@ -310,10 +283,6 @@ mod tests {
         // TODO.md); resolution must still be DETERMINISTIC — `query_documents`
         // orders by id, so the lowest-UUID doc's policy always wins.
         let (repo, world_id, gm) = world().await;
-        let gm_ctx = PermissionContext {
-            user_id: gm,
-            world_role: WorldRole::Gm,
-        };
         let mut low = settings_doc(world_id, gm, serde_json::json!({ "markdown": true }));
         low.id = Uuid::from_u128(1);
         let mut high = settings_doc(
@@ -323,27 +292,11 @@ mod tests {
         );
         high.id = Uuid::from_u128(u128::MAX);
         // Insert the high-id doc FIRST to prove insertion order doesn't decide it.
-        repo.apply_intent(
-            &gm_ctx,
-            world_id,
-            vec![Operation::Create { doc: high }],
-            0,
-            WriteOrigin::Client,
-        )
-        .await
-        .unwrap();
-        repo.apply_intent(
-            &gm_ctx,
-            world_id,
-            vec![Operation::Create { doc: low }],
-            1,
-            WriteOrigin::Client,
-        )
-        .await
-        .unwrap();
+        seed_settings_doc(&repo, world_id, gm, high).await;
+        seed_settings_doc(&repo, world_id, gm, low).await;
         let p = resolve_content_policy(&repo, world_id).await;
         assert!(
-            p.markdown && !p.html,
+            p.markdown() && !p.html(),
             "the lowest-id doc's policy must win deterministically"
         );
     }
@@ -351,10 +304,6 @@ mod tests {
     #[tokio::test]
     async fn present_policy_is_read() {
         let (repo, world_id, gm) = world().await;
-        let gm_ctx = PermissionContext {
-            user_id: gm,
-            world_role: WorldRole::Gm,
-        };
         let doc = settings_doc(
             world_id,
             gm,
@@ -363,52 +312,30 @@ mod tests {
                 "hyperlinks": true, "emails": false
             }),
         );
-        repo.apply_intent(
-            &gm_ctx,
-            world_id,
-            vec![Operation::Create { doc }],
-            0,
-            WriteOrigin::Client,
-        )
-        .await
-        .unwrap();
+        seed_settings_doc(&repo, world_id, gm, doc).await;
         let p = resolve_content_policy(&repo, world_id).await;
-        assert!(p.markdown && p.images && p.hyperlinks && !p.html && !p.emails);
+        assert!(p.markdown() && p.images() && p.hyperlinks() && !p.html() && !p.emails());
     }
 
-    /// A `dice-settings` `Document` in `world_id` with the given `system`
+    /// A `dice-settings` `Document` in `world_id` with the given `engine`
     /// body, owned by `gm`.
-    fn dice_settings_doc(world_id: Uuid, gm: Uuid, system: serde_json::Value) -> Document {
+    fn dice_settings_doc(world_id: Uuid, gm: Uuid, engine: serde_json::Value) -> Document {
         Document {
             id: Uuid::new_v4(),
             scope: Scope::World { world_id },
             doc_type: DICE_SETTINGS_DOC_TYPE.to_string(),
             schema_version: 1,
+            name: None,
             source: None,
             owner: Some(gm),
             permissions: PermissionSet::default(),
             embedded: BTreeMap::new(),
             parent_id: None,
-            system,
+            engine: Some(engine),
+            system: serde_json::json!({}),
             created_at: 0,
             updated_at: 0,
         }
-    }
-
-    async fn create_dice_doc(repo: &SqliteRepository, world_id: Uuid, gm: Uuid, doc: Document) {
-        let gm_ctx = PermissionContext {
-            user_id: gm,
-            world_role: WorldRole::Gm,
-        };
-        repo.apply_intent(
-            &gm_ctx,
-            world_id,
-            vec![Operation::Create { doc }],
-            0,
-            WriteOrigin::Client,
-        )
-        .await
-        .unwrap();
     }
 
     #[test]
@@ -430,9 +357,10 @@ mod tests {
     async fn malformed_dice_settings_body_resolves_to_default() {
         let (repo, world_id, gm) = world().await;
         // `mode` is a type mismatch (number, not a known string), so
-        // deserialization into `DiceSettingsBody` errors outright.
+        // deserialization into `DiceSettingsEngine` errors outright. Seeded
+        // via `apply_command` — `apply_intent` would reject this Create.
         let doc = dice_settings_doc(world_id, gm, serde_json::json!({ "mode": 5 }));
-        create_dice_doc(&repo, world_id, gm, doc).await;
+        seed_settings_doc(&repo, world_id, gm, doc).await;
         let ctx = resolve_dice_context(&repo, world_id).await;
         assert_eq!(ctx.mode, ModeKind::Total);
         assert_eq!(ctx.direction, Direction::HighWins);
@@ -443,13 +371,14 @@ mod tests {
         let (repo, world_id, gm) = world().await;
         // An out-of-vocabulary variant string (not a type mismatch) also fails
         // the whole-body deserialization — no #[serde(other)] catch-all exists,
-        // so fail-closed covers this distinct failure class too.
+        // so fail-closed covers this distinct failure class too. Seeded via
+        // `apply_command` for the same ingress-bypass reason as above.
         let doc = dice_settings_doc(
             world_id,
             gm,
             serde_json::json!({ "mode": "foobar", "direction": "low_wins" }),
         );
-        create_dice_doc(&repo, world_id, gm, doc).await;
+        seed_settings_doc(&repo, world_id, gm, doc).await;
         let ctx = resolve_dice_context(&repo, world_id).await;
         assert_eq!(ctx.mode, ModeKind::Total);
         assert_eq!(ctx.direction, Direction::HighWins);
@@ -463,7 +392,7 @@ mod tests {
             gm,
             serde_json::json!({ "mode": "total", "direction": "high_wins" }),
         );
-        create_dice_doc(&repo, world_id, gm, doc).await;
+        seed_settings_doc(&repo, world_id, gm, doc).await;
         let ctx = resolve_dice_context(&repo, world_id).await;
         assert_eq!(ctx.mode, ModeKind::Total);
         assert_eq!(ctx.direction, Direction::HighWins);
@@ -477,7 +406,7 @@ mod tests {
             gm,
             serde_json::json!({ "mode": "total", "direction": "low_wins" }),
         );
-        create_dice_doc(&repo, world_id, gm, doc).await;
+        seed_settings_doc(&repo, world_id, gm, doc).await;
         let ctx = resolve_dice_context(&repo, world_id).await;
         assert_eq!(ctx.mode, ModeKind::Total);
         assert_eq!(ctx.direction, Direction::LowWins);
@@ -491,7 +420,7 @@ mod tests {
             gm,
             serde_json::json!({ "mode": "success_count", "direction": "high_wins" }),
         );
-        create_dice_doc(&repo, world_id, gm, doc).await;
+        seed_settings_doc(&repo, world_id, gm, doc).await;
         let ctx = resolve_dice_context(&repo, world_id).await;
         assert_eq!(ctx.mode, ModeKind::SuccessCount);
         assert_eq!(ctx.direction, Direction::HighWins);
@@ -505,7 +434,7 @@ mod tests {
             gm,
             serde_json::json!({ "mode": "success_count", "direction": "low_wins" }),
         );
-        create_dice_doc(&repo, world_id, gm, doc).await;
+        seed_settings_doc(&repo, world_id, gm, doc).await;
         let ctx = resolve_dice_context(&repo, world_id).await;
         assert_eq!(ctx.mode, ModeKind::SuccessCount);
         assert_eq!(ctx.direction, Direction::LowWins);
@@ -516,7 +445,7 @@ mod tests {
         let (repo, world_id, gm) = world().await;
         // Only `mode` set; `direction` must default to `HighWins`.
         let doc = dice_settings_doc(world_id, gm, serde_json::json!({ "mode": "success_count" }));
-        create_dice_doc(&repo, world_id, gm, doc).await;
+        seed_settings_doc(&repo, world_id, gm, doc).await;
         let ctx = resolve_dice_context(&repo, world_id).await;
         assert_eq!(ctx.mode, ModeKind::SuccessCount);
         assert_eq!(ctx.direction, Direction::HighWins);
@@ -528,7 +457,7 @@ mod tests {
             gm2,
             serde_json::json!({ "direction": "low_wins" }),
         );
-        create_dice_doc(&repo2, world_id2, gm2, doc2).await;
+        seed_settings_doc(&repo2, world_id2, gm2, doc2).await;
         let ctx2 = resolve_dice_context(&repo2, world_id2).await;
         assert_eq!(ctx2.mode, ModeKind::Total);
         assert_eq!(ctx2.direction, Direction::LowWins);

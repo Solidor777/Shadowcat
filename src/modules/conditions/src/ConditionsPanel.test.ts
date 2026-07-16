@@ -13,7 +13,7 @@ function storeWith(...docs: WireDocument[]): DocumentStore {
   return s;
 }
 const actorDoc = (id: string, conditions: string[]) =>
-  buildActorDoc("w1", { name: "G", displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions, prototype: false }, id);
+  buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions, prototype: false, vision: null }, id);
 
 describe("ConditionsPanel", () => {
   it("seeds the condition registry once on GM mount when absent", async () => {
@@ -24,7 +24,7 @@ describe("ConditionsPanel", () => {
     expect(ops[0].op).toBe("create");
     const doc = (ops[0] as { doc: WireDocument }).doc;
     expect(doc.doc_type).toBe("condition-registry");
-    const conds = (doc.system as { conditions: Record<string, unknown> }).conditions;
+    const conds = (doc.engine as { conditions: Record<string, unknown> }).conditions;
     expect(Object.keys(conds).sort()).toEqual(["blinded", "dead", "hasted", "invisible", "poisoned", "prone", "slowed", "stunned", "unconscious"]);
   });
 
@@ -59,7 +59,7 @@ describe("ConditionsPanel", () => {
     await fireEvent.click(screen.getByTitle("Dead"));
     expect(dispatchIntent).toHaveBeenCalledTimes(1);
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
-    expect(ops[0]).toMatchObject({ op: "update", doc_id: "act1", changes: [{ path: "/system/conditions", new: ["dead"] }] });
+    expect(ops[0]).toMatchObject({ op: "update", doc_id: "act1", changes: [{ path: "/engine/conditions", new: ["dead"] }] });
   });
 
   it("reads the raw stored value as `old` on a SECOND edit to the same field (OCC regression)", async () => {
@@ -73,13 +73,13 @@ describe("ConditionsPanel", () => {
     // First edit: pristine doc, `old` correctly matches the stored value.
     await fireEvent.change(nameInput, { target: { value: "Deceased" } });
     expect(dispatchIntent).toHaveBeenNthCalledWith(1, [
-      { op: "update", doc_id: "creg1", changes: [{ path: "/system/conditions/dead/name", old: "Dead", new: "Deceased" }] },
+      { op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/dead/name", old: "Dead", new: "Deceased" }] },
     ]);
 
     // Apply the first write to the store, as the server would on success, before the second edit.
     store.applyCommand({
       seq: 2, world_id: "w1", author: "a", ts: 0,
-      ops: [{ op: "update", doc_id: "creg1", changes: [{ path: "/system/conditions/dead/name", old: "Dead", new: "Deceased" }] }],
+      ops: [{ op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/dead/name", old: "Dead", new: "Deceased" }] }],
     });
     await tick();
 
@@ -87,7 +87,7 @@ describe("ConditionsPanel", () => {
     // hardcoded at null (a stale `old` gets rejected by the server's field-level OCC check).
     await fireEvent.change(nameInput, { target: { value: "Deceased2" } });
     expect(dispatchIntent).toHaveBeenNthCalledWith(2, [
-      { op: "update", doc_id: "creg1", changes: [{ path: "/system/conditions/dead/name", old: "Deceased", new: "Deceased2" }] },
+      { op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/dead/name", old: "Deceased", new: "Deceased2" }] },
     ]);
   });
 });

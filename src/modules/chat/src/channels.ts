@@ -3,7 +3,7 @@
 // queries. `channel` itself is a purely client-side label (chat skill: the server
 // enforces only `audience`, never `channel`); "All" and per-channel views both read
 // EVERY message regardless of audience, while the GM view filters on `audience`.
-import type { ChatMessageSystem, WireAudience, WireDocument } from "@shadowcat/core";
+import type { ChatMessageEngine, WireAudience, WireDocument } from "@shadowcat/core";
 
 export type ChatView = { kind: "all" } | { kind: "channel"; id: string } | { kind: "gm" };
 
@@ -14,7 +14,7 @@ export function postTarget(view: ChatView): { channel: string; audience: WireAud
   return { channel: "general", audience: { kind: "public" } };
 }
 
-export function inView(view: ChatView, sys: ChatMessageSystem): boolean {
+export function inView(view: ChatView, sys: ChatMessageEngine): boolean {
   if (view.kind === "all") return true;
   if (view.kind === "gm") return sys.audience.kind === "gm_only";
   return sys.channel === view.id;

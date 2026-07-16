@@ -83,7 +83,7 @@ and between `parent_id` and `system`:
     pub engine: Option<serde_json::Value>,
 ```
 
-- [ ] **Step 4: Compile-driven fixture sweep** — `cargo test` will now fail to compile every `Document { … }` literal; add `name: None, engine: None,` to each (tests + any constructor in non-test code, e.g. server-side doc builders in `chat/mod.rs`). Run full `cargo test`: PASS (bindings regenerate as a side effect of the ts-rs export tests; verify `src/types/generated/Document.ts` now contains `name: string | null` and `engine?: unknown`).
+- [ ] **Step 4: Compile-driven fixture sweep** — `cargo test` will now fail to compile every `Document { … }` literal; add `name: None, engine: None,` to each (tests + any constructor in non-test code, e.g. server-side doc builders in `chat/mod.rs`). Run full `cargo test`: PASS (bindings regenerate as a side effect of the ts-rs export tests; verify `src/types/generated/Document.ts` now contains `name: string | null` and `engine: unknown` — NOTE: `#[ts(type = "unknown")]` overrides ts-rs's `Option` handling, so the generated key is REQUIRED and un-unioned, same as `system` today; Task 8 must not assume `engine` is omittable in the generated type — the Zod schema's `z.unknown()` inferring optional is the runtime-tolerant side).
 - [ ] **Step 5: Commit** — `feat(m13-0): envelope name + engine band on Document (server)`
 
 ---
@@ -301,7 +301,7 @@ pub fn engine_of<T: serde::de::DeserializeOwned + Default>(doc: &Document) -> T 
 }
 ```
 
-(Note: `message` arm forward-references Task 6's `MessageEngine` rename — implement the arm with the CURRENT struct name `MessageSystem` re-exported, and let Task 6 rename it; both tasks compile independently.)
+(Note: `message` arm forward-references Task 7's `MessageEngine` rename — implement the arm with the CURRENT struct name `MessageSystem` re-exported, and let Task 7 rename it; both tasks compile independently. Task 7 MUST add `#[serde(deny_unknown_fields)]` to the renamed `MessageEngine` — `MessageSystem` lacks it today, so until then message engine bodies do not reject unknown fields; Task 7's reviewer verifies it landed.)
 
 - [ ] **Step 2: Unit battery** (`engine/mod.rs` tests) — for EVERY doc_type in the registry: (a) a minimal valid body deserializes; (b) an unknown field is rejected (struct-level; skip for tagged-enum-only bodies); (c) a wrong-typed field (`"x": "12"`) is rejected; (d) `validate_engine("item", Some(&json!({})))` and `validate_engine("custom-thing", Some(&json!({})))` are `Err`; (e) `validate_engine("item", None)` and `validate_engine("custom-thing", None)` are `Ok`; (f) `validate_engine("token", None)` is `Err`. For token/actor visuals: all three `TokenVisual` kinds + both `AnimatedSource` types round-trip. Literal-set assertions: every string the CLIENT writers emit today (`"square"`, `"circle"`, region `"rect"|"circle"|"polygon"`, behaviors used by scene-tools) deserializes.
 - [ ] **Step 3: Run** full `cargo test`: PASS. Verify `src/types/generated/engine/` now holds the exported TS types.
@@ -465,6 +465,18 @@ let bounds = scene.bounds
 
 - [ ] **Step 1:** Rename + re-root; fixtures move bodies to `engine`. The ingest caps (`MAX_MESSAGE_CHARS`, inline-roll caps) and `ops_target_message` ingress guard are UNCHANGED in behavior — they now read/inspect `engine`. `ops_target_message`'s block on client-authored message ops must also cover `/engine` paths (it blocked `/system` writes before; verify and re-point its path checks).
 - [ ] **Step 2: Run** full `cargo test`: PASS. **Step 3: Commit** — `refactor(m13-0): chat message + settings bodies on engine band`
+
+**Post-Task-3-review note (2026-07-15):** this task must re-root BOTH chat READS and chat WRITES to
+`engine` — `handle_edit_message`/`handle_delete_message` currently write only `/system`
+(`WriteOrigin::ServerMessageRevision`), so once reads move to `engine` those handlers' `Operation::Update`
+must target `/engine`, not `/system`, and `build_message_doc`'s post-re-root Create must empty out
+`system: {}` for message docs (see `docs/POST_WORK_FINDINGS.md`, "M13-0 Task 3 — message doc `/engine`
+copy goes stale on edit/delete"). Do NOT trust any pre-Task-7 `/engine` copy of a previously-edited
+message as authoritative — it reflects only the message's ORIGINAL Create body, not any subsequent
+edit/delete (those only touched `/system` before this task). This task's reviewer must also check the
+diff against the same broadcast/event-log normalization chokepoint fixed in `apply_intent`'s Phase 2
+(`data/sqlite.rs`, T3-review fix): confirm the re-rooted chat message `Operation::Update`'s `/engine`
+`FieldChange.new` is what gets normalized/broadcast/logged, not a stale pre-normalization value.
 
 ---
 

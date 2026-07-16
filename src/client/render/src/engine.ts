@@ -440,7 +440,7 @@ export class RenderEngine implements SceneToolHost {
     this.pings.add(x, y);
   }
 
-  /** Swap the active grid (from the active scene's `system.grid`) and redraw lines.
+  /** Swap the active grid (from the active scene's `engine.grid`) and redraw lines.
    * Coupling: notifies the token animator so tween durations are recalculated in the
    * new cell size (px/cell ratio changes when the grid changes). */
   setGrid(spec: GridSpec): void {

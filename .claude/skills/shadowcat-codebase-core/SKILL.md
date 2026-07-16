@@ -49,9 +49,17 @@ source of truth. The ones agents break most:
 - **`dist/` must be built before any `cargo` build of the server** — `rust-embed` validates
   `../../dist/` at COMPILE time. [[embed-dist-compile-ordering]]
 - **Capability/permission model** layered server/world/document roles. [[capability-permissions]]
-- **Server runs no third-party code**; authority over the `system` body is structural only
-  (size/field-path/`deny_unknown_fields`), except engine-owned geometry (movement-collision,
-  vision) (ARCHITECTURE §2 invariant 6).
+- **Three-band document shape (M13-0): envelope `name` + typed `engine` + opaque `system`.**
+  Server runs no third-party code; authority over the opaque `system` body is structural only
+  (size/field-path/`deny_unknown_fields`) — no semantic validation, ever. The typed `engine` body
+  (present only for the 17 engine-defined doc types: tokens, actors, scenes, walls, regions,
+  lights, drawings, templates, messages, and the world/vision/lighting/chat/dice/faction/
+  condition/channel config-docs) gets REAL server-side ingress validation instead
+  (`validate_engine`/`validate_engine_tree`, `deny_unknown_fields` per struct) — this is the band
+  engine-owned geometry (movement-collision, vision) now lives in, not a `system`-body exception
+  (ARCHITECTURE §2 invariant 6). See `shadowcat-codebase-documents-permissions` for the
+  `data/engine/` registry and `shadowcat-codebase-scene-rendering`/`-chat`/`-actors-tokens` for
+  the per-subsystem re-root.
 
 ## Gotchas
 

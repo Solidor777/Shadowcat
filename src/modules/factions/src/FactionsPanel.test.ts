@@ -23,13 +23,13 @@ describe("FactionsPanel field edits", () => {
     // First edit: pristine doc, `old` correctly matches the stored value.
     await fireEvent.change(nameInput, { target: { value: "Allies" } });
     expect(dispatchIntent).toHaveBeenNthCalledWith(1, [
-      { op: "update", doc_id: "reg1", changes: [{ path: "/system/factions/f1/name", old: "Friendly", new: "Allies" }] },
+      { op: "update", doc_id: "reg1", changes: [{ path: "/engine/factions/f1/name", old: "Friendly", new: "Allies" }] },
     ]);
 
     // Apply the first write to the store, as the server would on success, before the second edit.
     store.applyCommand({
       seq: 2, world_id: "w1", author: "a", ts: 0,
-      ops: [{ op: "update", doc_id: "reg1", changes: [{ path: "/system/factions/f1/name", old: "Friendly", new: "Allies" }] }],
+      ops: [{ op: "update", doc_id: "reg1", changes: [{ path: "/engine/factions/f1/name", old: "Friendly", new: "Allies" }] }],
     });
     await tick();
 
@@ -37,7 +37,7 @@ describe("FactionsPanel field edits", () => {
     // hardcoded at null (a stale `old` gets rejected by the server's field-level OCC check).
     await fireEvent.change(nameInput, { target: { value: "Allies2" } });
     expect(dispatchIntent).toHaveBeenNthCalledWith(2, [
-      { op: "update", doc_id: "reg1", changes: [{ path: "/system/factions/f1/name", old: "Allies", new: "Allies2" }] },
+      { op: "update", doc_id: "reg1", changes: [{ path: "/engine/factions/f1/name", old: "Allies", new: "Allies2" }] },
     ]);
   });
 });

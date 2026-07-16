@@ -135,6 +135,27 @@ async fn vision_frame_includes_lit_mask_after_room_hydration() {
                     "scope": { "kind": "world", "world_id": h.world },
                     "doc_type": "world-settings",
                     "schema_version": 1,
+                    // "world-settings" is engine-defined; a minimal valid
+                    // `engine` body clears the ingress gate. `system` below
+                    // (untouched) is what `validated_world_settings_system`
+                    // actually reads today — the read-path re-root onto
+                    // `engine` is later checkpoint work.
+                    "engine": {
+                        "scene": {
+                            "lightingEnabled": true,
+                            "lightMode": "environmentLight",
+                            "losRestriction": true,
+                            "fog": true,
+                            "observerVision": false,
+                            "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+                            "movementRestriction": "visible",
+                            "movementModel": "grid-stepped",
+                            "partialCellLeniency": true
+                        },
+                        "pathfinding": { "diagonalRule": "chebyshev" },
+                        "animation": { "speedCellsPerSec": 6.0, "easing": "easeInOut" },
+                        "activeScene": null
+                    },
                     "system": {
                         "scene": {
                             "lightingEnabled": true,
@@ -162,6 +183,16 @@ async fn vision_frame_includes_lit_mask_after_room_hydration() {
                     "doc_type": "light",
                     "schema_version": 1,
                     "parent_id": json_uuid(10),
+                    // "light" is engine-defined; see the world-settings
+                    // comment above for why `engine` and `system` diverge.
+                    "engine": {
+                        "x": 50.0, "y": 50.0,
+                        "color": "#ffffff",
+                        "intensity": 1.0,
+                        "brightRadius": 3.0,
+                        "dimRadius": 6.0,
+                        "enabled": true
+                    },
                     "system": {
                         "x": 50.0, "y": 50.0,
                         "color": "#ffffff",

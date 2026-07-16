@@ -1214,6 +1214,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // Dual-write fixture helpers (`ws_engine`/`token_engine`) live in `ws::test_support`,
+    // shared with `ws::room`'s test module.
+    use crate::ws::test_support::{token_engine, ws_engine};
+
     /// Deterministic broadcast-`Lagged` → resync guard, driven directly against the
     /// generic `egress_loop` with a credit-gated in-process sink — no real socket, so
     /// it does not depend on any OS's TCP buffer sizing (the prior socket-backpressure
@@ -1572,7 +1576,7 @@ mod tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 50.0, "y": 50.0 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             repo.as_ref(),
             &gm_ctx,
@@ -1685,6 +1689,7 @@ mod tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             repo.as_ref(),
             &gm_ctx,
@@ -1714,7 +1719,7 @@ mod tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 50.0, "y": 50.0 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             repo.as_ref(),
             &gm_ctx,
@@ -1908,7 +1913,7 @@ mod tests {
             tok.parent_id = Some(scene_id);
             tok.owner = Some(obs);
             tok.permissions.users.insert(obs, DocRole::Owner);
-            tok.system = json!({ "x": pos.0, "y": pos.1 });
+            tok.engine = Some(token_engine(pos.0, pos.1));
             room.publish(
                 repo.as_ref(),
                 &gm_ctx,
@@ -1925,7 +1930,7 @@ mod tests {
             let mut wall = wdoc(world.id, wall_id, "wall");
             wall.parent_id = Some(scene_id);
             wall.owner = Some(gm);
-            wall.system = ws;
+            wall.engine = Some(ws);
             if wall_gm_only {
                 // gm_only wall: DocRole::None means players cannot read the doc;
                 // sight_walls uses the FULL wall set regardless (permission-blind).

@@ -12,7 +12,7 @@
 use shadowcat::auth::role::ServerRole;
 use shadowcat::chat::{
     build_link_preview_client, build_message_doc, handle_delete_message, handle_edit_message,
-    handle_send_message, Audience, ChatContentPolicy, LinkPreviewCache, MessageKind, MessageSystem,
+    handle_send_message, Audience, ChatContentPolicy, LinkPreviewCache, MessageEngine, MessageKind,
     PreviewRateLimiter, Segment, SendMessageError, CHAT_SETTINGS_DOC_TYPE,
 };
 use shadowcat::data::command::{Command, FieldChange, Operation, WriteOrigin};
@@ -86,12 +86,18 @@ impl Fixture {
                 scope: Scope::World { world_id: w.id },
                 doc_type: CHAT_SETTINGS_DOC_TYPE.to_string(),
                 schema_version: 1,
+                name: None,
                 source: None,
                 owner: Some(gm),
                 permissions: PermissionSet::default(),
                 embedded: BTreeMap::new(),
                 parent_id: None,
-                system: serde_json::to_value(policy).unwrap(),
+                // "chat-settings" is engine-defined (M13-0: re-rooted from
+                // `system`) — the policy under test lives on `engine`, which
+                // is what `resolve_content_policy` actually reads; `system`
+                // stays reserved-empty.
+                engine: Some(serde_json::to_value(policy).unwrap()),
+                system: serde_json::json!({}),
                 created_at: 0,
                 updated_at: 0,
             };
@@ -155,9 +161,9 @@ impl Fixture {
             .expect("message doc persisted")
     }
 
-    async fn stored_message_system(&self, cmd: &Command) -> MessageSystem {
+    async fn stored_message_system(&self, cmd: &Command) -> MessageEngine {
         let doc = self.stored_message_doc(cmd).await;
-        serde_json::from_value(doc.system).unwrap()
+        serde_json::from_value(doc.engine.unwrap()).unwrap()
     }
 
     async fn send(&self, content: &str) -> Result<Command, SendMessageError> {
@@ -193,7 +199,7 @@ async fn fixture_with_policy(policy: ChatContentPolicy) -> Fixture {
 #[tokio::test]
 async fn owner_can_edit_and_content_resanitizes() {
     let f = fixture_with_policy(ChatContentPolicy {
-        markdown: true,
+        markdown: Some(true),
         ..Default::default()
     })
     .await;
@@ -320,7 +326,7 @@ async fn cannot_edit_already_deleted_message() {
         "editing a tombstoned message must return NotFound: {r:?}"
     );
     let doc = f.repo.get_document(id).await.unwrap().unwrap();
-    let sys: MessageSystem = serde_json::from_value(doc.system).unwrap();
+    let sys: MessageEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
     assert!(
         sys.content.is_empty(),
         "content must stay empty — the rejected edit must not persist"
@@ -558,7 +564,7 @@ async fn unknown_whisper_target_rejects_whole_send() {
 #[tokio::test]
 async fn markdown_enriched_when_policy_on() {
     let f = Fixture::with_policy(Some(ChatContentPolicy {
-        markdown: true,
+        markdown: Some(true),
         ..Default::default()
     }))
     .await;
@@ -692,7 +698,7 @@ async fn owner_soft_delete_clears_content_and_keeps_doc() {
         .await
         .unwrap()
         .expect("doc still present (tombstone)");
-    let sys: MessageSystem = serde_json::from_value(doc.system).unwrap();
+    let sys: MessageEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
     assert!(sys.content.is_empty(), "content cleared");
     assert_eq!(sys.deleted_at, Some(2));
 }
@@ -829,7 +835,7 @@ async fn gm_can_delete_whisper_message_not_addressed_to_gm() {
         "GM moderation must override whisper audience gating: {r:?}"
     );
     let doc = f.repo.get_document(id).await.unwrap().unwrap();
-    let sys: MessageSystem = serde_json::from_value(doc.system).unwrap();
+    let sys: MessageEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
     assert!(sys.content.is_empty());
     assert_eq!(sys.deleted_at, Some(2));
 }
@@ -1058,7 +1064,7 @@ async fn client_intent_update_to_message_still_forbidden() {
     // Confirm the rejection actually held the line: the stored doc's kind is
     // unchanged, not merely that the call returned an error.
     let doc = f.repo.get_document(id).await.unwrap().unwrap();
-    let sys: MessageSystem = serde_json::from_value(doc.system).unwrap();
+    let sys: MessageEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
     assert_eq!(sys.kind, MessageKind::Normal, "kind must be unaltered");
 }
 

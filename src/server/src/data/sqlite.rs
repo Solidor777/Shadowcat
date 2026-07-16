@@ -4,7 +4,9 @@ use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::auth::role::ServerRole;
-use crate::data::command::{set_pointer, Command, Operation, UnsequencedCommand, WriteOrigin};
+use crate::data::command::{
+    set_pointer, Command, FieldChange, Operation, UnsequencedCommand, WriteOrigin,
+};
 use crate::data::document::{
     CapabilityRequirement, ContractDeclaration, Document, Scope, World, WorldCapDefaults, WorldRole,
 };
@@ -759,17 +761,32 @@ impl SqliteRepository {
         .bind(doc.updated_at)
         .execute(&mut *conn)
         .await?;
-        // Keep the FTS index in lockstep with the row, inside the same tx.
-        sqlx::query("DELETE FROM documents_fts WHERE doc_id = ?")
+        // Two SEPARATE single-column tables, not two columns of one table:
+        // bm25()'s row-length normalization is computed from the WHOLE ROW
+        // (all columns), so a shared table would let a non-GM query's score
+        // be shifted by the mere LENGTH of GM-only text on the same row even
+        // when column weights zero out that column's term-frequency
+        // contribution (see migrations/0008_fts_split.sql). Separate tables
+        // make each tier's row length genuinely isolated.
+        sqlx::query("DELETE FROM documents_fts_public WHERE doc_id = ?")
             .bind(doc.id.to_string())
             .execute(&mut *conn)
             .await?;
-        // Two visibility-split columns: `content` indexes only non-GM-readable
-        // text (GM-only properties stripped), `content_all` indexes everything.
+        sqlx::query("DELETE FROM documents_fts_gm WHERE doc_id = ?")
+            .bind(doc.id.to_string())
+            .execute(&mut *conn)
+            .await?;
         sqlx::query(
-            "INSERT INTO documents_fts (content, content_all, doc_id, world_id) VALUES (?, ?, ?, ?)",
+            "INSERT INTO documents_fts_public (content, doc_id, world_id) VALUES (?, ?, ?)",
         )
         .bind(crate::data::search::index_content_public(doc))
+        .bind(doc.id.to_string())
+        .bind(world_id.clone())
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query(
+            "INSERT INTO documents_fts_gm (content_all, doc_id, world_id) VALUES (?, ?, ?)",
+        )
         .bind(crate::data::search::index_content(doc))
         .bind(doc.id.to_string())
         .bind(world_id)
@@ -778,13 +795,18 @@ impl SqliteRepository {
         Ok(())
     }
 
-    /// Remove a document's FTS row. Call alongside every document delete so the
-    /// index never references a removed document.
+    /// Remove a document's FTS rows (both visibility-tier tables). Call
+    /// alongside every document delete so the index never references a
+    /// removed document.
     async fn delete_document_fts(
         conn: &mut sqlx::SqliteConnection,
         id: Uuid,
     ) -> Result<(), DataError> {
-        sqlx::query("DELETE FROM documents_fts WHERE doc_id = ?")
+        sqlx::query("DELETE FROM documents_fts_public WHERE doc_id = ?")
+            .bind(id.to_string())
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("DELETE FROM documents_fts_gm WHERE doc_id = ?")
             .bind(id.to_string())
             .execute(conn)
             .await?;
@@ -801,6 +823,89 @@ fn check_command_scope(doc: &Document, world_id: Uuid) -> Result<(), DataError> 
         _ => Err(DataError::OpFailed(
             "document scope does not match the command's world".into(),
         )),
+    }
+}
+
+/// Largest integer magnitude an `f64` represents exactly (2^53); beyond this,
+/// adjacent integers alias to the same `f64`, so a Number/variant comparison
+/// falling back to `as f64` would silently equate genuinely different values.
+const MAX_EXACT_F64_INT: i128 = 1i128 << 53;
+
+/// Structural equality used ONLY at the `apply_intent` Phase-1 OCC pre-image
+/// comparison (`data/sqlite.rs`, `actual != ch.old`). `serde_json::Value::Number`
+/// splits whole numbers into `PosInt`/`NegInt` and non-whole numbers into `Float`;
+/// an engine field stored as a whole-number `f64` (e.g. `100.0`) serializes to
+/// `Float(100.0)`, but a JS client cannot preserve "this was a float" through
+/// `JSON.parse`/re-serialize for a whole-number value, so an echoed pre-image
+/// comes back as `PosInt(100)`. Raw `==` treats these as unequal, causing a
+/// spurious `Conflict` on an otherwise up-to-date write (e.g. an ordinary token
+/// drag after a server-executed `execute_move`, or the `ActorsPanel` vision-range
+/// editor's nested `range` field). This function recurses into `Object`/`Array`
+/// structure and treats mismatched-variant Number leaves as equal when they
+/// represent the same value. Two Numbers that BOTH parse as integers (either
+/// PosInt/NegInt variant) are compared EXACTLY as `i128`, with no magnitude
+/// limit -- this case never touches `f64`, so distinct large integers (past
+/// 2^53) never alias into a false match. The `|n| <= 2^53` exactness guard
+/// applies ONLY to the genuinely mixed case, one side an integer and the other
+/// a `Float`, where an `f64` comparison is unavoidable because the Float side
+/// has no exact integer form; outside that range, or for any non-Number
+/// mismatch, it falls back to serde's derived `PartialEq`.
+fn values_semantically_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match (a, b) {
+        (Value::Object(ma), Value::Object(mb)) => {
+            ma.len() == mb.len()
+                && ma
+                    .iter()
+                    .all(|(k, va)| mb.get(k).is_some_and(|vb| values_semantically_eq(va, vb)))
+        }
+        (Value::Array(xa), Value::Array(xb)) => {
+            xa.len() == xb.len()
+                && xa
+                    .iter()
+                    .zip(xb.iter())
+                    .all(|(va, vb)| values_semantically_eq(va, vb))
+        }
+        (Value::Number(na), Value::Number(nb)) => {
+            if na == nb {
+                return true;
+            }
+            // Variants differ (one PosInt/NegInt, the other Float, or the pair
+            // straddles PosInt/NegInt with mismatched sign representation).
+            // Compare numerically only when any integer operand is exactly
+            // representable as f64; otherwise trust the exact comparison above.
+            let ia = na
+                .as_i64()
+                .map(|v| v as i128)
+                .or_else(|| na.as_u64().map(|v| v as i128));
+            let ib = nb
+                .as_i64()
+                .map(|v| v as i128)
+                .or_else(|| nb.as_u64().map(|v| v as i128));
+            match (ia, ib) {
+                // Both sides parse as integers (PosInt/NegInt pair): i128 holds
+                // every i64/u64 value without loss, so compare exactly. Never
+                // fall through to f64 here -- two distinct integers past 2^53
+                // (e.g. 2^62 vs 2^62 + 1) alias to the same f64 and would
+                // falsely compare equal, which is an OCC bypass (a stale
+                // pre-image would match a genuinely different stored value).
+                (Some(va), Some(vb)) => va == vb,
+                // Genuinely mixed case: one side is an integer, the other a
+                // Float. f64 comparison is unavoidable here since the Float
+                // side has no exact integer representation; only exact when
+                // the integer side is within f64's exact range.
+                (Some(v), None) | (None, Some(v))
+                    if v.unsigned_abs() > MAX_EXACT_F64_INT as u128 =>
+                {
+                    false
+                }
+                _ => match (na.as_f64(), nb.as_f64()) {
+                    (Some(fa), Some(fb)) => fa == fb,
+                    _ => false,
+                },
+            }
+        }
+        _ => a == b,
     }
 }
 
@@ -907,7 +1012,7 @@ impl Repository for SqliteRepository {
         &self,
         ctx: &crate::data::membership::PermissionContext,
         world_id: Uuid,
-        ops: Vec<Operation>,
+        mut ops: Vec<Operation>,
         ts: i64,
         origin: WriteOrigin,
     ) -> Result<Command, DataError> {
@@ -920,12 +1025,17 @@ impl Repository for SqliteRepository {
 
         // Phase 1 — authorize, structurally validate, and check pre-images.
         // No row is mutated; any failure here drops the transaction, so the
-        // per-world seq is never consumed by a rejected intent.
-        for op in &ops {
+        // per-world seq is never consumed by a rejected intent. `Create`'s
+        // `doc` is mutated in place (`&mut ops`) so `validate_engine_tree`
+        // can normalize the engine band here and have that normalization
+        // survive into Phase 2 storage AND the returned `Command` (broadcast).
+        for op in &mut ops {
             match op {
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
                     validation::validate_system_size(doc)?;
+                    validation::validate_property_overrides(doc)?;
+                    validation::validate_engine_tree(doc)?;
                     // A self-referential parent_id satisfies the self-FK and
                     // commits, then poisons the doc's deletion (the descendant
                     // walk would loop). Reject it; and when the parent already
@@ -986,7 +1096,7 @@ impl Repository for SqliteRepository {
                     // requirement whose protected path is populated must be
                     // authorized — otherwise Create is a wholesale bypass of the
                     // declarative gate that Update enforces field-by-field.
-                    let doc_json = serde_json::to_value(doc)?;
+                    let doc_json = serde_json::to_value(&*doc)?;
                     for extra in declared_caps_for_document(&doc_json, &world_reqs) {
                         if !access.has(extra) {
                             tracing::debug!(
@@ -1070,18 +1180,19 @@ impl Repository for SqliteRepository {
                     // reviewed against this invariant.
                     //
                     // Grant only READ + WRITE_FIELDS (never `all: true`) —
-                    // both existing handlers construct a single `/system`
-                    // FieldChange and never touch `/permissions` or
-                    // `/embedded`, so the exemption is scoped to exactly what
-                    // it is used for. This still authorizes the GM-not-
-                    // addressed moderation edit/delete of `/system` while
-                    // denying `/permissions`/`/embedded` writes by
-                    // construction, closing the gap even for a hypothetical
-                    // future `ServerMessageRevision` caller with a broader op.
+                    // both existing handlers construct a single `/engine`
+                    // FieldChange (M13-0: re-rooted from `/system`) and never
+                    // touch `/permissions` or `/embedded`, so the exemption is
+                    // scoped to exactly what it is used for. This still
+                    // authorizes the GM-not-addressed moderation edit/delete
+                    // of `/engine` while denying `/permissions`/`/embedded`
+                    // writes by construction, closing the gap even for a
+                    // hypothetical future `ServerMessageRevision` caller with
+                    // a broader op.
                     // CAVEAT: unlike the prior unconditional `all: true`, this
                     // concrete cap set does NOT auto-satisfy an ADDITIVE
                     // `declared_caps_for_path` world/module requirement on a
-                    // message `/system` (sub-)path (checked further below).
+                    // message `/engine` (sub-)path (checked further below).
                     // No first-party module declares one today, so this is
                     // inert; if one is ever added for `doc_type: "message"`,
                     // it would block a GM's already-vetted moderation write —
@@ -1140,7 +1251,11 @@ impl Repository for SqliteRepository {
                             .pointer(&ch.path)
                             .cloned()
                             .unwrap_or(serde_json::Value::Null);
-                        if actual != ch.old {
+                        // Numeric-aware: a whole-number-valued engine `f64` round-tripped
+                        // through a JS client loses its Float-ness (PosInt/Float variant
+                        // split), so raw `!=` here would spuriously Conflict an otherwise
+                        // up-to-date write. See `values_semantically_eq` doc comment.
+                        if !values_semantically_eq(&actual, &ch.old) {
                             return Err(DataError::Conflict(format!(
                                 "stale pre-image at {}",
                                 ch.path
@@ -1204,7 +1319,7 @@ impl Repository for SqliteRepository {
             .ok_or(DataError::NotFound)?
             .get("seq");
 
-        let sequenced = Command {
+        let mut sequenced = Command {
             seq,
             world_id,
             author: ctx.user_id,
@@ -1212,15 +1327,27 @@ impl Repository for SqliteRepository {
             ops: authoritative_ops,
         };
 
+        // Rebuilt in place of `sequenced.ops`: identical to the input ops
+        // except an Update's `FieldChange.new` under `/engine`(/*) is
+        // renormalized to the validated post-image (see below). Since
+        // `sequenced` is what gets broadcast AND logged to `world_events`
+        // (INSERT further down) AND replayed by `events_since`, this is the
+        // single chokepoint that keeps all three in sync with the persisted
+        // row.
+        let mut normalized_ops = Vec::with_capacity(sequenced.ops.len());
         for op in &sequenced.ops {
             match op {
-                Operation::Create { doc } => Self::upsert_document(&mut tx, doc, seq).await?,
+                Operation::Create { doc } => {
+                    Self::upsert_document(&mut tx, doc, seq).await?;
+                    normalized_ops.push(op.clone());
+                }
                 Operation::Delete { doc } => {
                     sqlx::query("DELETE FROM documents WHERE id = ?")
                         .bind(doc.id.to_string())
                         .execute(&mut *tx)
                         .await?;
                     Self::delete_document_fts(&mut tx, doc.id).await?;
+                    normalized_ops.push(op.clone());
                 }
                 Operation::Update { doc_id, changes } => {
                     let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
@@ -1243,11 +1370,52 @@ impl Repository for SqliteRepository {
                     // Body cap re-checked post-merge: the merged result, not the
                     // pre-image, is what gets stored.
                     validation::validate_system_size(&doc)?;
+                    validation::validate_property_overrides(&doc)?;
+                    // Engine band re-validated + normalized post-merge (mutates
+                    // `doc.engine` in place to the re-serialized validated
+                    // struct — see `validate_engine_tree`'s doc comment).
+                    validation::validate_engine_tree(&mut doc)?;
                     doc.updated_at = ts;
                     Self::upsert_document(&mut tx, &doc, seq).await?;
+
+                    // `validate_engine_tree` above normalizes `doc.engine` (a
+                    // JSON-number literal coerced to its typed f64
+                    // representation; an unknown key smuggled into a
+                    // tagged-enum sub-object dropped by the
+                    // deserialize-then-reserialize round trip) but that
+                    // normalization only reached the persisted row until now.
+                    // Re-derive each `/engine`(/*) `FieldChange.new` from the
+                    // SAME validated post-image so the broadcast delta and the
+                    // `world_events` log entry (and therefore every future
+                    // `events_since` replay) carry the identical normalized
+                    // value the row was stored with — never the raw
+                    // client-submitted JSON. `/system`-prefixed changes are
+                    // untouched: only the structurally-typed engine band goes
+                    // through `validate_engine_tree`.
+                    let normalized_doc_json = serde_json::to_value(&doc)?;
+                    let normalized_changes: Vec<FieldChange> = changes
+                        .iter()
+                        .map(|ch| {
+                            if ch.path == "/engine" || ch.path.starts_with("/engine/") {
+                                if let Some(v) = normalized_doc_json.pointer(&ch.path) {
+                                    return FieldChange {
+                                        path: ch.path.clone(),
+                                        old: ch.old.clone(),
+                                        new: v.clone(),
+                                    };
+                                }
+                            }
+                            ch.clone()
+                        })
+                        .collect();
+                    normalized_ops.push(Operation::Update {
+                        doc_id: *doc_id,
+                        changes: normalized_changes,
+                    });
                 }
             }
         }
+        sequenced.ops = normalized_ops;
 
         sqlx::query("INSERT INTO world_events (world_id, seq, author_id, ts, command_json) VALUES (?, ?, ?, ?, ?)")
             .bind(sequenced.world_id.to_string())
@@ -1445,29 +1613,37 @@ impl Repository for SqliteRepository {
         };
         let world_defaults = self.world_cap_defaults(world_id).await?;
 
-        // Visibility-split index: a non-GM matches and snippets only the
-        // GM-only-stripped `content` column, so neither the MATCH (oracle), the
-        // bm25 score, nor the snippet can reveal GM-only text. A GM/admin
-        // searches the full `content_all` column. (Server admin resolves to the
-        // Gm world role in `permission_context`.)
+        // Visibility-split index: a non-GM matches, scores, and snippets only
+        // against `documents_fts_public` (GM-only properties stripped at
+        // index time), so neither the MATCH (oracle), the bm25 score, nor the
+        // snippet can reveal GM-only text. A GM/admin searches the separate
+        // `documents_fts_gm` table. (Server admin resolves to the Gm world
+        // role in `permission_context`.)
+        //
+        // TWO SEPARATE single-column tables (migrations/0008_fts_split.sql),
+        // not two columns of one table: SQLite FTS5's bm25() computes each
+        // row's document-length normalization term from the token count of
+        // the WHOLE ROW (every declared column combined), not just the
+        // matched/weighted column — a documented FTS5 characteristic. In a
+        // shared two-column table, per-column bm25() weight arguments zero a
+        // column's term-frequency*IDF CONTRIBUTION but cannot remove its
+        // tokens from that shared row-length denominator, so a non-GM
+        // searcher's score still shifts by the sheer LENGTH of GM-only text
+        // on the same row — even text that never matches the query. Separate
+        // tables make each tier's row length genuinely isolated: a non-GM
+        // query's table contains no GM-only text in any column of any row.
         let is_gm = ctx.world_role == WorldRole::Gm;
-        let column = if is_gm { "content_all" } else { "content" };
-        // Column-filter the MATCH to the chosen column. This whole expression is
-        // a bound parameter (?1) — `column` is a server-chosen literal, never user
-        // input. The snippet column index must be a literal in the SQL, so two
-        // static query strings are selected rather than building SQL at runtime.
-        let scoped_match = format!("{{{column}}} : ({match_expr})");
         let sql = if is_gm {
-            "SELECT doc_id, bm25(documents_fts) AS score, \
-             snippet(documents_fts, 1, '<mark>', '</mark>', '…', 16) AS snippet \
-             FROM documents_fts \
-             WHERE documents_fts MATCH ?1 AND world_id = ?2 \
+            "SELECT doc_id, bm25(documents_fts_gm) AS score, \
+             snippet(documents_fts_gm, 0, '<mark>', '</mark>', '…', 16) AS snippet \
+             FROM documents_fts_gm \
+             WHERE documents_fts_gm MATCH ?1 AND world_id = ?2 \
              ORDER BY score LIMIT ?3 OFFSET ?4"
         } else {
-            "SELECT doc_id, bm25(documents_fts) AS score, \
-             snippet(documents_fts, 0, '<mark>', '</mark>', '…', 16) AS snippet \
-             FROM documents_fts \
-             WHERE documents_fts MATCH ?1 AND world_id = ?2 \
+            "SELECT doc_id, bm25(documents_fts_public) AS score, \
+             snippet(documents_fts_public, 0, '<mark>', '</mark>', '…', 16) AS snippet \
+             FROM documents_fts_public \
+             WHERE documents_fts_public MATCH ?1 AND world_id = ?2 \
              ORDER BY score LIMIT ?3 OFFSET ?4"
         };
 
@@ -1484,7 +1660,7 @@ impl Repository for SqliteRepository {
 
         'outer: loop {
             let rows = sqlx::query(sql)
-                .bind(&scoped_match)
+                .bind(&match_expr)
                 .bind(world_id.to_string())
                 .bind(batch)
                 .bind(offset)
@@ -1567,6 +1743,97 @@ mod tests {
 
     async fn repo() -> SqliteRepository {
         SqliteRepository::connect("sqlite::memory:").await.unwrap()
+    }
+
+    // --- values_semantically_eq: OCC pre-image PosInt/Float variant equality ---
+
+    #[test]
+    fn values_semantically_eq_accepts_whole_number_float_vs_posint() {
+        // Stored Float(100.0) vs a client-echoed PosInt(100) pre-image: same
+        // numeric value, different serde_json variant -- must be treated equal.
+        let stored = serde_json::json!(100.0);
+        let echoed = serde_json::Value::Number(serde_json::Number::from(100u64));
+        assert!(values_semantically_eq(&stored, &echoed));
+        assert!(values_semantically_eq(&echoed, &stored));
+    }
+
+    #[test]
+    fn values_semantically_eq_rejects_genuinely_stale_pre_image() {
+        // PosInt(99) vs Float(100.0): different values -- must still Conflict.
+        let stale = serde_json::Value::Number(serde_json::Number::from(99u64));
+        let current = serde_json::json!(100.0);
+        assert!(!values_semantically_eq(&stale, &current));
+    }
+
+    #[test]
+    fn values_semantically_eq_recurses_into_nested_array_and_object() {
+        // ActorsPanel-style vision pre-image: an array of objects with a Number
+        // leaf that differs only in serde_json variant must be equal; the same
+        // structure with a genuinely different nested value must not be.
+        let a = serde_json::json!([{ "mode": "dark", "range": 30 }]);
+        let b = serde_json::json!([{ "mode": "dark", "range": 30.0 }]);
+        assert!(values_semantically_eq(&a, &b));
+
+        let c = serde_json::json!([{ "mode": "dark", "range": 31.0 }]);
+        assert!(!values_semantically_eq(&a, &c));
+    }
+
+    #[test]
+    fn values_semantically_eq_falls_back_to_exact_beyond_f64_precision() {
+        // 2^53 + 1 cannot be represented exactly as f64 -- comparing it against
+        // its lossy f64 neighbor must NOT be equated; fall back to exact/raw.
+        let big_int = serde_json::Value::Number(serde_json::Number::from((1u64 << 53) + 1));
+        let lossy_float = serde_json::json!(((1u64 << 53) + 1) as f64);
+        assert!(!values_semantically_eq(&big_int, &lossy_float));
+    }
+
+    #[test]
+    fn values_semantically_eq_accepts_negative_whole_number_variant_mismatch() {
+        // NegInt(-50) vs Float(-50.0): same negative whole number, different
+        // variant -- must be treated equal.
+        let neg_int = serde_json::Value::Number(serde_json::Number::from(-50i64));
+        let neg_float = serde_json::json!(-50.0);
+        assert!(values_semantically_eq(&neg_int, &neg_float));
+    }
+
+    #[test]
+    fn values_semantically_eq_rejects_large_posint_pair_aliased_by_f64() {
+        // 2^62 and 2^62 + 1 are both PosInt (both fit in i128 exactly) but
+        // alias to the same f64 value if compared lossily -- the both-integer
+        // path must compare them exactly and reject the match.
+        let a = serde_json::Value::Number(serde_json::Number::from(1u64 << 62));
+        let b = serde_json::Value::Number(serde_json::Number::from((1u64 << 62) + 1));
+        // Sanity: confirm these two DO alias under a naive f64 cast, i.e. this
+        // is a real repro and not a vacuous case.
+        assert_eq!(a.as_f64(), b.as_f64());
+        assert!(!values_semantically_eq(&a, &b));
+    }
+
+    #[test]
+    fn values_semantically_eq_rejects_large_negint_pair_aliased_by_f64() {
+        // Negative counterpart: two distinct large NegInt values that alias
+        // when cast to f64 must still be rejected as unequal.
+        let a = serde_json::Value::Number(serde_json::Number::from(-(1i64 << 62)));
+        let b = serde_json::Value::Number(serde_json::Number::from(-((1i64 << 62) + 1)));
+        assert_eq!(a.as_f64(), b.as_f64());
+        assert!(!values_semantically_eq(&a, &b));
+    }
+
+    #[test]
+    fn values_semantically_eq_rejects_posint_vs_negint_same_magnitude() {
+        // PosInt(100) vs NegInt(-100): same absolute value, opposite sign --
+        // sign must be respected, not just magnitude.
+        let pos = serde_json::Value::Number(serde_json::Number::from(100u64));
+        let neg = serde_json::Value::Number(serde_json::Number::from(-100i64));
+        assert!(!values_semantically_eq(&pos, &neg));
+    }
+
+    #[test]
+    fn values_semantically_eq_accepts_equal_small_posint_pair() {
+        // Both-integer, genuinely equal values must still compare equal.
+        let a = serde_json::Value::Number(serde_json::Number::from(5u64));
+        let b = serde_json::Value::Number(serde_json::Number::from(5u64));
+        assert!(values_semantically_eq(&a, &b));
     }
 
     #[tokio::test]
@@ -2165,15 +2432,780 @@ mod tests {
             },
             doc_type: "actor".into(),
             schema_version: 1,
+            name: None,
             source: None,
             owner: None,
             permissions: perms,
             embedded: Default::default(),
             parent_id: None,
+            // "actor" is engine-defined; a minimal valid body so `Create`
+            // clears the ingress gate. Unrelated to `system` (opaque,
+            // caller-supplied) — this helper predates the engine band.
+            engine: crate::data::document::tests::default_test_engine("actor"),
             system,
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    /// A world-scoped document of `doc_type` carrying an `engine` body
+    /// (no `system` content — `engine`-typed docs in this battery don't
+    /// need one). Callers overwrite `scope` with the real world id.
+    fn tests_engine_doc(
+        perms: crate::data::document::PermissionSet,
+        doc_type: &str,
+        engine: serde_json::Value,
+    ) -> Document {
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.doc_type = doc_type.into();
+        d.engine = Some(engine);
+        d
+    }
+
+    #[tokio::test]
+    async fn create_with_invalid_engine_body_is_rejected() {
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "wall",
+            serde_json::json!({ "seg": { "x1": "not-a-number", "y1": 0.0, "x2": 1.0, "y2": 1.0 } }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadEngine(_)));
+    }
+
+    #[tokio::test]
+    async fn create_of_non_engine_doc_type_with_engine_body_is_rejected() {
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(perms, "item", serde_json::json!({ "anything": 1 }));
+        d.scope = Scope::World { world_id: w.id };
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadEngine(_)));
+    }
+
+    #[tokio::test]
+    async fn update_post_image_with_invalid_engine_is_rejected() {
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "wall",
+            serde_json::json!({ "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 } }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // A field write that leaves the post-image engine undeserializable
+        // (wrong type at /engine/seg/x1) must be rejected.
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        path: "/engine/seg/x1".into(),
+                        old: serde_json::json!(0.0),
+                        new: serde_json::json!("not-a-number"),
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadEngine(_)));
+    }
+
+    #[tokio::test]
+    async fn create_with_trailing_slash_property_override_key_is_rejected() {
+        use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        d.permissions
+            .property_overrides
+            .insert("/engine/".into(), Visibility::GmOnly);
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadPath(_)));
+    }
+
+    #[tokio::test]
+    async fn create_with_missing_leading_slash_property_override_key_is_rejected() {
+        use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        d.permissions
+            .property_overrides
+            .insert("engine".into(), Visibility::GmOnly);
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadPath(_)));
+    }
+
+    #[tokio::test]
+    async fn create_with_valid_property_override_keys_succeeds() {
+        use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        d.permissions
+            .property_overrides
+            .insert("/engine".into(), Visibility::GmOnly);
+        d.permissions
+            .property_overrides
+            .insert("/engine/vision".into(), Visibility::GmOnly);
+        d.permissions
+            .property_overrides
+            .insert("/name".into(), Visibility::GmOnly);
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn update_with_trailing_slash_property_override_key_is_rejected() {
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        path: "/permissions/property_overrides".into(),
+                        old: serde_json::json!({}),
+                        new: serde_json::json!({ "/engine/": "gm_only" }),
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadPath(_)));
+    }
+
+    #[tokio::test]
+    async fn update_with_missing_leading_slash_property_override_key_is_rejected() {
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        path: "/permissions/property_overrides".into(),
+                        old: serde_json::json!({}),
+                        new: serde_json::json!({ "engine": "gm_only" }),
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadPath(_)));
+    }
+
+    #[tokio::test]
+    async fn update_with_valid_property_override_keys_succeeds() {
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    path: "/permissions/property_overrides".into(),
+                    old: serde_json::json!({}),
+                    new: serde_json::json!({ "/engine": "gm_only", "/name": "gm_only" }),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn update_writing_a_valid_engine_subpath_succeeds() {
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "wall",
+            serde_json::json!({ "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 } }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    path: "/engine/seg/x1".into(),
+                    old: serde_json::json!(0.0),
+                    new: serde_json::json!(5.0),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let stored = r.get_document(doc_id).await.unwrap().unwrap();
+        assert_eq!(stored.engine.unwrap()["seg"]["x1"], serde_json::json!(5.0));
+    }
+
+    #[tokio::test]
+    async fn create_actor_omitting_faction_persists_explicit_null() {
+        // The stored/broadcast engine body is the RE-SERIALIZED validated
+        // struct: `ActorEngine.faction` deserializes an absent key to
+        // `None`, and normalization restores that as an explicit `null` on
+        // the stored side, matching the client's `faction: string | null`
+        // contract even though the ingress body omitted the key entirely.
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "actor",
+            serde_json::json!({
+                "displayName": "Goblin",
+                "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 },
+                "shape": "square",
+                "conditions": [],
+                "prototype": true
+                // "faction" intentionally omitted from the wire submission
+            }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+
+        let cmd = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+        // The returned Command (broadcast payload) already carries the
+        // normalized engine body.
+        let broadcast_engine = cmd
+            .ops
+            .iter()
+            .find_map(|o| match o {
+                Operation::Create { doc } if doc.id == doc_id => doc.engine.clone(),
+                _ => None,
+            })
+            .expect("create op present");
+        assert_eq!(broadcast_engine["faction"], serde_json::Value::Null);
+        assert!(broadcast_engine.get("faction").is_some());
+
+        // And the persisted row, independently re-fetched, matches.
+        let stored = r.get_document(doc_id).await.unwrap().unwrap();
+        let stored_engine = stored.engine.unwrap();
+        assert_eq!(stored_engine["faction"], serde_json::Value::Null);
+        assert!(stored_engine.get("faction").is_some());
+    }
+
+    #[tokio::test]
+    async fn apply_intent_update_normalizes_engine_broadcast_and_event_log_smuggled_key() {
+        // `validate_engine_tree` re-serializes the post-image `doc.engine`,
+        // dropping an unknown key smuggled into a tagged-enum sub-object
+        // (`TokenVisual` cannot carry `deny_unknown_fields` -- a serde
+        // limitation), but that normalization must reach the broadcast
+        // `Command` AND the permanent `world_events` log entry, not just the
+        // persisted row. Assert both: the returned `Command`'s `FieldChange`
+        // is clean, and a fresh `events_since` replay of that same seq
+        // (an independent disk round trip, not the in-memory return value)
+        // is clean too.
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "actor",
+            serde_json::json!({
+                "displayName": "Goblin",
+                "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 },
+                "shape": "square",
+                "faction": null,
+                "conditions": [],
+                "prototype": true
+            }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        // OCC pre-image must be the STORED (post-normalization) engine, not
+        // the raw submitted body -- the two may already diverge (e.g. key
+        // ordering / explicit-null carry-forward) even before this test's
+        // own smuggled-key mutation.
+        let old_engine = r
+            .get_document(doc_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .engine
+            .unwrap();
+
+        // Wholesale /engine replacement smuggling an unknown key into the
+        // `visual` tagged-enum sub-object.
+        let smuggled_engine = serde_json::json!({
+            "displayName": "Goblin",
+            "visual": { "kind": "image", "asset": "b.png", "smuggled": "evil" },
+            "size": { "w": 1.0, "h": 1.0 },
+            "shape": "square",
+            "faction": null,
+            "conditions": [],
+            "prototype": true
+        });
+        let cmd = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        path: "/engine".into(),
+                        old: old_engine,
+                        new: smuggled_engine,
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+        // (i) The returned Command's FieldChange.new is already normalized.
+        let broadcast_new = cmd
+            .ops
+            .iter()
+            .find_map(|o| match o {
+                Operation::Update {
+                    doc_id: id,
+                    changes,
+                } if *id == doc_id => changes
+                    .iter()
+                    .find(|c| c.path == "/engine")
+                    .map(|c| c.new.clone()),
+                _ => None,
+            })
+            .expect("update op with /engine change present");
+        assert!(
+            broadcast_new["visual"].get("smuggled").is_none(),
+            "broadcast Command must not carry the smuggled key"
+        );
+
+        // (ii) events_since replay (an independent disk round trip through
+        // `world_events.command_json`, not the in-memory `cmd` above) is
+        // ALSO clean.
+        let replayed = r.events_since(w.id, 1).await.unwrap();
+        let replayed_cmd = replayed
+            .iter()
+            .find(|c| c.seq == cmd.seq)
+            .expect("replayed command present");
+        let replayed_new = replayed_cmd
+            .ops
+            .iter()
+            .find_map(|o| match o {
+                Operation::Update {
+                    doc_id: id,
+                    changes,
+                } if *id == doc_id => changes
+                    .iter()
+                    .find(|c| c.path == "/engine")
+                    .map(|c| c.new.clone()),
+                _ => None,
+            })
+            .expect("replayed update op with /engine change present");
+        assert!(
+            replayed_new["visual"].get("smuggled").is_none(),
+            "events_since replay must not carry the smuggled key"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_intent_update_normalizes_engine_integer_literal_to_stored_float() {
+        // A raw JSON integer literal (`5`, no decimal) submitted for an
+        // f64-typed engine field must normalize to the SAME serde_json
+        // representation the persisted row round-trips to -- not remain a
+        // raw JSON integer Number variant, which would mismatch a
+        // client-side float comparison once resync/replay carries it.
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "actor",
+            serde_json::json!({
+                "displayName": "Goblin",
+                "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 },
+                "shape": "square",
+                "faction": null,
+                "conditions": [],
+                "prototype": true
+            }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // Submit a bare integer literal (`5`, not `5.0`) for /engine/size/w.
+        let cmd = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        path: "/engine/size/w".into(),
+                        old: serde_json::json!(1.0),
+                        new: serde_json::json!(5),
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+        let broadcast_new = cmd
+            .ops
+            .iter()
+            .find_map(|o| match o {
+                Operation::Update {
+                    doc_id: id,
+                    changes,
+                } if *id == doc_id => changes
+                    .iter()
+                    .find(|c| c.path == "/engine/size/w")
+                    .map(|c| c.new.clone()),
+                _ => None,
+            })
+            .expect("update op with /engine/size/w change present");
+
+        let stored = r.get_document(doc_id).await.unwrap().unwrap();
+        let stored_w = stored.engine.unwrap()["size"]["w"].clone();
+
+        // Broadcast value must equal the stored, typed-f64-round-tripped
+        // representation -- and its wire form must be the float form, not
+        // the raw integer literal that was submitted.
+        assert_eq!(broadcast_new, stored_w);
+        assert_eq!(
+            serde_json::to_string(&broadcast_new).unwrap(),
+            "5.0",
+            "must be the float serialization, not the raw integer literal"
+        );
     }
 
     #[tokio::test]
@@ -2428,7 +3460,7 @@ mod tests {
         .await
         .unwrap();
         let n: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM documents_fts WHERE documents_fts MATCH 'Goblin' AND world_id = ?",
+            "SELECT count(*) FROM documents_fts_public WHERE documents_fts_public MATCH 'Goblin' AND world_id = ?",
         )
         .bind(w.id.to_string())
         .fetch_one(r.pool())
@@ -2454,20 +3486,20 @@ mod tests {
         .await
         .unwrap();
         let goblin: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM documents_fts WHERE documents_fts MATCH 'Goblin'",
+            "SELECT count(*) FROM documents_fts_public WHERE documents_fts_public MATCH 'Goblin'",
         )
         .fetch_one(r.pool())
         .await
         .unwrap();
         let orc: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM documents_fts WHERE documents_fts MATCH 'Orc'",
+            "SELECT count(*) FROM documents_fts_public WHERE documents_fts_public MATCH 'Orc'",
         )
         .fetch_one(r.pool())
         .await
         .unwrap();
         assert_eq!((goblin, orc), (0, 1));
 
-        // Delete → removed.
+        // Delete → removed from both visibility-tier tables.
         r.apply_intent(
             &ctx,
             w.id,
@@ -2477,12 +3509,19 @@ mod tests {
         )
         .await
         .unwrap();
-        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM documents_fts WHERE doc_id = ?")
-            .bind(d.id.to_string())
-            .fetch_one(r.pool())
-            .await
-            .unwrap();
-        assert_eq!(after, 0);
+        let after_public: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM documents_fts_public WHERE doc_id = ?")
+                .bind(d.id.to_string())
+                .fetch_one(r.pool())
+                .await
+                .unwrap();
+        let after_gm: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM documents_fts_gm WHERE doc_id = ?")
+                .bind(d.id.to_string())
+                .fetch_one(r.pool())
+                .await
+                .unwrap();
+        assert_eq!((after_public, after_gm), (0, 0));
     }
 
     #[tokio::test]
@@ -2605,6 +3644,103 @@ mod tests {
         let gm_probe = r.search(&gm_ctx, w.id, "weakness", 10, None).await.unwrap();
         assert_eq!(gm_probe.hits.len(), 1);
         assert_eq!(gm_probe.hits[0].document.id, sheet.id);
+    }
+
+    #[tokio::test]
+    async fn search_score_unaffected_by_gm_only_match_non_gm() {
+        // Regression: bm25() without explicit per-column weights sums score
+        // over BOTH `content` and `content_all`, so a non-GM searcher's
+        // ranking would shift when the query term ALSO appears in GM-only
+        // text they can never see — leaking the existence of a hidden match
+        // through score/rank even though row selection and snippets are
+        // already correctly redacted. Pre-dates this task (present since
+        // M6c-1); widened by the M13-0 /engine+/name FTS re-root because
+        // `content_all` now also carries name/engine content.
+        use crate::auth::role::ServerRole;
+        use crate::data::command::Operation;
+        use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let pl_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+
+        // Two otherwise-identical readable docs, both matching "wolf" in
+        // publicly visible content. Only `hidden_extra` ALSO repeats "wolf"
+        // in a GM-only-redacted property — text the player can never see.
+        let mut plain = tests_doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "name": "Wolf Pack" }),
+        );
+        plain.scope = Scope::World { world_id: w.id };
+        let mut hidden_extra = tests_doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "name": "Wolf Pack", "secret": "wolf lair" }),
+        );
+        hidden_extra.scope = Scope::World { world_id: w.id };
+        hidden_extra
+            .permissions
+            .property_overrides
+            .insert("/system/secret".into(), Visibility::GmOnly);
+
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: plain.clone() }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: hidden_extra.clone(),
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let page = r.search(&pl_ctx, w.id, "wolf", 10, None).await.unwrap();
+        assert_eq!(page.hits.len(), 2);
+        let plain_hit = page
+            .hits
+            .iter()
+            .find(|h| h.document.id == plain.id)
+            .expect("plain doc present");
+        let hidden_hit = page
+            .hits
+            .iter()
+            .find(|h| h.document.id == hidden_extra.id)
+            .expect("hidden_extra doc present");
+        assert_eq!(
+            plain_hit.score, hidden_hit.score,
+            "GM-only text repeating the query term shifted a non-GM searcher's score"
+        );
     }
 
     #[tokio::test]
@@ -2845,11 +3981,16 @@ mod tests {
             scope: Scope::World { world_id: world },
             doc_type: "actor".into(),
             schema_version: 1,
+            name: None,
             source: None,
             owner: None,
             permissions: Default::default(),
             embedded: Default::default(),
             parent_id: None,
+            // "actor" is engine-defined; a minimal valid body so `Create`
+            // clears the ingress gate. Callers that override `doc_type`
+            // afterward must also recompute `engine` for the new type.
+            engine: crate::data::document::tests::default_test_engine("actor"),
             system,
             created_at: 0,
             updated_at: 0,
@@ -2956,6 +4097,7 @@ mod tests {
 
         let mut tok = world_doc(1, w.id, serde_json::json!({}));
         tok.doc_type = "token".into();
+        tok.engine = crate::data::document::tests::default_test_engine("token");
         tok.permissions.users.insert(player, DocRole::Owner);
         assert!(r
             .apply_intent(
@@ -3037,6 +4179,9 @@ mod tests {
             2,
         );
         other.doc_type = "note".into();
+        // "note" is not engine-defined (unlike "message"); the engine body
+        // `build_message_doc` set must not follow the doc_type override.
+        other.engine = None;
         let err = r
             .apply_intent(
                 &pl_ctx,
@@ -3273,7 +4418,7 @@ mod tests {
     async fn message_update_rejected_for_client_allowed_for_server_revision() {
         let (repo, world, owner_ctx, msg_id) = seed_owned_message().await;
         let change = FieldChange {
-            path: "/system/content".into(),
+            path: "/engine/content".into(),
             old: serde_json::json!([{ "kind": "text", "text": "hi" }]),
             new: serde_json::json!([{ "kind": "text", "text": "edited" }]),
         };
@@ -3711,6 +4856,62 @@ mod tests {
             r.get_document(doc.id).await.unwrap().unwrap().system["hp"],
             serde_json::json!(5)
         );
+    }
+
+    /// Regression pin: a single intent batching `[Create(token), Update(token,
+    /// /engine/x=...)]` must be rejected wholesale, never partially committed. The `Update`
+    /// validation branch loads the CURRENT stored document (`Self::load_document`) before any
+    /// row is mutated, so a same-batch `Create` for the same id has not yet inserted its row,
+    /// and the `Update` finds no document to load. This pins the ordering `Room::publish`'s
+    /// movement gate depends on: the gate only runs when `SceneEcs::token_move` finds the token
+    /// already hydrated, and this ordering guarantee is what prevents a same-batch Create+Update
+    /// from committing ungated and unhydrated. Any future refactor that mutates rows per-op
+    /// instead of validating the whole batch up front could silently reopen this gap.
+    #[tokio::test]
+    async fn apply_intent_same_batch_create_then_engine_update_is_rejected() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut tok = world_doc(1, w.id, serde_json::json!({}));
+        tok.doc_type = "token".into();
+        tok.engine = crate::data::document::tests::default_test_engine("token");
+
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![
+                    Operation::Create { doc: tok.clone() },
+                    Operation::Update {
+                        doc_id: tok.id,
+                        changes: vec![FieldChange {
+                            path: "/engine/x".into(),
+                            old: serde_json::json!(0.0),
+                            new: serde_json::json!(999.0),
+                        }],
+                    },
+                ],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DataError::Conflict(_)),
+            "expected Conflict (Update's existence check rejecting the not-yet-inserted Create \
+             target), got: {err:?}"
+        );
+        // Nothing committed: the whole batch (including the Create) was rejected, no partial
+        // commit of just the Create half.
+        assert!(r.get_document(tok.id).await.unwrap().is_none());
     }
 
     #[tokio::test]

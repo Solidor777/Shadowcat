@@ -23,10 +23,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `LitScene` cells), and the fail-closed server resolvers `resolve_scene`/`resolved_bands`/
   `resolved_vision_modes`/`token_vision_floors` (mirror scene-docs.ts + actor.ts `resolveTokenActor`
   precedence) plus `scene_lights`/`light_walls` accessors. `resolve_scene` also yields `bounds:
-  (f64,f64)` (M10f-0, `width,height` in grid units) via a fail-closed structural parse
-  (`s.pointer("/bounds/width")`/`/height"`, `serde_json::Value::pointer` + `unwrap_or`, matching
-  the file's existing sibling-field idiom — no ts-rs struct, the scene `system` body stays
-  client-owned/server-structural); non-finite or ≤0-on-either-axis falls back to
+  (f64,f64)` (M10f-0, `width,height` in grid units), read from the typed `eng::SceneEngine.bounds`
+  (M13-0 re-root — the pre-M13-0 `s.pointer("/bounds/width")` structural walk is gone; every scene
+  reader now goes through `engine_as::<T>(doc)`, the module-local typed accessor, see below); non-
+  finite or ≤0-on-either-axis falls back to
   `DEFAULT_SCENE_BOUNDS_UNITS = (100.0, 100.0)`, which MUST numerically match the client's
   `DEFAULT_SCENE_BOUNDS` in `scene-docs.ts` (dual-language default-parity invariant — verify both
   when either changes). Per-scene only, no world-settings layer. **Movement gate (M10e-4):**
@@ -36,6 +36,27 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   zero-overlap cell). `resolve_scene` also yields `movement_restriction`
   (`MovementRestriction::{Visible,Revealed,Unrestricted}`, scene-overridable, fail-closed to `Visible`)
   + `partial_cell_leniency` (world-only).
+- **`/engine` re-root (M13-0).** Every scene/vision/movement/pathfinding document read in this
+  subsystem now goes through the typed `engine` band, not a `/system` pointer walk. `mod.rs`'s
+  private `engine_as::<T: DeserializeOwned>(doc: &Document) -> Option<T>` (`doc.engine.as_ref()
+  .and_then(|v| serde_json::from_value(v.clone()).ok())`) is the module-local typed accessor every
+  reader calls — a `None` result (absent `engine`, or a stored value that fails to parse) is
+  treated identically to the pre-M13-0 pointer-walk's `None`, so every caller's OWN existing
+  field-level fail-closed backstop (bounds → `DEFAULT_SCENE_BOUNDS_UNITS`, grid size default 100,
+  etc.) is unchanged. `data/engine::{TokenEngine, SceneEngine, WallEngine, RegionEngine,
+  WorldSettingsEngine, LightEngine, ...}` (re-exported here as `eng::*`) are the typed structs
+  `engine_as` deserializes into. The DELETED pre-M13-0 `sys_f64`/raw pointer-walk helper no longer
+  exists anywhere in this subsystem — do not reintroduce a pointer-walk reader; add a new typed
+  field to the relevant `eng::*Engine` struct instead. `region_field`'s per-requester secrecy-tier
+  lookup now reads `doc.permissions.property_overrides.get("/engine")` (was `"/system"` pre-M13-0)
+  since a region's shape/behavior/cost live in `engine`; `setRegionVisibility`
+  (`scene-docs.ts`) sets `property_overrides["/engine"] = "gm_only"` to match.
+  `movementModel`/`snapToGrid` (below) are likewise now typed `SceneEngine` fields, ts-rs exported
+  (`MovementModel`/`MovementRestriction` DO have ts-rs derives now — the pre-M13-0 "no ts-rs type,
+  opaque `system`-body JSON" framing for these two fields is stale and must not be assumed).
+  **A logged perf TODO (`docs/TODO.md`):** `engine_as` clones + fully re-deserializes the JSON
+  value on every call, a constant-factor regression against the old direct per-field pointer reads
+  across vision/lighting/pathfinding hot paths — inert until profiling shows it, not yet acted on.
 - `src/server/src/scene/movement.rs` — pure `supercover_cells(a0, a1, cell) -> Option<BTreeSet<(i32,i32)>>`
   (M10e-4): every cell the move segment crosses (supercover, not a thin line — an exact corner crossing
   emits BOTH flanking cells so a diagonal can't thread an unseen cell). `None` ⇒ caller fails closed
@@ -171,8 +192,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (every enabled region, unfiltered) — used by the GM and by `move_exec` (which always springs
   secret regions on execution regardless of what the mover's own route preview could see);
   `viewer: Some(user)` is the PER-REQUESTER view used by the grid A* router — a region is included
-  only when `user` can see the visibility tier declared on its `/system` (defaults to `All` when
-  undeclared), via the SAME `resolve_access`/`property_overrides["/system"]` mechanism that already
+  only when `user` can see the visibility tier declared on its `/engine` (M13-0 re-root; defaults
+  to `All` when undeclared), via the SAME `resolve_access`/`property_overrides["/engine"]`
+  mechanism that already
   gates every other document's egress (spec §3: no new secrecy machinery). **Callers MUST pass
   `None` for a GM requester** — mirrors `visible_cells`'s GM-skips-the-mask convention; passing
   `Some(gm_user)` would incorrectly filter a GM's own field.
@@ -226,11 +248,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - **`movementModel` axis (M10f-1)**: a per-scene/world-default routing-engine choice
   (`MovementModel::{GridStepped,Continuous}` server-side, `MovementModel = "grid-stepped" |
   "continuous"` client-side), resolved by `resolve_scene`/`resolveSceneSettings` with the EXACT
-  same shape as `movement_restriction`/`MovementRestriction` (world default in `/system/scene`, a
-  per-scene override in `/system/vision`, fail-closed to `GridStepped` on unknown/absent — never
-  silently promotes a scene to the newer engine). Opaque `system`-body JSON, no ts-rs type — the
-  approved design doc's claim that this axis needs "ts-rs → Zod mirror" is itself stale/inaccurate
-  (verified: `MovementRestriction` has no ts-rs derive either); do not add one. `SceneEcs::pathfind`
+  same shape as `movement_restriction`/`MovementRestriction` (world default in
+  `WorldSettingsEngine.scene` at `/engine/scene`, a per-scene override in `SceneEngine.vision` at
+  `/engine/vision`, fail-closed to `GridStepped` on unknown/absent — never silently promotes a
+  scene to the newer engine). **M13-0 re-root:** both `MovementModel` and `MovementRestriction`
+  are now typed `engine`-band fields, ts-rs exported (`data/engine/scene.rs`) — the pre-M13-0 "no
+  ts-rs type, opaque `system`-body JSON" framing for this axis no longer holds; do not assume
+  either enum is untyped. `SceneEcs::pathfind`
   dispatches on `resolve_scene(scene).movement_model`: `GridStepped` calls the unchanged
   `pathfinding::find`; `Continuous` calls `navmesh_for` → `navmesh::navmesh_find` →
   `navmesh::clip_to_visible_mask` (below). Both branches build the per-`(user,scene)` visibility
@@ -246,8 +270,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   engine-agnostic since M10f-2 — no `movementModel` branch anywhere in that path, so there was
   nothing engine-specific left to gate at the client. `requestRoute` (the preview path) was always
   unaffected — no grid-snap fallback, silent no-op on double-click.
-- **`snapToGrid` axis (M10f-3, `src/client/core/src/scene-docs.ts`)**: `SceneSystem.snapToGrid?:
-  boolean` — opaque `system`-body JSON, no ts-rs type (mirrors `movementModel`/`bounds`).
+- **`snapToGrid` axis (M10f-3, `src/client/core/src/scene-docs.ts`)**: `SceneEngine.snapToGrid?:
+  boolean` (M13-0 re-root: typed `engine`-band field, ts-rs exported — was opaque `system`-body
+  JSON pre-M13-0, mirrors `movementModel`/`bounds`'s same re-root).
   `resolveSceneSettings` resolves a DERIVED DEFAULT keyed off the already-resolved
   `movementModel`: `sys?.snapToGrid ?? (movementModel === "continuous" ? false : true)` — an
   explicit stored boolean (including `false`) always overrides the derived default in either
@@ -272,10 +297,11 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   freeze the pushed value. **Authoring:** a GM-only persistent toggle button in `ToolRail.svelte`
   (`data-testid="snap-toggle"`), reflecting the resolved `snapToGrid` via a reactive
   `createSubscriber`+`$derived.by` subscription to the document store (mirrors
-  `FactionsPanel`/`GameSettingsPanel`'s pattern), dispatching a `/system/snapToGrid` scene-doc
-  update on click. **Load-bearing convention for any config-doc field-toggle editor:** the
-  dispatched update's `old` field must read the RAW stored value (`scene.system?.snapToGrid ??
-  null`), NOT the resolved/defaulted value — a hardcoded `old: null` breaks after the first
+  `FactionsPanel`/`GameSettingsPanel`'s pattern), dispatching a `/engine/snapToGrid` (M13-0
+  re-root; was `/system/snapToGrid`) scene-doc update on click. **Load-bearing convention for any
+  config-doc field-toggle editor:** the dispatched update's `old` field must read the RAW stored
+  value (`scene.engine?.snapToGrid ?? null`), NOT the resolved/defaulted value — a hardcoded `old:
+  null` breaks after the first
   successful write, since the server's field-level optimistic-concurrency check
   (`Repository::apply_intent`) rejects any subsequent `Update` whose `old` doesn't match the
   actual current stored value. This was a Critical bug caught and fixed during M10f-3 Task 5's
@@ -489,12 +515,14 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   segment: `blocksSight` + `blocksMove` + `blocksLight`. Region tool (`makeRegionTool`) drags out
   a rect/circle/polygon `region` doc (`ToolController.regionShapeMode`/`regionBehavior`/
   `regionCost`/`regionSecret` reactive fields) via `buildRegionDoc` +, when `regionSecret`,
-  `setRegionVisibility(doc, true)` (declares `/system` `gm_only` at construction — the create op
-  never carries the geometry in the clear). Create-only, mirroring `makeWallTool`: no edit UI for
-  an already-placed region's behavior/cost/visibility/`enabled` — a GM re-authors via
-  delete+recreate, or the server's live `enabled` toggle (region_field already honors it) without
-  a UI surface. `buildRegionDoc`/`setRegionVisibility`/`RegionSystem`/`RegionShape`/
-  `RegionShapeKind`/`RegionBehavior` are exported from `@shadowcat/core`'s public `index.ts` (the
+  `setRegionVisibility(doc, true)` (declares `/engine` `gm_only` at construction — M13-0 re-root,
+  was `/system`; the create op never carries the geometry in the clear). Create-only, mirroring
+  `makeWallTool`: no edit UI for an already-placed region's behavior/cost/visibility/`enabled` — a
+  GM re-authors via delete+recreate, or the server's live `enabled` toggle (region_field already
+  honors it) without a UI surface. `buildRegionDoc`/`setRegionVisibility`/`RegionEngine`/
+  `RegionShape`/`RegionShapeKind`/`RegionBehavior` are exported from `@shadowcat/core`'s public
+  `index.ts` (M13-0 renamed the client type from `RegionSystem` to `RegionEngine` — no back-compat
+  alias; the
   scene-docs.ts source predates the export; any future scene-docs.ts addition needs its own
   `index.ts` export line — it is not automatic).
 - `src/client/core/src/scene-docs.ts` — **vision/lighting/movement data model (M10e-1 client model;
@@ -685,13 +713,14 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   router's field is a SUBSET of the authoritative field (spec §6 parity) — a secret region can
   narrow a player's route/preview but can never appear to them where it wouldn't to the GM, and it
   always still applies at `move_exec` regardless of what the router showed. Reuses the EXACT same
-  `resolve_access`/`property_overrides["/system"]` mechanism as ordinary document egress — no new
-  secrecy machinery was introduced for regions (spec §3). **Fixture-construction precision (test/
-  brief authoring convention):** the correct way to mark a region `gm_only` in a test fixture is
-  `doc.permissions.property_overrides.insert("/system".into(), Visibility::GmOnly)` — matching
-  `region_field`'s actual read (`doc.permissions.property_overrides.get("/system")`, default
+  `resolve_access`/`property_overrides["/engine"]` mechanism as ordinary document egress (M13-0
+  re-root; was `"/system"`) — no new secrecy machinery was introduced for regions (spec §3).
+  **Fixture-construction precision (test/brief authoring convention):** the correct way to mark a
+  region `gm_only` in a test fixture is
+  `doc.permissions.property_overrides.insert("/engine".into(), Visibility::GmOnly)` — matching
+  `region_field`'s actual read (`doc.permissions.property_overrides.get("/engine")`, default
   `Visibility::All`, `mod.rs`). Setting `permissions.default = Access::None` instead does NOT gate
-  `region_field`'s per-requester filter at all (that field only reads the `/system`
+  `region_field`'s per-requester filter at all (that field only reads the `/engine`
   `property_overrides` entry) — a brief/test author who reaches for `permissions.default` here will
   write a region that still weights a non-GM's route (M10f-4 Task 4 brief slip, caught before
   merge).
@@ -728,7 +757,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   NO client-side secrecy logic. The `"regions"` render layer sits between `"tiles"` and
   `"drawings"` in `layers.ts`'s `CORE_LAYERS`. Only regions the viewer is permitted to see ever
   reach `store` in the first place: `setRegionVisibility(doc, true)` sets `permissions.default =
-  "none"` (NOT just a `/system` override), so `filter_command` drops a secret region's whole
+  "none"` (NOT just a `/engine` override — M13-0 re-root; was `/system`), so `filter_command` drops a secret region's whole
   `Create` op for non-owner/non-GM recipients — the doc never arrives, not even redacted — while
   `region_field`'s per-requester view independently keeps a secret region out of a non-GM's
   pathfinder/budget field. There is no client-side hide check to get wrong, by design.
@@ -764,6 +793,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   visibility override (only nested-property overrides existed); secret regions were the first doc
   type to exercise it, and the panic-on-strip bug was caught before it shipped. Any future doc type
   that wants whole-body secrecy (vs. per-field) must go through this same branch, not a new one.
+  **M13-0 generalized this exact same null-not-strip branch to `/engine` and `/name` too**
+  (`filter_properties` now special-cases all three top-level pointers identically) — a secret
+  region's declared override moved from `/system` to `/engine` as part of that same re-root (see
+  `shadowcat-codebase-documents-permissions` for the generalized rule).
 - **RESOLVED (`docs/CLOSED_BUGS.md`): `supercover_cells`'s corner-crossing branch no longer drifts
   past the target on a diagonal king-step whose leg endpoints both sit exactly on 4-way grid-line
   intersections.** (M10f-2 discovered this via a Task 6 fixture-derivation error; a later fix

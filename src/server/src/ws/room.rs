@@ -227,9 +227,10 @@ impl Room {
                 > = std::collections::HashMap::new();
                 for op in &ops {
                     if let Operation::Update { doc_id, changes } = op {
-                        // Validate the POST-IMAGE position (the committed system + all changes
-                        // applied), so a wholesale `/system` write or duplicate `/system/x`
-                        // changes can't present a safe target while committing an unsafe one.
+                        // Validate the POST-IMAGE position over the committed `/engine` band
+                        // (the engine band with all changes applied), so a wholesale `/engine`
+                        // write or duplicate `/engine/x` changes can't present a safe target
+                        // while committing an unsafe one.
                         if let Some((scene_id, a0, a1)) = scene.token_move(*doc_id, changes) {
                             // M9a wall gate (unchanged): a wall crossing short-circuits before
                             // any mask work.
@@ -443,7 +444,8 @@ impl Room {
         {
             let scene = self.scene.read().await;
 
-            // Verify the token exists and get its committed position.
+            // Verify the token exists and get its committed position (the `/engine/x,y` band —
+            // the sole position source since this task; `/system` never carries position).
             start = scene.token_position(token).ok_or(DataError::Forbidden)?;
 
             let settings = scene.resolve_scene(scene_id);
@@ -587,19 +589,21 @@ impl Room {
         // PRECONDITION: commit_ops_locked requires the caller to hold publish_guard for its
         // full duration. The guard was acquired at the top of this function and is still held
         // here — no re-acquisition needed or allowed (tokio Mutex is non-reentrant; re-acquiring
-        // would deadlock). The position ops mirror the field paths that `token_move` / `publish`
-        // write (/system/x and /system/y), keyed on the authoritative ECS-read old values so the
-        // optimistic-concurrency check in apply_intent passes as defense-in-depth.
+        // would deadlock). The position ops write ONLY `/engine/x,y` — position lives
+        // exclusively in the engine band since this task; `/system` is game-system data and is
+        // never touched by movement. `old` is keyed on the authoritative ECS-read `start`
+        // (`SceneEcs::token_position`, itself `/engine/x,y`) so the optimistic-concurrency check
+        // in `apply_intent` passes as defense-in-depth.
         let pos_ops = vec![Operation::Update {
             doc_id: token,
             changes: vec![
                 FieldChange {
-                    path: "/system/x".into(),
+                    path: "/engine/x".into(),
                     old: serde_json::json!(start.0),
                     new: serde_json::json!(outcome.stop.0),
                 },
                 FieldChange {
-                    path: "/system/y".into(),
+                    path: "/engine/y".into(),
                     old: serde_json::json!(start.1),
                     new: serde_json::json!(outcome.stop.1),
                 },
@@ -876,6 +880,10 @@ mod room_tests {
     use std::sync::atomic::Ordering;
     use uuid::Uuid;
 
+    // Dual-write fixture helpers (`ws_engine`/`token_engine`) live in `ws::test_support`,
+    // shared with `ws::conn`'s test module.
+    use crate::ws::test_support::{token_engine, ws_engine};
+
     async fn repo_with_world() -> (SqliteRepository, Uuid, PermissionContext) {
         let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
         let author = repo
@@ -957,6 +965,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -984,7 +993,7 @@ mod room_tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 0, "y": 0 });
+        token.engine = Some(token_engine(0.0, 0.0));
         room.publish(
             &repo,
             &gm,
@@ -999,8 +1008,8 @@ mod room_tests {
         let mut wall = wdoc(world_id, wall_id, "wall");
         wall.parent_id = Some(scene_id);
         wall.owner = Some(gm.user_id);
-        wall.system =
-            json!({ "seg": { "x1": 0, "y1": 10, "x2": 10, "y2": 0 }, "blocksMove": true });
+        wall.engine =
+            Some(json!({ "seg": { "x1": 0, "y1": 10, "x2": 10, "y2": 0 }, "blocksMove": true }));
         room.publish(
             &repo,
             &gm,
@@ -1011,31 +1020,34 @@ mod room_tests {
         .await
         .unwrap();
 
+        // `/engine/x,y` are stored as `f64` (`TokenEngine`); the pre-image `old` must be typed
+        // identically or the OCC check's `serde_json::Value` equality (which distinguishes an
+        // integer `Number` variant from a float one) spuriously reports staleness.
         let mv = |nx: i64, ny: i64, ox: i64, oy: i64| Operation::Update {
             doc_id: token_id,
             changes: vec![
                 FieldChange {
-                    path: "/system/x".into(),
-                    old: json!(ox),
-                    new: json!(nx),
+                    path: "/engine/x".into(),
+                    old: json!(ox as f64),
+                    new: json!(nx as f64),
                 },
                 FieldChange {
-                    path: "/system/y".into(),
-                    old: json!(oy),
-                    new: json!(ny),
+                    path: "/engine/y".into(),
+                    old: json!(oy as f64),
+                    new: json!(ny as f64),
                 },
             ],
         };
 
         let seq_before = room.current_seq();
-        // Forged bypass A: a single wholesale `/system` write that relocates the token past the
+        // Forged bypass A: a single wholesale `/engine` write that relocates the token past the
         // wall must be caught (the post-image, not a leaf-path match, is validated).
         let whole = Operation::Update {
             doc_id: token_id,
             changes: vec![FieldChange {
-                path: "/system".into(),
-                old: json!({ "x": 0, "y": 0 }),
-                new: json!({ "x": 10, "y": 10 }),
+                path: "/engine".into(),
+                old: json!({ "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
+                new: json!({ "x": 10.0, "y": 10.0, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
             }],
         };
         assert!(matches!(
@@ -1044,20 +1056,20 @@ mod room_tests {
             Err(crate::data::DataError::Forbidden)
         ));
         assert_eq!(room.current_seq(), seq_before);
-        // Forged bypass B: duplicate `/system/x` (safe-then-unsafe) — last write wins, so the
+        // Forged bypass B: duplicate `/engine/x` (safe-then-unsafe) — last write wins, so the
         // committed x=11 crosses; the gate validates against that, not the first change.
         let dup = Operation::Update {
             doc_id: token_id,
             changes: vec![
                 FieldChange {
-                    path: "/system/x".into(),
-                    old: json!(0),
-                    new: json!(1),
+                    path: "/engine/x".into(),
+                    old: json!(0.0),
+                    new: json!(1.0),
                 },
                 FieldChange {
-                    path: "/system/x".into(),
-                    old: json!(0),
-                    new: json!(11),
+                    path: "/engine/x".into(),
+                    old: json!(0.0),
+                    new: json!(11.0),
                 },
             ],
         };
@@ -1098,6 +1110,174 @@ mod room_tests {
             .unwrap();
     }
 
+    /// A `/system/x` write on a token is game-system data — it must not be treated as a move
+    /// by `Room::publish`'s M9a/M10e-4 gate (which reads `/engine` exclusively), and the
+    /// write must not desync the ECS's committed `/engine` position. This is the integration-
+    /// level counterpart of `scene::mod::tests::token_move_uses_post_image_resisting_forged_
+    /// bypasses`'s `/system/x` decoy assertion (same naming-collision decoy: `/system/x` vs.
+    /// `/engine/x`), proved end-to-end through `Room::publish` rather than the bare ECS method.
+    #[tokio::test]
+    async fn system_field_write_bypasses_the_move_gate_and_does_not_desync_the_engine_band() {
+        let h = movement_scene_with_wall().await;
+
+        // A `/system/x` + `/system/y` decoy pair targeting `(200,150)`. If the gate mistakenly
+        // read these `/system/*` paths as `/engine/x,y` (the naming-collision decoy this test
+        // targets), the resulting straight-line move from the committed start `(50,50)` to
+        // `(200,150)` crosses `movement_scene_with_wall`'s horizontal wall (y=100, x∈[100,200])
+        // at x=125 — well clear of both wall endpoints, no corner-touch ambiguity — and would be
+        // rejected. The gate must not even see this write, since it targets `/system`, not
+        // `/engine`.
+        let write = Operation::Update {
+            doc_id: h.token_id,
+            changes: vec![
+                FieldChange {
+                    path: "/system/x".into(),
+                    old: serde_json::Value::Null, // absent key reads as Null (no `system.x` default)
+                    new: serde_json::json!(200.0),
+                },
+                FieldChange {
+                    path: "/system/y".into(),
+                    old: serde_json::Value::Null,
+                    new: serde_json::json!(150.0),
+                },
+            ],
+        };
+        h.room
+            .publish(
+                &h.repo,
+                &h.player,
+                vec![write],
+                now_millis(),
+                WriteOrigin::Client,
+            )
+            .await
+            .expect("a /system write must not be rejected by the movement gate");
+
+        // The engine-band position is untouched by the /system write.
+        let pos = h.committed_pos(h.token_id).await;
+        assert_eq!(
+            pos, h.start,
+            "/system write must not move the token's /engine position"
+        );
+    }
+
+    /// Defense-in-depth: a single `Update`'s FieldChange list combining a wholesale `/engine`
+    /// replace AND a leaf `/engine/x` change must produce the SAME post-image whether the
+    /// gate's replay (`SceneEcs::token_move`, consulted by `Room::publish`'s movement gate) or
+    /// the commit path's replay (`apply_intent`'s sequential `set_pointer` application) computes
+    /// it — in BOTH possible orderings of the two changes. Both replay implementations apply
+    /// `changes` via `set_pointer` in array order independently; this pins them against silently
+    /// diverging (which would let the gate validate one post-image while a different one
+    /// actually lands).
+    #[tokio::test]
+    async fn mixed_wholesale_and_leaf_engine_changes_agree_between_gate_and_commit_in_both_orderings(
+    ) {
+        use crate::data::command::FieldChange;
+        use serde_json::json;
+
+        // The wholesale `old` pre-image must equal the ACTUAL stored `/engine` value, which
+        // includes `TokenEngine`'s `#[serde(default)]` `null` fields (visual/actor_id/
+        // overrides/face) beyond the `token_engine(50.0, 50.0)` fixture's x/y/w/h/rotation —
+        // read it back rather than hand-constructing it, mirroring `mv_to`'s convention.
+        async fn stored_engine(h: &MovementHandle) -> serde_json::Value {
+            h.repo
+                .get_document(h.token_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .engine
+                .unwrap()
+        }
+        let wholesale_new = json!({
+            "x": 10.0, "y": 10.0, "w": 1.0, "h": 1.0, "rotation": 0.0,
+            "visual": null, "actor_id": null, "overrides": null, "face": null
+        });
+
+        // Ordering A: wholesale replace, then a leaf x-overwrite. Expected final: (20,10).
+        {
+            let h = movement_scene_with_wall().await;
+            let start_engine = stored_engine(&h).await;
+            let changes = vec![
+                FieldChange {
+                    path: "/engine".into(),
+                    old: start_engine.clone(),
+                    new: wholesale_new.clone(),
+                },
+                FieldChange {
+                    path: "/engine/x".into(),
+                    old: json!(50.0),
+                    new: json!(20.0),
+                },
+            ];
+            let gate_post = {
+                let scene = h.room.scene().read().await;
+                scene.token_move(h.token_id, &changes).unwrap().2
+            };
+            h.room
+                .publish(
+                    &h.repo,
+                    &h.player,
+                    vec![Operation::Update {
+                        doc_id: h.token_id,
+                        changes,
+                    }],
+                    now_millis(),
+                    WriteOrigin::Client,
+                )
+                .await
+                .unwrap();
+            let committed = h.committed_pos(h.token_id).await;
+            assert_eq!(gate_post, (20.0, 10.0), "ordering A gate post-image");
+            assert_eq!(committed, (20.0, 10.0), "ordering A committed post-image");
+            assert_eq!(
+                gate_post, committed,
+                "ordering A: gate and commit post-images must agree"
+            );
+        }
+
+        // Ordering B: leaf x-overwrite, then wholesale replace. Expected final: (10,10).
+        {
+            let h = movement_scene_with_wall().await;
+            let start_engine = stored_engine(&h).await;
+            let changes = vec![
+                FieldChange {
+                    path: "/engine/x".into(),
+                    old: json!(50.0),
+                    new: json!(20.0),
+                },
+                FieldChange {
+                    path: "/engine".into(),
+                    old: start_engine.clone(),
+                    new: wholesale_new.clone(),
+                },
+            ];
+            let gate_post = {
+                let scene = h.room.scene().read().await;
+                scene.token_move(h.token_id, &changes).unwrap().2
+            };
+            h.room
+                .publish(
+                    &h.repo,
+                    &h.player,
+                    vec![Operation::Update {
+                        doc_id: h.token_id,
+                        changes,
+                    }],
+                    now_millis(),
+                    WriteOrigin::Client,
+                )
+                .await
+                .unwrap();
+            let committed = h.committed_pos(h.token_id).await;
+            assert_eq!(gate_post, (10.0, 10.0), "ordering B gate post-image");
+            assert_eq!(committed, (10.0, 10.0), "ordering B committed post-image");
+            assert_eq!(
+                gate_post, committed,
+                "ordering B: gate and commit post-images must agree"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn get_or_create_hydrates_config_and_actors_from_db() {
         use crate::data::document::DocRole;
@@ -1132,6 +1312,7 @@ mod room_tests {
                        "observerVision": false, "movementRestriction": "visible", "partialCellLeniency": true },
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" } });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room1
             .publish(
                 &repo,
@@ -1161,7 +1342,7 @@ mod room_tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 50, "y": 50 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room1
             .publish(
                 &repo,
@@ -1180,6 +1361,7 @@ mod room_tests {
             "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
             "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
         });
+        light.engine = Some(light.system.clone());
         room1
             .publish(
                 &repo,
@@ -1353,12 +1535,12 @@ mod room_tests {
                 doc_id: self.token_id,
                 changes: vec![
                     FieldChange {
-                        path: "/system/x".into(),
+                        path: "/engine/x".into(),
                         old: serde_json::json!(ox),
                         new: serde_json::json!(x),
                     },
                     FieldChange {
-                        path: "/system/y".into(),
+                        path: "/engine/y".into(),
                         old: serde_json::json!(oy),
                         new: serde_json::json!(y),
                     },
@@ -1426,6 +1608,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -1453,7 +1636,7 @@ mod room_tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 50.0, "y": 50.0 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
             &gm,
@@ -1474,6 +1657,7 @@ mod room_tests {
                 "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
                 "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true
             });
+            light.engine = Some(light.system.clone());
             room.publish(
                 &repo,
                 &gm,
@@ -1548,6 +1732,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -1575,7 +1760,7 @@ mod room_tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 50.0, "y": 50.0 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
             &gm,
@@ -1594,6 +1779,7 @@ mod room_tests {
             "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
             "brightRadius": 1.5, "dimRadius": 1.5, "enabled": true
         });
+        l1.engine = Some(l1.system.clone());
         room.publish(
             &repo,
             &gm,
@@ -1613,6 +1799,7 @@ mod room_tests {
             "x": 950.0, "y": 950.0, "color": "#ffffff", "intensity": 1.0,
             "brightRadius": 1.5, "dimRadius": 1.5, "enabled": true
         });
+        l2.engine = Some(l2.system.clone());
         room.publish(
             &repo,
             &gm,
@@ -1689,6 +1876,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -1716,7 +1904,7 @@ mod room_tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 50.0, "y": 50.0 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
             &gm,
@@ -1737,6 +1925,7 @@ mod room_tests {
             "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
             "brightRadius": 1.4, "dimRadius": 1.4, "enabled": true
         });
+        light.engine = Some(light.system.clone());
         room.publish(
             &repo,
             &gm,
@@ -2009,6 +2198,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -2036,7 +2226,7 @@ mod room_tests {
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
         token.permissions.users.insert(p, DocRole::Owner);
-        token.system = json!({ "x": 50.0, "y": 50.0 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
             &gm,
@@ -2051,8 +2241,9 @@ mod room_tests {
         let mut wall = wdoc(world_id, wall_id, "wall");
         wall.parent_id = Some(scene_id);
         wall.owner = Some(gm.user_id);
-        wall.system =
-            json!({ "seg": { "x1": 100, "y1": 100, "x2": 200, "y2": 100 }, "blocksMove": true });
+        wall.engine = Some(
+            json!({ "seg": { "x1": 100, "y1": 100, "x2": 200, "y2": 100 }, "blocksMove": true }),
+        );
         room.publish(
             &repo,
             &gm,
@@ -2106,6 +2297,68 @@ mod room_tests {
         assert_eq!(res.render_path.last().copied(), Some(res.stop));
         // Committed ECS position must equal stop (atomic write invariant).
         assert_eq!(h.committed_pos(h.token_id).await, res.stop);
+    }
+
+    #[tokio::test]
+    async fn client_update_with_posint_pre_image_after_execute_move_is_accepted() {
+        // Reproduces the OCC PosInt/Float variant-mismatch bug end-to-end:
+        // `execute_move` commits a whole-number-valued token position, which
+        // stores as a serde_json `Float` (`json!(f64)` always serializes to the
+        // Float variant, even for a whole number). A subsequent client-authored
+        // `Update` -- like an ordinary `sendMoves` token drag -- echoes the
+        // JS-side whole number back as a `PosInt` pre-image (`JSON.parse` cannot
+        // preserve "this was a float" for a whole-number value). The OCC check
+        // in `apply_intent` must accept this pre-image, not spuriously Conflict.
+        use crate::data::command::FieldChange;
+
+        let h = movement_scene("unrestricted", false).await;
+        h.room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                vec![h.start, h.adj],
+                now_millis(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(h.committed_pos(h.token_id).await, h.adj);
+
+        // Sanity: the stored /engine/x is the Float variant serialization.
+        let stored = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+        let stored_x = stored.engine.unwrap()["x"].clone();
+        assert_eq!(
+            serde_json::to_string(&stored_x).unwrap(),
+            "150.0",
+            "execute_move must commit the whole-number position as a Float"
+        );
+
+        // Client echoes the JS whole number 150 as a PosInt pre-image, not a
+        // Float, for the OCC comparison -- exactly what `sendMoves` does.
+        let ops = vec![Operation::Update {
+            doc_id: h.token_id,
+            changes: vec![FieldChange {
+                path: "/engine/x".into(),
+                old: serde_json::Value::Number(serde_json::Number::from(150u64)),
+                new: serde_json::json!(160.0),
+            }],
+        }];
+        let result = h
+            .repo
+            .apply_intent(
+                &h.player,
+                h.world_id,
+                ops,
+                now_millis(),
+                WriteOrigin::Client,
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "a PosInt pre-image numerically equal to the stored Float must be accepted, got: {:?}",
+            result.err()
+        );
     }
 
     #[tokio::test]
@@ -2213,6 +2466,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" },
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -2239,7 +2493,7 @@ mod room_tests {
         let mut token = wdoc(world_id, token_id, "token");
         token.parent_id = Some(scene_id);
         token.owner = Some(player.user_id);
-        token.system = json!({ "x": 0.0, "y": 0.0, "w": 100, "h": 100, "rotation": 0 });
+        token.engine = Some(json!({ "x": 0.0, "y": 0.0, "w": 100, "h": 100, "rotation": 0 }));
         room.publish(
             &repo,
             &gm,
@@ -2253,14 +2507,14 @@ mod room_tests {
         let mut region = wdoc(world_id, region_id, "region");
         region.parent_id = Some(scene_id);
         region.owner = Some(gm.user_id);
-        region.system = json!({
+        region.engine = Some(json!({
             "shape": { "kind": "rect", "points": [50.0, 0.0, 150.0, 100.0] },
             "behavior": "impassable", "cost": 1.0, "enabled": true,
-        });
+        }));
         region
             .permissions
             .property_overrides
-            .insert("/system".into(), Visibility::GmOnly);
+            .insert("/engine".into(), Visibility::GmOnly);
         room.publish(
             &repo,
             &gm,
@@ -2350,7 +2604,7 @@ mod room_tests {
         assert_eq!(h.committed_pos(h.token_id).await, res.stop);
     }
 
-    /// Identical to `movement_scene`, but the scene doc's `system.vision.movementModel` is
+    /// Identical to `movement_scene`, but the scene doc's `engine.vision.movementModel` is
     /// explicitly `"continuous"` (M10f-3 §6): proves `execute_move` gates an any-angle route
     /// from a scene genuinely marked continuous, not just incidentally sent a diagonal path.
     /// Functionally inert on the server today — `execute_move` has no `movementModel` branch
@@ -2401,6 +2655,7 @@ mod room_tests {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         });
+        ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
             &repo,
             &gm,
@@ -2419,6 +2674,7 @@ mod room_tests {
             "grid": { "kind": "square", "size": 100 },
             "vision": { "movementModel": "continuous" }
         });
+        scene.engine = Some(scene.system.clone());
         room.publish(
             &repo,
             &gm,
@@ -2432,14 +2688,14 @@ mod room_tests {
         let mut token = wdoc(world_id, token_id, "token");
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
-        // Required for the player to have write permission on the token's /system/x,y fields
+        // Required for the player to have write permission on the token's /engine/x,y fields
         // at commit time (mirrors every sibling helper — movement_scene et al.); `owner` alone
         // does not grant the per-doc write permission apply_intent checks.
         token
             .permissions
             .users
             .insert(p, crate::data::document::DocRole::Owner);
-        token.system = json!({ "x": 50.0, "y": 50.0 });
+        token.engine = Some(token_engine(50.0, 50.0));
         room.publish(
             &repo,
             &gm,
@@ -2459,6 +2715,7 @@ mod room_tests {
                 "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
                 "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true
             });
+            light.engine = Some(light.system.clone());
             room.publish(
                 &repo,
                 &gm,

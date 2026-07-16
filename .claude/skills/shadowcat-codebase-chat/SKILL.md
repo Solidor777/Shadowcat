@@ -16,7 +16,8 @@ message-specific redaction/search/broadcast code. **M11c-3 shipped** (sanitizer 
 (`chat::parse_command`) derives `MessageKind`/a content-level `/w` whisper target; `EditMessage`/
 `DeleteMessage` replace c-1's blanket Update rejection with a real, authorized, sanitizing edit
 path and a soft-tombstone delete path, gated by a new `WriteOrigin` marker. **M11d-1 shipped**
-(the client display layer + three server enablers): `MessageSystem.source` (edit-prefill raw
+(the client display layer + three server enablers): `MessageEngine.source` (M13-0 renamed from
+`MessageSystem`; edit-prefill raw
 input), an always-on `:shortcode:` → emoji pre-pass in `sanitize`, a member-visible world
 roster, the client Zod mirror (`chat-docs.ts`), and the chat UI as three replaceable modules
 (`module-chat` host / `module-chat-composer` / `module-chat-card`) mounted in the tabbed
@@ -138,8 +139,9 @@ with zero message-specific plumbing in any of those subsystems.
     exhaustive test) and `Segment` (tagged enum: `Text{text}` — verbatim, client renders as a DOM
     text node; `Html{sanitized_html}` — a run of already-`ammonia`-cleaned HTML, produced ONLY by
     `sanitize::sanitize`, client renders via `innerHTML`) — both serde-only, NO ts-rs; they live
-    inside the opaque `system` JSON body, not the wire frame, so the client declares its own Zod
-    mirror later (M11d). **Design note:** inline formatting/links/images do NOT get their own
+    inside the `engine` JSON body (M13-0 re-root, was `system`), not the wire frame, so the client
+    declares its own Zod mirror later (M11d). **Design note:** inline formatting/links/images do
+    NOT get their own
     typed `Segment` variants — they stay INSIDE a `Segment::Html` run as ordinary sanitized markup
     (`<strong>`/`<a>`/`<img>`). A separate typed `Link`/`Image` segment would require re-parsing
     already-sanitized HTML to extract them, duplicating work `ammonia` already did; `Html` is the
@@ -149,14 +151,19 @@ with zero message-specific plumbing in any of those subsystems.
     `innerHTML`, so embedded markup is inert).
   - `Audience` (`Public`/`Whisper{recipients: Vec<Uuid>}`/`GmOnly`, `#[default] Public`, tagged
     enum, ts-rs exported same as `ActorOwnerRef`) — the intended readership of a message, carried
-    on the `SendMessage` frame and stored verbatim in `MessageSystem`. This is the ONLY
+    on the `SendMessage` frame and stored verbatim in `MessageEngine`. This is the ONLY
     server-enforced visibility concept for chat; `channel` is a purely client-chosen label with
     ZERO server-enforced meaning — the server never validates or branches on it. A client module
     choosing to post to a "GM" channel is what sets `audience: GmOnly`; the server has no concept
     of a reserved channel name.
-  - `MessageSystem{channel, user_owner, actor_owner, kind, audience, content, source,
-    edited_at, deleted_at}` — the `system` body shape; `audience` rides the opaque body
-    verbatim, same treatment as `kind`/`actor_owner`. `edited_at`/`deleted_at` (both
+  - `MessageEngine{channel, user_owner, actor_owner, kind, audience, content, source,
+    edited_at, deleted_at}` (M13-0 re-root, renamed from `MessageSystem`; now lives at
+    `Document.engine`, not `Document.system` — a message doc's `system` body is empty `{}`) — the
+    `engine` body shape; `#[serde(deny_unknown_fields)]` (added by the M13-0 re-root — the
+    pre-M13-0 `MessageSystem` lacked it, so an unknown key used to pass through unrejected;
+    `MessageEngine` closes that gap the same way every other engine-defined doc_type's ingress
+    does). `audience` rides the body verbatim, same treatment as `kind`/`actor_owner`.
+    `edited_at`/`deleted_at` (both
     `Option<i64>`, `#[serde(skip_serializing_if = "Option::is_none")]`) are the c-3 edit/delete
     markers — absent (not `null`) on an unedited/live message, so a stored c-1 message
     round-trips unchanged. `source: Option<String>` (M11d-1, same serde shape) is the author's
@@ -227,13 +234,14 @@ with zero message-specific plumbing in any of those subsystems.
     post-`/w`-strip) can never reparse into a different `kind` or spuriously trip
     `AudienceLocked` on a literal "/w ..." body. `channel`/`user_owner`/`actor_owner`/`audience`/
     `deleted_at` are always copied verbatim from the STORED doc, never re-derived from the
-    request. Publishes a single `Operation::Update` on `/system` under
-    `WriteOrigin::ServerMessageRevision`. Rate-limited like `handle_send_message`.
+    request. Publishes a single `Operation::Update` on `/engine` (M13-0 re-root, was `/system`)
+    under `WriteOrigin::ServerMessageRevision`. Rate-limited like `handle_send_message`.
   - `handle_delete_message(room, repo, ctx, rate, message_id, now, budget_per_min) ->
     Result<Command, SendMessageError>` — same owner-or-GM authorization; a pure SOFT tombstone (no
     command parsing/sanitization runs): clears `content` to `[]` and sets `deleted_at`, leaving
     `channel`/`user_owner`/`actor_owner`/`audience`/`kind`/`edited_at` untouched. Publishes an
-    `Operation::Update` on `/system` (NOT a hard `Operation::Delete`) under `WriteOrigin::
+    `Operation::Update` on `/engine` (M13-0 re-root, was `/system`; NOT a hard
+    `Operation::Delete`) under `WriteOrigin::
     ServerMessageRevision` — the doc stays in the sequenced log at its original seq, so resync and
     per-recipient redaction continue to apply unmodified. Rate-limited (without a budget, a single
     owner/GM could repeatedly re-delete the same message, each call consuming a real seq number
@@ -333,10 +341,10 @@ with zero message-specific plumbing in any of those subsystems.
      WRITE_FIELDS}, all: false, ... }`, trusting that the calling handler has ALREADY completed
      its owner-or-GM check. This is proven correct for BOTH edit and delete, across all three
      `Audience` variants, for both the owner and a non-addressed GM. `all: false` (not `all:
-     true`) is deliberate — it authorizes writing `/system` only, not `/permissions`/`/embedded`,
-     even for this trusted origin. **Caveat:** this scoped grant does NOT auto-satisfy an
-     additive `declared_caps_for_path` world/module requirement on a message `/system`
-     (sub-)path — no first-party module declares one today (inert), but a future one would
+     true`) is deliberate — it authorizes writing `/engine` only (M13-0 re-root, was `/system`),
+     not `/permissions`/`/embedded`, even for this trusted origin. **Caveat:** this scoped grant
+     does NOT auto-satisfy an additive `declared_caps_for_path` world/module requirement on a
+     message `/engine` (sub-)path — no first-party module declares one today (inert), but a future one would
      silently block a GM's already-vetted moderation edit/delete; re-review this chokepoint
      before adding such a requirement.
 
@@ -377,14 +385,17 @@ with zero message-specific plumbing in any of those subsystems.
   this, an unmodified resubmit of a whisper's edit-prefill (itself post-`/w`-strip `source`) could
   silently reparse into a different `kind` or spuriously trip `AudienceLocked` one token deeper.
   `AudienceLocked` therefore fires only for a non-whisper edit. A delete is a pure SOFT tombstone — `content`
-  is cleared and `deleted_at` is set via `Operation::Update` on `/system`, NOT a hard
-  `Operation::Delete`; the doc stays in the sequenced log at its original seq, so resync and
-  per-recipient redaction keep applying to it unmodified. An edit on an already-tombstoned message
-  is rejected (`NotFound`) — content can never be resurrected on a soft-deleted doc.
-- **Content model is opaque and NOT ts-rs-exported** (`MessageKind`, `Segment`, `MessageSystem`)
+  is cleared and `deleted_at` is set via `Operation::Update` on `/engine` (M13-0 re-root, was
+  `/system`), NOT a hard `Operation::Delete`; the doc stays in the sequenced log at its original
+  seq, so resync and per-recipient redaction keep applying to it unmodified. An edit on an
+  already-tombstoned message is rejected (`NotFound`) — content can never be resurrected on a
+  soft-deleted doc.
+- **Content model is opaque and NOT ts-rs-exported** (`MessageKind`, `Segment`, `MessageEngine`)
   — only `ActorOwnerRef` and `Audience` (both on the wire `SendMessage` frame) are. The client
   mirror NOW EXISTS: `src/client/core/src/chat-docs.ts` (M11d-1) — Zod schemas +
-  `parseMessageSystem(doc) -> ChatMessageSystem | null` (fail-closed: wrong doc_type or ANY
+  `parseMessageEngine(doc) -> ChatMessageEngine | null` (M13-0 renamed from
+  `parseMessageSystem`/`ChatMessageSystem`, parses `doc.engine` not `doc.system`; fail-closed:
+  wrong doc_type or ANY
   malformed body → null, never partial) + `isKnownSegment` (unknown segment kinds parse as
   opaque forward-compat and render as nothing, but the fallback REFUSES kinds "text"/"html" so
   a malformed known-kind segment fails the whole message instead of being misclassified —
@@ -462,7 +473,7 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   sets `audience: gm_only`, exactly the c-2 contract). Channels live in a `channel-registry`
   singleton config doc (id→`{name}` map, GM-seeded `{general}` via the reactive-seed idiom;
   add/rename are single-key updates but **remove is a WHOLE-FIELD replace of
-  `/system/channels`** with the key deleted — `set_pointer` cannot delete keys; a null
+  `/engine/channels`** (M13-0 re-root, was `/system/channels`) with the key deleted — `set_pointer` cannot delete keys; a null
   tombstone was reviewed and rejected). Render cap: last 200 per view. Scroll: stick-to-bottom
   + "new messages" pill; the pill effect tracks the previous count in a non-reactive closure +
   `untrack`ed `atBottom` (scrolling alone must not re-trigger), and all scroll measurement
@@ -472,15 +483,16 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   guard; validation on the TRIMMED length (what's actually sent); NO client command parsing
   (`/`-commands ride verbatim — the server parses); the "Speak as" picker (M11d-2) sends
   `actor_owner` `Actor` refs, server-ownership-validated at ingest (see Dice wire above).
-- **`src/modules/chat-card`** — fail-closed render (`parseMessageSystem` null ⇒ nothing).
+- **`src/modules/chat-card`** — fail-closed render (`parseMessageEngine` null ⇒ nothing).
   **THE `{@html}` INVARIANT: the module's single `{@html}` sink renders only an
   `isKnownSegment`-narrowed `kind:"html"` segment's `sanitized_html` (ammonia-produced);
   Text segments are text nodes (`white-space: pre-wrap`); every other string interpolates
   escaped.** Header: author via `ctx.members` (member-visible roster, M11d-1 widened
   `list_members` from GM-only to any member — chat name resolution needs it), actor name via
   the real `resolveTokenActor`/`actorDisplayName` fail-closed chokepoint (an
-  `ActorOwnerRef::Actor` is wrapped in a synthetic `{system:{actor_id, overrides:{}}}` token
-  — safe: that resolver branch reads only `system.actor_id` + `system.overrides`, and the
+  `ActorOwnerRef::Actor` is wrapped in a synthetic `{engine:{actor_id, overrides:{}}}` token
+  (M13-0 re-root, was `{system:{...}}}`) — safe: that resolver branch reads only
+  `engine.actor_id` + `engine.overrides`, and the
   empty overrides map is a no-op). Roll-pending shell derives the
   formula from `sys.source` (command prefix stripped per `parse_command`'s exact tokens) —
   `textOf(content)` alone is EMPTY on markdown/html worlds where the body becomes one Html

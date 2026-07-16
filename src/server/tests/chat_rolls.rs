@@ -7,7 +7,7 @@
 
 use shadowcat::chat::{
     build_link_preview_client, handle_edit_message, handle_send_message, Audience,
-    LinkPreviewCache, MessageKind, MessageSystem, PreviewRateLimiter, Segment, SendMessageError,
+    LinkPreviewCache, MessageEngine, MessageKind, PreviewRateLimiter, Segment, SendMessageError,
 };
 use shadowcat::data::command::{Command, Operation};
 use shadowcat::data::document::{Document, WorldRole};
@@ -113,9 +113,9 @@ impl Fixture {
             .expect("message doc persisted")
     }
 
-    async fn stored_message_system(&self, cmd: &Command) -> MessageSystem {
+    async fn stored_message_system(&self, cmd: &Command) -> MessageEngine {
         let doc = self.stored_message_doc(cmd).await;
-        serde_json::from_value(doc.system).unwrap()
+        serde_json::from_value(doc.engine.unwrap()).unwrap()
     }
 }
 
@@ -300,7 +300,7 @@ async fn edit_into_roll_is_rejected() {
     assert!(matches!(r, Err(SendMessageError::RollImmutable)), "{r:?}");
     // The stored message must be untouched by the rejected edit attempt.
     let doc = f.repo.get_document(id).await.unwrap().unwrap();
-    let sys: MessageSystem = serde_json::from_value(doc.system).unwrap();
+    let sys: MessageEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
     assert_eq!(sys.kind, MessageKind::Normal);
     assert_eq!(
         sys.content,
@@ -344,8 +344,8 @@ async fn edit_content_with_inline_span_stays_literal_text() {
     );
 }
 
-/// (g) A stored pre-M11d-2 `MessageSystem` JSON (no roll-related content,
-/// `content: []`) still round-trips through `MessageSystem`'s deserializer —
+/// (g) A stored pre-M11d-2 `MessageEngine` JSON (no roll-related content,
+/// `content: []`) still round-trips through `MessageEngine`'s deserializer —
 /// the new `Segment` variants are additive, not a breaking schema change.
 #[test]
 fn stored_pre_m11d2_message_still_deserializes() {
@@ -356,7 +356,7 @@ fn stored_pre_m11d2_message_still_deserializes() {
         "audience": { "kind": "public" },
         "content": [{ "kind": "text", "text": "hi" }],
     });
-    let sys: MessageSystem = serde_json::from_value(j).unwrap();
+    let sys: MessageEngine = serde_json::from_value(j).unwrap();
     assert_eq!(sys.kind, MessageKind::Normal);
     assert_eq!(sys.content, vec![Segment::Text { text: "hi".into() }]);
 }

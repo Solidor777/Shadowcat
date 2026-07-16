@@ -23,9 +23,9 @@ function tokenDocs(): ReadableDocuments {
 
 /** A documents view exposing a single scene doc with the given `system` body (M10f-3 snap
  * wiring: `resolveSceneSettings` reads it via `documents.query("scene")[0]`). */
-function sceneDocs(system: Record<string, unknown>): ReadableDocuments {
+function sceneDocs(engine: Record<string, unknown>): ReadableDocuments {
   return {
-    query: (t: string) => (t === "scene" ? [{ id: "s1", doc_type: "scene", system }] : []),
+    query: (t: string) => (t === "scene" ? [{ id: "s1", doc_type: "scene", engine, system: {} }] : []),
     get: () => undefined,
     subscribe: () => () => {},
     snapshot: () => [],
@@ -141,14 +141,14 @@ test("drives the initial reconcile from ctx.viewedSceneId (M12d)", async () => {
     author: "u",
     ts: 0,
     ops: [
-      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100 } }, "sA") },
-      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 50 } }, "sB") },
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "sA") },
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 50, distance: null } }, "sB") },
       {
         op: "create",
         doc: buildTokenDoc(
           "w1",
           "sB",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
           "t-b",
         ),
       },
@@ -181,8 +181,8 @@ test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per
     author: "u",
     ts: 0,
     ops: [
-      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100 } }, "sA") },
-      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100 } }, "sB") },
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "sA") },
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "sB") },
     ],
   } as never);
   const createBackend = vi.fn(async () => fakeBackend());
@@ -222,7 +222,7 @@ test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
           "t1",
         ),
       },
@@ -243,7 +243,7 @@ test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
           "t2",
         ),
       },

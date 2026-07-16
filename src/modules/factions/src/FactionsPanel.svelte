@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildFactionRegistryDoc, resolveTokenActor, type Faction, type FactionRegistrySystem, type WireDocument } from "@shadowcat/core";
+  import { buildFactionRegistryDoc, resolveTokenActor, type Faction, type FactionRegistryEngine, type WireDocument } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -12,7 +12,7 @@
     return ctx.documents.query("faction-registry")[0];
   });
   const factionEntries = $derived.by((): [string, Faction][] => {
-    const sys = registry?.system as FactionRegistrySystem | undefined;
+    const sys = registry?.engine as FactionRegistryEngine | undefined;
     return Object.entries(sys?.factions ?? {});
   });
 
@@ -41,25 +41,25 @@
     // server's apply_intent enforces field-level OCC (actual != change.old -> Conflict), so a
     // hardcoded `old: null` is only valid once and is rejected on every subsequent edit once the
     // field holds a non-null value (mirrors GameSettingsPanel's `set` helper fix).
-    const sys = registry.system as FactionRegistrySystem;
-    const current = sys.factions[id] as Partial<Faction> | undefined;
+    const eng = registry.engine as FactionRegistryEngine;
+    const current = eng.factions[id] as Partial<Faction> | undefined;
     for (const [k, v] of Object.entries(patch)) {
       const old = current?.[k as keyof Faction] ?? null;
-      ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/system/factions/${id}/${k}`, old, new: v }] }]);
+      ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/factions/${id}/${k}`, old, new: v }] }]);
     }
   }
   function add(): void {
     if (!registry) return;
     const id = crypto.randomUUID();
     const f: Faction = { name: "New faction", color: "#9e9e9e", stance: "neutral" };
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/system/factions/${id}`, old: null, new: f }] }]);
+    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/factions/${id}`, old: null, new: f }] }]);
   }
   function remove(id: string): void {
-    const sys = registry?.system as FactionRegistrySystem | undefined;
+    const sys = registry?.engine as FactionRegistryEngine | undefined;
     if (!registry || !sys) return;
     const next = { ...sys.factions };
     delete next[id];
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/system/factions", old: sys.factions, new: next }] }]);
+    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/engine/factions", old: sys.factions, new: next }] }]);
   }
   function selectTokens(factionId: string): void {
     const ids = ctx.documents.query("token").filter((tok) => resolveTokenActor(tok, ctx.documents)?.faction === factionId).map((tok) => tok.id);

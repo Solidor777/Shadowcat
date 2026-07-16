@@ -206,6 +206,9 @@ pub struct Document {
     pub scope: Scope,
     pub doc_type: String,
     pub schema_version: u32,
+    /// Universal display name (S2). Redacts to `null` under a `/name` override.
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub source: Option<Source>,
     #[serde(default)]
@@ -219,6 +222,12 @@ pub struct Document {
     /// scenes themselves). Immutable via field-path Update (envelope field).
     #[serde(default)]
     pub parent_id: Option<Uuid>,
+    /// Engine band (S1/S3): present iff `doc_type` is engine-defined; validated
+    /// against the doc_type's typed struct at ingress (data/engine). Stored
+    /// post-validation. `None` for community/system doc types.
+    #[serde(default)]
+    #[ts(type = "unknown")]
+    pub engine: Option<serde_json::Value>,
     #[ts(type = "unknown")]
     pub system: serde_json::Value,
     pub created_at: i64,
@@ -238,6 +247,35 @@ pub struct World {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn document_carries_name_and_engine_and_rejects_modules_key() {
+        let json = serde_json::json!({
+            "id": Uuid::from_u128(1), "scope": {"kind": "world", "world_id": Uuid::from_u128(9)},
+            "doc_type": "token", "schema_version": 1,
+            "name": "Goblin", "engine": {"x": 1.0},
+            "system": {}, "created_at": 0, "updated_at": 0
+        });
+        let doc: Document = serde_json::from_value(json).unwrap();
+        assert_eq!(doc.name.as_deref(), Some("Goblin"));
+        assert!(doc.engine.is_some());
+
+        // absent name/engine default to None (serde default)
+        let bare = serde_json::json!({
+            "id": Uuid::from_u128(1), "scope": {"kind": "world", "world_id": Uuid::from_u128(9)},
+            "doc_type": "note", "schema_version": 1, "system": {}, "created_at": 0, "updated_at": 0
+        });
+        let doc: Document = serde_json::from_value(bare).unwrap();
+        assert!(doc.name.is_none() && doc.engine.is_none());
+
+        // S4 reservation: unknown root key `modules` is rejected
+        let with_modules = serde_json::json!({
+            "id": Uuid::from_u128(1), "scope": {"kind": "world", "world_id": Uuid::from_u128(9)},
+            "doc_type": "note", "schema_version": 1, "system": {}, "modules": {},
+            "created_at": 0, "updated_at": 0
+        });
+        assert!(serde_json::from_value::<Document>(with_modules).is_err());
+    }
 
     #[test]
     fn grants_for_merges_all_and_by_type() {
@@ -290,6 +328,7 @@ pub(crate) mod tests {
             },
             doc_type: "actor".to_string(),
             schema_version: 1,
+            name: None,
             source: Some(Source {
                 id: Uuid::from_u128(2),
                 pack: Some("dnd5e".into()),
@@ -299,6 +338,7 @@ pub(crate) mod tests {
             permissions: PermissionSet::default(),
             embedded: BTreeMap::new(),
             parent_id: None,
+            engine: None,
             system: serde_json::json!({ "hp": 10 }),
             created_at: 100,
             updated_at: 100,
@@ -315,7 +355,63 @@ pub(crate) mod tests {
         d.source = None;
         d.owner = None;
         d.parent_id = None;
+        d.engine = default_test_engine(doc_type);
         d
+    }
+
+    /// A minimal valid `engine` body for `doc_type` (mirrors
+    /// `data::engine::validate_engine`'s battery), `None` for a non-engine
+    /// doc type. `system` bodies built by shared test helpers are opaque
+    /// placeholders unrelated to `doc_type` (pre-dating the engine band) and
+    /// stay untouched — the read-path re-root that consumes `engine` instead
+    /// of `system` for scene/token/etc. is later checkpoint work; this only
+    /// satisfies the ingress gate so `apply_intent`-driven fixtures can still
+    /// Create/Update.
+    pub(crate) fn default_test_engine(doc_type: &str) -> Option<serde_json::Value> {
+        match doc_type {
+            "token" => Some(serde_json::json!({
+                "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0
+            })),
+            "scene" => Some(serde_json::json!({
+                "grid": { "kind": "square", "size": 100.0 }, "background": null
+            })),
+            "wall" => {
+                Some(serde_json::json!({ "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 } }))
+            }
+            "region" => Some(serde_json::json!({
+                "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+                "behavior": "terrain", "cost": 1.0, "enabled": true
+            })),
+            "light" => Some(serde_json::json!({
+                "x": 0.0, "y": 0.0, "color": "#fff", "intensity": 1.0,
+                "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true
+            })),
+            "drawing" => Some(serde_json::json!({
+                "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+                "stroke": null, "fill": null
+            })),
+            "template" => Some(serde_json::json!({
+                "shape": { "kind": "cone", "x": 0.0, "y": 0.0, "size": 5.0, "direction": 0.0 },
+                "color": "#f00"
+            })),
+            "actor" => Some(serde_json::json!({
+                "displayName": "Test", "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+                "faction": null, "conditions": [], "prototype": true
+            })),
+            "message" => None, // chat's own re-root builds this doc directly; see chat/mod.rs
+            "world-settings" => Some(
+                serde_json::to_value(crate::data::engine::WorldSettingsEngine::default()).unwrap(),
+            ),
+            "vision-modes" => Some(serde_json::json!({ "modes": {} })),
+            "light-gradation" => Some(serde_json::json!({ "bands": [] })),
+            "chat-settings" => Some(serde_json::json!({})),
+            "dice-settings" => Some(serde_json::json!({})),
+            "channel-registry" => Some(serde_json::json!({ "channels": {} })),
+            "faction-registry" => Some(serde_json::json!({ "factions": {} })),
+            "condition-registry" => Some(serde_json::json!({ "conditions": {} })),
+            _ => None,
+        }
     }
 
     #[test]

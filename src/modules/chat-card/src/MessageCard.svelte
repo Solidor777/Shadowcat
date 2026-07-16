@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
-    parseMessageSystem,
+    parseMessageEngine,
     isKnownSegment,
     resolveTokenActor,
     actorDisplayName,
@@ -22,7 +22,7 @@
 
   // Fail-closed body parse (chat skill): a malformed/foreign-shaped `system` body renders
   // nothing rather than a partially-broken card.
-  const sys = $derived(parseMessageSystem(message));
+  const sys = $derived(parseMessageEngine(message));
 
   const authorName = $derived(sys ? (ctx.members.get(sys.user_owner) ?? sys.user_owner.slice(0, 8)) : "");
 
@@ -50,7 +50,7 @@
 
   function resolveActorOwnerName(owner: WireActorOwnerRef): string | null {
     if (owner.kind === "actor") {
-      const synthetic = { system: { actor_id: owner.actor_id, overrides: {} } } as unknown as WireDocument;
+      const synthetic = { engine: { actor_id: owner.actor_id, overrides: {} } } as unknown as WireDocument;
       const eff = resolveTokenActor(synthetic, ctx.documents);
       return eff ? actorDisplayName(eff) : null;
     }
@@ -96,7 +96,7 @@
 
   const whisperNames = $derived.by((): string => {
     if (sys?.audience.kind !== "whisper") return "";
-    return sys.audience.recipients.map((r) => ctx.members.get(r) ?? r.slice(0, 8)).join(", ");
+    return sys.audience.recipients.map((r: string) => ctx.members.get(r) ?? r.slice(0, 8)).join(", ");
   });
 
   /** Concatenates `text` segments only — the edit-prefill + roll-shell source of truth. */

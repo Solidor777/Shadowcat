@@ -22,6 +22,7 @@ function createOp(id: string, hp: number): WireOperation {
       scope: { kind: "world", world_id: "test-world" },
       doc_type: "actor",
       schema_version: 1,
+      name: null,
       source: null,
       owner: null,
       permissions: {

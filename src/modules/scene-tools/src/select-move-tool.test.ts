@@ -11,7 +11,7 @@ function setup() {
   const docs = new DocumentStore();
   docs.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
-    ops: [{ op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } }, "t1") }],
+    ops: [{ op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "t1") }],
   });
   const drags: (string | null)[] = [];
   const bridge = new SceneInteractionBridge();
@@ -33,8 +33,8 @@ function setupTwo() {
   docs.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
     ops: [
-      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } }, "tok1") },
-      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 300, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" } }, "tok2") },
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok1") },
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 300, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok2") },
     ],
   });
   const bridge = new SceneInteractionBridge();
@@ -56,7 +56,7 @@ test("moves all selected tokens together by the snapped delta", () => {
   tool.onPointerMove({ x: 200, y: 100 }, ev); // +100 in x
   tool.onPointerUp({ x: 200, y: 100 }, ev);
   const moves = sent.flat().filter((o) => o.op === "update");
-  const xByDoc = new Map(moves.map((m) => [m.op === "update" ? m.doc_id : "", m.op === "update" ? m.changes.find((c) => c.path === "/system/x")?.new : undefined]));
+  const xByDoc = new Map(moves.map((m) => [m.op === "update" ? m.doc_id : "", m.op === "update" ? m.changes.find((c) => c.path === "/engine/x")?.new : undefined]));
   expect(xByDoc.get("tok1")).toBe(200);
   expect(xByDoc.get("tok2")).toBe(400);
 });
@@ -96,8 +96,8 @@ test("a drag streams coalesced position intents and flushes the final on release
   const last = sent[1][0];
   expect(last.op).toBe("update");
   if (last.op === "update") {
-    expect(last.changes.find((c) => c.path === "/system/x")?.new).toBe(160);
-    expect(last.changes.find((c) => c.path === "/system/y")?.new).toBe(100);
+    expect(last.changes.find((c) => c.path === "/engine/x")?.new).toBe(160);
+    expect(last.changes.find((c) => c.path === "/engine/y")?.new).toBe(100);
   }
 });
 
@@ -116,12 +116,12 @@ test("circle-shaped token gets an ellipse selection ring (> 8 points), not a rec
   // returns shape:"circle", w:100, h:100. The selection ring must be an ellipsePoints
   // path (many points) rather than the 8-number rect path.
   const docs = new DocumentStore();
-  const scene = buildSceneDoc("w1", { grid: { kind: "square", size: 100 } }, "scene1");
-  const actor = buildActorDoc("w1", {
-    name: "Wraith", displayName: "Wraith",
+  const scene = buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "scene1");
+  const actor = buildActorDoc("w1", "Wraith", {
+    displayName: "Wraith",
     visual: { kind: "image", asset: "a1" },
     size: { w: 1, h: 1 }, shape: "circle",
-    faction: null, conditions: [], prototype: false,
+    faction: null, conditions: [], prototype: false, vision: null,
   }, "act1");
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 100, y: 100 }, 100, "tok1");
   docs.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [

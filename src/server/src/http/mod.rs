@@ -517,6 +517,18 @@ pub(crate) mod tests {
             "doc_type": "actor",
             "schema_version": 1,
             "permissions": permissions,
+            // "actor" is engine-defined; a minimal valid body so `Create`
+            // clears the ingress gate. `system` above is what these HTTP
+            // tests actually exercise (untouched).
+            "engine": {
+                "displayName": "Test",
+                "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 },
+                "shape": "square",
+                "faction": null,
+                "conditions": [],
+                "prototype": true
+            },
             "system": system,
             "created_at": 0,
             "updated_at": 0,
@@ -889,10 +901,7 @@ pub(crate) mod tests {
             .get(&format!("/api/worlds/{world_id}/contracts"))
             .await
             .json();
-        assert_eq!(
-            got[0]["provides"][0]["contract"],
-            "example.surface:widget"
-        );
+        assert_eq!(got[0]["provides"][0]["contract"], "example.surface:widget");
 
         // Dangling requires (no provider) is rejected.
         let dangling = serde_json::json!([

@@ -56,7 +56,7 @@ function activeScene(ctx: ToolContext): { id: string; size: number; perCell: num
   const vsid = ctx.viewedSceneId?.() ?? ctx.documents.query("scene")[0]?.id ?? null;
   const scene = vsid ? ctx.documents.get(vsid) : undefined;
   if (!scene) return null;
-  const grid = (scene.system as { grid?: { size?: number; distance?: { perCell: number; unit: string } } } | undefined)?.grid;
+  const grid = (scene.engine as { grid?: { size?: number; distance?: { perCell: number; unit: string } } } | undefined)?.grid;
   const size = grid?.size ?? 100;
   const { perCell, unit } = grid?.distance ?? { perCell: 5, unit: "ft" };
   return { id: scene.id, size, perCell, unit };
@@ -126,7 +126,7 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
       if (actorId) {
         const actor = ctx.documents.get(actorId);
         if (!actor) return false;
-        const mode = (actor.system as { prototype?: boolean })?.prototype ? "instance" : "link";
+        const mode = (actor.engine as { prototype?: boolean } | undefined)?.prototype ? "instance" : "link";
         ctx.dispatchIntent([{ op: "create", doc: buildTokenFromActor(ctx.world, scene.id, actor, mode, c, scene.size) }]);
         // A unique (linked) actor places once by default: clear the selection so repeated
         // clicks don't stamp duplicate live-views. The user can opt to keep it selected
@@ -139,7 +139,7 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
       ctx.dispatchIntent([
         {
           op: "create",
-          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: scene.size, h: scene.size, rotation: 0, visual: { kind: "image", asset } }),
+          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: scene.size, h: scene.size, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null }),
         },
       ]);
       return true;
@@ -265,7 +265,7 @@ function regionShapePath(mode: RegionShapeMode, a: Point, b: Point, freehand: nu
   }
 }
 
-/** The persisted `system.shape.points` layout for `mode`: rect=[x0,y0,x1,y1], circle=[cx,cy,r],
+/** The persisted `engine.shape.points` layout for `mode`: rect=[x0,y0,x1,y1], circle=[cx,cy,r],
  * polygon=[x0,y0,x1,y1,...] — matches the server's region shape parser expectations. */
 function regionShapeGeometry(mode: RegionShapeMode, a: Point, b: Point, freehand: number[]): number[] {
   switch (mode) {
@@ -348,8 +348,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     const sel = ctx.tokenSelection;
     if (!sel || sel.ids.size !== 1) return null;
     const [id] = [...sel.ids];
-    const sys = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
-    return [sys?.x ?? 0, sys?.y ?? 0];
+    const eng = ctx.documents.get(id)?.engine as { x?: number; y?: number } | undefined;
+    return [eng?.x ?? 0, eng?.y ?? 0];
   }
 
   /** Footprint radius of the single selected token (for pathfind clearance). Falls
@@ -698,8 +698,8 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
   let lastSentAt = -Infinity;
 
   const centerOf = (id: string): Point => {
-    const s = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
-    return { x: s?.x ?? 0, y: s?.y ?? 0 };
+    const e = ctx.documents.get(id)?.engine as { x?: number; y?: number } | undefined;
+    return { x: e?.x ?? 0, y: e?.y ?? 0 };
   };
 
   /** A closed ring per selected token into the tool overlay (cleared when empty). Circle
@@ -727,10 +727,10 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
     const ops: WireOperation[] = [];
     for (const [id, o] of origins) {
       const target = ctx.scene.snap({ x: o.x + delta.x, y: o.y + delta.y });
-      const sys = ctx.documents.get(id)?.system as { x?: number; y?: number } | undefined;
+      const eng = ctx.documents.get(id)?.engine as { x?: number; y?: number } | undefined;
       ops.push({ op: "update", doc_id: id, changes: [
-        { path: "/system/x", old: sys?.x ?? null, new: target.x },
-        { path: "/system/y", old: sys?.y ?? null, new: target.y },
+        { path: "/engine/x", old: eng?.x ?? null, new: target.x },
+        { path: "/engine/y", old: eng?.y ?? null, new: target.y },
       ] });
     }
     if (ops.length > 0) ctx.dispatchIntent(ops);

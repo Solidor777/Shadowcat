@@ -1,6 +1,7 @@
 pub mod asset;
 pub mod command;
 pub mod document;
+pub mod engine;
 pub mod membership;
 pub mod migrate;
 pub mod permission;
@@ -32,4 +33,6 @@ pub enum DataError {
     Forbidden,
     #[error("conflict: {0}")]
     Conflict(String),
+    #[error("invalid engine body: {0}")]
+    BadEngine(String),
 }

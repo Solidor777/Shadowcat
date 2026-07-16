@@ -39,6 +39,9 @@ function createIntent(world: string, id: string, name: string, role: "observer" 
           scope: { kind: "world", world_id: world },
           doc_type: "actor",
           schema_version: 1,
+          // Universal display name (envelope, M13-0 S2) — this is what the FTS
+          // index and the search-hit assertions below match against.
+          name,
           source: null,
           owner: null,
           permissions: {
@@ -50,7 +53,18 @@ function createIntent(world: string, id: string, name: string, role: "observer" 
           },
           embedded: {},
           parent_id: null,
-          system: { name },
+          // "actor" is engine-defined (M13-0 S1): a minimal valid body clears
+          // the ingress gate. `system` is unused by this test.
+          engine: {
+            displayName: name,
+            visual: { kind: "image", asset: "a.png" },
+            size: { w: 1, h: 1 },
+            shape: "square",
+            faction: null,
+            conditions: [],
+            prototype: true,
+          },
+          system: {},
           created_at: 0,
           updated_at: 0,
         },

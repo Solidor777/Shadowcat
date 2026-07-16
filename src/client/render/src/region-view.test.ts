@@ -5,10 +5,11 @@ import { MockBackend, RegionView } from "./index";
 function regionDoc(id: string, shape: unknown, behavior: string): WireDocument {
   return {
     id, scope: { kind: "world", world_id: "w1" }, doc_type: "region", schema_version: 1,
-    source: null, owner: null,
+    name: null, source: null, owner: null,
     permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
     embedded: {}, parent_id: "s1",
-    system: { shape, behavior, cost: 1, enabled: true },
+    engine: { shape, behavior, cost: 1, enabled: true },
+    system: {},
     created_at: 0, updated_at: 0,
   };
 }

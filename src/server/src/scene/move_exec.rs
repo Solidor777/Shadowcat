@@ -419,14 +419,19 @@ mod tests {
         d
     }
 
+    /// Builds a scene-entity fixture with `engine` set to `body` (`system` stays `{}`) — every
+    /// reader this file's tests exercise (`scene_grid_sizes`, `blocks_move`, `region_field`) is a
+    /// typed `engine` read; a `token` fixture built through this helper carries no position data
+    /// these tests consume (`execute_move` takes an explicit `path`, never the token doc's
+    /// position), so re-rooting it here alongside scene/wall/region is harmless.
     fn entity_doc(
         id: u128,
         parent: u128,
         ty: &str,
-        system: serde_json::Value,
+        body: serde_json::Value,
     ) -> crate::data::document::Document {
         let mut d = doc(id, Some(parent), ty);
-        d.system = system;
+        d.engine = Some(body);
         d
     }
 
@@ -436,8 +441,18 @@ mod tests {
         let token_id = Uuid::from_u128(11);
         let ecs = SceneEcs::from_documents(
             vec![
-                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
-                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
             ],
             0,
         );
@@ -461,8 +476,18 @@ mod tests {
         // line at y=50 that the vertical segment from (100,0) to (100,100) crosses.
         let ecs = SceneEcs::from_documents(
             vec![
-                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
-                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
                 entity_doc(
                     12,
                     10,
@@ -783,8 +808,18 @@ mod tests {
         let token_id = Uuid::from_u128(11);
         let ecs = SceneEcs::from_documents(
             vec![
-                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
-                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
                 region_doc(12, 10, "impassable", 1.0, (50.0, 0.0, 150.0, 100.0)),
             ],
             0,
@@ -814,8 +849,18 @@ mod tests {
         let token_id = Uuid::from_u128(11);
         let ecs = SceneEcs::from_documents(
             vec![
-                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
-                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
                 region_doc(12, 10, "arrest", 1.0, (50.0, -50.0, 150.0, 50.0)),
             ],
             0,
@@ -848,8 +893,18 @@ mod tests {
         let token_id = Uuid::from_u128(11);
         let ecs = SceneEcs::from_documents(
             vec![
-                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
-                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
                 region_doc(12, 10, "terrain", 2.5, (50.0, 0.0, 150.0, 100.0)),
             ],
             0,
@@ -878,11 +933,21 @@ mod tests {
         secret
             .permissions
             .property_overrides
-            .insert("/system".into(), crate::data::document::Visibility::GmOnly);
+            .insert("/engine".into(), crate::data::document::Visibility::GmOnly);
         let ecs = SceneEcs::from_documents(
             vec![
-                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
-                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
                 secret,
             ],
             0,
@@ -939,8 +1004,18 @@ mod tests {
         // Vertical wall at x=250, spanning y in [-50,50] — crosses a horizontal move at y=0.
         let ecs = SceneEcs::from_documents(
             vec![
-                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
-                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
                 entity_doc(
                     12,
                     10,
@@ -983,8 +1058,18 @@ mod tests {
         let token_id = Uuid::from_u128(11);
         let ecs = SceneEcs::from_documents(
             vec![
-                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
-                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
                 region_doc(12, 10, "impassable", 1.0, (300.0, -50.0, 500.0, 150.0)),
             ],
             0,
@@ -1014,8 +1099,18 @@ mod tests {
         let token_id = Uuid::from_u128(11);
         let ecs = SceneEcs::from_documents(
             vec![
-                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
-                entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
                 region_doc(12, 10, "arrest", 1.0, (300.0, -50.0, 500.0, 150.0)),
             ],
             0,
@@ -1048,8 +1143,18 @@ mod tests {
         let token_id = Uuid::from_u128(11);
         let ecs = SceneEcs::from_documents(
             vec![
-                entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
-                entity_doc(11, 10, "token", json!({ "x": 50.0, "y": 50.0 })),
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
                 region_doc(12, 10, "terrain", 3.0, (100.0, 0.0, 200.0, 100.0)),
                 region_doc(13, 10, "arrest", 1.0, (300.0, 0.0, 400.0, 100.0)),
             ],
@@ -1092,8 +1197,18 @@ mod tests {
         let scene_id = Uuid::from_u128(10);
         let token_id = Uuid::from_u128(11);
         let mut docs = vec![
-            entity_doc(10, 0, "scene", json!({ "grid": { "size": 100 } })),
-            entity_doc(11, 10, "token", json!({ "x": 0.0, "y": 0.0 })),
+            entity_doc(
+                10,
+                0,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+            ),
+            entity_doc(
+                11,
+                10,
+                "token",
+                json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+            ),
         ];
         if let Some((x1, y1, x2, y2)) = wall {
             docs.push(entity_doc(
@@ -1111,7 +1226,7 @@ mod tests {
             if secret_region {
                 r.permissions
                     .property_overrides
-                    .insert("/system".into(), crate::data::document::Visibility::GmOnly);
+                    .insert("/engine".into(), crate::data::document::Visibility::GmOnly);
             }
             docs.push(r);
         }

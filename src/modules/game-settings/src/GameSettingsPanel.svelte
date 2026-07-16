@@ -5,9 +5,9 @@
     buildWorldSettingsDoc, buildLightGradationDoc, buildVisionModesDoc, buildDiceSettingsDoc,
     buildChatSettingsDoc,
     DEFAULT_WORLD_SETTINGS,
-    type WorldSettingsSystem, type LightGradationSystem, type VisionModesSystem,
-    type SceneSystem, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsSystem,
-    type ChatSettingsSystem,
+    type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine,
+    type SceneEngine, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsEngine,
+    type ChatSettingsEngine,
   } from "@shadowcat/core";
 
   const ctx = getAppContext();
@@ -34,7 +34,12 @@
     // chat-settings mirrors the server's ChatContentPolicy::default() (every toggle
     // off/absent — plain text, previews resolve false since hyperlinks is off).
     if (ctx.documents.query("chat-settings").length === 0) {
-      ops.push({ op: "create" as const, doc: buildChatSettingsDoc(ctx.world, {}) });
+      ops.push({
+        op: "create" as const,
+        doc: buildChatSettingsDoc(ctx.world, {
+          markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null,
+        }),
+      });
     }
     seeded = true;
     if (ops.length > 0) ctx.dispatchIntent(ops);
@@ -46,31 +51,31 @@
     subscribe();
     return ctx.documents.query("world-settings")[0];
   });
-  const wsys = $derived.by((): WorldSettingsSystem | undefined => ws?.system as WorldSettingsSystem | undefined);
+  const wsys = $derived.by((): WorldSettingsEngine | undefined => ws?.engine as WorldSettingsEngine | undefined);
 
   const lgDoc = $derived.by((): WireDocument | undefined => {
     subscribe();
     return ctx.documents.query("light-gradation")[0];
   });
-  const lgsys = $derived.by((): LightGradationSystem | undefined => lgDoc?.system as LightGradationSystem | undefined);
+  const lgsys = $derived.by((): LightGradationEngine | undefined => lgDoc?.engine as LightGradationEngine | undefined);
 
   const vmDoc = $derived.by((): WireDocument | undefined => {
     subscribe();
     return ctx.documents.query("vision-modes")[0];
   });
-  const vmsys = $derived.by((): VisionModesSystem | undefined => vmDoc?.system as VisionModesSystem | undefined);
+  const vmsys = $derived.by((): VisionModesEngine | undefined => vmDoc?.engine as VisionModesEngine | undefined);
 
   const diceDoc = $derived.by((): WireDocument | undefined => {
     subscribe();
     return ctx.documents.query("dice-settings")[0];
   });
-  const dicesys = $derived.by((): DiceSettingsSystem | undefined => diceDoc?.system as DiceSettingsSystem | undefined);
+  const dicesys = $derived.by((): DiceSettingsEngine | undefined => diceDoc?.engine as DiceSettingsEngine | undefined);
 
   const chatDoc = $derived.by((): WireDocument | undefined => {
     subscribe();
     return ctx.documents.query("chat-settings")[0];
   });
-  const chatsys = $derived.by((): ChatSettingsSystem | undefined => chatDoc?.system as ChatSettingsSystem | undefined);
+  const chatsys = $derived.by((): ChatSettingsEngine | undefined => chatDoc?.engine as ChatSettingsEngine | undefined);
 
   // Single-field JSON-pointer update against a config doc.
   // INVARIANT: doc must be defined; callers guard with the {#if} block.
@@ -111,7 +116,7 @@
 
   const scene = $derived.by((): WireDocument | undefined =>
     scenes.find((s) => s.id === (selectedSceneId ?? scenes[0]?.id)));
-  const ssys = $derived.by((): SceneSystem | undefined => scene?.system as SceneSystem | undefined);
+  const ssys = $derived.by((): SceneEngine | undefined => scene?.engine as SceneEngine | undefined);
 
   // Single-field JSON-pointer update against the SELECTED scene doc.
   // INVARIANT: scene must be defined; callers guard with the {#if} block.
@@ -126,7 +131,7 @@
   // The unedited axis falls back to the current authored value, else DEFAULT_SCENE_BOUNDS.
   function setBounds(axis: "width" | "height", value: number): void {
     const cur = ssys?.bounds ?? DEFAULT_SCENE_BOUNDS;
-    setScene("/system/bounds", ssys?.bounds ?? null, { ...cur, [axis]: value });
+    setScene("/engine/bounds", ssys?.bounds ?? null, { ...cur, [axis]: value });
   }
 </script>
 
@@ -138,7 +143,7 @@
     <label>
       {ctx.t("gameSettings.movementRestriction")}
       <select aria-label="gameSettings.movementRestriction" value={wsys.scene.movementRestriction}
-        onchange={(e) => set(ws.id, "/system/scene/movementRestriction", wsys.scene.movementRestriction, (e.currentTarget as HTMLSelectElement).value)}>
+        onchange={(e) => set(ws.id, "/engine/scene/movementRestriction", wsys.scene.movementRestriction, (e.currentTarget as HTMLSelectElement).value)}>
         {#each MOVEMENT as m}<option value={m}>{m}</option>{/each}
       </select>
     </label>
@@ -146,7 +151,7 @@
     <label>
       {ctx.t("gameSettings.movementModel")}
       <select aria-label="gameSettings.movementModel" value={wsys.scene.movementModel}
-        onchange={(e) => set(ws.id, "/system/scene/movementModel", wsys.scene.movementModel, (e.currentTarget as HTMLSelectElement).value)}>
+        onchange={(e) => set(ws.id, "/engine/scene/movementModel", wsys.scene.movementModel, (e.currentTarget as HTMLSelectElement).value)}>
         {#each MOVEMENT_MODEL as m}<option value={m}>{m}</option>{/each}
       </select>
     </label>
@@ -154,13 +159,13 @@
     <label>
       {ctx.t("gameSettings.lightingEnabled")}
       <input type="checkbox" aria-label="gameSettings.lightingEnabled" checked={wsys.scene.lightingEnabled}
-        onchange={(e) => set(ws.id, "/system/scene/lightingEnabled", wsys.scene.lightingEnabled, (e.currentTarget as HTMLInputElement).checked)} />
+        onchange={(e) => set(ws.id, "/engine/scene/lightingEnabled", wsys.scene.lightingEnabled, (e.currentTarget as HTMLInputElement).checked)} />
     </label>
 
     <label>
       {ctx.t("gameSettings.lightMode")}
       <select aria-label="gameSettings.lightMode" value={wsys.scene.lightMode}
-        onchange={(e) => set(ws.id, "/system/scene/lightMode", wsys.scene.lightMode, (e.currentTarget as HTMLSelectElement).value)}>
+        onchange={(e) => set(ws.id, "/engine/scene/lightMode", wsys.scene.lightMode, (e.currentTarget as HTMLSelectElement).value)}>
         {#each LIGHTMODE as m}<option value={m}>{m}</option>{/each}
       </select>
     </label>
@@ -168,7 +173,7 @@
     <label>
       {ctx.t("gameSettings.diagonalRule")}
       <select aria-label="gameSettings.diagonalRule" value={wsys.pathfinding.diagonalRule}
-        onchange={(e) => set(ws.id, "/system/pathfinding/diagonalRule", wsys.pathfinding.diagonalRule, (e.currentTarget as HTMLSelectElement).value)}>
+        onchange={(e) => set(ws.id, "/engine/pathfinding/diagonalRule", wsys.pathfinding.diagonalRule, (e.currentTarget as HTMLSelectElement).value)}>
         {#each DIAGONAL as d}<option value={d}>{d}</option>{/each}
       </select>
     </label>
@@ -176,13 +181,13 @@
     <label>
       {ctx.t("gameSettings.animSpeed")}
       <input type="number" min="1" step="1" aria-label="gameSettings.animSpeed" value={wsys.animation.speedCellsPerSec}
-        onchange={(e) => set(ws.id, "/system/animation/speedCellsPerSec", wsys.animation.speedCellsPerSec, Number((e.currentTarget as HTMLInputElement).value))} />
+        onchange={(e) => set(ws.id, "/engine/animation/speedCellsPerSec", wsys.animation.speedCellsPerSec, Number((e.currentTarget as HTMLInputElement).value))} />
     </label>
 
     <label>
       {ctx.t("gameSettings.animEasing")}
       <select aria-label="gameSettings.animEasing" value={wsys.animation.easing}
-        onchange={(e) => set(ws.id, "/system/animation/easing", wsys.animation.easing, (e.currentTarget as HTMLSelectElement).value)}>
+        onchange={(e) => set(ws.id, "/engine/animation/easing", wsys.animation.easing, (e.currentTarget as HTMLSelectElement).value)}>
         {#each EASING as ea}<option value={ea}>{ea}</option>{/each}
       </select>
     </label>
@@ -200,7 +205,7 @@
             type="number" min="0" max="1" step="0.01"
             aria-label="gameSettings.gradation.{band.name}"
             value={band.minIllumination}
-            onchange={(e) => set(lgDoc.id, `/system/bands/${i}/minIllumination`, band.minIllumination, Number((e.currentTarget as HTMLInputElement).value))}
+            onchange={(e) => set(lgDoc.id, `/engine/bands/${i}/minIllumination`, band.minIllumination, Number((e.currentTarget as HTMLInputElement).value))}
           />
         </label>
       {/each}
@@ -220,7 +225,7 @@
             <select
               aria-label="gameSettings.visionMode.{mode.id}"
               value={mode.illuminationFloor}
-              onchange={(e) => set(vmDoc.id, `/system/modes/${mode.id}/illuminationFloor`, mode.illuminationFloor, (e.currentTarget as HTMLSelectElement).value)}
+              onchange={(e) => set(vmDoc.id, `/engine/modes/${mode.id}/illuminationFloor`, mode.illuminationFloor, (e.currentTarget as HTMLSelectElement).value)}
             >
               {#each ILLUMINATION_FLOORS as f}<option value={f}>{f}</option>{/each}
             </select>
@@ -231,7 +236,7 @@
               type="number" min="0" step="1"
               aria-label="gameSettings.visionMode.{mode.id}.range"
               value={mode.defaultRange}
-              onchange={(e) => set(vmDoc.id, `/system/modes/${mode.id}/defaultRange`, mode.defaultRange, Number((e.currentTarget as HTMLInputElement).value))}
+              onchange={(e) => set(vmDoc.id, `/engine/modes/${mode.id}/defaultRange`, mode.defaultRange, Number((e.currentTarget as HTMLInputElement).value))}
             />
           </label>
         </div>
@@ -241,15 +246,15 @@
 
   {#if ctx.role === "gm" && dicesys && diceDoc}
     <!-- Ambient dice-notation context: mode (Total/Success count) and direction
-         (High/Low wins). JSON-pointer paths: /system/mode, /system/direction.
-         Matches the server body shape (chat/settings.rs DiceSettingsBody) exactly:
+         (High/Low wins). JSON-pointer paths: /engine/mode, /engine/direction.
+         Matches the server body shape (data/engine/registries.rs DiceSettingsEngine) exactly:
          mode "total"|"success_count", direction "high_wins"|"low_wins". -->
     <fieldset>
       <legend>{ctx.t("gameSettings.dice.title")}</legend>
       <label>
         {ctx.t("gameSettings.dice.mode")}
         <select aria-label="gameSettings.dice.mode" value={dicesys.mode}
-          onchange={(e) => set(diceDoc.id, "/system/mode", dicesys.mode, (e.currentTarget as HTMLSelectElement).value)}>
+          onchange={(e) => set(diceDoc.id, "/engine/mode", dicesys.mode, (e.currentTarget as HTMLSelectElement).value)}>
           {#each DICE_MODE as m}
             <option value={m}>{m === "total" ? ctx.t("gameSettings.dice.modeTotal") : ctx.t("gameSettings.dice.modeSuccess")}</option>
           {/each}
@@ -259,7 +264,7 @@
       <label>
         {ctx.t("gameSettings.dice.direction")}
         <select aria-label="gameSettings.dice.direction" value={dicesys.direction}
-          onchange={(e) => set(diceDoc.id, "/system/direction", dicesys.direction, (e.currentTarget as HTMLSelectElement).value)}>
+          onchange={(e) => set(diceDoc.id, "/engine/direction", dicesys.direction, (e.currentTarget as HTMLSelectElement).value)}>
           {#each DICE_DIRECTION as d}
             <option value={d}>{d === "high_wins" ? ctx.t("gameSettings.dice.directionHigh") : ctx.t("gameSettings.dice.directionLow")}</option>
           {/each}
@@ -270,8 +275,9 @@
 
   {#if ctx.role === "gm" && chatsys && chatDoc}
     <!-- Chat content policy: hyperlinks toggle + link-preview tri-state.
-         JSON-pointer paths: /system/hyperlinks, /system/link_previews.
-         Matches the server body shape (chat/settings.rs ChatContentPolicy) exactly:
+         JSON-pointer paths: /engine/hyperlinks, /engine/link_previews.
+         Matches the server body shape (chat/settings.rs ChatContentPolicy, a type
+         alias onto data/engine/registries.rs ChatSettingsEngine) exactly:
          hyperlinks is a plain bool (default false); link_previews is TRI-STATE
          (absent/null = default-on-when-hyperlinks-on, true/false = explicit override) —
          the "" option writes null, mirroring the scene-override inherit pattern above. -->
@@ -280,7 +286,7 @@
       <label>
         {ctx.t("gameSettings.chat.hyperlinks")}
         <input type="checkbox" aria-label="gameSettings.chat.hyperlinks" checked={chatsys.hyperlinks ?? false}
-          onchange={(e) => set(chatDoc.id, "/system/hyperlinks", chatsys.hyperlinks ?? false, (e.currentTarget as HTMLInputElement).checked)} />
+          onchange={(e) => set(chatDoc.id, "/engine/hyperlinks", chatsys.hyperlinks ?? false, (e.currentTarget as HTMLInputElement).checked)} />
       </label>
 
       <label>
@@ -289,7 +295,7 @@
           value={chatsys.link_previews == null ? "" : chatsys.link_previews ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            set(chatDoc.id, "/system/link_previews", chatsys.link_previews ?? null, v === "" ? null : v === "true");
+            set(chatDoc.id, "/engine/link_previews", chatsys.link_previews ?? null, v === "" ? null : v === "true");
           }}>
           <option value="">{ctx.t("gameSettings.chat.linkPreviewsDefault")}</option>
           <option value="true">{ctx.t("gameSettings.enabled")}</option>
@@ -328,7 +334,7 @@
           value={ssys.vision?.movementRestriction ?? ""}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            setScene("/system/vision/movementRestriction", ssys.vision?.movementRestriction ?? null, v === "" ? null : v);
+            setScene("/engine/vision/movementRestriction", ssys.vision?.movementRestriction ?? null, v === "" ? null : v);
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           {#each MOVEMENT as m}<option value={m}>{m}</option>{/each}
@@ -341,7 +347,7 @@
           value={ssys.vision?.movementModel ?? ""}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            setScene("/system/vision/movementModel", ssys.vision?.movementModel ?? null, v === "" ? null : v);
+            setScene("/engine/vision/movementModel", ssys.vision?.movementModel ?? null, v === "" ? null : v);
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           {#each MOVEMENT_MODEL as m}<option value={m}>{m}</option>{/each}
@@ -354,7 +360,7 @@
           value={ssys.vision?.losRestriction == null ? "" : ssys.vision.losRestriction ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            setScene("/system/vision/losRestriction", ssys.vision?.losRestriction ?? null, v === "" ? null : v === "true");
+            setScene("/engine/vision/losRestriction", ssys.vision?.losRestriction ?? null, v === "" ? null : v === "true");
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           <option value="true">{ctx.t("gameSettings.enabled")}</option>
@@ -368,7 +374,7 @@
           value={ssys.vision?.fog == null ? "" : ssys.vision.fog ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            setScene("/system/vision/fog", ssys.vision?.fog ?? null, v === "" ? null : v === "true");
+            setScene("/engine/vision/fog", ssys.vision?.fog ?? null, v === "" ? null : v === "true");
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           <option value="true">{ctx.t("gameSettings.enabled")}</option>
@@ -382,7 +388,7 @@
           value={ssys.vision?.observerVision == null ? "" : ssys.vision.observerVision ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            setScene("/system/vision/observerVision", ssys.vision?.observerVision ?? null, v === "" ? null : v === "true");
+            setScene("/engine/vision/observerVision", ssys.vision?.observerVision ?? null, v === "" ? null : v === "true");
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           <option value="true">{ctx.t("gameSettings.enabled")}</option>
@@ -397,7 +403,7 @@
           value={ssys.lighting?.enabled == null ? "" : ssys.lighting.enabled ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            setScene("/system/lighting/enabled", ssys.lighting?.enabled ?? null, v === "" ? null : v === "true");
+            setScene("/engine/lighting/enabled", ssys.lighting?.enabled ?? null, v === "" ? null : v === "true");
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           <option value="true">{ctx.t("gameSettings.enabled")}</option>
@@ -411,7 +417,7 @@
           value={ssys.lighting?.mode ?? ""}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            setScene("/system/lighting/mode", ssys.lighting?.mode ?? null, v === "" ? null : v);
+            setScene("/engine/lighting/mode", ssys.lighting?.mode ?? null, v === "" ? null : v);
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           {#each LIGHTMODE as m}<option value={m}>{m}</option>{/each}
@@ -432,11 +438,11 @@
             const v = (e.currentTarget as HTMLSelectElement).value;
             const curEnv = ssys?.lighting?.environment != null ? { ...ssys.lighting.environment } : null;
             if (v === "") {
-              setScene("/system/lighting/environment", curEnv, null);
+              setScene("/engine/lighting/environment", curEnv, null);
             } else {
               // Seed from the current override if present; fall back to the built-in default
               // (cloned — DEFAULT_WORLD_SETTINGS is deep-frozen and must not be dispatched by ref).
-              setScene("/system/lighting/environment", curEnv, curEnv ?? { ...DEFAULT_WORLD_SETTINGS.scene.environment });
+              setScene("/engine/lighting/environment", curEnv, curEnv ?? { ...DEFAULT_WORLD_SETTINGS.scene.environment });
             }
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
@@ -452,7 +458,7 @@
             onchange={(e) => {
               // Coupling: reads sibling intensity from the current override (always present in
               // this branch) to avoid overwriting it with a stale value.
-              setScene("/system/lighting/environment", { ...ssys!.lighting!.environment! }, {
+              setScene("/engine/lighting/environment", { ...ssys!.lighting!.environment! }, {
                 color: (e.currentTarget as HTMLInputElement).value,
                 intensity: ssys!.lighting!.environment!.intensity,
               });
@@ -467,7 +473,7 @@
             onchange={(e) => {
               // Coupling: reads sibling color from the current override (always present in
               // this branch) to avoid overwriting it with a stale value.
-              setScene("/system/lighting/environment", { ...ssys!.lighting!.environment! }, {
+              setScene("/engine/lighting/environment", { ...ssys!.lighting!.environment! }, {
                 color: ssys!.lighting!.environment!.color,
                 intensity: Number((e.currentTarget as HTMLInputElement).value),
               });
@@ -481,7 +487,7 @@
         {ctx.t("gameSettings.scene.distancePerCell")}
         <input type="number" min="0" step="0.5" aria-label="gameSettings.scene.distancePerCell"
           value={ssys.grid?.distance?.perCell ?? ""}
-          onchange={(e) => setScene("/system/grid/distance", ssys.grid?.distance ?? null, {
+          onchange={(e) => setScene("/engine/grid/distance", ssys.grid?.distance ?? null, {
             perCell: Number((e.currentTarget as HTMLInputElement).value),
             unit: ssys?.grid?.distance?.unit ?? "ft",
           })} />
@@ -491,7 +497,7 @@
         {ctx.t("gameSettings.scene.distanceUnit")}
         <input type="text" aria-label="gameSettings.scene.distanceUnit"
           value={ssys.grid?.distance?.unit ?? ""}
-          onchange={(e) => setScene("/system/grid/distance", ssys.grid?.distance ?? null, {
+          onchange={(e) => setScene("/engine/grid/distance", ssys.grid?.distance ?? null, {
             perCell: ssys?.grid?.distance?.perCell ?? 5,
             unit: (e.currentTarget as HTMLInputElement).value,
           })} />

@@ -9,6 +9,8 @@ use uuid::Uuid;
 pub mod conn;
 pub mod protocol;
 pub mod room;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod time;
 
 pub use room::RoomRegistry;

@@ -2,14 +2,16 @@
 // consumer (render visual, faction border [M10b], conditions [M10c], displayName) uses.
 // Linked tokens read the shared actor + apply the override whitelist; instanced tokens read
 // their embedded copy. Returns null for a raw (actorless) or dangling-link token.
+// Re-rooted onto the three-band document shape: `name` (the actor's real identity) lives on
+// the envelope; `ActorEngine`/`TokenEngine` carry every other engine-owned field.
 import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { ActorSystem, TokenVisual, TokenOverrides, ConditionRegistrySystem, SceneSystem, VisionAssignment, RenderVisual, FaceVisual } from "./scene-docs";
+import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, ConditionRegistryEngine, SceneEngine, VisionAssignment, RenderVisual, FaceVisual } from "./scene-docs";
 
 export interface EffectiveActor {
-  name: string;
+  name: string | null;
   displayName: string;
-  visual: TokenVisual;
+  visual: TokenVisual | null;
   size: { w: number; h: number };
   shape: "square" | "circle";
   faction: string | null;
@@ -19,15 +21,15 @@ export interface EffectiveActor {
   visionModes: VisionAssignment[];
 }
 
-function project(base: ActorSystem, overrides?: TokenOverrides): EffectiveActor {
+function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOverrides | null): EffectiveActor {
   return {
-    name: overrides?.name ?? base.name,
+    name: overrides?.name ?? actorDoc.name,
     displayName: base.displayName,
     visual: overrides?.visual ?? base.visual,
     size: overrides?.size ?? base.size,
-    shape: overrides?.shape ?? base.shape,
+    shape: (overrides?.shape ?? base.shape) as "square" | "circle",
     faction: base.faction,
-    // Fail-closed: a missing/redacted /system/conditions yields no conditions, never a throw in
+    // Fail-closed: a missing/redacted actor `conditions` yields no conditions, never a throw in
     // the downstream `for...of` (the single chokepoint protecting every EffectiveActor consumer).
     conditions: base.conditions ?? [],
     // Override replaces actor base entirely (not merged); [] when neither present (fail-closed).
@@ -36,22 +38,23 @@ function project(base: ActorSystem, overrides?: TokenOverrides): EffectiveActor 
 }
 
 /** The name to show for an actor: the real name when present, else the non-secret
- * displayName, else a generic fallback. For unauthorized recipients the server strips the
- * real `name` (the OwnerOrGm tier), so it is absent here — fail-closed: a missing name yields
- * the generic label, never a leak. The single display chokepoint every surface reads. */
-export function actorDisplayName(a: { name?: string; displayName?: string }, fallback = "Unknown Creature"): string {
+ * displayName, else a generic fallback. For unauthorized recipients the server redacts the
+ * real `name` to `null` (the OwnerOrGm tier), so it is null here — fail-closed: a missing
+ * name yields the generic label, never a leak. The single display chokepoint every surface
+ * reads. */
+export function actorDisplayName(a: { name?: string | null; displayName?: string }, fallback = "Unknown Creature"): string {
   return a.name || a.displayName || fallback;
 }
 
 export function resolveTokenActor(token: WireDocument, store: ReadableDocuments): EffectiveActor | null {
-  const sys = token.system as { actor_id?: string | null; overrides?: TokenOverrides } | undefined;
-  if (sys?.actor_id) {
-    const actor = store.get(sys.actor_id);
+  const eng = token.engine as TokenEngine | undefined;
+  if (eng?.actor_id) {
+    const actor = store.get(eng.actor_id);
     if (!actor) return null;
-    return project(actor.system as ActorSystem, sys.overrides);
+    return project(actor, actor.engine as ActorEngine, eng.overrides);
   }
   const embedded = token.embedded?.actor?.[0];
-  if (embedded) return project(embedded.system as ActorSystem);
+  if (embedded) return project(embedded, embedded.engine as ActorEngine);
   return null;
 }
 
@@ -61,7 +64,7 @@ export function resolveTokenActor(token: WireDocument, store: ReadableDocuments)
 export function resolveConditions(token: WireDocument, store: ReadableDocuments): { id: string; name: string; icon: string }[] {
   const eff = resolveTokenActor(token, store);
   if (!eff) return [];
-  const reg = store.query("condition-registry")[0]?.system as ConditionRegistrySystem | undefined;
+  const reg = store.query("condition-registry")[0]?.engine as ConditionRegistryEngine | undefined;
   const map = reg?.conditions ?? {};
   const out: { id: string; name: string; icon: string }[] = [];
   for (const id of eff.conditions) {
@@ -72,8 +75,8 @@ export function resolveConditions(token: WireDocument, store: ReadableDocuments)
 }
 
 /** Where a token's conditions live + the current set. Linked tokens write the shared actor doc's
- * `/system/conditions`; instanced tokens write the embedded copy at
- * `/embedded/actor/0/system/conditions`. Returns null for a raw/dangling token. The caller gates
+ * `/engine/conditions`; instanced tokens write the embedded copy at
+ * `/embedded/actor/0/engine/conditions`. Returns null for a raw/dangling token. The caller gates
  * the write via `AppContext.canEdit(doc, path)` — the embedded path requires `core:manage_embedded`,
  * the actor path `core:write_fields`, so the capability model decides owner eligibility per mode. */
 export interface ConditionTarget {
@@ -83,15 +86,15 @@ export interface ConditionTarget {
 }
 
 export function conditionTarget(token: WireDocument, store: ReadableDocuments): ConditionTarget | null {
-  const sys = token.system as { actor_id?: string | null } | undefined;
-  if (sys?.actor_id) {
-    const actor = store.get(sys.actor_id);
+  const eng = token.engine as TokenEngine | undefined;
+  if (eng?.actor_id) {
+    const actor = store.get(eng.actor_id);
     if (!actor) return null;
-    return { doc: actor, path: "/system/conditions", conditions: (actor.system as ActorSystem).conditions ?? [] };
+    return { doc: actor, path: "/engine/conditions", conditions: (actor.engine as ActorEngine).conditions ?? [] };
   }
   const embedded = token.embedded?.actor?.[0];
   if (embedded) {
-    return { doc: token, path: "/embedded/actor/0/system/conditions", conditions: (embedded.system as ActorSystem).conditions ?? [] };
+    return { doc: token, path: "/embedded/actor/0/engine/conditions", conditions: (embedded.engine as ActorEngine).conditions ?? [] };
   }
   return null;
 }
@@ -102,7 +105,7 @@ export function conditionTarget(token: WireDocument, store: ReadableDocuments): 
  * raw/dangling tokens fall back to their own transform + square. `(x,y)` is the token center.
  * Pass a pre-resolved `eff` (from a prior `resolveTokenActor` call) to avoid a second
  * resolution; omit (or pass `undefined`) to resolve internally. Pass `null` explicitly for a
- * known actorless token to skip resolution and fall back to the raw system dimensions. */
+ * known actorless token to skip resolution and fall back to the raw engine dimensions. */
 export interface TokenBox {
   x: number;
   y: number;
@@ -114,19 +117,19 @@ export interface TokenBox {
 /** Grid cell size (px) of the token's parent scene; 100 when the scene is absent/garbled. */
 function sceneCellSize(token: WireDocument, store: ReadableDocuments): number {
   const scene = token.parent_id ? store.get(token.parent_id) : undefined;
-  return (scene?.system as SceneSystem | undefined)?.grid?.size ?? 100;
+  return (scene?.engine as SceneEngine | undefined)?.grid?.size ?? 100;
 }
 
 export function resolveTokenBox(token: WireDocument, store: ReadableDocuments, eff?: EffectiveActor | null): TokenBox {
-  const s = token.system as { x?: number; y?: number; w?: number; h?: number } | undefined;
-  const x = s?.x ?? 0;
-  const y = s?.y ?? 0;
+  const eng = token.engine as TokenEngine | undefined;
+  const x = eng?.x ?? 0;
+  const y = eng?.y ?? 0;
   const actor = eff === undefined ? resolveTokenActor(token, store) : eff;
   if (actor) {
     const cell = sceneCellSize(token, store);
     return { x, y, w: actor.size.w * cell, h: actor.size.h * cell, shape: actor.shape };
   }
-  return { x, y, w: s?.w ?? 0, h: s?.h ?? 0, shape: "square" };
+  return { x, y, w: eng?.w ?? 0, h: eng?.h ?? 0, shape: "square" };
 }
 
 /** Bounding-disc radius (grid units) consumed by the M10e+ pathfinder for clearance/inflation.
@@ -138,13 +141,13 @@ export function footprintRadius(eff: Pick<EffectiveActor, "shape" | "size">): nu
 }
 
 /** Resolve a `faces` visual to the active face's RenderVisual. Precedence: a valid manual
- * `token.system.face` > the first `faceMap` entry whose condition id is in `conditions` (in
+ * `token.engine.face` > the first `faceMap` entry whose condition id is in `conditions` (in
  * `conditions` array order — a v1 simplification, no severity ranking across simultaneously
  * active conditions) > `default` > the first key of `faces` (fail-closed continuation, never a
  * missing-visual null while any face exists). Returns null only when `faces` is empty. */
 function resolveFace(
   visual: Extract<TokenVisual, { kind: "faces" }>,
-  manualFace: string | undefined,
+  manualFace: string | null | undefined,
   conditions: string[],
 ): FaceVisual | null {
   const names = Object.keys(visual.faces);
@@ -176,10 +179,10 @@ export function resolveTokenVisual(
   eff?: EffectiveActor | null,
 ): RenderVisual | null {
   const actor = eff === undefined ? resolveTokenActor(token, store) : eff;
-  const sys = token.system as { visual?: TokenVisual; face?: string } | undefined;
-  const visual = actor?.visual ?? sys?.visual;
+  const eng = token.engine as TokenEngine | undefined;
+  const visual = actor?.visual ?? eng?.visual;
   if (!visual) return null;
-  const resolved = visual.kind === "faces" ? resolveFace(visual, sys?.face, actor?.conditions ?? []) : visual;
+  const resolved = visual.kind === "faces" ? resolveFace(visual, eng?.face, actor?.conditions ?? []) : visual;
   if (!resolved) return null;
   if (resolved.kind !== "image" && resolved.kind !== "animated") return null;
   if (resolved.kind === "animated" && !isValidAnimated(resolved)) return null;

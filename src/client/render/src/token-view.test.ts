@@ -6,9 +6,11 @@ import type { WireDocument, WireOperation } from "@shadowcat/core";
 function tokenDoc(id: string, x: number, y: number, asset: string): WireDocument {
   return {
     id, scope: { kind: "world", world_id: "w1" }, doc_type: "token", schema_version: 1,
-    source: null, owner: null,
+    name: null, source: null, owner: null,
     permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
-    embedded: {}, parent_id: null, system: { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset } },
+    embedded: {}, parent_id: null,
+    engine: { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null },
+    system: {},
     created_at: 0, updated_at: 0,
   };
 }
@@ -22,12 +24,12 @@ test("a dragging token snaps to its new position; a non-dragging one tweens", ()
   view.reconcile();
   // Mark dragging: the local dragger must follow the pointer with no tween lag.
   view.setDragging("t1");
-  store.applyCommand(cmd(2, [{ op: "update", doc_id: "t1", changes: [{ path: "/system/x", old: 0, new: 100 }] }]));
+  store.applyCommand(cmd(2, [{ op: "update", doc_id: "t1", changes: [{ path: "/engine/x", old: 0, new: 100 }] }]));
   view.reconcile();
   expect(backend.tokens.get("t1")!.x).toBe(100); // snapped immediately
   // Clear dragging: a subsequent move tweens (current lags behind target).
   view.setDragging(null);
-  store.applyCommand(cmd(3, [{ op: "update", doc_id: "t1", changes: [{ path: "/system/x", old: 100, new: 200 }] }]));
+  store.applyCommand(cmd(3, [{ op: "update", doc_id: "t1", changes: [{ path: "/engine/x", old: 100, new: 200 }] }]));
   view.reconcile();
   expect(backend.tokens.get("t1")!.x).toBeLessThan(200);
 });
@@ -47,7 +49,7 @@ test("a moved token tweens via tick toward the new position", () => {
   const view = new TokenView(store, new AssetResolver(), backend);
   store.applyCommand(cmd(1, [{ op: "create", doc: tokenDoc("t1", 0, 0, "img1") }]));
   view.reconcile();
-  store.applyCommand(cmd(2, [{ op: "update", doc_id: "t1", changes: [{ path: "/system/x", old: 0, new: 100 }] }]));
+  store.applyCommand(cmd(2, [{ op: "update", doc_id: "t1", changes: [{ path: "/engine/x", old: 0, new: 100 }] }]));
   view.reconcile(); // sets the new target; current still ~0 (existing token, not snapped)
   expect(backend.tokens.get("t1")!.x).toBeLessThan(100);
   view.tick(10_000); // settle
@@ -60,7 +62,8 @@ test("renders a linked token using the actor's visual", () => {
   const backend = new MockBackend();
   const actor = buildActorDoc(
     "w1",
-    { name: "G", displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+    "G",
+    { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
     "act1",
   );
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 10, y: 20 }, 100, "tok1");
@@ -87,7 +90,8 @@ test("resolves the faction border color from the registry", () => {
   const registry = buildFactionRegistryDoc("w1", { f1: { name: "F1", color: "#ff0000", stance: "hostile" } }, "reg1");
   const actor = buildActorDoc(
     "w1",
-    { name: "G", displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: "f1", conditions: [], prototype: false },
+    "G",
+    { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: "f1", conditions: [], prototype: false, vision: null },
     "act1",
   );
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
@@ -101,7 +105,8 @@ test("a token with no faction has a null border", () => {
   const backend = new MockBackend();
   const actor = buildActorDoc(
     "w1",
-    { name: "G", displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+    "G",
+    { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
     "act2",
   );
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok2");
@@ -116,7 +121,8 @@ test("resolves condition icon glyphs into token badges via the registry", () => 
   const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" }, prone: { name: "Prone", icon: "🛌" } }, "creg1");
   const actor = buildActorDoc(
     "w1",
-    { name: "G", displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: ["dead", "prone"], prototype: false },
+    "G",
+    { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: ["dead", "prone"], prototype: false, vision: null },
     "act1",
   );
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
@@ -130,7 +136,8 @@ test("a token whose actor has no conditions has empty badges", () => {
   const backend = new MockBackend();
   const actor = buildActorDoc(
     "w1",
-    { name: "G", displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+    "G",
+    { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
     "act2",
   );
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok2");
@@ -143,10 +150,11 @@ test("reconciles a linked 2x2 actor token to 2-cell pixel size + circle shape", 
   const store = new DocumentStore();
   const assets = new AssetResolver();
   const backend = new MockBackend();
-  const scene = buildSceneDoc("w1", { grid: { kind: "square", size: 100 } }, "scene1");
+  const scene = buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "scene1");
   const actor = buildActorDoc(
     "w1",
-    { name: "Ogre", displayName: "Ogre", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 2 }, shape: "circle", faction: null, conditions: [], prototype: false },
+    "Ogre",
+    { displayName: "Ogre", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 2 }, shape: "circle", faction: null, conditions: [], prototype: false, vision: null },
     "act1",
   );
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
@@ -161,7 +169,7 @@ test("reconciles a linked 2x2 actor token to 2-cell pixel size + circle shape", 
 test("raw token keeps its own size + defaults to square", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
-  const token = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 80, h: 80, rotation: 0, visual: { kind: "image", asset: "a1" } }, "tok1");
+  const token = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 80, h: 80, rotation: 0, visual: { kind: "image", asset: "a1" }, actor_id: null, overrides: null, face: null }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: token }]));
   new TokenView(store, new AssetResolver(), backend).reconcile();
   const spec = backend.tokens.get("tok1")!;
@@ -176,7 +184,8 @@ test("renders an animated frame-list visual with resolved frame URLs", () => {
   const backend = new MockBackend();
   const actor = buildActorDoc(
     "w1",
-    { name: "Wisp", displayName: "Wisp", visual: { kind: "animated", source: { type: "frames", frames: ["f1", "f2"] }, fps: 6, loop: true }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+    "Wisp",
+    { displayName: "Wisp", visual: { kind: "animated", source: { type: "frames", frames: ["f1", "f2"] }, fps: 6, loop: true }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
     "act1",
   );
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
@@ -196,7 +205,8 @@ test("renders an animated grid-sheet visual with a resolved sheet URL", () => {
   const backend = new MockBackend();
   const actor = buildActorDoc(
     "w1",
-    { name: "Torch", displayName: "Torch", visual: { kind: "animated", source: { type: "sheet", asset: "sheet1", rows: 2, cols: 4, count: 7 }, fps: 12, loop: false }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+    "Torch",
+    { displayName: "Torch", visual: { kind: "animated", source: { type: "sheet", asset: "sheet1", rows: 2, cols: 4, count: 7 }, fps: 12, loop: false }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
     "act1",
   );
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
@@ -210,12 +220,34 @@ test("renders an animated grid-sheet visual with a resolved sheet URL", () => {
   });
 });
 
+test("renders an animated grid-sheet visual with a null count coalesced to undefined", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const actor = buildActorDoc(
+    "w1",
+    "Torch",
+    { displayName: "Torch", visual: { kind: "animated", source: { type: "sheet", asset: "sheet1", rows: 2, cols: 4, count: null }, fps: 12, loop: false }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, assets, backend).reconcile();
+  expect(backend.tokens.get("tok1")!.visual).toEqual({
+    kind: "animated",
+    source: { type: "sheet", url: assets.url("sheet1"), rows: 2, cols: 4, count: undefined },
+    fps: 12,
+    loop: false,
+  });
+});
+
 test("a token whose visual fails to resolve (empty faces) is skipped, not crashed", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
   const actor = buildActorDoc(
     "w1",
-    { name: "Broken", displayName: "Broken", visual: { kind: "faces", faces: {}, default: "x" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false },
+    "Broken",
+    { displayName: "Broken", visual: { kind: "faces", faces: {}, default: "x", faceMap: null }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
     "act1",
   );
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
@@ -255,14 +287,14 @@ function makeStoreWithToken(id: string, pos: { x: number; y: number }): Document
 
 /** Apply an authoritative move to a token already in the store. */
 function moveToken(store: DocumentStore, id: string, pos: { x: number; y: number }): void {
-  const prev = (store.query("token").find((d) => d.id === id)?.system as { x: number; y: number }) ?? { x: 0, y: 0 };
+  const prev = (store.query("token").find((d) => d.id === id)?.engine as { x: number; y: number }) ?? { x: 0, y: 0 };
   store.applyCommand(
     cmd(
       (store.query("token").find((d) => d.id === id)?.updated_at ?? 0) + 2,
       [
         { op: "update", doc_id: id, changes: [
-          { path: "/system/x", old: prev.x, new: pos.x },
-          { path: "/system/y", old: prev.y, new: pos.y },
+          { path: "/engine/x", old: prev.x, new: pos.x },
+          { path: "/engine/y", old: prev.y, new: pos.y },
         ]},
       ],
     ),

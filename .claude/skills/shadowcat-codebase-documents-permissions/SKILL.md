@@ -10,16 +10,34 @@ Server is the source of truth; the client only mirrors the wire shape.
 
 ## Purpose
 
-A document is a typed envelope (id, type, owner, permissions, `schema_version`) + an opaque
-`system` JSONB body the engine never interprets semantically. Permissions are enforced
+A document is a typed envelope (id, type, owner, permissions, `schema_version`, display `name`)
+carrying **three bands (M13-0)**: the envelope `name: Option<String>` itself, a typed `engine`
+JSONB body (present only for engine-defined `doc_type`s, strictly ingress-validated), and an
+opaque `system` JSONB body the engine never interprets semantically. Permissions are enforced
 server-side **per recipient**: hidden fields are stripped before transmission, never
 sent-then-hidden. This subsystem also owns the visibility-partitioned full-text index.
 
 ## Key files & seams
 
-- `src/server/src/data/document.rs` — the `Document` envelope; `enum Visibility { All, GmOnly,
-  OwnerOrGm }` (the per-property visibility tiers); `PermissionSet.gm_role: Option<DocRole>`
-  (`#[serde(default)]`, ts-rs exported) — see Hard Invariants below.
+- `src/server/src/data/document.rs` — the `Document` envelope: `name: Option<String>` (universal
+  display name, `#[serde(default)]`) and `engine: Option<serde_json::Value>` (`#[ts(type =
+  "unknown")]`, present iff `doc_type` is engine-defined) alongside the pre-existing `system`
+  body; `enum Visibility { All, GmOnly, OwnerOrGm }` (the per-property visibility tiers);
+  `PermissionSet.gm_role: Option<DocRole>` (`#[serde(default)]`, ts-rs exported) — see Hard
+  Invariants below.
+- `src/server/src/data/engine/` (M13-0) — the typed `engine`-band structs + the ingress-validation
+  registry, one module per doc-type family (`token.rs`, `scene.rs`, `geometry.rs`,
+  `registries.rs`) plus `mod.rs`: `is_engine_doc_type(doc_type) -> bool` (the 17-entry registry:
+  `token`/`scene`/`wall`/`region`/`light`/`drawing`/`template`/`actor`/`message`/
+  `world-settings`/`vision-modes`/`light-gradation`/`chat-settings`/`dice-settings`/
+  `channel-registry`/`faction-registry`/`condition-registry`), `validate_engine(doc_type, engine)
+  -> Result<(), DataError>` (deserializes the body against that doc_type's typed struct;
+  `deny_unknown_fields` on every struct — engine-defined types WITHOUT an `engine` body error, and
+  non-engine types WITH one error too, so a non-engine `doc_type` can never smuggle a typed body
+  in). `src/server/src/data/command.rs`'s `validate_engine_tree` is the recursive ingress
+  chokepoint — called on every Create/Update POST-IMAGE (after all `FieldChange`s apply),
+  including embedded children, so a wholesale `/engine` replacement, a leaf `/engine/x` write, and
+  an embedded child's engine write are all covered by one call site.
 - `src/server/src/data/permission.rs` — the redaction core:
   - `resolve_access(user, world_role, doc) -> Access` (and `resolve_access_world`) builds the
     per-connection `Access { caps, all, see_gm_only, is_owner }`.
@@ -31,12 +49,29 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     `OwnerOrGm => see_gm_only || is_owner`, `All => true`.
   - `filter_properties(doc, access)` strips hidden **properties** from an outgoing doc — a
     PROPERTY-visibility gate only (see Hard Invariants: it does NOT decide whole-document
-    withholding).
+    withholding). `/system`, `/engine`, and `/name` overrides all **null the field rather than
+    strip the key** (M13-0 generalized this from a `/system`-only special case) — dropping the key
+    would either fail re-deserialization (`system`) or be indistinguishable from a doc that never
+    had a name/engine body, breaking the client's stable envelope shape; nested pointers one level
+    down still strip normally.
   - `redact_change(change, gm_only)` redacts field-level change events on the broadcast path.
 - `src/server/src/data/search.rs` — `index_content` (full) vs `index_content_public` (redacted):
-  the index is **partitioned by visibility**, not redacted after the fact.
+  the index is **partitioned by visibility**, not redacted after the fact. Indexes `name ∪ engine
+  ∪ system` (M13-0 added `name` and `engine` as leaf sources alongside `system`, same
+  string-leaf-walk treatment; `index_content_public` needs no structural change — it re-runs
+  `filter_properties` first, and a nulled `/engine`/`/name` band simply contributes nothing).
 - `src/server/src/data/{repository.rs,validation.rs}` — `Repository` trait (storage seam; SQLite today, Postgres-capable later) +
-  structural validation (size caps, field-path validity, `deny_unknown_fields`).
+  structural validation (size caps, field-path validity, `deny_unknown_fields`); `validation.rs`
+  applies the same `MAX_SYSTEM_BYTES` (256 KiB) cap to `engine` as to `system` (M13-0), checked
+  independently per block.
+- `src/server/src/data/sqlite.rs`'s `apply_intent` — Phase-1 OCC pre-image comparison
+  (`values_semantically_eq`) is **numeric-variant-aware, not raw equality** (M13-0). Same-variant
+  integer pairs (both `PosInt`/`NegInt`) compare EXACTLY as `i128`, no magnitude limit — this never
+  touches `f64`, so two distinct large integers past 2^53 never alias into a false match. Only a
+  genuinely-mixed pair (one integer variant, one `Float`) falls back to an `f64` comparison, gated
+  by a `|n| <= 2^53` exactness guard (`MAX_EXACT_F64_INT`) — outside that range a mixed-variant
+  pair is unconditionally unequal, never a false-positive OCC pass. Recurses through
+  `Object`/`Array` structure; any non-Number mismatch falls back to serde's derived `PartialEq`.
 - `src/client/core/src/wire.ts` — Zod mirror: `VisibilitySchema = z.enum(["all","gm_only",
   "owner_or_gm"])`, `property_overrides`. ts-rs generates the TS types from the Rust source.
 - `src/client/core/src/scene-docs.ts` — `ITEM_DOC_TYPE = "item"`, `ItemSystem`, `buildItemDoc`
@@ -94,6 +129,18 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 - **The search index is visibility-partitioned.** Redacting only the returned doc leaks GM-only
   text via snippet/match/score — index public and full content separately
   [[search-index-must-be-visibility-partitioned]].
+- **`engine` ingress validation is strict and fail-closed; `system` stays structural-only.**
+  `validate_engine_tree` rejects an engine body with an unknown field, a wrong-typed field, a
+  missing body on an engine `doc_type`, or a present body on a non-engine `doc_type` — this is a
+  REAL semantic-shape gate, unlike `system`'s size/JSON-validity-only structural check. Do not
+  conflate the two bands' authority models when reasoning about what the server does and doesn't
+  validate.
+- **OCC pre-image comparison at `apply_intent` is numeric-variant-aware, not raw equality.** A
+  naive raw-`==` assumption is now wrong: `values_semantically_eq` (`data/sqlite.rs`) exists
+  because JS clients cannot preserve the whole-number-vs-float distinction through a JSON
+  round-trip (e.g. a server-computed `100.0` comes back over the wire and reparses as `PosInt(100)`,
+  which raw `==` would treat as unequal to a stored `100`, causing a spurious `Conflict` on an
+  otherwise up-to-date write). See the `sqlite.rs` seam entry above for the exact comparison rule.
 - **Path-prefix authz covers ancestor (subtree-replacing) writes AND whole-doc Create**, not just
   descendant field updates [[path-prefix-authz-covers-ancestor-and-create]].
 - **Check-then-act across two queries needs one transaction** — TOCTOU-racy even at
@@ -105,6 +152,11 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 
 - **Wire types are generated** — change the Rust `Visibility`/`Document`, regenerate ts-rs, then
   mirror in the Zod schema (a drift guard enforces parity). Never hand-edit `src/types/generated`.
+- **A naive raw-equality assumption about OCC pre-images is wrong (M13-0).** Any code (or reviewer)
+  reasoning about `apply_intent`'s Phase-1 conflict check must account for
+  `values_semantically_eq`'s numeric-variant awareness — see the Hard Invariants entry above and
+  the `sqlite.rs` seam. Treating pre-image comparison as plain `serde_json::Value` `==` will
+  misdiagnose both false-conflict and false-pass scenarios.
 - **Embedded copies need a deep clone** — `{...doc}` aliases nested `system`/`permissions`/
   `embedded` until the wire round-trip; use `structuredClone` at construction
   [[embedded-copy-needs-deep-clone]].
@@ -114,7 +166,8 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 ## Pointers
 
 - Rationale: `docs/design/M2-data-foundation.md`; invariants in `docs/design/ARCHITECTURE.md`
-  §2 invariant 4 (per-recipient permissions) + §6 (data model).
+  §2 invariant 4 (per-recipient permissions) + invariant 6 (three-band document shape) + §6 (data
+  model). M13-0 design: `docs/superpowers/specs/2026-07-15-m13-0-document-shape-design.md`.
 - Relationships: `graphify query "document permissions redaction filter_properties can_see"`,
   `graphify path "permission.rs" "search.rs"`.
 - Deferred merge model: [[document-inheritance-merge-model]].

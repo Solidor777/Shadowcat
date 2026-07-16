@@ -1,13 +1,13 @@
 import { describe, expect, test } from "vitest";
-import { parseMessageSystem, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc, isKnownSegment, MESSAGE_DOC_TYPE } from "./chat-docs";
+import { parseMessageEngine, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc, isKnownSegment, MESSAGE_DOC_TYPE } from "./chat-docs";
 import type { WireDocument } from "./wire";
 
-function msgDoc(system: unknown, docType = MESSAGE_DOC_TYPE): WireDocument {
+function msgDoc(engine: unknown, docType = MESSAGE_DOC_TYPE): WireDocument {
   return {
     id: "m1", scope: { kind: "world", world_id: "w1" }, doc_type: docType,
-    schema_version: 1, source: null, owner: "u1",
+    schema_version: 1, name: null, source: null, owner: "u1",
     permissions: { default: "observer", users: {} } as WireDocument["permissions"],
-    embedded: {}, parent_id: null, system, created_at: 1, updated_at: 1,
+    embedded: {}, parent_id: null, engine, system: {}, created_at: 1, updated_at: 1,
   };
 }
 const base = {
@@ -15,42 +15,42 @@ const base = {
   audience: { kind: "public" }, content: [{ kind: "text", text: "hi" }],
 };
 
-describe("parseMessageSystem", () => {
+describe("parseMessageEngine", () => {
   test("parses a plain public text message", () => {
-    const sys = parseMessageSystem(msgDoc(base));
-    expect(sys).not.toBeNull();
-    expect(sys!.channel).toBe("general");
-    expect(sys!.content).toEqual([{ kind: "text", text: "hi" }]);
+    const eng = parseMessageEngine(msgDoc(base));
+    expect(eng).not.toBeNull();
+    expect(eng!.channel).toBe("general");
+    expect(eng!.content).toEqual([{ kind: "text", text: "hi" }]);
   });
   test("parses whisper audience, html segment, markers, source", () => {
-    const sys = parseMessageSystem(msgDoc({
+    const eng = parseMessageEngine(msgDoc({
       ...base, audience: { kind: "whisper", recipients: ["u2"] }, kind: "emote",
       content: [{ kind: "html", sanitized_html: "<em>waves</em>" }],
       source: "/me waves", edited_at: 5, deleted_at: null,
     }));
-    expect(sys!.audience).toEqual({ kind: "whisper", recipients: ["u2"] });
-    expect(sys!.kind).toBe("emote");
-    expect(sys!.source).toBe("/me waves");
-    expect(sys!.edited_at).toBe(5);
+    expect(eng!.audience).toEqual({ kind: "whisper", recipients: ["u2"] });
+    expect(eng!.kind).toBe("emote");
+    expect(eng!.source).toBe("/me waves");
+    expect(eng!.edited_at).toBe(5);
   });
   test("unknown segment kinds survive parse and are filtered by isKnownSegment", () => {
-    const sys = parseMessageSystem(msgDoc({ ...base, content: [{ kind: "text", text: "a" }, { kind: "preview_card", url: "x" }] }));
-    expect(sys).not.toBeNull();
-    expect(sys!.content).toHaveLength(2);
-    expect(sys!.content.filter(isKnownSegment)).toEqual([{ kind: "text", text: "a" }]);
+    const eng = parseMessageEngine(msgDoc({ ...base, content: [{ kind: "text", text: "a" }, { kind: "preview_card", url: "x" }] }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toHaveLength(2);
+    expect(eng!.content.filter(isKnownSegment)).toEqual([{ kind: "text", text: "a" }]);
   });
   test("fail-closed: a malformed KNOWN-kind segment fails the whole message parse", () => {
     // The unknown-kind fallback must not rescue a text/html segment with a
     // missing or wrong-typed payload — isKnownSegment would misclassify it.
-    expect(parseMessageSystem(msgDoc({ ...base, content: [{ kind: "text" }] }))).toBeNull();
-    expect(parseMessageSystem(msgDoc({ ...base, content: [{ kind: "text", text: 42 }] }))).toBeNull();
-    expect(parseMessageSystem(msgDoc({ ...base, content: [{ kind: "html", sanitized_html: 123 }] }))).toBeNull();
+    expect(parseMessageEngine(msgDoc({ ...base, content: [{ kind: "text" }] }))).toBeNull();
+    expect(parseMessageEngine(msgDoc({ ...base, content: [{ kind: "text", text: 42 }] }))).toBeNull();
+    expect(parseMessageEngine(msgDoc({ ...base, content: [{ kind: "html", sanitized_html: 123 }] }))).toBeNull();
   });
   test("fail-closed: wrong doc_type, malformed body, missing fields → null", () => {
-    expect(parseMessageSystem(msgDoc(base, "actor"))).toBeNull();
-    expect(parseMessageSystem(msgDoc("nonsense"))).toBeNull();
-    expect(parseMessageSystem(msgDoc({ channel: "g" }))).toBeNull();
-    expect(parseMessageSystem(msgDoc({ ...base, content: "not-an-array" }))).toBeNull();
+    expect(parseMessageEngine(msgDoc(base, "actor"))).toBeNull();
+    expect(parseMessageEngine(msgDoc("nonsense"))).toBeNull();
+    expect(parseMessageEngine(msgDoc({ channel: "g" }))).toBeNull();
+    expect(parseMessageEngine(msgDoc({ ...base, content: "not-an-array" }))).toBeNull();
   });
 });
 
@@ -74,15 +74,15 @@ function rollOutcome(overrides: Partial<Record<string, unknown>> = {}) {
 
 describe("roll segments (M11d-2)", () => {
   test("parses a roll_embed segment", () => {
-    const sys = parseMessageSystem(msgDoc({
+    const eng = parseMessageEngine(msgDoc({
       ...base, kind: "roll",
       content: [{ kind: "roll_embed", formula: "2d6+1", outcome: rollOutcome() }],
     }));
-    expect(sys).not.toBeNull();
-    expect(sys!.content).toEqual([{ kind: "roll_embed", formula: "2d6+1", outcome: rollOutcome() }]);
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toEqual([{ kind: "roll_embed", formula: "2d6+1", outcome: rollOutcome() }]);
   });
   test("tolerates extra server-only fields on a DieRecord (passthrough)", () => {
-    const sys = parseMessageSystem(msgDoc({
+    const eng = parseMessageEngine(msgDoc({
       ...base, kind: "roll",
       content: [{
         kind: "roll_embed", formula: "1d20",
@@ -91,85 +91,85 @@ describe("roll segments (M11d-2)", () => {
         }),
       }],
     }));
-    expect(sys).not.toBeNull();
+    expect(eng).not.toBeNull();
   });
   test("parses a roll_button segment with and without label", () => {
-    const withLabel = parseMessageSystem(msgDoc({
+    const withLabel = parseMessageEngine(msgDoc({
       ...base, content: [{ kind: "roll_button", formula: "1d20", label: "Attack" }],
     }));
     expect(withLabel!.content).toEqual([{ kind: "roll_button", formula: "1d20", label: "Attack" }]);
-    const withoutLabel = parseMessageSystem(msgDoc({
+    const withoutLabel = parseMessageEngine(msgDoc({
       ...base, content: [{ kind: "roll_button", formula: "1d20", label: null }],
     }));
     expect(withoutLabel!.content).toEqual([{ kind: "roll_button", formula: "1d20", label: null }]);
   });
   test("fail-closed: roll_embed missing outcome fails the whole message parse", () => {
-    expect(parseMessageSystem(msgDoc({
+    expect(parseMessageEngine(msgDoc({
       ...base, content: [{ kind: "roll_embed", formula: "1d20" }],
     }))).toBeNull();
   });
   test("fail-closed: roll_embed with outcome.total wrong type fails the whole message parse", () => {
-    expect(parseMessageSystem(msgDoc({
+    expect(parseMessageEngine(msgDoc({
       ...base, content: [{ kind: "roll_embed", formula: "1d20", outcome: rollOutcome({ total: "four" }) }],
     }))).toBeNull();
   });
   test("fail-closed: roll_embed with outcome.records not an array fails the whole message parse", () => {
-    expect(parseMessageSystem(msgDoc({
+    expect(parseMessageEngine(msgDoc({
       ...base, content: [{ kind: "roll_embed", formula: "1d20", outcome: rollOutcome({ records: "nope" }) }],
     }))).toBeNull();
   });
   test("unknown segment kinds are still opaque alongside known roll kinds", () => {
-    const sys = parseMessageSystem(msgDoc({
+    const eng = parseMessageEngine(msgDoc({
       ...base,
       content: [
         { kind: "roll_button", formula: "1d20", label: null },
         { kind: "preview_card", url: "https://example.com" },
       ],
     }));
-    expect(sys).not.toBeNull();
-    expect(sys!.content).toHaveLength(2);
-    expect(sys!.content.filter(isKnownSegment)).toEqual([{ kind: "roll_button", formula: "1d20", label: null }]);
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toHaveLength(2);
+    expect(eng!.content.filter(isKnownSegment)).toEqual([{ kind: "roll_button", formula: "1d20", label: null }]);
   });
 });
 
 describe("link_preview segments (M11d-3)", () => {
   test("parses a link_preview segment", () => {
-    const sys = parseMessageSystem(msgDoc({
+    const eng = parseMessageEngine(msgDoc({
       ...base,
       content: [
         { kind: "text", text: "check this out" },
         { kind: "link_preview", url: "https://example.com/a", title: "Example", description: "A page." },
       ],
     }));
-    expect(sys).not.toBeNull();
-    expect(sys!.content).toEqual([
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toEqual([
       { kind: "text", text: "check this out" },
       { kind: "link_preview", url: "https://example.com/a", title: "Example", description: "A page." },
     ]);
   });
   test("fail-closed: link_preview missing title fails the whole message parse", () => {
-    expect(parseMessageSystem(msgDoc({
+    expect(parseMessageEngine(msgDoc({
       ...base,
       content: [{ kind: "link_preview", url: "https://example.com/a", description: "A page." }],
     }))).toBeNull();
   });
   test("fail-closed: link_preview with url not a string fails the whole message parse", () => {
-    expect(parseMessageSystem(msgDoc({
+    expect(parseMessageEngine(msgDoc({
       ...base,
       content: [{ kind: "link_preview", url: 42, title: "Example", description: "A page." }],
     }))).toBeNull();
   });
   test("unknown segment kinds are still opaque alongside known link_preview kinds", () => {
-    const sys = parseMessageSystem(msgDoc({
+    const eng = parseMessageEngine(msgDoc({
       ...base,
       content: [
         { kind: "link_preview", url: "https://example.com/a", title: "Example", description: "A page." },
         { kind: "preview_card", url: "https://example.com/b" },
       ],
     }));
-    expect(sys).not.toBeNull();
-    expect(sys!.content).toHaveLength(2);
-    expect(sys!.content.filter(isKnownSegment)).toEqual([
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toHaveLength(2);
+    expect(eng!.content.filter(isKnownSegment)).toEqual([
       { kind: "link_preview", url: "https://example.com/a", title: "Example", description: "A page." },
     ]);
   });
@@ -180,7 +180,8 @@ test("buildChannelRegistryDoc builds a world-scoped parentless singleton map doc
   expect(d.doc_type).toBe("channel-registry");
   expect(d.parent_id).toBeNull();
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
-  expect((d.system as { channels: Record<string, { name: string }> }).channels.general.name).toBe("General");
+  expect((d.engine as { channels: Record<string, { name: string }> }).channels.general.name).toBe("General");
+  expect(d.system).toEqual({});
 });
 
 test("buildDiceSettingsDoc builds a world-scoped parentless singleton doc", () => {
@@ -188,13 +189,17 @@ test("buildDiceSettingsDoc builds a world-scoped parentless singleton doc", () =
   expect(d.doc_type).toBe("dice-settings");
   expect(d.parent_id).toBeNull();
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
-  expect(d.system).toEqual({ mode: "success_count", direction: "low_wins" });
+  expect(d.engine).toEqual({ mode: "success_count", direction: "low_wins" });
+  expect(d.system).toEqual({});
 });
 
 test("buildChatSettingsDoc builds a world-scoped parentless singleton doc", () => {
-  const d = buildChatSettingsDoc("w1", { hyperlinks: true, link_previews: false });
+  const d = buildChatSettingsDoc("w1", {
+    markdown: null, html: null, images: null, hyperlinks: true, emails: null, link_previews: false,
+  });
   expect(d.doc_type).toBe("chat-settings");
   expect(d.parent_id).toBeNull();
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
-  expect(d.system).toEqual({ hyperlinks: true, link_previews: false });
+  expect(d.engine).toEqual({ markdown: null, html: null, images: null, hyperlinks: true, emails: null, link_previews: false });
+  expect(d.system).toEqual({});
 });

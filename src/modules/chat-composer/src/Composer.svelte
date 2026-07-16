@@ -88,7 +88,7 @@
   <select id="chat-composer-speak-as" bind:value={selectedActorId}>
     <option value="">{t("chat.composer.myself")}</option>
     {#each speakableActors as actor (actor.id)}
-      <option value={actor.id}>{actorDisplayName(actor.system as { name?: string; displayName?: string })}</option>
+      <option value={actor.id}>{actorDisplayName({ name: actor.name, displayName: (actor.engine as { displayName?: string } | undefined)?.displayName })}</option>
     {/each}
   </select>
   <label class="visually-hidden" for="chat-composer-input">{placeholder}</label>

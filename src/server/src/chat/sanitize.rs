@@ -17,13 +17,13 @@ pub fn sanitize(raw: &str, policy: &ChatContentPolicy) -> Vec<Segment> {
     // policy toggles — always-on typing sugar, not policy-gated enrichment.
     let replaced = super::shortcodes::replace_shortcodes(raw);
     let raw: &str = &replaced;
-    if !policy.markdown && !policy.html {
+    if !policy.markdown() && !policy.html() {
         return vec![Segment::Text {
             text: raw.to_string(),
         }];
     }
     // Produce an HTML string, then hand the WHOLE thing to ammonia once.
-    let html_input = if policy.markdown {
+    let html_input = if policy.markdown() {
         let mut opts = Options::empty();
         opts.insert(Options::ENABLE_STRIKETHROUGH);
         opts.insert(Options::ENABLE_TABLES);
@@ -35,7 +35,7 @@ pub fn sanitize(raw: &str, policy: &ChatContentPolicy) -> Vec<Segment> {
             // visible, escaped text (e.g. `<b>` -> `&lt;b&gt;`) instead of
             // silently vanishing — content is never lost, and no raw `<`
             // character from user input can ever reach ammonia as live markup.
-            if !policy.html {
+            if !policy.html() {
                 match ev {
                     Event::Html(s) | Event::InlineHtml(s) => Event::Text(s),
                     other => other,
@@ -85,7 +85,7 @@ fn ammonia_for(policy: &ChatContentPolicy) -> ammonia::Builder<'static> {
     // recipient. Deny relative URLs outright; only the http/https(/mailto)
     // absolute schemes below are ever permitted.
     b.url_relative(ammonia::UrlRelative::Deny);
-    if !policy.images {
+    if !policy.images() {
         b.rm_tags(std::iter::once("img"));
     } else {
         // Image `src` must resolve to an allowlisted raster extension
@@ -126,13 +126,13 @@ fn ammonia_for(policy: &ChatContentPolicy) -> ammonia::Builder<'static> {
             Some(value.into())
         });
     }
-    if !policy.hyperlinks {
+    if !policy.hyperlinks() {
         b.rm_tags(std::iter::once("a"));
     }
     let mut schemes: HashSet<&str> = HashSet::new();
     schemes.insert("http");
     schemes.insert("https");
-    if policy.emails {
+    if policy.emails() {
         schemes.insert("mailto");
     }
     b.url_schemes(schemes);
@@ -149,30 +149,30 @@ mod tests {
 
     fn md() -> ChatContentPolicy {
         ChatContentPolicy {
-            markdown: true,
+            markdown: Some(true),
             ..off()
         }
     }
 
     fn html_on() -> ChatContentPolicy {
         ChatContentPolicy {
-            html: true,
+            html: Some(true),
             ..off()
         }
     }
 
     fn hyperlinks_on() -> ChatContentPolicy {
         ChatContentPolicy {
-            html: true,
-            hyperlinks: true,
+            html: Some(true),
+            hyperlinks: Some(true),
             ..off()
         }
     }
 
     fn images_on() -> ChatContentPolicy {
         ChatContentPolicy {
-            html: true,
-            images: true,
+            html: Some(true),
+            images: Some(true),
             ..off()
         }
     }
@@ -404,8 +404,8 @@ mod tests {
     #[test]
     fn images_on_allows_https_png_only() {
         let p = ChatContentPolicy {
-            markdown: true,
-            images: true,
+            markdown: Some(true),
+            images: Some(true),
             ..Default::default()
         };
         let ok = render(&sanitize("![a](https://x.example/a.png)", &p));
@@ -426,8 +426,8 @@ mod tests {
     #[test]
     fn images_on_extension_match_is_case_insensitive() {
         let p = ChatContentPolicy {
-            markdown: true,
-            images: true,
+            markdown: Some(true),
+            images: Some(true),
             ..Default::default()
         };
         let ok = render(&sanitize("![a](https://x.example/a.PNG)", &p));
@@ -445,8 +445,8 @@ mod tests {
     #[test]
     fn images_on_rejects_extension_smuggled_via_query_string() {
         let p = ChatContentPolicy {
-            markdown: true,
-            images: true,
+            markdown: Some(true),
+            images: Some(true),
             ..Default::default()
         };
         let bad = render(&sanitize("![a](https://x.example/a.exe?x=.png)", &p));
@@ -461,8 +461,8 @@ mod tests {
     #[test]
     fn images_on_rejects_missing_extension() {
         let p = ChatContentPolicy {
-            markdown: true,
-            images: true,
+            markdown: Some(true),
+            images: Some(true),
             ..Default::default()
         };
         let bad = render(&sanitize("![a](https://x.example/a)", &p));
@@ -489,17 +489,17 @@ mod tests {
     #[test]
     fn emails_toggle_gates_mailto() {
         let off = ChatContentPolicy {
-            html: true,
-            hyperlinks: true,
+            html: Some(true),
+            hyperlinks: Some(true),
             ..Default::default()
         };
         assert!(
             !render(&sanitize(r#"<a href="mailto:a@b.example">m</a>"#, &off)).contains("mailto:")
         );
         let on = ChatContentPolicy {
-            html: true,
-            hyperlinks: true,
-            emails: true,
+            html: Some(true),
+            hyperlinks: Some(true),
+            emails: Some(true),
             ..Default::default()
         };
         assert!(

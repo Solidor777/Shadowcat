@@ -1,20 +1,11 @@
 import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistrySystem, AnimatedSource } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec, ResolvedAnimatedSource } from "./types";
 import { parseColor } from "./geometry";
 import { TokenAnimator, type MoveSample } from "./token-animator";
 import type { EasingMode } from "./easing";
 import { sceneScopedDocs } from "./scene-scope";
-
-/** Engine-reserved token system fields (M8 §4.2; client-owned). `(x,y)` = center. */
-interface TokenSystem {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  rotation?: number;
-}
 
 /** Renders `doc_type:"token"` docs as backend token nodes, tweening transforms via a
  * TokenAnimator. The visual (size + image) applies immediately; the transform tweens. */
@@ -141,11 +132,14 @@ export class TokenView {
   private resolveSource(source: AnimatedSource): ResolvedAnimatedSource {
     return source.type === "frames"
       ? { type: "frames", urls: source.frames.map((id) => this.assets.url(id)) }
-      : { type: "sheet", url: this.assets.url(source.asset), rows: source.rows, cols: source.cols, ...(source.count !== undefined ? { count: source.count } : {}) };
+      // `count` is required-nullable on the generated `AnimatedSource` (`number | null`);
+      // `ResolvedAnimatedSource.count` is optional (`number | undefined`) — coalesce null to
+      // undefined rather than assuming presence implies non-null.
+      : { type: "sheet", url: this.assets.url(source.asset), rows: source.rows, cols: source.cols, count: source.count ?? undefined };
   }
 
   private toSpec(doc: WireDocument): TokenNodeSpec | null {
-    const s = doc.system as TokenSystem | undefined;
+    const s = doc.engine as TokenEngine | undefined;
     if (!s) return null;
     const eff = resolveTokenActor(doc, this.store);
     const visual = resolveTokenVisual(doc, this.store, eff);
@@ -157,7 +151,7 @@ export class TokenView {
     // Faction border color resolves through the world faction registry; null = no border.
     let borderColor: number | null = null;
     if (eff?.faction) {
-      const reg = this.store.query("faction-registry")[0]?.system as FactionRegistrySystem | undefined;
+      const reg = this.store.query("faction-registry")[0]?.engine as FactionRegistryEngine | undefined;
       const hex = reg?.factions?.[eff.faction]?.color;
       if (hex) borderColor = parseColor(hex);
     }

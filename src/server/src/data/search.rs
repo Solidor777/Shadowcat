@@ -23,12 +23,21 @@ pub struct SearchPage {
     pub next_cursor: Option<i64>,
 }
 
-/// Extract indexable text from a document, content-agnostically: every string
-/// and number leaf value of the `system` body (recursing objects and arrays),
-/// plus the `doc_type`. Keys, booleans, nulls, and the envelope are excluded.
+/// Extract indexable text from a document, content-agnostically: the
+/// `doc_type`, the envelope `name` (if present), and every string and number
+/// leaf value of the `engine` band (if present) and the `system` body
+/// (recursing objects and arrays in both). Keys, booleans, nulls, and the rest
+/// of the envelope are excluded.
 pub fn index_content(doc: &Document) -> String {
     let mut out = String::new();
     out.push_str(&doc.doc_type);
+    if let Some(name) = &doc.name {
+        out.push(' ');
+        out.push_str(name);
+    }
+    if let Some(engine) = &doc.engine {
+        collect_leaves(engine, &mut out);
+    }
     collect_leaves(&doc.system, &mut out);
     out
 }
@@ -105,7 +114,7 @@ pub fn build_match(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::document::{Document, PermissionSet, Scope};
+    use crate::data::document::{Document, PermissionSet, Scope, Visibility};
     use uuid::Uuid;
 
     fn doc(doc_type: &str, system: serde_json::Value) -> Document {
@@ -116,11 +125,13 @@ mod tests {
             },
             doc_type: doc_type.into(),
             schema_version: 1,
+            name: None,
             source: None,
             owner: None,
             permissions: PermissionSet::default(),
             embedded: Default::default(),
             parent_id: None,
+            engine: None,
             system,
             created_at: 0,
             updated_at: 0,
@@ -154,6 +165,64 @@ mod tests {
         // Keys and non-text leaves are not indexed.
         assert!(!c.contains("weapon"));
         assert!(!c.contains("true"));
+    }
+
+    #[test]
+    fn indexes_envelope_name_and_engine_alongside_system() {
+        let mut d = doc(
+            "actor",
+            serde_json::json!({ "bio": "vampire lord of Barovia" }),
+        );
+        d.name = Some("Strahd".into());
+        d.engine = Some(serde_json::json!({ "x": 3, "faction": "undead" }));
+
+        let c = index_content(&d);
+        for needle in ["Strahd", "3", "undead", "vampire", "Barovia"] {
+            assert!(c.contains(needle), "content missing {needle:?}: {c}");
+        }
+    }
+
+    #[test]
+    fn name_gm_only_hides_from_public_index_but_gm_index_retains_it() {
+        let mut d = doc("actor", serde_json::json!({}));
+        d.name = Some("Strahd".into());
+        d.permissions
+            .property_overrides
+            .insert("/name".into(), Visibility::GmOnly);
+
+        let public = index_content_public(&d);
+        assert!(
+            !public.contains("Strahd"),
+            "gm-only name leaked into the public index: {public}"
+        );
+
+        let full = index_content(&d);
+        assert!(full.contains("Strahd"), "GM index must retain the name");
+    }
+
+    #[test]
+    fn engine_leaf_gm_only_hides_from_public_index_but_gm_index_retains_it() {
+        // A redacted NESTED engine leaf (not the whole `/engine` band) must
+        // still be absent from the public index — proves `index_content_public`'s
+        // redaction-first property covers engine leaves, not just the band root.
+        let mut d = doc("actor", serde_json::json!({}));
+        d.engine = Some(serde_json::json!({ "x": 3, "faction": "undead" }));
+        d.permissions
+            .property_overrides
+            .insert("/engine/faction".into(), Visibility::GmOnly);
+
+        let public = index_content_public(&d);
+        assert!(
+            !public.contains("undead"),
+            "gm-only engine leaf leaked into the public index: {public}"
+        );
+        assert!(
+            public.contains('3'),
+            "unrestricted engine leaf must remain in the public index: {public}"
+        );
+
+        let full = index_content(&d);
+        assert!(full.contains("undead"), "GM index must retain the leaf");
     }
 
     #[test]

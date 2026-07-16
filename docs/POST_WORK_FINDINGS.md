@@ -211,3 +211,48 @@ are observations awaiting triage, not committed work.
   (toolrail after main) fixes tab order without visual change. Status: Resolved — M12b Task 6
   (commit fce8910) reordered the markup; grid areas kept both visual layouts identical.
   (M12b Task 1 code review.)
+
+- Title: M13-0 Task 3 — message doc `/engine` copy goes stale on edit/delete (interim, pre-Task-7).
+  Summary: `build_message_doc` (`chat/mod.rs`) intentionally writes the SAME `MessageSystem` body
+  into both `/system` and `/engine` — the `system` copy stays load-bearing because chat reads still
+  deserialize `cur.system` until Task 7 re-roots them, so setting `system: {}` now would break live
+  chat. `handle_edit_message`/`handle_delete_message` only construct a `/system` `FieldChange`
+  (`WriteOrigin::ServerMessageRevision`); they never touch `/engine`. So a message's `/engine` copy
+  reflects only its ORIGINAL Create body — any subsequent edit or soft-delete leaves it stale,
+  diverging from the authoritative `/system` body. Nothing reads the message `/engine` band today
+  (dead data until Task 7), and this is pre-v1 with a zero-migration policy (no shipped worlds), so
+  no cleanup is required — Task 7 must simply not trust any pre-Task-7 `/engine` copy of a
+  previously-edited message when it re-roots chat. Separately: `apply_command`
+  (`data/sqlite.rs::apply_command`) — an ungated trusted substrate with zero production callers
+  today — does NOT carry the same broadcast/event-log `/engine` normalization gate added to
+  `apply_intent` by this fix; if `apply_command` is ever wired to real undo/replay functionality,
+  it must gain the identical gate first. Status: Resolved — M13-0 Task 7 re-rooted both chat READS
+  and WRITES onto `/engine` (`handle_edit_message`/`handle_delete_message` now construct an
+  `/engine` `FieldChange`, not `/system`; `build_message_doc` writes `system: {}`); `/engine` is now
+  the sole source of truth and the staleness window is closed. Re-confirmed at Task 7: `apply_command`
+  still has zero production callers (grep across `src/server/src`), so it was not accidentally wired
+  into the chat re-root; its missing `/engine` normalization gate remains inert until a real
+  undo/replay caller is added, at which point it needs the same gate as `apply_intent`.
+
+- Title: Movement gate: token_move gate-dispatch is opt-in on ECS hydration (fail-open shape,
+  reachability unconfirmed). Summary: `Room::publish`'s per-operation movement gate only runs when
+  `SceneEcs::token_move` returns `Some(...)`, which requires the token to already exist in the
+  hydrated in-memory ECS (`self.index.get(&token_id)`). An `Update` operation touching
+  `/engine/x,y` on a token the ECS hasn't yet hydrated (e.g. a same-batch Create+Update sequence,
+  or an Update racing ECS hydration) would commit UNGATED — the gate is skipped (returns `None`,
+  falls through to the ordinary write path), not rejected. This is a PRE-EXISTING shape, unchanged
+  by Task 6 itself (Task 6 only moved the gate's read target from `/system` to `/engine`).
+  Status: Investigated — unreachable: `apply_intent`'s Phase 1 (`data/sqlite.rs`) validates every
+  op in a single batch sequentially, in array order, BEFORE any Phase 2 row mutation runs — an
+  `Operation::Update`'s Phase 1 branch calls `Self::load_document(&mut *tx, *doc_id)` and rejects
+  with `DataError::Conflict` if it returns `None`; a same-batch `Create` for that same `doc_id`
+  has not yet inserted its row (insertion is Phase 2 only), so a `[Create(token),
+  Update(token, /engine/x=...)]` batch is rejected outright at Phase 1, never reaching commit.
+  Separately, `Room::publish` acquires `publish_guard` (a `tokio::sync::Mutex<()>`) for its ENTIRE
+  gate→`apply_intent`→ECS-hydrate critical section (guard taken at function entry, held through
+  `commit_ops_locked`, never re-entered or released early) — every `publish` call for a room is
+  therefore fully serialized against every other `publish` call for that same room, including
+  across separate WS requests, so an `Update` racing a DIFFERENT publish call's ECS hydration for
+  the same token cannot land mid-hydration either: the racing publish cannot even begin its own
+  Phase 1 validation (which needs the same guard, via `commit_ops_locked`) until the prior
+  publish's hydration has fully completed. No code change required.

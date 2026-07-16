@@ -20,9 +20,17 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 ## Key files & seams
 
 - `src/client/core/src/scene-docs.ts` — builders + types (all re-exported from `core/index.ts`):
-  - `buildActorDoc(worldId, system, id?)`, `ActorSystem`.
+  M13-0 re-rooted every builder/accessor below onto the envelope `name` + typed `engine` band;
+  `ActorSystem`/`TokenSystem`/`FactionRegistrySystem`/`ConditionRegistrySystem` are renamed to
+  `ActorEngine`/`TokenEngine`/`FactionRegistryEngine`/`ConditionRegistryEngine` (no back-compat
+  alias — token/actor position, vision, conditions, and visual all now live on `doc.engine`, not
+  `doc.system`). `ItemSystem` is UNCHANGED — `item` is a client-only doc_type with no Rust-side
+  registration, not one of the 17 engine-defined types, so it stays on the opaque `system` band
+  ([[shadowcat-codebase-sheets]]/`shadowcat-codebase-documents-permissions` cover it).
+  - `buildActorDoc(worldId, name, engine, id?)` — `name: string | null` is now a DEDICATED
+    parameter (the envelope `name` band), separate from the `ActorEngine` body.
   - `buildTokenFromActor(worldId, sceneId, actor, "link"|"instance", pos, size, id?)` — link mode
-    sets `token.system.actor_id` + `overrides`; instance mode embeds an independent (deep-cloned)
+    sets `token.engine.actor_id` + `overrides`; instance mode embeds an independent (deep-cloned)
     copy with `source` provenance.
   - `TokenOverrides` whitelist includes `shape` (alongside `name`, `visual`, `size`) — a per-token
     `"square" | "circle"` override applied on top of the actor's own shape field.
@@ -36,20 +44,21 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
     separate mechanism). `TokenVisual = RenderVisual | {kind:"faces", faces: Record<string,
     FaceVisual>, default: string, faceMap?: Record<string,string>}` — `default` is REQUIRED (no
     `?`), per `scene-docs.ts:181`; `ActorsPanel.buildVisual()` always supplies it and nulls the
-    whole visual if unset. `ActorSystem.visual` and
+    whole visual if unset. `ActorEngine.visual` and
     `TokenOverrides.visual` both carry `TokenVisual` (a token can override the actor's whole visual,
-    faces-union included). `TokenSystem.face?: string` — the per-token ACTIVE face selection; only
+    faces-union included). `TokenEngine.face?: string` — the per-token ACTIVE face selection; only
     meaningful when the effective visual resolves to `"faces"`, ignored otherwise; token-local
     always (deliberately NOT part of `overrides` — it selects INTO the actor's faces map rather than
     overriding actor data).
   - `VisionAssignment { mode, range }` (mode = a `vision-modes` registry id, range in grid cells);
-    `ActorSystem.vision?` + `TokenOverrides.vision?` carry `VisionAssignment[]` (M10e-1).
-  - `setNameHidden(doc, hidden)` — sets/clears the `OwnerOrGm` override on `/system/name`.
+    `ActorEngine.vision?` + `TokenOverrides.vision?` carry `VisionAssignment[]` (M10e-1).
+  - `setNameHidden(doc, hidden)` — sets/clears the `OwnerOrGm` override on `/name` (the envelope
+    field — M13-0 re-root, was `/system/name`).
   - `FactionStance = "friendly"|"neutral"|"hostile"`, `Faction { name, color, stance }`,
-    `FactionRegistrySystem`, `buildFactionRegistryDoc(worldId, factions, id?)` (param
+    `FactionRegistryEngine`, `buildFactionRegistryDoc(worldId, factions, id?)` (param
     `factions: Record<string, Faction>`) — a
     world-scoped, **parentless config-document** with an id-keyed faction map.
-  - `Condition { name, icon }`, `ConditionRegistrySystem`, `buildConditionRegistryDoc(worldId,
+  - `Condition { name, icon }`, `ConditionRegistryEngine`, `buildConditionRegistryDoc(worldId,
     conditions, id?)` (param `conditions: Record<string, Condition>`) — same parentless
     config-document shape as factions; `icon` is an emoji glyph rendered as a token badge.
 - `src/client/core/src/actor.ts` — `resolveTokenActor(token, store) -> EffectiveActor | null`
@@ -57,10 +66,11 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   redaction-aware fallback), `TokenOverrides` projection. Conditions: `resolveConditions(token,
   store)` (effective condition ids → `{id,name,icon}` via the registry, fail-closed) +
   `conditionTarget(token, store) -> {doc, path, conditions}` (the write site: linked →
-  `actor` doc `/system/conditions`; instanced → token `/embedded/actor/0/system/conditions`).
+  `actor` doc `/engine/conditions`; instanced → token `/embedded/actor/0/engine/conditions` —
+  M13-0 re-root, was `/system/conditions`).
   Shapes + footprint: `resolveTokenBox(token, store, eff?) -> TokenBox {x,y,w,h,shape}` — the
   scene-pixel footprint read-through: actor-backed size = `EffectiveActor.size × parent-scene grid
-  cell` (default 100 px); raw/dangling token → `token.system.w/h` + `"square"`; fail-closed (never
+  cell` (default 100 px); raw/dangling token → `token.engine.w/h` + `"square"`; fail-closed (never
   throws); optional pre-resolved `eff` avoids a double `resolveTokenActor` call. `TokenBox` is
   exported from `core/index.ts`. `footprintRadius(eff) -> number` — grid-unit bounding-disc radius
   for the M10e+ pathfinder: circle = `max(w,h)/2`, square = half-diagonal (`√(w²+h²)/2`); both in
@@ -68,10 +78,10 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   `overrides?.vision ?? base.vision ?? []` (per-token override **replaces** actor base, not merged).
   **`resolveTokenVisual(token, store, eff?) -> RenderVisual | null` (M10h)** — the render-boundary
   visual resolver, sibling to `resolveTokenActor`/`resolveTokenBox`/`resolveConditions`. Reads
-  `actor?.visual ?? token.system.visual` (the projected `EffectiveActor.visual` — an
+  `actor?.visual ?? token.engine.visual` (the projected `EffectiveActor.visual` — an
   actor-override-then-base precedence identical to every other overridable field — falling back to
-  a raw token's own `system.visual` when there's no actor at all); when that resolves to
-  `{kind:"faces"}`, applies precedence **manual `token.system.face` (if it names an existing face) >
+  a raw token's own `engine.visual` when there's no actor at all); when that resolves to
+  `{kind:"faces"}`, applies precedence **manual `token.engine.face` (if it names an existing face) >
   first `faceMap` entry matching an id in the token's RAW `EffectiveActor.conditions[]`, in array
   order (NOT `resolveConditions`'s enriched `{id,name,icon}` — the raw id list) > `default` (if it
   names an existing face) > first object key > `null` if `faces` is empty**. Fails closed
@@ -84,7 +94,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 - `src/modules/actors/{ActorsPanel.svelte,index.ts}` — create/list/pick actors; hide-name control;
   faction assignment; shape (`square`/`circle`) + size (fractional grid-cells) editing in the
   create form and in the per-row GM inline editor; darkvision range authoring (create + per-row),
-  writing `system.vision: [{ mode: "darkvision", range }]` (omitted when range 0). **Visual
+  writing `engine.vision: [{ mode: "darkvision", range }]` (M13-0 re-root, was `system.vision`;
+  omitted when range 0). **Visual
   authoring (M10h):** a visual-kind editor (image / faces / animated) in the actor-creation form;
   `buildVisual()` validates per-kind completeness for EVERY face row (an image row needs `asset`; an
   animated row needs non-empty `frames` or a chosen `sheetAsset` — a failing row nulls the WHOLE
@@ -94,8 +105,9 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   A separate per-TOKEN face-swap palette (distinct from the per-actor creation-form editor) shows
   only when the selected token's effective visual (via `resolveTokenActor`, the canonical
   read-through — **still the load-bearing entry point for token/actor resolution, unchanged by
-  M10h**) is `"faces"`; clicking a face name dispatches a `/system/face` update on the TOKEN doc.
-  **Load-bearing convention: the dispatched update's `old` reads the RAW stored `token.system.face`**
+  M10h**) is `"faces"`; clicking a face name dispatches a `/engine/face` (M13-0 re-root, was
+  `/system/face`) update on the TOKEN doc.
+  **Load-bearing convention: the dispatched update's `old` reads the RAW stored `token.engine.face`**
   (never a resolved/defaulted value) — the same raw-`old` convention already established for other
   config-doc field-toggle editors in this codebase (e.g. the M10f-3 `snapToGrid` toggle) — a
   resolved/defaulted `old` would mismatch the server's field-level optimistic-concurrency check
@@ -136,9 +148,10 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 - **Condition toggling is capability-gated client-side via `AppContext.canEdit(doc, path)`** — an
   advisory mirror of the server's Update-path check (GM bypasses; a non-GM needs the doc-role
   write cap). The server stays authoritative; the gate only shows/hides the control.
-- **Name privacy rides the existing redaction layer** — `setNameHidden` flips `/system/name` to
-  `OwnerOrGm`; the owner still sees it, others get the `actorDisplayName` fallback. Enforcement is
-  server-side and fail-closed (see `shadowcat-codebase-documents-permissions`).
+- **Name privacy rides the existing redaction layer** — `setNameHidden` flips `/name` (the
+  envelope field — M13-0 re-root, was `/system/name`) to `OwnerOrGm`; the owner still sees it,
+  others get the `actorDisplayName` fallback. Enforcement is server-side and fail-closed (see
+  `shadowcat-codebase-documents-permissions`).
 
 ## Gotchas
 
