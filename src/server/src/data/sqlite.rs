@@ -842,9 +842,14 @@ const MAX_EXACT_F64_INT: i128 = 1i128 << 53;
 /// drag after a server-executed `execute_move`, or the `ActorsPanel` vision-range
 /// editor's nested `range` field). This function recurses into `Object`/`Array`
 /// structure and treats mismatched-variant Number leaves as equal when they
-/// represent the same value AND the integer side is exactly representable as an
-/// `f64` (`|n| <= 2^53`); outside that range, or for any non-Number mismatch,
-/// it falls back to serde's derived `PartialEq`.
+/// represent the same value. Two Numbers that BOTH parse as integers (either
+/// PosInt/NegInt variant) are compared EXACTLY as `i128`, with no magnitude
+/// limit -- this case never touches `f64`, so distinct large integers (past
+/// 2^53) never alias into a false match. The `|n| <= 2^53` exactness guard
+/// applies ONLY to the genuinely mixed case, one side an integer and the other
+/// a `Float`, where an `f64` comparison is unavoidable because the Float side
+/// has no exact integer form; outside that range, or for any non-Number
+/// mismatch, it falls back to serde's derived `PartialEq`.
 fn values_semantically_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     use serde_json::Value;
     match (a, b) {
@@ -878,6 +883,17 @@ fn values_semantically_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool 
                 .map(|v| v as i128)
                 .or_else(|| nb.as_u64().map(|v| v as i128));
             match (ia, ib) {
+                // Both sides parse as integers (PosInt/NegInt pair): i128 holds
+                // every i64/u64 value without loss, so compare exactly. Never
+                // fall through to f64 here -- two distinct integers past 2^53
+                // (e.g. 2^62 vs 2^62 + 1) alias to the same f64 and would
+                // falsely compare equal, which is an OCC bypass (a stale
+                // pre-image would match a genuinely different stored value).
+                (Some(va), Some(vb)) => va == vb,
+                // Genuinely mixed case: one side is an integer, the other a
+                // Float. f64 comparison is unavoidable here since the Float
+                // side has no exact integer representation; only exact when
+                // the integer side is within f64's exact range.
                 (Some(v), None) | (None, Some(v))
                     if v.unsigned_abs() > MAX_EXACT_F64_INT as u128 =>
                 {
@@ -1778,6 +1794,46 @@ mod tests {
         let neg_int = serde_json::Value::Number(serde_json::Number::from(-50i64));
         let neg_float = serde_json::json!(-50.0);
         assert!(values_semantically_eq(&neg_int, &neg_float));
+    }
+
+    #[test]
+    fn values_semantically_eq_rejects_large_posint_pair_aliased_by_f64() {
+        // 2^62 and 2^62 + 1 are both PosInt (both fit in i128 exactly) but
+        // alias to the same f64 value if compared lossily -- the both-integer
+        // path must compare them exactly and reject the match.
+        let a = serde_json::Value::Number(serde_json::Number::from(1u64 << 62));
+        let b = serde_json::Value::Number(serde_json::Number::from((1u64 << 62) + 1));
+        // Sanity: confirm these two DO alias under a naive f64 cast, i.e. this
+        // is a real repro and not a vacuous case.
+        assert_eq!(a.as_f64(), b.as_f64());
+        assert!(!values_semantically_eq(&a, &b));
+    }
+
+    #[test]
+    fn values_semantically_eq_rejects_large_negint_pair_aliased_by_f64() {
+        // Negative counterpart: two distinct large NegInt values that alias
+        // when cast to f64 must still be rejected as unequal.
+        let a = serde_json::Value::Number(serde_json::Number::from(-(1i64 << 62)));
+        let b = serde_json::Value::Number(serde_json::Number::from(-((1i64 << 62) + 1)));
+        assert_eq!(a.as_f64(), b.as_f64());
+        assert!(!values_semantically_eq(&a, &b));
+    }
+
+    #[test]
+    fn values_semantically_eq_rejects_posint_vs_negint_same_magnitude() {
+        // PosInt(100) vs NegInt(-100): same absolute value, opposite sign --
+        // sign must be respected, not just magnitude.
+        let pos = serde_json::Value::Number(serde_json::Number::from(100u64));
+        let neg = serde_json::Value::Number(serde_json::Number::from(-100i64));
+        assert!(!values_semantically_eq(&pos, &neg));
+    }
+
+    #[test]
+    fn values_semantically_eq_accepts_equal_small_posint_pair() {
+        // Both-integer, genuinely equal values must still compare equal.
+        let a = serde_json::Value::Number(serde_json::Number::from(5u64));
+        let b = serde_json::Value::Number(serde_json::Number::from(5u64));
+        assert!(values_semantically_eq(&a, &b));
     }
 
     #[tokio::test]
