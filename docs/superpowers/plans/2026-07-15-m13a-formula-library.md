@@ -278,7 +278,9 @@ describe("evaluate", () => {
     expect(evaluate(ast("ghost + 1"), env({}))).toMatchObject({ error: "unknown-ref" });
   });
   it("non-finite results are error values", () => {
-    expect(evaluate(ast("1e308 * 1e308"), env({}))).toMatchObject({ error: "non-finite" });
+    // Digit-run literals: the grammar has no exponent notation ("1e308" would lex as num(1)+word).
+    const big = "1" + "0".repeat(160); // 1e160 as a pure digit run; product overflows f64
+    expect(evaluate(ast(`${big} * ${big}`), env({}))).toMatchObject({ error: "non-finite" });
   });
   it("min/max n-ary", () => {
     expect(evaluate(ast("max(1, dex, 2)"), env({ dex: 9 }))).toBe(9);
