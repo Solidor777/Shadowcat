@@ -227,9 +227,10 @@ impl Room {
                 > = std::collections::HashMap::new();
                 for op in &ops {
                     if let Operation::Update { doc_id, changes } = op {
-                        // Validate the POST-IMAGE position (the committed system + all changes
-                        // applied), so a wholesale `/system` write or duplicate `/system/x`
-                        // changes can't present a safe target while committing an unsafe one.
+                        // Validate the POST-IMAGE position over the committed `/engine` band
+                        // (the engine band with all changes applied), so a wholesale `/engine`
+                        // write or duplicate `/engine/x` changes can't present a safe target
+                        // while committing an unsafe one.
                         if let Some((scene_id, a0, a1)) = scene.token_move(*doc_id, changes) {
                             // M9a wall gate (unchanged): a wall crossing short-circuits before
                             // any mask work.
@@ -2493,7 +2494,7 @@ mod room_tests {
         let mut token = wdoc(world_id, token_id, "token");
         token.parent_id = Some(scene_id);
         token.owner = Some(p);
-        // Required for the player to have write permission on the token's /system/x,y fields
+        // Required for the player to have write permission on the token's /engine/x,y fields
         // at commit time (mirrors every sibling helper — movement_scene et al.); `owner` alone
         // does not grant the per-doc write permission apply_intent checks.
         token

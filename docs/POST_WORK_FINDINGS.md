@@ -228,3 +228,17 @@ are observations awaiting triage, not committed work.
   `apply_intent` by this fix; if `apply_command` is ever wired to real undo/replay functionality,
   it must gain the identical gate first. Status: Accepted (interim divergence, no action needed
   before Task 7); Task 7 tracking note added to the M13-0 plan.
+
+- Title: Movement gate: token_move gate-dispatch is opt-in on ECS hydration (fail-open shape,
+  reachability unconfirmed). Summary: `Room::publish`'s per-operation movement gate only runs when
+  `SceneEcs::token_move` returns `Some(...)`, which requires the token to already exist in the
+  hydrated in-memory ECS (`self.index.get(&token_id)`). An `Update` operation touching
+  `/engine/x,y` on a token the ECS hasn't yet hydrated (e.g. a same-batch Create+Update sequence,
+  or an Update racing ECS hydration) would commit UNGATED — the gate is skipped (returns `None`,
+  falls through to the ordinary write path), not rejected. This is a PRE-EXISTING shape, unchanged
+  by Task 6 itself (Task 6 only moved the gate's read target from `/system` to `/engine`), and
+  believed unreachable in steady state because of the ingress validation guarantee (Task 3) — but
+  it is structurally a fail-open pattern sitting on a security-critical gate. Status: Needs Review
+  (flagged by the spec reviewer for the upcoming adversarial buddy-check to probe reachability —
+  specifically whether a same-batch Create+Update or an Update arriving before ECS hydration
+  completes can actually reach `apply_intent` with the gate skipped).

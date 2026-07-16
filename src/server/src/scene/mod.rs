@@ -651,12 +651,10 @@ impl SceneEcs {
         Some((t.x, t.y))
     }
 
-    /// The token's current STORED `/system` `(x, y)` — as opposed to `token_position`'s
-    /// `/engine` band. Coupling: `Room::execute_move`'s dual-write `pos_ops` needs each band's
-    /// own current value as that band's own OCC pre-image (`old`), because the still-shipping
-    /// client drag-move path (`Room::publish`) writes `/system` only, so `/system` and
-    /// `/engine` can diverge on this branch — reusing the engine-sourced `start` as `old` for
-    /// the `/system` FieldChange would desync from the actually-stored `/system` value and
+    /// `Room::publish`'s client-driven drag-move path still writes `/system` only pending Task
+    /// 8/9 — such writes are structurally inert against this `/engine`-only gate; see room.rs's
+    /// `system_field_write_bypasses_the_move_gate_and_does_not_desync_the_engine_band` test.
+    ///
     /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,
     /// post_image_end)`. The end is the committed `engine` band with **all** changes applied in
     /// array order (last-write-wins) — exactly what `apply_intent` commits — so a wholesale
