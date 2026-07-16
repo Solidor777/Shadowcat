@@ -2300,6 +2300,68 @@ mod room_tests {
     }
 
     #[tokio::test]
+    async fn client_update_with_posint_pre_image_after_execute_move_is_accepted() {
+        // Reproduces the OCC PosInt/Float variant-mismatch bug end-to-end:
+        // `execute_move` commits a whole-number-valued token position, which
+        // stores as a serde_json `Float` (`json!(f64)` always serializes to the
+        // Float variant, even for a whole number). A subsequent client-authored
+        // `Update` -- like an ordinary `sendMoves` token drag -- echoes the
+        // JS-side whole number back as a `PosInt` pre-image (`JSON.parse` cannot
+        // preserve "this was a float" for a whole-number value). The OCC check
+        // in `apply_intent` must accept this pre-image, not spuriously Conflict.
+        use crate::data::command::FieldChange;
+
+        let h = movement_scene("unrestricted", false).await;
+        h.room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                vec![h.start, h.adj],
+                now_millis(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(h.committed_pos(h.token_id).await, h.adj);
+
+        // Sanity: the stored /engine/x is the Float variant serialization.
+        let stored = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+        let stored_x = stored.engine.unwrap()["x"].clone();
+        assert_eq!(
+            serde_json::to_string(&stored_x).unwrap(),
+            "150.0",
+            "execute_move must commit the whole-number position as a Float"
+        );
+
+        // Client echoes the JS whole number 150 as a PosInt pre-image, not a
+        // Float, for the OCC comparison -- exactly what `sendMoves` does.
+        let ops = vec![Operation::Update {
+            doc_id: h.token_id,
+            changes: vec![FieldChange {
+                path: "/engine/x".into(),
+                old: serde_json::Value::Number(serde_json::Number::from(150u64)),
+                new: serde_json::json!(160.0),
+            }],
+        }];
+        let result = h
+            .repo
+            .apply_intent(
+                &h.player,
+                h.world_id,
+                ops,
+                now_millis(),
+                WriteOrigin::Client,
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "a PosInt pre-image numerically equal to the stored Float must be accepted, got: {:?}",
+            result.err()
+        );
+    }
+
+    #[tokio::test]
     async fn execute_move_rejects_a_moving_token() {
         // First execute_move succeeds and stamps the moving lock (end epoch in the future).
         // An immediate second call on the same token must be Forbidden while the lock is held.

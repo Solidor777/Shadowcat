@@ -826,6 +826,73 @@ fn check_command_scope(doc: &Document, world_id: Uuid) -> Result<(), DataError> 
     }
 }
 
+/// Largest integer magnitude an `f64` represents exactly (2^53); beyond this,
+/// adjacent integers alias to the same `f64`, so a Number/variant comparison
+/// falling back to `as f64` would silently equate genuinely different values.
+const MAX_EXACT_F64_INT: i128 = 1i128 << 53;
+
+/// Structural equality used ONLY at the `apply_intent` Phase-1 OCC pre-image
+/// comparison (`data/sqlite.rs`, `actual != ch.old`). `serde_json::Value::Number`
+/// splits whole numbers into `PosInt`/`NegInt` and non-whole numbers into `Float`;
+/// an engine field stored as a whole-number `f64` (e.g. `100.0`) serializes to
+/// `Float(100.0)`, but a JS client cannot preserve "this was a float" through
+/// `JSON.parse`/re-serialize for a whole-number value, so an echoed pre-image
+/// comes back as `PosInt(100)`. Raw `==` treats these as unequal, causing a
+/// spurious `Conflict` on an otherwise up-to-date write (e.g. an ordinary token
+/// drag after a server-executed `execute_move`, or the `ActorsPanel` vision-range
+/// editor's nested `range` field). This function recurses into `Object`/`Array`
+/// structure and treats mismatched-variant Number leaves as equal when they
+/// represent the same value AND the integer side is exactly representable as an
+/// `f64` (`|n| <= 2^53`); outside that range, or for any non-Number mismatch,
+/// it falls back to serde's derived `PartialEq`.
+fn values_semantically_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match (a, b) {
+        (Value::Object(ma), Value::Object(mb)) => {
+            ma.len() == mb.len()
+                && ma
+                    .iter()
+                    .all(|(k, va)| mb.get(k).is_some_and(|vb| values_semantically_eq(va, vb)))
+        }
+        (Value::Array(xa), Value::Array(xb)) => {
+            xa.len() == xb.len()
+                && xa
+                    .iter()
+                    .zip(xb.iter())
+                    .all(|(va, vb)| values_semantically_eq(va, vb))
+        }
+        (Value::Number(na), Value::Number(nb)) => {
+            if na == nb {
+                return true;
+            }
+            // Variants differ (one PosInt/NegInt, the other Float, or the pair
+            // straddles PosInt/NegInt with mismatched sign representation).
+            // Compare numerically only when any integer operand is exactly
+            // representable as f64; otherwise trust the exact comparison above.
+            let ia = na
+                .as_i64()
+                .map(|v| v as i128)
+                .or_else(|| na.as_u64().map(|v| v as i128));
+            let ib = nb
+                .as_i64()
+                .map(|v| v as i128)
+                .or_else(|| nb.as_u64().map(|v| v as i128));
+            match (ia, ib) {
+                (Some(v), None) | (None, Some(v))
+                    if v.unsigned_abs() > MAX_EXACT_F64_INT as u128 =>
+                {
+                    false
+                }
+                _ => match (na.as_f64(), nb.as_f64()) {
+                    (Some(fa), Some(fb)) => fa == fb,
+                    _ => false,
+                },
+            }
+        }
+        _ => a == b,
+    }
+}
+
 #[async_trait]
 impl Repository for SqliteRepository {
     async fn apply_command(&self, cmd: UnsequencedCommand) -> Result<Command, DataError> {
@@ -1168,7 +1235,11 @@ impl Repository for SqliteRepository {
                             .pointer(&ch.path)
                             .cloned()
                             .unwrap_or(serde_json::Value::Null);
-                        if actual != ch.old {
+                        // Numeric-aware: a whole-number-valued engine `f64` round-tripped
+                        // through a JS client loses its Float-ness (PosInt/Float variant
+                        // split), so raw `!=` here would spuriously Conflict an otherwise
+                        // up-to-date write. See `values_semantically_eq` doc comment.
+                        if !values_semantically_eq(&actual, &ch.old) {
                             return Err(DataError::Conflict(format!(
                                 "stale pre-image at {}",
                                 ch.path
@@ -1656,6 +1727,57 @@ mod tests {
 
     async fn repo() -> SqliteRepository {
         SqliteRepository::connect("sqlite::memory:").await.unwrap()
+    }
+
+    // --- values_semantically_eq: OCC pre-image PosInt/Float variant equality ---
+
+    #[test]
+    fn values_semantically_eq_accepts_whole_number_float_vs_posint() {
+        // Stored Float(100.0) vs a client-echoed PosInt(100) pre-image: same
+        // numeric value, different serde_json variant -- must be treated equal.
+        let stored = serde_json::json!(100.0);
+        let echoed = serde_json::Value::Number(serde_json::Number::from(100u64));
+        assert!(values_semantically_eq(&stored, &echoed));
+        assert!(values_semantically_eq(&echoed, &stored));
+    }
+
+    #[test]
+    fn values_semantically_eq_rejects_genuinely_stale_pre_image() {
+        // PosInt(99) vs Float(100.0): different values -- must still Conflict.
+        let stale = serde_json::Value::Number(serde_json::Number::from(99u64));
+        let current = serde_json::json!(100.0);
+        assert!(!values_semantically_eq(&stale, &current));
+    }
+
+    #[test]
+    fn values_semantically_eq_recurses_into_nested_array_and_object() {
+        // ActorsPanel-style vision pre-image: an array of objects with a Number
+        // leaf that differs only in serde_json variant must be equal; the same
+        // structure with a genuinely different nested value must not be.
+        let a = serde_json::json!([{ "mode": "dark", "range": 30 }]);
+        let b = serde_json::json!([{ "mode": "dark", "range": 30.0 }]);
+        assert!(values_semantically_eq(&a, &b));
+
+        let c = serde_json::json!([{ "mode": "dark", "range": 31.0 }]);
+        assert!(!values_semantically_eq(&a, &c));
+    }
+
+    #[test]
+    fn values_semantically_eq_falls_back_to_exact_beyond_f64_precision() {
+        // 2^53 + 1 cannot be represented exactly as f64 -- comparing it against
+        // its lossy f64 neighbor must NOT be equated; fall back to exact/raw.
+        let big_int = serde_json::Value::Number(serde_json::Number::from((1u64 << 53) + 1));
+        let lossy_float = serde_json::json!(((1u64 << 53) + 1) as f64);
+        assert!(!values_semantically_eq(&big_int, &lossy_float));
+    }
+
+    #[test]
+    fn values_semantically_eq_accepts_negative_whole_number_variant_mismatch() {
+        // NegInt(-50) vs Float(-50.0): same negative whole number, different
+        // variant -- must be treated equal.
+        let neg_int = serde_json::Value::Number(serde_json::Number::from(-50i64));
+        let neg_float = serde_json::json!(-50.0);
+        assert!(values_semantically_eq(&neg_int, &neg_float));
     }
 
     #[tokio::test]

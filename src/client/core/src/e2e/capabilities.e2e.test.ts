@@ -78,8 +78,8 @@ test("player is rejected writing a GM-gated path; Welcome carries projected caps
         changes: [
           {
             path: "/engine/vision",
-            old: [{ mode: "darkvision", range: 30.5 }],
-            new: [{ mode: "darkvision", range: 60.5 }],
+            old: [{ mode: "darkvision", range: 30 }],
+            new: [{ mode: "darkvision", range: 60 }],
           },
         ],
       },

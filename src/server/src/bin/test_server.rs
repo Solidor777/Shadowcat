@@ -60,10 +60,11 @@ async fn main() -> anyhow::Result<()> {
             "faction": null,
             "conditions": [],
             "prototype": true,
-            // Non-integer so JSON round-tripping never collides the client's
-            // "old" pre-image (a plain JS number) with the server's PosInt-vs-
-            // Float serde_json::Number variant split on whole numbers.
-            "vision": [{ "mode": "darkvision", "range": 30.5 }]
+            // A whole-number range: `apply_intent`'s OCC pre-image comparison
+            // is numeric-aware (`values_semantically_eq` in `data/sqlite.rs`)
+            // across the serde_json PosInt/Float variant split, so a JS
+            // client's whole-number pre-image round-trips correctly here.
+            "vision": [{ "mode": "darkvision", "range": 30 }]
         })),
         system: serde_json::json!({ "hp": 10 }),
         created_at: 0,
