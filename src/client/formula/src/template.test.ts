@@ -43,4 +43,44 @@ describe("resolveNotationTemplate", () => {
   it("out-of-i32-range values are a cap error", () => {
     expect(resolveNotationTemplate("d20 + big", env({ big: 2 ** 31 }))).toMatchObject({ error: "cap" });
   });
+  it("a word that merely STARTS with a keyword letter is a stat (total)", () => {
+    expect(resolveNotationTemplate("total + 1", env({ total: 5 })))
+      .toEqual({ notation: "5[total] + 1" });
+  });
+  it("i32 boundary is intentionally asymmetric: max passes, min is rejected as cap", () => {
+    expect(resolveNotationTemplate("d20 + posBig", env({ posBig: 2147483647 })))
+      .toEqual({ notation: "1d20 + 2147483647[posBig]" });
+    expect(resolveNotationTemplate("d20 + negBig", env({ negBig: -2147483648 })))
+      .toMatchObject({ error: "cap" });
+  });
+  it("unterminated '[' label is a parse error", () => {
+    expect(resolveNotationTemplate("d20 + [oops", env({}))).toMatchObject({ error: "parse" });
+  });
+
+  describe("malformed/faulting resolver returns (trust boundary)", () => {
+    it("resolver throws -> resolver-error", () => {
+      const throwing = (): FormulaValue => {
+        throw new Error("boom");
+      };
+      expect(resolveNotationTemplate("d20 + oops", throwing)).toMatchObject({ error: "resolver-error" });
+    });
+    it("resolver returns undefined -> resolver-error, not silently passed through", () => {
+      const undef = (() => undefined) as unknown as (path: string[]) => FormulaValue;
+      expect(resolveNotationTemplate("d20 + oops", undef)).toMatchObject({ error: "resolver-error" });
+    });
+    it("resolver returns a raw string -> resolver-error, not spliced into the notation", () => {
+      const stringy = (() => "haxxor") as unknown as (path: string[]) => FormulaValue;
+      const result = resolveNotationTemplate("d20 + oops", stringy);
+      expect(result).toMatchObject({ error: "resolver-error" });
+      expect(JSON.stringify(result)).not.toContain("haxxor");
+    });
+    it("resolver returns NaN -> non-finite, not resolver-error", () => {
+      const nan = (() => NaN) as unknown as (path: string[]) => FormulaValue;
+      expect(resolveNotationTemplate("d20 + oops", nan)).toMatchObject({ error: "non-finite" });
+    });
+    it("resolver returns Infinity -> non-finite, not resolver-error", () => {
+      const inf = (() => Infinity) as unknown as (path: string[]) => FormulaValue;
+      expect(resolveNotationTemplate("d20 + oops", inf)).toMatchObject({ error: "non-finite" });
+    });
+  });
 });

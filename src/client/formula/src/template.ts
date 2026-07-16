@@ -1,4 +1,5 @@
 import { MAX_FORMULA_LENGTH, type FormulaError, type FormulaValue, isFormulaError } from "./types";
+import { validateResolverOutput } from "./internal";
 
 /** Identifier words whose leading-alpha prefix means dice notation, not a stat.
  * Mirrors src/server/src/dice/notation/parser.rs keyword match (kh/kl/dh/dl/r/ro/cs/cf/t/e)
@@ -34,25 +35,26 @@ function substituteIdentifier(
   resolve: (path: string[]) => FormulaValue,
 ): string | FormulaError {
   const path = originalText.split(".");
-  let value: FormulaValue;
+  let rawValue: unknown;
   try {
-    value = resolve(path);
+    rawValue = resolve(path);
   } catch {
     return { error: "resolver-error", detail: `resolver threw for '${originalText}'` };
   }
+  // Trust-boundary validation: `resolve` is a consumer-supplied callback and is not
+  // guaranteed to honor the `FormulaValue` contract (same boundary evaluate.ts's `ref`
+  // case and graph.ts's `evalNode` call already cross via this shared helper).
+  const value = validateResolverOutput(rawValue);
   if (isFormulaError(value)) return value;
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return {
-      error: "resolver-error",
-      detail: `resolver returned a non-numeric, non-error value for '${originalText}'`,
-    };
-  }
   if (!Number.isInteger(value)) {
     return {
       error: "type",
       detail: `'${originalText}' = ${value}: roll templates require integers (use floor/round in the stat formula)`,
     };
   }
+  // Intentionally asymmetric: spec formula is `abs(value) > i32::MAX`, so the true i32
+  // minimum (-2147483648) is rejected as a cap error even though it IS representable in
+  // an i32. This mirrors the spec literally — do not "fix" it into a symmetric range check.
   if (Math.abs(value) > I32_MAX) {
     return { error: "cap", detail: `'${originalText}' = ${value}: out of i32 range` };
   }
@@ -103,6 +105,13 @@ export function resolveNotationTemplate(
     if (isAlpha(ch)) {
       const prefix = readAlphaPrefix(src, i);
       const lower = prefix.toLowerCase();
+      // An identifier whose name is exactly a single-letter keyword immediately followed
+      // by a digit or another keyword-shaped run (e.g. "t1", "d2mod") cannot be resolved
+      // as an identifier here: `readAlphaPrefix` stops at the first non-alpha char, so
+      // the keyword letter alone matches NOTATION_KEYWORDS and the remainder re-lexes as
+      // dice-notation atoms, not a continued identifier. M13b's tier-1 authoring
+      // validation (reserved-key checking) must reject this compound shape too, not just
+      // literal keyword collisions.
       if (NOTATION_KEYWORDS.includes(lower)) {
         if (lower === "d" && !prevWasInt) {
           out += `1${prefix}`;
