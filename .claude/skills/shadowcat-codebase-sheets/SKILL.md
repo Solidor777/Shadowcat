@@ -73,6 +73,27 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   `item` doc_type ([[shadowcat-codebase-documents-permissions]]) and the roll-to-chat affordance
   (`ctx.chat.send({channel:"general", content:"/roll <formula>"})`, gated by `isDiceNotation`).
   Seam-only: none of the three imports any other `@shadowcat/module-*`.
+  **`basePrefix` derivation pattern (M13-0, `ActorSheet`/`ItemSheet`):** the three-band document
+  restructure (envelope `name` / typed `engine` / opaque `system`) put `name`/`engine` at the SAME
+  tree node as `system` — `systemPrefix` (the `SheetTarget.writePrefix` from `resolveDocRef`) is
+  ALWAYS `/system` or `/embedded/<coll>/<idx>/system`, so both sheets derive the sibling roots by
+  stripping the trailing `/system` suffix: `const basePrefix = $derived(systemPrefix.replace(/\/system$/, ""))`,
+  then `enginePrefix = ${basePrefix}/engine` and `namePrefix = ${basePrefix}/name`. **This is the
+  load-bearing pattern for any FUTURE sheet that needs to read/write the envelope `name` or a
+  typed `engine` field** — do not hand-derive these paths any other way. `systemPrefix`/
+  `writePrefix` ITSELF is UNCHANGED by M13-0 and still genuinely means `/system` — game-system
+  data is untouched by the three-band restructure; only the DERIVED `enginePrefix`/`namePrefix`
+  are new. `setField`'s `old` for an engine-field edit reads the RAW current value via
+  `getPointer(doc, enginePrefix + "/" + field)`, mirroring the pre-existing raw-`old` invariant
+  above — no special-casing needed since `setField` is already path-generic. **Critical bug
+  caught + fixed at Task 9 review (M13-0):** `ItemSheet` initially read/wrote the envelope
+  `/name` path DIRECTLY rather than via `namePrefix` — for an embedded item (opened from an
+  actor's inventory) `/name` targets the PARENT ACTOR's name, not the item's own, corrupting
+  reads and, on edit, renaming the wrong document. Fixed by mirroring `ActorSheet`'s
+  `basePrefix`/`namePrefix` derivation exactly. Any future sheet touching an embedded child must
+  derive `namePrefix`/`enginePrefix` from ITS OWN `systemPrefix`, never read `/name`/`/engine` as
+  a hardcoded top-level path — treat any new envelope-band access in a sheet as
+  buddy-check-worthy by default.
 - `src/modules/chat-card/src/MessageCard.svelte` — actor names on chat cards become
   `ctx.openDocument` links, permission-gated by PRESENCE in the recipient's per-recipient
   optimistic store (a doc absent from `ctx.documents` means the recipient lacks READ — server-side
