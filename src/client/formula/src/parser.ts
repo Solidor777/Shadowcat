@@ -24,7 +24,10 @@ class Parser {
   private pos = 0;
   private nodeCount = 0;
 
-  constructor(private readonly toks: Tok[]) {}
+  constructor(
+    private readonly toks: Tok[],
+    private readonly srcLen: number,
+  ) {}
 
   private peek(): Tok | undefined {
     return this.toks[this.pos];
@@ -53,6 +56,12 @@ class Parser {
     return e;
   }
 
+  // INVARIANT: `depth` counts true structural-nesting boundaries only —
+  // paren-open, call-argument, and unary-minus descents — so 32 documented
+  // levels of nesting are genuinely available for each construct uniformly.
+  // The flat additive/multiplicative/unary/primary production chain passes
+  // `depth` through UNCHANGED; it never itself recurses unboundedly, so no
+  // check is needed at those non-structural hops.
   private checkDepth(depth: number): FormulaError | undefined {
     if (depth > MAX_PARSE_DEPTH) {
       return { error: "cap", detail: "formula exceeds max nesting depth of 32" };
@@ -61,15 +70,13 @@ class Parser {
   }
 
   private additive(depth: number): Expr | FormulaError {
-    const capErr = this.checkDepth(depth);
-    if (capErr) return capErr;
-    let left = this.multiplicative(depth + 1);
+    let left = this.multiplicative(depth);
     if (isErr(left)) return left;
     for (;;) {
       if (this.atOp("+") || this.atOp("-")) {
         const op = (this.peek() as { kind: "op"; value: "+" | "-" }).value;
         this.pos++;
-        const right = this.multiplicative(depth + 1);
+        const right = this.multiplicative(depth);
         if (isErr(right)) return right;
         const e = this.node({ kind: "bin", op, left, right });
         if (isErr(e)) return e;
@@ -82,15 +89,13 @@ class Parser {
   }
 
   private multiplicative(depth: number): Expr | FormulaError {
-    const capErr = this.checkDepth(depth);
-    if (capErr) return capErr;
-    let left = this.unary(depth + 1);
+    let left = this.unary(depth);
     if (isErr(left)) return left;
     for (;;) {
       if (this.atOp("*") || this.atOp("/") || this.atOp("%")) {
         const op = (this.peek() as { kind: "op"; value: "*" | "/" | "%" }).value;
         this.pos++;
-        const right = this.unary(depth + 1);
+        const right = this.unary(depth);
         if (isErr(right)) return right;
         const e = this.node({ kind: "bin", op, left, right });
         if (isErr(e)) return e;
@@ -103,20 +108,20 @@ class Parser {
   }
 
   private unary(depth: number): Expr | FormulaError {
-    const capErr = this.checkDepth(depth);
-    if (capErr) return capErr;
     if (this.atOp("-")) {
+      // Structural boundary: unary-minus descent.
+      const newDepth = depth + 1;
+      const capErr = this.checkDepth(newDepth);
+      if (capErr) return capErr;
       this.pos++;
-      const operand = this.unary(depth + 1);
+      const operand = this.unary(newDepth);
       if (isErr(operand)) return operand;
       return this.node({ kind: "neg", operand });
     }
-    return this.primary(depth + 1);
+    return this.primary(depth);
   }
 
   private primary(depth: number): Expr | FormulaError {
-    const capErr = this.checkDepth(depth);
-    if (capErr) return capErr;
     const t = this.peek();
     if (t === undefined) {
       return { error: "parse", detail: "unexpected end of formula" };
@@ -129,13 +134,17 @@ class Parser {
 
     if (t.kind === "op" && t.value === "(") {
       this.pos++;
-      const inner = this.additive(depth + 1);
+      // Structural boundary: paren-open descent.
+      const newDepth = depth + 1;
+      const capErr = this.checkDepth(newDepth);
+      if (capErr) return capErr;
+      const inner = this.additive(newDepth);
       if (isErr(inner)) return inner;
       if (!this.atOp(")")) {
         const at = this.peek();
         return {
           error: "parse",
-          detail: `expected ')' at position ${at !== undefined ? at.pos : t.pos}`,
+          detail: `expected ')' at position ${at !== undefined ? at.pos : this.srcLen}`,
         };
       }
       this.pos++;
@@ -150,10 +159,14 @@ class Parser {
         }
         const fn = t.value as FnName;
         this.pos++;
+        // Structural boundary: call-argument descent.
+        const newDepth = depth + 1;
+        const capErr = this.checkDepth(newDepth);
+        if (capErr) return capErr;
         const args: Expr[] = [];
         if (!this.atOp(")")) {
           for (;;) {
-            const arg = this.additive(depth + 1);
+            const arg = this.additive(newDepth);
             if (isErr(arg)) return arg;
             args.push(arg);
             if (this.atOp(",")) {
@@ -167,7 +180,7 @@ class Parser {
           const at = this.peek();
           return {
             error: "parse",
-            detail: `expected ')' at position ${at !== undefined ? at.pos : t.pos}`,
+            detail: `expected ')' at position ${at !== undefined ? at.pos : this.srcLen}`,
           };
         }
         this.pos++;
@@ -183,12 +196,14 @@ class Parser {
         if (seg === undefined || seg.kind !== "word") {
           return {
             error: "parse",
-            detail: `expected identifier after '.' at position ${seg !== undefined ? seg.pos : t.pos}`,
+            detail: `expected identifier after '.' at position ${seg !== undefined ? seg.pos : this.srcLen}`,
           };
         }
         this.pos++;
         path.push(seg.value);
       }
+      // One ref = one node regardless of segment count; the dotted-path
+      // length is bounded by MAX_FORMULA_LENGTH (lexer), not MAX_AST_NODES.
       return this.node({ kind: "ref", path });
     }
 
@@ -219,5 +234,5 @@ function isErr<T>(v: T | FormulaError): v is FormulaError {
 export function parseFormula(src: string): Expr | FormulaError {
   const toks = tokenize(src);
   if (isErr(toks)) return toks;
-  return new Parser(toks).parseTop();
+  return new Parser(toks, src.length).parseTop();
 }

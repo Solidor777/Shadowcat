@@ -229,7 +229,7 @@ describe("parseFormula", () => {
 });
 ```
 
-- [ ] **Step 2: Run — expect FAIL. Step 3: Implement** recursive descent over `tokenize` output: `additive := multiplicative (("+"|"-") multiplicative)*`; `multiplicative := unary (("*"|"/"|"%") unary)*`; `unary := "-" unary | primary`; `primary := num | "(" additive ")" | word ("(" args ")")? ("." word)*`. A word followed by `(` must be one of the five function names (else parse error); otherwise the word starts a ref path extended by `.` + word segments (a dotted segment is never a call). Track a node counter (`MAX_AST_NODES` → cap error) and recursion depth (`MAX_PARSE_DEPTH` → cap error). After `additive`, any remaining token is a parse error. Number literal that is non-finite (`1e999`) → cap error.
+- [ ] **Step 2: Run — expect FAIL. Step 3: Implement** recursive descent over `tokenize` output: `additive := multiplicative (("+"|"-") multiplicative)*`; `multiplicative := unary (("*"|"/"|"%") unary)*`; `unary := "-" unary | primary`; `primary := num | "(" additive ")" | word ("(" args ")")? ("." word)*`. A word followed by `(` must be one of the five function names (else parse error); otherwise the word starts a ref path extended by `.` + word segments (a dotted segment is never a call). Track a node counter (`MAX_AST_NODES` → cap error) and recursion depth (`MAX_PARSE_DEPTH` → cap error). After `additive`, any remaining token is a parse error. The grammar has no exponent notation: `1e999` lexes as `num(1)` + `word("e999")` and fails as a trailing-input parse error, not a cap error.
 
 - [ ] **Step 4: Run tests (PASS). Step 5: typecheck + commit** — `feat(formula): recursive-descent parser + Expr AST with caps`
 
