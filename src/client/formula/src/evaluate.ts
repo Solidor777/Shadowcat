@@ -1,5 +1,6 @@
 import type { Expr } from "./parser";
-import { type FormulaError, type FormulaValue, isFormulaError } from "./types";
+import { type FormulaValue, isFormulaError } from "./types";
+import { finite, validateResolverOutput } from "./internal";
 
 /** Structural recursion over `Expr`. Resolver errors and non-finite arithmetic
  * results both short-circuit as `FormulaValue` errors — the evaluator never
@@ -121,40 +122,3 @@ function evalCall(
   return finite(result);
 }
 
-/** Gates any arithmetic result behind `Number.isFinite` — an overflow to
- * `Infinity`/`-Infinity` (or a stray `NaN`) becomes a `FormulaValue` error
- * instead of leaking past the library boundary (spec §5.2). */
-function finite(n: number): FormulaValue {
-  if (!Number.isFinite(n)) {
-    return { error: "non-finite", detail: `arithmetic result is not finite (${n})` };
-  }
-  return n;
-}
-
-/** True shape check for a `FormulaError` — mirrors parser.ts's `isErr`, not
- * the type-only `isFormulaError` (which merely asserts `typeof v !== "number"`
- * and cannot detect a malformed non-number). */
-function isWellFormedError(v: unknown): v is FormulaError {
-  return (
-    typeof v === "object" &&
-    v !== null &&
-    typeof (v as { error?: unknown }).error === "string" &&
-    typeof (v as { detail?: unknown }).detail === "string"
-  );
-}
-
-/** Validates a resolver's return value at the trust boundary: a resolver is
- * consumer-supplied and is not guaranteed to honor `FormulaValue`'s contract.
- * A finite number passes through `finite()` (overflow still rejected); a
- * well-formed `FormulaError` propagates unchanged; anything else (wrong
- * shape, `undefined`, a raw string, non-finite number smuggled as a shape
- * other than `number`, etc.) becomes a synthetic `resolver-error` rather than
- * being trusted and later crashing a caller that reads `.detail` off it. */
-function validateResolverOutput(v: unknown): FormulaValue {
-  if (typeof v === "number") return finite(v);
-  if (isWellFormedError(v)) return v;
-  return {
-    error: "resolver-error",
-    detail: `resolver returned a malformed value (expected number or FormulaError, got ${typeof v})`,
-  };
-}
