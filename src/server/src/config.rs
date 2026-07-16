@@ -152,9 +152,10 @@ impl Config {
 
     /// Resolve the installed-module discovery root: explicit `modules_dir`, else a
     /// sibling `modules/` directory beside the db file (built via std::path, #2).
-    /// Unlike `assets_path`, nothing writes here server-side (install is manual
-    /// filesystem extract, T2) — the directory need not exist; a missing dir
-    /// scans as "no modules installed" (see `modules::scan_installed_modules`).
+    /// Unlike `assets_path`, nothing writes here server-side (install is a
+    /// manual filesystem extract — no server-side installer exists) — the
+    /// directory need not exist; a missing dir scans as "no modules installed"
+    /// (see `modules::scan_installed_modules`).
     pub fn modules_path(&self) -> std::path::PathBuf {
         if let Some(dir) = &self.modules_dir {
             return std::path::PathBuf::from(dir);
