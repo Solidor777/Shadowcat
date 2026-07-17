@@ -15,6 +15,7 @@ export type { PipelineName, Middleware } from "./middleware";
 export { ManifestSchema, parseManifest, declarationOf } from "./manifest";
 export type {
   ModuleManifest,
+  ModuleEngines,
   CapRequirement,
   HookDecl,
   ContractProvide,

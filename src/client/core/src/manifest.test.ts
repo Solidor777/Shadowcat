@@ -85,3 +85,29 @@ test("requirement path_prefix must start with /", () => {
     }),
   ).toThrow();
 });
+
+test("a manifest with no engines field parses (first-party modules never set it)", () => {
+  const m = parseManifest({ id: "a", version: "1.0.0", dependencies: {} });
+  expect(m.engines).toBeUndefined();
+});
+
+test("a manifest with a valid engines.shadowcat range parses", () => {
+  const m = parseManifest({
+    id: "a",
+    version: "1.0.0",
+    dependencies: {},
+    engines: { shadowcat: "^0.1.0" },
+  });
+  expect(m.engines?.shadowcat).toBe("^0.1.0");
+});
+
+test("an empty engines.shadowcat string is rejected", () => {
+  expect(() =>
+    parseManifest({
+      id: "a",
+      version: "1.0.0",
+      dependencies: {},
+      engines: { shadowcat: "" },
+    }),
+  ).toThrow();
+});
