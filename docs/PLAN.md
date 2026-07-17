@@ -1238,7 +1238,26 @@ Decomposed **M11a–d**:
 > number/resource/text/boolean stats as maps, Zod tier-1 write validation,
 > one-dependency-graph resolver, typed commutative modifier buckets `add → mulAdditive →
 > mulCompound`, `effect` doc_type with opt-in transfer + active gating; plan
-> `superpowers/plans/2026-07-15-m13b-nightfox-headless-rules.md`) → **M13c**
+> `superpowers/plans/2026-07-15-m13b-nightfox-headless-rules.md`) →
+> **M13b DONE** (7 tasks, executed in the nested Nightfox dev clone at
+> `<Shadowcat checkout>/src/modules/nightfox/`, committed inside the Nightfox repo
+> `C:\Dev\Nightfox` — never pushed; the Nightfox repo is the user's to push): shipped
+> `nightfox-docs.ts` (fail-closed `parseNightfox`/`validateNightfox`/`validateStatKey` over
+> `system.stats`/`system.mechanics`, reserved-key + dice-notation-collision + cap
+> validation), `contributions.ts` (embed-tree modifier collection with active/transfer
+> gating per spec §5.3, host-inert/dangling warnings), `resolve.ts` (the one-graph resolver
+> over `@shadowcat/formula`'s `resolveAll`: bucket pipeline `(derived + Σadd) × (1 +
+> ΣmulAdditive) × ΠmulCompound` in canonical `(carrierId, modId)` fold order, D8 self-base,
+> §5.2/§5.3 scope rules, §5.4 tolerance), `permutation.test.ts` (100-seed × 4-variant exact-
+> equality property battery proving D3/D12 order-independence), and the rules-engine barrel
+> re-export from the M13-1 Task 18 module entry. Task 4's pre-authorized buddy-check caught
+> an Important (float non-associativity across fold order → fixed by the canonical fold);
+> Task 5 correctly BLOCKED on an order-dependence bug in `@shadowcat/formula` itself, fixed
+> at the root per user decision rather than worked around in Nightfox: `resolveAll` made a
+> pure function of the key set via sorted-root traversal, cycle-error detail now names the
+> lexicographically smallest cycle member, and the visiting/stack pairing invariant fails
+> loudly instead of silently. Suites: nightfox 136/136, `@shadowcat/formula` 85/85 (both
+> counts include the fix's regression coverage), full `pnpm -r test` green. → **M13c**
 > (`@shadowcat/module-nightfox-sheets` over the M12c sheet registry; plan deferred until M12c +
 > M13-0 exist) → **M13d** (per-stat roll templates → labeled M11 notation as inline `[[…]]`
 > chat embeds; zero new wire frames; plan `superpowers/plans/2026-07-15-m13d-roll-wire.md`) →

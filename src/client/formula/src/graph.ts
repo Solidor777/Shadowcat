@@ -12,8 +12,10 @@ class NeedsDependency {
 /** Memoized lazy resolution over named nodes. Dependencies are discovered
  * dynamically: evalNode calls get(depKey) and cycles are detected via the
  * in-progress stack. Every node on a cycle resolves to {error:"cycle"}.
- * INVARIANT: result is independent of key iteration order (consumers rely on
- * this for the Nightfox permutation invariant, spec D3/D12).
+ * INVARIANT: the result is a pure function of the key SET — independent of
+ * the caller's key order (consumers rely on this for the Nightfox permutation
+ * invariant, spec D3/D12). Enforced by sorting the roots before iteration;
+ * see the note at the root loop.
  *
  * Recursion bound: O(1) JS call-stack frames regardless of graph depth or
  * chain length. `evalNode` is a consumer-supplied synchronous callback that
@@ -54,12 +56,37 @@ export function resolveAll(
 ): Map<string, FormulaValue> {
   const memo = new Map<string, FormulaValue>();
   const visiting = new Set<string>();
+  // The active dependency path for the resolveKey currently running (a linear
+  // chain: each entry depends on the next). Shared across resolveKey calls,
+  // which run sequentially (never nested/reentrant), so one array is safe and
+  // lets `get` read the path to name a cycle deterministically.
+  const stack: string[] = [];
   let visits = 0;
 
   const get = (key: string): FormulaValue => {
     if (memo.has(key)) return memo.get(key)!;
     if (visiting.has(key)) {
-      return { error: "cycle", detail: `reference cycle involving '${key}'` };
+      // A re-entered key on the active path closes a cycle: the path slice from
+      // that key to the top IS the cycle's member set. Naming the raw
+      // re-entered key would make `detail` depend on traversal/iteration order
+      // (which root started, record-key order) — breaking this module's
+      // documented order-independence invariant. Name the lexicographically
+      // smallest cycle member instead: canonical for a given cycle regardless
+      // of where the traversal happened to detect it.
+      // INVARIANT: every visiting key is present on `stack` (add/push and
+      // delete/pop are strictly paired, and a re-entered key takes this cycle
+      // branch instead of a second push). A miss here means that pairing was
+      // broken by a refactor; failing loudly beats silently returning a
+      // non-canonical single-key detail. The throw is caught by resolveKey's
+      // driver and surfaces as a resolver-error value, per the module's
+      // never-throw boundary.
+      const start = stack.indexOf(key);
+      if (start < 0) {
+        throw new Error(`visiting key '${key}' absent from the active stack`);
+      }
+      const cycle = stack.slice(start);
+      const canonical = cycle.reduce((min, k) => (k < min ? k : min), cycle[0]);
+      return { error: "cycle", detail: `reference cycle involving '${canonical}'` };
     }
     throw new NeedsDependency(key);
   };
@@ -67,7 +94,8 @@ export function resolveAll(
   // Iteratively resolves `root` and every transitive dependency it needs,
   // using `stack` (a plain array) in place of JS call-stack recursion.
   const resolveKey = (root: string): void => {
-    const stack: string[] = [root];
+    stack.length = 0;
+    stack.push(root);
     while (stack.length > 0) {
       const key = stack[stack.length - 1];
       if (memo.has(key)) {
@@ -114,7 +142,17 @@ export function resolveAll(
     }
   };
 
-  for (const key of keys) {
+  // Roots iterate in sorted order, NOT caller order: cycle handling is
+  // traversal-path-dependent (whether `get(dep)` finds `dep` mid-evaluation
+  // on the active path — a structural cycle error — or already memoized can
+  // change a cycle-adjacent node's error KIND, not just its detail, when a
+  // node's value short-circuits without needing the cycle completed). Fixing
+  // the entry order makes the whole traversal — restart sequence, stack
+  // states, detection points — a pure function of the key SET, which is what
+  // the order-independence invariant above actually promises. Which member of
+  // a short-circuitable cycle reports `cycle` vs the propagated error remains
+  // traversal-defined, but deterministically so.
+  for (const key of [...keys].sort()) {
     if (!memo.has(key)) resolveKey(key);
   }
 
