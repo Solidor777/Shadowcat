@@ -644,6 +644,65 @@ test("Welcome degrades gracefully when external module discovery fails (network 
   );
 });
 
+test("unsubscribing a scene sub during the Welcome await window is not re-established (no spurious re-subscribe)", async () => {
+  let resolveMembers!: () => void;
+  vi.mocked(listWorldMembers).mockImplementationOnce(
+    () => new Promise((resolve) => { resolveMembers = () => resolve([]); }),
+  );
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const frames: unknown[] = [];
+  const sub = session.subscribeScene("identity", (f) => frames.push(f));
+  await vi.waitFor(() => expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(1));
+
+  // Reconnect Welcome: bootstrap already ran, so the only remaining await before the
+  // scene-subs reconciliation loop is the member fetch, now held pending.
+  push(welcomeFrame);
+  await Promise.resolve();
+  await Promise.resolve();
+  // Torn down DURING the Welcome's await window — the reconciliation loop (running
+  // against a pre-await snapshot) must not resurrect this entry.
+  sub.unsubscribe();
+  resolveMembers();
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Only the original subscribe; no re-subscribe was sent for the torn-down sub.
+  expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(1);
+});
+
+test("a scene sub added during the Welcome await window is established exactly once", async () => {
+  let resolveMembers!: () => void;
+  vi.mocked(listWorldMembers).mockImplementationOnce(
+    () => new Promise((resolve) => { resolveMembers = () => resolve([]); }),
+  );
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  // Reconnect Welcome; the member fetch is held pending so the reconciliation loop
+  // (over the pre-await snapshot) has not yet run.
+  push(welcomeFrame);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const frames: unknown[] = [];
+  session.subscribeScene("identity", (f) => frames.push(f)); // added mid-flight
+  resolveMembers();
+  await new Promise((r) => setTimeout(r, 20));
+
+  // subscribeScene's own establish call is the only scene_subscribe sent — the
+  // reconciliation loop must not double-establish a sub added mid-flight.
+  expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(1);
+});
+
 test("an enabled set with nothing to load never calls listInstalledModules a second time on reconnect", async () => {
   const core = await import("@shadowcat/core");
   // This suite has no `clearMocks` config, so the shared `getEnabledModules` mock's

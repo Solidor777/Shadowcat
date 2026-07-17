@@ -31,8 +31,10 @@ import {
   type WireSearchHit,
   loadModules,
   type ModuleEntry,
+  type ModuleManifest,
+  listInstalledModules,
+  getEnabledModules,
 } from "@shadowcat/core";
-import { listInstalledModules, getEnabledModules } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import { listWorldMembers } from "./api";
@@ -420,6 +422,11 @@ export class WorldSession {
       // Iterates the PRE-await snapshot (`subsAtWelcome`), not the live map, so a sub
       // added mid-flight (see snapshot comment above) is left to its own establish.
       for (const [id, rec] of subsAtWelcome) {
+        // Liveness check: `subsAtWelcome` holds `[id, rec]` by reference, so a caller
+        // that unsubscribes during this Welcome's (now-widened) await window has
+        // already removed `id` from the live `#sceneSubs` map. Skip a torn-down entry
+        // instead of resurrecting it with a spurious `scene_subscribe`.
+        if (this.#sceneSubs.get(id) !== rec) continue;
         // Tear down a live handle from a prior connect before re-subscribing; the
         // gen bump inside #establishScene invalidates any still-in-flight attempt,
         // so a flapping reconnect can't leak a duplicate server subscription.
@@ -469,7 +476,7 @@ export class WorldSession {
           continue;
         }
         entries.push({
-          manifest: info.manifest as import("@shadowcat/core").ModuleManifest,
+          manifest: info.manifest as ModuleManifest,
           entry: info.entry_url,
         });
       }

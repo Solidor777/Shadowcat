@@ -58,8 +58,10 @@ test("does not activate a module whose required contract has no provider", async
   expect(r.list().find((m) => m.id === "combat")!.active).toBe(false);
 });
 
-test("throws when two active modules provide the same singleton contract", async () => {
-  const r = new ModuleRegistry(deps());
+test("a singleton contract collision is reported but does not abort activation of other modules", async () => {
+  const warnings: string[] = [];
+  const logger = { ...silentLogger, warn: (m: string) => warnings.push(m) };
+  const r = new ModuleRegistry({ ...deps(), logger });
   r.add({
     manifest: { id: "a", version: "1.0.0", dependencies: {},
       provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
@@ -70,7 +72,33 @@ test("throws when two active modules provide the same singleton contract", async
       provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
     register: vi.fn(),
   });
-  await expect(r.activate()).rejects.toThrow(/singleton/);
+  r.add({ manifest: { id: "c", version: "1.0.0", dependencies: {} }, register: vi.fn() });
+  await expect(r.activate()).resolves.toBeUndefined();
+  expect(r.list().find((m) => m.id === "a")!.active).toBe(true);
+  // b loses the collision (a activated first in insertion/topological order).
+  expect(r.list().find((m) => m.id === "b")!.active).toBe(false);
+  // An unrelated sibling module is unaffected by b's collision.
+  expect(r.list().find((m) => m.id === "c")!.active).toBe(true);
+  expect(warnings.some((w) => w.includes("singleton") && w.includes("s:sidebar"))).toBe(true);
+});
+
+test("a module whose register() throws is left inactive but a sibling module still activates (containment)", async () => {
+  const warnings: string[] = [];
+  const logger = { ...silentLogger, warn: (m: string) => warnings.push(m) };
+  const r = new ModuleRegistry({ ...deps(), logger });
+  const sibling = vi.fn();
+  r.add({
+    manifest: { id: "broken", version: "1.0.0", dependencies: {} },
+    register: () => {
+      throw new Error("boom");
+    },
+  });
+  r.add({ manifest: { id: "sibling", version: "1.0.0", dependencies: {} }, register: sibling });
+  await expect(r.activate()).resolves.toBeUndefined();
+  expect(r.list().find((m) => m.id === "broken")!.active).toBe(false);
+  expect(r.list().find((m) => m.id === "sibling")!.active).toBe(true);
+  expect(sibling).toHaveBeenCalledOnce();
+  expect(warnings.some((w) => w.includes("broken") && w.includes("boom"))).toBe(true);
 });
 
 test("allows two providers of a multi contract", async () => {
