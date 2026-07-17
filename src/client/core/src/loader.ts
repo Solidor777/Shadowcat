@@ -67,7 +67,12 @@ export async function loadModules(opts: {
       // module's *own* manifest. Two distinct sources, bridged by the id check
       // below — both parses are intentional.
       parseManifest(manifest);
-      if (opts.shadowcatVersion) checkEngineCompat(manifest, opts.shadowcatVersion);
+      // typeof-check (not truthy-check): an empty-string shadowcatVersion must still
+      // run the gate, failing closed via `satisfies("", range)`'s semver parse error,
+      // rather than being treated as "omitted" and silently skipping the T6 gate.
+      if (typeof opts.shadowcatVersion === "string") {
+        checkEngineCompat(manifest, opts.shadowcatVersion);
+      }
       const module = normalize(await opts.importFn(entry));
       if (module.manifest.id !== manifest.id) {
         throw new Error(

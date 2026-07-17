@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { loadModules } from "./loader";
 import { ModuleRegistry, type Module } from "./modules";
+import type { ModuleManifest } from "./manifest";
 import { HookBus } from "./hooks";
 import { ServiceRegistry } from "./services";
 import { MiddlewareChain } from "./middleware";
@@ -126,4 +127,70 @@ test("a manifest with no engines field always passes compat, even when shadowcat
     shadowcatVersion: "1.0.0",
   });
   expect(result.loaded).toEqual(["a"]);
+});
+
+test("a structurally-invalid discovered manifest is contained; a sibling valid entry still loads", async () => {
+  const r = registry();
+  const good: Module = {
+    manifest: { id: "b", version: "1.0.0", dependencies: {} },
+    register: vi.fn(),
+  };
+  const result = await loadModules({
+    // Missing `id`/`version` fails ManifestSchema.parse in loadModules itself,
+    // before importFn is ever invoked for this entry.
+    entries: [
+      { manifest: { dependencies: {} } as unknown as ModuleManifest, entry: "./broken.js" },
+      { manifest: good.manifest, entry: "./b.js" },
+    ],
+    importFn: async (entry) => (entry === "./b.js" ? good : mod),
+    registry: r,
+  });
+  expect(result.loaded).toEqual(["b"]);
+  expect(result.failed).toHaveLength(1);
+  expect(result.failed[0].entry).toBe("./broken.js");
+  expect(result.failed[0].error.length).toBeGreaterThan(0);
+  expect(r.list().map((m) => m.id)).toEqual(["b"]);
+});
+
+test("an importFn rejection is contained; a sibling valid entry still loads", async () => {
+  const r = registry();
+  const good: Module = {
+    manifest: { id: "e", version: "1.0.0", dependencies: {} },
+    register: vi.fn(),
+  };
+  const broken: ModuleManifest = { id: "f", version: "1.0.0", dependencies: {} };
+  const result = await loadModules({
+    entries: [
+      { manifest: broken, entry: "./f.js" },
+      { manifest: good.manifest, entry: "./e.js" },
+    ],
+    importFn: async (entry) => {
+      if (entry === "./f.js") throw new Error("network error");
+      return good;
+    },
+    registry: r,
+  });
+  expect(result.loaded).toEqual(["e"]);
+  expect(result.failed).toHaveLength(1);
+  expect(result.failed[0].id).toBe("f");
+  expect(result.failed[0].error).toMatch(/network error/);
+  expect(r.list().map((m) => m.id)).toEqual(["e"]);
+});
+
+test("an empty shadowcatVersion fails closed (does not silently skip the compat gate)", async () => {
+  const r = registry();
+  const withRange: Module = {
+    manifest: { id: "g", version: "1.0.0", dependencies: {}, engines: { shadowcat: "^1.0.0" } },
+    register: vi.fn(),
+  };
+  const result = await loadModules({
+    entries: [{ manifest: withRange.manifest, entry: "./g.js" }],
+    importFn: async () => withRange,
+    registry: r,
+    shadowcatVersion: "",
+  });
+  expect(result.loaded).toEqual([]);
+  expect(result.failed).toHaveLength(1);
+  expect(result.failed[0].id).toBe("g");
+  expect(r.list()).toHaveLength(0);
 });
