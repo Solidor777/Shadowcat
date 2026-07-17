@@ -259,6 +259,13 @@ mod tests {
         res.assert_status(StatusCode::NOT_FOUND);
     }
 
+    // Does not exercise the traversal guard: axum-test builds the request
+    // through the `url` crate, which applies WHATWG dot-segment normalization
+    // to `%2e%2e` client-side, collapsing it before the request is sent. The
+    // 404 below comes from route non-match on the normalized path, not from
+    // `is_strictly_within` rejecting an escaping `id`. Real coverage for this
+    // escape class lives in `is_strictly_within_rejects_equality_but_accepts_a_proper_descendant`
+    // and `serve_module_file_rejects_a_module_folder_symlink_that_collapses_to_the_modules_root`.
     #[tokio::test]
     async fn serve_module_file_rejects_an_id_segment_that_escapes_the_modules_root() {
         let dir = tempfile::tempdir().unwrap();
