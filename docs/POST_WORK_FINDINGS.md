@@ -260,9 +260,10 @@ are observations awaiting triage, not committed work.
 - Title: External-module i18n registration seam missing. Summary: An out-of-tree module
   (Nightfox sheets, M13c) has no public seam to register i18n keys into the shell catalog; M13c
   ships a built-in English fallback map (`nfT`/`NF_MESSAGES`) with a `ctx.t` override hook as a
-  workaround. First surfaced as an M13b friction candidate; reinforced by M13c's own
-  test-context gotcha (`setAppContextForTest`'s default `t: (k) => k` echo means `nfT` always
-  resolves through its English fallback under test, never through a real translation catalog).
+  workaround. First surfaced in M13c Task 1's own code comment; reinforced by a separately
+  discovered test-context gotcha (`setAppContextForTest`'s default `t: (k) => k` echo means `nfT`
+  always resolves through its English fallback under test, never through a real translation
+  catalog).
   Status: Needs Review (candidate engine seam for a later checkpoint).
 
 - Title: `effect` doc_type constant has no engine home. Summary: D9 makes `effect` a

@@ -113,9 +113,10 @@ new wire frames.
   `/embedded/<coll>/<i>/system`) is where `mechanics`/`stats` live, `basePrefix` is where
   `name`/`engine` live. **Confusing the two silently breaks OCC** — a `mechanics.*` field read
   via `basePrefix` instead of `systemPrefix` always resolves `undefined`, collapsing every
-  write's `old` pre-image to `null`. This exact bug was caught live in `ItemSheet` and avoided
-  proactively in `EffectSheet` after the flag — treat any new sheet or write helper touching
-  `stats`/`mechanics` as needing this check first.
+  write's `old` pre-image to `null`. This exact bug was found and fixed during `ItemSheet`'s
+  implementation review; no shipped test currently exercises the embedded (non-top-level) case
+  that would catch a regression, so treat any new sheet or write helper touching
+  `stats`/`mechanics` as needing this check first, and consider adding that regression test.
 - **Map-CRUD idiom (D11), every write helper (`addStat`/`editStatField`/`removeStat`/
   `setStatOrder`/`addModifier`/`editModifierField`/`removeModifier`/`setMechanicsFlag`)**: add =
   single-key `old:null`; edit = single-key raw-old; remove = whole-map `setField` replace with
@@ -133,7 +134,9 @@ new wire frames.
   `core:manage_embedded` capability. `ActorSheet` computes this per-carrier as `embedReadOnly`,
   never reusing the actor's own `write_fields`-derived `readOnly` for embedded controls — caught
   as a Critical/Important in Task 7's pre-authorized buddy-check (2 blind reviewers, same finding
-  independently); `ItemSheet`/`EffectSheet` inherit the identical pattern for their own embeds.
+  independently); `ItemSheet` inherits the identical pattern (`effectReadOnly`) for its own
+  embedded effects. `EffectSheet` has no embeds of its own (effects are leaf documents in this
+  checkpoint) and needs no such split — its `readOnly` alone is correct and complete.
 - **`nfT`/`NF_MESSAGES` (`nf-i18n.ts`)** — chrome-translation helper: prefers the shell's `t`,
   falls back to a built-in English map when `t` echoes the key unchanged (the i18next/test
   "missing key" signal). **Test-context gotcha:** `setAppContextForTest`'s default `t: (k) => k`

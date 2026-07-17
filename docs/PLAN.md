@@ -1280,8 +1280,8 @@ Decomposed **M11a–d**:
 > and a full author→equip→toggle→revert integration test (spec §11). Task 7 (ActorSheet) was
 > pre-authorized-buddy-checked (2 blind reviewers, both independently found the same
 > Critical/Important capability-gating gap on the third check, fixed and re-confirmed); Task 8
-> (ItemSheet) and Task 9 (EffectSheet) both surfaced the SAME `basePrefix`-vs-`systemPrefix` OCC
-> pre-image bug class (Task 8 caught it live, Task 9 avoided it proactively after the flag).
+> (ItemSheet) surfaced a `basePrefix`-vs-`systemPrefix` OCC pre-image bug (fixed during review;
+> the same bug class was checked for and confirmed absent in Task 9's EffectSheet).
 > Suites: nightfox 215/215, typecheck clean, full `pnpm -r test`/`pnpm -r typecheck` green
 > throughout. → **M13d** (per-stat roll templates → labeled M11 notation as inline `[[…]]`
 > chat embeds; zero new wire frames; plan `superpowers/plans/2026-07-15-m13d-roll-wire.md`) →
