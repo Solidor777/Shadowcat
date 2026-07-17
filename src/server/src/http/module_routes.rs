@@ -499,6 +499,31 @@ mod tests {
         res.assert_status(StatusCode::NOT_FOUND);
     }
 
+    // Whole-branch-review Minor: the Windows-specific counterpart of the
+    // absolute-rel_path family above. On Windows a DRIVE-LETTER-absolute second
+    // argument (`C:\...`) makes `Path::join` discard the base entirely, exactly
+    // as a leading `/` does on Unix — a hazard the Unix-rooted tests can't
+    // exercise. Pure `Path`-logic (no filesystem / `canonicalize` / elevated
+    // symlink privileges), so it locks the regression reliably on the Windows
+    // CI runner where a symlink-based HTTP test would flake.
+    #[cfg(windows)]
+    #[test]
+    fn is_strictly_within_rejects_a_drive_letter_absolute_that_replaces_the_base() {
+        use std::path::Path;
+        let module_dir = Path::new(r"C:\data\modules\mod-a");
+        // A drive-absolute `rel_path` — `join` discards `module_dir` entirely.
+        let joined = module_dir.join(r"C:\windows\win.ini");
+        assert_eq!(
+            joined,
+            Path::new(r"C:\windows\win.ini"),
+            "a drive-absolute argument must replace the base (std invariant this test locks)"
+        );
+        assert!(
+            !super::is_strictly_within(&joined, module_dir),
+            "a drive-absolute rel_path escaping the module folder must be rejected"
+        );
+    }
+
     // Buddy-check Minor: double-percent-encoding must fail closed (single
     // decode pass yields a literal, non-path string like `%2e%2e%2fsecret.txt`
     // that simply doesn't exist), not panic or 500.
