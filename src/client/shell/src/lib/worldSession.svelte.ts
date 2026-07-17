@@ -463,10 +463,13 @@ export class WorldSession {
         getEnabledModules(world),
         listInstalledModules(),
       ]);
+      // Keyed on the canonical install folder id (`info.id`), matching the
+      // server's own enabled-set key space — NOT `manifest.id`, which is an
+      // opaque, author-declared value the folder id may legitimately differ
+      // from (or collide with another module's).
       const byId = new Map<string, (typeof installed)[number]>();
       for (const info of installed) {
-        const id = (info.manifest as { id?: unknown }).id;
-        if (typeof id === "string") byId.set(id, info);
+        byId.set(info.id, info);
       }
       const entries: ModuleEntry[] = [];
       for (const id of enabledIds) {

@@ -623,6 +623,40 @@ test("Welcome warns (but still enters the world) when an enabled id is not insta
   );
 });
 
+test("resolves an enabled folder id to its installed entry even when the manifest declares a different id", async () => {
+  // Regression: the enabled-module set (T6) is keyed on the install FOLDER
+  // id, never the manifest's author-declared id — the two may legitimately
+  // differ. A lookup keyed on `manifest.id` would (wrongly) treat this
+  // entry as "not installed" and skip it.
+  const core = await import("@shadowcat/core");
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["folder-name"]);
+  vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
+    {
+      id: "folder-name",
+      manifest: { id: "declared-manifest-id", version: "1.0.0", dependencies: {}, provides: [] },
+      entry_url: "/modules/folder-name/index.js",
+    },
+  ]);
+  const warnings: unknown[][] = [];
+  const logger = { ...silentLogger, warn: (...args: unknown[]) => warnings.push(args) };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(),
+    modules: [coreUiStub],
+    logger,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Must NOT have been skipped as "not installed" — it was found (by folder
+  // id) and handed to the loader (which then fails on the fake entry URL,
+  // a separate/expected warning distinct from the lookup-miss one below).
+  expect(
+    warnings.some((a) => String(a[0]).includes("folder-name") && String(a[0]).includes("is not installed")),
+  ).toBe(false);
+});
+
 test("Welcome degrades gracefully when external module discovery fails (network error)", async () => {
   const core = await import("@shadowcat/core");
   vi.mocked(core.getEnabledModules).mockRejectedValueOnce(new Error("network down"));

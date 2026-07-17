@@ -6,12 +6,19 @@ use ts_rs::TS;
 use crate::auth::session::AuthUser;
 use crate::http::AppState;
 
-/// `GET /api/modules` response element: the raw manifest (opaque to the
-/// server beyond structural discovery, ARCHITECTURE invariant 2 — the client's
-/// own Zod schema re-validates it) plus the URL the client dynamic-imports.
+/// `GET /api/modules` response element: `id` is the canonical install folder
+/// name (`crate::modules::InstalledModule::id`) — the SAME key
+/// `set_world_enabled_modules`/`world_enabled_modules` validate and store
+/// against. `manifest` is the raw, author-declared manifest (opaque to the
+/// server beyond structural discovery, ARCHITECTURE invariant 2 — the
+/// client's own Zod schema re-validates it) and may declare a DIFFERENT `id`
+/// than the folder it's installed under; callers must key enabled-set
+/// membership on this `id` field, never `manifest.id`, or toggle state and
+/// save requests silently diverge from the server's authoritative key space.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct InstalledModuleInfo {
+    pub id: String,
     #[ts(type = "unknown")]
     pub manifest: serde_json::Value,
     pub entry_url: String,
@@ -20,6 +27,7 @@ pub struct InstalledModuleInfo {
 impl From<&crate::modules::InstalledModule> for InstalledModuleInfo {
     fn from(m: &crate::modules::InstalledModule) -> Self {
         InstalledModuleInfo {
+            id: m.id.clone(),
             manifest: m.manifest_json.clone(),
             entry_url: m.entry_url.clone(),
         }
@@ -234,6 +242,54 @@ mod tests {
         assert_eq!(arr[0]["manifest"]["id"], "actors-plus");
         assert_eq!(arr[0]["manifest"]["provides"][0]["contract"], "x:y");
         assert_eq!(arr[0]["entry_url"], "/modules/actors-plus/index.js");
+        assert_eq!(arr[0]["id"], "actors-plus");
+    }
+
+    /// The wire `id` MUST be the install folder name, not the manifest's
+    /// author-declared `id` — the server's enabled-module set (T6) is keyed on
+    /// the folder, so a client keying on `manifest.id` instead would show
+    /// wrong toggle state and send ids the server rejects whenever the two
+    /// diverge (a community author's declared id colliding with, or simply
+    /// differing from, the folder it's installed under).
+    #[tokio::test]
+    async fn list_installed_modules_returns_the_folder_id_distinct_from_manifest_id() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("folder-name")).unwrap();
+        std::fs::write(
+            dir.path().join("folder-name").join("module.json"),
+            r#"{"id":"declared-manifest-id","version":"1.0.0"}"#,
+        )
+        .unwrap();
+
+        let mut state = initialized_state().await;
+        state.config = std::sync::Arc::new(crate::config::Config {
+            modules_dir: Some(dir.path().to_string_lossy().to_string()),
+            ..crate::config::Config::default()
+        });
+        let hash = crate::auth::password::hash_password("pw").unwrap();
+        state
+            .repo
+            .create_user("u", Some(&hash), crate::auth::role::ServerRole::User, 0)
+            .await
+            .unwrap();
+        let server = axum_test::TestServer::builder()
+            .save_cookies()
+            .build(router(state).await)
+            .unwrap();
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": "u", "password": "pw" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let got: serde_json::Value = server.get("/api/modules").await.json();
+        let arr = got.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["id"], "folder-name", "wire id must be the folder name");
+        assert_eq!(
+            arr[0]["manifest"]["id"], "declared-manifest-id",
+            "manifest.id stays the opaque author-declared value, distinct from the wire id"
+        );
     }
 
     #[tokio::test]

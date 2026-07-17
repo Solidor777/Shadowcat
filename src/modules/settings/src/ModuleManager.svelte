@@ -15,9 +15,14 @@
   let saving = $state(false);
   let error = $state<string | null>(null);
 
-  function manifestId(info: InstalledModuleInfo): string {
+  // Display-only label: the manifest's author-declared name. Never used as a
+  // toggle/save key — the server's enabled-module set is keyed on the install
+  // folder id (`info.id`, server-guaranteed present), which the manifest's
+  // own declared id may legitimately differ from or collide with another
+  // module's.
+  function displayName(info: InstalledModuleInfo): string {
     const id = (info.manifest as { id?: unknown }).id;
-    return typeof id === "string" ? id : "(unknown)";
+    return typeof id === "string" ? id : info.id;
   }
 
   async function load(): Promise<void> {
@@ -62,16 +67,16 @@
     <p>{t("settings.modules.empty")}</p>
   {:else}
     <ul>
-      {#each installed as info (manifestId(info))}
+      {#each installed as info (info.id)}
         <li>
           <label>
             <input
               type="checkbox"
-              aria-label={manifestId(info)}
-              checked={enabled.has(manifestId(info))}
-              onchange={() => toggle(manifestId(info))}
+              aria-label={displayName(info)}
+              checked={enabled.has(info.id)}
+              onchange={() => toggle(info.id)}
             />
-            {manifestId(info)}
+            {displayName(info)}
           </label>
         </li>
       {/each}
@@ -90,5 +95,12 @@
   }
   .error {
     color: var(--danger);
+  }
+  input[type="checkbox"] {
+    min-width: 36px;
+    min-height: 36px;
+  }
+  button {
+    min-height: 32px;
   }
 </style>
