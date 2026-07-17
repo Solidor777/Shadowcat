@@ -373,6 +373,14 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   call with a `removeModule(id)` cleanup sweep on catch, or document `register()` as required to be
   effect-free until its final synchronous step. (Surfaced by the M13-1 Task 15 review
   fix-confirmation.)
+- TODO: `modules.e2e.test.ts`'s fixture `module.json` hardcodes `engines.shadowcat: "^0.1.0"`,
+  which only satisfies the server's `engine_compat_ok` (`src/server/src/modules.rs`) because the
+  crate's `CARGO_PKG_VERSION` is currently `0.1.x`. A future bump past the `0.1` line makes the
+  test fail at the `enable → 204` assertion with a misleading 422, and the failure won't point at
+  the version bump. The Rust-side tests avoid this via `env!("CARGO_PKG_VERSION")`; the TS side has
+  no equivalent macro and would need to read `Cargo.toml`/the served server version at runtime.
+  Make the fixture range track the running version (or use a permissive `*`) when a version bump
+  first breaks it. (Surfaced by the M13-1 Task 19 code review.)
 
 ## Server / backups (M12.5)
 - TODO: Per-world granular export/import (sharing a single world between server instances without a whole-database snapshot) — M12.5 ships whole-server snapshot/restore only. Real complexity (world-scoped row subset while preserving referential integrity across cross-table FKs, shared asset references, admin/global tables) deferred as a distinct future feature, not required for the dogfood-alpha gate.

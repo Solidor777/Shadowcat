@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { startTestServer, login } from "./server-process";
@@ -79,6 +79,7 @@ describe("module toolchain e2e", () => {
       expect(badEnable.status).toBe(422);
     } finally {
       server.stop();
+      rmSync(modulesDir, { recursive: true, force: true });
     }
   }, 30_000);
 });
