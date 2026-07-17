@@ -9,6 +9,20 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
     <title>shadowcat</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "svelte": "/runtime/svelte.js",
+          "svelte/internal/client": "/runtime/svelte-internal-client.js",
+          "svelte/internal/disclose-version": "/runtime/svelte-internal-disclose-version.js",
+          "svelte/reactivity": "/runtime/svelte-reactivity.js",
+          "@shadowcat/core": "/runtime/shadowcat-core.js",
+          "@shadowcat/ui-kit": "/runtime/shadowcat-ui-kit.js",
+          "@shadowcat/formula": "/runtime/shadowcat-formula.js",
+          "@shadowcat/types": "/runtime/shadowcat-types.js"
+        }
+      }
+    </script>
   </head>
   <body>
     <div id="app"></div>

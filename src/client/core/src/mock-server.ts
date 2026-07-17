@@ -54,6 +54,7 @@ export class MockServer {
         world: this.world,
         current_seq: this.seq,
         server_time: this.now(),
+        server_version: "0.0.0-test",
         world_default_grants: { by_role: {}, by_user: {} },
         user_role: "player",
         capability_requirements: [],

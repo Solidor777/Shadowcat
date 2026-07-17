@@ -185,6 +185,12 @@ pub enum ServerMsg {
         world: Uuid,
         current_seq: i64,
         server_time: i64,
+        /// The running server's semver (`CARGO_PKG_VERSION`). The client's
+        /// load-time engine-compat gate checks each external module's
+        /// `engines.shadowcat` range against this; delivered here (authenticated,
+        /// per-session) rather than on public `/api/config` to avoid disclosing
+        /// the exact build to unauthenticated callers.
+        server_version: String,
         world_default_grants: crate::data::document::CapabilityGrants,
         user_role: crate::data::document::WorldRole,
         capability_requirements: Vec<crate::data::document::CapabilityRequirement>,
@@ -701,6 +707,7 @@ mod protocol_tests {
             world: Uuid::from_u128(1),
             current_seq: 0,
             server_time: 0,
+            server_version: "0.0.0-test".to_string(),
             world_default_grants: CapabilityGrants::default(),
             user_role: WorldRole::Player,
             capability_requirements: Vec::new(),
@@ -712,5 +719,6 @@ mod protocol_tests {
         assert!(json.get("world_default_grants").is_some());
         assert!(json.get("capability_requirements").is_some());
         assert!(json.get("contract_declarations").is_some());
+        assert_eq!(json["server_version"], "0.0.0-test");
     }
 }

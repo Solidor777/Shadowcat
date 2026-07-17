@@ -593,6 +593,19 @@ impl SqliteRepository {
         self.set_setting(&world_contracts_key(world), &json).await
     }
 
+    /// Replace a world's enabled installed-module set (stored as JSON in
+    /// settings, beside `world_cap_requirements`/`world_contract_declarations`
+    /// — enable/disable never mutates either of those; see the plan's
+    /// non-destructive-union decision for the `Welcome` broadcast).
+    pub async fn set_world_enabled_modules(
+        &self,
+        world: Uuid,
+        ids: &[String],
+    ) -> Result<(), DataError> {
+        let json = serde_json::to_string(ids)?;
+        self.set_setting(&world_modules_key(world), &json).await
+    }
+
     pub async fn add_member(
         &self,
         world_id: Uuid,
@@ -1020,6 +1033,12 @@ impl Repository for SqliteRepository {
         // single-writer pool holds one connection, so a settings query mid-tx
         // would deadlock.
         let world_defaults = self.world_cap_defaults(world_id).await?;
+        // Write-enforcement input is ONLY the GM-authored `world_cap_requirements`
+        // record. Module-declared `requirements` (published to clients via the
+        // Welcome union, see `ws::conn::welcome_capability_requirements`) are
+        // advisory client-side UX only and are intentionally NOT consulted here —
+        // server authority over write policy stays with the GM/operator, never
+        // community module code (ARCHITECTURE invariant 6).
         let world_reqs = self.world_cap_requirements(world_id).await?;
         let mut tx = self.pool.begin().await?;
 
@@ -1588,6 +1607,13 @@ impl Repository for SqliteRepository {
         }
     }
 
+    async fn world_enabled_modules(&self, world: Uuid) -> Result<Vec<String>, DataError> {
+        match self.get_setting(&world_modules_key(world)).await? {
+            Some(json) => Ok(serde_json::from_str(&json)?),
+            None => Ok(Vec::new()),
+        }
+    }
+
     async fn search(
         &self,
         ctx: &crate::data::membership::PermissionContext,
@@ -1733,6 +1759,11 @@ fn world_caps_req_key(world: Uuid) -> String {
 /// Settings key holding a world's UI contract declarations (JSON).
 fn world_contracts_key(world: Uuid) -> String {
     format!("world_contracts:{world}")
+}
+
+/// Settings key holding a world's enabled installed-module ids (JSON).
+fn world_modules_key(world: Uuid) -> String {
+    format!("world_modules:{world}")
 }
 
 #[cfg(test)]
@@ -3824,6 +3855,28 @@ mod tests {
         }];
         r.set_world_cap_requirements(w.id, &reqs).await.unwrap();
         assert_eq!(r.world_cap_requirements(w.id).await.unwrap(), reqs);
+    }
+
+    #[tokio::test]
+    async fn world_enabled_modules_round_trip() {
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let author = r.create_user("a", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", author, 0).await.unwrap();
+
+        assert!(r.world_enabled_modules(w.id).await.unwrap().is_empty());
+
+        let ids = vec!["actors-plus".to_string(), "nightfox".to_string()];
+        r.set_world_enabled_modules(w.id, &ids).await.unwrap();
+        assert_eq!(r.world_enabled_modules(w.id).await.unwrap(), ids);
+
+        // A subsequent set fully replaces, not appends.
+        r.set_world_enabled_modules(w.id, &["nightfox".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            r.world_enabled_modules(w.id).await.unwrap(),
+            vec!["nightfox".to_string()]
+        );
     }
 
     #[tokio::test]

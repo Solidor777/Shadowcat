@@ -29,6 +29,11 @@ import {
   type WireAudience,
   type SubscriptionHandle,
   type WireSearchHit,
+  loadModules,
+  type ModuleEntry,
+  type ModuleManifest,
+  listInstalledModules,
+  getEnabledModules,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
@@ -131,7 +136,12 @@ export class WorldSession {
   }
 
   /** Advisory client-side mirror of the server's Update-path check, for showing/hiding write
-   * controls. GM bypasses; the server remains authoritative and rejects a bypass at apply_intent. */
+   * controls. GM bypasses; the server remains authoritative and rejects a bypass at apply_intent.
+   * Caveat: `#requirements` (from the Welcome union) mixes GM-authored world_cap_requirements
+   * with module-declared manifest requirements. For GM-authored entries this mirror matches
+   * server enforcement exactly. Module-published entries are advisory UX only — the server
+   * does NOT reject a write solely because a module declared a requirement on that path, so
+   * this gate can be stricter here than the server actually is for module-only requirements. */
   canEdit(doc: WireDocument, path: string): boolean {
     if (this.role === "gm") return true;
     if (!this.role) return false;
@@ -373,6 +383,12 @@ export class WorldSession {
       this.role = w.user_role;
       this.#worldGrants = w.world_default_grants;
       this.#requirements = w.capability_requirements;
+      // Snapshot BEFORE any await below: a scene subscription added while this
+      // Welcome's async chain is still in flight (module activation / external-module
+      // load / member fetch) already self-establishes via `subscribeScene`'s own
+      // `#establishScene` call — reconciling it again here too would double-send
+      // `scene_subscribe` for the very sub this Welcome never actually dropped.
+      const subsAtWelcome = [...this.#sceneSubs];
       // Activate modules BEFORE any await below (the member fetch) so the
       // layout module contributes Layout into the `root` surface the host renders
       // — the table chrome paints immediately on mount, never a blank frame during
@@ -382,6 +398,7 @@ export class WorldSession {
         this.#bootstrapped = true;
         for (const m of this.opts.modules) this.#modules.add(m);
         await this.#modules.activate();
+        await this.#loadExternalModules(w.world, w.server_version);
       }
       // Fetch member usernames: every role needs these to resolve chat author
       // names and whisper recipient labels; the GM additionally uses them for
@@ -402,7 +419,14 @@ export class WorldSession {
       // Scene subscriptions are dropped by the WS on disconnect; re-establish each
       // on every (re)connect so derived state (vision) survives a reconnect. No-op
       // on the first Welcome (none registered until the render engine subscribes).
-      for (const [id, rec] of this.#sceneSubs) {
+      // Iterates the PRE-await snapshot (`subsAtWelcome`), not the live map, so a sub
+      // added mid-flight (see snapshot comment above) is left to its own establish.
+      for (const [id, rec] of subsAtWelcome) {
+        // Liveness check: `subsAtWelcome` holds `[id, rec]` by reference, so a caller
+        // that unsubscribes during this Welcome's (now-widened) await window has
+        // already removed `id` from the live `#sceneSubs` map. Skip a torn-down entry
+        // instead of resurrecting it with a spurious `scene_subscribe`.
+        if (this.#sceneSubs.get(id) !== rec) continue;
         // Tear down a live handle from a prior connect before re-subscribing; the
         // gen bump inside #establishScene invalidates any still-in-flight attempt,
         // so a flapping reconnect can't leak a duplicate server subscription.
@@ -420,6 +444,58 @@ export class WorldSession {
       }
     } catch (e) {
       this.#logger.error("world session welcome handling failed", e);
+    }
+  }
+
+  /** Fetch the world's enabled installed-module set + their (manifest,
+   * entry_url) pairs and load them through the shared, per-module-contained
+   * loader (M13-1 §3). Runs exactly once per WorldSession (called only inside
+   * the `#bootstrapped` guard) — external modules never hot-reload across a
+   * reconnect within one session (no hot unload, M13-1 §2); "next client load
+   * of that world" means a fresh WorldSession (page load / re-enter), not a
+   * WS reconnect. A discovery-level failure (network, malformed response)
+   * degrades to a logged warning; the session still enters the world with
+   * only its first-party modules active — a broken pipeline must never brick
+   * a world (invariant 4). */
+  async #loadExternalModules(world: string, serverVersion: string): Promise<void> {
+    try {
+      const [enabledIds, installed] = await Promise.all([
+        getEnabledModules(world),
+        listInstalledModules(),
+      ]);
+      // Keyed on the canonical install folder id (`info.id`), matching the
+      // server's own enabled-set key space — NOT `manifest.id`, which is an
+      // opaque, author-declared value the folder id may legitimately differ
+      // from (or collide with another module's).
+      const byId = new Map<string, (typeof installed)[number]>();
+      for (const info of installed) {
+        byId.set(info.id, info);
+      }
+      const entries: ModuleEntry[] = [];
+      for (const id of enabledIds) {
+        const info = byId.get(id);
+        if (!info) {
+          this.#logger.warn(`enabled module ${id} is not installed; skipping`);
+          continue;
+        }
+        entries.push({
+          manifest: info.manifest as ModuleManifest,
+          entry: info.entry_url,
+        });
+      }
+      if (entries.length === 0) return;
+      const result = await loadModules({
+        entries,
+        importFn: (url) => import(/* @vite-ignore */ url),
+        registry: this.#modules,
+        shadowcatVersion: serverVersion,
+      });
+      for (const f of result.failed) {
+        this.#logger.warn(`external module ${f.id} (${f.entry}) failed to load: ${f.error}`);
+      }
+      if (result.loaded.length > 0) await this.#modules.activate();
+    } catch (e) {
+      this.#logger.warn("external module discovery failed", e);
     }
   }
 

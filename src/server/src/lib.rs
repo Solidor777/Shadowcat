@@ -7,5 +7,6 @@ pub mod db;
 pub mod dice;
 pub mod health;
 pub mod http;
+pub mod modules;
 pub mod scene;
 pub mod ws;

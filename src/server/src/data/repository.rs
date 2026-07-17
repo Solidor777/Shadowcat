@@ -93,6 +93,9 @@ pub trait Repository: Send + Sync {
         world: Uuid,
     ) -> Result<Vec<ContractDeclaration>, DataError>;
 
+    /// A world's enabled installed-module ids (GM-set). Empty when unset.
+    async fn world_enabled_modules(&self, world: Uuid) -> Result<Vec<String>, DataError>;
+
     /// Full-text search over a world's documents, ranked by relevance and
     /// filtered to what `ctx` may read. `cursor` is the raw-rank offset from a
     /// prior page (`None` for the first). Returns up to `limit` readable hits.

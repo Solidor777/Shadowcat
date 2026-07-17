@@ -26,6 +26,7 @@ These are the spec's Invariants (copied verbatim); every task's requirements imp
 - **Module discovery caching**: scanned fresh on every `GET /api/modules` call and every enable-time validation (no `AppState` cache). A GM's manual filesystem extract is visible immediately without a server restart; local-disk scan cost is negligible at realistic module counts. A log-only scan also runs at startup (matches the spec's literal "on startup, scan" trigger).
 - **Import map delivery**: built INTO `index.html` at Vite build time (not injected server-side at request time), because the custom `entryFileNames` function makes the runtime-chunk output paths deterministic and known ahead of time. `src/server/src/http/embed.rs` needs no changes.
 - **`engines` field is OPTIONAL on the shared `ModuleManifest` TS type/Zod schema** (not required), because it is shared with every first-party module's in-code manifest literal — making it required would break ~20 existing first-party `Module` objects for no reason (first-party modules ship version-locked inside the binary; they have no engine-compat problem). T6's "obligates version discipline from here on" applies to the community modules-folder pipeline specifically (server enable-time gate + client load-time gate both hard-require it there), not to the shared schema.
+- **The running server version reaches the client via the authenticated `Welcome` broadcast, NOT public `/api/config`** (Task 9). The load-time engine-compat gate needs the server version, and it runs in `worldSession.#onWelcome` — which already receives the whole `Welcome` payload. `Welcome` is authenticated and per-session, and already carries a server-global value (`server_time`), so `server_version` rides the same message the client is already awaiting: no extra `getConfig()` round-trip, no new public API. `/api/config` stays public but `initialized`-only (it MUST remain unauthenticated for the pre-init setup flow, so `version` was the only field that ever wanted auth — splitting it out is mandatory, not optional). This closes a pre-auth version-fingerprinting surface (exact patch semver disclosed to any unauthenticated caller, enabling targeted-CVE recon) while REDUCING API surface. The server-side enable-time gate (Task 8) is unaffected — it reads `CARGO_PKG_VERSION` directly, never the wire field.
 
 ---
 
@@ -194,9 +195,11 @@ pub struct InstalledModule {
 /// Scan `<modules_dir>/*/module.json`, parse + validate each. An invalid
 /// manifest (missing/malformed `id`/`version`, or malformed JSON) is logged
 /// (warn) and skipped — one broken module must not prevent startup or hide the
-/// others (ARCHITECTURE invariant 2: structural authority only, fail-open on
-/// discovery). A missing `modules_dir` (nothing installed yet) yields an empty
-/// list, not an error. Deterministic id-sorted order.
+/// others (ARCHITECTURE invariant 6: server authority over a community-authored
+/// body is structural only; fail-open on discovery is this plan's own Global
+/// Constraint 4, not itself an ARCHITECTURE invariant). A missing `modules_dir`
+/// (nothing installed yet) yields an empty list, not an error. Deterministic
+/// id-sorted order.
 pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
     let mut out = Vec::new();
     let entries = match std::fs::read_dir(modules_dir) {
@@ -1260,90 +1263,89 @@ git commit -m "feat(server/http): GET/PUT /api/worlds/{id}/enabled-modules (T6 g
 
 ---
 
-## Task 9: `ServerConfig.version`
+## Task 9: `Welcome.server_version` — deliver the running server version over the authenticated join broadcast
+
+Delivers the running server's semver to the client's load-time engine-compat gate (Task 12/15) through the authenticated, per-session `Welcome` message it already receives — NOT the public `/api/config` endpoint (see the "running server version reaches the client via `Welcome`" design decision above for the security/round-trip rationale). `/api/config` is left untouched (public, `initialized`-only). The server-side enable-time gate (Task 8) is unaffected — it reads `CARGO_PKG_VERSION` directly.
 
 **Files:**
-- Modify: `src/server/src/http/routes.rs`, `src/client/shell/src/lib/api.ts`
+- Modify: `src/server/src/ws/protocol.rs`, `src/server/src/ws/conn.rs`, `src/client/core/src/wire.ts`
 
 **Interfaces:**
-- Produces: `ServerConfig.version: string` (regenerated `src/types/generated/ServerConfig.ts`); `getConfig(): Promise<ServerConfig>` in shell's `api.ts`.
+- Produces: `ServerMsg::Welcome` gains `server_version: String` (regenerated `src/types/generated/ServerMsg.ts`); the client Zod `ServerMsgSchema` welcome variant + `WireWelcome` type gain `server_version: string`. Consumed by Task 15 (`worldSession.#onWelcome`'s `w.server_version`).
 
-- [ ] **Step 1: Write the failing test** — add to the `#[cfg(test)] mod tests` block in `src/server/src/http/mod.rs`, right after `config_reports_initialized_state_and_is_public_pre_init`:
+Note (Task 10 interplay): Task 10 also edits the `ServerMsg::Welcome { ... }` construction site in `conn.rs` (it changes the `world_reqs` source). Task 9 adds a `server_version:` line to that same literal. The two edits touch different fields of the same struct literal and compose without conflict; Task 9 lands first.
+
+- [ ] **Step 1: Write the failing test** — extend the existing `welcome_carries_caps_role_and_requirements` test in `src/server/src/ws/protocol.rs`'s `#[cfg(test)] mod tests` block: add a `server_version` field to the `ServerMsg::Welcome { ... }` constructor and assert it serializes. The constructor becomes:
 
 ```rust
-    #[tokio::test]
-    async fn config_reports_the_running_server_version() {
-        let server = axum_test::TestServer::new(router(initialized_state().await).await).unwrap();
-        let res = server.get("/api/config").await;
-        res.assert_status_ok();
-        assert_eq!(
-            res.json::<serde_json::Value>()["version"],
-            env!("CARGO_PKG_VERSION"),
-        );
-    }
+        let w = ServerMsg::Welcome {
+            world: Uuid::from_u128(1),
+            current_seq: 0,
+            server_time: 0,
+            server_version: "0.0.0-test".to_string(),
+            world_default_grants: CapabilityGrants::default(),
+            user_role: WorldRole::Player,
+            capability_requirements: Vec::new(),
+            contract_declarations: Vec::new(),
+        };
+```
+
+and add, alongside the existing assertions:
+
+```rust
+        assert_eq!(json["server_version"], "0.0.0-test");
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run (from `src/server/`): `cargo test -p shadowcat config_reports_the_running_server_version`
-Expected: FAIL — `ServerConfig` has no `version` field (missing JSON key, or compile error since the struct literal in `config()` must add it too).
+Run (from `src/server/`): `cargo test -p shadowcat welcome_carries_caps_role_and_requirements`
+Expected: FAIL to compile — `ServerMsg::Welcome` has no `server_version` field.
 
-- [ ] **Step 3: Implement** — in `src/server/src/http/routes.rs`, modify `ServerConfig` and `config()`:
+- [ ] **Step 3: Implement** — in `src/server/src/ws/protocol.rs`, add the field to the `Welcome` variant (right after `server_time`):
 
 ```rust
-#[derive(Serialize, TS)]
-#[ts(export, export_to = "../../types/generated/")]
-pub struct ServerConfig {
-    pub initialized: bool,
-    /// The running server's semver — external modules' `engines.shadowcat`
-    /// compat range is checked against this at enable (server, Task 8) and
-    /// load (client, Task 12) time.
-    pub version: String,
-}
+        server_time: i64,
+        /// The running server's semver (`CARGO_PKG_VERSION`). The client's
+        /// load-time engine-compat gate checks each external module's
+        /// `engines.shadowcat` range against this; delivered here (authenticated,
+        /// per-session) rather than on public `/api/config` to avoid disclosing
+        /// the exact build to unauthenticated callers.
+        server_version: String,
+```
 
-/// Whether a first admin exists, plus the running server version. Unauthenticated;
-/// reachable before init.
-pub async fn config(State(state): State<AppState>) -> Json<ServerConfig> {
-    Json(ServerConfig {
-        initialized: state.initialized.load(Ordering::Relaxed),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    })
-}
+Then set it at the construction site in `src/server/src/ws/conn.rs` (the `ServerMsg::Welcome { ... }` literal, right after `server_time: now_millis(),`):
+
+```rust
+            server_time: now_millis(),
+            server_version: env!("CARGO_PKG_VERSION").to_string(),
 ```
 
 - [ ] **Step 4: Run full server suite + clippy to verify GREEN**
 
 Run (from `src/server/`): `cargo test --all-targets`
-Expected: PASS; ts-rs regenerates `src/types/generated/ServerConfig.ts` as a side effect.
+Expected: PASS; ts-rs regenerates `src/types/generated/ServerMsg.ts` (now with `server_version: string`) as a side effect.
 Run: `cargo clippy --all-targets -- -D warnings`
 Expected: clean.
 
-- [ ] **Step 5: Add the client-side fetch wrapper** — in `src/client/shell/src/lib/api.ts`, add the import (extend the existing `import type { WorldEntry } from "@shadowcat/types";` line):
+- [ ] **Step 5: Mirror in the client Zod schema** — in `src/client/core/src/wire.ts`, add the field to the `welcome` object of `ServerMsgSchema` (right after `server_time: int,`):
 
 ```ts
-import type { ServerConfig, WorldEntry } from "@shadowcat/types";
-```
-
-Add right after the `logout` function:
-
-```ts
-export function getConfig(): Promise<ServerConfig> {
-  return getJson<ServerConfig>("/api/config");
-}
+    server_time: int,
+    server_version: z.string(),
 ```
 
 - [ ] **Step 6: Run the client suites**
 
-Run (from repo root): `pnpm --filter @shadowcat/shell test`
-Expected: PASS (no existing test touches `api.ts`'s `getConfig`; this is additive).
+Run (from repo root): `pnpm --filter @shadowcat/core test`
+Expected: PASS (the wire round-trip/drift-guard tests accept the new field; a Welcome fixture missing `server_version` would fail the schema, confirming the mirror is enforced).
 Run: `pnpm -r typecheck`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/server/src/http/routes.rs src/server/src/http/mod.rs src/types/generated/ServerConfig.ts src/client/shell/src/lib/api.ts
-git commit -m "feat(config): expose the running server version at /api/config; add getConfig()"
+git add src/server/src/ws/protocol.rs src/server/src/ws/conn.rs src/types/generated/ServerMsg.ts src/client/core/src/wire.ts
+git commit -m "feat(server/ws): carry the running server version in the Welcome broadcast (T6 client gate source)"
 ```
 
 ---
@@ -2271,22 +2273,23 @@ git commit -m "feat(shell): shared-runtime ESM chunks + build-time import map (T
 - Modify: `src/client/shell/src/lib/worldSession.svelte.ts`, `src/client/shell/src/lib/worldSession.test.ts`
 
 **Interfaces:**
-- Consumes: `loadModules`, `type ModuleEntry`, `type ModuleManifest`, `listInstalledModules`, `getEnabledModules` (`@shadowcat/core`); `getConfig` (`./api`).
-- Produces: `WorldSession`'s new private `#loadExternalModules(world: string): Promise<void>`, invoked once per session inside the existing `#bootstrapped` guard.
+- Consumes: `loadModules`, `type ModuleEntry`, `type ModuleManifest`, `listInstalledModules`, `getEnabledModules` (`@shadowcat/core`); the server version from the `Welcome` payload (`w.server_version`, Task 9) — NOT a `getConfig()` fetch.
+- Produces: `WorldSession`'s new private `#loadExternalModules(world: string, serverVersion: string): Promise<void>`, invoked once per session inside the existing `#bootstrapped` guard.
 
 - [ ] **Step 1: Extend the test mocks + write the failing tests**
 
 In `src/client/shell/src/lib/worldSession.test.ts`, replace the existing `vi.mock("./api", ...)` block:
 
 ```ts
-// The members + config fetches hit the network; stub them (safe defaults,
-// overridable per test).
+// The members fetch hits the network; stub it (safe default, overridable per
+// test). The server version now arrives on the Welcome payload, not a fetch —
+// ensure this file's mock Welcome message (built in `mockConnect`) includes a
+// `server_version: "0.1.0"` field, since the `WireWelcome` schema now requires it.
 vi.mock("./api", async (importActual) => {
   const actual = await importActual<typeof import("./api")>();
   return {
     ...actual,
     listWorldMembers: vi.fn().mockResolvedValue([]),
-    getConfig: vi.fn().mockResolvedValue({ initialized: true, version: "0.1.0" }),
   };
 });
 
@@ -2398,7 +2401,6 @@ Add the `listInstalledModules`/`getEnabledModules` import right after the `@shad
 
 ```ts
 import { listInstalledModules, getEnabledModules } from "@shadowcat/core";
-import { getConfig } from "./api";
 ```
 
 In `#onWelcome`, change the bootstrap block:
@@ -2411,14 +2413,14 @@ In `#onWelcome`, change the bootstrap block:
       }
 ```
 
-to:
+to (threading the server version straight off the Welcome payload `w`):
 
 ```ts
       if (!this.#bootstrapped) {
         this.#bootstrapped = true;
         for (const m of this.opts.modules) this.#modules.add(m);
         await this.#modules.activate();
-        await this.#loadExternalModules(w.world);
+        await this.#loadExternalModules(w.world, w.server_version);
       }
 ```
 
@@ -2435,12 +2437,11 @@ Add the new private method right after `#onWelcome`'s closing brace:
    * degrades to a logged warning; the session still enters the world with
    * only its first-party modules active — a broken pipeline must never brick
    * a world (invariant 4). */
-  async #loadExternalModules(world: string): Promise<void> {
+  async #loadExternalModules(world: string, serverVersion: string): Promise<void> {
     try {
-      const [enabledIds, installed, cfg] = await Promise.all([
+      const [enabledIds, installed] = await Promise.all([
         getEnabledModules(world),
         listInstalledModules(),
-        getConfig(),
       ]);
       const byId = new Map<string, (typeof installed)[number]>();
       for (const info of installed) {
@@ -2464,7 +2465,7 @@ Add the new private method right after `#onWelcome`'s closing brace:
         entries,
         importFn: (url) => import(/* @vite-ignore */ url),
         registry: this.#modules,
-        shadowcatVersion: cfg.version,
+        shadowcatVersion: serverVersion,
       });
       for (const f of result.failed) {
         this.#logger.warn(`external module ${f.id} (${f.entry}) failed to load: ${f.error}`);

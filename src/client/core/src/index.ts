@@ -15,6 +15,7 @@ export type { PipelineName, Middleware } from "./middleware";
 export { ManifestSchema, parseManifest, declarationOf } from "./manifest";
 export type {
   ModuleManifest,
+  ModuleEngines,
   CapRequirement,
   HookDecl,
   ContractProvide,
@@ -23,7 +24,7 @@ export type {
 export { ModuleRegistry } from "./modules";
 export type { Module, ModuleContext, ModuleInfo } from "./modules";
 export { loadModules } from "./loader";
-export type { ImportFn, ModuleEntry } from "./loader";
+export type { ImportFn, ModuleEntry, ModuleLoadFailure, ModuleLoadResult } from "./loader";
 export { resolveCaps, canWritePath } from "./capabilities";
 export { DocumentStore, setPointer, getPointer, applyOperation } from "./store";
 export type { Listener, ReadableDocuments } from "./store";
@@ -75,6 +76,8 @@ export type {
 export { AssetResolver } from "./assets";
 export type { AssetOp } from "./assets";
 export { listAssets, uploadAsset, replaceAsset, deleteAsset } from "./asset-rest";
+export { listInstalledModules, getEnabledModules, setEnabledModules } from "./module-rest";
+export type { InstalledModuleInfo } from "@shadowcat/types";
 export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildWorldSettingsDoc, DEFAULT_WORLD_SETTINGS, resolveSceneSettings, resolveViewedScene, DEFAULT_GRADATION, buildLightGradationDoc, resolveGradation, SEED_VISION_MODES, buildVisionModesDoc, resolveVisionModes, buildLightDoc, buildRegionDoc, setRegionVisibility, DEFAULT_SCENE_BOUNDS, envelope, buildItemDoc, ITEM_DOC_TYPE } from "./scene-docs";
 export type { SceneEngine, TokenEngine, ActorEngine, TokenOverrides, RenderVisual, AnimatedSource, FaceVisual, TokenVisual, Faction, FactionStance, FactionRegistryEngine, Condition, ConditionRegistryEngine, MovementRestriction, MovementModel, LightMode, DiagonalRule, EasingMode, EnvironmentLight, GridDistance, SceneVisionOverrides, SceneLightingOverrides, WorldSceneDefaults, WorldSettingsEngine, ResolvedSceneSettings, GradationBand, LightGradationEngine, VisionMode, VisionModesEngine, VisionAssignment, LightEngine, RegionShapeKind, RegionShape, RegionBehavior, RegionEngine, SceneDimensions, ItemSystem, DrawingEngine, DrawingShape, TemplateEngine, TemplateShape, Stroke, Fill, Grid, WallEngine, Seg } from "./scene-docs";
 export { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, footprintRadius, resolveTokenVisual } from "./actor";

@@ -36,6 +36,12 @@ async fn main() -> anyhow::Result<()> {
     let repo = SqliteRepository::connect(&config.db).await?;
     std::fs::create_dir_all(config.assets_path())?;
 
+    // Runs once at boot purely to surface a summary in the log; every actual
+    // read (GET /api/modules, enable-time validation) re-scans fresh, so this
+    // never goes stale.
+    let discovered = shadowcat::modules::scan_installed_modules(&config.modules_path());
+    tracing::info!(count = discovered.len(), "installed modules discovered");
+
     // Headless bootstrap (remote hosting): seed admin from config if present.
     let seeded = shadowcat::auth::setup::bootstrap_admin(&repo, &config).await?;
     let initialized = seeded || repo.admin_exists().await?;

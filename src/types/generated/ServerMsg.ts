@@ -15,7 +15,15 @@ import type { WsErrorCode } from "./WsErrorCode";
 /**
  * Server -> client frames.
  */
-export type ServerMsg = { "type": "welcome", world: string, current_seq: bigint, server_time: bigint, world_default_grants: CapabilityGrants, user_role: WorldRole, capability_requirements: Array<CapabilityRequirement>, 
+export type ServerMsg = { "type": "welcome", world: string, current_seq: bigint, server_time: bigint, 
+/**
+ * The running server's semver (`CARGO_PKG_VERSION`). The client's
+ * load-time engine-compat gate checks each external module's
+ * `engines.shadowcat` range against this; delivered here (authenticated,
+ * per-session) rather than on public `/api/config` to avoid disclosing
+ * the exact build to unauthenticated callers.
+ */
+server_version: string, world_default_grants: CapabilityGrants, user_role: WorldRole, capability_requirements: Array<CapabilityRequirement>, 
 /**
  * The world's UI contract declarations, so the client can validate its
  * loaded module set against the world's declared topology.

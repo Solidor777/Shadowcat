@@ -62,6 +62,14 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   forwards through `RenderEngine` to `TokenView`/`TokenAnimator` (position tween) and, when
   `moverVision` is present (mover only), the engine's `visionSweeps` fog-sweep playback (see
   `shadowcat-codebase-scene-rendering`).
+- **External-module loading (M13-1)** — `worldSession.svelte.ts`'s `#loadExternalModules(world,
+  serverVersion)` runs after `Welcome` (`serverVersion` = `w.server_version`): fetches the world's
+  enabled set (keyed on the install FOLDER id, `InstalledModuleInfo.id`, never manifest id), calls
+  core `loadModules` (per-module-contained, non-throwing `ModuleLoadResult`), then activates. The
+  shell serves ONE runtime instance of `svelte`/`@shadowcat/*` via `vite.config.ts` `RUNTIME_ENTRIES`
+  + `preserveEntrySignatures:"strict"` + the `index.html` import map. GM management UI =
+  `src/modules/settings/src/ModuleManager.svelte`. Full subsystem (server discovery/serving/enablement,
+  engine-compat gate) → [[shadowcat-codebase-module-toolchain]].
 - `src/client/shell/src/` — `App.svelte`, `main.ts`, `lib/` (hash router, api client, session,
   WorldSession controller, default-module wiring). `sessionState.svelte.ts` owns the
   `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` (M12a, replaced

@@ -1195,6 +1195,28 @@ Decomposed **M11a–d**:
 > **M13-1** (external-module toolchain: engine-package consumption for out-of-tree modules,
 > module build/packaging, world install/load via the M6b loader, dev-server + e2e-harness
 > access for external repos; own spec cycle; bootstraps the Nightfox repo) →
+> **M13-1 DONE** (branch `m13-1-external-module-toolchain`, 21 SDD tasks, 3 pre-authorized
+> security buddy-checks — Task 5 path-traversal static serve, Tasks 8+10 enable+capability-union,
+> Task 14 single-instance import map — Tasks 5 and 14 each caught a Critical, Task 8+10 an
+> Important): installed modules
+> live at `<data-dir>/modules/<folder-id>/` (`module.json` + pre-built ESM); the server SCANS +
+> serves them static (`src/server/src/modules.rs` discovery, `http/module_routes.rs` two-stage
+> canonicalize + strict-containment guard) but NEVER executes module code. Per-world GM enablement
+> (`PUT/GET /api/worlds/{id}/enabled-modules`, settings-JSON storage) keyed on the install FOLDER
+> id (server-controlled), never the author-declared manifest id. Engine-compat gate
+> (`engines.shadowcat` semver, fail-closed caret-0.x fix) enforced at BOTH enable and load. The
+> client shell serves exactly one runtime instance of `svelte`/`svelte/*`/`@shadowcat/*` via a
+> Rollup multi-entry `preserveEntrySignatures:"strict"` build + browser import map (Global
+> Constraint 1); `worldSession` fetches the enabled set after `Welcome`, `loadModules`
+> (per-module-contained, non-throwing `ModuleLoadResult`), then activates. Two design questions
+> decided on merits: the running server version ships over the authenticated `ServerMsg::Welcome`
+> (`server_version`), not public `/api/config` (closes a pre-auth fingerprint surface); module
+> `requirements` are advisory-to-client only, unioned into the world's broadcast
+> `capability_requirements` but NEVER server-enforced (ARCHITECTURE §2 invariant 6 — server runs no
+> third-party logic). The Nightfox reference repo is bootstrapped OUT-OF-TREE (own git repo, nested
+> into a checkout at `src/modules/nightfox/` for dev; never pushed from this session) with a
+> library build, trivial hello module, standalone `test_server --modules-dir` smoke e2e, and 3-OS
+> CI stub. Authoring toolchain guide: `docs/design/module-authoring.md`. →
 > **M13a** (`@shadowcat/formula` shared formula library: free-form parser/evaluator,
 > fail-closed error values, DoS caps, cycle guard, dice-notation-template mode; plan
 > `superpowers/plans/2026-07-15-m13a-formula-library.md`) →

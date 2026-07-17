@@ -13,11 +13,29 @@ import {
 import { WorldSession } from "./worldSession.svelte";
 import { listWorldMembers } from "./api";
 
-// The members fetch hits the network; stub it (default empty for the player/GM
-// tests that don't care, overridable per test).
+// The members fetch hits the network; stub it (safe default, overridable per
+// test). The server version now arrives on the Welcome payload, not a fetch —
+// ensure this file's mock Welcome message (built in `mockConnect`) includes a
+// `server_version: "0.1.0"` field, since the `WireWelcome` schema now requires it.
 vi.mock("./api", async (importActual) => {
   const actual = await importActual<typeof import("./api")>();
-  return { ...actual, listWorldMembers: vi.fn().mockResolvedValue([]) };
+  return {
+    ...actual,
+    listWorldMembers: vi.fn().mockResolvedValue([]),
+  };
+});
+
+// The external-module discovery fetches (installed set + a world's enabled
+// set) also hit the network; default to "nothing enabled" so the 25+ existing
+// Welcome-flow tests below are unaffected (empty enabled set → #loadExternalModules
+// returns before ever calling loadModules/import()).
+vi.mock("@shadowcat/core", async (importActual) => {
+  const actual = await importActual<typeof import("@shadowcat/core")>();
+  return {
+    ...actual,
+    listInstalledModules: vi.fn().mockResolvedValue([]),
+    getEnabledModules: vi.fn().mockResolvedValue([]),
+  };
 });
 
 // `MockServer` is internal core test code (not barrel-exported), so use a minimal
@@ -28,6 +46,7 @@ const welcomeFrame = {
   world: "w1",
   current_seq: 0,
   server_time: 0,
+  server_version: "0.1.0",
   world_default_grants: { by_role: {}, by_user: {} },
   user_role: "player",
   capability_requirements: [],
@@ -583,4 +602,158 @@ test("onScenePing cross-scene guard: a GM roaming scene B sees own pings for B, 
   push({ type: "scene_ping", scene: "sceneB", x: 3, y: 4, user: "u1" }); // the GM's own viewed scene — accepted
   await vi.waitFor(() => expect(got).toHaveLength(1));
   expect(got[0].scene).toBe("sceneB");
+});
+
+test("Welcome warns (but still enters the world) when an enabled id is not installed", async () => {
+  const core = await import("@shadowcat/core");
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["missing-mod"]);
+  vi.mocked(core.listInstalledModules).mockResolvedValueOnce([]);
+  const warnings: unknown[][] = [];
+  const logger = { ...silentLogger, warn: (...args: unknown[]) => warnings.push(args) };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(),
+    modules: [coreUiStub],
+    logger,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  await vi.waitFor(() =>
+    expect(warnings.some((a) => String(a[0]).includes("missing-mod"))).toBe(true),
+  );
+});
+
+test("resolves an enabled folder id to its installed entry even when the manifest declares a different id", async () => {
+  // Regression: the enabled-module set (T6) is keyed on the install FOLDER
+  // id, never the manifest's author-declared id — the two may legitimately
+  // differ. A lookup keyed on `manifest.id` would (wrongly) treat this
+  // entry as "not installed" and skip it.
+  const core = await import("@shadowcat/core");
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["folder-name"]);
+  vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
+    {
+      id: "folder-name",
+      manifest: { id: "declared-manifest-id", version: "1.0.0", dependencies: {}, provides: [] },
+      entry_url: "/modules/folder-name/index.js",
+    },
+  ]);
+  const warnings: unknown[][] = [];
+  const logger = { ...silentLogger, warn: (...args: unknown[]) => warnings.push(args) };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(),
+    modules: [coreUiStub],
+    logger,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Must NOT have been skipped as "not installed" — it was found (by folder
+  // id) and handed to the loader (which then fails on the fake entry URL,
+  // a separate/expected warning distinct from the lookup-miss one below).
+  expect(
+    warnings.some((a) => String(a[0]).includes("folder-name") && String(a[0]).includes("is not installed")),
+  ).toBe(false);
+});
+
+test("Welcome degrades gracefully when external module discovery fails (network error)", async () => {
+  const core = await import("@shadowcat/core");
+  vi.mocked(core.getEnabledModules).mockRejectedValueOnce(new Error("network down"));
+  const warnings: unknown[][] = [];
+  const logger = { ...silentLogger, warn: (...args: unknown[]) => warnings.push(args) };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(),
+    modules: [coreUiStub],
+    logger,
+  });
+  await session.enter("w1");
+  // The session still enters the world normally despite the discovery failure.
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  await vi.waitFor(() =>
+    expect(
+      warnings.some((a) => String(a[0]).includes("external module discovery failed")),
+    ).toBe(true),
+  );
+});
+
+test("unsubscribing a scene sub during the Welcome await window is not re-established (no spurious re-subscribe)", async () => {
+  let resolveMembers!: () => void;
+  vi.mocked(listWorldMembers).mockImplementationOnce(
+    () => new Promise((resolve) => { resolveMembers = () => resolve([]); }),
+  );
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const frames: unknown[] = [];
+  const sub = session.subscribeScene("identity", (f) => frames.push(f));
+  await vi.waitFor(() => expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(1));
+
+  // Reconnect Welcome: bootstrap already ran, so the only remaining await before the
+  // scene-subs reconciliation loop is the member fetch, now held pending.
+  push(welcomeFrame);
+  await Promise.resolve();
+  await Promise.resolve();
+  // Torn down DURING the Welcome's await window — the reconciliation loop (running
+  // against a pre-await snapshot) must not resurrect this entry.
+  sub.unsubscribe();
+  resolveMembers();
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Only the original subscribe; no re-subscribe was sent for the torn-down sub.
+  expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(1);
+});
+
+test("a scene sub added during the Welcome await window is established exactly once", async () => {
+  let resolveMembers!: () => void;
+  vi.mocked(listWorldMembers).mockImplementationOnce(
+    () => new Promise((resolve) => { resolveMembers = () => resolve([]); }),
+  );
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  // Reconnect Welcome; the member fetch is held pending so the reconciliation loop
+  // (over the pre-await snapshot) has not yet run.
+  push(welcomeFrame);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const frames: unknown[] = [];
+  session.subscribeScene("identity", (f) => frames.push(f)); // added mid-flight
+  resolveMembers();
+  await new Promise((r) => setTimeout(r, 20));
+
+  // subscribeScene's own establish call is the only scene_subscribe sent — the
+  // reconciliation loop must not double-establish a sub added mid-flight.
+  expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(1);
+});
+
+test("an enabled set with nothing to load never calls listInstalledModules a second time on reconnect", async () => {
+  const core = await import("@shadowcat/core");
+  // This suite has no `clearMocks` config, so the shared `getEnabledModules` mock's
+  // call count otherwise carries over from every earlier test in this file that
+  // also calls `session.enter()`; clear it here so the assertion below reflects
+  // only this session's calls, not file-order-dependent accumulation.
+  vi.mocked(core.getEnabledModules).mockClear();
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(2), // Welcome delivered twice (reconnect)
+    modules: [coreUiStub],
+    logger: silentLogger,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  await vi.waitFor(() => expect(vi.mocked(core.getEnabledModules)).toHaveBeenCalledTimes(1));
+  await Promise.resolve();
+  // External-module loading is bootstrap-once, exactly like core-ui activation.
+  expect(vi.mocked(core.getEnabledModules)).toHaveBeenCalledTimes(1);
 });

@@ -1,5 +1,6 @@
 pub mod assets;
 pub mod embed;
+pub mod module_routes;
 pub mod error;
 pub mod routes;
 
@@ -96,6 +97,15 @@ pub async fn router(state: AppState) -> Router {
             "/api/worlds/{id}/contracts",
             get(routes::get_world_contract_declarations)
                 .put(routes::set_world_contract_declarations),
+        )
+        .route("/api/modules", get(module_routes::list_installed_modules))
+        .route(
+            "/modules/{id}/{*path}",
+            get(module_routes::serve_module_file),
+        )
+        .route(
+            "/api/worlds/{id}/enabled-modules",
+            get(module_routes::get_world_enabled_modules).put(module_routes::set_world_enabled_modules),
         )
         .route(
             "/api/worlds/{id}/documents",

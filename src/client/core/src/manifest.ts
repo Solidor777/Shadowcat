@@ -30,6 +30,16 @@ export interface ContractDeclaration {
   requires: string[];
 }
 
+/** Minimal engine-compat gate (T6, M13-1). Optional on the shared manifest
+ * shape (first-party modules never set it — they ship version-locked inside
+ * the binary); the modules-folder install/enable/load pipeline treats a
+ * missing or unsatisfied range as a hard reject for community modules
+ * specifically (see `loader.ts`'s `checkEngineCompat` and the server's
+ * `engine_compat_ok`). */
+export interface ModuleEngines {
+  shadowcat: string;
+}
+
 export interface ModuleManifest {
   id: string;
   version: string;
@@ -40,6 +50,7 @@ export interface ModuleManifest {
   hooks?: HookDecl[];
   provides?: ContractProvide[];
   requires?: string[];
+  engines?: ModuleEngines;
 }
 
 const HookKindSchema = z.enum(["info", "mutate", "cancel"]);
@@ -48,6 +59,8 @@ const CapRequirementSchema = z.object({
   path_prefix: z.string().startsWith("/"),
   caps: z.array(z.string()).min(1),
 });
+
+const ModuleEnginesSchema = z.object({ shadowcat: z.string().min(1) });
 
 export const ManifestSchema: z.ZodType<ModuleManifest> = z.object({
   id: z.string().min(1),
@@ -63,6 +76,7 @@ export const ManifestSchema: z.ZodType<ModuleManifest> = z.object({
     .array(z.object({ contract: z.string(), cardinality: z.enum(["singleton", "multi"]) }))
     .optional(),
   requires: z.array(z.string()).optional(),
+  engines: ModuleEnginesSchema.optional(),
 });
 
 export function parseManifest(value: unknown): ModuleManifest {

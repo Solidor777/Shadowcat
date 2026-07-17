@@ -105,9 +105,10 @@ export class ModuleRegistry {
       .map((r) => declarationOf(r.module.manifest));
   }
 
-  // A singleton-conflict throw (below) is non-recoverable: it aborts the pass
-  // with earlier modules already active, so the registry must be discarded, not
-  // retried.
+  // Per-module isolated: a colliding singleton contract or a throwing `register()`
+  // is caught, logged, and left inactive WITHOUT aborting the topological loop —
+  // one broken/colliding module (first-party or external) must never brick the
+  // modules ordered after it (ARCHITECTURE §2 invariant 4).
   async activate(): Promise<void> {
     const order = this.topoSort(); // throws on cycle
     for (const id of order) {
@@ -117,19 +118,26 @@ export class ModuleRegistry {
         this.deps.logger.warn(`module ${id} not activated: dependency unmet`);
         continue;
       }
-      // Loud-fail: a singleton contract must have exactly one active provider.
-      for (const p of r.module.manifest.provides ?? []) {
-        if (p.cardinality === "singleton") {
-          const others = this.activeProvidersOf(p.contract).filter((x) => x !== id);
-          if (others.length > 0) {
-            throw new Error(
-              `singleton contract ${p.contract} already provided by ${others[0]}`,
-            );
+      try {
+        // A singleton contract must have exactly one active provider; a collision
+        // is reported below (caught) rather than aborting the whole batch.
+        for (const p of r.module.manifest.provides ?? []) {
+          if (p.cardinality === "singleton") {
+            const others = this.activeProvidersOf(p.contract).filter((x) => x !== id);
+            if (others.length > 0) {
+              throw new Error(
+                `singleton contract ${p.contract} already provided by ${others[0]}`,
+              );
+            }
           }
         }
+        await r.module.register(this.contextFor(id));
+        r.active = true;
+      } catch (e) {
+        this.deps.logger.warn(
+          `module ${id} failed to activate: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
-      await r.module.register(this.contextFor(id));
-      r.active = true;
     }
   }
 

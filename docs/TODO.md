@@ -7,6 +7,9 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - TODO: Purge `explored_fog` rows on world/scene/user deletion. The M9c table denormalizes `world_id` for a world-scoped purge, but no deletion path consumes it yet (worlds aren't deletable; scene deletion goes through the `apply_intent` document cascade, which doesn't touch `explored_fog`). Orphaned rows are harmless (reads key on the exact never-reused `(scene_id, user_id)` UUIDs) but accumulate unboundedly over a server's lifetime. Wire a `DELETE FROM explored_fog WHERE world_id = ?` (and a per-scene purge into the scene-delete cascade) when world/scene deletion lands; index `world_id` then. (Surfaced by the M9c-1 buddy check.)
 - TODO: `command::set_pointer` is set-only — an Update that conceptually removes a key writes `null` (key stays present as null) rather than removing it. `null` ≠ absent. Resolve removal semantics when the merge engine lands.
 
+## Test infrastructure
+- TODO: `axum_test::TestServer` builds request URLs via the `url` crate's `Url::set_path`, which performs WHATWG dot-segment normalization CLIENT-SIDE before the request is ever sent — a path segment that is an EXACT match to `.`/`..`/`%2e`/`%2e%2e` (and case variants) is silently collapsed/popped before it reaches the router, let alone a handler. Any HTTP-level test in this codebase that tries to smuggle a bare dot-segment through `TestServer::get`/`.post` to exercise a server-side path-traversal guard is vacuous — it proves nothing about the guard logic, since the segment never survives to hit it (confirmed: `serve_module_file_rejects_an_id_segment_that_escapes_the_modules_root` in `src/server/src/http/module_routes.rs` still passes against a deliberately-reverted, vulnerable guard). Segments that are NOT an exact dot-form match (e.g. `%2e%2e%2fsecret.txt` as one combined segment) are NOT normalized and do reach the handler intact — only bare exact-match dot segments are affected. Write future path-traversal HTTP tests either as (a) a pure unit test of the containment predicate itself, (b) a symlink/alias-based HTTP repro (module_routes.rs's `self-link`-style test), or (c) an encoded segment embedded inside a longer non-exact-match string. (Surfaced by the M13-1 Task 5 buddy-check fix-confirmation review.)
+
 ## Repo hygiene
 - RESOLVED (M10h merge): `.superpowers/sdd/task-5-report.md` and `.superpowers/sdd/task-8-report.md` were tracked in git despite `.superpowers/sdd/.gitignore` declaring `*` — `task-5-report.md` first force-added at or before the M2 checkpoint (`3505a7c`), carried forward by filename reuse across M10g/M10f-1/M10f-2/M10f-3/M10h; `task-8-report.md` was a fresh instance of the same mistake introduced mid-M10h (a fix-round implementer's broad `git add` picked it up for the first time). During M10h's Task 9 review, a reviewer subagent ran `git checkout -- .superpowers/sdd/task-5-report.md` without checking diff/stashing first, discarding that session's uncommitted report content — no durable work was lost (redundant with the real code commit + the SDD progress ledger + the session transcript), but it was the second real incident this bug enabled. Both files `git rm --cached` at the M10h merge (working-tree copies preserved; not rewriting history). If a future checkpoint's `git add` re-tracks another `.superpowers/sdd/*.md` file, repeat this cleanup at that checkpoint's merge.
 
@@ -328,6 +331,60 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - Bundle the link-preview deps (`preview_client`/`cache`/`preview_rate`) into a `LinkPreviewDeps`
   struct to shrink `handle_send_message`/`handle_edit_message` signatures (~40 call sites now under
   `#[allow(clippy::too_many_arguments)]`) and reduce call-site arg-order risk.
+
+## Module toolchain (M13-1 Tasks 8+10)
+- TODO: `welcome_capability_requirements` (`ws/conn.rs`) emits duplicate `(path_prefix, caps)`
+  entries when a GM-authored requirement and an enabled module (or two modules) declare the same
+  `path_prefix` — inert today (`declared_caps_for_path` checks inclusion, not count) but inflates
+  the Welcome payload. Add dedup once a dedup-key strategy for `CapabilityRequirement` (not
+  currently `Hash`/`Ord`) is chosen. (Surfaced by the M13-1 Tasks 8+10 buddy-check.)
+- TODO: `scan_installed_modules` does blocking `std::fs` I/O with no `spawn_blocking`; Task 10
+  moved it onto the per-WS-connect Welcome path (was admin-HTTP-only), so it now blocks a tokio
+  worker on every session join. Latent scaling concern at large module counts / concurrent
+  reconnects — wrap in `spawn_blocking` or introduce the deferred module-discovery cache.
+  (Surfaced by the M13-1 Tasks 8+10 buddy-check.)
+- Design note (module requirements are advisory): module-declared manifest `requirements` are
+  published to clients as advisory UX only and are NOT server-enforced at `apply_intent` (server
+  authority stays with the GM's `world_cap_requirements`, per ARCHITECTURE invariant 6). A future
+  explicit "GM adopts a module's requirements into the world policy" mechanism could make them
+  enforced if desired. (Surfaced by the M13-1 Tasks 8+10 buddy-check.)
+- TODO: No build-time guard exists against a first-party or module change introducing a new
+  `svelte/*` subpath (e.g. `svelte/store`, `svelte/transition`) not enumerated in
+  `vite.config.ts`'s `RUNTIME_ENTRIES` — an un-enumerated subpath would resolve to the app's own
+  bundled copy instead of the shared runtime chunk, degrading the single-instance sharing
+  invariant silently rather than failing the build. Add a build-time check (scan built output or
+  source for `from "svelte/..."` specifiers absent from `RUNTIME_ENTRIES` and fail the build).
+  (Surfaced by the M13-1 Task 14 buddy-check.)
+- TODO: The build-time import map (`vite.config.ts`) has only exact-match package-root entries —
+  an external module importing a package SUBPATH (e.g. `@shadowcat/core/something`) is an
+  unresolvable bare specifier under the current map. This is a clean browser-level failure caught
+  by the per-module load containment (a documented completeness caveat, not a single-instance
+  violation), but the module-authoring guide (Task 17) should call it out explicitly. (Surfaced by
+  the M13-1 Task 14 buddy-check.)
+- TODO: `ModuleRegistry.activate()` (`modules.ts`) now contains a throwing module's `register()`
+  per-module (logs + skips, doesn't abort the batch), but its catch does NOT roll back partial
+  side effects the module already made before throwing — `ctx.hooks.on`, `ctx.services.provide`,
+  `ctx.use`, and especially `ctx.contributions.contribute` (contributions render via `<Surface>`
+  regardless of a module's `active` flag). A module whose async `register()` contributes UI then
+  throws leaves a live, rendered contribution behind while the registry reports it inactive.
+  Unreachable today (all first-party modules `register()` synchronously with no interleaved
+  awaits), but reachable once external modules with async `register()` bodies exist (M13b+). Decide
+  the `register()` lifecycle contract when Nightfox first exercises it: either wrap the `register()`
+  call with a `removeModule(id)` cleanup sweep on catch, or document `register()` as required to be
+  effect-free until its final synchronous step. (Surfaced by the M13-1 Task 15 review
+  fix-confirmation.)
+- TODO: `modules.e2e.test.ts`'s fixture `module.json` hardcodes `engines.shadowcat: "^0.1.0"`,
+  which only satisfies the server's `engine_compat_ok` (`src/server/src/modules.rs`) because the
+  crate's `CARGO_PKG_VERSION` is currently `0.1.x`. A future bump past the `0.1` line makes the
+  test fail at the `enable → 204` assertion with a misleading 422, and the failure won't point at
+  the version bump. The Rust-side tests avoid this via `env!("CARGO_PKG_VERSION")`; the TS side has
+  no equivalent macro and would need to read `Cargo.toml`/the served server version at runtime.
+  Make the fixture range track the running version (or use a permissive `*`) when a version bump
+  first breaks it. (Surfaced by the M13-1 Task 19 code review.)
+- Module upload/install UI (M13-1 T2) — install stays manual-extract into `<data-dir>/modules/<id>/`.
+- Sandboxing/permissions for installed module JS (M13-1 T2) — modules are admin-trusted, same tier as the server binary.
+- Hot enable/disable of installed modules without a client reload (M13-1 §2).
+- Module marketplace/registry, signing, or update channels (M13-1 §2).
 
 ## Server / backups (M12.5)
 - TODO: Per-world granular export/import (sharing a single world between server instances without a whole-database snapshot) — M12.5 ships whole-server snapshot/restore only. Real complexity (world-scoped row subset while preserving referential integrity across cross-table FKs, shared asset references, admin/global tables) deferred as a distinct future feature, not required for the dogfood-alpha gate.
