@@ -361,6 +361,18 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   by the per-module load containment (a documented completeness caveat, not a single-instance
   violation), but the module-authoring guide (Task 17) should call it out explicitly. (Surfaced by
   the M13-1 Task 14 buddy-check.)
+- TODO: `ModuleRegistry.activate()` (`modules.ts`) now contains a throwing module's `register()`
+  per-module (logs + skips, doesn't abort the batch), but its catch does NOT roll back partial
+  side effects the module already made before throwing — `ctx.hooks.on`, `ctx.services.provide`,
+  `ctx.use`, and especially `ctx.contributions.contribute` (contributions render via `<Surface>`
+  regardless of a module's `active` flag). A module whose async `register()` contributes UI then
+  throws leaves a live, rendered contribution behind while the registry reports it inactive.
+  Unreachable today (all first-party modules `register()` synchronously with no interleaved
+  awaits), but reachable once external modules with async `register()` bodies exist (M13b+). Decide
+  the `register()` lifecycle contract when Nightfox first exercises it: either wrap the `register()`
+  call with a `removeModule(id)` cleanup sweep on catch, or document `register()` as required to be
+  effect-free until its final synchronous step. (Surfaced by the M13-1 Task 15 review
+  fix-confirmation.)
 
 ## Server / backups (M12.5)
 - TODO: Per-world granular export/import (sharing a single world between server instances without a whole-database snapshot) — M12.5 ships whole-server snapshot/restore only. Real complexity (world-scoped row subset while preserving referential integrity across cross-table FKs, shared asset references, admin/global tables) deferred as a distinct future feature, not required for the dogfood-alpha gate.
