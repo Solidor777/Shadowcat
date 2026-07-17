@@ -342,6 +342,17 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn config_reports_the_running_server_version() {
+        let server = axum_test::TestServer::new(router(initialized_state().await).await).unwrap();
+        let res = server.get("/api/config").await;
+        res.assert_status_ok();
+        assert_eq!(
+            res.json::<serde_json::Value>()["version"],
+            env!("CARGO_PKG_VERSION"),
+        );
+    }
+
+    #[tokio::test]
     async fn ui_state_get_put_round_trip_and_validation() {
         let state = initialized_state().await;
         seed_user(&state, "u").await;

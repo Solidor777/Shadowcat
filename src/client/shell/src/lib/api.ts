@@ -1,4 +1,4 @@
-import type { WorldEntry } from "@shadowcat/types";
+import type { ServerConfig, WorldEntry } from "@shadowcat/types";
 
 /** Local mirror of the server's MeResponse (not ts-rs-exported). */
 export interface Me {
@@ -30,6 +30,10 @@ export async function getMe(): Promise<Me | null> {
 
 export async function logout(): Promise<void> {
   await postJson("/api/logout", {});
+}
+
+export function getConfig(): Promise<ServerConfig> {
+  return getJson<ServerConfig>("/api/config");
 }
 
 export function listWorlds(): Promise<WorldEntry[]> {
