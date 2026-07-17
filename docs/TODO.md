@@ -381,6 +381,10 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   no equivalent macro and would need to read `Cargo.toml`/the served server version at runtime.
   Make the fixture range track the running version (or use a permissive `*`) when a version bump
   first breaks it. (Surfaced by the M13-1 Task 19 code review.)
+- Module upload/install UI (M13-1 T2) — install stays manual-extract into `<data-dir>/modules/<id>/`.
+- Sandboxing/permissions for installed module JS (M13-1 T2) — modules are admin-trusted, same tier as the server binary.
+- Hot enable/disable of installed modules without a client reload (M13-1 §2).
+- Module marketplace/registry, signing, or update channels (M13-1 §2).
 
 ## Server / backups (M12.5)
 - TODO: Per-world granular export/import (sharing a single world between server instances without a whole-database snapshot) — M12.5 ships whole-server snapshot/restore only. Real complexity (world-scoped row subset while preserving referential integrity across cross-table FKs, shared asset references, admin/global tables) deferred as a distinct future feature, not required for the dogfood-alpha gate.

@@ -1,0 +1,112 @@
+---
+name: shadowcat-codebase-module-toolchain
+description: "Use when touching the external/community module toolchain: server-side installed-module discovery + path-traversal-guarded static serving + per-world enablement (src/server/src/modules.rs, http/module_routes.rs, config.rs modules_dir), the engine-compat semver gate, the Welcome server_version + capability-requirements union, or the client consumption path (core loader.ts/modules.ts/module-rest.ts/manifest.ts engines, shell import-map single-instance build + worldSession external-module loading, settings ModuleManager UI). Covers out-of-tree modules (the Nightfox reference repo) and docs/design/module-authoring.md. Invoke shadowcat-codebase-core first; for the shell/AppContext seams invoke shadowcat-codebase-client-shell."
+---
+
+# Shadowcat — External Module Toolchain
+
+Orientation for how a module built OUTSIDE the engine repo (own git repo, own release cycle) is
+installed, discovered, served, enabled, and loaded — the M13-1 pipeline. Orientation+index only:
+points INTO graphify, `docs/design/`, and memory.
+
+## Purpose
+
+An installed module lives at `<data-dir>/modules/<folder-id>/` as a `module.json` manifest plus a
+pre-built ESM bundle. The **server discovers and serves it as static files but NEVER executes any
+module code** (ARCHITECTURE §2 invariant 6). A GM enables a module per-world; the client shell
+supplies exactly one runtime instance of `svelte`/`@shadowcat/*` via an import map, fetches the
+enabled set after `Welcome`, dynamically imports each enabled module through the real
+modules-folder → server → import-map path (identical in dev and prod), and activates it through the
+existing M6b `ModuleRegistry`.
+
+## Key files & seams
+
+**Server (authoritative, never runs module code):**
+- `src/server/src/modules.rs` — `scan_installed_modules(dir)` walks `<dir>/*/module.json`, parse +
+  validate each (invalid `id`/`version`/JSON → warn + SKIP, never blocks startup or hides siblings).
+  `InstalledModule { id, requirements, engines_shadowcat, manifest_json, entry_url }` where **`id`
+  is the install FOLDER name, not the author-declared manifest id**. `entry` (module.json field,
+  `default_entry` = `index.js`) computes `entry_url` = `/modules/<folder>/<entry>`.
+  `semver_satisfies` (exact/`^`/`~`/`*`, caret-0.x leftmost-non-zero fix) + `engine_compat_ok`
+  (**fail-closed**: missing `engines.shadowcat` → reject).
+- `src/server/src/http/module_routes.rs` — `InstalledModuleInfo { id (folder id), manifest,
+  entry_url }` (ts-rs → `src/types/generated/`); `list_installed_modules` (`GET /api/modules`,
+  any-auth); `serve_module_file` (`GET /modules/{id}/{*path}` — two-stage canonicalize +
+  `is_strictly_within` proper-descendant check, guards BOTH the `id` segment and the `*path`
+  segment, rejects path==root equality); `set_world_enabled_modules`/get (`PUT/GET
+  /api/worlds/{id}/enabled-modules`, `require_gm`, atomic validate-all + dedup, `MAX_ENABLED_MODULES`).
+- `src/server/src/config.rs` — `Config.modules_dir: Option<String>` + `modules_path()`; the
+  `test_server --modules-dir` flag (`bin/test_server.rs`) sets it for e2e.
+- `src/server/src/ws/{conn.rs,protocol.rs}` — `ServerMsg::Welcome.server_version`
+  (`env!("CARGO_PKG_VERSION")`); `welcome_capability_requirements` non-destructively UNIONs the GM's
+  `world_cap_requirements` with each `engine_compat_ok` enabled module's `requirements`.
+
+**Client core (framework-neutral):**
+- `src/client/core/src/loader.ts` — `loadModules(...) → Promise<ModuleLoadResult { loaded, failed }>`
+  — **per-module contained, NON-throwing** (a single module's import/compat failure no longer aborts
+  the batch); `checkEngineCompat`; fail-closed when `opts.shadowcatVersion` is absent.
+- `src/client/core/src/modules.ts` — `ModuleRegistry.activate()` is per-module isolated: a throwing
+  `register()` or a singleton-contract collision is logged + skipped, the topo loop continues, the
+  first provider stays sole-active.
+- `src/client/core/src/module-rest.ts` — `listInstalledModules` / `getEnabledModules` /
+  `setEnabledModules` REST wrappers (consume `InstalledModuleInfo` via unchecked cast — no Zod).
+- `src/client/core/src/manifest.ts` — `engines?: ModuleEngines` (optional; first-party modules never
+  set it, community modules MUST); `requirements` are advisory. `src/client/core/src/semver.ts` —
+  caret-0.x fix mirror of the server.
+
+**Client shell:**
+- `src/client/shell/vite.config.ts` — `RUNTIME_ENTRIES` multi-entry (svelte, svelte/internal/client,
+  svelte/internal/disclose-version, svelte/reactivity, @shadowcat/{core,ui-kit,formula,types}) →
+  stable `runtime/<name>.js` chunks + **`preserveEntrySignatures: "strict"`**; `index.html` import
+  map maps each bare specifier to its chunk.
+- `src/client/shell/src/lib/worldSession.svelte.ts` — `#loadExternalModules(world, serverVersion)`
+  sourced from `w.server_version`; fetch enabled set → `loadModules` → activate; keyed on `info.id`.
+- `src/modules/settings/src/ModuleManager.svelte` — GM installed-module management UI; toggle/save
+  keyed on the canonical folder `info.id` (manifest id is display-only).
+
+**Out-of-tree reference + guide:** the Nightfox repo (its own git repo, nested into a checkout at
+`src/modules/nightfox/` for dev, never bundled statically even in dev); `docs/design/module-authoring.md`.
+
+## Hard invariants
+
+- **The server NEVER executes installed module code** — it only discovers + serves it as static
+  bytes (ARCHITECTURE §2 invariant 6). Authority over the `system` band stays structural.
+- **Exactly one runtime instance** of `svelte`/`svelte/*`/`@shadowcat/*` (Global Constraint 1) —
+  requires `preserveEntrySignatures: "strict"` so runtime chunks export real API names, verified by
+  a test that IMPORTS each chunk (not just checks existence) [[build-artifact-tests-must-consume-not-just-exist]].
+- **The enabled-module set is keyed on the install FOLDER id, never the manifest id** — the server
+  controls folder names; author-declared manifest ids can collide and are untrusted as the key. Both
+  client consumers (ModuleManager, worldSession) MUST key on the wire `InstalledModuleInfo.id`.
+- **Engine-compat is fail-closed** (missing/unsatisfied `engines.shadowcat` → reject) at BOTH enable
+  time and load time.
+- **Module `requirements` are advisory to the client only** — unioned into the world's broadcast
+  `capability_requirements`, but NEVER server-enforced at `apply_intent` (server authority stays with
+  the GM's `world_cap_requirements`).
+- **Path-traversal guard rejects equality, not just prefix** — a two-stage canonicalize must treat
+  the modules root as a strict ancestor of both the `id` folder and the served file.
+
+## Gotchas
+
+- **`entry` is a `module.json` field read by the server scanner** (`modules.rs`, default
+  `index.js`), NOT part of the client `ModuleManifest` Zod shape — declare it in module.json only.
+- **The import map serves a FIXED svelte-subpath set** — a module importing a subpath the host does
+  not serve (`svelte/store`, `svelte/transition`, …) hard-fails with a runtime `SyntaxError`; adding
+  one is a host change (`RUNTIME_ENTRIES` + import map), not a module change. See `module-authoring.md`.
+- **`loadModules`'s contract CHANGED** from `Promise<void>` throw-on-first-failure to the contained
+  `ModuleLoadResult`; any doc describing the old throw behavior is stale.
+- **Adding a required field to `Welcome`** (e.g. `server_version`) breaks untyped frame fixtures in
+  every package — gate with `pnpm -r test`, not a single filter [[shared-wire-schema-change-needs-full-repo-test]].
+- **`InstalledModuleInfo` is ts-rs generated** — edit the Rust struct, regenerate, never hand-edit
+  the `.ts`.
+- **HTTP path-traversal tests via `axum_test`/`fetch` are vacuous for bare dot-segments** (client-side
+  WHATWG normalization collapses them before they reach the guard); test the containment predicate as
+  a unit, or embed the encoded segment inside a longer non-exact-match string (see `docs/TODO.md`).
+
+## Pointers
+
+- Rationale: `docs/design/ARCHITECTURE.md` §2 invariant 6 (server runs no third-party code) +
+  Global Constraint 1 (single instance); `docs/design/module-authoring.md` (authoring toolchain);
+  `docs/PLAN.md` M13 (M13-1 DONE entry).
+- Relationships: `graphify query "installed module discovery serve enable engine-compat import map loader"`.
+- Lessons: [[build-artifact-tests-must-consume-not-just-exist]],
+  [[shared-wire-schema-change-needs-full-repo-test]], [[injected-callback-boundary-must-validate-every-site]].
