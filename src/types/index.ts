@@ -32,6 +32,9 @@ export type { ContractDeclaration } from "./generated/ContractDeclaration";
 export type { ServerConfig } from "./generated/ServerConfig";
 export type { WorldEntry } from "./generated/WorldEntry";
 
+// Module toolchain (M13-1)
+export type { InstalledModuleInfo } from "./generated/InstalledModuleInfo";
+
 // Assets
 export type { Asset } from "./generated/Asset";
 export type { AssetOp } from "./generated/AssetOp";
