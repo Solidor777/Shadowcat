@@ -73,8 +73,18 @@ export function resolveAll(
       // documented order-independence invariant. Name the lexicographically
       // smallest cycle member instead: canonical for a given cycle regardless
       // of where the traversal happened to detect it.
+      // INVARIANT: every visiting key is present on `stack` (add/push and
+      // delete/pop are strictly paired, and a re-entered key takes this cycle
+      // branch instead of a second push). A miss here means that pairing was
+      // broken by a refactor; failing loudly beats silently returning a
+      // non-canonical single-key detail. The throw is caught by resolveKey's
+      // driver and surfaces as a resolver-error value, per the module's
+      // never-throw boundary.
       const start = stack.indexOf(key);
-      const cycle = start >= 0 ? stack.slice(start) : [key];
+      if (start < 0) {
+        throw new Error(`visiting key '${key}' absent from the active stack`);
+      }
+      const cycle = stack.slice(start);
       const canonical = cycle.reduce((min, k) => (k < min ? k : min), cycle[0]);
       return { error: "cycle", detail: `reference cycle involving '${canonical}'` };
     }
