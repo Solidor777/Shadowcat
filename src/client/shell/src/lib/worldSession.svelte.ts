@@ -131,7 +131,12 @@ export class WorldSession {
   }
 
   /** Advisory client-side mirror of the server's Update-path check, for showing/hiding write
-   * controls. GM bypasses; the server remains authoritative and rejects a bypass at apply_intent. */
+   * controls. GM bypasses; the server remains authoritative and rejects a bypass at apply_intent.
+   * Caveat: `#requirements` (from the Welcome union) mixes GM-authored world_cap_requirements
+   * with module-declared manifest requirements. For GM-authored entries this mirror matches
+   * server enforcement exactly. Module-published entries are advisory UX only — the server
+   * does NOT reject a write solely because a module declared a requirement on that path, so
+   * this gate can be stricter here than the server actually is for module-only requirements. */
   canEdit(doc: WireDocument, path: string): boolean {
     if (this.role === "gm") return true;
     if (!this.role) return false;

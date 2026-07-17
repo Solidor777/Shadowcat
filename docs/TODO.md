@@ -332,6 +332,23 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   struct to shrink `handle_send_message`/`handle_edit_message` signatures (~40 call sites now under
   `#[allow(clippy::too_many_arguments)]`) and reduce call-site arg-order risk.
 
+## Module toolchain (M13-1 Tasks 8+10)
+- TODO: `welcome_capability_requirements` (`ws/conn.rs`) emits duplicate `(path_prefix, caps)`
+  entries when a GM-authored requirement and an enabled module (or two modules) declare the same
+  `path_prefix` — inert today (`declared_caps_for_path` checks inclusion, not count) but inflates
+  the Welcome payload. Add dedup once a dedup-key strategy for `CapabilityRequirement` (not
+  currently `Hash`/`Ord`) is chosen. (Surfaced by the M13-1 Tasks 8+10 buddy-check.)
+- TODO: `scan_installed_modules` does blocking `std::fs` I/O with no `spawn_blocking`; Task 10
+  moved it onto the per-WS-connect Welcome path (was admin-HTTP-only), so it now blocks a tokio
+  worker on every session join. Latent scaling concern at large module counts / concurrent
+  reconnects — wrap in `spawn_blocking` or introduce the deferred module-discovery cache.
+  (Surfaced by the M13-1 Tasks 8+10 buddy-check.)
+- Design note (module requirements are advisory): module-declared manifest `requirements` are
+  published to clients as advisory UX only and are NOT server-enforced at `apply_intent` (server
+  authority stays with the GM's `world_cap_requirements`, per ARCHITECTURE invariant 6). A future
+  explicit "GM adopts a module's requirements into the world policy" mechanism could make them
+  enforced if desired. (Surfaced by the M13-1 Tasks 8+10 buddy-check.)
+
 ## Server / backups (M12.5)
 - TODO: Per-world granular export/import (sharing a single world between server instances without a whole-database snapshot) — M12.5 ships whole-server snapshot/restore only. Real complexity (world-scoped row subset while preserving referential integrity across cross-table FKs, shared asset references, admin/global tables) deferred as a distinct future feature, not required for the dogfood-alpha gate.
 - TODO: The backup mechanism's assets-copy step is not transactionally coupled to the `VACUUM INTO` DB snapshot. An asset REPLACE (not create) in flight during backup commits its DB row before renaming its temp file into place (`http/assets.rs` — `replace`), so a backup racing an in-flight replace can capture updated asset metadata with the pre-replace file bytes for a few milliseconds' window. Inherent property of any online (no-downtime) backup of a live mutable system; add a brief write-quiesce mode during backup if stronger consistency is ever needed in practice.

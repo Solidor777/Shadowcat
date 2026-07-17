@@ -1033,6 +1033,12 @@ impl Repository for SqliteRepository {
         // single-writer pool holds one connection, so a settings query mid-tx
         // would deadlock.
         let world_defaults = self.world_cap_defaults(world_id).await?;
+        // Write-enforcement input is ONLY the GM-authored `world_cap_requirements`
+        // record. Module-declared `requirements` (published to clients via the
+        // Welcome union, see `ws::conn::welcome_capability_requirements`) are
+        // advisory client-side UX only and are intentionally NOT consulted here —
+        // server authority over write policy stays with the GM/operator, never
+        // community module code (ARCHITECTURE invariant 6).
         let world_reqs = self.world_cap_requirements(world_id).await?;
         let mut tx = self.pool.begin().await?;
 

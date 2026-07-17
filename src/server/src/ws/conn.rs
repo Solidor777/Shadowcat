@@ -857,7 +857,15 @@ async fn clip_move_stream(
 /// NEVER mutated by enable/disable; this union is recomputed fresh on every
 /// `Welcome`, so a mid-session enable/disable takes effect on the affected
 /// world's next (re)connect, exactly like a `world_cap_requirements` edit
-/// already does today.
+/// already does today. Re-checks `engine_compat_ok` per enabled module (not
+/// just at enable time) so a module that has gone incompatible since being
+/// enabled (server downgrade, on-disk manifest edit) stops contributing.
+///
+/// ADVISORY ONLY: the returned union is the client's advisory copy for
+/// showing/hiding write controls (`worldSession.svelte.ts`'s `canEdit`). It is
+/// NOT the server-side write-enforcement input — `apply_intent`
+/// (`data/sqlite.rs`) consults only the GM-authored `world_cap_requirements`
+/// record, never a module's declared `requirements`.
 async fn welcome_capability_requirements(
     repo: &dyn Repository,
     world_id: Uuid,
@@ -880,7 +888,15 @@ async fn welcome_capability_requirements(
     if !enabled.is_empty() {
         let installed = crate::modules::scan_installed_modules(modules_dir);
         for id in &enabled {
-            if let Some(m) = installed.iter().find(|m| &m.id == id) {
+            // Re-check engine-compat here (not just at enable time): a module
+            // enabled while compatible can go stale after a server downgrade
+            // or an on-disk manifest edit. Invariant 5 ("enforced at enable AND
+            // load") is a continuous property, not a one-time gate — a
+            // now-incompatible enabled module must not publish requirements.
+            if let Some(m) = installed
+                .iter()
+                .find(|m| &m.id == id && crate::modules::engine_compat_ok(m))
+            {
                 out.extend(m.requirements.iter().cloned());
             }
         }
@@ -1431,7 +1447,10 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("actors-plus")).unwrap();
         std::fs::write(
             dir.path().join("actors-plus").join("module.json"),
-            r#"{"id":"actors-plus","version":"1.0.0","requirements":[{"path_prefix":"/system/plus","caps":["plus:write"]}]}"#,
+            format!(
+                r#"{{"id":"actors-plus","version":"1.0.0","engines":{{"shadowcat":"^{}"}},"requirements":[{{"path_prefix":"/system/plus","caps":["plus:write"]}}]}}"#,
+                env!("CARGO_PKG_VERSION")
+            ),
         )
         .unwrap();
 
@@ -1466,6 +1485,56 @@ mod tests {
         // world_cap_requirements itself is never mutated by this — the raw GM
         // record still holds exactly its one original entry.
         assert_eq!(repo.world_cap_requirements(world.id).await.unwrap().len(), 1);
+    }
+
+    /// Buddy-check Important: a module that is enabled but whose on-disk manifest
+    /// declares an engine range the RUNNING server no longer satisfies (a version
+    /// downgrade, or a manifest edited after enable) must NOT publish its
+    /// requirements into the advisory Welcome union — mirroring the enable-time
+    /// `engine_compat_ok` gate in `module_routes::set_world_enabled_modules` as a
+    /// continuous property, not a one-time check (invariant 5: "enforced at enable
+    /// AND load"). Simulated by storing the id directly via `set_world_enabled_modules`
+    /// (bypassing the HTTP enable-time gate) against a manifest declaring `^99.0.0`.
+    #[tokio::test]
+    async fn welcome_excludes_requirements_from_an_enabled_but_now_incompatible_module() {
+        use crate::data::document::CapabilityRequirement;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("stale-mod")).unwrap();
+        std::fs::write(
+            dir.path().join("stale-mod").join("module.json"),
+            r#"{"id":"stale-mod","version":"1.0.0","engines":{"shadowcat":"^99.0.0"},"requirements":[{"path_prefix":"/system/stale","caps":["stale:write"]}]}"#,
+        )
+        .unwrap();
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.set_world_cap_requirements(
+            world.id,
+            &[CapabilityRequirement {
+                path_prefix: "/system/vision".into(),
+                caps: ["dnd5e:gm_vision".to_string()].into_iter().collect(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        // Enabled directly at the repo layer (bypassing the HTTP enable-time
+        // engine-compat gate), simulating a module that was compatible at enable
+        // time but no longer is (server downgrade / manifest edit).
+        repo.set_world_enabled_modules(world.id, &["stale-mod".to_string()])
+            .await
+            .unwrap();
+
+        let reqs = welcome_capability_requirements(repo.as_ref(), world.id, dir.path()).await;
+        assert_eq!(
+            reqs.len(),
+            1,
+            "an incompatible enabled module must not contribute requirements"
+        );
+        assert_eq!(reqs[0].path_prefix, "/system/vision");
+        assert!(!reqs.iter().any(|r| r.path_prefix == "/system/stale"));
     }
 
     /// The M9c dispatch-layer accumulation: a masked vision payload grows + persists the player's

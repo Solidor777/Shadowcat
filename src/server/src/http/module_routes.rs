@@ -159,6 +159,11 @@ pub async fn set_world_enabled_modules(
             "too many enabled modules (max {MAX_ENABLED_MODULES})"
         )));
     }
+    // Order-preserving dedup: a duplicate id in the request body is otherwise
+    // inert (stored/validated redundantly) but inflates the persisted set and
+    // the client's echoed response; first occurrence wins.
+    let mut seen = std::collections::HashSet::with_capacity(ids.len());
+    let ids: Vec<String> = ids.into_iter().filter(|id| seen.insert(id.clone())).collect();
     let installed = crate::modules::scan_installed_modules(&state.config.modules_path());
     for id in &ids {
         let Some(m) = installed.iter().find(|m| &m.id == id) else {
@@ -558,6 +563,39 @@ mod tests {
             .json(&serde_json::json!(["no-engines"]))
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn enabled_modules_dedups_a_duplicate_id_preserving_first_occurrence_order() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("actors-plus")).unwrap();
+        std::fs::write(
+            dir.path().join("actors-plus").join("module.json"),
+            format!(r#"{{"id":"actors-plus","version":"1.0.0","engines":{{"shadowcat":"^{}"}}}}"#, env!("CARGO_PKG_VERSION")),
+        )
+        .unwrap();
+        let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+        gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .json(&serde_json::json!(["actors-plus", "actors-plus"]))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let got: serde_json::Value = gm.get(&format!("/api/worlds/{world_id}/enabled-modules")).await.json();
+        assert_eq!(got, serde_json::json!(["actors-plus"]));
+    }
+
+    #[tokio::test]
+    async fn enabled_modules_rejects_a_batch_exceeding_the_max_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+        let ids: Vec<String> = (0..(super::MAX_ENABLED_MODULES + 1))
+            .map(|i| format!("mod-{i}"))
+            .collect();
+        gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .json(&serde_json::json!(ids))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+        let got: serde_json::Value = gm.get(&format!("/api/worlds/{world_id}/enabled-modules")).await.json();
+        assert_eq!(got, serde_json::json!([]), "an over-cap batch must not persist");
     }
 
     #[tokio::test]
