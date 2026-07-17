@@ -227,6 +227,7 @@ async fn handle_socket(
     // ingress intents with a per-connection sequence guard.
     let egress_room = room.clone();
     let egress_repo = repo.clone();
+    let modules_dir = state.config.modules_path();
     let mut egress = tokio::spawn(egress_loop(
         sink,
         rx,
@@ -235,6 +236,7 @@ async fn handle_socket(
         egress_repo,
         ctx,
         current_seq,
+        modules_dir,
     ));
 
     // Ingress: parse client frames, forward intents to egress / publish.
@@ -848,6 +850,45 @@ async fn clip_move_stream(
     })
 }
 
+/// Union `world_reqs` (GM-authored, unchanged) with the `requirements`
+/// declared by each of the world's currently ENABLED installed modules (M13-1
+/// §2 — "enabling a module publishes its manifest requirements through the
+/// capability machinery"). Non-destructive: `world_cap_requirements` itself is
+/// NEVER mutated by enable/disable; this union is recomputed fresh on every
+/// `Welcome`, so a mid-session enable/disable takes effect on the affected
+/// world's next (re)connect, exactly like a `world_cap_requirements` edit
+/// already does today.
+async fn welcome_capability_requirements(
+    repo: &dyn Repository,
+    world_id: Uuid,
+    modules_dir: &std::path::Path,
+) -> Vec<crate::data::document::CapabilityRequirement> {
+    let mut out = match repo.world_cap_requirements(world_id).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(world = %world_id, error = %e, "capability requirements unreadable; sending empty");
+            Vec::new()
+        }
+    };
+    let enabled = match repo.world_enabled_modules(world_id).await {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(world = %world_id, error = %e, "enabled modules unreadable; skipping module-published requirements");
+            Vec::new()
+        }
+    };
+    if !enabled.is_empty() {
+        let installed = crate::modules::scan_installed_modules(modules_dir);
+        for id in &enabled {
+            if let Some(m) = installed.iter().find(|m| &m.id == id) {
+                out.extend(m.requirements.iter().cloned());
+            }
+        }
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn egress_loop<S>(
     mut sink: S,
     mut rx: tokio::sync::broadcast::Receiver<Arc<ServerMsg>>,
@@ -856,6 +897,7 @@ async fn egress_loop<S>(
     repo: Arc<SqliteRepository>,
     ctx: PermissionContext,
     current_seq: i64,
+    modules_dir: std::path::PathBuf,
 ) where
     S: Sink<Message> + Unpin,
 {
@@ -864,15 +906,9 @@ async fn egress_loop<S>(
     // with apply_intent on the single-writer pool. A defaults change mid-session
     // takes effect on the client's next (re)connect.
     let world_defaults = repo.world_cap_defaults(world_id).await.unwrap_or_default();
-    let world_reqs = match repo.world_cap_requirements(world_id).await {
-        Ok(r) => r,
-        Err(e) => {
-            // Fail open for the advisory client copy only; server-side
-            // enforcement reads requirements freshly per intent and fails closed.
-            tracing::warn!(world = %world_id, error = %e, "capability requirements unreadable; sending empty");
-            Vec::new()
-        }
-    };
+    // Fail open for the advisory client copy only; server-side enforcement
+    // reads requirements freshly per intent and fails closed.
+    let world_reqs = welcome_capability_requirements(repo.as_ref(), world_id, &modules_dir).await;
     let world_contracts = match repo.world_contract_declarations(world_id).await {
         Ok(c) => c,
         Err(e) => {
@@ -1322,6 +1358,7 @@ mod tests {
             repo.clone(),
             ctx,
             current_seq,
+            std::path::PathBuf::from("nonexistent-test-modules-dir-for-egress-lag-test"),
         ));
 
         // Drain the `Welcome` (consumes the sole credit); the egress now has zero
@@ -1384,6 +1421,51 @@ mod tests {
 
         drop(etx);
         let _ = egress.await;
+    }
+
+    #[tokio::test]
+    async fn welcome_unions_enabled_modules_requirements_with_gm_authored_ones() {
+        use crate::data::document::CapabilityRequirement;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("actors-plus")).unwrap();
+        std::fs::write(
+            dir.path().join("actors-plus").join("module.json"),
+            r#"{"id":"actors-plus","version":"1.0.0","requirements":[{"path_prefix":"/system/plus","caps":["plus:write"]}]}"#,
+        )
+        .unwrap();
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+        // A GM-authored requirement, unrelated to any module.
+        repo.set_world_cap_requirements(
+            world.id,
+            &[CapabilityRequirement {
+                path_prefix: "/system/vision".into(),
+                caps: ["dnd5e:gm_vision".to_string()].into_iter().collect(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        // With nothing enabled, only the GM-authored requirement is published.
+        let reqs = welcome_capability_requirements(repo.as_ref(), world.id, dir.path()).await;
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].path_prefix, "/system/vision");
+
+        // Enabling the module adds its requirement WITHOUT removing the GM's own.
+        repo.set_world_enabled_modules(world.id, &["actors-plus".to_string()])
+            .await
+            .unwrap();
+        let reqs = welcome_capability_requirements(repo.as_ref(), world.id, dir.path()).await;
+        assert_eq!(reqs.len(), 2);
+        assert!(reqs.iter().any(|r| r.path_prefix == "/system/vision"));
+        assert!(reqs.iter().any(|r| r.path_prefix == "/system/plus"));
+
+        // world_cap_requirements itself is never mutated by this — the raw GM
+        // record still holds exactly its one original entry.
+        assert_eq!(repo.world_cap_requirements(world.id).await.unwrap().len(), 1);
     }
 
     /// The M9c dispatch-layer accumulation: a masked vision payload grows + persists the player's
