@@ -36,10 +36,9 @@ async fn main() -> anyhow::Result<()> {
     let repo = SqliteRepository::connect(&config.db).await?;
     std::fs::create_dir_all(config.assets_path())?;
 
-    // Log-only discovery pass (the spec's literal "on startup, scan" trigger);
-    // every actual read (GET /api/modules, enable-time validation) re-scans
-    // fresh, so this never goes stale — it exists purely to surface a boot-time
-    // summary in the log.
+    // Runs once at boot purely to surface a summary in the log; every actual
+    // read (GET /api/modules, enable-time validation) re-scans fresh, so this
+    // never goes stale.
     let discovered = shadowcat::modules::scan_installed_modules(&config.modules_path());
     tracing::info!(count = discovered.len(), "installed modules discovered");
 
