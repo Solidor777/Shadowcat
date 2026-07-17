@@ -889,6 +889,7 @@ async fn egress_loop<S>(
             world: world_id,
             current_seq,
             server_time: now_millis(),
+            server_version: env!("CARGO_PKG_VERSION").to_string(),
             world_default_grants: actor_grants,
             user_role: ctx.world_role,
             capability_requirements: world_reqs,
