@@ -24,7 +24,7 @@ export type {
 export { ModuleRegistry } from "./modules";
 export type { Module, ModuleContext, ModuleInfo } from "./modules";
 export { loadModules } from "./loader";
-export type { ImportFn, ModuleEntry } from "./loader";
+export type { ImportFn, ModuleEntry, ModuleLoadFailure, ModuleLoadResult } from "./loader";
 export { resolveCaps, canWritePath } from "./capabilities";
 export { DocumentStore, setPointer, getPointer, applyOperation } from "./store";
 export type { Listener, ReadableDocuments } from "./store";
