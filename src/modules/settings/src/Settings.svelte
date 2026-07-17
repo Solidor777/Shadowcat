@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
   import { i18n, locale } from "@shadowcat/ui-kit";
+  import ModuleManager from "./ModuleManager.svelte";
 
   const { role, t, leaveWorld, logout } = getAppContext();
   async function doLogout() {
@@ -16,6 +17,9 @@
       {#each i18n.locales as loc (loc)}<option value={loc}>{loc}</option>{/each}
     </select>
   </label>
+  {#if role === "gm"}
+    <ModuleManager />
+  {/if}
   <button onclick={leaveWorld}>{t("settings.leaveWorld")}</button>
   <button onclick={doLogout}>{t("settings.logout")}</button>
 </section>

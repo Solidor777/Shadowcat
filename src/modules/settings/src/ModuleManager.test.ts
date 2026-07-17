@@ -1,0 +1,46 @@
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/svelte";
+import { setAppContextForTest } from "@shadowcat/ui-kit/test";
+import ModuleManager from "./ModuleManager.svelte";
+
+vi.mock("@shadowcat/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@shadowcat/core")>();
+  return {
+    ...actual,
+    listInstalledModules: vi.fn().mockResolvedValue([
+      { manifest: { id: "nightfox" }, entry_url: "/modules/nightfox/index.js" },
+    ]),
+    getEnabledModules: vi.fn().mockResolvedValue([]),
+    setEnabledModules: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
+describe("ModuleManager", () => {
+  it("lists installed modules and lets the GM toggle + save an enabled set", async () => {
+    const { setEnabledModules } = await import("@shadowcat/core");
+    render(ModuleManager, { context: setAppContextForTest({ world: "w1", role: "gm" }) });
+
+    const checkbox = await screen.findByLabelText("nightfox");
+    expect((checkbox as HTMLInputElement).checked).toBe(false);
+
+    await fireEvent.click(checkbox);
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+
+    await fireEvent.click(screen.getByText("settings.modules.save"));
+    await vi.waitFor(() => expect(vi.mocked(setEnabledModules)).toHaveBeenCalledWith("w1", ["nightfox"]));
+  });
+
+  it("shows an empty state when nothing is installed", async () => {
+    const { listInstalledModules } = await import("@shadowcat/core");
+    vi.mocked(listInstalledModules).mockResolvedValueOnce([]);
+    render(ModuleManager, { context: setAppContextForTest({ world: "w1", role: "gm" }) });
+    expect(await screen.findByText("settings.modules.empty")).toBeTruthy();
+  });
+
+  it("shows an error message when discovery fails", async () => {
+    const { listInstalledModules } = await import("@shadowcat/core");
+    vi.mocked(listInstalledModules).mockRejectedValueOnce(new Error("boom"));
+    render(ModuleManager, { context: setAppContextForTest({ world: "w1", role: "gm" }) });
+    expect(await screen.findByText("settings.modules.error")).toBeTruthy();
+  });
+});
