@@ -256,3 +256,22 @@ are observations awaiting triage, not committed work.
   the same token cannot land mid-hydration either: the racing publish cannot even begin its own
   Phase 1 validation (which needs the same guard, via `commit_ops_locked`) until the prior
   publish's hydration has fully completed. No code change required.
+
+- Title: External-module i18n registration seam missing. Summary: An out-of-tree module
+  (Nightfox sheets, M13c) has no public seam to register i18n keys into the shell catalog; M13c
+  ships a built-in English fallback map (`nfT`/`NF_MESSAGES`) with a `ctx.t` override hook as a
+  workaround. First surfaced as an M13b friction candidate; reinforced by M13c's own
+  test-context gotcha (`setAppContextForTest`'s default `t: (k) => k` echo means `nfT` always
+  resolves through its English fallback under test, never through a real translation catalog).
+  Status: Needs Review (candidate engine seam for a later checkpoint).
+
+- Title: `effect` doc_type constant has no engine home. Summary: D9 makes `effect` a
+  client-semantics doc_type but neither M12c (which owns `ITEM_DOC_TYPE` in
+  `scene-docs.ts`) nor the M13b rules plan declares an `EFFECT_DOC_TYPE`; M13c defines it in
+  the Nightfox barrel (`index.ts`). Consider promoting it beside `ITEM_DOC_TYPE` if a second
+  consumer appears. Status: Needs Review.
+
+- Title: No browser e2e harness for external modules. Summary: The M13-1 toolchain e2e is
+  HTTP-only (no DOM); the spec §11 "Playwright e2e" for M13c has no browser harness, so the
+  author→equip→toggle→revert flow (M13c Task 11) is covered by a component-level integration
+  test instead. Status: Needs Review (Playwright harness is a toolchain follow-up).

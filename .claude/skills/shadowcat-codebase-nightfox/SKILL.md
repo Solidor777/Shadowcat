@@ -1,16 +1,17 @@
 ---
 name: shadowcat-codebase-nightfox
-description: "Use when touching `@shadowcat/formula` (the framework-neutral expression library: lexer/parser/evaluator, dependency-graph resolution, dice-notation-template mode) or the Nightfox rules engine it feeds (`nightfox-docs.ts`/`contributions.ts`/`resolve.ts`, external repo `C:\\Dev\\Nightfox`, nested for dev at `src/modules/nightfox/`). Covers src/client/formula/ (in-repo) and the Nightfox repo's src/ (out-of-repo, M13b+). Invoke shadowcat-codebase-core first."
+description: "Use when touching `@shadowcat/formula` (the framework-neutral expression library: lexer/parser/evaluator, dependency-graph resolution, dice-notation-template mode), the Nightfox rules engine it feeds (`nightfox-docs.ts`/`contributions.ts`/`resolve.ts`), or the Nightfox sheets layer (`src/sheets/*` — sheet-model.ts, StatRow/StatTable/ModifiersEditor, ActorSheet/ItemSheet/EffectSheet, nf-i18n.ts), external repo `C:\\Dev\\Nightfox`, nested for dev at `src/modules/nightfox/`. Covers src/client/formula/ (in-repo) and the Nightfox repo's src/ (out-of-repo, M13b+). Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Nightfox / `@shadowcat/formula`
 
 Orientation for the shared formula library and the Nightfox rules engine consuming it (M13a
-shipped in this repo; M13b shipped in the external Nightfox repo — this skill covers both,
-extended in-place rather than forking a new one per checkpoint). Spec:
-`docs/superpowers/specs/2026-07-15-m13-nightfox-system-design.md` §§3-5 (decisions D2-D4, D7-D9,
-D11-D14). Plans: `docs/superpowers/plans/2026-07-15-m13a-formula-library.md` (library),
-`docs/superpowers/plans/2026-07-15-m13b-nightfox-headless-rules.md` (rules engine).
+shipped in this repo; M13b + M13c shipped in the external Nightfox repo — this skill covers all
+three, extended in-place rather than forking a new one per checkpoint). Spec:
+`docs/superpowers/specs/2026-07-15-m13-nightfox-system-design.md` §§3-6 (decisions D2-D4, D7-D14).
+Plans: `docs/superpowers/plans/2026-07-15-m13a-formula-library.md` (library),
+`docs/superpowers/plans/2026-07-15-m13b-nightfox-headless-rules.md` (rules engine),
+`docs/superpowers/plans/2026-07-16-m13c-nightfox-sheets.md` (sheets).
 
 ## Purpose
 
@@ -95,6 +96,60 @@ have.
 - **`src/index.ts`** (Nightfox repo) — the module's public barrel, re-exporting the full pure
   API surface above alongside the M13-1-scaffolded manifest/`register()` (superseded by real
   sheet registration in M13c, not touched by M13b).
+
+## The sheets layer (M13c)
+
+`src/sheets/` (Nightfox repo) — actor/item/effect sheets over the M12c sheet registry
+(`shadowcat.sheet:<doc_type>` contract, see `shadowcat-codebase-sheets`), all client-side, no
+new wire frames.
+
+- **`sheet-model.ts`** — the read/write model shared by every sheet. `sheetView(top,
+  systemPrefix)` ALWAYS resolves `resolveNightfox` from the TOP-LEVEL host document, then
+  extracts the self doc's slice by id — resolving an embedded item/effect in isolation would
+  drop transfer/`parent.*` flow (§5.3). The self doc is located by stripping the trailing
+  `/system` off `systemPrefix` to get `basePrefix` — **the same M13-0 `basePrefix` derivation
+  documented in `shadowcat-codebase-sheets`'s `ActorSheet`/`ItemSheet` paragraph
+  (`systemPrefix.replace(/\/system$/, "")`)**: `systemPrefix` (`/system` or
+  `/embedded/<coll>/<i>/system`) is where `mechanics`/`stats` live, `basePrefix` is where
+  `name`/`engine` live. **Confusing the two silently breaks OCC** — a `mechanics.*` field read
+  via `basePrefix` instead of `systemPrefix` always resolves `undefined`, collapsing every
+  write's `old` pre-image to `null`. This exact bug was caught live in `ItemSheet` and avoided
+  proactively in `EffectSheet` after the flag — treat any new sheet or write helper touching
+  `stats`/`mechanics` as needing this check first.
+- **Map-CRUD idiom (D11), every write helper (`addStat`/`editStatField`/`removeStat`/
+  `setStatOrder`/`addModifier`/`editModifierField`/`removeModifier`/`setMechanicsFlag`)**: add =
+  single-key `old:null`; edit = single-key raw-old; remove = whole-map `setField` replace with
+  the current map as the pre-image (`set_pointer` cannot delete a key in place). Stat/modifier
+  keys are spliced directly into a JSON pointer, so `addStat`/`addModifier` guard against a
+  `/`-containing or reserved key (`validateStatKey`) as defense-in-depth even though the calling
+  UI is expected to have already surfaced Tier-1 validation.
+- **Presentation-only order (D12):** `StatTable`'s add-stat assigns `max-existing-order + 1`,
+  not a count — a remove-then-add sequence with a naive count would collide orders. Order never
+  feeds `resolveNightfox`; it's a `sort()` key at render time only.
+- **Permission-gating split — a Critical-class distinction, not interchangeable `readOnly`
+  booleans.** A sheet's own `/system` writes (its own stats/modifiers/mechanics flags) gate on
+  `core:write_fields`; a write to an EMBEDDED carrier's `/embedded/.../mechanics/<flag>`
+  (item/effect active toggle, effect transfer toggle) gates on the DISTINCT
+  `core:manage_embedded` capability. `ActorSheet` computes this per-carrier as `embedReadOnly`,
+  never reusing the actor's own `write_fields`-derived `readOnly` for embedded controls — caught
+  as a Critical/Important in Task 7's pre-authorized buddy-check (2 blind reviewers, same finding
+  independently); `ItemSheet`/`EffectSheet` inherit the identical pattern for their own embeds.
+- **`nfT`/`NF_MESSAGES` (`nf-i18n.ts`)** — chrome-translation helper: prefers the shell's `t`,
+  falls back to a built-in English map when `t` echoes the key unchanged (the i18next/test
+  "missing key" signal). **Test-context gotcha:** `setAppContextForTest`'s default `t: (k) => k`
+  identity-echo means `nfT` under test ALWAYS resolves through `NF_MESSAGES`, never through a
+  real translation — a test asserting a raw i18n key can never pass against a correctly
+  i18n-routed component; assert against `NF_MESSAGES["..."]` instead. User-authored stat
+  labels/keys/values are DATA and never routed through `nfT`.
+- **Registration (`index.ts`)** — `EFFECT_DOC_TYPE = "effect"` (D9; no engine home yet, filed as
+  friction in `docs/POST_WORK_FINDINGS.md`); all three sheets contribute at `sheet: { priority:
+  10 }`, above the generic sheets (0 / `-Infinity`) so a community sheet module can still outbid
+  by priority (D10).
+- Component files: `StatRow.svelte`/`StatTable.svelte`/`ModifiersEditor.svelte` (shared
+  editors — per-instance datalist ids via `$props.id()` to avoid collision across simultaneous
+  instances), `ActorSheet.svelte`/`ItemSheet.svelte`/`EffectSheet.svelte` (per-doc-type sheets),
+  `format.ts` (value display + live formula-validation + warning chips, sharing `resolve.ts`'s
+  `isParseError`).
 
 ### The permutation invariant (D3/D12) — a tested property, not a hope
 
@@ -200,21 +255,42 @@ not the only, expected caller):
 - **A literal `#` in a `docId` would collide with the `f:`/`c:` node-key scheme** (`f:<docId>#
   <key>`) — theoretical only, since server-issued document ids are UUIDs and can't contain `#`,
   but do not relax that assumption without re-deriving the node-key format.
+- **`basePrefix`/`systemPrefix` confusion silently breaks OCC, not a crash.** See "The sheets
+  layer" above — a `mechanics.*`/`stats.*` read through `basePrefix` resolves `undefined` and
+  collapses the write's `old` pre-image to `null` with no error. Caught twice already in this
+  checkpoint (`ItemSheet` live, `EffectSheet` proactively); treat as the single highest-risk
+  mistake for any new sheet touching `stats`/`mechanics`.
+- **`nfT` under `setAppContextForTest` never exercises real i18n** — its default `t: (k) => k`
+  identity-echo means every `nfT` call resolves through `NF_MESSAGES`, not through a mocked
+  translation catalog; a test asserting a raw key string can never pass against a component that
+  correctly routes through `nfT`.
+- **An embedded carrier's write capability is NOT the sheet's own `write_fields`.** Reusing a
+  single `readOnly` for both a sheet's own fields and its embedded items/effects is a
+  Critical-class permission bug (Task 7 buddy-check), not a minor UX gap — always compute
+  embedded-write gating from `core:manage_embedded` per carrier.
 
 ## Pointers
 
 - Spec: `docs/superpowers/specs/2026-07-15-m13-nightfox-system-design.md` §3 (formula grammar,
   caps, error model, template mode — `@shadowcat/formula`), §§4-5 (Nightfox data model + one-graph
-  resolver, decisions D2-D4, D7-D9, D11-D14 — the rules engine).
+  resolver, decisions D2-D4, D7-D9, D11-D14 — the rules engine), §6 (sheets — this skill's
+  "sheets layer" section).
 - Plans: `docs/superpowers/plans/2026-07-15-m13a-formula-library.md` (M13a, shipped, this repo);
   `docs/superpowers/plans/2026-07-15-m13b-nightfox-headless-rules.md` (M13b, shipped, Nightfox
+  repo); `docs/superpowers/plans/2026-07-16-m13c-nightfox-sheets.md` (M13c, shipped, Nightfox
   repo).
-- `docs/PLAN.md` M13 section — milestone chain (M13-0 → M13-1 → **M13a** → **M13b** → M13c → M13d
-  → M13e → M13f) and which repo (this one vs. the external Nightfox repo) owns each step; the
-  M13b done-entry there is the empirically-verified record of what shipped (task count,
-  buddy-check findings, suite counts) — this skill is the orientation layer, not the changelog.
+- `docs/PLAN.md` M13 section — milestone chain (M13-0 → M13-1 → **M13a** → **M13b** → **M13c** →
+  M13d → M13e → M13f) and which repo (this one vs. the external Nightfox repo) owns each step;
+  the M13b/M13c done-entries there are the empirically-verified record of what shipped (task
+  count, buddy-check findings, suite counts) — this skill is the orientation layer, not the
+  changelog.
 - `docs/design/ARCHITECTURE.md` §6 — the `system.stats`/`system.mechanics` reserved-directory
   premise (D13/D14) as a durable engine invariant, independent of Nightfox as a specific system.
-- Once M13c/M13d land (Nightfox repo, `src/`), extend this skill's Nightfox sections in place
-  rather than splitting — this skill is scoped to the whole Nightfox surface (in-repo library +
+- `shadowcat-codebase-sheets` — the M12c sheet registry (`shadowcat.sheet:<doc_type>` contract,
+  `pickSheet`/`resolveDocRef`, the `basePrefix` derivation pattern) that M13c's sheets register
+  into; read it alongside this skill for any sheet-registration work.
+- `docs/POST_WORK_FINDINGS.md` — the external-module i18n-registration-seam gap and the
+  `effect`-doc_type-has-no-engine-home gap, both filed at M13c.
+- Once M13d lands (Nightfox repo, `src/`), extend this skill's Nightfox sections in place rather
+  than splitting — this skill is scoped to the whole Nightfox surface (in-repo library +
   out-of-repo rules engine + sheets + rolls), not just the formula library.
