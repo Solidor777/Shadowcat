@@ -111,24 +111,18 @@ pub async fn put_ui_state(
 }
 
 /// Public server bootstrap info for the SPA's first-load routing (setup vs
-/// login) plus the running server version. Unauthenticated; reachable before
-/// init.
+/// login). Exposes nothing beyond the `initialized` bit the setup-409 already
+/// reveals.
 #[derive(Serialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct ServerConfig {
     pub initialized: bool,
-    /// The running server's semver. External modules' `engines.shadowcat`
-    /// compat range is checked against this value, both at world-enable time
-    /// (server) and module-load time (client).
-    pub version: String,
 }
 
-/// Whether a first admin exists, plus the running server version. Unauthenticated;
-/// reachable before init.
+/// Whether a first admin exists. Unauthenticated; reachable before init.
 pub async fn config(State(state): State<AppState>) -> Json<ServerConfig> {
     Json(ServerConfig {
         initialized: state.initialized.load(Ordering::Relaxed),
-        version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }
 
