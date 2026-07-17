@@ -1257,9 +1257,33 @@ Decomposed **M11a–d**:
 > pure function of the key set via sorted-root traversal, cycle-error detail now names the
 > lexicographically smallest cycle member, and the visiting/stack pairing invariant fails
 > loudly instead of silently. Suites: nightfox 136/136, `@shadowcat/formula` 85/85 (both
-> counts include the fix's regression coverage), full `pnpm -r test` green. → **M13c**
+> counts include the fix's regression coverage), full `pnpm -r test` green. →
+> **M13c**
 > (`@shadowcat/module-nightfox-sheets` over the M12c sheet registry; plan deferred until M12c +
-> M13-0 exist) → **M13d** (per-stat roll templates → labeled M11 notation as inline `[[…]]`
+> M13-0 exist) →
+> **M13c DONE** (12 tasks, executed in the nested Nightfox dev clone at
+> `<Shadowcat checkout>/src/modules/nightfox/`, committed inside the Nightfox repo — never
+> pushed; the Nightfox repo is the user's to push): shipped `nfT` (i18n chrome-translation
+> helper with a built-in English fallback map, since no external-module i18n-registration seam
+> exists yet), `sheet-model.ts` (`sheetView` always resolves from the top-level host so
+> item/effect modifier flow via the M13b resolver is correct; field-path write helpers for
+> stats/modifiers/mechanics flags following the D11 map-CRUD idiom, hardened with
+> pointer-injection guards on `addStat`/`addModifier`), `format.ts` (value display + live
+> formula-validation + warning chips, sharing `resolve.ts`'s `isParseError`),
+> `StatRow.svelte`/`StatTable.svelte`/`ModifiersEditor.svelte` (per-type stat editors,
+> presentation-only drag/drop reorder via max-existing-order+1, per-instance datalist ids via
+> `$props.id()`), `ActorSheet.svelte`/`ItemSheet.svelte`/`EffectSheet.svelte` (own stat/modifier
+> blocks, inventory/effects lists with `openDocument`, active/transfer toggles gated on the
+> DISTINCT `core:manage_embedded` capability for embedded carriers vs. `core:write_fields` for
+> the sheet's own fields), module registration (`shadowcat.sheet:<doc_type>` priority 10,
+> outbidding the generic sheets at 0/-Infinity; `EFFECT_DOC_TYPE` filed as an engine-home gap),
+> and a full author→equip→toggle→revert integration test (spec §11). Task 7 (ActorSheet) was
+> pre-authorized-buddy-checked (2 blind reviewers, both independently found the same
+> Critical/Important capability-gating gap on the third check, fixed and re-confirmed); Task 8
+> (ItemSheet) surfaced a `basePrefix`-vs-`systemPrefix` OCC pre-image bug (fixed during review;
+> the same bug class was checked for and confirmed absent in Task 9's EffectSheet).
+> Suites: nightfox 215/215, typecheck clean, full `pnpm -r test`/`pnpm -r typecheck` green
+> throughout. → **M13d** (per-stat roll templates → labeled M11 notation as inline `[[…]]`
 > chat embeds; zero new wire frames; plan `superpowers/plans/2026-07-15-m13d-roll-wire.md`) →
 > **M13e** (templates: provenance stamp + on-command 3-way pull/push/revert merge engine —
 > engine-level, own sub-spec; closes the deferred document-inheritance model) → **M13f**
