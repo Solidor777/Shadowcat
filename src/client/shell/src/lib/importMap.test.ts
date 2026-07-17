@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
 
@@ -55,5 +55,70 @@ describe("shared-runtime import map (build output)", () => {
     const appIdx = html.indexOf('<script type="module"');
     expect(mapIdx).toBeGreaterThanOrEqual(0);
     expect(appIdx).toBeGreaterThan(mapIdx);
+  });
+
+  // Global Constraint 1 (single-instance sharing): a stable chunk name is not
+  // enough — Vite's default `preserveEntrySignatures: false` lets Rollup drop
+  // or mangle an entry chunk's exports down to whatever THIS build's own
+  // module graph happens to consume by name. That ships a chunk file at the
+  // right path with the wrong (or zero) export bindings, so an external
+  // module's `import { mount } from "svelte"` resolves through the import map
+  // but throws `SyntaxError: does not provide an export named 'mount'` at
+  // runtime — invisible to a test that only checks file existence / the
+  // import map's string content. These assertions import the actual built
+  // chunks and check the real public API names survive.
+  it("runtime chunks export their packages' real public API (not mangled aliases)", async () => {
+    const svelte = await import(
+      pathToFileURL(path.join(distDir, "runtime", "svelte.js")).href
+    );
+    expect(typeof svelte.mount).toBe("function");
+    expect(typeof svelte.tick).toBe("function");
+    expect(typeof svelte.unmount).toBe("function");
+
+    // svelte/internal/client is the compiler-emitted import every compiled
+    // Svelte 5 component uses (`push`, `pop`, `template`, ...); an empty or
+    // near-empty export set means the chunk was tree-shaken to nothing.
+    const svelteInternalClient = await import(
+      pathToFileURL(path.join(distDir, "runtime", "svelte-internal-client.js")).href
+    );
+    expect(Object.keys(svelteInternalClient).length).toBeGreaterThan(10);
+    expect(typeof svelteInternalClient.push).toBe("function");
+    expect(typeof svelteInternalClient.pop).toBe("function");
+    expect(typeof svelteInternalClient.template_effect).toBe("function");
+
+    const svelteReactivity = await import(
+      pathToFileURL(path.join(distDir, "runtime", "svelte-reactivity.js")).href
+    );
+    expect(typeof svelteReactivity.SvelteMap).toBe("function");
+    expect(typeof svelteReactivity.SvelteSet).toBe("function");
+    expect(typeof svelteReactivity.createSubscriber).toBe("function");
+
+    const formula = await import(
+      pathToFileURL(path.join(distDir, "runtime", "shadowcat-formula.js")).href
+    );
+    expect(typeof formula.parseFormula).toBe("function");
+    expect(typeof formula.evaluate).toBe("function");
+    expect(typeof formula.resolveAll).toBe("function");
+    expect(typeof formula.resolveNotationTemplate).toBe("function");
+    expect(formula.NOTATION_KEYWORDS).toBeDefined();
+
+    const core = await import(
+      pathToFileURL(path.join(distDir, "runtime", "shadowcat-core.js")).href
+    );
+    expect(typeof core.WsClient).toBe("function");
+    expect(typeof core.DocumentStore).toBe("function");
+
+    const uiKit = await import(
+      pathToFileURL(path.join(distDir, "runtime", "shadowcat-ui-kit.js")).href
+    );
+    expect(typeof uiKit.setAppContext).toBe("function");
+    expect(typeof uiKit.getAppContext).toBe("function");
+
+    // @shadowcat/types is type-only (fully erased by tsc): a zero-export
+    // chunk here is correct, not a regression.
+    const types = await import(
+      pathToFileURL(path.join(distDir, "runtime", "shadowcat-types.js")).href
+    );
+    expect(Object.keys(types)).toEqual([]);
   });
 });

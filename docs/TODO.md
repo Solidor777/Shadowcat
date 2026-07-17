@@ -348,6 +348,19 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   authority stays with the GM's `world_cap_requirements`, per ARCHITECTURE invariant 6). A future
   explicit "GM adopts a module's requirements into the world policy" mechanism could make them
   enforced if desired. (Surfaced by the M13-1 Tasks 8+10 buddy-check.)
+- TODO: No build-time guard exists against a first-party or module change introducing a new
+  `svelte/*` subpath (e.g. `svelte/store`, `svelte/transition`) not enumerated in
+  `vite.config.ts`'s `RUNTIME_ENTRIES` — an un-enumerated subpath would resolve to the app's own
+  bundled copy instead of the shared runtime chunk, degrading the single-instance sharing
+  invariant silently rather than failing the build. Add a build-time check (scan built output or
+  source for `from "svelte/..."` specifiers absent from `RUNTIME_ENTRIES` and fail the build).
+  (Surfaced by the M13-1 Task 14 buddy-check.)
+- TODO: The build-time import map (`vite.config.ts`) has only exact-match package-root entries —
+  an external module importing a package SUBPATH (e.g. `@shadowcat/core/something`) is an
+  unresolvable bare specifier under the current map. This is a clean browser-level failure caught
+  by the per-module load containment (a documented completeness caveat, not a single-instance
+  violation), but the module-authoring guide (Task 17) should call it out explicitly. (Surfaced by
+  the M13-1 Task 14 buddy-check.)
 
 ## Server / backups (M12.5)
 - TODO: Per-world granular export/import (sharing a single world between server instances without a whole-database snapshot) — M12.5 ships whole-server snapshot/restore only. Real complexity (world-scoped row subset while preserving referential integrity across cross-table FKs, shared asset references, admin/global tables) deferred as a distinct future feature, not required for the dogfood-alpha gate.
