@@ -27,6 +27,19 @@ describe("resolveAll", () => {
     expect(r.get("x")).toMatchObject({ error: "cycle" });
     expect(r.get("y")).toMatchObject({ error: "cycle" });
   });
+  it("reports an order-independent canonical cycle detail (smallest member) regardless of entry order", () => {
+    // 3-cycle a -> b -> c -> a. The FULL result (kind AND detail) must be
+    // independent of key order, per this module's documented invariant: detail
+    // names the lexicographically smallest cycle member ('a'), not whichever
+    // member the traversal happened to re-enter first.
+    const cyc = (k: string, get: (d: string) => FormulaValue): FormulaValue =>
+      k === "a" ? get("b") : k === "b" ? get("c") : k === "c" ? get("a") : { error: "unknown-ref", detail: k };
+    const forward = resolveAll(["a", "b", "c"], cyc);
+    const reverse = resolveAll(["c", "b", "a"], cyc);
+    expect(forward).toEqual(reverse);
+    expect(forward.get("a")).toEqual({ error: "cycle", detail: "reference cycle involving 'a'" });
+    expect(reverse.get("c")).toEqual({ error: "cycle", detail: "reference cycle involving 'a'" });
+  });
   it("caps total visits", () => {
     // a chain longer than MAX_GRAPH_VISITS trips the cap error, not a hang
     const chain = (k: string, get: (d: string) => FormulaValue): FormulaValue => {

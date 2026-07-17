@@ -54,12 +54,27 @@ export function resolveAll(
 ): Map<string, FormulaValue> {
   const memo = new Map<string, FormulaValue>();
   const visiting = new Set<string>();
+  // The active dependency path for the resolveKey currently running (a linear
+  // chain: each entry depends on the next). Shared across resolveKey calls,
+  // which run sequentially (never nested/reentrant), so one array is safe and
+  // lets `get` read the path to name a cycle deterministically.
+  const stack: string[] = [];
   let visits = 0;
 
   const get = (key: string): FormulaValue => {
     if (memo.has(key)) return memo.get(key)!;
     if (visiting.has(key)) {
-      return { error: "cycle", detail: `reference cycle involving '${key}'` };
+      // A re-entered key on the active path closes a cycle: the path slice from
+      // that key to the top IS the cycle's member set. Naming the raw
+      // re-entered key would make `detail` depend on traversal/iteration order
+      // (which root started, record-key order) — breaking this module's
+      // documented order-independence invariant. Name the lexicographically
+      // smallest cycle member instead: canonical for a given cycle regardless
+      // of where the traversal happened to detect it.
+      const start = stack.indexOf(key);
+      const cycle = start >= 0 ? stack.slice(start) : [key];
+      const canonical = cycle.reduce((min, k) => (k < min ? k : min), cycle[0]);
+      return { error: "cycle", detail: `reference cycle involving '${canonical}'` };
     }
     throw new NeedsDependency(key);
   };
@@ -67,7 +82,8 @@ export function resolveAll(
   // Iteratively resolves `root` and every transitive dependency it needs,
   // using `stack` (a plain array) in place of JS call-stack recursion.
   const resolveKey = (root: string): void => {
-    const stack: string[] = [root];
+    stack.length = 0;
+    stack.push(root);
     while (stack.length > 0) {
       const key = stack[stack.length - 1];
       if (memo.has(key)) {
