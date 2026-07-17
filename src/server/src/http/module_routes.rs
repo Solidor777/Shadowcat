@@ -39,9 +39,10 @@ pub async fn list_installed_modules(
 }
 
 use axum::extract::Path;
-use axum::http::header;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 
+use crate::data::repository::Repository;
 use crate::http::error::AppError;
 
 /// PROPER-descendant containment: `candidate` must be strictly inside `root`,
@@ -117,6 +118,63 @@ pub async fn serve_module_file(
             .to_string(),
     };
     Ok(([(header::CONTENT_TYPE, content_type)], bytes).into_response())
+}
+
+use uuid::Uuid;
+
+use crate::http::routes::require_gm;
+
+/// Upper bound on a world's enabled-module set. Parsed on every read/write and
+/// broadcast (via the `Welcome`-time merge) — far above any realistic install.
+const MAX_ENABLED_MODULES: usize = 256;
+
+/// A world's enabled installed-module ids. Any member (needed at join to load
+/// the enabled set) — mirrors `list_members`'s any-member-may-read stance.
+pub async fn get_world_enabled_modules(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+) -> Result<Json<Vec<String>>, AppError> {
+    state
+        .repo
+        .permission_context(world, user.id, user.role)
+        .await?;
+    Ok(Json(state.repo.world_enabled_modules(world).await?))
+}
+
+/// Replace a world's enabled installed-module set. GM/admin only. Every id
+/// must name a currently-installed, validly-manifested module whose
+/// `engines.shadowcat` range is satisfied by the running server version (T6) —
+/// enabling a version-incompatible or unknown module is rejected outright,
+/// atomically (never partially applied).
+pub async fn set_world_enabled_modules(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+    Json(ids): Json<Vec<String>>,
+) -> Result<StatusCode, AppError> {
+    require_gm(&state, &user, world).await?;
+    if ids.len() > MAX_ENABLED_MODULES {
+        return Err(AppError::Unprocessable(format!(
+            "too many enabled modules (max {MAX_ENABLED_MODULES})"
+        )));
+    }
+    let installed = crate::modules::scan_installed_modules(&state.config.modules_path());
+    for id in &ids {
+        let Some(m) = installed.iter().find(|m| &m.id == id) else {
+            return Err(AppError::Unprocessable(format!(
+                "module '{id}' is not installed"
+            )));
+        };
+        if !crate::modules::engine_compat_ok(m) {
+            return Err(AppError::Unprocessable(format!(
+                "module '{id}' is incompatible with this server version (requires shadowcat {})",
+                m.engines_shadowcat.as_deref().unwrap_or("(missing engines.shadowcat)")
+            )));
+        }
+    }
+    state.repo.set_world_enabled_modules(world, &ids).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
@@ -392,5 +450,131 @@ mod tests {
 
         let res = server.get("/modules/mod-a/%252e%252e%252fsecret.txt").await;
         res.assert_status(StatusCode::NOT_FOUND);
+    }
+
+    async fn logged_in_gm_and_player_with_modules_dir(
+        dir: &std::path::Path,
+    ) -> (axum_test::TestServer, axum_test::TestServer, String) {
+        let mut state = initialized_state().await;
+        state.config = std::sync::Arc::new(crate::config::Config {
+            modules_dir: Some(dir.to_string_lossy().to_string()),
+            ..crate::config::Config::default()
+        });
+        let hash = crate::auth::password::hash_password("pw").unwrap();
+        state.repo.create_user("gm", Some(&hash), crate::auth::role::ServerRole::User, 0).await.unwrap();
+        let player_id = state
+            .repo
+            .create_user("pl", Some(&hash), crate::auth::role::ServerRole::User, 0)
+            .await
+            .unwrap();
+
+        let gm = axum_test::TestServer::builder().save_cookies().build(router(state.clone()).await).unwrap();
+        gm.post("/api/login").json(&serde_json::json!({"username":"gm","password":"pw"})).await.assert_status(StatusCode::NO_CONTENT);
+        let world: serde_json::Value = gm.post("/api/worlds").json(&serde_json::json!({"name":"W"})).await.json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+        gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({"user": player_id, "role": "player"}))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let pl = axum_test::TestServer::builder().save_cookies().build(router(state).await).unwrap();
+        pl.post("/api/login").json(&serde_json::json!({"username":"pl","password":"pw"})).await.assert_status(StatusCode::NO_CONTENT);
+
+        (gm, pl, world_id)
+    }
+
+    #[tokio::test]
+    async fn enabled_modules_gm_crud_and_member_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("actors-plus")).unwrap();
+        std::fs::write(
+            dir.path().join("actors-plus").join("module.json"),
+            format!(r#"{{"id":"actors-plus","version":"1.0.0","engines":{{"shadowcat":"^{}"}}}}"#, env!("CARGO_PKG_VERSION")),
+        )
+        .unwrap();
+        let (gm, pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+
+        // Empty by default.
+        let got: serde_json::Value = gm.get(&format!("/api/worlds/{world_id}/enabled-modules")).await.json();
+        assert_eq!(got, serde_json::json!([]));
+
+        // A non-GM cannot enable.
+        pl.put(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .json(&serde_json::json!(["actors-plus"]))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        // The GM enables it.
+        gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .json(&serde_json::json!(["actors-plus"]))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // Any member (not just the GM) can read the enabled set.
+        let got: serde_json::Value = pl.get(&format!("/api/worlds/{world_id}/enabled-modules")).await.json();
+        assert_eq!(got, serde_json::json!(["actors-plus"]));
+    }
+
+    #[tokio::test]
+    async fn enabled_modules_rejects_an_uninstalled_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+        gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .json(&serde_json::json!(["not-installed"]))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+        // Rejected atomically: nothing is persisted from the bad batch.
+        let got: serde_json::Value = gm.get(&format!("/api/worlds/{world_id}/enabled-modules")).await.json();
+        assert_eq!(got, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn enabled_modules_rejects_an_engine_incompatible_module() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("too-new")).unwrap();
+        std::fs::write(
+            dir.path().join("too-new").join("module.json"),
+            r#"{"id":"too-new","version":"1.0.0","engines":{"shadowcat":"^99.0.0"}}"#,
+        )
+        .unwrap();
+        let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+        gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .json(&serde_json::json!(["too-new"]))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn enabled_modules_rejects_a_module_with_no_engines_field() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("no-engines")).unwrap();
+        std::fs::write(
+            dir.path().join("no-engines").join("module.json"),
+            r#"{"id":"no-engines","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+        gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .json(&serde_json::json!(["no-engines"]))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn enabled_modules_a_batch_with_one_bad_id_rejects_the_whole_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("actors-plus")).unwrap();
+        std::fs::write(
+            dir.path().join("actors-plus").join("module.json"),
+            format!(r#"{{"id":"actors-plus","version":"1.0.0","engines":{{"shadowcat":"^{}"}}}}"#, env!("CARGO_PKG_VERSION")),
+        )
+        .unwrap();
+        let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+        gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .json(&serde_json::json!(["actors-plus", "ghost"]))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+        let got: serde_json::Value = gm.get(&format!("/api/worlds/{world_id}/enabled-modules")).await.json();
+        assert_eq!(got, serde_json::json!([]), "a valid id in a rejected batch must not partially apply");
     }
 }

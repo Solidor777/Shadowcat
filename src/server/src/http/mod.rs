@@ -104,6 +104,10 @@ pub async fn router(state: AppState) -> Router {
             get(module_routes::serve_module_file),
         )
         .route(
+            "/api/worlds/{id}/enabled-modules",
+            get(module_routes::get_world_enabled_modules).put(module_routes::set_world_enabled_modules),
+        )
+        .route(
             "/api/worlds/{id}/documents",
             get(routes::list_documents).post(routes::create_document),
         )
