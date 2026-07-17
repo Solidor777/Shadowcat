@@ -121,9 +121,15 @@ new wire frames.
   `setStatOrder`/`addModifier`/`editModifierField`/`removeModifier`/`setMechanicsFlag`)**: add =
   single-key `old:null`; edit = single-key raw-old; remove = whole-map `setField` replace with
   the current map as the pre-image (`set_pointer` cannot delete a key in place). Stat/modifier
-  keys are spliced directly into a JSON pointer, so `addStat`/`addModifier` guard against a
-  `/`-containing or reserved key (`validateStatKey`) as defense-in-depth even though the calling
-  UI is expected to have already surfaced Tier-1 validation.
+  keys are spliced directly into a JSON pointer, so both `addStat` and `addModifier` guard
+  against a key that would escape the intended pointer segment as defense-in-depth even though
+  the calling UI is expected to have already surfaced Tier-1 validation — but the two guards are
+  NOT the same mechanism: `addStat` calls the shared `validateStatKey` (rejects `/`-containing
+  AND reserved words like `parent`/`base`/`current`/`min`/`max`), because a stat key is a
+  user-chosen identifier subject to reserved-word/notation-collision rules (it can appear bare in
+  a formula reference). `addModifier` uses its own simpler ad-hoc check
+  (`id.length === 0 || id.includes("/")`), because a modifier id is an opaque generated UUID with
+  no reserved-word semantics to protect — only pointer-injection safety matters for it.
 - **Presentation-only order (D12):** `StatTable`'s add-stat assigns `max-existing-order + 1`,
   not a count — a remove-then-add sequence with a naive count would collide orders. Order never
   feeds `resolveNightfox`; it's a `sort()` key at render time only.

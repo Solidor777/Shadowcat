@@ -276,3 +276,21 @@ are observations awaiting triage, not committed work.
   HTTP-only (no DOM); the spec §11 "Playwright e2e" for M13c has no browser harness, so the
   author→equip→toggle→revert flow (M13c Task 11) is covered by a component-level integration
   test instead. Status: Needs Review (Playwright harness is a toolchain follow-up).
+
+- Title: StatTable drag/drop reorder has no touch-triggerable fallback on iOS Safari. Summary:
+  the reorder mechanism is pure native HTML5 Drag-and-Drop (`draggable` + `ondragstart`/
+  `ondragover`/`ondrop`); WebKit on iOS does not fire `dragstart` from touch on `draggable`
+  elements (a long-standing WebKit gap, distinct from desktop/Android Chrome). 44px sizing
+  satisfies touch target SIZE but not touch TRIGGERING. This violates the CLAUDE.md
+  cross-platform touch directive and the spec's own "touch-friendly... cross-platform directive"
+  framing for this exact feature, on a named target platform, with zero test signal (tests only
+  fire synthetic dragStart/drop events). A pointer-events-based (or long-press) reorder
+  implementation is needed. Status: Needs Review (buddy-check Important, deferred with explicit
+  reviewer sign-off).
+
+- Title: StatRow's numeric field edits silently no-op on invalid input with no visible feedback.
+  Summary: `editNumber` returns early on non-finite input with no dispatch and no error
+  indicator; because numeric inputs use one-way `value={...}` bindings (not `bind:value`), the
+  DOM is never forced back to the last valid value, so stale/invalid typed text can persist
+  indefinitely with no chip or signal. No invalid value is ever dispatched (no
+  correctness/security impact) — a UX papercut only. Status: Needs Review.
