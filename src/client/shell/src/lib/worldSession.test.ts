@@ -28,6 +28,7 @@ const welcomeFrame = {
   world: "w1",
   current_seq: 0,
   server_time: 0,
+  server_version: "0.1.0",
   world_default_grants: { by_role: {}, by_user: {} },
   user_role: "player",
   capability_requirements: [],
