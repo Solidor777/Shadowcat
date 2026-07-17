@@ -100,6 +100,10 @@ pub async fn router(state: AppState) -> Router {
         )
         .route("/api/modules", get(module_routes::list_installed_modules))
         .route(
+            "/modules/{id}/{*path}",
+            get(module_routes::serve_module_file),
+        )
+        .route(
             "/api/worlds/{id}/documents",
             get(routes::list_documents).post(routes::create_document),
         )
