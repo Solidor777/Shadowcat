@@ -98,11 +98,11 @@ have.
 
 ### The permutation invariant (D3/D12) — a tested property, not a hope
 
-`src/permutation.test.ts` (Nightfox repo) is a 100-seed × 4-construction-variant
-exact-equality battery: the SAME logical actor (random stats/items/effects/modifiers over a
-seeded PRNG) is built four ways — shuffled embed-array order, shuffled `stats`-record key
-insertion order, shuffled `modifiers`-record key insertion order, and shuffled `order` field
-values — and `resolveNightfox` must deep-equal across all four. This is the concrete test the
+`src/permutation.test.ts` (Nightfox repo) is a 100-seed exact-equality battery over three
+independently-toggled shuffle axes — embed-array order, record key insertion order (`stats` and
+`modifiers` records together, one flag), and `order` field values — tested via four comparison
+variants against the natural-order baseline: one per individual axis plus one with all three
+axes combined. `resolveNightfox` output must deep-equal across all of them. This is the concrete test the
 canonical-fold-order fix exists for; a failure here is a Task-4/`resolve.ts` bug, never a test to
 loosen (`[[tests-yield-to-correct-code]]`).
 
