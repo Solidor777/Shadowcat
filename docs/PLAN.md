@@ -1197,7 +1197,8 @@ Decomposed **M11a–d**:
 > access for external repos; own spec cycle; bootstraps the Nightfox repo) →
 > **M13-1 DONE** (branch `m13-1-external-module-toolchain`, 21 SDD tasks, 3 pre-authorized
 > security buddy-checks — Task 5 path-traversal static serve, Tasks 8+10 enable+capability-union,
-> Task 14 single-instance import map — each of which caught a real Critical): installed modules
+> Task 14 single-instance import map — Tasks 5 and 14 each caught a Critical, Task 8+10 an
+> Important): installed modules
 > live at `<data-dir>/modules/<folder-id>/` (`module.json` + pre-built ESM); the server SCANS +
 > serves them static (`src/server/src/modules.rs` discovery, `http/module_routes.rs` two-stage
 > canonicalize + strict-containment guard) but NEVER executes module code. Per-world GM enablement
