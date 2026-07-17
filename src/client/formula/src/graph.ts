@@ -12,8 +12,10 @@ class NeedsDependency {
 /** Memoized lazy resolution over named nodes. Dependencies are discovered
  * dynamically: evalNode calls get(depKey) and cycles are detected via the
  * in-progress stack. Every node on a cycle resolves to {error:"cycle"}.
- * INVARIANT: result is independent of key iteration order (consumers rely on
- * this for the Nightfox permutation invariant, spec D3/D12).
+ * INVARIANT: the result is a pure function of the key SET — independent of
+ * the caller's key order (consumers rely on this for the Nightfox permutation
+ * invariant, spec D3/D12). Enforced by sorting the roots before iteration;
+ * see the note at the root loop.
  *
  * Recursion bound: O(1) JS call-stack frames regardless of graph depth or
  * chain length. `evalNode` is a consumer-supplied synchronous callback that
@@ -130,7 +132,17 @@ export function resolveAll(
     }
   };
 
-  for (const key of keys) {
+  // Roots iterate in sorted order, NOT caller order: cycle handling is
+  // traversal-path-dependent (whether `get(dep)` finds `dep` mid-evaluation
+  // on the active path — a structural cycle error — or already memoized can
+  // change a cycle-adjacent node's error KIND, not just its detail, when a
+  // node's value short-circuits without needing the cycle completed). Fixing
+  // the entry order makes the whole traversal — restart sequence, stack
+  // states, detection points — a pure function of the key SET, which is what
+  // the order-independence invariant above actually promises. Which member of
+  // a short-circuitable cycle reports `cycle` vs the propagated error remains
+  // traversal-defined, but deterministically so.
+  for (const key of [...keys].sort()) {
     if (!memo.has(key)) resolveKey(key);
   }
 

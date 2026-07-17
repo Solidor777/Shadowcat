@@ -40,6 +40,27 @@ describe("resolveAll", () => {
     expect(forward.get("a")).toEqual({ error: "cycle", detail: "reference cycle involving 'a'" });
     expect(reverse.get("c")).toEqual({ error: "cycle", detail: "reference cycle involving 'a'" });
   });
+  it("a short-circuitable cycle resolves identically regardless of entry order (error KIND, not just detail)", () => {
+    // s1 requests s2 (the dependency edge exists) but its own value
+    // short-circuits to unknown-ref without needing s2; s2's value is
+    // get(s1). Structurally s1<->s2 is a cycle. Path-dependent handling
+    // would give s2 = cycle when entered from s1 (s1 still mid-evaluation
+    // on the active path) but s2 = unknown-ref when entered from s2 (the
+    // trampoline completes s1 first, s2 reads the memo) — sorted-root
+    // iteration makes the outcome a pure function of the key set.
+    const shortCircuit = (k: string, get: (d: string) => FormulaValue): FormulaValue => {
+      if (k === "s1") {
+        get("s2");
+        return { error: "unknown-ref", detail: "u missing" };
+      }
+      if (k === "s2") return get("s1");
+      return { error: "unknown-ref", detail: k };
+    };
+    const a = resolveAll(["s1", "s2"], shortCircuit);
+    const b = resolveAll(["s2", "s1"], shortCircuit);
+    expect(a.get("s1")).toEqual(b.get("s1"));
+    expect(a.get("s2")).toEqual(b.get("s2"));
+  });
   it("caps total visits", () => {
     // a chain longer than MAX_GRAPH_VISITS trips the cap error, not a hang
     const chain = (k: string, get: (d: string) => FormulaValue): FormulaValue => {
