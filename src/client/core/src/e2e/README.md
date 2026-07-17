@@ -23,7 +23,9 @@ pre-builds the server so the in-test spawn does not pay the compile cost.
 
 ## What the harness provides
 
-- `startTestServer()` — spawns the server, parses its `test_server:` address and
+- `startTestServer(opts?)` — spawns the server, parses its `test_server:` address and
   `e2e-fixture:` JSON (world/doc/gm/player ids), returns `{ baseUrl, wsUrl,
-  fixture, stop }`.
+  fixture, stop }`. `opts.modulesDir` (optional) passes `--modules-dir <path>`
+  to the spawned binary, for tests exercising the installed-module pipeline
+  (see `modules.e2e.test.ts`).
 - `login(baseUrl, user, pw)` — `POST /api/login`, returns the session cookie.

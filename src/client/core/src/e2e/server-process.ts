@@ -24,7 +24,7 @@ export interface TestServer {
 // .../src/client/core/src/e2e/server-process.ts -> repo root is five levels up.
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../..");
 
-export async function startTestServer(): Promise<TestServer> {
+export async function startTestServer(opts: { modulesDir?: string } = {}): Promise<TestServer> {
   const isWindows = process.platform === "win32";
   const exe = path.join(repoRoot, "target", "debug", isWindows ? "test_server.exe" : "test_server");
 
@@ -38,7 +38,8 @@ export async function startTestServer(): Promise<TestServer> {
   });
   if (build.status !== 0) throw new Error(`cargo build test_server failed (${build.status})`);
 
-  const proc: ChildProcess = spawn(exe, [], {
+  const args = opts.modulesDir ? ["--modules-dir", opts.modulesDir] : [];
+  const proc: ChildProcess = spawn(exe, args, {
     cwd: repoRoot,
     stdio: ["ignore", "pipe", "inherit"],
   });

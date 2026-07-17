@@ -20,6 +20,20 @@ use shadowcat::data::sqlite::SqliteRepository;
 use shadowcat::http::{self, AppState};
 use uuid::Uuid;
 
+use clap::Parser;
+
+/// `--modules-dir <path>`: overrides the modules folder the embedded router
+/// scans/serves from (default: none installed). Lets the Node<->Rust e2e
+/// harness — and an external module repo's own smoke script (see
+/// `docs/design/module-authoring.md`) — point a fresh `test_server` at a
+/// fixture-populated temp folder without touching the hardcoded in-memory
+/// fixture data below.
+#[derive(Parser, Debug, Default)]
+struct Args {
+    #[arg(long)]
+    modules_dir: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -132,9 +146,14 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
+    let args = Args::parse();
+    let mut config = Config::default();
+    if let Some(dir) = args.modules_dir {
+        config.modules_dir = Some(dir);
+    }
     let state = AppState {
         repo,
-        config: Arc::new(Config::default()),
+        config: Arc::new(config),
         setup_token: None,
         initialized: Arc::new(AtomicBool::new(true)),
         ws: shadowcat::ws::WsState::new(),
