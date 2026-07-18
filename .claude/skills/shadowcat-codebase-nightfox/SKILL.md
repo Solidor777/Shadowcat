@@ -195,11 +195,16 @@ producer, not consumer.
   `d20`). A non-integer resolved value (e.g. a `formula` evaluating to `7 / 2`) is a `type` error
   from the builder rather than a silently-rounded roll — explicit rounding is required upstream.
 - **One-embed-per-message constraint:** the builder emits exactly ONE inline `[[…]]` roll embed per
-  message by construction — safely under the server's `MAX_INLINE_ROLLS=8`
-  (`chat/rolls.rs`)/`MAX_MESSAGE_CHARS=4096` (`chat/mod.rs`) caps, since a template (≤
-  `@shadowcat/formula`'s `MAX_FORMULA_LENGTH=512`) plus one bounded notation string can never
-  approach either limit. Never call the builder in a loop to compose a multi-roll message; that is
-  an unenforced-by-this-function caller discipline, not a library-level cap.
+  message by construction, trivially satisfying the server's `MAX_INLINE_ROLLS=8` (`chat/rolls.rs`).
+  `MAX_MESSAGE_CHARS=4096` (`chat/mod.rs`) is NOT structurally guaranteed: `resolveNotationTemplate`
+  caps only the pre-substitution template at `@shadowcat/formula`'s `MAX_FORMULA_LENGTH=512`, but
+  each substituted identifier reference expands to `${value}[${originalText}]` with `value`
+  unclamped up to `i32::MAX` — a pathological template packing many large-valued short-named
+  identifier references can push the composed content over 4096 chars. This has no security
+  consequence (the server's own length check still rejects the oversized message — no bypass, just
+  a self-inflicted rejection for a pathological author), but do not assume the cap is unreachable.
+  Never call the builder in a loop to compose a multi-roll message; that is an unenforced-by-this-
+  function caller discipline, not a library-level cap.
 - **Server-side prerequisite this pathway depends on:** the M11 dice notation parser now accepts a
   trailing `[label]` on ANY atomic factor (a bare `Const` or a `DiceGroup`), not only a dice group
   — required because `resolveNotationTemplate` substitutes every resolved identifier as a labeled

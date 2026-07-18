@@ -1295,8 +1295,10 @@ Decomposed **M11a–d**:
 > `resolveNotationTemplate`; rollable stat types are `number`/`resource` only (D7), a missing
 > stat/text/boolean stat/any errored reference all return a `FormulaError` instead of posting;
 > the builder itself never rewrites or normalizes notation (`resolveNotationTemplate`'s sole
-> job) and emits exactly ONE inline `[[…]]` embed per message, safely under the server's
-> `MAX_INLINE_ROLLS=8`/`MAX_MESSAGE_CHARS=4096` caps by construction. A standalone differential
+> job) and emits exactly ONE inline `[[…]]` embed per message, trivially satisfying the
+> server's `MAX_INLINE_ROLLS=8`; `MAX_MESSAGE_CHARS=4096` is not structurally guaranteed (a
+> pathological template of many large-valued short-named identifier references could exceed it —
+> the server's own length check still rejects such a message, no bypass). A standalone differential
 > e2e (`e2e/roll-wire.e2e.test.ts` + `vitest.e2e.config.ts`, `test:e2e:roll-wire` script)
 > spawns the real Rust `test_server`, sends every built roll shape (authored dice+label
 > template, default flat roll, resource bare/`.max`, negative-value parenthesized form, a
