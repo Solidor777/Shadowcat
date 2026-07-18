@@ -1411,7 +1411,14 @@ git commit -m "feat(m13e): core snapshotBase + stampInstance deep-clone (buddy-c
 - Modify: `src/client/core/src/index.ts`
 
 **Interfaces:**
-- Consumes: `merge3`, `takeTemplate`, `structuralDiff`, `isPlacementExcluded`, `placementExclusions`, `deepEqual`, `MergePlan`, `MergeBands`, `Conflict`, `MergeBase` from `./merge`; `WireDocument`, `WireOperation`, `WireFieldChange` from `./wire`.
+- Consumes: `merge3`, `merge3Tree`, `takeTemplate`, `structuralDiff`, `isPlacementExcluded`, `placementExclusions`, `deepEqual`, `restampSubtree`, `MergePlan`, `MergeBands`, `Conflict`, `MergeBase` from `./merge`; `WireDocument`, `WireOperation`, `WireFieldChange` from `./wire`.
+- Note: `computeRevert` does NOT reuse `merge3Embedded` (Task 5) for its embedded reset — that
+  correlation table's "no correlation → keep" rule is a PULL default (preserve local additions),
+  which is the opposite of what revert needs (discard local additions). `computeRevert` uses its
+  own `revertEmbedded`/`revertChild` (private to `templates.ts`): a child correlated to a CURRENT
+  template child recurses/resets; an uncorrelated child is dropped; an unmatched template child is
+  freshly stamped in. Scalar/object bands still reuse `merge3Tree` via the "child as its own base"
+  trick (`revertBands`), which is safe because ALWAYS-take-template has no keep-mine ambiguity.
 - Produces:
   - `type SyncState = "none" | "up_to_date" | "template_changed"`
   - `computePull(child: WireDocument, template: WireDocument): MergePlan`
@@ -1566,7 +1573,7 @@ Update the top import:
 ```ts
 import type { WireDocument, WireOperation, WireFieldChange } from "./wire";
 import {
-  merge3, takeTemplate, structuralDiff, isPlacementExcluded, placementExclusions, deepEqual,
+  merge3, merge3Tree, takeTemplate, structuralDiff, isPlacementExcluded, placementExclusions, deepEqual,
   restampSubtree, type MergeBase, type MergeBands, type MergePlan, type Conflict, type EmbeddedBaseChild,
 } from "./merge";
 ```
@@ -1620,13 +1627,82 @@ export function applyResolutions(mergedBands: MergeBands, conflicts: Conflict[],
   return { name: root.name, engine: root.engine, system: root.system, embedded: root.embedded };
 }
 
-/** Revert: discard the child's local diffs on the mergeable bands (template wins everywhere),
- * except placement paths (kept), then refresh `base`. No conflicts are possible — the child side
- * is discarded by using the child's own current snapshot as the merge base. */
+type Bands = { name: string | null; engine: unknown; system: unknown };
+
+/** Reset one node's own bands to the template's current value, keeping placement (E8). Reuses
+ * `merge3Tree` with the child as its OWN base (so `childDiff` is always empty and every parent
+ * diff auto-applies with zero conflicts) — the "always take template" trick. NOTE: this handles
+ * only `name`/`engine`/`system`; embedded reset is a SEPARATE algorithm (`revertEmbedded`) — see
+ * below for why `merge3Embedded`'s pull-shaped correlation table cannot be reused for revert. */
+function revertBands(child: Bands, template: Bands, exclusions: string[]): Bands {
+  const selfBase = { name: child.name, engine: child.engine ?? null, system: child.system ?? null };
+  const templateNow = { name: template.name, engine: template.engine ?? null, system: template.system ?? null };
+  const { merged } = merge3Tree(selfBase, templateNow, selfBase, exclusions);
+  return merged as Bands;
+}
+
+/**
+ * Embedded-collection reset for revert. `merge3Embedded` (used by pull/push) KEEPS an
+ * uncorrelated instance child ("instance-added" — correct when preserving local additions is
+ * the point). Revert wants the opposite: discard every local addition. Correlation is by
+ * `childKid.source.id` against a CURRENT template child's id — no stored `base` is consulted
+ * (there is nothing to preserve), so:
+ * - a child correlated to a current template child → recurse-reset it (`revertChild`);
+ * - a child with no correlation (no `source`, or `source.id` not among the template's current
+ *   children) → DROPPED (a locally-added child never belongs in a reverted instance);
+ * - a template child with no correlating instance child → freshly stamped in (restores content
+ *   the instance had locally deleted, or never had).
+ */
+function revertEmbedded(
+  parentEmbedded: Record<string, WireDocument[]>,
+  childEmbedded: Record<string, WireDocument[]>,
+): Record<string, WireDocument[]> {
+  const merged: Record<string, WireDocument[]> = {};
+  const colls = new Set([...Object.keys(parentEmbedded), ...Object.keys(childEmbedded)]);
+  for (const coll of [...colls].sort()) {
+    const parentKids = parentEmbedded[coll] ?? [];
+    const childKids = childEmbedded[coll] ?? [];
+    const templateById = new Map(parentKids.map((t) => [t.id, t]));
+    const out: WireDocument[] = [];
+    for (const cd of childKids) {
+      const t = cd.source ? templateById.get(cd.source.id) : undefined;
+      if (t) out.push(revertChild(cd, t));
+      // else: no correlation → child-added → dropped.
+    }
+    for (const t of parentKids) {
+      if (!childKids.some((cd) => cd.source?.id === t.id)) out.push(restampSubtree(t));
+    }
+    merged[coll] = out;
+  }
+  return merged;
+}
+
+/** Reset one matched embedded child: its own bands to the template counterpart (placement kept),
+ * recursing into its own embedded collections the same way. */
+function revertChild(child: WireDocument, template: WireDocument): WireDocument {
+  const bands = revertBands(child, template, placementExclusions(child.doc_type));
+  return {
+    ...child,
+    name: bands.name,
+    engine: bands.engine,
+    system: bands.system,
+    embedded: revertEmbedded(template.embedded, child.embedded),
+  };
+}
+
+/** Revert: discard the child's local diffs on the mergeable bands — every path becomes the
+ * template's current value, embedded content resets per `revertEmbedded` — except placement
+ * paths (kept, E8), then refresh `base`. No conflicts are possible (revert never asks the user
+ * to choose; it always takes the template). */
 export function computeRevert(child: WireDocument, template: WireDocument): WireOperation {
-  const plan = merge3(snapshotBase(child), template, child, placementExclusions(child.doc_type));
-  // plan.conflicts is empty by construction (childNow == its own base → no child diffs).
-  return planToUpdate(child, template, plan.mergedBands);
+  const bands = revertBands(child, template, placementExclusions(child.doc_type));
+  const mergedBands: MergeBands = {
+    name: bands.name,
+    engine: bands.engine,
+    system: bands.system,
+    embedded: revertEmbedded(template.embedded, child.embedded),
+  };
+  return planToUpdate(child, template, mergedBands);
 }
 
 /** All in-store documents stamped from `templateId` (correlated by `source.id`). Same-world,
