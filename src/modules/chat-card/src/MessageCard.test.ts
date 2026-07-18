@@ -97,7 +97,7 @@ function rollOutcome(over: Record<string, unknown> = {}): Record<string, unknown
     total: 4, records: [dieRecord()],
     successes: null, pass: null, margin: null, tier_label: null, tier_value: null,
     crit_successes: 0, crit_fails: 0, positive_counter: 0, negative_counter: 0,
-    symbol_counts: {},
+    symbol_counts: {}, labeled_consts: [],
     ...over,
   };
 }
@@ -478,6 +478,27 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     });
     expect(container.querySelector(".die-label")?.textContent).toBe("atk");
     expect(container.querySelector(".die-symbols")?.textContent).toBe("* !");
+  });
+
+  it("renders a labeled constant term the same way a labeled die is shown", () => {
+    // The root-cause fix: a bare labeled constant (e.g. "3[dex]") has no
+    // DieRecord, so it must surface via outcome.labeled_consts and render as
+    // its own chip alongside any dice-group chips.
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [{
+        kind: "roll_embed", formula: "1d20 + 3[dex]",
+        outcome: rollOutcome({ labeled_consts: [{ value: 3, label: "dex" }] }),
+      }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    const constChip = container.querySelector(".const-chip");
+    expect(constChip).not.toBeNull();
+    expect(constChip?.querySelector(".die-value")?.textContent).toBe("3");
+    expect(constChip?.querySelector(".die-label")?.textContent).toBe("dex");
   });
 
   it("renders positive/negative counter rows only when non-zero", () => {

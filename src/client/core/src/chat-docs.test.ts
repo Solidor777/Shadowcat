@@ -67,7 +67,7 @@ function rollOutcome(overrides: Partial<Record<string, unknown>> = {}) {
     total: 4, records: [dieRecord()],
     successes: null, pass: null, margin: null, tier_label: null, tier_value: null,
     crit_successes: 0, crit_fails: 0, positive_counter: 0, negative_counter: 0,
-    symbol_counts: {},
+    symbol_counts: {}, labeled_consts: [],
     ...overrides,
   };
 }
@@ -81,6 +81,30 @@ describe("roll segments (M11d-2)", () => {
     expect(eng).not.toBeNull();
     expect(eng!.content).toEqual([{ kind: "roll_embed", formula: "2d6+1", outcome: rollOutcome() }]);
   });
+  test("parses a labeled Const term in labeled_consts, defaulting to [] when absent", () => {
+    const withConst = parseMessageEngine(msgDoc({
+      ...base, kind: "roll",
+      content: [{
+        kind: "roll_embed", formula: "1d20 + 3[dex]",
+        outcome: rollOutcome({ labeled_consts: [{ value: 3, label: "dex" }] }),
+      }],
+    }));
+    expect(withConst!.content).toEqual([
+      { kind: "roll_embed", formula: "1d20 + 3[dex]", outcome: rollOutcome({ labeled_consts: [{ value: 3, label: "dex" }] }) },
+    ]);
+
+    // Absent on a roll persisted before this field existed -> defaults to [].
+    const legacy = rollOutcome();
+    delete (legacy as Record<string, unknown>).labeled_consts;
+    const withoutConst = parseMessageEngine(msgDoc({
+      ...base, kind: "roll",
+      content: [{ kind: "roll_embed", formula: "1d20", outcome: legacy }],
+    }));
+    expect(withoutConst).not.toBeNull();
+    const seg = withoutConst!.content[0] as { outcome: { labeled_consts: unknown[] } };
+    expect(seg.outcome.labeled_consts).toEqual([]);
+  });
+
   test("tolerates extra server-only fields on a DieRecord (passthrough)", () => {
     const eng = parseMessageEngine(msgDoc({
       ...base, kind: "roll",

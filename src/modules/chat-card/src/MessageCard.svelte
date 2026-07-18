@@ -245,6 +245,12 @@
                   {#if r.symbols.length > 0}<span class="die-symbols">{r.symbols.join(" ")}</span>{/if}
                 </span>
               {/each}
+              {#each rollBlock.outcome.labeled_consts as c, i (i)}
+                <span class="die-chip const-chip">
+                  <span class="die-value">{c.value}</span>
+                  {#if c.label}<span class="die-label">{c.label}</span>{/if}
+                </span>
+              {/each}
             </div>
             {#if rollBlock.outcome.positive_counter !== 0 || rollBlock.outcome.negative_counter !== 0}
               <div class="roll-counters">

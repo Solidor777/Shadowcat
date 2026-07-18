@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dice::spec::{DieId, DieKind, RollSpec, Symbol};
+use crate::dice::spec::{ConstTerm, DieId, DieKind, RollSpec, Symbol};
 
 /// A single die's natural (RNG) result — the only nondeterministic artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +123,16 @@ pub struct RollOutcome {
     /// of `SuccessRule`'s variant). Deterministic iteration order (`BTreeMap`).
     #[serde(default)]
     pub symbol_counts: BTreeMap<Symbol, i32>,
+    /// Every labeled `Const` term in the expression, in AST left-to-right order
+    /// (`eval::sum::evaluate_total`'s `collect_labeled_consts`). Total-mode only —
+    /// display/provenance decoration for chat-embed rendering, mirroring how a
+    /// labeled `DiceGroup`'s dice show up in `records`; a bare constant has no
+    /// dice pool, so this is NEVER read by `by_label`/`compare_labels`. Always
+    /// empty in SuccessCount mode (arithmetic is ignored there) and for an
+    /// unlabeled constant. `#[serde(default)]`: absent on any roll persisted
+    /// before this field existed.
+    #[serde(default)]
+    pub labeled_consts: Vec<ConstTerm>,
 }
 
 impl RollOutcome {
@@ -230,6 +240,7 @@ mod tests {
             positive_counter: 0,
             negative_counter: 0,
             symbol_counts: Default::default(),
+            labeled_consts: vec![],
         };
         let hope: Vec<i32> = out.by_label("Hope").iter().map(|r| r.value).collect();
         assert_eq!(hope, vec![5, 2]);
@@ -256,6 +267,7 @@ mod tests {
             positive_counter: 0,
             negative_counter: 0,
             symbol_counts: Default::default(),
+            labeled_consts: vec![],
         };
         // Hope kept-sum = 5, Fear kept-sum = 3 -> Hope > Fear.
         assert_eq!(out.compare_labels("Hope", "Fear"), Some(Ordering::Greater));
@@ -285,6 +297,7 @@ mod tests {
             positive_counter: 0,
             negative_counter: 0,
             symbol_counts: Default::default(),
+            labeled_consts: vec![],
         };
         assert_eq!(out.compare_labels("Hope", "Fear"), None);
         assert_eq!(out.compare_labels("Fear", "Hope"), None);
@@ -310,6 +323,7 @@ mod tests {
             positive_counter: 0,
             negative_counter: 0,
             symbol_counts: Default::default(),
+            labeled_consts: vec![],
         };
         assert_eq!(out.compare_labels("Mixed", "Mixed"), None);
     }

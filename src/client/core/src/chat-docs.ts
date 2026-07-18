@@ -47,6 +47,15 @@ export type DieRecord = z.infer<typeof DieRecordSchema>;
  * JSON.parse rounds such extremes before Zod runs, so display precision
  * degrades past 2^53. Accepted tradeoff (no crash/security effect).
  * TODO: string-encode these two i64 fields if exact extreme totals matter. */
+/** Mirror of dice::spec::ConstTerm — a labeled bare constant. Display/
+ * provenance decoration only (never fed into a dice-pool comparison); only
+ * ever populated in Total mode. */
+export const ConstTermSchema = z.object({
+  value: z.number(),
+  label: z.string().nullish(),
+});
+export type ConstTerm = z.infer<typeof ConstTermSchema>;
+
 export const RollOutcomeSchema = z.object({
   total: z.number(),
   records: z.array(DieRecordSchema),
@@ -60,6 +69,10 @@ export const RollOutcomeSchema = z.object({
   positive_counter: z.number(),
   negative_counter: z.number(),
   symbol_counts: z.record(z.string(), z.number()),
+  /** Every labeled `Const` term in the expression; empty in SuccessCount mode
+   * (arithmetic is ignored there) and defaults to empty for any roll
+   * persisted before this field existed. */
+  labeled_consts: z.array(ConstTermSchema).default([]),
 });
 export type RollOutcome = z.infer<typeof RollOutcomeSchema>;
 
