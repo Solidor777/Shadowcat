@@ -1283,8 +1283,42 @@ Decomposed **M11a–d**:
 > (ItemSheet) surfaced a `basePrefix`-vs-`systemPrefix` OCC pre-image bug (fixed during review;
 > the same bug class was checked for and confirmed absent in Task 9's EffectSheet).
 > Suites: nightfox 215/215, typecheck clean, full `pnpm -r test`/`pnpm -r typecheck` green
-> throughout. → **M13d** (per-stat roll templates → labeled M11 notation as inline `[[…]]`
-> chat embeds; zero new wire frames; plan `superpowers/plans/2026-07-15-m13d-roll-wire.md`) →
+> throughout. →
+> **M13d**
+> (per-stat roll templates → labeled M11 notation as inline `[[…]]` chat embeds; zero new wire
+> frames; plan `superpowers/plans/2026-07-15-m13d-roll-wire.md`) →
+> **M13d DONE** (3 tasks, Tasks 1-2 executed in the nested Nightfox dev clone at
+> `<Shadowcat checkout>/src/modules/nightfox/`, committed inside the Nightfox repo
+> `C:\Dev\Nightfox` — never pushed; Task 3's doc rows committed here): shipped
+> `src/roll.ts`'s `buildStatRollContent(resolved, block, key)` — a pure builder producing chat
+> content of the shape `"<template> [[<notation>]]"` via `@shadowcat/formula`'s
+> `resolveNotationTemplate`; rollable stat types are `number`/`resource` only (D7), a missing
+> stat/text/boolean stat/any errored reference all return a `FormulaError` instead of posting;
+> the builder itself never rewrites or normalizes notation (`resolveNotationTemplate`'s sole
+> job) and emits exactly ONE inline `[[…]]` embed per message, trivially satisfying the
+> server's `MAX_INLINE_ROLLS=8`; `MAX_MESSAGE_CHARS=4096` is not structurally guaranteed (a
+> pathological template of many large-valued short-named identifier references could exceed it —
+> the server's own length check still rejects such a message, no bypass). A standalone differential
+> e2e (`e2e/roll-wire.e2e.test.ts` + `vitest.e2e.config.ts`, `test:e2e:roll-wire` script)
+> spawns the real Rust `test_server`, sends every built roll shape (authored dice+label
+> template, default flat roll, resource bare/`.max`, negative-value parenthesized form, a
+> dotted-path label referencing another stat's `.max`, a keep-modifier template) through a real
+> `WsClient`, and asserts each survives the server's actual chat-ingest pipeline as an accepted
+> `roll_embed` message with zero whispered `System` rejection notices — plus a sanity inversion
+> proving the harness can detect a genuine server rejection (`[[1d]]`, an incomplete dice term).
+> The e2e caught a real pre-existing Shadowcat-repo bug: the M11 dice notation parser (this
+> repo, `src/server/src/dice/notation/parser.rs`) only ever consumed a trailing `[label]` after
+> a `DiceGroup`, so `@shadowcat/formula`'s labeled-constant substitution (used on every
+> Nightfox roll, including flat-value rolls with no dice group) was rejected as unconsumed
+> trailing input — fixed (`bf494c1`) by mirroring `DiceGroup.label` onto a new
+> `Expr::Const(ConstTerm)` shape and generalizing label-consumption to any atomic factor via a
+> shared `take_label()` helper, plus a Total-mode-only `RollOutcome.labeled_consts` field
+> (never fed into `by_label`/`compare_labels`) rendered through the TS Zod mirror and
+> `MessageCard.svelte`'s die-chip display. Already reviewed (spec PASS, code Approve) and its
+> own reviewed skill-update gate closed (`shadowcat-codebase-dice`, `4e3cc30`); 2 non-blocking
+> Minor findings logged to `POST_WORK_FINDINGS.md` (missing Rust-side legacy-deserialization
+> coverage for `labeled_consts`; a labeled constant's displayed value ignores an enclosing
+> `Neg`/`Mul` operator, matching `DieRecord`'s existing raw-face-display precedent). →
 > **M13e** (templates: provenance stamp + on-command 3-way pull/push/revert merge engine —
 > engine-level, own sub-spec; closes the deferred document-inheritance model) → **M13f**
 > (declarative server-side schema registry, subtree-scoped, data-only enforcement — own

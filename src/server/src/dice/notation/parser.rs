@@ -1,8 +1,8 @@
 use crate::dice::notation::lexer::{describe_token, lex, Token};
 use crate::dice::notation::{ModeKind, ParseContext, ParseError};
 use crate::dice::spec::{
-    BinOp, Comparator, DiceGroup, DieKind, Direction, ExplodeKind, Expr, GroupModifier, Mode,
-    RollSpec, SuccessConfig, SuccessRule, TotalConfig,
+    BinOp, Comparator, ConstTerm, DiceGroup, DieKind, Direction, ExplodeKind, Expr, GroupModifier,
+    Mode, RollSpec, SuccessConfig, SuccessRule, TotalConfig,
 };
 
 /// Recursion depth (via `expr`/`term`/`factor`'s mutual calls, e.g. through
@@ -106,6 +106,19 @@ impl P {
         t
     }
 
+    /// Consumes an optional trailing `Token::Label`, shared by any atomic factor
+    /// that can carry one (a `DiceGroup` after its modifiers, or a bare `Const`).
+    fn take_label(&mut self) -> Option<String> {
+        if let Some(Token::Label(_)) = self.peek() {
+            match self.bump() {
+                Some(Token::Label(l)) => Some(l),
+                _ => unreachable!(),
+            }
+        } else {
+            None
+        }
+    }
+
     fn expect_int(&mut self) -> Result<i32, ParseError> {
         match self.bump() {
             Some(Token::Int(n)) => Ok(n),
@@ -184,14 +197,7 @@ impl P {
                         return Err(ParseError::InvalidDieSides(sides));
                     }
                     let modifiers = self.modifiers(sides)?;
-                    let label = if let Some(Token::Label(_)) = self.peek() {
-                        match self.bump() {
-                            Some(Token::Label(l)) => Some(l),
-                            _ => unreachable!(),
-                        }
-                    } else {
-                        None
-                    };
+                    let label = self.take_label();
                     Ok(Expr::Dice(DiceGroup {
                         label,
                         count: n as u32,
@@ -199,7 +205,12 @@ impl P {
                         modifiers,
                     }))
                 } else {
-                    Ok(Expr::Const(n))
+                    // Generalized (was dice-only): a bare constant can carry the
+                    // same trailing `[label]` a `DiceGroup` can. Root-cause fix —
+                    // the grammar's own intent is that labels decorate ANY atomic
+                    // factor, not just dice groups (see `ConstTerm` doc comment).
+                    let label = self.take_label();
+                    Ok(Expr::Const(ConstTerm { value: n, label }))
                 }
             }
             other => Err(ParseError::Unexpected(format!(
@@ -349,7 +360,10 @@ mod tests {
             Expr::Bin {
                 op: BinOp::Add,
                 lhs: Box::new(dice(4, 1, 6, vec![GroupModifier::KeepHighest(3)])),
-                rhs: Box::new(Expr::Const(2)),
+                rhs: Box::new(Expr::Const(ConstTerm {
+                    value: 2,
+                    label: None,
+                })),
             }
         );
     }
@@ -604,5 +618,51 @@ mod tests {
     fn duplicate_labels_across_groups_are_not_an_error() {
         // Two groups intentionally sharing a label pool under by_label — not a parse error.
         assert!(parse("1d6[Pool] + 1d6[Pool]", ParseContext::default()).is_ok());
+    }
+
+    #[test]
+    fn parses_label_onto_bare_constant() {
+        // The root-cause bug: a label immediately after a bare constant (not a dice
+        // group) must be consumed by `factor()`, not left as unconsumed trailing input.
+        let spec = parse("3[dex]", ParseContext::default()).unwrap();
+        match spec.expr {
+            Expr::Const(c) => {
+                assert_eq!(c.value, 3);
+                assert_eq!(c.label, Some("dex".to_string()));
+            }
+            other => panic!("expected Const, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_dice_group_plus_labeled_constant() {
+        // The exact failing case from the e2e report: a dice group followed by an
+        // additive labeled constant must no longer error as trailing input.
+        let spec = parse("1d20 + 3[dex]", ParseContext::default()).unwrap();
+        match spec.expr {
+            Expr::Bin { lhs, rhs, .. } => {
+                assert!(matches!(*lhs, Expr::Dice(_)));
+                match *rhs {
+                    Expr::Const(c) => {
+                        assert_eq!(c.value, 3);
+                        assert_eq!(c.label, Some("dex".to_string()));
+                    }
+                    other => panic!("expected Const rhs, got {other:?}"),
+                }
+            }
+            other => panic!("expected Bin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unlabeled_bare_constant_has_no_label() {
+        let spec = parse("3", ParseContext::default()).unwrap();
+        match spec.expr {
+            Expr::Const(c) => {
+                assert_eq!(c.value, 3);
+                assert_eq!(c.label, None);
+            }
+            other => panic!("expected Const, got {other:?}"),
+        }
     }
 }

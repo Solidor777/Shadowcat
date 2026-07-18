@@ -294,3 +294,19 @@ are observations awaiting triage, not committed work.
   DOM is never forced back to the last valid value, so stale/invalid typed text can persist
   indefinitely with no chip or signal. No invalid value is ever dispatched (no
   correctness/security impact) — a UX papercut only. Status: Needs Review.
+
+- Title: M13d dice-label fix (`bf494c1`) — no Rust-side test for `RollOutcome` missing the
+  `labeled_consts` key. Summary: the report's cited backward-compat regression test
+  (`stored_pre_m11d2_message_still_deserializes`) doesn't actually exercise a `RollOutcome`-
+  shaped blob, so `#[serde(default)]` on `labeled_consts` is backed only by the mechanical,
+  already-precedented pattern (`symbol_counts` uses it identically) plus a client-side
+  (`chat-docs.test.ts`) legacy-fixture test, not a Rust-side one. Low real risk. Status: Needs
+  Review (code-review Minor, non-blocking).
+
+- Title: M13d dice-label fix (`bf494c1`) — a labeled constant's displayed value ignores an
+  enclosing `Neg`/`Mul` operator (e.g. `-3[dex]` displays as `3[dex]`, not `-3`).
+  `collect_labeled_consts` shows each `ConstTerm`'s raw literal value, mirroring how `DieRecord`
+  raw faces are already shown regardless of an enclosing sign — a real precedent, not an
+  oversight, but a fidelity gap against `labeled_consts`'s own provenance-transparency intent
+  since `total` itself is unaffected and correct. Status: Needs Review (code-review Minor,
+  disclosed by the implementer, non-blocking).

@@ -139,12 +139,24 @@ pub enum BinOp {
     Div,
 }
 
+/// A constant term. Mirrors `DiceGroup.label` exactly: an optional tag for
+/// chat-embed display only. A bare constant has no dice pool, so `label` is
+/// NEVER threaded into `RollOutcome::by_label`/`compare_labels` — those are
+/// SuccessCount-mode dice-pool comparison features; a labeled `Const` is purely
+/// a Sum-mode display/provenance decoration (see `RollOutcome::labeled_consts`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConstTerm {
+    pub value: i32,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
 /// Roll expression AST. Sum mode folds this to a total; SuccessCount mode ignores
 /// the arithmetic and pools the dice reachable from `Dice` nodes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Expr {
     Dice(DiceGroup),
-    Const(i32),
+    Const(ConstTerm),
     Bin {
         op: BinOp,
         lhs: Box<Expr>,
@@ -295,7 +307,10 @@ mod tests {
                     kind: DieKind::Numeric { min: 1, max: 6 },
                     modifiers: vec![],
                 })),
-                rhs: Box::new(Expr::Const(3)),
+                rhs: Box::new(Expr::Const(ConstTerm {
+                    value: 3,
+                    label: None,
+                })),
             },
             direction: Direction::HighWins,
             mode: Mode::Total(TotalConfig {
@@ -305,6 +320,21 @@ mod tests {
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert_eq!(spec, serde_json::from_str::<RollSpec>(&json).unwrap());
+    }
+
+    #[test]
+    fn const_term_deserializes_with_missing_label_key() {
+        // `#[serde(default)]` on `ConstTerm.label` (mirrors `DiceGroup.label`
+        // exactly): a client/older-persisted-roll payload omitting `label`
+        // must still deserialize, defaulting to `None`.
+        let mut value = serde_json::to_value(ConstTerm {
+            value: 3,
+            label: Some("dex".into()),
+        })
+        .unwrap();
+        value.as_object_mut().unwrap().remove("label");
+        let term: ConstTerm = serde_json::from_value(value).unwrap();
+        assert_eq!(term.label, None);
     }
 
     #[test]

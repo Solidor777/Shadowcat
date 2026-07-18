@@ -76,6 +76,11 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         positive_counter: pos,
         negative_counter: neg,
         symbol_counts,
+        // SuccessCount ignores the AST arithmetic entirely (pools dice by
+        // group membership, not by expression structure), so there is no
+        // notion of a "labeled Const term" here — always empty, mirroring
+        // how this mode never threads a Const's label into by_label either.
+        labeled_consts: Vec::new(),
     }
 }
 

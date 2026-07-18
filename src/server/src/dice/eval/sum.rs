@@ -1,6 +1,6 @@
 use crate::dice::eval::classify;
 use crate::dice::outcome::{RawRoll, RollOutcome};
-use crate::dice::spec::{BinOp, Expr, RollSpec, TotalConfig};
+use crate::dice::spec::{BinOp, ConstTerm, Expr, RollSpec, TotalConfig};
 
 /// Fold the AST to a total. Each `Dice` node contributes the sum of its group's kept
 /// records (matched by `group_index`); a cursor consumes groups in AST order. If
@@ -17,6 +17,8 @@ pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> Rol
             (c.pass, Some(m), c.tier_label, c.tier_value)
         }
     };
+    let mut labeled_consts = Vec::new();
+    collect_labeled_consts(&spec.expr, &mut labeled_consts);
     RollOutcome {
         total,
         records: raws.records.clone(),
@@ -30,6 +32,31 @@ pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> Rol
         positive_counter: 0,
         negative_counter: 0,
         symbol_counts: Default::default(),
+        labeled_consts,
+    }
+}
+
+/// Collects every labeled `Const` term in the expression, in AST left-to-right
+/// order, for chat-embed display (`RollOutcome::labeled_consts`). Mirrors how a
+/// `DieRecord`'s value is shown independent of the arithmetic operator around its
+/// group (e.g. a `1d6 - 1d8` shows both groups' raw positive rolled values, never
+/// negated) — a labeled constant's displayed `value` is likewise its own literal,
+/// unaffected by an enclosing `Neg`/`Bin` operator. Total mode only; SuccessCount
+/// ignores the arithmetic entirely (see `success::evaluate_success`), so this is
+/// never called for that mode.
+fn collect_labeled_consts(expr: &Expr, out: &mut Vec<ConstTerm>) {
+    match expr {
+        Expr::Const(c) => {
+            if c.label.is_some() {
+                out.push(c.clone());
+            }
+        }
+        Expr::Dice(_) => {}
+        Expr::Neg(inner) => collect_labeled_consts(inner, out),
+        Expr::Bin { lhs, rhs, .. } => {
+            collect_labeled_consts(lhs, out);
+            collect_labeled_consts(rhs, out);
+        }
     }
 }
 
@@ -79,7 +106,7 @@ fn mul_saturating(l: i64, r: i64) -> i64 {
 
 fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
     match expr {
-        Expr::Const(c) => *c as i64,
+        Expr::Const(c) => c.value as i64,
         // `i64::MIN.checked_neg()` is `None` (its magnitude has no positive
         // i64 representation); saturate to `i64::MAX` instead of the raw `-`
         // negation, which is checked-overflow (panics) even in release.
@@ -129,7 +156,7 @@ mod tests {
     use crate::dice::notation::{self, ModeKind, ParseContext};
     use crate::dice::rng::NoiseRng;
     use crate::dice::spec::{
-        BinOp, DiceGroup, DieKind, Direction, Expr, Mode, RollSpec, Tier, TotalConfig,
+        BinOp, ConstTerm, DiceGroup, DieKind, Direction, Expr, Mode, RollSpec, Tier, TotalConfig,
     };
 
     fn total_ctx() -> ParseContext {
@@ -161,7 +188,7 @@ mod tests {
             expr: Expr::Bin {
                 op: BinOp::Add,
                 lhs: Box::new(ng(2, 1, 6)),
-                rhs: Box::new(Expr::Const(3)),
+                rhs: Box::new(Expr::Const(ConstTerm { value: 3, label: None })),
             },
             direction: Direction::HighWins,
             mode: total_mode(),
@@ -184,7 +211,7 @@ mod tests {
             expr: Expr::Bin {
                 op: BinOp::Mul,
                 lhs: Box::new(ng(1, 1, 4)),
-                rhs: Box::new(Expr::Const(2)),
+                rhs: Box::new(Expr::Const(ConstTerm { value: 2, label: None })),
             },
             direction: Direction::HighWins,
             mode: total_mode(),
@@ -278,8 +305,8 @@ mod tests {
         let spec = RollSpec {
             expr: Expr::Bin {
                 op: BinOp::Add,
-                lhs: Box::new(Expr::Const(2)),
-                rhs: Box::new(Expr::Const(3)),
+                lhs: Box::new(Expr::Const(ConstTerm { value: 2, label: None })),
+                rhs: Box::new(Expr::Const(ConstTerm { value: 3, label: None })),
             },
             direction: Direction::HighWins,
             mode: total_mode(),
@@ -291,9 +318,53 @@ mod tests {
     }
 
     #[test]
+    fn labeled_bare_constant_surfaces_in_labeled_consts() {
+        // "3[dex]" alone: the root-cause bug (label rejected on a non-dice term)
+        // fixed at the parser; here we verify the fixed shape is ALSO surfaced for
+        // chat-embed rendering, not merely accepted-but-invisible.
+        let spec = notation::parse("3[dex]", total_ctx()).unwrap();
+        let raws = roll(&spec, &mut NoiseRng::from_seed(1));
+        let out = evaluate(&spec, &raws);
+        assert_eq!(out.total, 3);
+        assert_eq!(out.labeled_consts.len(), 1);
+        assert_eq!(out.labeled_consts[0].value, 3);
+        assert_eq!(out.labeled_consts[0].label, Some("dex".to_string()));
+    }
+
+    #[test]
+    fn dice_group_plus_labeled_constant_parses_and_surfaces_both() {
+        // The exact failing case from the e2e report: "1d20 + 3[dex]" must parse
+        // (no longer a trailing-input error) and the labeled constant must show up
+        // in labeled_consts alongside the dice group's own records.
+        let spec = notation::parse("1d20 + 3[dex]", total_ctx()).unwrap();
+        let raws = roll(&spec, &mut NoiseRng::from_seed(1));
+        let out = evaluate(&spec, &raws);
+        assert_eq!(out.records.len(), 1, "the 1d20 group still produces one record");
+        assert_eq!(out.labeled_consts.len(), 1);
+        assert_eq!(out.labeled_consts[0].value, 3);
+        assert_eq!(out.labeled_consts[0].label, Some("dex".to_string()));
+        assert_eq!(out.total, out.records[0].value as i64 + 3);
+    }
+
+    #[test]
+    fn unlabeled_constant_does_not_appear_in_labeled_consts() {
+        let spec = RollSpec {
+            expr: Expr::Const(ConstTerm {
+                value: 7,
+                label: None,
+            }),
+            direction: Direction::HighWins,
+            mode: total_mode(),
+        };
+        let raws = roll(&spec, &mut NoiseRng::from_seed(1));
+        let out = evaluate(&spec, &raws);
+        assert!(out.labeled_consts.is_empty());
+    }
+
+    #[test]
     fn total_no_difficulty_reports_bare_total() {
         let spec = RollSpec {
-            expr: Expr::Const(12),
+            expr: Expr::Const(ConstTerm { value: 12, label: None }),
             direction: Direction::HighWins,
             mode: Mode::Total(TotalConfig {
                 difficulty: None,
@@ -310,7 +381,7 @@ mod tests {
     #[test]
     fn total_with_difficulty_sets_pass_by_direction() {
         let spec_hi = RollSpec {
-            expr: Expr::Const(12),
+            expr: Expr::Const(ConstTerm { value: 12, label: None }),
             direction: Direction::HighWins,
             mode: Mode::Total(TotalConfig {
                 difficulty: Some(10),
@@ -346,7 +417,7 @@ mod tests {
             },
         ];
         let spec = RollSpec {
-            expr: Expr::Const(17),
+            expr: Expr::Const(ConstTerm { value: 17, label: None }),
             direction: Direction::HighWins,
             mode: Mode::Total(TotalConfig {
                 difficulty: Some(10),

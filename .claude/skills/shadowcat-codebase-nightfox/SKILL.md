@@ -6,12 +6,13 @@ description: "Use when touching `@shadowcat/formula` (the framework-neutral expr
 # Shadowcat — Nightfox / `@shadowcat/formula`
 
 Orientation for the shared formula library and the Nightfox rules engine consuming it (M13a
-shipped in this repo; M13b + M13c shipped in the external Nightfox repo — this skill covers all
-three, extended in-place rather than forking a new one per checkpoint). Spec:
-`docs/superpowers/specs/2026-07-15-m13-nightfox-system-design.md` §§3-6 (decisions D2-D4, D7-D14).
-Plans: `docs/superpowers/plans/2026-07-15-m13a-formula-library.md` (library),
+shipped in this repo; M13b + M13c + M13d shipped in the external Nightfox repo — this skill covers
+all four, extended in-place rather than forking a new one per checkpoint). Spec:
+`docs/superpowers/specs/2026-07-15-m13-nightfox-system-design.md` §§3-7 (decisions D2-D4, D7-D14;
+§7 = the roll wire). Plans: `docs/superpowers/plans/2026-07-15-m13a-formula-library.md` (library),
 `docs/superpowers/plans/2026-07-15-m13b-nightfox-headless-rules.md` (rules engine),
-`docs/superpowers/plans/2026-07-16-m13c-nightfox-sheets.md` (sheets).
+`docs/superpowers/plans/2026-07-16-m13c-nightfox-sheets.md` (sheets),
+`docs/superpowers/plans/2026-07-15-m13d-roll-wire.md` (roll wire).
 
 ## Purpose
 
@@ -170,6 +171,56 @@ axes combined. `resolveNightfox` output must deep-equal across all of them. This
 canonical-fold-order fix exists for; a failure here is a Task-4/`resolve.ts` bug, never a test to
 loosen (`[[tests-yield-to-correct-code]]`).
 
+## The roll wire (M13d)
+
+`src/roll.ts` (Nightfox repo) — `buildStatRollContent(resolved: Map<string, ResolvedStat>, block:
+NightfoxBlock, key: string): { content: string } | FormulaError` is the pure builder that turns a
+resolved stat into chat content, posted verbatim through the existing chat seam
+(`WsClient.sendChatMessage`/`SendMessage`). Zero new wire frames, zero server change — the M11d-2
+ingest boundary (`chat/rolls.rs` caps/entropy/validation, see `shadowcat-codebase-chat`/
+`shadowcat-codebase-dice`) remains the only security boundary; this builder is untrusted-input
+producer, not consumer.
+
+- **Pathway:** stat lookup in `block.stats[key]` → rollable-type gate (`number`/`resource` only,
+  D7; `text`/`boolean` or a missing key return a `FormulaError` instead of posting) → template =
+  `stat.roll ?? key` (no authored template = a bare flat-value roll on the stat key itself) →
+  `resolveNotationTemplate(template, statRefResolver(resolved, block))` (M13a/M13b, resolves every
+  bare/dotted reference to its **final** resolved value per the existing resolver scope rules) →
+  on success, `content = "<template> [[<notation>]]"`; on any resolver error (a referenced stat is
+  itself errored, e.g. a broken `formula`), the builder returns that `FormulaError` and never
+  posts.
+- **Verbatim-copy rule:** the builder never rewrites, rounds, or otherwise normalizes the produced
+  notation string — `resolveNotationTemplate` alone owns that (including the count-less-`d` → `1d`
+  normalization the M11 parser requires; the visible template text keeps the user's authored
+  `d20`). A non-integer resolved value (e.g. a `formula` evaluating to `7 / 2`) is a `type` error
+  from the builder rather than a silently-rounded roll — explicit rounding is required upstream.
+- **One-embed-per-message constraint:** the builder emits exactly ONE inline `[[…]]` roll embed per
+  message by construction, trivially satisfying the server's `MAX_INLINE_ROLLS=8` (`chat/rolls.rs`).
+  `MAX_MESSAGE_CHARS=4096` (`chat/mod.rs`) is NOT structurally guaranteed: `resolveNotationTemplate`
+  caps only the pre-substitution template at `@shadowcat/formula`'s `MAX_FORMULA_LENGTH=512`, but
+  each substituted identifier reference expands to `${value}[${originalText}]` with `value`
+  unclamped up to `i32::MAX` — a pathological template packing many large-valued short-named
+  identifier references can push the composed content over 4096 chars. This has no security
+  consequence (the server's own length check still rejects the oversized message — no bypass, just
+  a self-inflicted rejection for a pathological author), but do not assume the cap is unreachable.
+  Never call the builder in a loop to compose a multi-roll message; that is an unenforced-by-this-
+  function caller discipline, not a library-level cap.
+- **Server-side prerequisite this pathway depends on:** the M11 dice notation parser now accepts a
+  trailing `[label]` on ANY atomic factor (a bare `Const` or a `DiceGroup`), not only a dice group
+  — required because `resolveNotationTemplate` substitutes every resolved identifier as a labeled
+  constant (`value[name]`) even when the template has no dice group at all (e.g. `str`'s default
+  flat roll → `4[str]`). See `shadowcat-codebase-dice`'s `ConstTerm`/`labeled_consts` entries for
+  the full mechanism — this skill only needs the one-sentence dependency, not a duplicate
+  description.
+- **Differential proof, not just a unit test:** `e2e/roll-wire.e2e.test.ts` (Nightfox repo,
+  `test:e2e:roll-wire` script) spawns the REAL Rust `test_server` and sends every
+  `buildStatRollContent` output shape through a real `WsClient`, asserting each survives the
+  server's actual chat-ingest pipeline as an accepted `roll_embed` message with zero whispered
+  `System` rejection notices, plus a sanity inversion (a deliberately-broken `[[1d]]` notation)
+  proving the harness can actually detect a real rejection. This is what caught the parser gap
+  above — a pure-unit test against `roll.ts` alone would never have exercised the server's actual
+  grammar.
+
 ## The `@shadowcat/formula` graph-resolver contract (`src/graph.ts`, in this repo)
 
 Load-bearing for anyone writing a new `evalNode` consumer (Nightfox's `resolve.ts` is the first,
@@ -300,6 +351,8 @@ not the only, expected caller):
   into; read it alongside this skill for any sheet-registration work.
 - `docs/POST_WORK_FINDINGS.md` — the external-module i18n-registration-seam gap and the
   `effect`-doc_type-has-no-engine-home gap, both filed at M13c.
-- Once M13d lands (Nightfox repo, `src/`), extend this skill's Nightfox sections in place rather
-  than splitting — this skill is scoped to the whole Nightfox surface (in-repo library +
-  out-of-repo rules engine + sheets + rolls), not just the formula library.
+- M13d (the roll wire — `src/roll.ts`, the differential `e2e/roll-wire.e2e.test.ts`) shipped in
+  place in this skill's "The roll wire (M13d)" section above, per the same in-place-extension
+  convention prior checkpoints established — this skill is scoped to the whole Nightfox surface
+  (in-repo library + out-of-repo rules engine + sheets + rolls), not just the formula library. Any
+  future Nightfox checkpoint (M13e+) should extend here too rather than forking a new skill.
