@@ -66,7 +66,13 @@ on.
   keep-then-reroll are different specs; `label` is an M11b-3 tag propagated onto every `DieRecord`
   this group produces, including exploded/penetrated children — read by
   `RollOutcome::by_label`/`compare_labels`, orthogonal to mode; duplicate labels across groups are
-  NOT an error, they pool under `by_label`), `Expr` (Dice/Const/Bin/Neg). `Direction`
+  NOT an error, they pool under `by_label`), `Expr` (Dice(DiceGroup)/Const(ConstTerm)/Bin/Neg).
+  `ConstTerm{value: i32, label: Option<String>}` mirrors `DiceGroup`'s label field onto a bare
+  constant — the parser's label-consumption (`take_label()`) applies to EITHER atomic factor
+  (a `DiceGroup` or a `Const`), not only dice groups; a labeled constant is Total/Sum-mode
+  display-only provenance (surfaced via `RollOutcome.labeled_consts`, see below) and never feeds
+  `by_label`/`compare_labels` (SuccessCount dice-pool comparison has no pool for a bare constant
+  to join). `Direction`
   (`HighWins`/`LowWins`, `#[default] HighWins`) is a global flip on `RollSpec::direction` orienting
   every margin/tier/crit computation. `Tier{margin_offset, label, tier_value}` is one rung of a
   classification ladder, shared by both modes. `CritTrigger` (M11b-3, replaces M11b-1's bare
@@ -103,8 +109,16 @@ on.
   `crit_fails: i32`, `positive_counter: i32`, `negative_counter: i32`, `symbol_counts:
   BTreeMap<Symbol, i32>` (M11b-3 — per-symbol tallies over KEPT dice, computed UNCONDITIONALLY
   inside `evaluate_success`'s per-die loop regardless of which `SuccessRule` variant is active;
-  empty in Total mode) (all 0/None/empty in Total mode with no `difficulty`, or in SuccessCount
-  with no crit config). `RollOutcome::by_label(&self, label: &str) -> Vec<&DieRecord>` (M11b-3)
+  empty in Total mode), `labeled_consts: Vec<ConstTerm>` (M13d — every labeled bare `Const`
+  reachable in the expression, Total-mode only; `#[serde(default)]` so pre-M13d stored messages
+  still deserialize; `evaluate_success` always sets this to `Vec::new()` since SuccessCount
+  ignores all AST arithmetic; display-only — NOT read by `by_label`/`compare_labels`; the
+  chat wire mirror (`chat-docs.ts` Zod schema) and `MessageCard.svelte` render a labeled const's
+  raw `value` the same way a labeled `DiceGroup`'s die faces are shown, including under an
+  enclosing `Neg`/`Mul` where the displayed value does NOT reflect the operator — same
+  precedent as `DieRecord`'s raw face values ignoring an enclosing sign) (all 0/None/empty in
+  Total mode with no `difficulty`, or in SuccessCount with no crit config).
+  `RollOutcome::by_label(&self, label: &str) -> Vec<&DieRecord>` (M11b-3)
   returns all records — kept AND dropped — carrying that label, in roll order.
   `RollOutcome::compare_labels(&self, a, b) -> Option<Ordering>` (M11b-3) compares two labels by
   the sum of their KEPT records' `value`s; `None` iff either label has zero matching records at
@@ -256,6 +270,13 @@ on.
   (after its modifiers) — a per-group, not per-spec, field. Duplicate labels across different
   groups in the same notation string are NOT a parse error (they pool under `by_label`
   intentionally); only a duplicate `e<N>`/`t<N>`/`cs`/`cf` (shared roll-level state) errors.
+  **(M13d)** label-consumption is a shared `take_label()` helper applied after EITHER atomic
+  factor — a `DiceGroup` or a bare `Const` — not the `Dice` branch alone; a label immediately
+  after a parenthesized/compound sub-expression is still correctly rejected as trailing input
+  (the generalization is scoped to atomic factors only, not the whole grammar). This closed a
+  real bug: `@shadowcat/formula`'s `resolveNotationTemplate` substitutes every resolved
+  identifier as a labeled constant (`value[name]`) even with no dice roll present, and the
+  parser previously rejected any such label not immediately adjacent to a dice group.
 
 ## Hard invariants
 
