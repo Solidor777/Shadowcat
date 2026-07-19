@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, WireActorOwnerRef, WireAudience, SheetRef, SubscriptionHandle, WireSearchHit } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, WireActorOwnerRef, WireAudience, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -27,6 +27,27 @@ export interface ChatApi {
   }): void;
   edit(messageId: string, content: string): void;
   delete(messageId: string): void;
+}
+
+/** Template pull/push/revert/stamp seam (§6.3). Thin orchestration over `store`/`documents` +
+ * `dispatchIntent`; the controller opens the conflict modal when needed. */
+export interface TemplatesApi {
+  /** Deep-clone `source` into a new stamped instance; the caller dispatches the Create. */
+  stampInstance(source: WireDocument, opts: StampOpts): WireDocument;
+  /** Merge the template into the child; opens the modal on conflicts, else dispatches directly. */
+  pull(childId: string): void;
+  /** Push the template to every in-store instance the pusher can see + write. */
+  push(templateId: string): void;
+  /** Reset the child's mergeable bands to the template (keeping placement); refresh base. */
+  revert(childId: string): void;
+  /** In-store instances stamped from `templateId`. */
+  findInstances(templateId: string): WireDocument[];
+  /** Provenance/sync state for the sheet badge. */
+  syncState(childId: string): SyncState;
+  /** Whether the current user may pull/revert this child (owner-or-GM + write caps). */
+  canPull(childId: string): boolean;
+  /** Whether the current user may push this template (owner-or-GM). */
+  canPush(templateId: string): boolean;
 }
 
 export interface AppContext {
@@ -116,6 +137,8 @@ export interface AppContext {
    * correlation id) — the server applies/rejects out-of-band; the composer
    * pre-validates the cheap rejects client-side. */
   chat: ChatApi;
+  /** Template merge seam: stamp + pull/push/revert (M13e). */
+  templates: TemplatesApi;
   /** Leave the current world and return to world-select. */
   leaveWorld: () => void;
   /** Log out of the server session and return to the pre-world (login) view. */

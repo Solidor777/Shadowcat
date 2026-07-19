@@ -95,6 +95,9 @@ export type WireDocument = {
   // Universal display name. Redacts to `null` under a `/name` override.
   name: string | null;
   source: z.infer<typeof SourceSchema> | null;
+  // Opaque mergeable-content snapshot at last sync (`MergeBase`, `./merge`). Present only on
+  // stamped children; absent/undefined otherwise. Server-opaque; the client owns the shape.
+  base?: unknown;
   owner: string | null;
   permissions: z.infer<typeof PermissionSetSchema>;
   embedded: Record<string, WireDocument[]>;
@@ -120,6 +123,7 @@ export const DocumentSchema: z.ZodType<WireDocument> = z.lazy(() =>
     schema_version: int,
     name: z.string().nullable(),
     source: SourceSchema.nullable(),
+    base: z.unknown(),
     owner: z.string().nullable(),
     permissions: PermissionSetSchema,
     embedded: z.record(z.array(DocumentSchema)),

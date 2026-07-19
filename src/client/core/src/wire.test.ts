@@ -337,6 +337,19 @@ describe("DocumentSchema — envelope name + engine band", () => {
     const { name: _name, ...withoutName } = { ...base, name: null, engine: {} };
     expect(DocumentSchema.safeParse(withoutName).success).toBe(false);
   });
+
+  it("parses a document carrying a base snapshot", () => {
+    const parsed = DocumentSchema.parse({
+      ...base, name: "Inst", engine: {},
+      base: { name: "Tmpl", engine: null, system: { hp: 1 }, embedded: {} },
+    });
+    expect((parsed.base as { name: string }).name).toBe("Tmpl");
+  });
+
+  it("parses a document with base absent or null (unstamped)", () => {
+    expect(DocumentSchema.parse({ ...base, name: null, engine: null }).base).toBeUndefined();
+    expect(DocumentSchema.parse({ ...base, name: null, engine: null, base: null }).base).toBeNull();
+  });
 });
 
 describe("wire drift guard — Audience", () => {

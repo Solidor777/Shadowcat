@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, TemplatesController, TemplateModalHost } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
   import { consoleLogger } from "@shadowcat/core";
   import { createSubscriber } from "svelte/reactivity";
@@ -29,6 +29,20 @@
   // Scene "Configure" focus: the browser sets it, GameSettingsPanel reads it. Stable per Table,
   // like `panels`/`sheets`.
   const sceneSelection = new SceneSelection();
+
+  // Template merge controller (M13e): stamp/pull/push/revert orchestration + the conflict modal.
+  // `session` is fixed per Table, so capturing it once here is intended (see the identical
+  // rationale on the `setAppContext` call below).
+  // svelte-ignore state_referenced_locally
+  const templates = new TemplatesController({
+    store: session.store,
+    documents: session.documents,
+    dispatchIntent: (ops) => session.dispatchIntent(ops),
+    role: session.role!,
+    selfId: session.selfId,
+    canEdit: (doc, path) => session.canEdit(doc, path),
+    logger: consoleLogger(),
+  });
 
   // Boot restore (§7): re-open every persisted sheet whose document resolves. Sheets are
   // registered only when their doc is present, so this runs reactively — panels mount
@@ -88,7 +102,18 @@
       await logout();
       navigate({ name: "login" });
     },
+    templates: {
+      stampInstance: (s, opts) => templates.stampInstance(s, opts),
+      pull: (id) => templates.pull(id),
+      push: (id) => templates.push(id),
+      revert: (id) => templates.revert(id),
+      findInstances: (id) => templates.findInstances(id),
+      syncState: (id) => templates.syncState(id),
+      canPull: (id) => templates.canPull(id),
+      canPush: (id) => templates.canPush(id),
+    },
   });
 </script>
 
 <Surface contract="shadowcat.surface:root" />
+<TemplateModalHost controller={templates} />

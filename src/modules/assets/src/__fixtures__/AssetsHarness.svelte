@@ -40,6 +40,16 @@
     setGmViewedScene: () => {},
     searchDocuments: () => Promise.reject(new Error("not connected")),
     sceneSelection: new SceneSelection(),
+    templates: {
+      stampInstance: (s) => s,
+      pull: () => {},
+      push: () => {},
+      revert: () => {},
+      findInstances: () => [],
+      syncState: () => "none",
+      canPull: () => false,
+      canPush: () => false,
+    },
   });
 </script>
 

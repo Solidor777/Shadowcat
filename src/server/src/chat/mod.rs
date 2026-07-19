@@ -293,6 +293,7 @@ pub fn build_message_doc(
         // entire doc lifetime (never set on edit/delete either).
         name: None,
         source: None,
+        base: None,
         owner: Some(user),
         permissions: PermissionSet {
             default,
@@ -2376,6 +2377,7 @@ mod tests {
             schema_version: 1,
             name: None,
             source: None,
+            base: None,
             owner,
             permissions: crate::data::document::PermissionSet::default(),
             embedded: Default::default(),
@@ -2825,6 +2827,7 @@ mod link_preview_ingest_tests {
                 schema_version: 1,
                 name: None,
                 source: None,
+                base: None,
                 owner: Some(gm),
                 permissions: PermissionSet::default(),
                 embedded: BTreeMap::new(),

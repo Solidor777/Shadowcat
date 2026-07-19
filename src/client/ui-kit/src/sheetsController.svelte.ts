@@ -6,6 +6,7 @@
 // cascade, focus, and prune live in the panel manager.
 import { PANEL_CONTRACT, pickSheet, resolveDocRef, type ContributionRegistry, type Logger, type ReadableDocuments, type SheetRef } from "@shadowcat/core";
 import type { PanelsApi } from "./panelsBridge.svelte";
+import SheetHost from "./SheetHost.svelte";
 
 export interface SheetsControllerDeps {
   contributions: ContributionRegistry;
@@ -81,8 +82,8 @@ export class SheetsController {
       {
         id: panelId,
         contract: PANEL_CONTRACT,
-        component,
-        props: { docId, systemPrefix, close: () => this.closeDocument(panelId) },
+        component: SheetHost,
+        props: { docId, systemPrefix, close: () => this.closeDocument(panelId), inner: component },
         panel: { icon: "\u{1F4C4}", labelKey: "sheets.title", defaultPlacement: { kind: "floating" } },
       },
       { module: "sheets" },

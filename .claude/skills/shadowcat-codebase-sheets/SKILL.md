@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-sheets
-description: "Use when touching the Shadowcat sheet registry (M12c): the `shadowcat.sheet:<doc_type>` contract family, `pickSheet`/`resolveDocRef`/`SheetRef`/`SheetTarget` in @shadowcat/core, `ctx.openDocument`, `SheetsController` (dynamic sheet:<docId> panel registration), `setField`/`SystemTreeEditor` (the OCC edit path), or the generic actor/item/fallback sheet modules. Covers src/client/core/src/sheets.ts + src/client/ui-kit/src/{sheetsController.svelte.ts,sheetEdit.ts,SystemTreeEditor.svelte} + src/modules/sheet-{fallback,actor,item}/**. For the panel-manager internals sheets mount into (layout tree, floating placement) invoke shadowcat-codebase-panels. Invoke shadowcat-codebase-core first."
+description: "Use when touching the Shadowcat sheet registry (M12c): the `shadowcat.sheet:<doc_type>` contract family, `pickSheet`/`resolveDocRef`/`SheetRef`/`SheetTarget` in @shadowcat/core, `ctx.openDocument`, `SheetsController` (dynamic sheet:<docId> panel registration, wraps every sheet in `SheetHost`), `setField`/`SystemTreeEditor` (the OCC edit path), or the generic actor/item/fallback sheet modules. Covers src/client/core/src/sheets.ts + src/client/ui-kit/src/{sheetsController.svelte.ts,sheetEdit.ts,SystemTreeEditor.svelte,SheetHost.svelte} + src/modules/sheet-{fallback,actor,item}/**. For the panel-manager internals sheets mount into (layout tree, floating placement) invoke shadowcat-codebase-panels; for the template chrome `SheetHost` renders and the merge engine behind it invoke shadowcat-codebase-templates. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Sheet Registry (document panels)
@@ -56,6 +56,15 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   only resolvable ones — NEVER calls `open()`, relying entirely on the panel manager's own
   late-registration/`placeFromPersistedLocation` path to restore float/dock/minimize state;
   idempotent).
+  - **`#register` (M13e): registers `SheetHost`, not the picked sheet directly.** The picked
+    `component` (from `pickSheet`) is no longer registered as the contribution's own `component`;
+    instead `#register` ALWAYS registers `SheetHost` (`@shadowcat/ui-kit`) as the panel's
+    `component`, forwarding the picked component as `props.inner` alongside `props.docId`/
+    `props.systemPrefix`/`props.close`. `SheetHost` renders `TemplateControls` (the source
+    badge + pull/revert/push chrome, see `shadowcat-codebase-templates`) above `props.inner`, so
+    EVERY sheet — first-party or mod-provided — gets template chrome for free without opting in.
+    Any future sheet-registration change must preserve this wrapper; do not re-register the
+    picked component directly, or every doc_type silently loses its template controls.
 - `src/client/ui-kit/src/appContext.ts` — `AppContext.openDocument(ref: SheetRef): void`, wired in
   `Table.svelte` via a shell-constructed `SheetsController`, called reactively inside a
   `createSubscriber`-backed `$effect` on boot (panels mount before resync fills the store —
@@ -163,3 +172,5 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
 - Relationships: `graphify query "sheets registry openDocument SheetsController resolveDocRef pickSheet setField"`.
 - Panel-manager internals sheets mount into: [[shadowcat-codebase-panels]].
 - Document/permission model + the client-only `item` doc_type: [[shadowcat-codebase-documents-permissions]].
+- `SheetHost`'s `TemplateControls` chrome + the 3-way merge engine it drives (M13e):
+  [[shadowcat-codebase-templates]].

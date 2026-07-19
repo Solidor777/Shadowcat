@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-documents-permissions
-description: "Use when touching Shadowcat documents, permissions, redaction, visibility tiers (all / gm_only / owner_or_gm), per-recipient broadcast filtering, the search index, or the client wire/Zod types. Covers src/server/src/data and its src/client/core wire mirror. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat documents, permissions, redaction, visibility tiers (all / gm_only / owner_or_gm), per-recipient broadcast filtering, the search index, the `Document.base` merge-snapshot field (its authz/size-cap/egress rules — not the client merge algorithm), or the client wire/Zod types. Covers src/server/src/data and its src/client/core wire mirror. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Documents & Permissions
@@ -25,6 +25,15 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   body; `enum Visibility { All, GmOnly, OwnerOrGm }` (the per-property visibility tiers);
   `PermissionSet.gm_role: Option<DocRole>` (`#[serde(default)]`, ts-rs exported) — see Hard
   Invariants below.
+  - `base: Option<serde_json::Value>` (M13e, `#[serde(default)]`, `#[ts(type = "unknown")]`) —
+    the opaque 3-way-merge snapshot the generic templates system stamps onto an instance at
+    stamp/pull/push/revert time (see `shadowcat-codebase-templates` for the client-side
+    `MergeBase` shape/algorithm). Purely a client-owned blob: the server never interprets it.
+    `required_cap_for_path` (`permission.rs`) maps `/base` (and any subtree under it, e.g.
+    `/base/system/hp`) to `cap::WRITE_FIELDS`, the same capability that gates `/name`/`/engine`/
+    `/system` — no dedicated capability. `/source` (the sibling field naming what a document is
+    an instance OF) stays unmapped/immutable — `required_cap_for_path` returns `None` for it, so
+    no write path can ever re-target an existing document at a different template.
 - `src/server/src/data/engine/` (M13-0) — the typed `engine`-band structs + the ingress-validation
   registry, one module per doc-type family (`token.rs`, `scene.rs`, `geometry.rs`,
   `registries.rs`) plus `mod.rs`: `is_engine_doc_type(doc_type) -> bool` (the 17-entry registry:
@@ -53,8 +62,11 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     strip the key** (M13-0 generalized this from a `/system`-only special case) — dropping the key
     would either fail re-deserialization (`system`) or be indistinguishable from a doc that never
     had a name/engine body, breaking the client's stable envelope shape; nested pointers one level
-    down still strip normally.
-  - `redact_change(change, gm_only)` redacts field-level change events on the broadcast path.
+    down still strip normally. `/base` gets the same null-not-strip treatment, but its visibility
+    is NOT driven by `property_overrides` at all — see the `base` egress invariant below.
+  - `redact_change(change, gm_only)` redacts field-level change events on the broadcast path;
+    `collect_hidden` (its companion that builds the `gm_only`/hidden-path list for embedded-depth
+    redaction) applies the same unconditional `/base` policy at every embedded depth.
 - `src/server/src/data/search.rs` — `index_content` (full) vs `index_content_public` (redacted):
   the index is **partitioned by visibility**, not redacted after the fact. Indexes `name ∪ engine
   ∪ system` (M13-0 added `name` and `engine` as leaf sources alongside `system`, same
@@ -63,7 +75,13 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 - `src/server/src/data/{repository.rs,validation.rs}` — `Repository` trait (storage seam; SQLite today, Postgres-capable later) +
   structural validation (size caps, field-path validity, `deny_unknown_fields`); `validation.rs`
   applies the same `MAX_SYSTEM_BYTES` (256 KiB) cap to `engine` as to `system` (M13-0), checked
-  independently per block.
+  independently per block. `base` (M13e) gets the SAME independent size cap
+  (`validate_system_size`'s cap function, shared across all three blocks) but is explicitly
+  `EXEMPT` from `validate_engine_tree` — the tree walker only ever visits `/engine`, never
+  `/base`, because `base` is a historical snapshot that may legitimately hold a stale
+  `engine`/`system` shape from before the current schema (a template edited after an instance
+  stamped from it); running current-schema validation against a deliberately-historical blob
+  would be wrong, not defense-in-depth.
 - `src/server/src/data/sqlite.rs`'s `apply_intent` — Phase-1 OCC pre-image comparison
   (`values_semantically_eq`) is **numeric-variant-aware, not raw equality** (M13-0). Same-variant
   integer pairs (both `PosInt`/`NegInt`) compare EXACTLY as `i128`, no magnitude limit — this never
@@ -141,6 +159,17 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   round-trip (e.g. a server-computed `100.0` comes back over the wire and reparses as `PosInt(100)`,
   which raw `==` would treat as unequal to a stored `100`, causing a spurious `Conflict` on an
   otherwise up-to-date write). See the `sqlite.rs` seam entry above for the exact comparison rule.
+- **`/base`'s egress visibility is hardcoded `OwnerOrGm`, UNCONDITIONAL — never driven by
+  `property_overrides` (M13e).** `filter_properties` and `collect_hidden`/`redact_change` both
+  independently hide `/base` from any recipient who is neither the document's owner nor a GM,
+  regardless of what `permissions.property_overrides` says (a doc author cannot loosen or
+  tighten `/base`'s visibility by setting an override on it — there is none to set). This is
+  load-bearing: `base` is the merge-engine's raw pre-image snapshot of a document's
+  `name`/`engine`/`system`/`embedded` bands, which can itself contain content an ordinary
+  `GmOnly`/`OwnerOrGm` property override elsewhere on the doc was hiding from this same
+  recipient — leaking the snapshot would bypass that override. Any future change to `base`'s
+  redaction must keep both call sites (whole-doc `filter_properties`, broadcast-delta
+  `collect_hidden`) in sync; they are two independent code paths, not one shared chokepoint.
 - **Path-prefix authz covers ancestor (subtree-replacing) writes AND whole-doc Create**, not just
   descendant field updates [[path-prefix-authz-covers-ancestor-and-create]].
 - **Check-then-act across two queries needs one transaction** — TOCTOU-racy even at
@@ -173,3 +202,6 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 - Deferred merge model: [[document-inheritance-merge-model]].
 - `shadowcat-codebase-chat` — the first (and so far only) consumer of `gm_role`, via its
   `Audience` enum's `PermissionSet` mapping (see that skill's Key files & seams).
+- `shadowcat-codebase-templates` — the client-side 3-way merge engine + `TemplatesController`
+  that produces/consumes `base`; this skill owns only the server-side field/authz/redaction/size
+  facts above.

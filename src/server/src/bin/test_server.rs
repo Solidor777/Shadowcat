@@ -62,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
         schema_version: 1,
         name: Some("Player Dragon".into()),
         source: None,
+        base: None,
         owner: Some(player),
         permissions: perms,
         embedded: Default::default(),
@@ -107,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
         schema_version: 1,
         name: Some("Secret Dragon".into()),
         source: None,
+        base: None,
         owner: Some(gm),
         permissions: PermissionSet {
             default: DocRole::None,
