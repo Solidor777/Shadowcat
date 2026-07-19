@@ -43,6 +43,16 @@ pub trait Repository: Send + Sync {
         doc_type: &str,
     ) -> Result<Vec<Document>, DataError>;
 
+    /// All documents in `world` whose `doc_type` is any of `doc_types`, in one
+    /// query. Equivalent to unioning `query_documents` per type, but halves DB
+    /// round-trips when a caller needs several independent doc_type singletons
+    /// at once (e.g. room cold-hydration's four config/actor doc_types).
+    async fn query_documents_by_types(
+        &self,
+        world_id: Uuid,
+        doc_types: &[&str],
+    ) -> Result<Vec<Document>, DataError>;
+
     /// All documents whose `parent_id` equals `parent` (a scene's direct
     /// children). Ordered by id for determinism.
     async fn query_children(&self, parent: Uuid) -> Result<Vec<Document>, DataError>;

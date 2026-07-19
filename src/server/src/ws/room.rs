@@ -11,6 +11,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
+use crate::data::document::Document;
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::DataError;
@@ -734,25 +735,18 @@ impl RoomRegistry {
         // `or_insert_with` closure reflects the DB state it queried; the loser's closure is
         // simply never called). There is no window where the live room's side-tables are stale.
         //
-        // TODO: batch these four query_documents calls into one WHERE doc_type IN (...) query
-        // to halve the DB round-trips on cold room creation.
-        let world_settings = repo
-            .query_documents(world_id, "world-settings")
-            .await?
-            .into_iter()
-            .next();
-        let gradation = repo
-            .query_documents(world_id, "light-gradation")
-            .await?
-            .into_iter()
-            .next();
-        let vision_modes = repo
-            .query_documents(world_id, "vision-modes")
-            .await?
-            .into_iter()
-            .next();
+        let docs = repo
+            .query_documents_by_types(
+                world_id,
+                &["world-settings", "light-gradation", "vision-modes", "actor"],
+            )
+            .await?;
+        let world_settings = docs.iter().find(|d| d.doc_type == "world-settings").cloned();
+        let gradation = docs.iter().find(|d| d.doc_type == "light-gradation").cloned();
+        let vision_modes = docs.iter().find(|d| d.doc_type == "vision-modes").cloned();
+        let actors: Vec<Document> = docs.into_iter().filter(|d| d.doc_type == "actor").collect();
         scene_ecs.set_world_config(world_settings, gradation, vision_modes);
-        scene_ecs.set_actors(repo.query_documents(world_id, "actor").await?);
+        scene_ecs.set_actors(actors);
         let room = self
             .rooms
             .entry(world_id)
@@ -1394,6 +1388,86 @@ mod room_tests {
         assert!(
             mask.iter().any(|s| !s.cells.is_empty()),
             "player lit mask non-empty after cold-start hydration (config + token + light from DB)"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_or_create_batched_query_handles_partial_doc_type_presence() {
+        use serde_json::json;
+        let (repo, world_id, gm) = repo_with_world().await;
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+
+        let reg1 = RoomRegistry::new();
+        let room1 = reg1.get_or_create(&repo, world_id).await.unwrap().unwrap();
+
+        // Only actor + world-settings exist; light-gradation/vision-modes absent.
+        let actor_id = Uuid::from_u128(30);
+        let mut actor = wdoc(world_id, actor_id, "actor");
+        actor.owner = Some(gm.user_id);
+        actor.engine = Some(json!({
+            "displayName": "Fixture Actor",
+            "visual": { "kind": "image", "asset": "a.png" },
+            "size": { "w": 1.0, "h": 1.0 },
+            "shape": "square",
+            "conditions": [],
+            "prototype": true,
+            "vision": [],
+        }));
+        room1
+            .publish(
+                &repo,
+                &gm,
+                vec![Operation::Create { doc: actor }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+        let ws_id = Uuid::from_u128(31);
+        let mut ws = wdoc(world_id, ws_id, "world-settings");
+        ws.owner = Some(gm.user_id);
+        ws.system = json!({
+            "scene": { "losRestriction": true, "fog": true, "lightingEnabled": true,
+                       "lightMode": "environmentLight", "environment": {"color":"#0a0e1a","intensity":0.0},
+                       "observerVision": false, "movementRestriction": "visible", "partialCellLeniency": true },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" } });
+        ws.engine = Some(ws_engine(ws.system.clone()));
+        room1
+            .publish(
+                &repo,
+                &gm,
+                vec![Operation::Create { doc: ws }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+        // A FRESH registry never saw the live publishes: get_or_create must hydrate
+        // world-settings + actor from the DB even though light-gradation/vision-modes
+        // are absent for this world — proving the batched query resolves each doc_type
+        // independently rather than requiring all four to be present.
+        let reg2 = RoomRegistry::new();
+        let room2 = reg2.get_or_create(&repo, world_id).await.unwrap().unwrap();
+        let ecs = room2.scene().read().await;
+
+        assert!(
+            ecs.world_settings_doc().is_some(),
+            "world-settings must hydrate independently"
+        );
+        assert!(
+            ecs.actor(&actor_id).is_some(),
+            "actor must hydrate independently"
+        );
+        assert!(
+            ecs.gradation_doc().is_none(),
+            "absent light-gradation must not error or block others"
+        );
+        assert!(
+            ecs.vision_modes_doc().is_none(),
+            "absent vision-modes must not error or block others"
         );
     }
 

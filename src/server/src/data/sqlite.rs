@@ -1501,6 +1501,33 @@ impl Repository for SqliteRepository {
             .collect()
     }
 
+    async fn query_documents_by_types(
+        &self,
+        world_id: Uuid,
+        doc_types: &[&str],
+    ) -> Result<Vec<Document>, DataError> {
+        if doc_types.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = std::iter::repeat_n("?", doc_types.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT json FROM documents WHERE world_id = ? AND doc_type IN ({placeholders}) ORDER BY id"
+        );
+        // The interpolated segment is only a fixed-count `?, ?, ...` placeholder list built
+        // from `doc_types.len()`, never caller-supplied string content — every actual value
+        // (world_id, each doc_type) is bound as a parameter below, so this is not injectable.
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(world_id.to_string());
+        for doc_type in doc_types {
+            query = query.bind(*doc_type);
+        }
+        let rows = query.fetch_all(&self.pool).await?;
+        rows.into_iter()
+            .map(|r| Ok(serde_json::from_str(r.get::<String, _>("json").as_str())?))
+            .collect()
+    }
+
     async fn query_children(&self, parent: Uuid) -> Result<Vec<Document>, DataError> {
         let rows = sqlx::query("SELECT json FROM documents WHERE parent_id = ? ORDER BY id")
             .bind(parent.to_string())
