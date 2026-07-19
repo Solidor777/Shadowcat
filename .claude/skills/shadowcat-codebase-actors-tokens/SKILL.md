@@ -163,6 +163,10 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   remain forward-looking (M10i/M10j) [[token-architecture-forward-looking]]. Don't bind rendering
   to raw image URLs or assume a token has exactly one static image — always resolve through
   `resolveTokenVisual`, never read `actor.visual`/`token.system.visual` directly.
+- **Token on-scene placement is excluded from template merge (M13e):** `/engine/x`, `/engine/y`,
+  `/engine/rotation` are always instance-owned — never pulled, pushed, reverted, or flagged
+  `template_changed` by the merge engine (`placementExclusions("token")` in `merge.ts`). See
+  `shadowcat-codebase-templates`.
 
 ## Pointers
 

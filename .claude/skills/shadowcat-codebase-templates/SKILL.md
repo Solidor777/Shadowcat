@@ -25,10 +25,12 @@ interprets or merges anything itself.
 - `src/client/core/src/merge.ts` — the pure 3-way diff/merge algorithm, no store/Svelte
   dependency:
   - `structuralDiff(base, now, prefix)` → `Diff[]` (leaf-level added/changed/removed vs base).
-  - `merge3Tree(base, mine, theirs)` → `{ merged, conflicts }` at the tree level: **arrays merge
-    wholesale** (either side's whole-array change wins outright, or conflicts if both changed —
-    arrays have no stable per-element identity to diff), **objects merge key-level** (each key
-    independently: mine-only / theirs-only / both-same / both-different-conflict).
+  - `merge3Tree(base, parentNow, childNow, exclusions)` → `{ merged, conflicts }` at the tree
+    level: **arrays merge wholesale** (either side's whole-array change wins outright, or
+    conflicts if both changed — arrays have no stable per-element identity to diff), **objects
+    merge key-level** (each key independently: parent-only / child-only / both-same /
+    both-different-conflict). `exclusions` drops matching paths from the parent side entirely
+    (never merge, never conflict) — the placement-exclusion mechanism (E8, below).
   - `merge3Embedded(baseChildren, mineChildren, theirsChildren)` — **internal helper, not
     exported from `@shadowcat/core`** (used only inside `merge3`); correlates embedded children
     across base/mine/theirs **by `source.id`, never by array index or embedded-array position**
@@ -36,8 +38,9 @@ interprets or merges anything itself.
     children, so `source.id` is the only stable cross-side key. Handles instance-added
     (mine-only, kept) and base-missing (fail-safe: kept, not silently dropped) cases; a
     correlated triple with a real conflict is kept pending, not merged.
-  - `merge3(base: MergeBase, parentNow, childNow)` → `MergePlan { mergedBands, conflicts:
-    Conflict[] }` — the top-level entry point: merges `name`/`engine`/`system` bands plus
+  - `merge3(base: MergeBase, parentNow: WireDocument, childNow: WireDocument, exclusions:
+    string[])` → `MergePlan { mergedBands, conflicts: Conflict[] }` — the top-level entry point:
+    merges `name`/`engine`/`system` bands (via `merge3Tree`, forwarding `exclusions`) plus
     `embedded` (via `merge3Embedded`) in one pass.
   - `restampSubtree(doc)` — deep-clones a document tree for use as a fresh `base`/instance
     (guards against the aliasing hazard in `[[embedded-copy-needs-deep-clone]]`).
@@ -47,20 +50,32 @@ interprets or merges anything itself.
     paths that are always instance-owned and never merged/pulled/pushed (e.g. a token's on-scene
     `x`/`y`) — checked by every pull/revert/push computation in `templates.ts`, not re-derived
     per call site.
-  - Types: `Diff`, `Conflict` (`{ path, base, mine, theirs }`), `MergeBase` (the `base` snapshot
-    shape: `{ name, engine, system, embedded }`), `MergeBands` (the merged-band result shape),
-    `EmbeddedBaseChild`, `MergePlan`.
+  - Types: `Diff`, `Conflict` (`{ path, base, parent, child, parentKind: "set" | "delete" }` —
+    `parent`/`child` are `undefined` when that side deleted the key; `parentKind` records how
+    "take template" resolves it. Conceptually `parent`≈"theirs" (the template) and `child`≈"mine"
+    (the instance), but the field names on the type are `parent`/`child`, not `mine`/`theirs`),
+    `MergeBase` (the `base` snapshot shape: `{ name, engine, system, embedded }`), `MergeBands`
+    (the merged-band result shape), `EmbeddedBaseChild`, `MergePlan`.
 - `src/client/core/src/templates.ts` — the stamp/sync operations built on `merge.ts`:
   - `snapshotBase(doc) -> MergeBase` — takes the `base` snapshot from a document's current
     mergeable bands (called at stamp time and after every successful pull/push/revert).
   - `stampInstance(source, opts: StampOpts) -> WireDocument` — clones `source` into a new
-    instance: sets `source: { id: source.id, ... }`, `base: snapshotBase(source)`, deep-clones
-    via `restampSubtree`.
+    instance: sets `source: { id: source.id, ... }`, deep-clones embedded children via
+    `restampSubtree`, then assigns `stamped.base = snapshotBase(stamped)` — a snapshot of the
+    ASSEMBLED new instance (post-clone, with its fresh `id`/`scope`/`owner`/`source`), not a
+    direct call against `source`. The mergeable content (`name`/`engine`/`system`/`embedded`) is
+    equivalent either way since it's cloned verbatim from `source`, but the call target is the
+    stamped document, not the template.
   - `computePull(child, template) -> MergePlan` / `computeRevert(child, template) ->
     WireOperation` — pull = 3-way merge (child's local edits + template's edits, base = child's
     stored `base`); revert = discard local edits, reset to template's current state.
   - `planToUpdate(child, template, mergedBands) -> WireOperation` — turns a resolved
-    `MergeBands` into ONE `Update` op with a fresh `base` (`snapshotBase` of the merged result).
+    `MergeBands` into ONE `Update` op, refreshing `/base` to `snapshotBase(template)` — the
+    TEMPLATE's current snapshot, not a snapshot of the merged result. This is deliberate: it
+    makes `syncState`, run immediately after this op lands, compare the child's new stored
+    `base` against the template's CURRENT state and correctly read `up_to_date` rather than
+    falsely `template_changed` (a merged-result snapshot would already differ from the
+    template's live state the instant the template changes again, or in edge cases immediately).
     **Emits whole-band `FieldChange`s (`/name`, `/engine`, `/system`, `/embedded/<coll>/<idx>`),
     never per-leaf changes** — the server's `set_pointer` (`command.rs`) cannot delete a key or
     shrink/grow an array via a leaf-path Update, so a merge result that removes a key or changes
@@ -81,11 +96,15 @@ interprets or merges anything itself.
   (`pending: PendingSession | null`, a `$state` the `TemplateModalHost` renders) when a plan has
   conflicts, and dispatches the resolved `WireOperation` via the injected `dispatchIntent`.
   Methods: `stampInstance`, `findInstances`, `syncState`, `canPull`, `canPush`, `pull`, `push`,
-  `revert`, `cancel`. `canPull`/`canPush` gate on `role === "gm" || doc.owner === selfId` AND the
-  injected `canEdit(doc, "/base")`/`canEdit(doc, "/system")` (an advisory client-side mirror of
-  the server's real authority). `push` additionally filters `findInstances`' same-world result by
-  per-instance `canEdit` before splitting into dispatch-now (no conflicts) vs. conflict-modal
-  groups (E9: same-world see+write, not just same-world see).
+  `revert`, `cancel`. `canPull(childId)` gates on `isOwnerOrGm(child)` (`role === "gm" ||
+  doc.owner === selfId`) AND the injected `canEdit(child, "/base")` AND `canEdit(child,
+  "/system")` (an advisory client-side mirror of the server's real authority). `canPush
+  (templateId)` gates only on `isOwnerOrGm(template)` AND `findInstances(templateId).length > 0`
+  — it does NOT call `canEdit` at the predicate level. `push` itself DOES per-instance-filter by
+  `canEdit(inst, "/base")`/`canEdit(inst, "/system")` when actually pushing, additionally
+  filtering `findInstances`' same-world result before splitting into dispatch-now (no conflicts)
+  vs. conflict-modal groups (E9: same-world see+write, not just same-world see) — so the
+  write-scope check lives in `push`'s body, not in `canPush`'s predicate.
 - `src/client/ui-kit/src/MergeConflictModal.svelte` (+ `TemplateModalHost.svelte`) — the
   field-level conflict resolution UI (E5/§6.2): renders one `ConflictGroup` per pending child
   (`{ key, label, conflicts: Conflict[] }`), lets the user pick mine/theirs per leaf path, and
