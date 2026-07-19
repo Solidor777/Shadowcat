@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { DocumentStore, ContributionRegistry, PANEL_CONTRACT, silentLogger, envelope, sheetContract } from "@shadowcat/core";
 import { SheetsController } from "./sheetsController.svelte";
+import SheetHost from "./SheetHost.svelte";
 import type { PanelsApi } from "./panelsBridge.svelte";
 
 function fakePanels(): PanelsApi & { opened: string[]; closed: string[]; focused: string[] } {
@@ -23,7 +24,8 @@ describe("SheetsController.openDocument", () => {
     const { contributions, panels, ctrl } = seed();
     ctrl.openDocument({ docId: "a1" });
     const reg = contributions.contributionsFor(PANEL_CONTRACT).find((c) => c.id === "sheet:a1");
-    expect(reg?.component).toBe("ACTOR");
+    expect(reg?.component).toBe(SheetHost);
+    expect((reg?.props as { inner: unknown }).inner).toBe("ACTOR");
     expect(reg?.panel?.defaultPlacement).toEqual({ kind: "floating" });
     expect((reg?.props as { systemPrefix: string }).systemPrefix).toBe("/system");
     expect(panels.opened).toEqual(["sheet:a1"]);
@@ -78,7 +80,8 @@ describe("SheetsController.restoreFromPersisted", () => {
     documents.applyCommand({ seq: 2, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: token }] });
     ctrl.restoreFromPersisted({ expanded: { floating: [{ id: "sheet:t2/embedded/actor/0", rect: {}, z: 0 }] } });
     const reg = contributions.contributionsFor(PANEL_CONTRACT).find((c) => c.id === "sheet:t2/embedded/actor/0");
-    expect(reg?.component).toBe("ACTOR");
+    expect(reg?.component).toBe(SheetHost);
+    expect((reg?.props as { inner: unknown }).inner).toBe("ACTOR");
     expect(panels.opened).toEqual([]);
   });
 });
