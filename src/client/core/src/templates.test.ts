@@ -92,4 +92,48 @@ describe("stampInstance", () => {
     const inst = stampInstance(tmpl, opts);
     expect(inst.source).toEqual({ id: "T", pack: "nightfox", version: 1 });
   });
+
+  it("does not inherit the template's own provenance pack when the template itself is world-scoped", () => {
+    // The template is itself an instance of a compendium item, so its own `source.pack` is set —
+    // but that provenance belongs to the TEMPLATE, not to this stamp.
+    const tmpl = doc({ id: "T", scope: { kind: "world", world_id: "w1" }, source: { id: "orig", pack: "nightfox", version: 3 } });
+    const inst = stampInstance(tmpl, opts);
+    expect(inst.source).toEqual({ id: "T", pack: null, version: 3 });
+  });
+
+  it("gives the stamped instance fresh created_at/updated_at, not the template's", () => {
+    const tmpl = doc({ id: "T", name: "Old" });
+    (tmpl as { created_at: number }).created_at = 12345;
+    (tmpl as { updated_at: number }).updated_at = 12345;
+    const inst = stampInstance(tmpl, opts);
+    expect(inst.created_at).not.toBe(tmpl.created_at);
+    expect(inst.updated_at).not.toBe(tmpl.updated_at);
+    expect(inst.created_at).toBeGreaterThan(tmpl.created_at);
+    expect(inst.updated_at).toBeGreaterThan(tmpl.updated_at);
+  });
+
+  it("clones opts.permissions rather than aliasing the caller's object", () => {
+    const tmpl = doc({ id: "T" });
+    const perms: WireDocument["permissions"] = {
+      default: "none",
+      users: { u1: "owner" },
+      property_overrides: {},
+      capabilities: { by_role: {}, by_user: {} },
+      gm_role: null,
+    };
+    const inst = stampInstance(tmpl, { ...opts, permissions: perms });
+    perms.users.u1 = "observer";
+    expect(inst.permissions.users.u1).toBe("owner");
+  });
+
+  it("deep-clone independence holds 2 levels deep (grandchild)", () => {
+    const grandchild = doc({ id: "gc", system: { deep: { v: 1 } } });
+    const child = doc({ id: "tc", system: { v: 1 }, embedded: { items: [grandchild] } });
+    const tmpl = doc({ id: "T", embedded: { items: [child] } });
+    const inst = stampInstance(tmpl, opts);
+    const instChild = inst.embedded.items[0];
+    const instGrandchild = instChild.embedded.items[0];
+    (grandchild.system as { deep: { v: number } }).deep.v = 99;
+    expect((instGrandchild.system as { deep: { v: number } }).deep.v).toBe(1);
+  });
 });

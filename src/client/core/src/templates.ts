@@ -52,17 +52,24 @@ export function snapshotBase(doc: WireDocument): MergeBase {
 export function stampInstance(source: WireDocument, opts: StampOpts): WireDocument {
   const clone = structuredClone(source) as WireDocument;
   const embedded: Record<string, WireDocument[]> = {};
-  for (const [coll, kids] of Object.entries(clone.embedded)) embedded[coll] = kids.map(restampSubtree);
-  const pack = source.scope.kind === "compendium" ? source.scope.pack : (source.source?.pack ?? null);
+  // `restampSubtree` already deep-clones whatever it's handed; mapping it directly over
+  // `source.embedded` avoids a redundant whole-subtree clone via `clone.embedded`.
+  for (const [coll, kids] of Object.entries(source.embedded)) embedded[coll] = kids.map(restampSubtree);
+  // Non-compendium case is unconditionally null (matches `restampSubtree`'s identical convention):
+  // `source.source?.pack` is the TEMPLATE's own unrelated provenance, not this stamp's.
+  const pack = source.scope.kind === "compendium" ? source.scope.pack : null;
+  const now = Date.now();
   const stamped: WireDocument = {
     ...clone,
     id: crypto.randomUUID(),
     scope: { kind: "world", world_id: opts.worldId },
     owner: opts.ownerId,
-    permissions: opts.permissions ?? defaultPerms(),
+    permissions: opts.permissions ? structuredClone(opts.permissions) : defaultPerms(),
     parent_id: opts.parentId,
     source: { id: source.id, pack, version: source.source?.version ?? 1 },
     embedded,
+    created_at: now,
+    updated_at: now,
   };
   stamped.base = snapshotBase(stamped);
   return stamped;
