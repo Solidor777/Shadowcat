@@ -1052,6 +1052,11 @@ impl Repository for SqliteRepository {
         // server authority over write policy stays with the GM/operator, never
         // community module code (ARCHITECTURE invariant 6).
         let world_reqs = self.world_cap_requirements(world_id).await?;
+        // Loaded before the transaction (like `world_cap_requirements` above):
+        // the single-writer pool would deadlock on a mid-tx settings query.
+        // This is the GM-controlled tier-2 structural schema registry; the
+        // writer never supplies its own judging schema.
+        let world_schemas = self.world_schema_declarations(world_id).await?;
         let mut tx = self.pool.begin().await?;
 
         // Phase 1 — authorize, structurally validate, and check pre-images.
@@ -1067,6 +1072,7 @@ impl Repository for SqliteRepository {
                     validation::validate_system_size(doc)?;
                     validation::validate_property_overrides(doc)?;
                     validation::validate_engine_tree(doc)?;
+                    validation::validate_system_schema_tree(doc, &world_schemas)?;
                     // A self-referential parent_id satisfies the self-FK and
                     // commits, then poisons the doc's deletion (the descendant
                     // walk would loop). Reject it; and when the parent already
@@ -1406,6 +1412,10 @@ impl Repository for SqliteRepository {
                     // `doc.engine` in place to the re-serialized validated
                     // struct — see `validate_engine_tree`'s doc comment).
                     validation::validate_engine_tree(&mut doc)?;
+                    // Tier-2 structural schema gate on the MERGED post-image
+                    // (existing row + applied `FieldChange`s), matching
+                    // `validate_engine_tree` above: never the pre-image.
+                    validation::validate_system_schema_tree(&doc, &world_schemas)?;
                     doc.updated_at = ts;
                     Self::upsert_document(&mut tx, &doc, seq).await?;
 
@@ -5452,5 +5462,163 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn apply_intent_create_violating_system_schema_is_rejected_and_seq_untouched() {
+        use crate::data::document::SchemaDeclaration;
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        // Register: actor /system/mechanics requires object with numeric `version`.
+        let decls = vec![SchemaDeclaration {
+            module_id: "nightfox".into(),
+            version: "1".into(),
+            schema_format: 1,
+            doc_type: "actor".into(),
+            subtree_pointer: "/system/mechanics".into(),
+            schema: serde_json::from_value(serde_json::json!({
+                "type": "object", "required": ["version"],
+                "properties": { "version": { "type": "number" } }
+            }))
+            .unwrap(),
+        }];
+        r.set_world_schema_declarations(w.id, &decls).await.unwrap();
+        let seq_before = r.get_world(w.id).await.unwrap().unwrap().seq;
+
+        // A Create whose /system/mechanics.version is a string violates the schema.
+        let doc = world_doc(
+            1,
+            w.id,
+            serde_json::json!({ "mechanics": { "version": "oops" } }),
+        );
+        let err = r
+            .apply_intent(
+                &gm_ctx,
+                w.id,
+                vec![Operation::Create { doc }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::SchemaViolation { .. }));
+        // Rejected intent consumes no seq (transaction dropped).
+        let seq_after = r.get_world(w.id).await.unwrap().unwrap().seq;
+        assert_eq!(seq_before, seq_after);
+    }
+
+    #[tokio::test]
+    async fn apply_intent_create_conforming_system_schema_succeeds() {
+        use crate::data::document::SchemaDeclaration;
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let decls = vec![SchemaDeclaration {
+            module_id: "nightfox".into(),
+            version: "1".into(),
+            schema_format: 1,
+            doc_type: "actor".into(),
+            subtree_pointer: "/system/mechanics".into(),
+            schema: serde_json::from_value(serde_json::json!({
+                "type": "object", "required": ["version"],
+                "properties": { "version": { "type": "number" } }
+            }))
+            .unwrap(),
+        }];
+        r.set_world_schema_declarations(w.id, &decls).await.unwrap();
+        let doc = world_doc(
+            1,
+            w.id,
+            serde_json::json!({ "mechanics": { "version": 2 } }),
+        );
+        assert!(r
+            .apply_intent(
+                &gm_ctx,
+                w.id,
+                vec![Operation::Create { doc }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn apply_intent_update_violating_system_schema_is_rejected_and_seq_untouched() {
+        use crate::data::document::SchemaDeclaration;
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let decls = vec![SchemaDeclaration {
+            module_id: "nightfox".into(),
+            version: "1".into(),
+            schema_format: 1,
+            doc_type: "actor".into(),
+            subtree_pointer: "/system/mechanics".into(),
+            schema: serde_json::from_value(serde_json::json!({
+                "type": "object", "required": ["version"],
+                "properties": { "version": { "type": "number" } }
+            }))
+            .unwrap(),
+        }];
+        r.set_world_schema_declarations(w.id, &decls).await.unwrap();
+
+        // Create a conforming actor with /system/mechanics = { version: 1 }.
+        let doc = world_doc(
+            1,
+            w.id,
+            serde_json::json!({ "mechanics": { "version": 1 } }),
+        );
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: doc.clone() }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let seq_before = r.get_world(w.id).await.unwrap().unwrap().seq;
+        let update = Operation::Update {
+            doc_id: doc.id,
+            changes: vec![FieldChange {
+                path: "/system/mechanics/version".into(),
+                old: serde_json::json!(1),
+                new: serde_json::json!("oops"),
+            }],
+        };
+        let err = r
+            .apply_intent(&gm_ctx, w.id, vec![update], 2, WriteOrigin::Client)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::SchemaViolation { .. }));
+        let seq_after = r.get_world(w.id).await.unwrap().unwrap().seq;
+        assert_eq!(seq_before, seq_after);
     }
 }
