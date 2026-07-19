@@ -88,6 +88,7 @@ impl Fixture {
                 schema_version: 1,
                 name: None,
                 source: None,
+                base: None,
                 owner: Some(gm),
                 permissions: PermissionSet::default(),
                 embedded: BTreeMap::new(),

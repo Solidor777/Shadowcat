@@ -214,8 +214,10 @@ pub struct Document {
     /// Opaque snapshot of this child's mergeable content (`name`/`engine`/`system`/
     /// `embedded`) at last sync (stamp or a successful pull/push/revert). Present only
     /// on stamped children. The server NEVER interprets it: exempt from
-    /// `validate_engine_tree`, size-capped by `validate_system_size`, and writable at
-    /// `/base` under `cap::WRITE_FIELDS`. Client-owned shape (`MergeBase`, `@shadowcat/core`).
+    /// `validate_engine_tree` (the tree walker only ever visits `engine`); will be
+    /// size-capped by `validate_system_size` and writable at `/base` under
+    /// `cap::WRITE_FIELDS` (see follow-up task). Client-owned shape (`MergeBase`,
+    /// `@shadowcat/core`).
     #[serde(default)]
     #[ts(type = "unknown")]
     pub base: Option<serde_json::Value>,

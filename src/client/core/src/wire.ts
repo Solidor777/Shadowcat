@@ -123,9 +123,7 @@ export const DocumentSchema: z.ZodType<WireDocument> = z.lazy(() =>
     schema_version: int,
     name: z.string().nullable(),
     source: SourceSchema.nullable(),
-    // `.nullish()` accepts absent (unstamped) OR explicit null, matching the server's
-    // `Option` field; a present snapshot is passed through opaque (`z.unknown()`).
-    base: z.unknown().nullish(),
+    base: z.unknown(),
     owner: z.string().nullable(),
     permissions: PermissionSetSchema,
     embedded: z.record(z.array(DocumentSchema)),
