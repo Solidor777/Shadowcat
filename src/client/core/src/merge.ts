@@ -2,6 +2,7 @@
 // the merge is computed here and applied as an ordinary batched `Update` (M13e). Every value
 // is plain JSON (objects recurse key-by-key, arrays are opaque leaves, scalars are leaves).
 import { setPointer, getPointer } from "./store";
+import type { WireDocument } from "./wire";
 
 /** One structural change between two JSON trees at an RFC-6901 pointer. */
 export type Diff =
@@ -171,4 +172,189 @@ export function merge3Tree(
 export function takeTemplate(root: unknown, c: Conflict): void {
   if (c.parentKind === "delete") deletePointer(root, c.path);
   else setPointer(root, c.path, c.parent);
+}
+
+/** The mergeable bands of a live document; `embedded` children are full documents (envelope
+ * preserved). Produced by `merge3`, written whole-band by `planToUpdate`. */
+export type MergeBands = {
+  name: string | null;
+  engine: unknown;
+  system: unknown;
+  embedded: Record<string, WireDocument[]>;
+};
+
+/** One embedded child inside a `base` snapshot: bands + the `sourceId` correlation key (the
+ * child's `source.id` at sync time — the template child's id). Recurses (finite-depth embedding). */
+export type EmbeddedBaseChild = {
+  sourceId: string;
+  name: string | null;
+  engine: unknown;
+  system: unknown;
+  embedded: Record<string, EmbeddedBaseChild[]>;
+};
+
+/** The opaque `Document.base` snapshot shape (client-owned). Top-level bands + recursive
+ * embedded content keyed for provenance correlation. */
+export type MergeBase = {
+  name: string | null;
+  engine: unknown;
+  system: unknown;
+  embedded: Record<string, EmbeddedBaseChild[]>;
+};
+
+/** Result of a 3-way merge: the child-wins-default merged bands + the conflicts to resolve. */
+export type MergePlan = { mergedBands: MergeBands; conflicts: Conflict[] };
+
+/** Per-`doc_type` instance-local paths that never merge (E8). */
+export function placementExclusions(docType: string): string[] {
+  return docType === "token" ? ["/engine/x", "/engine/y", "/engine/rotation"] : [];
+}
+
+/** Deep-clone `doc` into a new subtree: fresh `id`, `source` pointing at the template (`doc.id`),
+ * recursively for every embedded child. Used to stamp a template-added embedded child into an
+ * instance. Deep-clone independence is load-bearing ([[embedded-copy-needs-deep-clone]]). */
+export function restampSubtree(doc: WireDocument): WireDocument {
+  const out = structuredClone(doc) as WireDocument;
+  out.id = crypto.randomUUID();
+  out.source = { id: doc.id, pack: null, version: doc.source?.version ?? 1 };
+  const embedded: Record<string, WireDocument[]> = {};
+  for (const [coll, kids] of Object.entries(doc.embedded)) embedded[coll] = kids.map(restampSubtree);
+  out.embedded = embedded;
+  return out;
+}
+
+/** The three synthetic-tree bands as one object, so `merge3Tree` addresses `/name`, `/engine/*`,
+ * `/system/*` at exactly the document's real pointers. */
+function bandsTree(name: string | null, engine: unknown, system: unknown): Record<string, unknown> {
+  return { name, engine: engine ?? null, system: system ?? null };
+}
+
+/** MergeBase-shaped bands of a live embedded child (for the recursive 3-way base). */
+function baseFromChild(b: EmbeddedBaseChild): MergeBase {
+  return { name: b.name, engine: b.engine, system: b.system, embedded: b.embedded };
+}
+
+/** Bands of a live document as a MergeBase (no sourceId at the top). */
+function bandsMergeBase(d: WireDocument): MergeBase {
+  const emb: Record<string, EmbeddedBaseChild[]> = {};
+  for (const [coll, kids] of Object.entries(d.embedded)) {
+    emb[coll] = kids.map((k) => ({
+      sourceId: k.source?.id ?? k.id,
+      name: k.name,
+      engine: k.engine ?? null,
+      system: k.system ?? null,
+      embedded: bandsMergeBase(k).embedded,
+    }));
+  }
+  return { name: d.name, engine: d.engine ?? null, system: d.system ?? null, embedded: emb };
+}
+
+/** Whether an instance child's bands are unchanged versus its base record. */
+function childUnchangedVsBase(child: WireDocument, b: EmbeddedBaseChild): boolean {
+  return structuralDiff(
+    { name: b.name, engine: b.engine, system: b.system, embedded: b.embedded },
+    bandsMergeBase(child),
+  ).length === 0;
+}
+
+function applyMergedBands(child: WireDocument, bands: MergeBands): WireDocument {
+  return { ...child, name: bands.name, engine: bands.engine, system: bands.system, embedded: bands.embedded };
+}
+
+function prefixConflicts(conflicts: Conflict[], coll: string, idx: number): Conflict[] {
+  const p = `/embedded/${coll}/${idx}`;
+  return conflicts.map((c) => ({ ...c, path: `${p}${c.path}` }));
+}
+
+/** 3-way merge of the embedded collections, correlating instance↔template children by
+ * `source.id`↔`id` (E7), using `base.embedded[coll][*].sourceId` as the membership record. */
+function merge3Embedded(
+  base: Record<string, EmbeddedBaseChild[]>,
+  parentEmbedded: Record<string, WireDocument[]>,
+  childEmbedded: Record<string, WireDocument[]>,
+): { merged: Record<string, WireDocument[]>; conflicts: Conflict[] } {
+  const merged: Record<string, WireDocument[]> = {};
+  const conflicts: Conflict[] = [];
+  const colls = new Set([...Object.keys(base), ...Object.keys(parentEmbedded), ...Object.keys(childEmbedded)]);
+  for (const coll of [...colls].sort()) {
+    const baseKids = base[coll] ?? [];
+    const parentKids = parentEmbedded[coll] ?? [];
+    const childKids = childEmbedded[coll] ?? [];
+    const templateById = new Map(parentKids.map((t) => [t.id, t]));
+    const baseBySource = new Map(baseKids.map((b) => [b.sourceId, b]));
+    const out: WireDocument[] = [];
+
+    // Pass 1: walk instance children in order.
+    for (const cd of childKids) {
+      const sid = cd.source?.id ?? null;
+      const correlated = sid !== null && (templateById.has(sid) || baseBySource.has(sid));
+      if (!correlated) {
+        out.push(structuredClone(cd)); // instance-added → keep (cloned; never alias childNow's live tree)
+        continue;
+      }
+      const t = sid !== null ? templateById.get(sid) : undefined;
+      const b = sid !== null ? baseBySource.get(sid) : undefined;
+      if (t) {
+        if (b) {
+          const idx = out.length;
+          const plan = merge3(baseFromChild(b), t, cd, placementExclusions(cd.doc_type));
+          out.push(applyMergedBands(cd, plan.mergedBands));
+          conflicts.push(...prefixConflicts(plan.conflicts, coll, idx));
+        } else {
+          // base-missing matched → keep instance (fail-safe; no 3-way base); cloned so the
+          // result never aliases childNow's live tree.
+          out.push(structuredClone(cd));
+        }
+        continue;
+      }
+      // template absent, base present → template-deleted this correlation
+      if (b) {
+        if (childUnchangedVsBase(cd, b)) continue; // drop
+        const idx = out.length;
+        out.push(structuredClone(cd)); // kept pending resolution; cloned, never aliases childNow
+        conflicts.push({
+          path: `/embedded/${coll}/${idx}`,
+          base: b.system,
+          parent: undefined,
+          // `cd.system` is a live reference into `childNow`'s object graph; clone at the
+          // crossing point into `Conflict` per the `merge3Tree` `child` convention.
+          child: structuredClone(cd.system ?? null),
+          parentKind: "delete",
+        });
+      }
+    }
+
+    // Pass 2: template-added children (in template, absent from base, no instance copy).
+    for (const t of parentKids) {
+      if (baseBySource.has(t.id)) continue;
+      if (childKids.some((cd) => cd.source?.id === t.id)) continue;
+      out.push(restampSubtree(t));
+    }
+
+    merged[coll] = out;
+  }
+  return { merged, conflicts };
+}
+
+/** Full 3-way merge over the mergeable bands (`name`+`engine`+`system` tree + `embedded`).
+ * `exclusions` apply to the top-level doc; embedded children use their own doc_type exclusions.
+ * Pure + order-independent. Conflicts default to the child ("keep mine") in `mergedBands`. */
+export function merge3(
+  base: MergeBase,
+  parentNow: WireDocument,
+  childNow: WireDocument,
+  exclusions: string[],
+): MergePlan {
+  const tree = merge3Tree(
+    bandsTree(base.name, base.engine, base.system),
+    bandsTree(parentNow.name, parentNow.engine ?? null, parentNow.system),
+    bandsTree(childNow.name, childNow.engine ?? null, childNow.system),
+    exclusions,
+  );
+  const m = tree.merged as { name: string | null; engine: unknown; system: unknown };
+  const emb = merge3Embedded(base.embedded, parentNow.embedded, childNow.embedded);
+  return {
+    mergedBands: { name: m.name, engine: m.engine, system: m.system, embedded: emb.merged },
+    conflicts: [...tree.conflicts, ...emb.conflicts],
+  };
 }

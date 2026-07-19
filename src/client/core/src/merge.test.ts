@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { structuralDiff, deletePointer, deepEqual } from "./merge";
 import { merge3Tree, takeTemplate, isPlacementExcluded, type Conflict } from "./merge";
+import { merge3, restampSubtree, placementExclusions, type MergeBase } from "./merge";
+import type { WireDocument } from "./wire";
 
 describe("deepEqual", () => {
   it("compares objects key-order-independently and arrays positionally", () => {
@@ -206,5 +208,124 @@ describe("isPlacementExcluded", () => {
     expect(isPlacementExcluded("/engine/x/deep", ["/engine/x"])).toBe(true);
     expect(isPlacementExcluded("/engine/xylophone", ["/engine/x"])).toBe(false);
     expect(isPlacementExcluded("/engine/y", ["/engine/x"])).toBe(false);
+  });
+});
+
+function doc(over: Partial<WireDocument> & { id: string }): WireDocument {
+  return {
+    id: over.id,
+    scope: over.scope ?? { kind: "world", world_id: "w1" },
+    doc_type: over.doc_type ?? "actor",
+    schema_version: 1,
+    name: over.name ?? null,
+    source: over.source ?? null,
+    owner: over.owner ?? null,
+    permissions: { default: "none", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
+    embedded: over.embedded ?? {},
+    parent_id: over.parent_id ?? null,
+    engine: over.engine,
+    system: over.system ?? {},
+    created_at: 0,
+    updated_at: 0,
+  };
+}
+
+/** MergeBase snapshot of a document's bands (test helper mirroring snapshotBase). */
+function baseOf(d: WireDocument): MergeBase {
+  const emb: MergeBase["embedded"] = {};
+  for (const [coll, kids] of Object.entries(d.embedded)) {
+    emb[coll] = kids.map((k) => ({
+      sourceId: k.source?.id ?? k.id,
+      name: k.name,
+      engine: k.engine ?? null,
+      system: k.system ?? null,
+      embedded: baseOf(k).embedded,
+    }));
+  }
+  return { name: d.name, engine: d.engine ?? null, system: d.system ?? null, embedded: emb };
+}
+
+describe("placementExclusions", () => {
+  it("excludes token placement, nothing for other doc types", () => {
+    expect(placementExclusions("token")).toEqual(["/engine/x", "/engine/y", "/engine/rotation"]);
+    expect(placementExclusions("actor")).toEqual([]);
+  });
+});
+
+describe("restampSubtree", () => {
+  it("assigns a fresh id + source pointing to the template, recursively", () => {
+    const child = doc({ id: "gc", name: "GC" });
+    const parent = doc({ id: "tmpl", name: "T", embedded: { items: [child] } });
+    const stamped = restampSubtree(parent);
+    expect(stamped.id).not.toBe("tmpl");
+    expect(stamped.source).toEqual({ id: "tmpl", pack: null, version: 1 });
+    const sc = stamped.embedded.items[0];
+    expect(sc.id).not.toBe("gc");
+    expect(sc.source).toEqual({ id: "gc", pack: null, version: 1 });
+  });
+});
+
+describe("merge3 embedded", () => {
+  it("matched child recurses; a disjoint system change auto-merges", () => {
+    const instChild = doc({ id: "ic", source: { id: "tc", pack: null, version: 1 }, system: { hp: 1 } });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: { items: [instChild] } });
+    const base = baseOf(child); // captured at stamp: instChild@hp:1
+    const tmplChild2 = doc({ id: "tc", system: { hp: 5 } }); // template changed hp
+    const template2 = doc({ id: "T", embedded: { items: [tmplChild2] } });
+    const { mergedBands, conflicts } = merge3(base, template2, child, []);
+    expect(conflicts).toEqual([]);
+    expect((mergedBands.embedded.items[0].system as { hp: number }).hp).toBe(5);
+    expect(mergedBands.embedded.items[0].id).toBe("ic"); // instance envelope preserved
+  });
+
+  it("template-added child is stamped into the instance", () => {
+    const template = doc({ id: "T", embedded: { items: [doc({ id: "new-tc", system: { k: 1 } })] } });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: { items: [] } });
+    const base = baseOf(child); // no items at stamp
+    const { mergedBands } = merge3(base, template, child, []);
+    expect(mergedBands.embedded.items).toHaveLength(1);
+    expect(mergedBands.embedded.items[0].source).toEqual({ id: "new-tc", pack: null, version: 1 });
+    expect(mergedBands.embedded.items[0].id).not.toBe("new-tc");
+  });
+
+  it("instance-added child (no correlation) is preserved", () => {
+    const template = doc({ id: "T", embedded: { items: [] } });
+    const localChild = doc({ id: "local", system: { own: true } });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: { items: [localChild] } });
+    const base: MergeBase = { name: null, engine: null, system: {}, embedded: { items: [] } };
+    const { mergedBands, conflicts } = merge3(base, template, child, []);
+    expect(conflicts).toEqual([]);
+    expect(mergedBands.embedded.items.map((c) => c.id)).toEqual(["local"]);
+  });
+
+  it("template-deleted + instance unchanged removes the child", () => {
+    const instChild = doc({ id: "ic", source: { id: "tc", pack: null, version: 1 }, system: { hp: 1 } });
+    const template = doc({ id: "T", embedded: { items: [] } }); // template dropped tc
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: { items: [instChild] } });
+    const base = baseOf(child); // base had tc@hp:1
+    const { mergedBands } = merge3(base, template, child, []);
+    expect(mergedBands.embedded.items).toHaveLength(0);
+  });
+
+  it("template-deleted + instance modified is a conflict", () => {
+    const instChild = doc({ id: "ic", source: { id: "tc", pack: null, version: 1 }, system: { hp: 9 } });
+    const template = doc({ id: "T", embedded: { items: [] } });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: { items: [instChild] } });
+    const base: MergeBase = { name: null, engine: null, system: {}, embedded: { items: [{ sourceId: "tc", name: null, engine: null, system: { hp: 1 }, embedded: {} }] } };
+    const { conflicts } = merge3(base, template, child, []);
+    expect(conflicts).toEqual([
+      { path: "/embedded/items/0", base: { hp: 1 }, parent: undefined, child: { hp: 9 }, parentKind: "delete" },
+    ]);
+  });
+
+  it("recurses 2 levels of embedding", () => {
+    const gcInst = doc({ id: "gci", source: { id: "gc", pack: null, version: 1 }, system: { deep: 1 } });
+    const tcInst = doc({ id: "tci", source: { id: "tc", pack: null, version: 1 }, embedded: { sub: [gcInst] } });
+    const template = doc({ id: "T", embedded: { items: [doc({ id: "tc", embedded: { sub: [doc({ id: "gc", system: { deep: 7 } })] } })] } });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: { items: [tcInst] } });
+    const base = baseOf(child);
+    const { mergedBands, conflicts } = merge3(base, template, child, []);
+    expect(conflicts).toEqual([]);
+    expect((mergedBands.embedded.items[0].embedded.sub[0].system as { deep: number }).deep).toBe(7);
   });
 });
