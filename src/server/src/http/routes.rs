@@ -16,8 +16,8 @@ use crate::auth::session::{AdminUser, AuthUser, SessionUser};
 use crate::auth::setup::{create_admin, now_millis};
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use crate::data::document::{
-    CapabilityRequirement, Cardinality, ContractDeclaration, Document, Scope, World,
-    WorldCapDefaults, WorldRole,
+    AdditionalProperties, CapabilityRequirement, Cardinality, ContractDeclaration, Document,
+    Schema, SchemaDeclaration, SchemaType, Scope, World, WorldCapDefaults, WorldRole,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
@@ -765,6 +765,182 @@ pub async fn set_world_contract_declarations(
     state
         .repo
         .set_world_contract_declarations(world, &decls)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Upper bound on schema declarations stored per world (parsed on every write,
+/// broadcast in `Welcome`). Sized like `MAX_CONTRACT_DECLARATIONS`.
+const MAX_SCHEMA_DECLARATIONS: usize = 256;
+/// Upper bound on nodes in a single schema type-tree (backstops a pathological
+/// declaration; the size cap already bounds the DATA, this bounds the SCHEMA).
+const MAX_SCHEMA_NODES: usize = 512;
+/// Upper bound on schema type-tree nesting depth.
+const MAX_SCHEMA_DEPTH: usize = 16;
+/// The single schema-format vocabulary version this server understands (F7). A
+/// future vocabulary bump increments this and the set endpoint rejects formats
+/// it does not know, so a format bump can never be silently half-enforced.
+const SCHEMA_FORMAT_V1: u32 = 1;
+
+/// Structurally validate one schema type-tree node (M13f tier-2), fail-closed:
+/// bounded depth/node-count and cross-field legality (a node's non-`type` keys
+/// must match its `type`). serde's `deny_unknown_fields` already rejected unknown
+/// keys and bad `type` values at deserialize; this rejects a well-typed-but-
+/// nonsensical node (e.g. `items` on an object, `properties` on an array).
+fn validate_schema(s: &Schema, depth: usize, budget: &mut usize) -> Result<(), AppError> {
+    if depth > MAX_SCHEMA_DEPTH {
+        return Err(AppError::Unprocessable(format!(
+            "schema nesting exceeds max depth {MAX_SCHEMA_DEPTH}"
+        )));
+    }
+    if *budget == 0 {
+        return Err(AppError::Unprocessable(format!(
+            "schema exceeds max node count {MAX_SCHEMA_NODES}"
+        )));
+    }
+    *budget -= 1;
+
+    let has_object_keys =
+        s.properties.is_some() || s.required.is_some() || s.additional_properties.is_some();
+    let has_array_keys = s.items.is_some();
+
+    match s.ty {
+        None => {
+            // `{}` (any): must carry no other constraint keys.
+            if has_object_keys || has_array_keys || s.nullable.is_some() {
+                return Err(AppError::Unprocessable(
+                    "a typeless schema node ({}) must have no other keys".into(),
+                ));
+            }
+        }
+        Some(SchemaType::Object) => {
+            if has_array_keys {
+                return Err(AppError::Unprocessable(
+                    "'items' is only valid on an array schema".into(),
+                ));
+            }
+            if let Some(props) = &s.properties {
+                for sub in props.values() {
+                    validate_schema(sub, depth + 1, budget)?;
+                }
+            }
+            if let Some(AdditionalProperties::Schema(sub)) = &s.additional_properties {
+                validate_schema(sub, depth + 1, budget)?;
+            }
+        }
+        Some(SchemaType::Array) => {
+            if has_object_keys {
+                return Err(AppError::Unprocessable(
+                    "'properties'/'required'/'additionalProperties' are only valid on an object schema"
+                        .into(),
+                ));
+            }
+            if let Some(items) = &s.items {
+                validate_schema(items, depth + 1, budget)?;
+            }
+        }
+        Some(SchemaType::String | SchemaType::Number | SchemaType::Boolean | SchemaType::Null) => {
+            if has_object_keys || has_array_keys {
+                return Err(AppError::Unprocessable(
+                    "a scalar schema node accepts only 'type' and 'nullable'".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate a world's schema declaration set (M13f tier-2 set-time gate),
+/// fail-closed — the server is the consistency authority. Mirrors
+/// `validate_contract_declarations`: bounded count, non-empty module_id/version,
+/// unique module_id, understood schema_format, strict `/system/…` pointers, no
+/// duplicate/overlapping `(doc_type, pointer)`, and each schema a well-formed
+/// type-tree.
+fn validate_schema_declarations(decls: &[SchemaDeclaration]) -> Result<(), AppError> {
+    use std::collections::HashSet;
+    if decls.len() > MAX_SCHEMA_DECLARATIONS {
+        return Err(AppError::Unprocessable(format!(
+            "too many schema declarations (max {MAX_SCHEMA_DECLARATIONS})"
+        )));
+    }
+    let mut seen_modules: HashSet<&str> = HashSet::new();
+    for d in decls {
+        if d.module_id.is_empty() || d.version.is_empty() {
+            return Err(AppError::Unprocessable(
+                "schema declaration module_id and version must be non-empty".into(),
+            ));
+        }
+        if !seen_modules.insert(d.module_id.as_str()) {
+            return Err(AppError::Unprocessable(format!(
+                "duplicate module_id '{}'",
+                d.module_id
+            )));
+        }
+        if d.schema_format != SCHEMA_FORMAT_V1 {
+            return Err(AppError::Unprocessable(format!(
+                "unsupported schema_format {} (server understands {SCHEMA_FORMAT_V1})",
+                d.schema_format
+            )));
+        }
+        // Pointer must be a strict `/system/…` descendant: guards content only,
+        // never the whole `system` body (bare `/system` re-introduces the
+        // deny_unknown_fields-on-system problem the band split avoids), and never
+        // `/engine`, `/permissions`, `/name`, or the envelope. Mirrors the
+        // `set_world_cap_requirements` writable-namespace check, narrowed.
+        let p = &d.subtree_pointer;
+        if !p.starts_with("/system/") || p.ends_with('/') || p.contains("//") {
+            return Err(AppError::Unprocessable(format!(
+                "subtree_pointer '{p}' must be a strict /system/… descendant"
+            )));
+        }
+        let mut budget = MAX_SCHEMA_NODES;
+        validate_schema(&d.schema, 0, &mut budget)?;
+    }
+    // No two entries for one doc_type whose pointers are equal or where one is a
+    // prefix of the other (ambiguous authority: which schema governs the nested
+    // value?). Prefix test: `a` covers `b` iff `b == a` or `b` starts with
+    // `a` + "/".
+    for (i, a) in decls.iter().enumerate() {
+        for b in &decls[i + 1..] {
+            if a.doc_type != b.doc_type {
+                continue;
+            }
+            let (x, y) = (&a.subtree_pointer, &b.subtree_pointer);
+            let overlaps =
+                x == y || y.starts_with(&format!("{x}/")) || x.starts_with(&format!("{y}/"));
+            if overlaps {
+                return Err(AppError::Unprocessable(format!(
+                    "overlapping schema pointers '{x}' and '{y}' for doc_type '{}'",
+                    a.doc_type
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A world's structural schema declarations. GM/admin only.
+pub async fn get_world_schema_declarations(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+) -> Result<Json<Vec<SchemaDeclaration>>, AppError> {
+    require_gm(&state, &user, world).await?;
+    Ok(Json(state.repo.world_schema_declarations(world).await?))
+}
+
+/// Replace a world's structural schema declarations. GM/admin only; validated.
+pub async fn set_world_schema_declarations(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+    Json(decls): Json<Vec<SchemaDeclaration>>,
+) -> Result<StatusCode, AppError> {
+    require_gm(&state, &user, world).await?;
+    validate_schema_declarations(&decls)?;
+    state
+        .repo
+        .set_world_schema_declarations(world, &decls)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

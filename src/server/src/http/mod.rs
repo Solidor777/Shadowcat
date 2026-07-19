@@ -98,6 +98,10 @@ pub async fn router(state: AppState) -> Router {
             get(routes::get_world_contract_declarations)
                 .put(routes::set_world_contract_declarations),
         )
+        .route(
+            "/api/worlds/{id}/schemas",
+            get(routes::get_world_schema_declarations).put(routes::set_world_schema_declarations),
+        )
         .route("/api/modules", get(module_routes::list_installed_modules))
         .route(
             "/modules/{id}/{*path}",
@@ -1036,6 +1040,122 @@ pub(crate) mod tests {
         let slash = serde_json::json!([{ "path_prefix": "/system/vision/", "caps": ["x:y"] }]);
         gm.put(&format!("/api/worlds/{world_id}/capability-requirements"))
             .json(&slash)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn schema_declarations_gm_crud_and_validation() {
+        let state = initialized_state().await;
+        seed_user(&state, "gm").await;
+        let player_id = seed_user(&state, "pl").await;
+        let gm = login_server(&state, "gm").await;
+        let pl = login_server(&state, "pl").await;
+
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "W" }))
+            .await
+            .json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+        gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": player_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        let base = format!("/api/worlds/{world_id}/schemas");
+
+        // Non-GM cannot read or write.
+        pl.get(&base).await.assert_status(StatusCode::FORBIDDEN);
+        pl.put(&base)
+            .json(&serde_json::json!([]))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        // GM: empty set is valid; default read is empty.
+        gm.put(&base)
+            .json(&serde_json::json!([]))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let got: Vec<serde_json::Value> = gm.get(&base).await.json();
+        assert!(got.is_empty());
+
+        // Valid declaration accepted.
+        let ok = serde_json::json!([{
+            "module_id": "nightfox", "version": "1.0.0", "schema_format": 1,
+            "doc_type": "actor", "subtree_pointer": "/system/stats",
+            "schema": { "type": "object", "additionalProperties": { "type": "object",
+                "properties": { "kind": { "type": "string" } } } }
+        }]);
+        gm.put(&base)
+            .json(&ok)
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // Pointer not a strict /system descendant -> rejected.
+        for bad_ptr in ["/engine/vision", "/permissions", "/name", "", "/system"] {
+            let body = serde_json::json!([{
+                "module_id": "m", "version": "1", "schema_format": 1, "doc_type": "actor",
+                "subtree_pointer": bad_ptr, "schema": { "type": "object" }
+            }]);
+            gm.put(&base)
+                .json(&body)
+                .await
+                .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+
+        // Overlapping pointers on one doc_type -> rejected.
+        let overlap = serde_json::json!([
+            { "module_id": "a", "version": "1", "schema_format": 1, "doc_type": "actor",
+              "subtree_pointer": "/system/stats", "schema": { "type": "object" } },
+            { "module_id": "b", "version": "1", "schema_format": 1, "doc_type": "actor",
+              "subtree_pointer": "/system/stats/str", "schema": { "type": "object" } }
+        ]);
+        gm.put(&base)
+            .json(&overlap)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Duplicate module_id -> rejected.
+        let dup_mod = serde_json::json!([
+            { "module_id": "a", "version": "1", "schema_format": 1, "doc_type": "actor",
+              "subtree_pointer": "/system/x", "schema": {} },
+            { "module_id": "a", "version": "2", "schema_format": 1, "doc_type": "actor",
+              "subtree_pointer": "/system/y", "schema": {} }
+        ]);
+        gm.put(&base)
+            .json(&dup_mod)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Unknown schema_format -> rejected.
+        let bad_fmt = serde_json::json!([{
+            "module_id": "m", "version": "1", "schema_format": 999, "doc_type": "actor",
+            "subtree_pointer": "/system/x", "schema": {}
+        }]);
+        gm.put(&base)
+            .json(&bad_fmt)
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Malformed schema (unknown key) -> deserialize fails -> 4xx (not 204).
+        let malformed = serde_json::json!([{
+            "module_id": "m", "version": "1", "schema_format": 1, "doc_type": "actor",
+            "subtree_pointer": "/system/x", "schema": { "type": "string", "enum": ["a"] }
+        }]);
+        assert_ne!(
+            gm.put(&base).json(&malformed).await.status_code(),
+            StatusCode::NO_CONTENT
+        );
+
+        // Cross-field-illegal schema (items on an object) -> rejected by validate_schema.
+        let cross = serde_json::json!([{
+            "module_id": "m", "version": "1", "schema_format": 1, "doc_type": "actor",
+            "subtree_pointer": "/system/x",
+            "schema": { "type": "object", "items": { "type": "number" } }
+        }]);
+        gm.put(&base)
+            .json(&cross)
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     }
