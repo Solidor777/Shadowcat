@@ -307,7 +307,7 @@ impl SqliteRepository {
             "SELECT m.user_id, u.username, m.role \
              FROM world_members m JOIN users u ON u.id = m.user_id \
              WHERE m.world_id = ? \
-             ORDER BY u.username",
+             ORDER BY u.username COLLATE NOCASE",
         )
         .bind(world.to_string())
         .fetch_all(&self.pool)
@@ -1966,6 +1966,36 @@ mod tests {
         let members = r.list_members(w.id).await.unwrap();
         let names: Vec<&str> = members.iter().map(|(_, name, _)| name.as_str()).collect();
         assert_eq!(names, vec!["abby", "mona", "zeke"]);
+    }
+
+    #[tokio::test]
+    async fn list_members_orders_case_insensitively() {
+        let r = repo().await;
+        let gm = r
+            .create_user("Bob", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let alice = r
+            .create_user("alice", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let charlie = r
+            .create_user("Charlie", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        r.add_member(w.id, alice, WorldRole::Player).await.unwrap();
+        r.add_member(w.id, charlie, WorldRole::Player)
+            .await
+            .unwrap();
+
+        let members = r.list_members(w.id).await.unwrap();
+        let names: Vec<&str> = members.iter().map(|(_, name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["alice", "Bob", "Charlie"],
+            "case-insensitive order: alice before Bob before Charlie"
+        );
     }
 
     #[tokio::test]
