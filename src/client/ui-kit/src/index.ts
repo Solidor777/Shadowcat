@@ -20,3 +20,7 @@ export { SheetsController } from "./sheetsController.svelte";
 export type { SheetsControllerDeps } from "./sheetsController.svelte";
 export { default as MergeConflictModal } from "./MergeConflictModal.svelte";
 export type { ConflictGroup } from "./MergeConflictModal.svelte";
+export { TemplatesController } from "./templatesController.svelte";
+export type { TemplatesControllerDeps, PendingSession } from "./templatesController.svelte";
+export { default as TemplateModalHost } from "./TemplateModalHost.svelte";
+export type { TemplatesApi } from "./appContext";

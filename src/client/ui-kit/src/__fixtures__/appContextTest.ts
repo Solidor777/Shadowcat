@@ -44,6 +44,16 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     setGmViewedScene: over.setGmViewedScene ?? (() => {}),
     searchDocuments: over.searchDocuments ?? (() => Promise.reject(new Error("not connected"))),
     sceneSelection: over.sceneSelection ?? new SceneSelection(),
+    templates: over.templates ?? {
+      stampInstance: (s) => s,
+      pull: () => {},
+      push: () => {},
+      revert: () => {},
+      findInstances: () => [],
+      syncState: () => "none",
+      canPull: () => false,
+      canPush: () => false,
+    },
   };
   return new Map([[__APP_CONTEXT_KEY__, ctx]]);
 }
