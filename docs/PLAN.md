@@ -1323,6 +1323,12 @@ Decomposed **M11a–d**:
 > engine-level, own sub-spec; closes the deferred document-inheritance model) → **M13f**
 > (declarative server-side schema registry, subtree-scoped, data-only enforcement — own
 > sub-spec; invariant 6 intact).
+>
+> **M13f — Server declarative schema registry (tier-2 structural validation): DONE.**
+> GM-controlled per-world SchemaDeclaration registry ((doc_type, /system/… pointer) → Schema
+> type-tree), enforced read-only in apply_intent (Create P1 / Update P2) via
+> validate_system_schema_tree; rejection rides the existing rejected-intent path
+> (DataError::SchemaViolation, no new wire frame); broadcast in Welcome for parity.
 - Purpose: (1) a playable generic system (stats, derived formulas, rolls to chat, items/effects
   modifying stats, template documents); (2) the reference implementation for system builders —
   built only against public seams, every friction point logged as an API bug report; second

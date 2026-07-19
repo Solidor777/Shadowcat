@@ -82,6 +82,21 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   `engine`/`system` shape from before the current schema (a template edited after an instance
   stamped from it); running current-schema validation against a deliberately-historical blob
   would be wrong, not defense-in-depth.
+- `data/validation.rs::validate_system_schema_tree` (M13f, tier-2) — a read-only recursive
+  `system`-band structural gate, run beside (not instead of) `validate_engine_tree`.
+  `validate_value_against_schema(value, schema) -> Result<(), SchemaMismatch>` is the pure
+  accept/reject matcher over the type-tree grammar. Types: `Schema`/`SchemaType`/
+  `AdditionalProperties`/`SchemaDeclaration` (`data/document.rs`). Set-time authority:
+  `http/routes.rs::validate_schema_declarations` (strict `/system/…`-descendant
+  `subtree_pointer`, per-`doc_type` overlap/dup rejection, `schema_format` version gate via
+  `SCHEMA_FORMAT_V1`, and resource bounds `MAX_SCHEMA_DECLARATIONS`/`MAX_SCHEMA_NODES`/
+  `MAX_SCHEMA_DEPTH`), reached only through the GM-only `GET`/`PUT /api/worlds/{id}/schemas`
+  pair (`routes::get_world_schema_declarations`/
+  `set_world_schema_declarations`). Registry storage: `Repository::world_schema_declarations`/
+  `set_world_schema_declarations` (`data/sqlite.rs`), a per-world settings row keyed by
+  `world_schemas_key(world)` — same storage shape as other world-settings singletons, not a new
+  table. Broadcast: `ServerMsg::Welcome.schema_declarations` (parity only; the client never
+  enforces from it, see the Hard Invariants entry below).
 - `src/server/src/data/sqlite.rs`'s `apply_intent` — Phase-1 OCC pre-image comparison
   (`values_semantically_eq`) is **numeric-variant-aware, not raw equality** (M13-0). Same-variant
   integer pairs (both `PosInt`/`NegInt`) compare EXACTLY as `i128`, no magnitude limit — this never
@@ -90,6 +105,14 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   by a `|n| <= 2^53` exactness guard (`MAX_EXACT_F64_INT`) — outside that range a mixed-variant
   pair is unconditionally unequal, never a false-positive OCC pass. Recurses through
   `Object`/`Array` structure; any non-Number mismatch falls back to serde's derived `PartialEq`.
+  `apply_intent` is also the tier-2 enforcement chokepoint: `validate_system_schema_tree` runs
+  immediately after `validate_engine_tree`, at BOTH call sites — Create (Phase-1, against the
+  new document) and Update (Phase-2, against the merged post-image: existing row + applied
+  `FieldChange`s, never the pre-image) — recursing through embedded children by their own
+  `doc_type` exactly as `validate_engine_tree` does. A violation returns `Err` before the
+  transaction commits, so the per-world seq counter is NOT consumed on rejection, and surfaces
+  to the client via the pre-existing rejected-intent path (`DataError::SchemaViolation { pointer,
+  reason }`) — no new wire frame.
 - `src/client/core/src/wire.ts` — Zod mirror: `VisibilitySchema = z.enum(["all","gm_only",
   "owner_or_gm"])`, `property_overrides`. ts-rs generates the TS types from the Rust source.
 - `src/client/core/src/scene-docs.ts` — `ITEM_DOC_TYPE = "item"`, `ItemSystem`, `buildItemDoc`
@@ -170,6 +193,27 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   recipient — leaking the snapshot would bypass that override. Any future change to `base`'s
   redaction must keep both call sites (whole-doc `filter_properties`, broadcast-delta
   `collect_hidden`) in sync; they are two independent code paths, not one shared chokepoint.
+- **Tier-2 (M13f) validates the `system` band's SHAPE only, never values — it EXTENDS invariant 6
+  (three-band document shape), it does not replace it.** `engine`-band validation
+  (`validate_engine`/`validate_engine_tree`) remains the separate, pre-existing REAL semantic
+  ingress gate for the 17 engine-defined doc types (see the `engine ingress validation` invariant
+  above); tier-2 is the `system`-band's analogous but strictly structural enforcement floor. The
+  declarable `Schema` type-tree grammar (`type`/`properties`/`required`/`items`/
+  `additionalProperties`/`nullable` — no `enum`, no numeric/string bounds, no `pattern`, no
+  `anyOf`/`oneOf`/combinators, ever) cannot express a value rule by construction, so it can never
+  become a semantic gate no matter what a GM configures; `additionalProperties` is closed by
+  default (`None` behaves as `Bool(false)`, matching JSON Schema's spec-divergent-but-documented
+  default here). Value legality stays where it always was: tier-1 (client-side Zod, per module)
+  plus fail-closed readers. The server still runs no third-party code and never interprets what a
+  `system` value MEANS — only whether its declared SHAPE matches.
+- **The document writer NEVER supplies the schema that judges it.** The `SchemaDeclaration`
+  registry is GM-controlled per-world state, set only through the GM-only
+  `/api/worlds/{id}/schemas` endpoint pair (`require_gm`), loaded once before the `apply_intent`
+  transaction and enforced read-only against Create/Update post-images — an ordinary writer has no
+  path to alter the schema that will judge their own write. The Welcome-broadcast
+  `schema_declarations` is informational parity only (lets a client preemptively validate/UX-hint)
+  and carries zero enforcement authority; the server-side `apply_intent` load is the only copy
+  that matters.
 - **Path-prefix authz covers ancestor (subtree-replacing) writes AND whole-doc Create**, not just
   descendant field updates [[path-prefix-authz-covers-ancestor-and-create]].
 - **Check-then-act across two queries needs one transaction** — TOCTOU-racy even at
@@ -196,7 +240,9 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 
 - Rationale: `docs/design/M2-data-foundation.md`; invariants in `docs/design/ARCHITECTURE.md`
   §2 invariant 4 (per-recipient permissions) + invariant 6 (three-band document shape) + §6 (data
-  model). M13-0 design: `docs/superpowers/specs/2026-07-15-m13-0-document-shape-design.md`.
+  model). M13-0 design: `docs/superpowers/specs/2026-07-15-m13-0-document-shape-design.md`. M13f
+  (tier-2 structural schema registry) design:
+  `docs/superpowers/specs/2026-07-18-m13f-server-schema-registry-design.md`.
 - Relationships: `graphify query "document permissions redaction filter_properties can_see"`,
   `graphify path "permission.rs" "search.rs"`.
 - Deferred merge model: [[document-inheritance-merge-model]].
