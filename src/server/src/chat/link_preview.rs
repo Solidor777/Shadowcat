@@ -113,6 +113,15 @@ fn extract_href_urls(html: &str) -> Vec<String> {
 /// the cache's TTL — both must be consistent with the caller's clock but are
 /// deliberately separate types/precisions, matching each dependency's own
 /// clock source.
+/// Borrow-bundle of the three link-preview dependencies threaded through
+/// `handle_send_message`/`handle_edit_message`, replacing three positional
+/// params with one. Not stored — constructed inline at each call site.
+pub struct LinkPreviewDeps<'a> {
+    pub client: &'a reqwest::Client,
+    pub cache: &'a LinkPreviewCache,
+    pub rate: &'a PreviewRateLimiter,
+}
+
 pub async fn enrich(
     segments: &mut Vec<Segment>,
     client: &reqwest::Client,

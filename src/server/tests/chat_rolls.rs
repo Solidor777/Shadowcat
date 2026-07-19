@@ -7,7 +7,8 @@
 
 use shadowcat::chat::{
     build_link_preview_client, handle_edit_message, handle_send_message, Audience,
-    LinkPreviewCache, MessageEngine, MessageKind, PreviewRateLimiter, Segment, SendMessageError,
+    LinkPreviewCache, LinkPreviewDeps, MessageEngine, MessageKind, PreviewRateLimiter, Segment,
+    SendMessageError,
 };
 use shadowcat::data::command::{Command, Operation};
 use shadowcat::data::document::{Document, WorldRole};
@@ -87,9 +88,11 @@ impl Fixture {
             &self.repo,
             &self.alice,
             &self.rate,
-            &self.preview_client,
-            &self.preview_cache,
-            &self.preview_rate,
+            LinkPreviewDeps {
+                client: &self.preview_client,
+                cache: &self.preview_cache,
+                rate: &self.preview_rate,
+            },
             "all".into(),
             content.into(),
             None,
@@ -264,9 +267,11 @@ async fn edit_of_roll_message_is_immutable() {
         &f.repo,
         &f.alice,
         &f.rate,
-        &f.preview_client,
-        &f.preview_cache,
-        &f.preview_rate,
+        LinkPreviewDeps {
+            client: &f.preview_client,
+            cache: &f.preview_cache,
+            rate: &f.preview_rate,
+        },
         id,
         "/roll 1d20".into(),
         2,
@@ -288,9 +293,11 @@ async fn edit_into_roll_is_rejected() {
         &f.repo,
         &f.alice,
         &f.rate,
-        &f.preview_client,
-        &f.preview_cache,
-        &f.preview_rate,
+        LinkPreviewDeps {
+            client: &f.preview_client,
+            cache: &f.preview_cache,
+            rate: &f.preview_rate,
+        },
         id,
         "/roll 1d6".into(),
         2,
@@ -323,9 +330,11 @@ async fn edit_content_with_inline_span_stays_literal_text() {
         &f.repo,
         &f.alice,
         &f.rate,
-        &f.preview_client,
-        &f.preview_cache,
-        &f.preview_rate,
+        LinkPreviewDeps {
+            client: &f.preview_client,
+            cache: &f.preview_cache,
+            rate: &f.preview_rate,
+        },
         id,
         "[[1d6]]".into(),
         2,
