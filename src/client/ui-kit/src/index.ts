@@ -18,3 +18,5 @@ export { setField } from "./sheetEdit";
 export { default as SystemTreeEditor } from "./SystemTreeEditor.svelte";
 export { SheetsController } from "./sheetsController.svelte";
 export type { SheetsControllerDeps } from "./sheetsController.svelte";
+export { default as MergeConflictModal } from "./MergeConflictModal.svelte";
+export type { ConflictGroup } from "./MergeConflictModal.svelte";
