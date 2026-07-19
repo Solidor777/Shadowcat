@@ -386,6 +386,9 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - Hot enable/disable of installed modules without a client reload (M13-1 §2).
 - Module marketplace/registry, signing, or update channels (M13-1 §2).
 
+## Docs / milestone tracking (M13f)
+- TODO: `docs/PLAN.md` marks M13a and M13f done with their own entries but never gave M13e (templates/`base` field/3-way merge engine) its own `**M13e DONE**` entry — M13e's work is fully merged and documented in the `shadowcat-codebase-documents-permissions` skill, just missing the PLAN.md roadmap entry other M13 sub-milestones get. Add the missing M13e entry alongside M13f's. (Surfaced by the M13f Task 9 reviewed skill-update gate.)
+
 ## Server / backups (M12.5)
 - TODO: Per-world granular export/import (sharing a single world between server instances without a whole-database snapshot) — M12.5 ships whole-server snapshot/restore only. Real complexity (world-scoped row subset while preserving referential integrity across cross-table FKs, shared asset references, admin/global tables) deferred as a distinct future feature, not required for the dogfood-alpha gate.
 - TODO: The backup mechanism's assets-copy step is not transactionally coupled to the `VACUUM INTO` DB snapshot. An asset REPLACE (not create) in flight during backup commits its DB row before renaming its temp file into place (`http/assets.rs` — `replace`), so a backup racing an in-flight replace can capture updated asset metadata with the pre-replace file bytes for a few milliseconds' window. Inherent property of any online (no-downtime) backup of a live mutable system; add a brief write-quiesce mode during backup if stronger consistency is ever needed in practice.
