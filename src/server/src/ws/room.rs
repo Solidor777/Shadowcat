@@ -545,12 +545,13 @@ impl Room {
             samples =
                 crate::scene::move_stream::sample_path(&outcome.render_path, cell, duration_ms);
 
-            // GM mover (Unrestricted) → None (no fog to sweep). Player movers get a per-sample
-            // vision polygon at each hypothetical position along the trajectory. The SAME
-            // full sight_walls set is used as for static vision (M9b full-wall-set invariant).
-            // Hoisting: player_vision_inputs collects walls + static-token polygons ONCE per move;
-            // each sample calls polygons_at (one moving-token raycast only, no repeated ECS scan).
-            mover_vision = if matches!(restriction, MovementRestriction::Unrestricted) {
+            // GM mover → None (no fog to sweep), regardless of restriction mode. Non-GM movers
+            // get a per-sample vision polygon at each hypothetical position along the
+            // trajectory, including in Unrestricted-mode scenes. The SAME full sight_walls set
+            // is used as for static vision (M9b full-wall-set invariant). Hoisting:
+            // player_vision_inputs collects walls + static-token polygons ONCE per move; each
+            // sample calls polygons_at (one moving-token raycast only, no repeated ECS scan).
+            mover_vision = if ctx.world_role == crate::data::document::WorldRole::Gm {
                 None
             } else {
                 let vision_inputs = scene.player_vision_inputs(ctx.user_id, scene_id, token);
@@ -2467,6 +2468,51 @@ mod room_tests {
         assert!(
             matches!(again, Err(DataError::Forbidden)),
             "second execute_move on a moving token must be Forbidden"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_gm_mover_gets_progressive_sweep_in_unrestricted_scene() {
+        // A non-GM mover in an Unrestricted-mode scene must get a progressive vision
+        // sweep gated on ROLE, not on the Unrestricted restriction mode itself.
+        let h = movement_scene("unrestricted", false).await;
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                vec![h.start, h.adj],
+                now_millis(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            res.mover_vision.is_some(),
+            "a non-GM mover in an Unrestricted scene must get a progressive vision sweep, not a static-fog snap"
+        );
+    }
+
+    #[tokio::test]
+    async fn gm_mover_still_gets_no_sweep_in_unrestricted_scene() {
+        // GM movers must never get a sweep, regardless of restriction mode (unchanged).
+        let h = movement_scene("unrestricted", false).await;
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.gm,
+                h.scene_id,
+                h.token_id,
+                vec![h.start, h.adj],
+                now_millis(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            res.mover_vision.is_none(),
+            "GM movers must not get a sweep, regardless of restriction mode (unchanged behavior)"
         );
     }
 

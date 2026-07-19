@@ -1967,8 +1967,9 @@ mod tests {
                     "last sample pos must equal stop"
                 );
                 assert!(
-                    mover_vision.is_none(),
-                    "mover_vision must be None at this stage"
+                    mover_vision.is_some(),
+                    "a non-GM mover must get a progressive vision sweep, even in an \
+                     Unrestricted-mode scene (gated on role, not restriction mode)"
                 );
             }
             other => panic!("expected MoveStream, got {other:?}"),
