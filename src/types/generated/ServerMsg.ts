@@ -7,6 +7,7 @@ import type { ContractDeclaration } from "./ContractDeclaration";
 import type { PosSample } from "./PosSample";
 import type { RejectReason } from "./RejectReason";
 import type { ResyncSource } from "./ResyncSource";
+import type { SchemaDeclaration } from "./SchemaDeclaration";
 import type { SearchHit } from "./SearchHit";
 import type { VisionSample } from "./VisionSample";
 import type { WorldRole } from "./WorldRole";
@@ -28,7 +29,13 @@ server_version: string, world_default_grants: CapabilityGrants, user_role: World
  * The world's UI contract declarations, so the client can validate its
  * loaded module set against the world's declared topology.
  */
-contract_declarations: Array<ContractDeclaration>, } | { "type": "event", command: Command, intent_id: string | null, } | { "type": "reject", intent_id: string, reason: RejectReason, } | { "type": "resync_begin", from_seq: bigint, to_seq: bigint, source: ResyncSource, } | { "type": "resync_end", current_seq: bigint, } | { "type": "time_pong", client_t0: bigint, server_t: bigint, } | { "type": "ping" } | { "type": "error", code: WsErrorCode, message: string, } | { "type": "search_result", request_id: string, hits: Array<SearchHit>, next_cursor: string | null, } | { "type": "search_error", request_id: string, message: string, } | { "type": "search_update", request_id: string, hits: Array<SearchHit>, } | { "type": "scene_derived", request_id: string, channel: string, computed_at_seq: bigint, payload: unknown, } | { "type": "scene_error", request_id: string, message: string, } | { "type": "asset_changed", uuid: string, op: AssetOp, } | { "type": "scene_ping", scene: string, x: number, y: number, user: string, } | { "type": "path_result", request_id: string, path: Array<[number, number]>, cost: number, arrested: boolean, } | { "type": "path_error", request_id: string, message: string, } | { "type": "move_error", request_id: string, message: string, } | { "type": "move_stream", 
+contract_declarations: Array<ContractDeclaration>, 
+/**
+ * The world's structural schema declarations (tier-2), so the client
+ * can mirror expectations. Informational/parity only — tier-1 Zod
+ * validates client-side; this is NOT a client enforcement gate.
+ */
+schema_declarations: Array<SchemaDeclaration>, } | { "type": "event", command: Command, intent_id: string | null, } | { "type": "reject", intent_id: string, reason: RejectReason, } | { "type": "resync_begin", from_seq: bigint, to_seq: bigint, source: ResyncSource, } | { "type": "resync_end", current_seq: bigint, } | { "type": "time_pong", client_t0: bigint, server_t: bigint, } | { "type": "ping" } | { "type": "error", code: WsErrorCode, message: string, } | { "type": "search_result", request_id: string, hits: Array<SearchHit>, next_cursor: string | null, } | { "type": "search_error", request_id: string, message: string, } | { "type": "search_update", request_id: string, hits: Array<SearchHit>, } | { "type": "scene_derived", request_id: string, channel: string, computed_at_seq: bigint, payload: unknown, } | { "type": "scene_error", request_id: string, message: string, } | { "type": "asset_changed", uuid: string, op: AssetOp, } | { "type": "scene_ping", scene: string, x: number, y: number, user: string, } | { "type": "path_result", request_id: string, path: Array<[number, number]>, cost: number, arrested: boolean, } | { "type": "path_error", request_id: string, message: string, } | { "type": "move_error", request_id: string, message: string, } | { "type": "move_stream", 
 /**
  * Correlates with the originating `MoveRequest`.
  */

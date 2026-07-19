@@ -197,6 +197,10 @@ pub enum ServerMsg {
         /// The world's UI contract declarations, so the client can validate its
         /// loaded module set against the world's declared topology.
         contract_declarations: Vec<crate::data::document::ContractDeclaration>,
+        /// The world's structural schema declarations (tier-2), so the client
+        /// can mirror expectations. Informational/parity only — tier-1 Zod
+        /// validates client-side; this is NOT a client enforcement gate.
+        schema_declarations: Vec<crate::data::document::SchemaDeclaration>,
     },
     /// A sequenced broadcast carrying the authoritative command. `intent_id` is
     /// the originator's correlation token; it is `None` on the shared broadcast
@@ -712,6 +716,7 @@ mod protocol_tests {
             user_role: WorldRole::Player,
             capability_requirements: Vec::new(),
             contract_declarations: Vec::new(),
+            schema_declarations: Vec::new(),
         };
         let json = serde_json::to_value(&w).unwrap();
         assert_eq!(json["type"], "welcome");
@@ -719,6 +724,7 @@ mod protocol_tests {
         assert!(json.get("world_default_grants").is_some());
         assert!(json.get("capability_requirements").is_some());
         assert!(json.get("contract_declarations").is_some());
+        assert!(json.get("schema_declarations").is_some());
         assert_eq!(json["server_version"], "0.0.0-test");
     }
 }

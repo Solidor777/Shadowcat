@@ -932,6 +932,15 @@ async fn egress_loop<S>(
             Vec::new()
         }
     };
+    // Informational/parity for the client (tier-2 is server-enforced; tier-1
+    // validates client-side). Fail open to empty for the advisory copy.
+    let world_schemas = match repo.world_schema_declarations(world_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(world = %world_id, error = %e, "schema declarations unreadable; sending empty");
+            Vec::new()
+        }
+    };
     // Project the world grants to only what this actor needs to self-gate; other
     // users' UUIDs and grants must not cross to the client.
     let actor_grants =
@@ -946,6 +955,7 @@ async fn egress_loop<S>(
             user_role: ctx.world_role,
             capability_requirements: world_reqs,
             contract_declarations: world_contracts,
+            schema_declarations: world_schemas,
         }))
         .await
         .is_err()
@@ -1455,7 +1465,10 @@ mod tests {
         .unwrap();
 
         let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
-        let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let world = repo.create_world_owned("W", gm, 0).await.unwrap();
         // A GM-authored requirement, unrelated to any module.
         repo.set_world_cap_requirements(
@@ -1484,7 +1497,10 @@ mod tests {
 
         // world_cap_requirements itself is never mutated by this — the raw GM
         // record still holds exactly its one original entry.
-        assert_eq!(repo.world_cap_requirements(world.id).await.unwrap().len(), 1);
+        assert_eq!(
+            repo.world_cap_requirements(world.id).await.unwrap().len(),
+            1
+        );
     }
 
     /// Buddy-check Important: a module that is enabled but whose on-disk manifest
@@ -1508,7 +1524,10 @@ mod tests {
         .unwrap();
 
         let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
-        let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
         let world = repo.create_world_owned("W", gm, 0).await.unwrap();
         repo.set_world_cap_requirements(
             world.id,
