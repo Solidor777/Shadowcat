@@ -1116,15 +1116,47 @@ pub(crate) mod tests {
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
 
-        // Duplicate module_id -> rejected.
-        let dup_mod = serde_json::json!([
+        // Same module_id declaring two non-overlapping subtrees of the same
+        // doc_type is accepted -- a SchemaDeclaration is a single
+        // (doc_type, subtree_pointer, schema) triple, not a per-module bundle,
+        // so one module legitimately governs several subtrees (e.g. a
+        // Nightfox-style module declaring both `/system/stats` and
+        // `/system/mechanics`).
+        let same_module_disjoint_subtrees = serde_json::json!([
+            { "module_id": "nightfox", "version": "1", "schema_format": 1, "doc_type": "actor",
+              "subtree_pointer": "/system/stats", "schema": {} },
+            { "module_id": "nightfox", "version": "1", "schema_format": 1, "doc_type": "actor",
+              "subtree_pointer": "/system/mechanics", "schema": {} }
+        ]);
+        gm.put(&base)
+            .json(&same_module_disjoint_subtrees)
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // Same module_id declaring two DIFFERENT doc_types is also accepted.
+        let same_module_different_doc_types = serde_json::json!([
+            { "module_id": "nightfox", "version": "1", "schema_format": 1, "doc_type": "actor",
+              "subtree_pointer": "/system/stats", "schema": {} },
+            { "module_id": "nightfox", "version": "1", "schema_format": 1, "doc_type": "item",
+              "subtree_pointer": "/system/stats", "schema": {} }
+        ]);
+        gm.put(&base)
+            .json(&same_module_different_doc_types)
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // Same module_id, same doc_type, OVERLAPPING subtree_pointer is still
+        // rejected: ambiguity is prevented by the pointer-overlap check, not
+        // by module_id uniqueness, and that check does not care whether the
+        // two declarations share a module_id.
+        let same_module_overlapping_subtrees = serde_json::json!([
             { "module_id": "a", "version": "1", "schema_format": 1, "doc_type": "actor",
               "subtree_pointer": "/system/x", "schema": {} },
             { "module_id": "a", "version": "2", "schema_format": 1, "doc_type": "actor",
-              "subtree_pointer": "/system/y", "schema": {} }
+              "subtree_pointer": "/system/x", "schema": {} }
         ]);
         gm.put(&base)
-            .json(&dup_mod)
+            .json(&same_module_overlapping_subtrees)
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
 

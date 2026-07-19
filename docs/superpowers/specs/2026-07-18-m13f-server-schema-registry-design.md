@@ -151,7 +151,14 @@ the server. Disabling a module drops its entries (module-keyed).
 `validate_contract_declarations`:
 - bounded count / per-schema node-count / nesting depth (backstops against a pathological schema;
   concrete caps resolved in the plan, sized like `MAX_CONTRACT_DECLARATIONS`);
-- `module_id` / `version` non-empty; a `module_id` appears at most once;
+- `module_id` / `version` non-empty. Unlike `ContractDeclaration` (a per-module bundle carrying
+  `provides`/`requires`, so naturally one-per-module), a `SchemaDeclaration` is a single
+  `(doc_type, subtree_pointer, schema)` triple — a `module_id` may legitimately appear on
+  **multiple** declarations in the batch (one module governing several disjoint subtrees, e.g.
+  separate declarations for `/system/stats` and `/system/mechanics`, or subtrees of different
+  `doc_type`s). `module_id` uniqueness is therefore NOT enforced; the pointer-overlap check below
+  is the sole ambiguity guard and applies regardless of whether two declarations share a
+  `module_id`;
 - `subtree_pointer` is a well-formed RFC-6901 pointer that is a **strict descendant of `/system`**
   (`/system/<key>…`, any depth) — reject `/engine`, `/permissions`, `/name`, `""` (whole doc), and
   bare `/system` itself (guarding the whole `system` body is not subtree-scoped and re-introduces

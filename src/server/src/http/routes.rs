@@ -852,29 +852,27 @@ fn validate_schema(s: &Schema, depth: usize, budget: &mut usize) -> Result<(), A
 
 /// Validate a world's schema declaration set (M13f tier-2 set-time gate),
 /// fail-closed — the server is the consistency authority. Mirrors
-/// `validate_contract_declarations`: bounded count, non-empty module_id/version,
-/// unique module_id, understood schema_format, strict `/system/…` pointers, no
-/// duplicate/overlapping `(doc_type, pointer)`, and each schema a well-formed
-/// type-tree.
+/// `validate_contract_declarations` on bounded count and non-empty
+/// module_id/version, but a `SchemaDeclaration` is NOT a per-module bundle
+/// (unlike `ContractDeclaration`, which carries `provides`/`requires` and so
+/// is naturally one-per-module) — it is a single `(doc_type, subtree_pointer,
+/// schema)` triple, and one module legitimately needs several of them (e.g.
+/// separate declarations for `/system/stats` and `/system/mechanics` under
+/// the same `module_id`). So `module_id` is intentionally NOT required to be
+/// unique across the batch; ambiguity is instead prevented by the
+/// per-doc_type pointer-overlap check below, understood schema_format, strict
+/// `/system/…` pointers, and each schema a well-formed type-tree.
 fn validate_schema_declarations(decls: &[SchemaDeclaration]) -> Result<(), AppError> {
-    use std::collections::HashSet;
     if decls.len() > MAX_SCHEMA_DECLARATIONS {
         return Err(AppError::Unprocessable(format!(
             "too many schema declarations (max {MAX_SCHEMA_DECLARATIONS})"
         )));
     }
-    let mut seen_modules: HashSet<&str> = HashSet::new();
     for d in decls {
         if d.module_id.is_empty() || d.version.is_empty() {
             return Err(AppError::Unprocessable(
                 "schema declaration module_id and version must be non-empty".into(),
             ));
-        }
-        if !seen_modules.insert(d.module_id.as_str()) {
-            return Err(AppError::Unprocessable(format!(
-                "duplicate module_id '{}'",
-                d.module_id
-            )));
         }
         if d.schema_format != SCHEMA_FORMAT_V1 {
             return Err(AppError::Unprocessable(format!(
