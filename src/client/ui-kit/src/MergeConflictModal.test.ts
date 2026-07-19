@@ -48,6 +48,20 @@ describe("MergeConflictModal", () => {
     expect(cancelled).toBe(true);
   });
 
+  it("moves focus into the dialog on mount and closes on Escape from the document", async () => {
+    let cancelled = false;
+    const context = setAppContextForTest();
+    const { getByRole } = render(MergeConflictModal, {
+      props: { groups: [{ key: "C", label: null, conflicts }], onApply: () => {}, onCancel: () => { cancelled = true; } },
+      context,
+    });
+    const dialog = getByRole("dialog");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    await fireEvent.keyDown(document, { key: "Escape" });
+    expect(cancelled).toBe(true);
+  });
+
   it("groups rows under a per-instance label when provided (push)", () => {
     const context = setAppContextForTest();
     const { getByText } = render(MergeConflictModal, {

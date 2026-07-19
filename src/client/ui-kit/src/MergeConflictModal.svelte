@@ -13,12 +13,27 @@
   const ctx = getAppContext();
   const t = ctx.t;
 
-  // Radio group name per (group,field), space-joined so it never collides with a field path
-  // (paths always start with "/", so a literal space can't appear inside either half).
+  // Radio group name per (group,field). Group keys are opaque document/instance UUIDs
+  // and never contain a space, so the join is unambiguous in practice; a NUL-byte join
+  // would be formally injective if this ever needs hardening.
   const rowKey = (groupKey: string, path: string): string => `${groupKey} ${path}`;
 
   // Selection: rowKey → "mine" | "theirs". Default "mine" (keep child).
   let choice = $state<Record<string, "mine" | "theirs">>({});
+
+  let modalEl: HTMLDivElement | undefined;
+
+  $effect(() => {
+    modalEl?.focus();
+  });
+
+  $effect(() => {
+    const onKeydown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKeydown);
+    return () => window.removeEventListener("keydown", onKeydown);
+  });
 
   function display(v: unknown): string {
     return v === undefined ? t("templates.conflict.deleted") : typeof v === "string" ? v : JSON.stringify(v);
@@ -35,10 +50,11 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="modal-scrim" role="presentation" onclick={onCancel} onkeydown={(e) => e.key === "Escape" && onCancel()}>
+<div class="modal-scrim" role="presentation">
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={t("templates.conflict.title")}
+       bind:this={modalEl}
        onclick={(e) => e.stopPropagation()}>
     <h2>{t("templates.conflict.title")}</h2>
     {#each groups as g (g.key)}
