@@ -742,8 +742,14 @@ impl RoomRegistry {
                 &["world-settings", "light-gradation", "vision-modes", "actor"],
             )
             .await?;
-        let world_settings = docs.iter().find(|d| d.doc_type == "world-settings").cloned();
-        let gradation = docs.iter().find(|d| d.doc_type == "light-gradation").cloned();
+        let world_settings = docs
+            .iter()
+            .find(|d| d.doc_type == "world-settings")
+            .cloned();
+        let gradation = docs
+            .iter()
+            .find(|d| d.doc_type == "light-gradation")
+            .cloned();
         let vision_modes = docs.iter().find(|d| d.doc_type == "vision-modes").cloned();
         let actors: Vec<Document> = docs.into_iter().filter(|d| d.doc_type == "actor").collect();
         scene_ecs.set_world_config(world_settings, gradation, vision_modes);

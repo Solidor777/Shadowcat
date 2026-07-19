@@ -188,7 +188,10 @@ mod tests {
             expr: Expr::Bin {
                 op: BinOp::Add,
                 lhs: Box::new(ng(2, 1, 6)),
-                rhs: Box::new(Expr::Const(ConstTerm { value: 3, label: None })),
+                rhs: Box::new(Expr::Const(ConstTerm {
+                    value: 3,
+                    label: None,
+                })),
             },
             direction: Direction::HighWins,
             mode: total_mode(),
@@ -211,7 +214,10 @@ mod tests {
             expr: Expr::Bin {
                 op: BinOp::Mul,
                 lhs: Box::new(ng(1, 1, 4)),
-                rhs: Box::new(Expr::Const(ConstTerm { value: 2, label: None })),
+                rhs: Box::new(Expr::Const(ConstTerm {
+                    value: 2,
+                    label: None,
+                })),
             },
             direction: Direction::HighWins,
             mode: total_mode(),
@@ -305,8 +311,14 @@ mod tests {
         let spec = RollSpec {
             expr: Expr::Bin {
                 op: BinOp::Add,
-                lhs: Box::new(Expr::Const(ConstTerm { value: 2, label: None })),
-                rhs: Box::new(Expr::Const(ConstTerm { value: 3, label: None })),
+                lhs: Box::new(Expr::Const(ConstTerm {
+                    value: 2,
+                    label: None,
+                })),
+                rhs: Box::new(Expr::Const(ConstTerm {
+                    value: 3,
+                    label: None,
+                })),
             },
             direction: Direction::HighWins,
             mode: total_mode(),
@@ -339,7 +351,11 @@ mod tests {
         let spec = notation::parse("1d20 + 3[dex]", total_ctx()).unwrap();
         let raws = roll(&spec, &mut NoiseRng::from_seed(1));
         let out = evaluate(&spec, &raws);
-        assert_eq!(out.records.len(), 1, "the 1d20 group still produces one record");
+        assert_eq!(
+            out.records.len(),
+            1,
+            "the 1d20 group still produces one record"
+        );
         assert_eq!(out.labeled_consts.len(), 1);
         assert_eq!(out.labeled_consts[0].value, 3);
         assert_eq!(out.labeled_consts[0].label, Some("dex".to_string()));
@@ -364,7 +380,10 @@ mod tests {
     #[test]
     fn total_no_difficulty_reports_bare_total() {
         let spec = RollSpec {
-            expr: Expr::Const(ConstTerm { value: 12, label: None }),
+            expr: Expr::Const(ConstTerm {
+                value: 12,
+                label: None,
+            }),
             direction: Direction::HighWins,
             mode: Mode::Total(TotalConfig {
                 difficulty: None,
@@ -381,7 +400,10 @@ mod tests {
     #[test]
     fn total_with_difficulty_sets_pass_by_direction() {
         let spec_hi = RollSpec {
-            expr: Expr::Const(ConstTerm { value: 12, label: None }),
+            expr: Expr::Const(ConstTerm {
+                value: 12,
+                label: None,
+            }),
             direction: Direction::HighWins,
             mode: Mode::Total(TotalConfig {
                 difficulty: Some(10),
@@ -417,7 +439,10 @@ mod tests {
             },
         ];
         let spec = RollSpec {
-            expr: Expr::Const(ConstTerm { value: 17, label: None }),
+            expr: Expr::Const(ConstTerm {
+                value: 17,
+                label: None,
+            }),
             direction: Direction::HighWins,
             mode: Mode::Total(TotalConfig {
                 difficulty: Some(10),

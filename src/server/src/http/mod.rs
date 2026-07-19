@@ -1,7 +1,7 @@
 pub mod assets;
 pub mod embed;
-pub mod module_routes;
 pub mod error;
+pub mod module_routes;
 pub mod routes;
 
 use std::sync::atomic::AtomicBool;
@@ -109,7 +109,8 @@ pub async fn router(state: AppState) -> Router {
         )
         .route(
             "/api/worlds/{id}/enabled-modules",
-            get(module_routes::get_world_enabled_modules).put(module_routes::set_world_enabled_modules),
+            get(module_routes::get_world_enabled_modules)
+                .put(module_routes::set_world_enabled_modules),
         )
         .route(
             "/api/worlds/{id}/documents",

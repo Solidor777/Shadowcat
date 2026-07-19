@@ -1,4 +1,6 @@
-use crate::data::document::{AdditionalProperties, Document, Schema, SchemaDeclaration, SchemaType};
+use crate::data::document::{
+    AdditionalProperties, Document, Schema, SchemaDeclaration, SchemaType,
+};
 use crate::data::engine;
 use crate::data::DataError;
 
@@ -771,14 +773,22 @@ mod tests {
     #[test]
     fn tree_validator_absent_subtree_is_ok() {
         let doc = doc_with_system(serde_json::json!({ "other": 1 }));
-        let schemas = vec![decl("actor", "/system/stats", serde_json::json!({ "type": "object" }))];
+        let schemas = vec![decl(
+            "actor",
+            "/system/stats",
+            serde_json::json!({ "type": "object" }),
+        )];
         assert!(validate_system_schema_tree(&doc, &schemas).is_ok());
     }
 
     #[test]
     fn tree_validator_unregistered_doc_type_passes() {
         let doc = doc_with_system(serde_json::json!({ "anything": true }));
-        let schemas = vec![decl("item", "/system/x", serde_json::json!({ "type": "number" }))];
+        let schemas = vec![decl(
+            "item",
+            "/system/x",
+            serde_json::json!({ "type": "number" }),
+        )];
         assert!(validate_system_schema_tree(&doc, &schemas).is_ok());
     }
 
@@ -790,11 +800,19 @@ mod tests {
         }));
         doc.doc_type = "actor".into();
         let schemas = vec![
-            decl("actor", "/system/stats", serde_json::json!({ "type": "object",
+            decl(
+                "actor",
+                "/system/stats",
+                serde_json::json!({ "type": "object",
                 "additionalProperties": { "type": "object",
-                    "properties": { "kind": { "type": "string" } } } })),
-            decl("actor", "/system/mechanics", serde_json::json!({ "type": "object",
-                "required": ["version"], "properties": { "version": { "type": "number" } } })),
+                    "properties": { "kind": { "type": "string" } } } }),
+            ),
+            decl(
+                "actor",
+                "/system/mechanics",
+                serde_json::json!({ "type": "object",
+                "required": ["version"], "properties": { "version": { "type": "number" } } }),
+            ),
         ];
         let err = validate_system_schema_tree(&doc, &schemas).unwrap_err();
         assert!(matches!(err, DataError::SchemaViolation { .. }));

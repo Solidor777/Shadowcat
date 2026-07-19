@@ -131,7 +131,9 @@ pub fn semver_satisfies(version: &str, range: &str) -> bool {
         Some((major, minor, patch))
     }
     let r = range.trim();
-    let Some(v) = parse(version) else { return false };
+    let Some(v) = parse(version) else {
+        return false;
+    };
     if r == "*" {
         return true;
     }
@@ -218,7 +220,11 @@ mod tests {
     fn an_invalid_manifest_is_skipped_without_hiding_valid_siblings() {
         let dir = tempfile::tempdir().unwrap();
         write_module(dir.path(), "broken", r#"{"not-json"#); // malformed JSON
-        write_module(dir.path(), "missing-fields", r#"{"name":"no id or version"}"#);
+        write_module(
+            dir.path(),
+            "missing-fields",
+            r#"{"name":"no id or version"}"#,
+        );
         write_module(dir.path(), "good", r#"{"id":"good","version":"1.0.0"}"#);
         let found = scan_installed_modules(dir.path());
         assert_eq!(found.len(), 1);
@@ -251,7 +257,10 @@ mod tests {
         write_module(dir.path(), "zzz", r#"{"id":"zzz","version":"1.0.0"}"#);
         write_module(dir.path(), "aaa", r#"{"id":"aaa","version":"1.0.0"}"#);
         let found = scan_installed_modules(dir.path());
-        assert_eq!(found.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["aaa", "zzz"]);
+        assert_eq!(
+            found.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["aaa", "zzz"]
+        );
     }
 
     #[test]
@@ -298,7 +307,11 @@ mod tests {
     #[test]
     fn engine_compat_ok_requires_the_engines_field() {
         let dir = tempfile::tempdir().unwrap();
-        write_module(dir.path(), "no-engines", r#"{"id":"no-engines","version":"1.0.0"}"#);
+        write_module(
+            dir.path(),
+            "no-engines",
+            r#"{"id":"no-engines","version":"1.0.0"}"#,
+        );
         let m = &scan_installed_modules(dir.path())[0];
         // A module with no declared compat range never enables (mandatory
         // going forward for the modules-folder pipeline).
@@ -311,7 +324,10 @@ mod tests {
         write_module(
             dir.path(),
             "compatible",
-            &format!(r#"{{"id":"compatible","version":"1.0.0","engines":{{"shadowcat":"^{}"}}}}"#, env!("CARGO_PKG_VERSION")),
+            &format!(
+                r#"{{"id":"compatible","version":"1.0.0","engines":{{"shadowcat":"^{}"}}}}"#,
+                env!("CARGO_PKG_VERSION")
+            ),
         );
         write_module(
             dir.path(),

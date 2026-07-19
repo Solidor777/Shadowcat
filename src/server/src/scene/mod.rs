@@ -1918,7 +1918,10 @@ struct VisibilityInputsSnapshot {
 
 /// `visible_cells_cache`'s per-entry value: the snapshot it was computed from, paired with the
 /// mask itself.
-type VisibleCellsCacheEntry = (VisibilityInputsSnapshot, std::collections::BTreeSet<(i32, i32)>);
+type VisibleCellsCacheEntry = (
+    VisibilityInputsSnapshot,
+    std::collections::BTreeSet<(i32, i32)>,
+);
 
 /// The per-source LOS raycast + per-cell scan shared by `visible_cells` and
 /// `visible_cells_cached` on a cache miss — extracted verbatim (no logic change) from

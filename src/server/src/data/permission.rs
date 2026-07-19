@@ -1072,7 +1072,10 @@ mod tests {
         };
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].path, "/base");
-        assert_eq!(changes[0].new, serde_json::json!({ "system": { "hp": 10 } }));
+        assert_eq!(
+            changes[0].new,
+            serde_json::json!({ "system": { "hp": 10 } })
+        );
 
         // GM: passed through unchanged.
         let out_gm = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;

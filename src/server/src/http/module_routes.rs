@@ -171,7 +171,10 @@ pub async fn set_world_enabled_modules(
     // inert (stored/validated redundantly) but inflates the persisted set and
     // the client's echoed response; first occurrence wins.
     let mut seen = std::collections::HashSet::with_capacity(ids.len());
-    let ids: Vec<String> = ids.into_iter().filter(|id| seen.insert(id.clone())).collect();
+    let ids: Vec<String> = ids
+        .into_iter()
+        .filter(|id| seen.insert(id.clone()))
+        .collect();
     let installed = crate::modules::scan_installed_modules(&state.config.modules_path());
     for id in &ids {
         let Some(m) = installed.iter().find(|m| &m.id == id) else {
@@ -182,7 +185,9 @@ pub async fn set_world_enabled_modules(
         if !crate::modules::engine_compat_ok(m) {
             return Err(AppError::Unprocessable(format!(
                 "module '{id}' is incompatible with this server version (requires shadowcat {})",
-                m.engines_shadowcat.as_deref().unwrap_or("(missing engines.shadowcat)")
+                m.engines_shadowcat
+                    .as_deref()
+                    .unwrap_or("(missing engines.shadowcat)")
             )));
         }
     }
@@ -192,8 +197,8 @@ pub async fn set_world_enabled_modules(
 
 #[cfg(test)]
 mod tests {
-    use crate::http::tests::initialized_state;
     use crate::http::router;
+    use crate::http::tests::initialized_state;
     use axum::http::StatusCode;
 
     #[tokio::test]
@@ -285,7 +290,10 @@ mod tests {
         let got: serde_json::Value = server.get("/api/modules").await.json();
         let arr = got.as_array().unwrap();
         assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["id"], "folder-name", "wire id must be the folder name");
+        assert_eq!(
+            arr[0]["id"], "folder-name",
+            "wire id must be the folder name"
+        );
         assert_eq!(
             arr[0]["manifest"]["id"], "declared-manifest-id",
             "manifest.id stays the opaque author-declared value, distinct from the wire id"
@@ -301,9 +309,7 @@ mod tests {
             .assert_status(StatusCode::UNAUTHORIZED);
     }
 
-    async fn logged_in_server_with_modules_dir(
-        dir: &std::path::Path,
-    ) -> axum_test::TestServer {
+    async fn logged_in_server_with_modules_dir(dir: &std::path::Path) -> axum_test::TestServer {
         let mut state = initialized_state().await;
         state.config = std::sync::Arc::new(crate::config::Config {
             modules_dir: Some(dir.to_string_lossy().to_string()),
@@ -331,7 +337,11 @@ mod tests {
     async fn serve_module_file_serves_the_entry_with_js_content_type() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("mod-a")).unwrap();
-        std::fs::write(dir.path().join("mod-a").join("index.js"), b"export const x = 1;").unwrap();
+        std::fs::write(
+            dir.path().join("mod-a").join("index.js"),
+            b"export const x = 1;",
+        )
+        .unwrap();
         let server = logged_in_server_with_modules_dir(dir.path()).await;
 
         let res = server.get("/modules/mod-a/index.js").await;
@@ -345,7 +355,11 @@ mod tests {
     async fn serve_module_file_serves_a_nested_asset_with_a_generic_content_type() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("mod-a").join("assets")).unwrap();
-        std::fs::write(dir.path().join("mod-a").join("assets").join("icon.png"), b"\x89PNG").unwrap();
+        std::fs::write(
+            dir.path().join("mod-a").join("assets").join("icon.png"),
+            b"\x89PNG",
+        )
+        .unwrap();
         let server = logged_in_server_with_modules_dir(dir.path()).await;
 
         let res = server.get("/modules/mod-a/assets/icon.png").await;
@@ -368,7 +382,11 @@ mod tests {
     async fn serve_module_file_rejects_a_rel_path_traversal_out_of_the_module_folder() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("mod-a")).unwrap();
-        std::fs::write(dir.path().join("secret.txt"), b"outside mod-a, inside modules_dir").unwrap();
+        std::fs::write(
+            dir.path().join("secret.txt"),
+            b"outside mod-a, inside modules_dir",
+        )
+        .unwrap();
         let server = logged_in_server_with_modules_dir(dir.path()).await;
 
         // Percent-encoded so the traversal segment reaches the server unresolved
@@ -547,24 +565,44 @@ mod tests {
             ..crate::config::Config::default()
         });
         let hash = crate::auth::password::hash_password("pw").unwrap();
-        state.repo.create_user("gm", Some(&hash), crate::auth::role::ServerRole::User, 0).await.unwrap();
+        state
+            .repo
+            .create_user("gm", Some(&hash), crate::auth::role::ServerRole::User, 0)
+            .await
+            .unwrap();
         let player_id = state
             .repo
             .create_user("pl", Some(&hash), crate::auth::role::ServerRole::User, 0)
             .await
             .unwrap();
 
-        let gm = axum_test::TestServer::builder().save_cookies().build(router(state.clone()).await).unwrap();
-        gm.post("/api/login").json(&serde_json::json!({"username":"gm","password":"pw"})).await.assert_status(StatusCode::NO_CONTENT);
-        let world: serde_json::Value = gm.post("/api/worlds").json(&serde_json::json!({"name":"W"})).await.json();
+        let gm = axum_test::TestServer::builder()
+            .save_cookies()
+            .build(router(state.clone()).await)
+            .unwrap();
+        gm.post("/api/login")
+            .json(&serde_json::json!({"username":"gm","password":"pw"}))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({"name":"W"}))
+            .await
+            .json();
         let world_id = world["id"].as_str().unwrap().to_string();
         gm.post(&format!("/api/worlds/{world_id}/members"))
             .json(&serde_json::json!({"user": player_id, "role": "player"}))
             .await
             .assert_status(StatusCode::NO_CONTENT);
 
-        let pl = axum_test::TestServer::builder().save_cookies().build(router(state).await).unwrap();
-        pl.post("/api/login").json(&serde_json::json!({"username":"pl","password":"pw"})).await.assert_status(StatusCode::NO_CONTENT);
+        let pl = axum_test::TestServer::builder()
+            .save_cookies()
+            .build(router(state).await)
+            .unwrap();
+        pl.post("/api/login")
+            .json(&serde_json::json!({"username":"pl","password":"pw"}))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
 
         (gm, pl, world_id)
     }
@@ -575,13 +613,19 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("actors-plus")).unwrap();
         std::fs::write(
             dir.path().join("actors-plus").join("module.json"),
-            format!(r#"{{"id":"actors-plus","version":"1.0.0","engines":{{"shadowcat":"^{}"}}}}"#, env!("CARGO_PKG_VERSION")),
+            format!(
+                r#"{{"id":"actors-plus","version":"1.0.0","engines":{{"shadowcat":"^{}"}}}}"#,
+                env!("CARGO_PKG_VERSION")
+            ),
         )
         .unwrap();
         let (gm, pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
 
         // Empty by default.
-        let got: serde_json::Value = gm.get(&format!("/api/worlds/{world_id}/enabled-modules")).await.json();
+        let got: serde_json::Value = gm
+            .get(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .await
+            .json();
         assert_eq!(got, serde_json::json!([]));
 
         // A non-GM cannot enable.
@@ -597,7 +641,10 @@ mod tests {
             .assert_status(StatusCode::NO_CONTENT);
 
         // Any member (not just the GM) can read the enabled set.
-        let got: serde_json::Value = pl.get(&format!("/api/worlds/{world_id}/enabled-modules")).await.json();
+        let got: serde_json::Value = pl
+            .get(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .await
+            .json();
         assert_eq!(got, serde_json::json!(["actors-plus"]));
     }
 
@@ -610,7 +657,10 @@ mod tests {
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
         // Rejected atomically: nothing is persisted from the bad batch.
-        let got: serde_json::Value = gm.get(&format!("/api/worlds/{world_id}/enabled-modules")).await.json();
+        let got: serde_json::Value = gm
+            .get(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .await
+            .json();
         assert_eq!(got, serde_json::json!([]));
     }
 
@@ -652,7 +702,10 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("actors-plus")).unwrap();
         std::fs::write(
             dir.path().join("actors-plus").join("module.json"),
-            format!(r#"{{"id":"actors-plus","version":"1.0.0","engines":{{"shadowcat":"^{}"}}}}"#, env!("CARGO_PKG_VERSION")),
+            format!(
+                r#"{{"id":"actors-plus","version":"1.0.0","engines":{{"shadowcat":"^{}"}}}}"#,
+                env!("CARGO_PKG_VERSION")
+            ),
         )
         .unwrap();
         let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
@@ -660,7 +713,10 @@ mod tests {
             .json(&serde_json::json!(["actors-plus", "actors-plus"]))
             .await
             .assert_status(StatusCode::NO_CONTENT);
-        let got: serde_json::Value = gm.get(&format!("/api/worlds/{world_id}/enabled-modules")).await.json();
+        let got: serde_json::Value = gm
+            .get(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .await
+            .json();
         assert_eq!(got, serde_json::json!(["actors-plus"]));
     }
 
@@ -675,8 +731,15 @@ mod tests {
             .json(&serde_json::json!(ids))
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
-        let got: serde_json::Value = gm.get(&format!("/api/worlds/{world_id}/enabled-modules")).await.json();
-        assert_eq!(got, serde_json::json!([]), "an over-cap batch must not persist");
+        let got: serde_json::Value = gm
+            .get(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .await
+            .json();
+        assert_eq!(
+            got,
+            serde_json::json!([]),
+            "an over-cap batch must not persist"
+        );
     }
 
     #[tokio::test]
@@ -685,7 +748,10 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("actors-plus")).unwrap();
         std::fs::write(
             dir.path().join("actors-plus").join("module.json"),
-            format!(r#"{{"id":"actors-plus","version":"1.0.0","engines":{{"shadowcat":"^{}"}}}}"#, env!("CARGO_PKG_VERSION")),
+            format!(
+                r#"{{"id":"actors-plus","version":"1.0.0","engines":{{"shadowcat":"^{}"}}}}"#,
+                env!("CARGO_PKG_VERSION")
+            ),
         )
         .unwrap();
         let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
@@ -693,7 +759,14 @@ mod tests {
             .json(&serde_json::json!(["actors-plus", "ghost"]))
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
-        let got: serde_json::Value = gm.get(&format!("/api/worlds/{world_id}/enabled-modules")).await.json();
-        assert_eq!(got, serde_json::json!([]), "a valid id in a rejected batch must not partially apply");
+        let got: serde_json::Value = gm
+            .get(&format!("/api/worlds/{world_id}/enabled-modules"))
+            .await
+            .json();
+        assert_eq!(
+            got,
+            serde_json::json!([]),
+            "a valid id in a rejected batch must not partially apply"
+        );
     }
 }
