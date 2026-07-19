@@ -72,6 +72,31 @@ describe("TemplatesController", () => {
     expect(ctrl.pending!.groups.map((g) => g.key)).toEqual(["B"]);
   });
 
+  it("push excludes an instance the pusher cannot write, even when it conflicts", () => {
+    const tmpl = doc({ id: "T", system: { hp: 5 } });
+    const writable = doc({ id: "A", owner: "u-self", source: { id: "T", pack: null, version: 1 }, system: { hp: 9 } });
+    writable.base = { name: null, engine: null, system: { hp: 1 }, embedded: {} };
+    const notWritable = doc({ id: "B", owner: "someone-else", source: { id: "T", pack: null, version: 1 }, system: { hp: 9 } });
+    notWritable.base = { name: null, engine: null, system: { hp: 1 }, embedded: {} };
+    const store = new DocumentStore();
+    store.applyCommand({
+      seq: 1, world_id: "w1", author: "a", ts: 0,
+      ops: [tmpl, writable, notWritable].map((d) => ({ op: "create", doc: d } as WireOperation)),
+    });
+    const calls: WireOperation[][] = [];
+    const ctrl = new TemplatesController({
+      store, documents: store, dispatchIntent: (ops) => calls.push(ops),
+      role: "player", selfId: "u-self",
+      canEdit: (doc) => doc.owner === "u-self",
+      logger: silentLogger,
+    });
+    ctrl.push("T");
+    // Both instances conflict, but only the writable one should surface at all.
+    expect(calls).toHaveLength(0);
+    expect(ctrl.pending).not.toBeNull();
+    expect(ctrl.pending!.groups.map((g) => g.key)).toEqual(["A"]);
+  });
+
   it("canPull is false for a non-owner non-GM", () => {
     const tmpl = doc({ id: "T" });
     const child = doc({ id: "C", owner: "someone-else", source: { id: "T", pack: null, version: 1 } });

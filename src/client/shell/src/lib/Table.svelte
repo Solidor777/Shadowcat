@@ -88,6 +88,17 @@
       await logout();
       navigate({ name: "login" });
     },
+    // TODO: replace with the real TemplatesController wiring; all methods currently no-op.
+    templates: {
+      stampInstance: (s) => s,
+      pull: () => {},
+      push: () => {},
+      revert: () => {},
+      findInstances: () => [],
+      syncState: () => "none",
+      canPull: () => false,
+      canPush: () => false,
+    },
   });
 </script>
 

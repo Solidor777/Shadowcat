@@ -100,8 +100,17 @@ export class TemplatesController {
 
   push(templateId: string): void {
     const template = this.#get(templateId);
-    if (!template) return;
-    const instances = this.findInstances(templateId);
+    if (!template) {
+      this.#deps.logger.warn(`templates.push: template ${templateId} not in store; push unavailable`);
+      return;
+    }
+    // Write-scope filter: `findInstances` is same-world only (see @shadowcat/core doc comment);
+    // it says nothing about per-instance write authorization, which can differ from the
+    // template's own ownership (an instance may belong to a different player). Exclude any
+    // instance the pusher cannot write before splitting into dispatch-now vs. conflict-modal.
+    const instances = this.findInstances(templateId).filter(
+      (inst) => this.#deps.canEdit(inst, "/base") && this.#deps.canEdit(inst, "/system"),
+    );
     const groups: ConflictGroup[] = [];
     const conflicted = new Map<string, { child: WireDocument; template: WireDocument; plan: MergePlan }>();
     for (const inst of instances) {
