@@ -27,7 +27,7 @@ Every task's requirements implicitly include this section.
 
 ## Model/Effort directives
 - Plan-writer: sdd-plan-writer-opus (this plan).
-- Dispatcher: mainline session (Opus/high).
+- Dispatcher: mainline session — user chose to stay on Sonnet 5/medium (2026-07-18) rather than switch to Opus/high; implementers/reviewers below are unaffected (fixed subagent tiers).
 - Implementers: shadowcat-coder (sonnet, effort medium); escalate to shadowcat-coder-opus on BLOCKED.
 - Per-task reviewers: shadowcat-spec-reviewer + shadowcat-code-reviewer (the two-reviewer pair, effort high); escalate to -opus twins on shallow/uncertain findings.
 - Final whole-branch review: shadowcat-code-reviewer-opus + shadowcat-spec-reviewer-opus.
