@@ -1360,7 +1360,16 @@ export function stampInstance(source: WireDocument, opts: StampOpts): WireDocume
   const clone = structuredClone(source) as WireDocument;
   const embedded: Record<string, WireDocument[]> = {};
   for (const [coll, kids] of Object.entries(clone.embedded)) embedded[coll] = kids.map(restampSubtree);
-  const pack = source.scope.kind === "compendium" ? source.scope.pack : (source.source?.pack ?? null);
+  // `source.pack` records where THIS stamp's immediate template lives (the id we're
+  // pointing at) — a compendium pack, or null for a world-resident template. The
+  // template's OWN provenance (source.source?.pack, if the template is itself an
+  // instance of something else) is irrelevant here and must NOT leak in: pairing this
+  // stamp's `source.id` (the template's own id, always a world-doc id when the template
+  // isn't compendium-scoped) with a compendium pack would be incoherent — you cannot
+  // fetch a world document from a compendium. Matches restampSubtree's unconditional
+  // `pack: null` for the identical non-compendium case (found during Task 6 buddy-check;
+  // the plan's own first draft here had this bug).
+  const pack = source.scope.kind === "compendium" ? source.scope.pack : null;
   const stamped: WireDocument = {
     ...clone,
     id: crypto.randomUUID(),
