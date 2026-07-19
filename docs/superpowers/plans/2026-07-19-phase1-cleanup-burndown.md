@@ -13,19 +13,19 @@
 - TDD per task (project CLAUDE.md): write the failing test first, verify it fails, implement, verify it passes.
 - Full cross-platform gate before any task is considered done: `cargo test --all-targets` + `cargo clippy --all-targets -- -D warnings` (server tasks); `pnpm -r test` + typecheck + lint (client tasks). Typecheck is a separate gate from vitest (esbuild strips types — vitest alone won't catch a type error).
 - No debug artifacts (`dbg!`, bare `println!`, `console.log`, `debugger;`) in committed code.
-- Tasks tagged `[sec]` require a mandatory two-reviewer security buddy-check before merge (see Buddy-check directives below): **Tasks 6, 7, 9, 10, 39** (B1, B2, C1, C2, I4) plus **Task 4** (A4, Unrestricted-mode vision-sweep gate) and **Task 5's cache** (A5, vision-mask cache) — full list below.
+- Tasks tagged `[sec]` require a mandatory two-reviewer security buddy-check before merge (see Buddy-check directives below): **Tasks 4, 5, 8, 9, 11, 12, 43** (A4, A5, B1, B2, C1, C2, I4) — full list below.
 - Never fork the vision/secrecy mask decision (project invariant, restated in `shadowcat-codebase-scene-rendering`): any new vision/lighting code path must reuse the existing mask/occlusion primitives, never compute a second independent one.
 - OCC field-level `Update` intents must read the current stored value for `old` (never hardcode `null`) — the exact class of bug the M11d-2/phase1-bugs-todo-sweep fixes closed. Every new dispatched `Update` in this plan follows that pattern.
 - Commit after each task's gate passes. One task = one or more commits, never a mixed commit spanning two tasks.
-- This plan intentionally excludes the 4 dogfood-polish features I2 (rich tooltip data plumbing already exists) is included as **Task 38**; I1 is **already implemented** — Task 37 is verify-and-close, not new code.
+- This plan intentionally builds all 4 dogfood-polish bucket-C features per user directive: Task 41 (I2, rich roll tooltip); Task 42 (I3, unread badges); Task 43 (I4, failure surfacing); Task 40 (I1) is verify-and-close only — speak-as composer picker is **already implemented** on `main`, confirmed during pre-plan research.
 
 ## Model/Effort directives
 
 **Plan-writing tier:** user chose mainline continuation (this session, Sonnet 5 default effort) over dispatching `sdd-plan-writer-opus`/`sdd-plan-writer-sonnet`.
 
-**Dispatch tier (for execution):** per project CLAUDE.md, `shadowcat-coder` (sonnet, effort: medium) is the default per-task implementer; `shadowcat-code-reviewer` + `shadowcat-spec-reviewer` (sonnet, effort: high) are the two-reviewer review pair at every checkpoint. Each has an `-opus` twin (opus, effort: high) — escalate to the twin when the base agent reports BLOCKED, or a reviewer's findings read shallow/uncertain, before escalating to the human. The user has stated they will be the SDD dispatcher for this plan (mainline session, model-switched at dispatch time) rather than delegating to `sdd-dispatcher`.
+**Dispatch tier (for execution):** per project CLAUDE.md, `shadowcat-coder` (sonnet, effort: medium) is the default per-task implementer; `shadowcat-code-reviewer` + `shadowcat-spec-reviewer` (sonnet, effort: high) are the two-reviewer review pair at every checkpoint. Each has an `-opus` twin (opus, effort: high) — escalate to the twin when the base agent reports BLOCKED, or a reviewer's findings read shallow/uncertain, before escalating to the human. **Corrected 2026-07-19:** this mainline session (Sonnet 5) is the SDD dispatcher, running the loop itself rather than delegating to `sdd-dispatcher`.
 
-**Escalate to `-opus` twins pre-emptively (not just on BLOCKED)** for: Task 6 (B1, set_pointer removal — interacts with the M13e merge engine's absent-vs-null convention), Task 9 (C1, edge-projected environment light — flagged by research as a genuine open design fork with no existing pattern to mirror), Task 17 (E1a, ActorsPanel visual-kind editor extraction — large refactor), Task 39 (I4, chat failure-surfacing protocol addition).
+**Escalate to `-opus` twins pre-emptively (not just on BLOCKED)** for: Task 8 (B1, set_pointer removal — interacts with the M13e merge engine's absent-vs-null convention), Task 11 (C1, edge-projected environment light — flagged by research as a genuine open design fork with no existing pattern to mirror), Task 19 (E1a, ActorsPanel visual-kind editor extraction — large refactor), Task 43 (I4, chat failure-surfacing protocol addition).
 
 ## Buddy-check directives
 
@@ -33,11 +33,11 @@ High-risk signals present (per `buddy-checking` skill's Offered-mode criteria): 
 
 - **Task 4** (A4 — Unrestricted-mode mover-vision gate change)
 - **Task 5** (A5 — vision-mask cache: must fail toward recompute, never a wider mask)
-- **Task 6** (B1 — set_pointer true removal, OCC + merge-engine interaction)
-- **Task 7** (B2 — singleton create-gate)
-- **Task 9** (C1 — edge-projected environment light)
-- **Task 10** (C2 — wall-less-scene full vision)
-- **Task 39** (I4 — chat failure-surfacing: reason channel must not leak authorization detail)
+- **Task 8** (B1 — set_pointer true removal, OCC + merge-engine interaction)
+- **Task 9** (B2 — singleton create-gate)
+- **Task 11** (C1 — edge-projected environment light)
+- **Task 12** (C2 — wall-less-scene full vision)
+- **Task 43** (I4 — chat failure-surfacing: reason channel must not leak authorization detail)
 
 All other tasks get the standard single-reviewer-pair gate; the dispatcher may additionally **offer** (not require) a buddy-check on any task whose diff reads unusually large or uncertain, per the `buddy-checking` skill's Offered mode — the human decides whether to accept the offer.
 
