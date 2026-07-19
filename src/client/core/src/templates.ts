@@ -193,8 +193,11 @@ function revertEmbedded(
  * recursing into its own embedded collections the same way. */
 function revertChild(child: WireDocument, template: WireDocument): WireDocument {
   const bands = revertBands(child, template, placementExclusions(child.doc_type));
+  // Full clone (not a shallow spread) so the returned envelope never aliases `child`'s
+  // `permissions`/`scope`/`source`/`owner` — mirrors `applyMergedBands` in `merge.ts`.
+  const out = structuredClone(child) as WireDocument;
   return {
-    ...child,
+    ...out,
     name: bands.name,
     engine: bands.engine,
     system: bands.system,

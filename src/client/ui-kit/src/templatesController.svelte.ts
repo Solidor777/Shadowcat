@@ -62,13 +62,28 @@ export class TemplatesController {
   canPull(childId: string): boolean {
     const child = this.#get(childId);
     if (!child || !this.#templateOf(child)) return false;
-    return this.#isOwnerOrGm(child) && this.#deps.canEdit(child, "/base") && this.#deps.canEdit(child, "/system");
+    // Advisory client-side mirror of the server cap union (spec §4.2): WRITE_FIELDS
+    // (base/system) ∪ MANAGE_EMBEDDED. A merge plan is not computed here (expensive/premature —
+    // it isn't computed until the user clicks pull), so a user missing MANAGE_EMBEDDED is
+    // withheld even for a merge that happens to touch no embedded content (false negative, safe
+    // direction to err in).
+    return (
+      this.#isOwnerOrGm(child) &&
+      this.#deps.canEdit(child, "/base") &&
+      this.#deps.canEdit(child, "/system") &&
+      this.#deps.canEdit(child, "/embedded")
+    );
   }
 
   canPush(templateId: string): boolean {
     const tmpl = this.#get(templateId);
     if (!tmpl) return false;
-    return this.#isOwnerOrGm(tmpl) && this.findInstances(templateId).length > 0;
+    // See `canPull`'s comment: same advisory cap-union mirror, checked against the template doc.
+    return (
+      this.#isOwnerOrGm(tmpl) &&
+      this.#deps.canEdit(tmpl, "/embedded") &&
+      this.findInstances(templateId).length > 0
+    );
   }
 
   pull(childId: string): void {

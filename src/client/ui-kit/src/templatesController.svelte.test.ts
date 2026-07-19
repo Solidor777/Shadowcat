@@ -104,6 +104,40 @@ describe("TemplatesController", () => {
     expect(ctrl.canPull("C")).toBe(false);
   });
 
+  it("canPull is false for a user who can edit base/system but not embedded", () => {
+    const tmpl = doc({ id: "T" });
+    const child = doc({ id: "C", owner: "u-self", source: { id: "T", pack: null, version: 1 } });
+    const store = new DocumentStore();
+    store.applyCommand({
+      seq: 1, world_id: "w1", author: "a", ts: 0,
+      ops: [tmpl, child].map((d) => ({ op: "create", doc: d } as WireOperation)),
+    });
+    const ctrl = new TemplatesController({
+      store, documents: store, dispatchIntent: () => {},
+      role: "player", selfId: "u-self",
+      canEdit: (_doc, path) => path === "/base" || path === "/system",
+      logger: silentLogger,
+    });
+    expect(ctrl.canPull("C")).toBe(false);
+  });
+
+  it("canPush is false for a user who can edit base/system but not embedded", () => {
+    const tmpl = doc({ id: "T", owner: "u-self" });
+    const inst = doc({ id: "A", source: { id: "T", pack: null, version: 1 } });
+    const store = new DocumentStore();
+    store.applyCommand({
+      seq: 1, world_id: "w1", author: "a", ts: 0,
+      ops: [tmpl, inst].map((d) => ({ op: "create", doc: d } as WireOperation)),
+    });
+    const ctrl = new TemplatesController({
+      store, documents: store, dispatchIntent: () => {},
+      role: "player", selfId: "u-self",
+      canEdit: (_doc, path) => path === "/base" || path === "/system",
+      logger: silentLogger,
+    });
+    expect(ctrl.canPush("T")).toBe(false);
+  });
+
   it("findInstances returns instances of the template from the store", () => {
     const tmpl = doc({ id: "T" });
     const a = doc({ id: "A", source: { id: "T", pack: null, version: 1 } });

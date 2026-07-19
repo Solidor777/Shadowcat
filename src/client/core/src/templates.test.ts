@@ -251,6 +251,22 @@ describe("computeRevert", () => {
     expect(kids[0].source).toEqual({ id: "tc", pack: null, version: 1 }); // template child stamped
     expect(kids.some((k) => k.id === "local")).toBe(false); // child-added dropped
   });
+
+  it("does not alias the correlated embedded child's envelope objects into the reverted output (purity)", () => {
+    const tmplChild = doc({ id: "tc", system: { k: 1 } });
+    const tmpl = doc({ id: "T", embedded: { items: [tmplChild] } });
+    const instChild = doc({ id: "ic", source: { id: "tc", pack: null, version: 1 }, system: { k: 2 } });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: { items: [instChild] } });
+    child.base = snapshotBaseForTest(child);
+    const op = computeRevert(child, tmpl);
+    if (op.op !== "update") throw new Error("expected update");
+    const emb = op.changes.find((c) => c.path === "/embedded/items")!;
+    const kids = emb.new as WireDocument[];
+    const reverted = kids.find((k) => k.source?.id === "tc")!;
+    expect(reverted.permissions).not.toBe(instChild.permissions);
+    instChild.permissions.default = "observer";
+    expect(reverted.permissions.default).toBe("none");
+  });
 });
 
 // local helper: base snapshot for the revert test above
