@@ -217,6 +217,10 @@ export function restampSubtree(doc: WireDocument): WireDocument {
   const out = structuredClone(doc) as WireDocument;
   out.id = crypto.randomUUID();
   out.source = { id: doc.id, pack: null, version: doc.source?.version ?? 1 };
+  // `base` (a sync snapshot) belongs only on a top-level stamped document, set explicitly by
+  // `stampInstance` after the whole tree is assembled; a restamped subtree has no prior sync
+  // snapshot of its own, so clear any stale/foreign `base` the clone inherited from `doc`.
+  out.base = undefined;
   const embedded: Record<string, WireDocument[]> = {};
   for (const [coll, kids] of Object.entries(doc.embedded)) embedded[coll] = kids.map(restampSubtree);
   out.embedded = embedded;
@@ -258,7 +262,11 @@ function childUnchangedVsBase(child: WireDocument, b: EmbeddedBaseChild): boolea
 }
 
 function applyMergedBands(child: WireDocument, bands: MergeBands): WireDocument {
-  return { ...child, name: bands.name, engine: bands.engine, system: bands.system, embedded: bands.embedded };
+  // Full clone (not a shallow spread) so the returned envelope never aliases `child`'s
+  // `permissions`/`scope`/`source`/`owner` — matches every other crossing point in
+  // `merge3Embedded` (instance-added, base-missing fail-safe, kept-pending-conflict).
+  const out = structuredClone(child) as WireDocument;
+  return { ...out, name: bands.name, engine: bands.engine, system: bands.system, embedded: bands.embedded };
 }
 
 function prefixConflicts(conflicts: Conflict[], coll: string, idx: number): Conflict[] {
@@ -308,6 +316,8 @@ function merge3Embedded(
         continue;
       }
       // template absent, base present → template-deleted this correlation
+      // invariant: correlated && !t implies b is defined (correlated's disjunction forces
+      // baseBySource.has(sid) when templateById.has(sid) is false)
       if (b) {
         if (childUnchangedVsBase(cd, b)) continue; // drop
         const idx = out.length;

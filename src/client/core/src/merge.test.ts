@@ -263,6 +263,13 @@ describe("restampSubtree", () => {
     expect(sc.id).not.toBe("gc");
     expect(sc.source).toEqual({ id: "gc", pack: null, version: 1 });
   });
+
+  it("clears a stale `base` inherited from the input document", () => {
+    const child = doc({ id: "tmpl" });
+    child.base = { name: null, engine: null, system: {}, embedded: {} };
+    const stamped = restampSubtree(child);
+    expect(stamped.base).toBeUndefined();
+  });
 });
 
 describe("merge3 embedded", () => {
@@ -276,6 +283,19 @@ describe("merge3 embedded", () => {
     expect(conflicts).toEqual([]);
     expect((mergedBands.embedded.items[0].system as { hp: number }).hp).toBe(5);
     expect(mergedBands.embedded.items[0].id).toBe("ic"); // instance envelope preserved
+  });
+
+  it("matched-child recursion does not alias the instance child's envelope objects (purity)", () => {
+    const instChild = doc({ id: "ic", source: { id: "tc", pack: null, version: 1 }, system: { hp: 1 } });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: { items: [instChild] } });
+    const base = baseOf(child);
+    const tmplChild2 = doc({ id: "tc", system: { hp: 5 } });
+    const template2 = doc({ id: "T", embedded: { items: [tmplChild2] } });
+    const { mergedBands } = merge3(base, template2, child, []);
+    const mergedChild = mergedBands.embedded.items[0];
+    expect(mergedChild.permissions).not.toBe(instChild.permissions);
+    instChild.permissions.default = "observer";
+    expect(mergedChild.permissions.default).toBe("none");
   });
 
   it("template-added child is stamped into the instance", () => {
