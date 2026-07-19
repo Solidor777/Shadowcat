@@ -1,4 +1,4 @@
-use crate::data::document::Document;
+use crate::data::document::{AdditionalProperties, Document, Schema, SchemaType};
 use crate::data::engine;
 use crate::data::DataError;
 
@@ -76,6 +76,152 @@ pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
         }
     }
     Ok(())
+}
+
+/// A structural mismatch: the JSON pointer (relative to the validated value's
+/// root) of the offending location plus a shape-only reason. Never carries a
+/// value's content.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SchemaMismatch {
+    pub pointer: String,
+    pub reason: String,
+}
+
+/// The JSON type name of a value, for structural error phrasing.
+fn json_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+/// The schema type name, for structural error phrasing.
+fn schema_type_label(t: SchemaType) -> &'static str {
+    match t {
+        SchemaType::Object => "object",
+        SchemaType::Array => "array",
+        SchemaType::String => "string",
+        SchemaType::Number => "number",
+        SchemaType::Boolean => "boolean",
+        SchemaType::Null => "null",
+    }
+}
+
+/// RFC-6901 reference-token escaping: `~` -> `~0`, `/` -> `~1`. Keeps a member
+/// key with a slash from forging a spurious pointer segment.
+fn escape_token(key: &str) -> String {
+    key.replace('~', "~0").replace('/', "~1")
+}
+
+/// Shape-only match of a JSON value against a schema type-tree node (M13f
+/// tier-2). NEVER inspects a value's magnitude/content (invariant 6): scalars
+/// match on JSON type alone. `additionalProperties` defaults to closed (F2).
+pub fn validate_value_against_schema(
+    value: &serde_json::Value,
+    schema: &Schema,
+) -> Result<(), SchemaMismatch> {
+    check_value(value, schema, String::new())
+}
+
+fn check_value(
+    value: &serde_json::Value,
+    schema: &Schema,
+    at: String,
+) -> Result<(), SchemaMismatch> {
+    // A typeless node (`{}`) matches any JSON value.
+    let Some(ty) = schema.ty else {
+        return Ok(());
+    };
+    // `nullable: true` widens exactly this node to also accept JSON null. The
+    // `null` type accepts null inherently.
+    if value.is_null() {
+        if ty == SchemaType::Null || schema.nullable == Some(true) {
+            return Ok(());
+        }
+        return Err(SchemaMismatch {
+            pointer: at,
+            reason: format!("expected {}, got null", schema_type_label(ty)),
+        });
+    }
+    match ty {
+        SchemaType::Null => Err(SchemaMismatch {
+            pointer: at,
+            reason: format!("expected null, got {}", json_type_name(value)),
+        }),
+        SchemaType::Boolean if !value.is_boolean() => Err(SchemaMismatch {
+            pointer: at,
+            reason: format!("expected boolean, got {}", json_type_name(value)),
+        }),
+        SchemaType::Number if !value.is_number() => Err(SchemaMismatch {
+            pointer: at,
+            reason: format!("expected number, got {}", json_type_name(value)),
+        }),
+        SchemaType::String if !value.is_string() => Err(SchemaMismatch {
+            pointer: at,
+            reason: format!("expected string, got {}", json_type_name(value)),
+        }),
+        SchemaType::Boolean | SchemaType::Number | SchemaType::String => Ok(()),
+        SchemaType::Array => {
+            let Some(arr) = value.as_array() else {
+                return Err(SchemaMismatch {
+                    pointer: at,
+                    reason: format!("expected array, got {}", json_type_name(value)),
+                });
+            };
+            if let Some(items) = &schema.items {
+                for (i, el) in arr.iter().enumerate() {
+                    check_value(el, items, format!("{at}/{i}"))?;
+                }
+            }
+            Ok(())
+        }
+        SchemaType::Object => {
+            let Some(obj) = value.as_object() else {
+                return Err(SchemaMismatch {
+                    pointer: at,
+                    reason: format!("expected object, got {}", json_type_name(value)),
+                });
+            };
+            if let Some(required) = &schema.required {
+                for key in required {
+                    if !obj.contains_key(key) {
+                        return Err(SchemaMismatch {
+                            pointer: format!("{at}/{}", escape_token(key)),
+                            reason: format!("missing required key '{key}'"),
+                        });
+                    }
+                }
+            }
+            for (key, val) in obj {
+                let child_ptr = format!("{at}/{}", escape_token(key));
+                if let Some(props) = &schema.properties {
+                    if let Some(sub) = props.get(key) {
+                        check_value(val, sub, child_ptr)?;
+                        continue;
+                    }
+                }
+                // Key not in `properties`: governed by additionalProperties,
+                // which defaults to closed (F2) when absent.
+                match &schema.additional_properties {
+                    None | Some(AdditionalProperties::Bool(false)) => {
+                        return Err(SchemaMismatch {
+                            pointer: child_ptr,
+                            reason: format!("unknown key '{key}' not permitted by schema"),
+                        });
+                    }
+                    Some(AdditionalProperties::Bool(true)) => {}
+                    Some(AdditionalProperties::Schema(sub)) => {
+                        check_value(val, sub, child_ptr)?;
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 /// A valid JSON pointer is empty or a sequence of "/"-prefixed tokens.
@@ -437,5 +583,117 @@ mod tests {
             doc.base.unwrap()["engine"]["seg"]["x1"],
             serde_json::json!("not-a-number")
         );
+    }
+
+    // --- validate_value_against_schema: accept/reject matrix (M13f tier-2) ---
+    // `Schema` is already in scope via `use super::*` (top-of-file import).
+
+    fn obj_schema(props: serde_json::Value) -> Schema {
+        // Build a Schema from a JSON literal (exercises the real deserialize path).
+        serde_json::from_value(props).unwrap()
+    }
+
+    #[test]
+    fn scalar_type_match_and_mismatch() {
+        let s: Schema = obj_schema(serde_json::json!({ "type": "number" }));
+        assert!(validate_value_against_schema(&serde_json::json!(3), &s).is_ok());
+        let err = validate_value_against_schema(&serde_json::json!("x"), &s).unwrap_err();
+        assert_eq!(err.reason, "expected number, got string");
+    }
+
+    #[test]
+    fn nullable_accepts_null_and_non_nullable_rejects_null() {
+        let n: Schema = obj_schema(serde_json::json!({ "type": "number", "nullable": true }));
+        assert!(validate_value_against_schema(&serde_json::json!(null), &n).is_ok());
+        let s: Schema = obj_schema(serde_json::json!({ "type": "number" }));
+        let err = validate_value_against_schema(&serde_json::json!(null), &s).unwrap_err();
+        assert_eq!(err.reason, "expected number, got null");
+    }
+
+    #[test]
+    fn null_type_requires_null() {
+        let s: Schema = obj_schema(serde_json::json!({ "type": "null" }));
+        assert!(validate_value_against_schema(&serde_json::json!(null), &s).is_ok());
+        assert!(validate_value_against_schema(&serde_json::json!(0), &s).is_err());
+    }
+
+    #[test]
+    fn empty_schema_matches_any() {
+        let any = Schema::default();
+        assert!(
+            validate_value_against_schema(&serde_json::json!({ "a": [1, "b", null] }), &any)
+                .is_ok()
+        );
+        assert!(validate_value_against_schema(&serde_json::json!(null), &any).is_ok());
+    }
+
+    #[test]
+    fn required_present_vs_missing() {
+        let s: Schema = obj_schema(serde_json::json!({
+            "type": "object", "required": ["kind"], "properties": { "kind": { "type": "string" } }
+        }));
+        assert!(validate_value_against_schema(&serde_json::json!({ "kind": "stat" }), &s).is_ok());
+        let err = validate_value_against_schema(&serde_json::json!({}), &s).unwrap_err();
+        assert_eq!(err.reason, "missing required key 'kind'");
+        assert_eq!(err.pointer, "/kind");
+    }
+
+    #[test]
+    fn additional_properties_closed_by_default_rejects_unknown_key() {
+        let s: Schema = obj_schema(serde_json::json!({
+            "type": "object", "properties": { "a": { "type": "number" } }
+        }));
+        let err =
+            validate_value_against_schema(&serde_json::json!({ "a": 1, "b": 2 }), &s).unwrap_err();
+        assert_eq!(err.reason, "unknown key 'b' not permitted by schema");
+        assert_eq!(err.pointer, "/b");
+    }
+
+    #[test]
+    fn additional_properties_subschema_accepts_open_map_and_rejects_wrong_type() {
+        // The Nightfox open user-keyed stat map.
+        let s: Schema = obj_schema(serde_json::json!({
+            "type": "object",
+            "additionalProperties": { "type": "object", "required": ["kind"],
+                "properties": { "kind": { "type": "string" } } }
+        }));
+        assert!(validate_value_against_schema(
+            &serde_json::json!({ "str": { "kind": "ability" }, "dex": { "kind": "ability" } }),
+            &s
+        )
+        .is_ok());
+        let err = validate_value_against_schema(&serde_json::json!({ "str": { "kind": 5 } }), &s)
+            .unwrap_err();
+        assert_eq!(err.reason, "expected string, got number");
+        assert_eq!(err.pointer, "/str/kind");
+    }
+
+    #[test]
+    fn additional_properties_true_permits_any_extra_key() {
+        let s: Schema = obj_schema(serde_json::json!({
+            "type": "object", "properties": { "a": { "type": "number" } },
+            "additionalProperties": true
+        }));
+        assert!(
+            validate_value_against_schema(&serde_json::json!({ "a": 1, "b": [1, 2] }), &s).is_ok()
+        );
+    }
+
+    #[test]
+    fn array_items_uniform_typing() {
+        let s: Schema =
+            obj_schema(serde_json::json!({ "type": "array", "items": { "type": "number" } }));
+        assert!(validate_value_against_schema(&serde_json::json!([1, 2, 3]), &s).is_ok());
+        let err = validate_value_against_schema(&serde_json::json!([1, "x"]), &s).unwrap_err();
+        assert_eq!(err.reason, "expected number, got string");
+        assert_eq!(err.pointer, "/1");
+        // Not an array at all.
+        assert!(validate_value_against_schema(&serde_json::json!({}), &s).is_err());
+    }
+
+    #[test]
+    fn array_without_items_accepts_mixed_elements() {
+        let s: Schema = obj_schema(serde_json::json!({ "type": "array" }));
+        assert!(validate_value_against_schema(&serde_json::json!([1, "x", null]), &s).is_ok());
     }
 }
