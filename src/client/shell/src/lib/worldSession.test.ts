@@ -51,6 +51,7 @@ const welcomeFrame = {
   user_role: "player",
   capability_requirements: [],
   contract_declarations: [],
+  schema_declarations: [],
 };
 
 // Deliver the Welcome `count` times to exercise reconnect-idempotency (the

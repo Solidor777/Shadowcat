@@ -59,6 +59,7 @@ export class MockServer {
         user_role: "player",
         capability_requirements: [],
         contract_declarations: [],
+        schema_declarations: [],
       });
       return Promise.resolve(transport);
     };

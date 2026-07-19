@@ -78,6 +78,48 @@ export const ContractDeclarationSchema = z.object({
 });
 export type WireContractDeclaration = z.infer<typeof ContractDeclarationSchema>;
 
+export const SchemaTypeSchema = z.enum([
+  "object",
+  "array",
+  "string",
+  "number",
+  "boolean",
+  "null",
+]);
+
+// Recursive structural type-tree (M13f tier-2). `additionalProperties` is
+// `boolean | Schema`; absent fields are optional (server omits None via
+// skip_serializing_if). Shape only — never a value rule.
+export type WireSchema = {
+  type?: z.infer<typeof SchemaTypeSchema>;
+  properties?: Record<string, WireSchema>;
+  required?: string[];
+  additionalProperties?: boolean | WireSchema;
+  items?: WireSchema;
+  nullable?: boolean;
+};
+
+export const SchemaSchema: z.ZodType<WireSchema> = z.lazy(() =>
+  z.object({
+    type: SchemaTypeSchema.optional(),
+    properties: z.record(SchemaSchema).optional(),
+    required: z.array(z.string()).optional(),
+    additionalProperties: z.union([z.boolean(), SchemaSchema]).optional(),
+    items: SchemaSchema.optional(),
+    nullable: z.boolean().optional(),
+  }),
+);
+
+export const SchemaDeclarationSchema = z.object({
+  module_id: z.string(),
+  version: z.string(),
+  schema_format: int,
+  doc_type: z.string(),
+  subtree_pointer: z.string(),
+  schema: SchemaSchema,
+});
+export type WireSchemaDeclaration = z.infer<typeof SchemaDeclarationSchema>;
+
 export const PermissionSetSchema = z.object({
   default: DocRoleSchema,
   users: z.record(DocRoleSchema),
@@ -177,6 +219,7 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     user_role: WorldRoleSchema,
     capability_requirements: z.array(CapabilityRequirementSchema),
     contract_declarations: z.array(ContractDeclarationSchema),
+    schema_declarations: z.array(SchemaDeclarationSchema),
   }),
   z.object({
     type: z.literal("event"),

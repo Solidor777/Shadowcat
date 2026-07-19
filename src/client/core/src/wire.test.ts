@@ -11,6 +11,8 @@ import {
   WsErrorCodeSchema,
   SendMessageSchema,
   DocumentSchema,
+  SchemaTypeSchema,
+  SchemaDeclarationSchema,
   type ServerMsg,
   type ClientMsg,
   type WireOperation,
@@ -76,6 +78,23 @@ describe("wire drift guard — message discriminants", () => {
   it("Operation op tags", () => {
     expectTypeOf<WireOperation["op"]>().toEqualTypeOf<Ts.Operation["op"]>();
   });
+  it("Welcome schema_declarations match ts-rs", () => {
+    type W = Extract<ServerMsg, { type: "welcome" }>;
+    type T = Extract<Ts.ServerMsg, { type: "welcome" }>;
+    expectTypeOf<W["schema_declarations"]>().toEqualTypeOf<T["schema_declarations"]>();
+  });
+});
+
+describe("wire drift guard — schema registry", () => {
+  it("SchemaType enum", () => {
+    expectTypeOf<z.infer<typeof SchemaTypeSchema>>().toEqualTypeOf<Ts.SchemaType>();
+  });
+  it("SchemaDeclaration shape", () => {
+    // module_id/version/doc_type/subtree_pointer are strings, schema_format u32.
+    expectTypeOf<
+      z.infer<typeof SchemaDeclarationSchema>["subtree_pointer"]
+    >().toEqualTypeOf<Ts.SchemaDeclaration["subtree_pointer"]>();
+  });
 });
 
 describe("parseServerMsg", () => {
@@ -91,6 +110,7 @@ describe("parseServerMsg", () => {
         user_role: "player",
         capability_requirements: [],
         contract_declarations: [],
+        schema_declarations: [],
       }),
     );
     expect(m?.type).toBe("welcome");
@@ -108,6 +128,7 @@ describe("parseServerMsg", () => {
         user_role: "gm",
         capability_requirements: [{ path_prefix: "/system/vision", caps: ["dnd5e:gm_vision"] }],
         contract_declarations: [],
+        schema_declarations: [],
       }),
     );
     expect(m?.type).toBe("welcome");
