@@ -332,25 +332,32 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
             )
         })
         .collect();
-    let hidden: Vec<String> = doc
+    let mut hidden: Vec<String> = doc
         .permissions
         .property_overrides
         .iter()
         .filter(|(_, v)| !access.can_see(**v))
         .map(|(p, _)| p.clone())
         .collect();
+    // `base` is a historical snapshot of this doc's own (possibly hidden) bands — it is
+    // hardcoded `OwnerOrGm` visibility, unconditional and non-overridable (M13e), independent
+    // of `property_overrides`. Only the document's owner or a GM ever needs it to compute a
+    // pull/push/revert; no other recipient should receive the raw snapshot.
+    if !access.can_see(Visibility::OwnerOrGm) {
+        hidden.push("/base".to_string());
+    }
     let mut whole = serde_json::to_value(&out).expect("document serializes");
     for pointer in hidden {
-        // `/system`, `/engine`, and `/name` target `Document` fields directly:
+        // `/system`, `/engine`, `/name`, and `/base` target `Document` fields directly:
         // dropping the key would (for `system`, a required field) fail
-        // re-deserialization, or (for the `Option` fields `engine`/`name`) be
+        // re-deserialization, or (for the `Option` fields `engine`/`name`/`base`) be
         // indistinguishable from a doc that never carried one, breaking the
         // client's stable envelope shape. Null them instead; nested pointers
         // (e.g. `/system/name`, `/engine/vision`) target an arbitrary body one
         // level down, where callers rely on true key absence, so those keep
         // the normal strip.
         match pointer.as_str() {
-            "/system" | "/engine" | "/name" => {
+            "/system" | "/engine" | "/name" | "/base" => {
                 if let Some(f) = whole.get_mut(&pointer[1..]) {
                     *f = serde_json::Value::Null;
                 }
@@ -372,6 +379,14 @@ fn collect_hidden(doc: &Document, access: &Access, prefix: &str, out: &mut Vec<S
         if !access.can_see(*v) {
             out.push(format!("{prefix}{p}"));
         }
+    }
+    // Mirrors `filter_properties`' hardcoded `OwnerOrGm` policy for `/base` (M13e) — see
+    // that function's comment. This recursion structure means the push fires at every
+    // embedded depth too (each recursive call gets its own `prefix`), covering an embedded
+    // child's own `base` the same way, even though `base` is documented as top-level-only —
+    // defense in depth costs nothing here.
+    if !access.can_see(Visibility::OwnerOrGm) {
+        out.push(format!("{prefix}/base"));
     }
     for (key, children) in &doc.embedded {
         for (idx, child) in children.iter().enumerate() {
@@ -945,6 +960,127 @@ mod tests {
 
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d);
         assert_eq!(filter_properties(&d, &gm).name.as_deref(), Some("Strahd"));
+    }
+
+    #[test]
+    fn base_is_hardcoded_owner_or_gm_unconditional_of_overrides() {
+        // `base` is a historical snapshot that may echo content hidden elsewhere in the
+        // document (e.g. via `property_overrides`). Its own visibility is hardcoded
+        // `OwnerOrGm` and must NOT depend on `property_overrides` at all — this doc has
+        // NONE, proving the hiding isn't override-driven.
+        let owner = Uuid::from_u128(1);
+        let other = Uuid::from_u128(2);
+        let mut d = doc(PermissionSet::default(), serde_json::json!({ "hp": 10 }));
+        d.owner = Some(owner);
+        d.base = Some(serde_json::json!({ "name": "Goblin", "system": { "hp": 10 } }));
+
+        // Non-owner, non-GM: base is nulled.
+        let a_other = resolve_access(other, WorldRole::Player, &d);
+        assert_eq!(filter_properties(&d, &a_other).base, None);
+
+        // Owner (non-GM): sees the real base.
+        let a_owner = resolve_access(owner, WorldRole::Player, &d);
+        assert_eq!(filter_properties(&d, &a_owner).base, d.base);
+
+        // GM: sees the real base.
+        let a_gm = resolve_access(other, WorldRole::Gm, &d);
+        assert_eq!(filter_properties(&d, &a_gm).base, d.base);
+    }
+
+    #[tokio::test]
+    async fn filter_command_update_drops_base_field_change_for_non_owner_non_gm() {
+        // A field-level `/base` FieldChange in a broadcast Update must be entirely dropped
+        // for a non-owner non-GM recipient (via `collect_hidden`/`redact_change`), but
+        // passed through unchanged for the owner and for a GM.
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let owner = r
+            .create_user("owner", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+
+        let mut d = doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "hp": 10 }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        d.owner = Some(owner);
+        d.base = Some(serde_json::json!({ "system": { "hp": 5 } }));
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: d.clone() }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let cmd = Command {
+            seq: 2,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id: d.id,
+                changes: vec![FieldChange {
+                    path: "/base".into(),
+                    old: serde_json::json!({ "system": { "hp": 5 } }),
+                    new: serde_json::json!({ "system": { "hp": 10 } }),
+                }],
+            }],
+        };
+
+        // Non-owner, non-GM: the change is dropped entirely.
+        let other = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let out_other = filter_command(&r, &cmd, &other, &WorldCapDefaults::default()).await;
+        let Operation::Update { changes, .. } = &out_other.ops[0] else {
+            panic!("expected Update");
+        };
+        assert!(
+            changes.is_empty(),
+            "non-owner non-GM must not receive a /base FieldChange"
+        );
+
+        // Owner: passed through unchanged.
+        let owner_ctx = PermissionContext {
+            user_id: owner,
+            world_role: WorldRole::Player,
+        };
+        let out_owner = filter_command(&r, &cmd, &owner_ctx, &WorldCapDefaults::default()).await;
+        let Operation::Update { changes, .. } = &out_owner.ops[0] else {
+            panic!("expected Update");
+        };
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "/base");
+        assert_eq!(changes[0].new, serde_json::json!({ "system": { "hp": 10 } }));
+
+        // GM: passed through unchanged.
+        let out_gm = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
+        let Operation::Update { changes, .. } = &out_gm.ops[0] else {
+            panic!("expected Update");
+        };
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "/base");
     }
 
     #[test]
