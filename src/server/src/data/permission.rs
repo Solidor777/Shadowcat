@@ -32,6 +32,8 @@ pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
         || path == "/engine"
         || path.starts_with("/engine/")
         || path == "/name"
+        || path == "/base"
+        || path.starts_with("/base/")
     {
         Some(cap::WRITE_FIELDS)
     } else if path == "/embedded" || path.starts_with("/embedded/") {
@@ -69,6 +71,31 @@ mod required_cap_tests {
         // `/name` has no sub-paths — a leaf value, not a container.
         assert_eq!(required_cap_for_path("/name/first"), None);
         assert_eq!(required_cap_for_path("/named"), None);
+    }
+
+    #[test]
+    fn base_whole_and_subpaths_require_write_fields() {
+        assert_eq!(required_cap_for_path("/base"), Some(cap::WRITE_FIELDS));
+        assert_eq!(
+            required_cap_for_path("/base/system/hp"),
+            Some(cap::WRITE_FIELDS)
+        );
+        assert_eq!(
+            required_cap_for_path("/base/embedded/actor/0/name"),
+            Some(cap::WRITE_FIELDS)
+        );
+    }
+
+    #[test]
+    fn base_boundary_neighbor_does_not_match() {
+        assert_eq!(required_cap_for_path("/based"), None);
+    }
+
+    #[test]
+    fn source_is_immutable_no_cap() {
+        // `/source` maps to no capability, so an Update targeting it is Forbidden for everyone.
+        assert_eq!(required_cap_for_path("/source"), None);
+        assert_eq!(required_cap_for_path("/source/id"), None);
     }
 }
 

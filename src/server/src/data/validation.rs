@@ -2,18 +2,19 @@ use crate::data::document::Document;
 use crate::data::engine;
 use crate::data::DataError;
 
-/// Maximum serialized size of EACH opaque body block (`system`, `engine`)
-/// independently. Region/drawing point arrays make `engine` size-unbounded
-/// without this cap (spec S6); the name is kept as `MAX_SYSTEM_BYTES` since
-/// it is referenced by that name across the codebase, but it now bounds
-/// every block, not just `system`.
+/// Maximum serialized size of EACH opaque body block (`system`, `engine`,
+/// `base`) independently. Region/drawing point arrays make `engine`
+/// size-unbounded without this cap (spec S6); the name is kept as
+/// `MAX_SYSTEM_BYTES` since it is referenced by that name across the
+/// codebase, but it now bounds every block, not just `system`.
 pub const MAX_SYSTEM_BYTES: usize = 256 * 1024;
 
 /// Reject a document — and every embedded descendant — whose opaque `system`
-/// body, or (when present) typed `engine` body, exceeds the per-block size
-/// cap. Embedded children are stored inline in the parent JSON, so each body
-/// is bounded independently; the recursion mirrors `embedded`'s finite stored
-/// depth (a document cannot embed itself).
+/// body, or (when present) typed `engine` body, or (when present) opaque
+/// `base` snapshot, exceeds the per-block size cap. Embedded children are
+/// stored inline in the parent JSON, so each body is bounded independently;
+/// the recursion mirrors `embedded`'s finite stored depth (a document cannot
+/// embed itself).
 pub fn validate_system_size(doc: &Document) -> Result<(), DataError> {
     let bytes = serde_json::to_vec(&doc.system)?.len();
     if bytes > MAX_SYSTEM_BYTES {
@@ -23,6 +24,12 @@ pub fn validate_system_size(doc: &Document) -> Result<(), DataError> {
         let eng_bytes = serde_json::to_vec(eng)?.len();
         if eng_bytes > MAX_SYSTEM_BYTES {
             return Err(DataError::TooLarge(eng_bytes));
+        }
+    }
+    if let Some(base) = &doc.base {
+        let base_bytes = serde_json::to_vec(base)?.len();
+        if base_bytes > MAX_SYSTEM_BYTES {
+            return Err(DataError::TooLarge(base_bytes));
         }
     }
     for children in doc.embedded.values() {
@@ -57,6 +64,10 @@ pub fn validate_system_size(doc: &Document) -> Result<(), DataError> {
 /// ingress-absent optional field (e.g. `ActorEngine.faction`) deserializes to
 /// `None`, and the persisted/broadcast form must store that as an explicit
 /// `null` to match the client's `T | null` contract, not silently omit the key.
+///
+/// `doc.base` is NEVER walked here: it is a historical opaque snapshot that
+/// may hold an engine shape invalid under the doc's CURRENT schema, and must
+/// still store as-is (size-capped separately by `validate_system_size`).
 pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
     doc.engine = engine::normalize_engine_opt(&doc.doc_type, doc.engine.as_ref())?;
     for children in doc.embedded.values_mut() {
@@ -386,6 +397,45 @@ mod tests {
         assert!(
             stored["visual"].get("smuggled").is_none(),
             "unknown key smuggled into a tagged-enum sub-object must be dropped on persist"
+        );
+    }
+
+    // --- base: independent size cap + engine-validation exemption ---
+
+    #[test]
+    fn oversized_base_is_rejected() {
+        let mut doc = doc_with_system(serde_json::json!({ "hp": 1 }));
+        doc.base = Some(serde_json::json!({ "blob": "x".repeat(MAX_SYSTEM_BYTES + 1) }));
+        assert!(matches!(
+            validate_system_size(&doc),
+            Err(DataError::TooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn small_base_passes() {
+        let mut doc = doc_with_system(serde_json::json!({ "hp": 1 }));
+        doc.base = Some(serde_json::json!({ "name": "T", "system": { "hp": 1 } }));
+        assert!(validate_system_size(&doc).is_ok());
+    }
+
+    #[test]
+    fn base_holding_stale_engine_is_exempt_from_engine_validation() {
+        // base is a historical snapshot that may predate the current engine schema; it must
+        // store even when it carries an engine shape that is invalid for this doc_type.
+        let mut doc = doc_with_engine(valid_wall_engine());
+        doc.base = Some(serde_json::json!({
+            "name": "Old", "engine": { "seg": { "x1": "not-a-number" } },
+            "system": {}, "embedded": {}
+        }));
+        assert!(
+            validate_engine_tree(&mut doc).is_ok(),
+            "base must not be walked by validate_engine_tree"
+        );
+        // And the stale base survives untouched.
+        assert_eq!(
+            doc.base.unwrap()["engine"]["seg"]["x1"],
+            serde_json::json!("not-a-number")
         );
     }
 }
