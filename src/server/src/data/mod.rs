@@ -35,4 +35,6 @@ pub enum DataError {
     Conflict(String),
     #[error("invalid engine body: {0}")]
     BadEngine(String),
+    #[error("schema violation at {pointer}: {reason}")]
+    SchemaViolation { pointer: String, reason: String },
 }

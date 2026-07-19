@@ -1,4 +1,4 @@
-use crate::data::document::{AdditionalProperties, Document, Schema, SchemaType};
+use crate::data::document::{AdditionalProperties, Document, Schema, SchemaDeclaration, SchemaType};
 use crate::data::engine;
 use crate::data::DataError;
 
@@ -222,6 +222,44 @@ fn check_value(
             Ok(())
         }
     }
+}
+
+/// Validate the POST-IMAGE `system` band against the world's registered
+/// structural schemas (M13f tier-2), recursing embedded descendants — each
+/// looked up by its OWN `doc_type`. READ-ONLY: unlike `validate_engine_tree`,
+/// there is no normalization; tier-2 only accepts/rejects and must not reshape
+/// the opaque `system` body. A subtree registered but absent in this document is
+/// NOT a violation (registering a schema governs shape-when-present, never
+/// compels presence). `subtree_pointer` is a strict `/system/…` descendant
+/// (guaranteed at set-time by `validate_schema_declarations`), so the leading
+/// `/system` is stripped and the remainder resolved within `doc.system`.
+pub fn validate_system_schema_tree(
+    doc: &Document,
+    schemas: &[SchemaDeclaration],
+) -> Result<(), DataError> {
+    for decl in schemas {
+        if decl.doc_type != doc.doc_type {
+            continue;
+        }
+        // Strict `/system/…` descendant → strip the `/system` prefix and resolve
+        // the remainder (`/stats`, `/mechanics/version`, …) inside `doc.system`.
+        let rel = &decl.subtree_pointer["/system".len()..];
+        let Some(subtree) = doc.system.pointer(rel) else {
+            continue; // absent subtree: not a violation
+        };
+        if let Err(m) = validate_value_against_schema(subtree, &decl.schema) {
+            return Err(DataError::SchemaViolation {
+                pointer: format!("{}{}", decl.subtree_pointer, m.pointer),
+                reason: m.reason,
+            });
+        }
+    }
+    for children in doc.embedded.values() {
+        for child in children {
+            validate_system_schema_tree(child, schemas)?;
+        }
+    }
+    Ok(())
 }
 
 /// A valid JSON pointer is empty or a sequence of "/"-prefixed tokens.
@@ -695,5 +733,107 @@ mod tests {
     fn array_without_items_accepts_mixed_elements() {
         let s: Schema = obj_schema(serde_json::json!({ "type": "array" }));
         assert!(validate_value_against_schema(&serde_json::json!([1, "x", null]), &s).is_ok());
+    }
+
+    // --- validate_system_schema_tree: subtree scoping, embedded, absent-ok ---
+
+    fn decl(doc_type: &str, pointer: &str, schema: serde_json::Value) -> SchemaDeclaration {
+        SchemaDeclaration {
+            module_id: "m".into(),
+            version: "1".into(),
+            schema_format: 1,
+            doc_type: doc_type.into(),
+            subtree_pointer: pointer.into(),
+            schema: serde_json::from_value(schema).unwrap(),
+        }
+    }
+
+    #[test]
+    fn tree_validator_rejects_a_violating_subtree_with_prefixed_pointer() {
+        let doc = doc_with_system(serde_json::json!({ "stats": { "str": { "kind": 5 } } }));
+        let schemas = vec![decl(
+            "actor",
+            "/system/stats",
+            serde_json::json!({ "type": "object",
+                "additionalProperties": { "type": "object",
+                    "properties": { "kind": { "type": "string" } } } }),
+        )];
+        let err = validate_system_schema_tree(&doc, &schemas).unwrap_err();
+        match err {
+            DataError::SchemaViolation { pointer, reason } => {
+                assert_eq!(pointer, "/system/stats/str/kind");
+                assert_eq!(reason, "expected string, got number");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tree_validator_absent_subtree_is_ok() {
+        let doc = doc_with_system(serde_json::json!({ "other": 1 }));
+        let schemas = vec![decl("actor", "/system/stats", serde_json::json!({ "type": "object" }))];
+        assert!(validate_system_schema_tree(&doc, &schemas).is_ok());
+    }
+
+    #[test]
+    fn tree_validator_unregistered_doc_type_passes() {
+        let doc = doc_with_system(serde_json::json!({ "anything": true }));
+        let schemas = vec![decl("item", "/system/x", serde_json::json!({ "type": "number" }))];
+        assert!(validate_system_schema_tree(&doc, &schemas).is_ok());
+    }
+
+    #[test]
+    fn tree_validator_disjoint_subtrees_both_enforce() {
+        let mut doc = doc_with_system(serde_json::json!({
+            "stats": { "str": { "kind": "ability" } },
+            "mechanics": { "version": "not-a-number" }
+        }));
+        doc.doc_type = "actor".into();
+        let schemas = vec![
+            decl("actor", "/system/stats", serde_json::json!({ "type": "object",
+                "additionalProperties": { "type": "object",
+                    "properties": { "kind": { "type": "string" } } } })),
+            decl("actor", "/system/mechanics", serde_json::json!({ "type": "object",
+                "required": ["version"], "properties": { "version": { "type": "number" } } })),
+        ];
+        let err = validate_system_schema_tree(&doc, &schemas).unwrap_err();
+        assert!(matches!(err, DataError::SchemaViolation { .. }));
+    }
+
+    #[test]
+    fn tree_validator_recurses_embedded_by_child_doc_type() {
+        let mut parent = doc_with_system(serde_json::json!({}));
+        parent.doc_type = "actor".into();
+        let mut child = doc_with_system(serde_json::json!({ "power": { "cost": "free" } }));
+        child.doc_type = "item".into();
+        parent.embedded.insert("items".into(), vec![child]);
+        let schemas = vec![decl(
+            "item",
+            "/system/power",
+            serde_json::json!({ "type": "object", "properties": { "cost": { "type": "number" } } }),
+        )];
+        let err = validate_system_schema_tree(&parent, &schemas).unwrap_err();
+        assert!(matches!(err, DataError::SchemaViolation { .. }));
+    }
+
+    #[test]
+    fn tree_validator_grandchild_violation_rejects() {
+        let mut parent = doc_with_system(serde_json::json!({}));
+        parent.doc_type = "actor".into();
+        let mut child = doc_with_system(serde_json::json!({}));
+        child.doc_type = "container".into();
+        let mut gc = doc_with_system(serde_json::json!({ "power": { "cost": "free" } }));
+        gc.doc_type = "item".into();
+        child.embedded.insert("nested".into(), vec![gc]);
+        parent.embedded.insert("items".into(), vec![child]);
+        let schemas = vec![decl(
+            "item",
+            "/system/power",
+            serde_json::json!({ "type": "object", "properties": { "cost": { "type": "number" } } }),
+        )];
+        assert!(matches!(
+            validate_system_schema_tree(&parent, &schemas),
+            Err(DataError::SchemaViolation { .. })
+        ));
     }
 }
