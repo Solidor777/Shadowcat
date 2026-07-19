@@ -19,9 +19,6 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 ## Server / lint hygiene
 - RESOLVED: `move_exec.rs::region_doc` (test helper) tripped `clippy::too_many_arguments` (8 positional params) under `cargo clippy --all-targets -- -D warnings`. Fixed by bundling the four rect coordinates into a single `rect: (f64, f64, f64, f64)` tuple param (destructured via `let (x0, y0, x1, y1) = rect;`), reducing the signature to 5 params; all 9 call sites updated to pass a tuple. No `#[allow(...)]` suppression used.
 
-## Server / scene ECS (M13-0)
-- TODO: `engine_as::<T>()` (`scene/mod.rs`) clones the document's `engine` JSON value and runs a full `serde_json::from_value` deserialize on every call, replacing the old per-field pointer reads (`sys_f64`/`v.pointer(...)`) across the vision/lighting/pathfinding hot paths (`region_field`, `resolve_scene`, `player_vision_polygons`, per-step `move_exec`/A* callers). A constant-factor perf regression vs. the old direct reads; profile and add a per-entity cached-decode (or a cheaper borrowed-deserialize) if it shows up under load.
-
 ## Server / pathfinding
 - TODO: Buddy-check Minor (B2): the A* search window = AABB{start∪waypoints∪wall-endpoints}+8-cell margin; a legitimate route whose detour must bulge >8 cells beyond that AABB is reported Unreachable (fail-closed). Inert until a real map hits it; add a `tracing::debug!` at window-edge leg failures for future tuning if needed.
 - TODO: Hex-grid pathfinding (M10e-6 is square-grid-only; the ruler's hex distance is untouched by the `alternating` rule addition).

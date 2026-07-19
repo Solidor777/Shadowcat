@@ -54,9 +54,25 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `movementModel`/`snapToGrid` (below) are likewise now typed `SceneEngine` fields, ts-rs exported
   (`MovementModel`/`MovementRestriction` DO have ts-rs derives now — the pre-M13-0 "no ts-rs type,
   opaque `system`-body JSON" framing for these two fields is stale and must not be assumed).
-  **A logged perf TODO (`docs/TODO.md`):** `engine_as` clones + fully re-deserializes the JSON
-  value on every call, a constant-factor regression against the old direct per-field pointer reads
-  across vision/lighting/pathfinding hot paths — inert until profiling shows it, not yet acted on.
+  **`engine_as_cached` (Phase-1 A2 perf item, resolved):** the free function `engine_as` still
+  fully re-`serde_json::from_value`-decodes on every call; `SceneEcs::engine_as_cached::<T>(&self,
+  id: Uuid, doc: &Document) -> Option<T>` is the cached wrapper 18 of the ~19 hot-path call sites
+  in `mod.rs` now go through (walls, tokens, scenes, regions, lights, the world-settings/gradation/
+  vision-modes singletons, and actor-table lookups). Cache correctness is VALUE-COMPARISON based,
+  not mutation-site invalidation: a cached entry (keyed on the document's own id) is reused only
+  when its stored source `engine` `Value` still equals the document's current one — `apply_op` is
+  NOT the only place a `Document` in this ECS gets mutated (`set_world_config`/`set_actors`, the
+  room-hydration setters, assign fields directly, bypassing `apply_op` entirely), so an
+  invalidate-on-every-mutation-site design would have been incomplete by construction (caught by
+  two real test failures — `diagonal_rule_reads_world_settings_and_unknown_falls_back` and
+  `token_vision_floors_resolve_through_actor_join` — when first tried). `apply_op` still removes
+  the touched id's entry as a best-effort trim (bounds memory on delete), but this is NOT
+  load-bearing for correctness. The ONE deliberately-uncached call site is `token_vision_floors`'s
+  embedded-actor branch (`token.embedded.get("actor")...`): an embedded actor sub-document's own
+  `id` differs from the owning token's `id`, so caching it under its own id would never be
+  invalidated by a token-level mutation that changes `/embedded/actor/0/...` — this is the same
+  failure shape as the two test bugs above, generalized to a case with no test coverage to catch
+  it, so it stays on the direct, uncached `engine_as` path.
 - `src/server/src/scene/movement.rs` — pure `supercover_cells(a0, a1, cell) -> Option<BTreeSet<(i32,i32)>>`
   (M10e-4): every cell the move segment crosses (supercover, not a thin line — an exact corner crossing
   emits BOTH flanking cells so a diagonal can't thread an unseen cell). `None` ⇒ caller fails closed
