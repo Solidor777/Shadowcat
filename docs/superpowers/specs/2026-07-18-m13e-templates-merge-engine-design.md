@@ -86,6 +86,20 @@ GM-initiated operation) may refresh it. `/source` remains unmapped (immutable). 
 a security boundary in a trusted self-hosted VTT; `base`/`source` integrity is a correctness
 concern, not an authz one.
 
+**Egress: `/base` is hardcoded `OwnerOrGm` visibility, non-overridable, on BOTH redaction
+chokepoints** (`filter_properties` whole-document egress, `collect_hidden`/`redact_change`
+field-level broadcast egress) — found during Task 2's buddy-check, not anticipated in the original
+design. `base` is a snapshot of the document's own `name`/`engine`/`system`/`embedded` bands,
+which can carry `GmOnly`/`OwnerOrGm`-hidden fields; the snapshot has no property-level visibility
+information of its own (`EmbeddedBaseChild` carries no `permissions`), so mirroring individual
+hidden fields into the snapshot's structure is not attempted. Instead, the whole field is treated
+as `OwnerOrGm` unconditionally: only the document's owner or a GM ever legitimately needs `base`
+(to compute a pull/push/revert), so hiding the entire snapshot from every other recipient closes
+the leak completely and matches who the feature actually serves. This mirrors the existing
+`OwnerOrGm` tier (`Access::can_see`) but is NOT driven by `property_overrides` — it is unconditional
+server policy for this one field, the same way `/permissions` itself is always
+`cap::EDIT_PERMISSIONS`-gated regardless of any override.
+
 ## 4. The four operations
 
 All four are pure client-core functions that produce document ops; the caller dispatches them
