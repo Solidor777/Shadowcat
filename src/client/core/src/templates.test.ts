@@ -177,6 +177,30 @@ describe("computePull + planToUpdate", () => {
     expect((emb.new as WireDocument[])).toHaveLength(1);
   });
 
+  it("emits old:null (not []) when the child has no key at all for a collection the template gained", () => {
+    // `child.embedded` has NO "items" key whatsoever — distinct from `{ items: [] }`. The server
+    // reads a genuinely-absent JSON pointer as `Value::Null`; the emitted pre-image must match.
+    const tmpl = doc({ id: "T", embedded: { items: [doc({ id: "tc", system: { k: 1 } })] } });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: {} });
+    child.base = { name: null, engine: null, system: {}, embedded: {} };
+    const plan = computePull(child, tmpl);
+    const op = planToUpdate(child, tmpl, plan.mergedBands);
+    if (op.op !== "update") throw new Error("expected update");
+    const emb = op.changes.find((c) => c.path === "/embedded/items")!;
+    expect(emb.old).toBeNull();
+    expect((emb.new as WireDocument[])).toHaveLength(1);
+  });
+
+  it("emits no /embedded/<coll> change when both sides have no items (absent vs. empty is not a real change)", () => {
+    const tmpl = doc({ id: "T", embedded: { items: [] } });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: {} });
+    child.base = { name: null, engine: null, system: {}, embedded: {} };
+    const plan = computePull(child, tmpl);
+    const op = planToUpdate(child, tmpl, plan.mergedBands);
+    if (op.op !== "update") throw new Error("expected update");
+    expect(op.changes.some((c) => c.path === "/embedded/items")).toBe(false);
+  });
+
   it("token placement never merges (child x/y/rotation kept even when template moved)", () => {
     const tmpl = doc({ id: "T", doc_type: "token", engine: { x: 99, y: 99, rotation: 90, hp: 5 } });
     const child = doc({ id: "C", doc_type: "token", source: { id: "T", pack: null, version: 1 }, engine: { x: 3, y: 4, rotation: 0, hp: 1 } });

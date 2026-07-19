@@ -93,6 +93,14 @@ function pushIfChanged(changes: WireFieldChange[], path: string, before: unknown
   if (!deepEqual(before, after)) changes.push({ path, old: before, new: after });
 }
 
+/** True when a collection value represents "no items": absent (`null`) or an empty array. Used
+ * to skip a vacuous embedded-collection change (both sides have nothing) even when `before` and
+ * `after` differ in absence-vs-empty-array shape (which itself is never emitted — see
+ * `planToUpdate`). */
+function isEmptyCollection(v: WireDocument[] | null): boolean {
+  return v === null || v.length === 0;
+}
+
 /** Turn merged bands into ONE `Update`: at most one whole-band change per changed band
  * (`/name`, `/engine`, `/system`), one per changed embedded collection (whole array), plus a
  * `/base` refresh (new = the template's current snapshot). Every `old` is the child's REAL
@@ -105,9 +113,16 @@ export function planToUpdate(child: WireDocument, template: WireDocument, merged
   pushIfChanged(changes, "/system", child.system ?? null, mergedBands.system);
   const colls = new Set([...Object.keys(child.embedded), ...Object.keys(mergedBands.embedded)]);
   for (const coll of [...colls].sort()) {
-    const before = child.embedded[coll] ?? [];
-    const after = mergedBands.embedded[coll] ?? [];
-    if (!deepEqual(before, after)) changes.push({ path: `/embedded/${coll}`, old: before, new: after });
+    // A collection key genuinely absent from `child.embedded` must fall back to `null`, NOT `[]`:
+    // the server reads a missing JSON pointer as `Value::Null`, and its numeric-aware pre-image
+    // comparison falls through to plain `==` for a (Null, Array([])) pair, which is `false` —
+    // emitting `[]` here would produce an `old` that never matches the server's actual stored
+    // state, causing a spurious OCC `Conflict` on an otherwise honest pre-image.
+    const before = coll in child.embedded ? child.embedded[coll] : null;
+    const after = coll in mergedBands.embedded ? mergedBands.embedded[coll] : null;
+    if (!deepEqual(before, after) && !(isEmptyCollection(before) && isEmptyCollection(after))) {
+      changes.push({ path: `/embedded/${coll}`, old: before, new: after });
+    }
   }
   changes.push({ path: "/base", old: (child.base ?? null) as unknown, new: snapshotBase(template) });
   return { op: "update", doc_id: child.id, changes };
