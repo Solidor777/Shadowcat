@@ -175,6 +175,112 @@ pub struct ContractDeclaration {
     pub requires: Vec<String>,
 }
 
+/// A single JSON type tag for a schema node (M13f tier-2). Shape only — never a
+/// value discriminator (invariant 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum SchemaType {
+    Object,
+    Array,
+    String,
+    Number,
+    Boolean,
+    Null,
+}
+
+/// `additionalProperties`: a bool (`false` = closed, `true` = any) or a subschema
+/// every non-`properties` key must match. Serialized untagged (`boolean | Schema`);
+/// the hand-written `Deserialize` routes a JSON object straight into `Schema` via
+/// `MapAccessDeserializer` so the inner schema's `deny_unknown_fields` is enforced
+/// (an untagged/internally-tagged derive would buffer through `Content` and drop
+/// that check — the same serde limitation documented for `TokenVisual` in
+/// `validation.rs`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum AdditionalProperties {
+    Bool(bool),
+    Schema(Box<Schema>),
+}
+
+impl<'de> Deserialize<'de> for AdditionalProperties {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ApVisitor;
+        impl<'de> serde::de::Visitor<'de> for ApVisitor {
+            type Value = AdditionalProperties;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a boolean or a schema object")
+            }
+            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(AdditionalProperties::Bool(v))
+            }
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let schema =
+                    Schema::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(AdditionalProperties::Schema(Box::new(schema)))
+            }
+        }
+        deserializer.deserialize_any(ApVisitor)
+    }
+}
+
+/// A structural (shape-only) type-tree node (M13f tier-2). By construction cannot
+/// express a value rule (no enum/bounds/pattern/combinators) — invariant 6 holds
+/// by construction. `deny_unknown_fields` makes a malformed schema fail to
+/// deserialize at the set endpoint. An all-absent node (`{}`) matches any JSON.
+/// Cross-field legality (e.g. `items` only on an array) is not enforced by serde;
+/// `validate_schema` (routes.rs) enforces it at set-time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(deny_unknown_fields)]
+pub struct Schema {
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ty: Option<SchemaType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub properties: Option<BTreeMap<String, Schema>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub required: Option<Vec<String>>,
+    #[serde(
+        rename = "additionalProperties",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional, type = "boolean | Schema")]
+    pub additional_properties: Option<AdditionalProperties>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub items: Option<Box<Schema>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub nullable: Option<bool>,
+}
+
+/// A module's per-`(doc_type, subtree)` structural schema (M13f tier-2). Pure
+/// data — the server stores and interprets it as a shape check, never as code.
+/// `subtree_pointer` is a strict `/system/…` descendant (enforced at set-time).
+/// `schema_format` is the engine-owned vocabulary version; `version` is the
+/// module's content version (provenance only).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(deny_unknown_fields)]
+pub struct SchemaDeclaration {
+    pub module_id: String,
+    pub version: String,
+    pub schema_format: u32,
+    pub doc_type: String,
+    pub subtree_pointer: String,
+    pub schema: Schema,
+}
+
 /// Document-level permissions: default role, per-user overrides, property-level
 /// visibility keyed by JSON pointer, and additive capability grants.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
@@ -285,6 +391,93 @@ pub(crate) mod tests {
             "created_at": 0, "updated_at": 0
         });
         assert!(serde_json::from_value::<Document>(with_modules).is_err());
+    }
+
+    #[test]
+    fn empty_schema_is_any_and_round_trips() {
+        let s: super::Schema = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(s.ty.is_none() && s.properties.is_none() && s.additional_properties.is_none());
+        assert_eq!(serde_json::to_value(&s).unwrap(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn object_schema_deserializes_with_camel_case_additional_properties() {
+        let s: super::Schema = serde_json::from_value(serde_json::json!({
+            "type": "object",
+            "required": ["kind"],
+            "properties": { "kind": { "type": "string" }, "base": { "type": "number", "nullable": true } },
+            "additionalProperties": { "type": "object" }
+        }))
+        .unwrap();
+        assert_eq!(s.ty, Some(super::SchemaType::Object));
+        assert!(matches!(
+            s.additional_properties,
+            Some(super::AdditionalProperties::Schema(_))
+        ));
+    }
+
+    #[test]
+    fn additional_properties_accepts_bool() {
+        let s: super::Schema = serde_json::from_value(serde_json::json!({
+            "type": "object", "additionalProperties": true
+        }))
+        .unwrap();
+        assert!(matches!(
+            s.additional_properties,
+            Some(super::AdditionalProperties::Bool(true))
+        ));
+    }
+
+    #[test]
+    fn unknown_schema_key_fails_to_deserialize() {
+        // deny_unknown_fields at the top level.
+        assert!(serde_json::from_value::<super::Schema>(serde_json::json!({
+            "type": "string", "minLength": 3
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn unknown_key_nested_in_additional_properties_schema_fails_to_deserialize() {
+        // The custom AdditionalProperties Deserialize preserves deny_unknown_fields
+        // on the inner Schema (MapAccessDeserializer, not a buffered Content), so a
+        // smuggled key inside an additionalProperties subschema is REJECTED, not
+        // silently dropped (mirrors the TokenVisual tagged-enum hole in validation.rs).
+        assert!(serde_json::from_value::<super::Schema>(serde_json::json!({
+            "type": "object",
+            "additionalProperties": { "type": "string", "enum": ["a"] }
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn bad_schema_type_fails_to_deserialize() {
+        assert!(
+            serde_json::from_value::<super::Schema>(serde_json::json!({ "type": "integer" }))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn schema_declaration_round_trips_and_rejects_unknown_field() {
+        let d: super::SchemaDeclaration = serde_json::from_value(serde_json::json!({
+            "module_id": "nightfox", "version": "1.0.0", "schema_format": 1,
+            "doc_type": "actor", "subtree_pointer": "/system/stats",
+            "schema": { "type": "object" }
+        }))
+        .unwrap();
+        assert_eq!(d.module_id, "nightfox");
+        let s = serde_json::to_string(&d).unwrap();
+        let back: super::SchemaDeclaration = serde_json::from_str(&s).unwrap();
+        assert_eq!(d, back);
+        // deny_unknown_fields on the declaration envelope.
+        assert!(
+            serde_json::from_value::<super::SchemaDeclaration>(serde_json::json!({
+                "module_id": "n", "version": "1", "schema_format": 1, "doc_type": "actor",
+                "subtree_pointer": "/system/x", "schema": {}, "bogus": 1
+            }))
+            .is_err()
+        );
     }
 
     #[test]
