@@ -512,9 +512,23 @@ pub fn find(
     let mut total = 0.0;
     let mut parity = 0u8;
     let mut from = to_cell(start, cell);
-    for wp in waypoints {
+    for (leg_index, wp) in waypoints.iter().enumerate() {
         let goal = to_cell(*wp, cell);
-        let (leg, cost, end_parity) = astar_leg(&grid, from, goal, parity)?;
+        let (leg, cost, end_parity) = match astar_leg(&grid, from, goal, parity) {
+            Ok(v) => v,
+            Err(PathFail::Unreachable) => {
+                let failed_cell = goal;
+                let search_window = grid.window;
+                tracing::debug!(
+                    leg_index,
+                    cell = ?failed_cell,
+                    window = ?search_window,
+                    "A* leg failed at search-window edge (AABB+8-cell margin) — route may need a wider window"
+                );
+                return Err(PathFail::Unreachable);
+            }
+            Err(e) => return Err(e),
+        };
         total += cost;
         parity = end_parity;
         if cells.is_empty() {
@@ -752,6 +766,33 @@ mod find_tests {
             ),
             Err(PathFail::Unreachable)
         );
+    }
+
+    #[test]
+    fn pathfind_reports_unreachable_when_route_exceeds_window_margin() {
+        // A single wall endpoint sits at the extreme y-edge of the start/goal/wall-endpoint AABB
+        // (y cell 3). Clearing that endpoint needs a 10-cell footprint clearance, but WINDOW_MARGIN
+        // only extends the search 8 cells past the AABB — so every cell that WOULD clear the wall
+        // lies outside the search window, even though a wider window would find a route around it.
+        // Must fail closed as Unreachable, not panic or silently truncate.
+        let c = 100.0;
+        let walls = vec![Seg {
+            a: (100.0, -200.0),
+            b: (100.0, 300.0),
+        }];
+        let start = (50.0, 50.0);
+        let goal = (150.0, 50.0);
+        let result = find(
+            start,
+            &[goal],
+            10.0, // footprint_radius_cells (10 cells) > WINDOW_MARGIN (8 cells)
+            c,
+            DiagonalRule::Chebyshev,
+            &walls,
+            None,
+            None,
+        );
+        assert_eq!(result, Err(PathFail::Unreachable));
     }
 
     #[test]
