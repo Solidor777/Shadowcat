@@ -88,5 +88,5 @@ export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, CH
 export type { MessageKind, DieRecord, RollOutcome, ChatSegment, UnknownSegment, ChatMessageEngine, ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine } from "./chat-docs";
 export { structuralDiff, deletePointer, deepEqual, merge3Tree, takeTemplate, isPlacementExcluded, merge3, restampSubtree, placementExclusions } from "./merge";
 export type { Diff, Conflict, MergeBands, MergeBase, EmbeddedBaseChild, MergePlan } from "./merge";
-export { snapshotBase, stampInstance } from "./templates";
-export type { StampOpts } from "./templates";
+export { snapshotBase, stampInstance, computePull, computeRevert, planToUpdate, applyResolutions, findInstances, syncState } from "./templates";
+export type { StampOpts, SyncState } from "./templates";

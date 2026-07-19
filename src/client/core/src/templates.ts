@@ -1,8 +1,11 @@
 // Client-core template operations: stamp (create-from-template) + the 3-way pull/push/revert
 // emission (M13e). All produce document ops; the caller dispatches via `dispatchIntent`. The
 // server never merges — a merge is an ordinary batched `Update`.
-import type { WireDocument } from "./wire";
-import { restampSubtree, type MergeBase, type EmbeddedBaseChild } from "./merge";
+import type { WireDocument, WireOperation, WireFieldChange } from "./wire";
+import {
+  merge3, merge3Tree, takeTemplate, structuralDiff, isPlacementExcluded, placementExclusions, deepEqual,
+  restampSubtree, type MergeBase, type MergeBands, type MergePlan, type Conflict, type EmbeddedBaseChild,
+} from "./merge";
 
 /** Where a stamped instance lands: the initiator's world/owner/parent (never the template's). */
 export interface StampOpts {
@@ -73,4 +76,146 @@ export function stampInstance(source: WireDocument, opts: StampOpts): WireDocume
   };
   stamped.base = snapshotBase(stamped);
   return stamped;
+}
+
+/** Provenance/sync state of a document for the sheet chrome (§6.4). */
+export type SyncState = "none" | "up_to_date" | "template_changed";
+
+/** 3-way pull: merge the template's current state into the child, preserving child-local diffs.
+ * `base` is the child's stored snapshot (falls back to the child's own snapshot when absent, so a
+ * base-less child yields a clean template-wins result). */
+export function computePull(child: WireDocument, template: WireDocument): MergePlan {
+  const base: MergeBase = (child.base as MergeBase | undefined) ?? snapshotBase(child);
+  return merge3(base, template, child, placementExclusions(child.doc_type));
+}
+
+function pushIfChanged(changes: WireFieldChange[], path: string, before: unknown, after: unknown): void {
+  if (!deepEqual(before, after)) changes.push({ path, old: before, new: after });
+}
+
+/** Turn merged bands into ONE `Update`: at most one whole-band change per changed band
+ * (`/name`, `/engine`, `/system`), one per changed embedded collection (whole array), plus a
+ * `/base` refresh (new = the template's current snapshot). Every `old` is the child's REAL
+ * current stored value (OCC pre-image). Whole-band/whole-collection writes are the only
+ * `set_pointer`-compatible way to delete keys / grow embedded arrays. */
+export function planToUpdate(child: WireDocument, template: WireDocument, mergedBands: MergeBands): WireOperation {
+  const changes: WireFieldChange[] = [];
+  pushIfChanged(changes, "/name", child.name, mergedBands.name);
+  pushIfChanged(changes, "/engine", child.engine ?? null, mergedBands.engine);
+  pushIfChanged(changes, "/system", child.system ?? null, mergedBands.system);
+  const colls = new Set([...Object.keys(child.embedded), ...Object.keys(mergedBands.embedded)]);
+  for (const coll of [...colls].sort()) {
+    const before = child.embedded[coll] ?? [];
+    const after = mergedBands.embedded[coll] ?? [];
+    if (!deepEqual(before, after)) changes.push({ path: `/embedded/${coll}`, old: before, new: after });
+  }
+  changes.push({ path: "/base", old: (child.base ?? null) as unknown, new: snapshotBase(template) });
+  return { op: "update", doc_id: child.id, changes };
+}
+
+/** Apply the user's per-field conflict choices: for each conflict whose path is in `theirs`, take
+ * the template value/deletion; the rest keep the child ("mine") value already in `mergedBands`.
+ * Pure (clones its input). */
+export function applyResolutions(mergedBands: MergeBands, conflicts: Conflict[], theirs: Set<string>): MergeBands {
+  const root = structuredClone({
+    name: mergedBands.name, engine: mergedBands.engine, system: mergedBands.system, embedded: mergedBands.embedded,
+  });
+  for (const c of conflicts) if (theirs.has(c.path)) takeTemplate(root, c);
+  return { name: root.name, engine: root.engine, system: root.system, embedded: root.embedded };
+}
+
+type Bands = { name: string | null; engine?: unknown; system?: unknown };
+
+/** Reset one node's own bands to the template's current value, keeping placement (E8). Reuses
+ * `merge3Tree` with the child as its OWN base (so `childDiff` is always empty and every parent
+ * diff auto-applies with zero conflicts) — the "always take template" trick. NOTE: this handles
+ * only `name`/`engine`/`system`; embedded reset is a SEPARATE algorithm (`revertEmbedded`) — see
+ * below for why `merge3Embedded`'s pull-shaped correlation table cannot be reused for revert. */
+function revertBands(child: Bands, template: Bands, exclusions: string[]): Bands {
+  const selfBase = { name: child.name, engine: child.engine ?? null, system: child.system ?? null };
+  const templateNow = { name: template.name, engine: template.engine ?? null, system: template.system ?? null };
+  const { merged } = merge3Tree(selfBase, templateNow, selfBase, exclusions);
+  return merged as Bands;
+}
+
+/**
+ * Embedded-collection reset for revert. `merge3Embedded` (used by pull/push) KEEPS an
+ * uncorrelated instance child ("instance-added" — correct when preserving local additions is
+ * the point). Revert wants the opposite: discard every local addition. Correlation is by
+ * `childKid.source.id` against a CURRENT template child's id — no stored `base` is consulted
+ * (there is nothing to preserve), so:
+ * - a child correlated to a current template child → recurse-reset it (`revertChild`);
+ * - a child with no correlation (no `source`, or `source.id` not among the template's current
+ *   children) → DROPPED (a locally-added child never belongs in a reverted instance);
+ * - a template child with no correlating instance child → freshly stamped in (restores content
+ *   the instance had locally deleted, or never had).
+ */
+function revertEmbedded(
+  parentEmbedded: Record<string, WireDocument[]>,
+  childEmbedded: Record<string, WireDocument[]>,
+): Record<string, WireDocument[]> {
+  const merged: Record<string, WireDocument[]> = {};
+  const colls = new Set([...Object.keys(parentEmbedded), ...Object.keys(childEmbedded)]);
+  for (const coll of [...colls].sort()) {
+    const parentKids = parentEmbedded[coll] ?? [];
+    const childKids = childEmbedded[coll] ?? [];
+    const templateById = new Map(parentKids.map((t) => [t.id, t]));
+    const out: WireDocument[] = [];
+    for (const cd of childKids) {
+      const t = cd.source ? templateById.get(cd.source.id) : undefined;
+      if (t) out.push(revertChild(cd, t));
+      // else: no correlation → child-added → dropped.
+    }
+    for (const t of parentKids) {
+      if (!childKids.some((cd) => cd.source?.id === t.id)) out.push(restampSubtree(t));
+    }
+    merged[coll] = out;
+  }
+  return merged;
+}
+
+/** Reset one matched embedded child: its own bands to the template counterpart (placement kept),
+ * recursing into its own embedded collections the same way. */
+function revertChild(child: WireDocument, template: WireDocument): WireDocument {
+  const bands = revertBands(child, template, placementExclusions(child.doc_type));
+  return {
+    ...child,
+    name: bands.name,
+    engine: bands.engine,
+    system: bands.system,
+    embedded: revertEmbedded(template.embedded, child.embedded),
+  };
+}
+
+/** Revert: discard the child's local diffs on the mergeable bands — every path becomes the
+ * template's current value, embedded content resets per `revertEmbedded` — except placement
+ * paths (kept, E8), then refresh `base`. No conflicts are possible (revert never asks the user
+ * to choose; it always takes the template). */
+export function computeRevert(child: WireDocument, template: WireDocument): WireOperation {
+  const bands = revertBands(child, template, placementExclusions(child.doc_type));
+  const mergedBands: MergeBands = {
+    name: bands.name,
+    engine: bands.engine,
+    system: bands.system,
+    embedded: revertEmbedded(template.embedded, child.embedded),
+  };
+  return planToUpdate(child, template, mergedBands);
+}
+
+/** All in-store documents stamped from `templateId` (correlated by `source.id`). Same-world,
+ * see+write scoped is the caller's responsibility (it passes the visible store snapshot). */
+export function findInstances(templateId: string, all: Iterable<WireDocument>): WireDocument[] {
+  const out: WireDocument[] = [];
+  for (const d of all) if (d.source?.id === templateId) out.push(d);
+  return out;
+}
+
+/** "template changed" iff base diverges from the template's current mergeable snapshot, ignoring
+ * placement exclusions. Purely local; `none` when unstamped or the template is not in store. */
+export function syncState(child: WireDocument, template: WireDocument | undefined): SyncState {
+  if (!child.source || !template) return "none";
+  const base: MergeBase = (child.base as MergeBase | undefined) ?? snapshotBase(child);
+  const excl = placementExclusions(child.doc_type);
+  const diverged = structuralDiff(base, snapshotBase(template)).filter((d) => !isPlacementExcluded(d.path, excl));
+  return diverged.length === 0 ? "up_to_date" : "template_changed";
 }
