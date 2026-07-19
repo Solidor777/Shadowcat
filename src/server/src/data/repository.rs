@@ -3,7 +3,8 @@ use uuid::Uuid;
 
 use crate::data::command::{Command, UnsequencedCommand};
 use crate::data::document::{
-    CapabilityRequirement, ContractDeclaration, Document, World, WorldCapDefaults, WorldRole,
+    CapabilityRequirement, ContractDeclaration, Document, SchemaDeclaration, World,
+    WorldCapDefaults, WorldRole,
 };
 use crate::data::DataError;
 
@@ -92,6 +93,13 @@ pub trait Repository: Send + Sync {
         &self,
         world: Uuid,
     ) -> Result<Vec<ContractDeclaration>, DataError>;
+
+    /// A world's declarative structural schema declarations (GM-committed on
+    /// module enable). Empty when unset.
+    async fn world_schema_declarations(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<SchemaDeclaration>, DataError>;
 
     /// A world's enabled installed-module ids (GM-set). Empty when unset.
     async fn world_enabled_modules(&self, world: Uuid) -> Result<Vec<String>, DataError>;

@@ -8,7 +8,8 @@ use crate::data::command::{
     set_pointer, Command, FieldChange, Operation, UnsequencedCommand, WriteOrigin,
 };
 use crate::data::document::{
-    CapabilityRequirement, ContractDeclaration, Document, Scope, World, WorldCapDefaults, WorldRole,
+    CapabilityRequirement, ContractDeclaration, Document, SchemaDeclaration, Scope, World,
+    WorldCapDefaults, WorldRole,
 };
 use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
@@ -591,6 +592,17 @@ impl SqliteRepository {
     ) -> Result<(), DataError> {
         let json = serde_json::to_string(decls)?;
         self.set_setting(&world_contracts_key(world), &json).await
+    }
+
+    /// Replace a world's structural schema declarations (stored as JSON in
+    /// settings, beside cap requirements / contract declarations).
+    pub async fn set_world_schema_declarations(
+        &self,
+        world: Uuid,
+        decls: &[SchemaDeclaration],
+    ) -> Result<(), DataError> {
+        let json = serde_json::to_string(decls)?;
+        self.set_setting(&world_schemas_key(world), &json).await
     }
 
     /// Replace a world's enabled installed-module set (stored as JSON in
@@ -1607,6 +1619,16 @@ impl Repository for SqliteRepository {
         }
     }
 
+    async fn world_schema_declarations(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<SchemaDeclaration>, DataError> {
+        match self.get_setting(&world_schemas_key(world)).await? {
+            Some(json) => Ok(serde_json::from_str(&json)?),
+            None => Ok(Vec::new()),
+        }
+    }
+
     async fn world_enabled_modules(&self, world: Uuid) -> Result<Vec<String>, DataError> {
         match self.get_setting(&world_modules_key(world)).await? {
             Some(json) => Ok(serde_json::from_str(&json)?),
@@ -1759,6 +1781,11 @@ fn world_caps_req_key(world: Uuid) -> String {
 /// Settings key holding a world's UI contract declarations (JSON).
 fn world_contracts_key(world: Uuid) -> String {
     format!("world_contracts:{world}")
+}
+
+/// Settings key holding a world's structural schema declarations (JSON).
+fn world_schemas_key(world: Uuid) -> String {
+    format!("world_schemas:{world}")
 }
 
 /// Settings key holding a world's enabled installed-module ids (JSON).
@@ -2318,6 +2345,37 @@ mod tests {
             .unwrap();
 
         let got = repo.world_contract_declarations(world.id).await.unwrap();
+        assert_eq!(got, decls);
+    }
+
+    #[tokio::test]
+    async fn schema_declarations_round_trip_and_default_empty() {
+        use crate::data::document::{Schema, SchemaDeclaration, SchemaType};
+        let repo = repo().await;
+        let world = repo.create_world("W", 0).await.unwrap();
+
+        // Default empty.
+        assert!(repo
+            .world_schema_declarations(world.id)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let decls = vec![SchemaDeclaration {
+            module_id: "nightfox".into(),
+            version: "1.0.0".into(),
+            schema_format: 1,
+            doc_type: "actor".into(),
+            subtree_pointer: "/system/stats".into(),
+            schema: Schema {
+                ty: Some(SchemaType::Object),
+                ..Default::default()
+            },
+        }];
+        repo.set_world_schema_declarations(world.id, &decls)
+            .await
+            .unwrap();
+        let got = repo.world_schema_declarations(world.id).await.unwrap();
         assert_eq!(got, decls);
     }
 
