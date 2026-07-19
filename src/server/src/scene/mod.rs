@@ -117,6 +117,19 @@ fn engine_as<T: serde::de::DeserializeOwned>(doc: &Document) -> Option<T> {
         .and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 
+/// A single `engine_as` decode cached under the owning document's id, alongside the exact
+/// `engine` `Value` it was decoded from. `source` is what makes the cache self-verifying:
+/// `engine_as_cached` treats a cached entry as valid only when `source` still equals the
+/// document's CURRENT `engine`, so it never depends on catching every possible mutation
+/// site (`apply_op` is not the only one — `set_world_config`/`set_actors`, the room-hydration
+/// setters, assign `Document`s directly too). `decoded` is type-erased (`Box<dyn Any + Send>`,
+/// `Send` so the enclosing `Mutex` stays `Sync` — `SceneEcs` is shared behind a
+/// `tokio::sync::RwLock` across connection tasks, matching `navmesh_cache`'s same constraint).
+struct CachedEngine {
+    source: serde_json::Value,
+    decoded: Box<dyn std::any::Any + Send>,
+}
+
 fn conv_light_mode(v: eng::LightMode) -> LightMode {
     match v {
         eng::LightMode::GlobalIllumination => LightMode::GlobalIllumination,
@@ -239,6 +252,19 @@ pub struct SceneEcs {
     /// floating-point noise in a client-computed radius producing distinct bit-patterns for what
     /// is logically the same size).
     navmesh_cache: std::sync::Mutex<HashMap<(Uuid, i64), std::sync::Arc<navmesh::NavMesh>>>,
+    /// Per-document decoded-`engine`-field cache (A2 perf item, `docs/TODO.md`), keyed on the
+    /// owning document's own id. `engine_as` fully re-`serde_json::from_value`-decodes on every
+    /// call; this cache lets the ~19 vision/lighting/pathfinding hot-path call sites in this file
+    /// reuse a prior decode instead. `Mutex` (not `RefCell`), matching `navmesh_cache` above, for
+    /// the same `Sync`-under-shared-`RwLock` reason. Never locked across an `.await` (every use
+    /// here is synchronous). Correctness does NOT depend on catching every mutation site — see
+    /// `CachedEngine`'s doc comment: a cached entry is only reused when its stored `source` Value
+    /// still equals the document's current `engine`, self-verifying regardless of how the
+    /// document was mutated (`apply_op`, `set_world_config`/`set_actors`, or a test-only direct
+    /// field assignment). `apply_op` additionally removes the touched document's entry outright
+    /// (a best-effort trim, not load-bearing for correctness) so a deleted document's stale entry
+    /// doesn't linger indefinitely.
+    engine_cache: std::sync::Mutex<HashMap<Uuid, CachedEngine>>,
 }
 
 impl SceneEcs {
@@ -252,7 +278,40 @@ impl SceneEcs {
             vision_modes: None,
             actors: HashMap::new(),
             navmesh_cache: std::sync::Mutex::new(HashMap::new()),
+            engine_cache: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Cached variant of the free function `engine_as`: decodes `doc.engine` into `T`, reusing a
+    /// prior decode for the same `id` when its cached source `Value` still equals `doc.engine`
+    /// (see `CachedEngine`'s doc comment — this equality check, not a mutation-site invalidation
+    /// hook, is what makes the cache correct). Callers MUST pass the document's OWN id (`doc.id`,
+    /// or the equivalent `self.index`/`self.actors` key it was looked up under) so a stale cache
+    /// entry can never be read under a DIFFERENT document's id.
+    fn engine_as_cached<T>(&self, id: Uuid, doc: &Document) -> Option<T>
+    where
+        T: serde::de::DeserializeOwned + Clone + Send + 'static,
+    {
+        let current = doc.engine.as_ref()?;
+        {
+            let cache = self.engine_cache.lock().unwrap();
+            if let Some(entry) = cache.get(&id) {
+                if &entry.source == current {
+                    if let Some(t) = entry.decoded.downcast_ref::<T>() {
+                        return Some(t.clone());
+                    }
+                }
+            }
+        }
+        let decoded: T = serde_json::from_value(current.clone()).ok()?;
+        self.engine_cache.lock().unwrap().insert(
+            id,
+            CachedEngine {
+                source: current.clone(),
+                decoded: Box::new(decoded.clone()),
+            },
+        );
+        Some(decoded)
     }
 
     /// Hydrate from a document set (scene entities only; others are ignored),
@@ -341,6 +400,19 @@ impl SceneEcs {
 
     /// Reflect one already-committed authoritative op into the derived world.
     pub fn apply_op(&mut self, op: &Operation) {
+        // Best-effort `engine_cache` trim (not load-bearing for correctness — see the
+        // `engine_cache`/`CachedEngine` doc comments: a cached entry is only ever reused when its
+        // stored source `Value` still matches the document's current `engine`, so a missed
+        // invalidation site can only cost a redundant decode, never stale data). `apply_op` is
+        // NOT the only place a `Document` in this ECS gets mutated — `set_world_config`/
+        // `set_actors` (room hydration) and test-only helpers assign fields directly — so this
+        // removal is deliberately narrow: it only ever drops the ONE id this op targets.
+        let touched_id = match op {
+            Operation::Create { doc } | Operation::Delete { doc } => doc.id,
+            Operation::Update { doc_id, .. } => *doc_id,
+        };
+        self.engine_cache.lock().unwrap().remove(&touched_id);
+
         // Determine whether this op can affect any cached navmesh's geometry (a `wall` doc's
         // blocksMove/seg fields, or a `scene` doc's bounds) BEFORE applying it — an Update needs
         // the existing entity's doc_type (Update never changes doc_type, so a pre-mutation lookup
@@ -457,9 +529,8 @@ impl SceneEcs {
     /// defaults exactly as before. Used by every resolver that reads world-settings so partial/
     /// malformed-doc handling stays consistent across all of them.
     fn validated_world_settings_engine(&self) -> Option<eng::WorldSettingsEngine> {
-        self.world_settings
-            .as_ref()
-            .and_then(engine_as::<eng::WorldSettingsEngine>)
+        let doc = self.world_settings.as_ref()?;
+        self.engine_as_cached::<eng::WorldSettingsEngine>(doc.id, doc)
     }
 
     /// Resolve a scene's effective lighting/vision settings: built-in defaults < world-settings doc
@@ -498,7 +569,7 @@ impl SceneEcs {
             .index
             .get(&scene)
             .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
-            .and_then(|c| engine_as::<eng::SceneEngine>(&c.doc));
+            .and_then(|c| self.engine_as_cached::<eng::SceneEngine>(scene, &c.doc));
         let s = scene_eng.as_ref();
         let vision_ov = s.and_then(|s| s.vision.as_ref());
         let lighting_ov = s.and_then(|s| s.lighting.as_ref());
@@ -545,7 +616,7 @@ impl SceneEcs {
         let bands = self
             .gradation
             .as_ref()
-            .and_then(engine_as::<eng::LightGradationEngine>)
+            .and_then(|d| self.engine_as_cached::<eng::LightGradationEngine>(d.id, d))
             .map(|g| {
                 g.bands
                     .into_iter()
@@ -593,7 +664,7 @@ impl SceneEcs {
         let parsed = self
             .vision_modes
             .as_ref()
-            .and_then(engine_as::<eng::VisionModesEngine>);
+            .and_then(|d| self.engine_as_cached::<eng::VisionModesEngine>(d.id, d));
         match parsed {
             Some(vme) => {
                 for (id, m) in vme.modes {
@@ -647,7 +718,7 @@ impl SceneEcs {
         if tok.doc.doc_type != "token" {
             return None;
         }
-        let t = engine_as::<eng::TokenEngine>(&tok.doc)?;
+        let t = self.engine_as_cached::<eng::TokenEngine>(token, &tok.doc)?;
         Some((t.x, t.y))
     }
 
@@ -677,7 +748,7 @@ impl SceneEcs {
                 return None;
             }
             let scene = tok.doc.parent_id?;
-            let t: eng::TokenEngine = engine_as(&tok.doc)?;
+            let t: eng::TokenEngine = self.engine_as_cached(token_id, &tok.doc)?;
             let v = serde_json::to_value(&tok.doc).ok()?;
             (scene, t.x, t.y, v)
         };
@@ -704,8 +775,10 @@ impl SceneEcs {
             if e.doc.doc_type != "token" || e.doc.owner != Some(user_id) {
                 continue;
             }
-            if let (Some(t), Some(scene)) = (engine_as::<eng::TokenEngine>(&e.doc), e.doc.parent_id)
-            {
+            if let (Some(t), Some(scene)) = (
+                self.engine_as_cached::<eng::TokenEngine>(e.doc.id, &e.doc),
+                e.doc.parent_id,
+            ) {
                 viewpoints.push((scene, (t.x, t.y)));
             }
         }
@@ -746,7 +819,7 @@ impl SceneEcs {
             if e.doc.id == moving_token {
                 continue; // mover's viewpoint varies per sample; skip here
             }
-            if let Some(t) = engine_as::<eng::TokenEngine>(&e.doc) {
+            if let Some(t) = self.engine_as_cached::<eng::TokenEngine>(e.doc.id, &e.doc) {
                 static_vps.push((t.x, t.y));
             }
         }
@@ -799,7 +872,8 @@ impl SceneEcs {
             if e.doc.doc_type != "scene" {
                 continue;
             }
-            let size = engine_as::<eng::SceneEngine>(&e.doc)
+            let size = self
+                .engine_as_cached::<eng::SceneEngine>(e.doc.id, &e.doc)
                 .map(|s| s.grid.size)
                 .filter(|s| *s > 0.0)
                 .unwrap_or(100.0);
@@ -815,7 +889,7 @@ impl SceneEcs {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
             }
-            let Some(wall) = engine_as::<eng::WallEngine>(&w.doc) else {
+            let Some(wall) = self.engine_as_cached::<eng::WallEngine>(w.doc.id, &w.doc) else {
                 continue;
             };
             if wall.blocks_sight != Some(true) {
@@ -836,7 +910,7 @@ impl SceneEcs {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
             }
-            let Some(wall) = engine_as::<eng::WallEngine>(&w.doc) else {
+            let Some(wall) = self.engine_as_cached::<eng::WallEngine>(w.doc.id, &w.doc) else {
                 continue;
             };
             if wall.blocks_light != Some(true) {
@@ -860,7 +934,7 @@ impl SceneEcs {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
             }
-            let Some(wall) = engine_as::<eng::WallEngine>(&w.doc) else {
+            let Some(wall) = self.engine_as_cached::<eng::WallEngine>(w.doc.id, &w.doc) else {
                 continue;
             };
             if wall.blocks_move != Some(true) {
@@ -1091,7 +1165,7 @@ impl SceneEcs {
             if doc.doc_type != "region" || doc.parent_id != Some(scene) {
                 continue;
             }
-            let Some(region_eng) = engine_as::<eng::RegionEngine>(doc) else {
+            let Some(region_eng) = self.engine_as_cached::<eng::RegionEngine>(doc.id, doc) else {
                 continue;
             };
             if !region_eng.enabled {
@@ -1136,7 +1210,7 @@ impl SceneEcs {
             if e.doc.doc_type != "light" || e.doc.parent_id != Some(scene) {
                 continue;
             }
-            let Some(le) = engine_as::<eng::LightEngine>(&e.doc) else {
+            let Some(le) = self.engine_as_cached::<eng::LightEngine>(e.doc.id, &e.doc) else {
                 continue;
             };
             if !le.enabled {
@@ -1182,7 +1256,7 @@ impl SceneEcs {
         let modes = self.resolved_vision_modes();
         let bands = self.resolved_bands();
 
-        let token_eng = engine_as::<eng::TokenEngine>(token);
+        let token_eng = self.engine_as_cached::<eng::TokenEngine>(token.id, token);
 
         // Mirror actor.ts resolveTokenActor: a LINKED token (actor_id) resolves the shared actor and
         // applies the per-token override whitelist (overrides.vision REPLACES the actor's vision); a
@@ -1195,9 +1269,15 @@ impl SceneEcs {
                         .as_ref()
                         .and_then(|t| t.overrides.as_ref())
                         .and_then(|o| o.vision.clone())
-                        .or_else(|| engine_as::<eng::ActorEngine>(actor).and_then(|a| a.vision)),
+                        .or_else(|| {
+                            self.engine_as_cached::<eng::ActorEngine>(actor.id, actor)
+                                .and_then(|a| a.vision)
+                        }),
                     None => None, // dangling link → normal (overrides ignored, per resolveTokenActor)
                 },
+                // Uncached: an embedded actor's `id` doesn't match `token.id`, the key
+                // `apply_op`'s invalidation removes on a token mutation — caching under the
+                // embedded doc's own id would go stale on any `/embedded/actor/0/...` write.
                 None => token
                     .embedded
                     .get("actor")
@@ -1331,7 +1411,7 @@ impl SceneEcs {
             if !is_source {
                 continue;
             }
-            if let Some(t) = engine_as::<eng::TokenEngine>(&e.doc) {
+            if let Some(t) = self.engine_as_cached::<eng::TokenEngine>(e.doc.id, &e.doc) {
                 sources.push(Src {
                     scene,
                     vp: (t.x, t.y),
@@ -1547,7 +1627,7 @@ impl SceneEcs {
             if !is_source {
                 continue;
             }
-            if let Some(t) = engine_as::<eng::TokenEngine>(&e.doc) {
+            if let Some(t) = self.engine_as_cached::<eng::TokenEngine>(e.doc.id, &e.doc) {
                 sources.push(Src {
                     vp: (t.x, t.y),
                     floors: self.token_vision_floors(&e.doc),
@@ -1653,7 +1733,7 @@ impl SceneEcs {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
             }
-            let Some(wall) = engine_as::<eng::WallEngine>(&w.doc) else {
+            let Some(wall) = self.engine_as_cached::<eng::WallEngine>(w.doc.id, &w.doc) else {
                 continue;
             };
             if wall.blocks_move != Some(true) {
@@ -1905,6 +1985,50 @@ mod tests {
         );
         assert_eq!(ecs.entity_count(), 2);
         assert_eq!(ecs.committed_seq(), 0);
+    }
+
+    #[test]
+    fn engine_as_cache_invalidates_on_engine_mutation() {
+        let mut ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                entity_doc_eng(
+                    12,
+                    10,
+                    "wall",
+                    json!({ "seg": {"x1":0,"y1":0,"x2":10,"y2":10}, "blocksSight": true }),
+                ),
+            ],
+            0,
+        );
+        let wall_id = Uuid::from_u128(12);
+        let doc1 = {
+            let e = ecs.index[&wall_id];
+            ecs.world.get::<&SceneEntity>(e).unwrap().doc.clone()
+        };
+        let decoded1: eng::WallEngine = ecs.engine_as_cached(wall_id, &doc1).unwrap();
+        assert_eq!(decoded1.blocks_sight, Some(true));
+
+        // Mutate the engine field through the real apply_op chokepoint.
+        ecs.apply_op(&Operation::Update {
+            doc_id: wall_id,
+            changes: vec![crate::data::command::FieldChange {
+                path: "/engine/blocksSight".into(),
+                old: json!(true),
+                new: json!(false),
+            }],
+        });
+
+        let doc2 = {
+            let e = ecs.index[&wall_id];
+            ecs.world.get::<&SceneEntity>(e).unwrap().doc.clone()
+        };
+        let decoded2: eng::WallEngine = ecs.engine_as_cached(wall_id, &doc2).unwrap();
+        assert_eq!(
+            decoded2.blocks_sight,
+            Some(false),
+            "cache must invalidate on engine mutation, not serve stale decode"
+        );
     }
 
     #[test]
