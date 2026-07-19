@@ -10,7 +10,15 @@ export type Document = { id: string, scope: Scope, doc_type: string, schema_vers
 /**
  * Universal display name (S2). Redacts to `null` under a `/name` override.
  */
-name: string | null, source: Source | null, owner: string | null, permissions: PermissionSet, embedded: { [key in string]: Array<Document> }, 
+name: string | null, source: Source | null, 
+/**
+ * Opaque snapshot of this child's mergeable content (`name`/`engine`/`system`/
+ * `embedded`) at last sync (stamp or a successful pull/push/revert). Present only
+ * on stamped children. The server NEVER interprets it: exempt from
+ * `validate_engine_tree`, size-capped by `validate_system_size`, and writable at
+ * `/base` under `cap::WRITE_FIELDS`. Client-owned shape (`MergeBase`, `@shadowcat/core`).
+ */
+base: unknown, owner: string | null, permissions: PermissionSet, embedded: { [key in string]: Array<Document> }, 
 /**
  * Scene-entity link: the id of the scene (or other parent) this document
  * belongs to. `None` for top-level documents (actors, compendium entries,

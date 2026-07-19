@@ -57,7 +57,9 @@ function baseCapForPath(path: string): string | null {
     path.startsWith("/system/") ||
     path === "/engine" ||
     path.startsWith("/engine/") ||
-    path === "/name"
+    path === "/name" ||
+    path === "/base" ||
+    path.startsWith("/base/")
   ) {
     return "core:write_fields";
   }

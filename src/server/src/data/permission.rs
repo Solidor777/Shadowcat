@@ -545,6 +545,7 @@ mod tests {
             schema_version: 1,
             name: None,
             source: None,
+            base: None,
             owner: None,
             permissions: perms,
             embedded: Default::default(),

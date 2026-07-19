@@ -211,6 +211,14 @@ pub struct Document {
     pub name: Option<String>,
     #[serde(default)]
     pub source: Option<Source>,
+    /// Opaque snapshot of this child's mergeable content (`name`/`engine`/`system`/
+    /// `embedded`) at last sync (stamp or a successful pull/push/revert). Present only
+    /// on stamped children. The server NEVER interprets it: exempt from
+    /// `validate_engine_tree`, size-capped by `validate_system_size`, and writable at
+    /// `/base` under `cap::WRITE_FIELDS`. Client-owned shape (`MergeBase`, `@shadowcat/core`).
+    #[serde(default)]
+    #[ts(type = "unknown")]
+    pub base: Option<serde_json::Value>,
     #[serde(default)]
     pub owner: Option<Uuid>,
     #[serde(default)]
@@ -334,6 +342,7 @@ pub(crate) mod tests {
                 pack: Some("dnd5e".into()),
                 version: 3,
             }),
+            base: None,
             owner: Some(Uuid::from_u128(5)),
             permissions: PermissionSet::default(),
             embedded: BTreeMap::new(),
@@ -439,5 +448,27 @@ pub(crate) mod tests {
     #[test]
     fn permissionset_default_role_is_none() {
         assert_eq!(PermissionSet::default().default, DocRole::None);
+    }
+
+    #[test]
+    fn document_round_trips_base_snapshot_and_defaults_none() {
+        // base defaults to None when absent (serde default).
+        let bare = serde_json::json!({
+            "id": Uuid::from_u128(1), "scope": {"kind": "world", "world_id": Uuid::from_u128(9)},
+            "doc_type": "actor", "schema_version": 1, "system": {}, "created_at": 0, "updated_at": 0
+        });
+        let doc: Document = serde_json::from_value(bare).unwrap();
+        assert!(doc.base.is_none());
+
+        // A present base round-trips verbatim, even holding an engine shape that is
+        // invalid for the current doc_type (base is an opaque historical snapshot).
+        let mut with_base = sample_doc();
+        with_base.base = Some(serde_json::json!({
+            "name": "Old", "engine": { "not": "a-valid-token-engine" },
+            "system": { "hp": 1 }, "embedded": {}
+        }));
+        let s = serde_json::to_string(&with_base).unwrap();
+        let back: Document = serde_json::from_str(&s).unwrap();
+        assert_eq!(with_base, back);
     }
 }

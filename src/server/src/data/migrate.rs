@@ -31,6 +31,7 @@ mod tests {
             schema_version: CURRENT_SCHEMA_VERSION,
             name: None,
             source: None,
+            base: None,
             owner: None,
             permissions: Default::default(),
             embedded: Default::default(),
