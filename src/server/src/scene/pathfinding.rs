@@ -519,11 +519,16 @@ pub fn find(
             Err(PathFail::Unreachable) => {
                 let failed_cell = goal;
                 let search_window = grid.window;
+                // Cause is not distinguishable here: `cell_enterable` folds wall-boxing, an
+                // empty/exhausted mask, region-impassable, and genuine window-margin truncation
+                // into one boolean, so this single `Unreachable` exit is reached identically for
+                // all of them. Logs the leg + failed cell + window as raw fields with no causal
+                // claim; the window field lets an operator hand-check margin truncation.
                 tracing::debug!(
                     leg_index,
                     cell = ?failed_cell,
                     window = ?search_window,
-                    "A* leg failed at search-window edge (AABB+8-cell margin) — route may need a wider window"
+                    "A* leg unreachable"
                 );
                 return Err(PathFail::Unreachable);
             }
