@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, fireEvent } from "@testing-library/svelte";
+import { render, fireEvent, waitFor } from "@testing-library/svelte";
 import TemplateControls from "./TemplateControls.svelte";
 import { setAppContextForTest } from "./__fixtures__/appContextTest";
 import { DocumentStore, type WireDocument, type WireOperation } from "@shadowcat/core";
@@ -60,5 +60,43 @@ describe("TemplateControls", () => {
     const { getByText } = render(TemplateControls, { props: { docId: "T" }, context });
     fireEvent.click(getByText("templates.action.push"));
     expect(pushed).toEqual(["T"]);
+  });
+
+  // The badge/state must re-derive from a POST-MOUNT store mutation, not just at initial
+  // render — a bare (unsubscribed) $derived reading ctx.documents freezes at first read.
+  // syncState below is wired to read the LIVE store (not a static closure value), so this
+  // only passes if TemplateControls actually calls subscribe() before every read that
+  // (transitively) depends on the store.
+  it("re-renders the badge after the store mutates post-mount", async () => {
+    const tmpl = doc({ id: "T", name: "Preset", system: { changed: false } });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, system: { changed: false } });
+    const store = storeWith([tmpl, child]);
+    const context = setAppContextForTest({
+      store, documents: store,
+      templates: {
+        stampInstance: (s) => s, pull: () => {}, push: () => {}, revert: () => {},
+        findInstances: (id) => store.snapshot().filter((d) => d.source?.id === id),
+        syncState: (id) => {
+          const d = store.get(id);
+          const tmpl = d?.source ? store.get(d.source.id) : undefined;
+          return (tmpl?.system as { changed?: boolean } | undefined)?.changed ? "template_changed" : "up_to_date";
+        },
+        canPull: () => true,
+        canPush: (id) => store.snapshot().some((d) => d.source?.id === id),
+      },
+    });
+
+    const { getByText, queryByText } = render(TemplateControls, { props: { docId: "C" }, context });
+
+    expect(getByText("templates.badge.upToDate")).toBeTruthy();
+
+    // Mutate the template's `system.changed` post-mount -> syncState flips to template_changed.
+    store.applyCommand({
+      seq: 2, world_id: "w1", author: "a", ts: 0,
+      ops: [{ op: "update", doc_id: "T", changes: [{ path: "/system/changed", old: false, new: true }] }],
+    });
+
+    await waitFor(() => expect(getByText("templates.badge.changed")).toBeTruthy());
+    expect(queryByText("templates.badge.upToDate")).toBeNull();
   });
 });

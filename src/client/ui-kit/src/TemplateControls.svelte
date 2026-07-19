@@ -2,17 +2,39 @@
   // Host-rendered template chrome for any doc_type's sheet (§6.1). Reads provenance/instances
   // from the templates seam; shows a source badge + pull/revert (stamped, authorized) and push
   // (has instances, authorized). The module sheet body never opts in.
+  import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "./appContext";
 
   let { docId }: { docId: string } = $props();
   const ctx = getAppContext();
   const t = ctx.t;
 
-  const doc = $derived(ctx.documents.get(docId));
-  const template = $derived(doc?.source ? ctx.documents.get(doc.source.id) : undefined);
-  const sync = $derived(ctx.templates.syncState(docId));
-  const canPull = $derived(ctx.templates.canPull(docId));
-  const canPush = $derived(ctx.templates.canPush(docId));
+  // Reactive subscription: ctx.documents (OptimisticClient) is a plain-callback store, not a
+  // Svelte rune — every $derived.by that reads it directly (or via ctx.templates.*, which reads
+  // the same underlying store) must call subscribe() itself, or the derived value freezes at
+  // first read and never observes later template/instance edits (mirrors ActorSheet's pattern).
+  const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
+
+  const doc = $derived.by(() => {
+    subscribe();
+    return ctx.documents.get(docId);
+  });
+  const template = $derived.by(() => {
+    subscribe();
+    return doc?.source ? ctx.documents.get(doc.source.id) : undefined;
+  });
+  const sync = $derived.by(() => {
+    subscribe();
+    return ctx.templates.syncState(docId);
+  });
+  const canPull = $derived.by(() => {
+    subscribe();
+    return ctx.templates.canPull(docId);
+  });
+  const canPush = $derived.by(() => {
+    subscribe();
+    return ctx.templates.canPush(docId);
+  });
   const hasSource = $derived(!!doc?.source && !!template);
 </script>
 
