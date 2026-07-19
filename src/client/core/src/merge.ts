@@ -116,7 +116,9 @@ function sameResult(a: Diff, b: Diff): boolean {
 }
 
 function applyDiff(root: unknown, d: Diff): void {
-  if (d.kind === "set") setPointer(root, d.path, d.value);
+  // `d.value` (a `set` diff) is a live reference into the source tree `structuralDiff` walked
+  // (e.g. `parentNow`); clone before splicing into `root` so `root` never aliases that tree.
+  if (d.kind === "set") setPointer(root, d.path, structuredClone(d.value));
   else deletePointer(root, d.path);
 }
 
@@ -149,11 +151,16 @@ export function merge3Tree(
     }
     const exact = overlapping.find((c) => c.path === p.path);
     if (exact && overlapping.length === 1 && sameResult(p, exact)) continue;
+    // `parent`/`child` may reference subtrees of `parentNow`/`childNow`; clone them so a
+    // `Conflict` can never alias (and a caller mutating it can never corrupt) either source tree.
     conflicts.push({
       path: p.path,
       base: getPointer(base, p.path),
-      parent: p.kind === "set" ? p.value : undefined,
-      child: exact && exact.kind === "set" ? exact.value : getPointer(childNow, p.path),
+      parent: p.kind === "set" ? structuredClone(p.value) : undefined,
+      child:
+        exact && exact.kind === "set"
+          ? structuredClone(exact.value)
+          : structuredClone(getPointer(childNow, p.path)),
       parentKind: p.kind,
     });
   }

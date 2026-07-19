@@ -166,6 +166,38 @@ describe("merge3Tree", () => {
     takeTemplate(merged, delC);
     expect(merged).toEqual({ a: 2 });
   });
+
+  it("does not alias parentNow/childNow subtrees into merged/Conflict values (purity)", () => {
+    // Disjoint parent-only set of a nested object: merged's subtree must not be the same
+    // reference as parentNow's, or mutating one would corrupt the other in place.
+    const base = { a: 1, nested: { x: 1 } };
+    const parentNow = { a: 1, nested: { x: 1 }, added: { deep: { v: 1 } } };
+    const childNow = { a: 2, nested: { x: 1 } };
+    const { merged } = merge3Tree(base, parentNow, childNow, []) as {
+      merged: { added: { deep: { v: number } } };
+    };
+    expect(merged.added).toEqual({ deep: { v: 1 } });
+    expect(merged.added).not.toBe(parentNow.added);
+    parentNow.added.deep.v = 999;
+    expect(merged.added.deep.v).toBe(1);
+
+    // Conflicting nested-object case: both sides add the same key with a different nested
+    // object value, so `Conflict.parent`/`.child` must not alias `parentNow`/`childNow`.
+    const base2 = { obj: { x: 1 } };
+    const parentNow2 = { obj: { x: 1, deep: { v: 1 } } };
+    const childNow2 = { obj: { x: 1, deep: { v: 2 } } };
+    const { conflicts } = merge3Tree(base2, parentNow2, childNow2, []);
+    expect(conflicts).toHaveLength(1);
+    const c = conflicts[0] as { parent: { v: number }; child: { v: number } };
+    expect(c.parent).toEqual({ v: 1 });
+    expect(c.child).toEqual({ v: 2 });
+    expect(c.parent).not.toBe(parentNow2.obj.deep);
+    expect(c.child).not.toBe(childNow2.obj.deep);
+    parentNow2.obj.deep.v = 999;
+    childNow2.obj.deep.v = 888;
+    expect(c.parent.v).toBe(1);
+    expect(c.child.v).toBe(2);
+  });
 });
 
 describe("isPlacementExcluded", () => {
