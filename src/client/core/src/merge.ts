@@ -1,8 +1,7 @@
 // Pure, order-independent 3-way merge primitives (client-core). The server never merges;
 // the merge is computed here and applied as an ordinary batched `Update` (M13e). Every value
 // is plain JSON (objects recurse key-by-key, arrays are opaque leaves, scalars are leaves).
-// TODO: import `setPointer`/`getPointer` from "./store" once the merge algorithm consumes them;
-// an unused import fails this package's `noUnusedLocals` typecheck.
+import { setPointer, getPointer } from "./store";
 
 /** One structural change between two JSON trees at an RFC-6901 pointer. */
 export type Diff =
@@ -87,4 +86,82 @@ export function deletePointer(root: unknown, pointer: string): void {
   } else if (isPlainObject(cur)) {
     delete cur[last];
   }
+}
+
+/** A field changed on both the template (parent) and instance (child) sides since the last
+ * sync. `parent`/`child` are `undefined` when that side deleted the key. `parentKind` records
+ * how "take template" resolves it (set the parent value, or delete the key). */
+export type Conflict = {
+  path: string;
+  base: unknown;
+  parent: unknown;
+  child: unknown;
+  parentKind: "set" | "delete";
+};
+
+/** Whether `path` is inside the placement exclusion set (equal or a descendant). */
+export function isPlacementExcluded(path: string, exclusions: string[]): boolean {
+  return exclusions.some((e) => path === e || path.startsWith(`${e}/`));
+}
+
+/** JSON-pointer subtree overlap (either contains the other, or equal). */
+function pathsOverlap(a: string, b: string): boolean {
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+function sameResult(a: Diff, b: Diff): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "delete") return true;
+  return deepEqual(a.value, (b as { value: unknown }).value);
+}
+
+function applyDiff(root: unknown, d: Diff): void {
+  if (d.kind === "set") setPointer(root, d.path, d.value);
+  else deletePointer(root, d.path);
+}
+
+/**
+ * 3-way merge of one JSON tree (used for the `name`+`engine`+`system` synthetic band tree).
+ * `merged` starts from `childNow` and applies parent-only changes; a path changed on both sides
+ * with a differing result is a conflict, left at the child value ("keep mine" default). Paths in
+ * `exclusions` are dropped from the parent side (never merge, never conflict). Pure +
+ * order-independent (sorted-key `structuralDiff`).
+ *
+ * Ancestor/descendant overlap (e.g. child deletes an object the parent edits inside) is treated
+ * as a conflict at the parent change's path (`pathsOverlap`) — the safe direction; arrays are
+ * opaque leaves so deep-array changes are single-path.
+ */
+export function merge3Tree(
+  base: unknown,
+  parentNow: unknown,
+  childNow: unknown,
+  exclusions: string[],
+): { merged: unknown; conflicts: Conflict[] } {
+  const parentDiff = structuralDiff(base, parentNow).filter((d) => !isPlacementExcluded(d.path, exclusions));
+  const childDiff = structuralDiff(base, childNow);
+  const merged = structuredClone(childNow) as unknown;
+  const conflicts: Conflict[] = [];
+  for (const p of parentDiff) {
+    const overlapping = childDiff.filter((c) => pathsOverlap(c.path, p.path));
+    if (overlapping.length === 0) {
+      applyDiff(merged, p);
+      continue;
+    }
+    const exact = overlapping.find((c) => c.path === p.path);
+    if (exact && overlapping.length === 1 && sameResult(p, exact)) continue;
+    conflicts.push({
+      path: p.path,
+      base: getPointer(base, p.path),
+      parent: p.kind === "set" ? p.value : undefined,
+      child: exact && exact.kind === "set" ? exact.value : getPointer(childNow, p.path),
+      parentKind: p.kind,
+    });
+  }
+  return { merged, conflicts };
+}
+
+/** Apply the parent's decision for a conflict into `root` (in place). */
+export function takeTemplate(root: unknown, c: Conflict): void {
+  if (c.parentKind === "delete") deletePointer(root, c.path);
+  else setPointer(root, c.path, c.parent);
 }

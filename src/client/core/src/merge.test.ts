@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { structuralDiff, deletePointer, deepEqual } from "./merge";
+import { merge3Tree, takeTemplate, isPlacementExcluded, type Conflict } from "./merge";
 
 describe("deepEqual", () => {
   it("compares objects key-order-independently and arrays positionally", () => {
@@ -72,5 +73,106 @@ describe("deletePointer", () => {
     const root = { a: 1 };
     deletePointer(root, "/b/c");
     expect(root).toEqual({ a: 1 });
+  });
+});
+
+describe("merge3Tree", () => {
+  it("disjoint changes auto-merge (parent value applied, child value kept)", () => {
+    const base = { a: 1, b: 2, c: 3 };
+    const parent = { a: 1, b: 20, c: 3 }; // parent changed b
+    const child = { a: 10, b: 2, c: 3 }; // child changed a
+    const { merged, conflicts } = merge3Tree(base, parent, child, []);
+    expect(conflicts).toEqual([]);
+    expect(merged).toEqual({ a: 10, b: 20, c: 3 });
+  });
+
+  it("set/set on the same path with equal result is a no-op", () => {
+    const { conflicts } = merge3Tree({ a: 1 }, { a: 2 }, { a: 2 }, []);
+    expect(conflicts).toEqual([]);
+  });
+
+  it("set/set differing is a conflict; merged keeps child by default", () => {
+    const { merged, conflicts } = merge3Tree({ a: 1 }, { a: 2 }, { a: 3 }, []);
+    expect(conflicts).toEqual([
+      { path: "/a", base: 1, parent: 2, child: 3, parentKind: "set" },
+    ]);
+    expect(merged).toEqual({ a: 3 });
+  });
+
+  it("set/delete is a conflict", () => {
+    const { conflicts } = merge3Tree({ a: 1 }, { a: 2 }, {}, []);
+    expect(conflicts).toEqual([
+      { path: "/a", base: 1, parent: 2, child: undefined, parentKind: "set" },
+    ]);
+  });
+
+  it("delete/set is a conflict", () => {
+    const { conflicts } = merge3Tree({ a: 1 }, {}, { a: 3 }, []);
+    expect(conflicts).toEqual([
+      { path: "/a", base: 1, parent: undefined, child: 3, parentKind: "delete" },
+    ]);
+  });
+
+  it("parent-only delete auto-applies (key removed from merged)", () => {
+    const { merged, conflicts } = merge3Tree({ a: 1, b: 2 }, { a: 1 }, { a: 1, b: 2 }, []);
+    expect(conflicts).toEqual([]);
+    expect(merged).toEqual({ a: 1 });
+  });
+
+  it("arrays merge wholesale (parent array replaces base→child when child untouched)", () => {
+    const { merged, conflicts } = merge3Tree(
+      { xs: [1, 2] }, { xs: [1, 2, 3] }, { xs: [1, 2] }, [],
+    );
+    expect(conflicts).toEqual([]);
+    expect(merged).toEqual({ xs: [1, 2, 3] });
+  });
+
+  it("map key-level: independent keys merge, one key conflicts", () => {
+    const base = { m: { x: 1, y: 1 } };
+    const parent = { m: { x: 2, y: 1 } };
+    const child = { m: { x: 1, y: 9 } };
+    const { merged, conflicts } = merge3Tree(base, parent, child, []);
+    expect(conflicts).toEqual([]);
+    expect(merged).toEqual({ m: { x: 2, y: 9 } });
+  });
+
+  it("excluded paths are dropped from parent's changes (never merge, never conflict)", () => {
+    const base = { engine: { x: 0, hp: 1 } };
+    const parent = { engine: { x: 99, hp: 5 } }; // parent moved x AND changed hp
+    const child = { engine: { x: 3, hp: 1 } }; // child placed at x:3
+    const { merged, conflicts } = merge3Tree(base, parent, child, ["/engine/x"]);
+    expect(conflicts).toEqual([]);
+    expect(merged).toEqual({ engine: { x: 3, hp: 5 } }); // child x kept, parent hp merged
+  });
+
+  it("is order-independent across permuted object keys", () => {
+    const base = { a: 1, b: 2, c: 3, d: 4 };
+    const parent = { a: 10, b: 2, c: 30, d: 4 };
+    const child = { a: 1, b: 20, c: 3, d: 40 };
+    const forward = merge3Tree(base, parent, child, []);
+    const rev = (o: Record<string, number>) =>
+      Object.fromEntries(Object.entries(o).reverse());
+    const permuted = merge3Tree(rev(base), rev(parent), rev(child), []);
+    expect(permuted.merged).toEqual(forward.merged);
+    expect(permuted.conflicts).toEqual(forward.conflicts);
+  });
+
+  it("takeTemplate applies the parent's set/delete into a merged tree", () => {
+    const merged = { a: 3, b: 5 };
+    const setC: Conflict = { path: "/a", base: 1, parent: 2, child: 3, parentKind: "set" };
+    takeTemplate(merged, setC);
+    expect(merged).toEqual({ a: 2, b: 5 });
+    const delC: Conflict = { path: "/b", base: 5, parent: undefined, child: 5, parentKind: "delete" };
+    takeTemplate(merged, delC);
+    expect(merged).toEqual({ a: 2 });
+  });
+});
+
+describe("isPlacementExcluded", () => {
+  it("matches a path or its descendants against the exclusion set", () => {
+    expect(isPlacementExcluded("/engine/x", ["/engine/x"])).toBe(true);
+    expect(isPlacementExcluded("/engine/x/deep", ["/engine/x"])).toBe(true);
+    expect(isPlacementExcluded("/engine/xylophone", ["/engine/x"])).toBe(false);
+    expect(isPlacementExcluded("/engine/y", ["/engine/x"])).toBe(false);
   });
 });

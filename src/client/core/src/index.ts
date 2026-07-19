@@ -86,5 +86,5 @@ export { SHEET_CONTRACT_PREFIX, SHEET_FALLBACK_CONTRACT, sheetContract, resolveD
 export type { SheetRef, SheetTarget } from "./sheets";
 export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, CHAT_SETTINGS_DOC_TYPE, MAX_MESSAGE_CHARS, MessageKindSchema, DieRecordSchema, RollOutcomeSchema, ChatSegmentSchema, ChatMessageEngineSchema, parseMessageEngine, isKnownSegment, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc } from "./chat-docs";
 export type { MessageKind, DieRecord, RollOutcome, ChatSegment, UnknownSegment, ChatMessageEngine, ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine } from "./chat-docs";
-export { structuralDiff, deletePointer, deepEqual } from "./merge";
-export type { Diff } from "./merge";
+export { structuralDiff, deletePointer, deepEqual, merge3Tree, takeTemplate, isPlacementExcluded } from "./merge";
+export type { Diff, Conflict } from "./merge";
