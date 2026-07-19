@@ -31,7 +31,7 @@ interprets or merges anything itself.
     merge key-level** (each key independently: parent-only / child-only / both-same /
     both-different-conflict). `exclusions` drops matching paths from the parent side entirely
     (never merge, never conflict) — the placement-exclusion mechanism (E8, below).
-  - `merge3Embedded(baseChildren, mineChildren, theirsChildren)` — **internal helper, not
+  - `merge3Embedded(baseChildren, theirsChildren, mineChildren)` — **internal helper, not
     exported from `@shadowcat/core`** (used only inside `merge3`); correlates embedded children
     across base/mine/theirs **by `source.id`, never by array index or embedded-array position**
     (E7) — an instance's embedded children were themselves stamped from the template's embedded
