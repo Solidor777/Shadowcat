@@ -11,7 +11,7 @@
 pub type P = (f64, f64);
 
 /// An occluding segment.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Seg {
     pub a: P,
     pub b: P,

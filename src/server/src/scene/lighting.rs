@@ -23,7 +23,7 @@ pub enum Falloff {
 
 /// A placed light's photometric inputs. Radii are in GRID CELLS; `color` is packed `0xRRGGBB`.
 /// Mirrors the client `LightSystem` (scene-docs.ts).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Light {
     pub pos: P,
     pub color: u32,

@@ -58,7 +58,7 @@ pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 
 /// The resolved per-scene lighting/vision/movement settings (subset of the client
 /// `ResolvedSceneSettings`; pathfinding/animation fields are resolved in later checkpoints).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedScene {
     pub los_restriction: bool,
     pub fog: bool,
@@ -265,6 +265,27 @@ pub struct SceneEcs {
     /// (a best-effort trim, not load-bearing for correctness) so a deleted document's stale entry
     /// doesn't linger indefinitely.
     engine_cache: std::sync::Mutex<HashMap<Uuid, CachedEngine>>,
+    /// `visible_cells_cached`'s per-`(user, scene)` mask cache for the M10e-4 movement gate.
+    /// Keyed `(user, scene)`, NOT `(user, scene, lenient)` — a `lenient` flip is just another
+    /// fingerprint field, so it naturally invalidates the entry rather than needing a wider key
+    /// (see `VisibilityInputsSnapshot`). Self-verifying like `engine_cache` above, generalized
+    /// from a single document's `engine` `Value` to the FULL set of values `visible_cells`'s
+    /// computation reads: a cached mask is reused only when a freshly rebuilt
+    /// `VisibilityInputsSnapshot` compares equal to the one stored alongside it. Deliberately NOT
+    /// a generation counter bumped at known mutation sites — `engine_cache` already proved that
+    /// shape incomplete (`apply_op` is not the sole mutation chokepoint;
+    /// `set_world_config`/`set_actors`/test helpers bypass it), and this cache's input surface is
+    /// far larger (tokens, walls, lights, the scene doc, world-settings, gradation, vision-modes,
+    /// linked actors) — enumerating every mutation site for all of that would repeat the same
+    /// incompleteness risk at higher stakes, since this cache sits directly on the secrecy gate.
+    /// `Mutex`, matching `navmesh_cache`/`engine_cache` (never locked across an `.await`;
+    /// `SceneEcs` is shared behind a `tokio::sync::RwLock`).
+    visible_cells_cache: std::sync::Mutex<HashMap<(Uuid, Uuid), VisibleCellsCacheEntry>>,
+    /// Test-only instrumentation: counts `visible_cells_cached` snapshot-mismatch recomputes, so
+    /// a test can assert reuse actually happened (a repeated call with an unchanged snapshot must
+    /// NOT bump this), not merely that the returned mask was correct both times.
+    #[cfg(test)]
+    visible_cells_recompute_count: std::sync::atomic::AtomicU64,
 }
 
 impl SceneEcs {
@@ -279,6 +300,9 @@ impl SceneEcs {
             actors: HashMap::new(),
             navmesh_cache: std::sync::Mutex::new(HashMap::new()),
             engine_cache: std::sync::Mutex::new(HashMap::new()),
+            visible_cells_cache: std::sync::Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            visible_cells_recompute_count: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1331,18 +1355,33 @@ impl SceneEcs {
         } else {
             self.light_walls(scene)
         };
+        Self::lighting_inputs_from(all_bright, lights, &light_walls, self.sight_walls(scene))
+    }
+
+    /// Raycast step of `lighting_inputs`, split out so `visible_cells_cached` can gather the
+    /// pre-raycast `lights`/`light_walls`/`sight_walls` (cheap: cached document decodes only, no
+    /// geometry) to build its invalidation fingerprint WITHOUT paying for `lit_polys`' raycasts,
+    /// then call this to do the raycast only on a fingerprint mismatch. `lighting_inputs` itself
+    /// is unchanged behavior — it always gathers then immediately raycasts, same as before this
+    /// split.
+    fn lighting_inputs_from(
+        all_bright: bool,
+        lights: Vec<lighting::Light>,
+        light_walls: &[vision::Seg],
+        sight_walls: Vec<vision::Seg>,
+    ) -> LightingInputs {
         let lit_polys: Vec<Vec<vision::P>> = lights
             .iter()
             .map(|l| {
-                let b = vision::bound_for(l.pos, &light_walls, VISION_BOUND_MARGIN);
-                vision::visibility_polygon(l.pos, &light_walls, b)
+                let b = vision::bound_for(l.pos, light_walls, VISION_BOUND_MARGIN);
+                vision::visibility_polygon(l.pos, light_walls, b)
             })
             .collect();
         LightingInputs {
             all_bright,
             lights,
             lit_polys,
-            sight_walls: self.sight_walls(scene),
+            sight_walls,
         }
     }
 
@@ -1601,13 +1640,130 @@ impl SceneEcs {
             return out;
         }
 
-        // Gather this user's vision sources in THIS scene (owner ∪ observer-tier when
-        // observerVision). Mirrors player_lit_mask's source gather, scene-filtered.
-        struct Src {
-            vp: vision::P,
-            floors: Vec<(f64, f64, Option<String>)>,
+        let sources = self.gather_vision_sources_in_scene(user, scene, &settings);
+        if sources.is_empty() {
+            return out;
         }
-        let mut sources: Vec<Src> = Vec::new();
+
+        // Scene-shared lighting inputs (once), then per-source per-cell test.
+        let li = self.lighting_inputs(scene, &settings);
+        accumulate_visible_cells(&mut out, &sources, &settings, cell, &li, lenient);
+        out
+    }
+
+    /// Cached variant of `visible_cells` for the M10e-4 movement gate (the ONLY intended caller —
+    /// `visible_cells` itself and every other existing caller, incl. the pathfinder and the §13
+    /// parity tests, are UNCHANGED and keep calling the uncached primitive). Reuses the mask from
+    /// a prior call for the same `(user, scene)` only when a freshly rebuilt
+    /// `VisibilityInputsSnapshot` — built from the SAME `gather_vision_sources_in_scene` call and
+    /// the SAME raw `resolve_scene`/`scene_grid_sizes`/`scene_lights`/`light_walls`/`sight_walls`
+    /// reads the uncached path uses — compares EQUAL to the snapshot stored alongside the cached
+    /// mask. Any difference (token move, wall/light/vision-mode/world-settings/scene mutation, a
+    /// token gaining or losing owner/observer-tier status in this scene, or `lenient` itself
+    /// changing) is a snapshot mismatch and forces a full recompute — fails toward recompute,
+    /// never toward serving a stale wider mask. The only work skipped on a cache HIT is the two
+    /// genuinely expensive geometry passes: `lit_polys`' per-light raycasts (inside
+    /// `lighting_inputs`) and `accumulate_visible_cells`'s per-source LOS raycast + nested
+    /// per-cell scan — the snapshot itself still re-reads every input document on every call (via
+    /// already-cheap, self-verifying `engine_as_cached` decodes), so a real change is always seen.
+    pub fn visible_cells_cached(
+        &self,
+        user: Uuid,
+        scene: Uuid,
+        lenient: bool,
+    ) -> std::collections::BTreeSet<(i32, i32)> {
+        use std::collections::BTreeSet;
+        let settings = self.resolve_scene(scene);
+        let cell = self
+            .scene_grid_sizes()
+            .get(&scene)
+            .copied()
+            .unwrap_or(100.0);
+        if cell <= 0.0 {
+            return BTreeSet::new();
+        }
+
+        let mut sources = self.gather_vision_sources_in_scene(user, scene, &settings);
+        if sources.is_empty() {
+            return BTreeSet::new();
+        }
+        // Deterministic snapshot order: `sources`' emission order follows hecs entity iteration,
+        // which is not a stable contract across unrelated entity churn. Sorting avoids a spurious
+        // fingerprint mismatch (over-invalidation is merely a perf cost, never a safety one, but
+        // a stable order is what makes the reuse test in Step 6 meaningful).
+        sources.sort_by_key(|s| s.id);
+
+        let all_bright = !settings.lighting_enabled
+            || matches!(settings.light_mode, LightMode::GlobalIllumination);
+        let lights = if all_bright {
+            Vec::new()
+        } else {
+            self.scene_lights(scene)
+        };
+        let light_walls = if all_bright {
+            Vec::new()
+        } else {
+            self.light_walls(scene)
+        };
+        let sight_walls = self.sight_walls(scene);
+
+        let snapshot = VisibilityInputsSnapshot {
+            lenient,
+            settings: settings.clone(),
+            cell,
+            sources: sources
+                .iter()
+                .map(|s| (s.id, s.vp, s.floors.clone()))
+                .collect(),
+            lights: lights.clone(),
+            light_walls: light_walls.clone(),
+            sight_walls: sight_walls.clone(),
+        };
+
+        {
+            let cache = self.visible_cells_cache.lock().unwrap();
+            if let Some((cached_snapshot, cached_mask)) = cache.get(&(user, scene)) {
+                if *cached_snapshot == snapshot {
+                    return cached_mask.clone();
+                }
+            }
+        }
+
+        #[cfg(test)]
+        self.visible_cells_recompute_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let li = Self::lighting_inputs_from(all_bright, lights, &light_walls, sight_walls);
+        let mut mask = BTreeSet::new();
+        accumulate_visible_cells(&mut mask, &sources, &settings, cell, &li, lenient);
+
+        let mut cache = self.visible_cells_cache.lock().unwrap();
+        cache.insert((user, scene), (snapshot, mask.clone()));
+        mask
+    }
+
+    /// Test-only: the number of times `visible_cells_cached` has fallen through to a full
+    /// recompute (snapshot mismatch or first call), so a test can assert a repeated call with no
+    /// input change was actually served from the cache rather than merely returning the same
+    /// (recomputed) answer twice.
+    #[cfg(test)]
+    fn visible_cells_recompute_count(&self) -> u64 {
+        self.visible_cells_recompute_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// This user's vision sources (owner ∪ observer-tier token when `observerVision`) in `scene`.
+    /// Shared by `visible_cells` and `visible_cells_cached` so the cached path's invalidation
+    /// fingerprint is built from the EXACT same source list the mask computation itself consumes
+    /// — never a second, separately hand-kept "what counts as a source" implementation that could
+    /// silently drift and omit an input the fingerprint should have caught.
+    fn gather_vision_sources_in_scene(
+        &self,
+        user: Uuid,
+        scene: Uuid,
+        settings: &ResolvedScene,
+    ) -> Vec<VisSrc> {
+        let mut sources: Vec<VisSrc> = Vec::new();
         for e in self.world.query::<&SceneEntity>().iter() {
             if e.doc.doc_type != "token" || e.doc.parent_id != Some(scene) {
                 continue;
@@ -1628,98 +1784,14 @@ impl SceneEcs {
                 continue;
             }
             if let Some(t) = self.engine_as_cached::<eng::TokenEngine>(e.doc.id, &e.doc) {
-                sources.push(Src {
+                sources.push(VisSrc {
+                    id: e.doc.id,
                     vp: (t.x, t.y),
                     floors: self.token_vision_floors(&e.doc),
                 });
             }
         }
-        if sources.is_empty() {
-            return out;
-        }
-
-        // Scene-shared lighting inputs (once), then per-source per-cell test.
-        let li = self.lighting_inputs(scene, &settings);
-        for src in &sources {
-            let poly = source_los_poly(src.vp, &li.sight_walls, settings.los_restriction);
-            if poly.len() < 3 {
-                continue;
-            }
-            let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-            for &(x, y) in &poly {
-                minx = minx.min(x);
-                miny = miny.min(y);
-                maxx = maxx.max(x);
-                maxy = maxy.max(y);
-            }
-            // Lenient samples corners, so a cell just outside the center-bbox can still qualify:
-            // expand the scan by one cell each side under leniency.
-            let pad = if lenient { 1 } else { 0 };
-            let i0 = (minx / cell).floor() as i32 - pad;
-            let i1 = (maxx / cell).floor() as i32 + pad;
-            let j0 = (miny / cell).floor() as i32 - pad;
-            let j1 = (maxy / cell).floor() as i32 + pad;
-            let w = i1 as i64 - i0 as i64 + 1;
-            let h = j1 as i64 - j0 as i64 + 1;
-            if w.saturating_mul(h) > crate::scene::explored::MAX_CELLS_PER_POLYGON {
-                tracing::warn!("visible_cells scan exceeds cap; skipping source");
-                continue;
-            }
-            for i in i0..=i1 {
-                for j in j0..=j1 {
-                    if out.contains(&(i, j)) {
-                        continue;
-                    }
-                    // Strict: center only. Lenient: center first (so §13 strict cells are always
-                    // included), then corners if center fails — a cell whose polygon merely clips
-                    // a corner still qualifies under leniency.
-                    let center = ((i as f64 + 0.5) * cell, (j as f64 + 0.5) * cell);
-                    let corners = [
-                        (i as f64 * cell, j as f64 * cell),
-                        ((i + 1) as f64 * cell, j as f64 * cell),
-                        (i as f64 * cell, (j + 1) as f64 * cell),
-                        ((i + 1) as f64 * cell, (j + 1) as f64 * cell),
-                    ];
-                    let mut found = false;
-                    if lenient {
-                        // Check center first, then corners.
-                        if vision::point_in_poly(&poly, center)
-                            && point_qualifies(center, src.vp, &src.floors, &settings, &li, cell)
-                        {
-                            found = true;
-                        }
-                        if !found {
-                            for &corner in &corners {
-                                if vision::point_in_poly(&poly, corner)
-                                    && point_qualifies(
-                                        corner,
-                                        src.vp,
-                                        &src.floors,
-                                        &settings,
-                                        &li,
-                                        cell,
-                                    )
-                                {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                        }
-                    } else {
-                        // Strict: center only (mirrors player_lit_mask exactly).
-                        if vision::point_in_poly(&poly, center)
-                            && point_qualifies(center, src.vp, &src.floors, &settings, &li, cell)
-                        {
-                            found = true;
-                        }
-                    }
-                    if found {
-                        out.insert((i, j));
-                    }
-                }
-            }
-        }
-        out
+        sources
     }
 
     /// Engine-owned movement collision (M9a, the second ARCHITECTURE #6 geometric
@@ -1803,6 +1875,135 @@ fn point_qualifies(
     };
     let dist_cells = (((point.0 - src_vp.0).powi(2) + (point.1 - src_vp.1).powi(2)).sqrt()) / cell;
     cell_visible(floors, cl.level, dist_cells)
+}
+
+/// One vision source gathered by `gather_vision_sources_in_scene`: an owned or observer-tier
+/// token's viewpoint + resolved vision floors. `id` is carried only for `visible_cells_cached`'s
+/// deterministic snapshot ordering — `visible_cells` itself never reads it.
+struct VisSrc {
+    id: Uuid,
+    vp: vision::P,
+    floors: Vec<(f64, f64, Option<String>)>,
+}
+
+/// Fingerprint of every input `visible_cells`'s computation reads for one `(user, scene,
+/// lenient)` call, used by `visible_cells_cached` to decide whether a prior mask may be reused.
+/// Built from the SAME calls the real computation makes (`gather_vision_sources_in_scene`,
+/// `resolve_scene`, `scene_grid_sizes`, `scene_lights`, `light_walls`, `sight_walls`) — not a
+/// separately-derived "things that might matter" list — so completeness reduces to "does this
+/// struct hold every field `accumulate_visible_cells`/`gather_vision_sources_in_scene` read",
+/// which is directly checkable by inspection, rather than "were all mutation call sites
+/// enumerated", which `engine_cache`'s `CachedEngine` already proved is an open, unboundable
+/// question for this codebase (`apply_op` is not the sole mutation chokepoint). Any change to
+/// what these fields hold — a token moving/gaining-or-losing source status, a wall's
+/// blocksSight/blocksLight/geometry changing, a light being added/moved/toggled, a vision-mode or
+/// gradation band definition changing (both flow into `sources`' `floors` via
+/// `token_vision_floors`), a linked actor's vision assignment changing (same path), the scene's
+/// own grid size or vision/lighting overrides changing, or world-settings' `observerVision`/
+/// `losRestriction`/lighting defaults changing — is captured because it necessarily changes the
+/// value of one of these fields, making the snapshot compare unequal.
+/// One `sources` entry in `VisibilityInputsSnapshot`: `(token id, viewpoint, vision floors)`.
+type VisSrcSnapshot = (Uuid, vision::P, Vec<(f64, f64, Option<String>)>);
+
+#[derive(Clone, PartialEq)]
+struct VisibilityInputsSnapshot {
+    lenient: bool,
+    settings: ResolvedScene,
+    cell: f64,
+    sources: Vec<VisSrcSnapshot>,
+    lights: Vec<lighting::Light>,
+    light_walls: Vec<vision::Seg>,
+    sight_walls: Vec<vision::Seg>,
+}
+
+/// `visible_cells_cache`'s per-entry value: the snapshot it was computed from, paired with the
+/// mask itself.
+type VisibleCellsCacheEntry = (VisibilityInputsSnapshot, std::collections::BTreeSet<(i32, i32)>);
+
+/// The per-source LOS raycast + per-cell scan shared by `visible_cells` and
+/// `visible_cells_cached` on a cache miss — extracted verbatim (no logic change) from
+/// `visible_cells`'s prior inline loop so there is exactly one implementation of the expensive
+/// half of the computation for both entry points to call.
+fn accumulate_visible_cells(
+    out: &mut std::collections::BTreeSet<(i32, i32)>,
+    sources: &[VisSrc],
+    settings: &ResolvedScene,
+    cell: f64,
+    li: &LightingInputs,
+    lenient: bool,
+) {
+    for src in sources {
+        let poly = source_los_poly(src.vp, &li.sight_walls, settings.los_restriction);
+        if poly.len() < 3 {
+            continue;
+        }
+        let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for &(x, y) in &poly {
+            minx = minx.min(x);
+            miny = miny.min(y);
+            maxx = maxx.max(x);
+            maxy = maxy.max(y);
+        }
+        // Lenient samples corners, so a cell just outside the center-bbox can still qualify:
+        // expand the scan by one cell each side under leniency.
+        let pad = if lenient { 1 } else { 0 };
+        let i0 = (minx / cell).floor() as i32 - pad;
+        let i1 = (maxx / cell).floor() as i32 + pad;
+        let j0 = (miny / cell).floor() as i32 - pad;
+        let j1 = (maxy / cell).floor() as i32 + pad;
+        let w = i1 as i64 - i0 as i64 + 1;
+        let h = j1 as i64 - j0 as i64 + 1;
+        if w.saturating_mul(h) > crate::scene::explored::MAX_CELLS_PER_POLYGON {
+            tracing::warn!("visible_cells scan exceeds cap; skipping source");
+            continue;
+        }
+        for i in i0..=i1 {
+            for j in j0..=j1 {
+                if out.contains(&(i, j)) {
+                    continue;
+                }
+                // Strict: center only. Lenient: center first (so §13 strict cells are always
+                // included), then corners if center fails — a cell whose polygon merely clips
+                // a corner still qualifies under leniency.
+                let center = ((i as f64 + 0.5) * cell, (j as f64 + 0.5) * cell);
+                let corners = [
+                    (i as f64 * cell, j as f64 * cell),
+                    ((i + 1) as f64 * cell, j as f64 * cell),
+                    (i as f64 * cell, (j + 1) as f64 * cell),
+                    ((i + 1) as f64 * cell, (j + 1) as f64 * cell),
+                ];
+                let mut found = false;
+                if lenient {
+                    // Check center first, then corners.
+                    if vision::point_in_poly(&poly, center)
+                        && point_qualifies(center, src.vp, &src.floors, settings, li, cell)
+                    {
+                        found = true;
+                    }
+                    if !found {
+                        for &corner in &corners {
+                            if vision::point_in_poly(&poly, corner)
+                                && point_qualifies(corner, src.vp, &src.floors, settings, li, cell)
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    // Strict: center only (mirrors player_lit_mask exactly).
+                    if vision::point_in_poly(&poly, center)
+                        && point_qualifies(center, src.vp, &src.floors, settings, li, cell)
+                    {
+                        found = true;
+                    }
+                }
+                if found {
+                    out.insert((i, j));
+                }
+            }
+        }
+    }
 }
 
 /// Per-cell visibility decision shared by `player_lit_mask` (egress/secrecy gate) and
@@ -3574,6 +3775,100 @@ mod tests {
             ecs.visible_cells(stranger, scene, true).is_empty(),
             "no sources → empty (fail closed)"
         );
+    }
+
+    #[test]
+    fn movement_gate_mask_cache_invalidates_on_wall_mutation() {
+        // `visible_cells_cached` must never serve a cell an occluding wall has since removed from
+        // view: a stale cache must fail toward recompute, never toward a wider mask.
+        use serde_json::json;
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        // Grid size 20 (not the usual 100) so the target cell sits comfortably inside the
+        // no-walls-yet `bound_for` margin box (±100 around the token) rather than on its edge.
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 20 }, "background": null }),
+        );
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 10, "y": 10, "w": 20.0, "h": 20.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let light = entity_doc_eng(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 10.0, "y": 10.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true
+            }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![scene, tok, light], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#000000", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+
+        // Cell (2,0), center (50,10): 40 scene units (2 cells) from the token at (10,10), well
+        // within the 160-unit (8-cell) dim radius, and on the token's LOS with no wall present.
+        let target_cell = (2, 0);
+        let mask1 = ecs.visible_cells_cached(user, scene_id, false);
+        assert!(
+            mask1.contains(&target_cell),
+            "cell visible before a blocksSight wall is added: {mask1:?}"
+        );
+
+        // A vertical blocksSight wall at x=30, between the token (x=10) and target_cell's center
+        // (x=50) — an ordinary `apply_op` Create, the same path a real `Room::publish` Create op
+        // takes.
+        let wall = entity_doc_eng(
+            30,
+            10,
+            "wall",
+            json!({ "seg": { "x1": 30, "y1": -400, "x2": 30, "y2": 400 }, "blocksSight": true }),
+        );
+        ecs.apply_op(&Operation::Create { doc: wall });
+
+        let mask2 = ecs.visible_cells_cached(user, scene_id, false);
+        assert!(
+            !mask2.contains(&target_cell),
+            "cache must invalidate on wall mutation, never serve a stale wider mask: {mask2:?}"
+        );
+    }
+
+    #[test]
+    fn movement_gate_mask_cache_reused_across_repeated_moves_with_no_scene_change() {
+        let (ecs, user, scene) = scene_with_lit_player_token();
+
+        let mask1 = ecs.visible_cells_cached(user, scene, false);
+        assert_eq!(
+            ecs.visible_cells_recompute_count(),
+            1,
+            "first call is always a recompute (cold cache)"
+        );
+
+        let mask2 = ecs.visible_cells_cached(user, scene, false);
+        assert_eq!(mask1, mask2);
+        assert_eq!(
+            ecs.visible_cells_recompute_count(),
+            1,
+            "a repeated call with no input change must be served from the cache, not recomputed"
+        );
+
+        // Sanity: `visible_cells` (the uncached primitive `visible_cells_cached` wraps) agrees.
+        assert_eq!(mask1, ecs.visible_cells(user, scene, false));
     }
 
     /// Build an ECS with one `blocksMove` wall and one non-blocking wall in the same scene.

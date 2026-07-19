@@ -262,7 +262,7 @@ impl Room {
                             let visible = visible_cache
                                 .entry((scene_id, lenient))
                                 .or_insert_with(|| {
-                                    scene.visible_cells(ctx.user_id, scene_id, lenient)
+                                    scene.visible_cells_cached(ctx.user_id, scene_id, lenient)
                                 })
                                 .clone();
                             match settings.movement_restriction {
@@ -477,7 +477,7 @@ impl Room {
             visible_cells = if matches!(restriction, MovementRestriction::Unrestricted) {
                 std::collections::BTreeSet::new()
             } else {
-                scene.visible_cells(ctx.user_id, scene_id, lenient)
+                scene.visible_cells_cached(ctx.user_id, scene_id, lenient)
             };
         } // scene read guard dropped here — safe to await (publish_guard still held)
 
