@@ -19,10 +19,6 @@ use crate::data::DataError;
 /// cannot distinguish "was absent" from "was explicitly null", so a set-creating-a-
 /// key is not re-derived as a removal. `invert` has no live caller (undo/redo is
 /// not wired), so this asymmetry is inert today.
-fn is_false(b: &bool) -> bool {
-    !*b
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct FieldChange {
@@ -37,6 +33,10 @@ pub struct FieldChange {
     /// client Zod mirror makes it optional to match.
     #[serde(default, skip_serializing_if = "is_false")]
     pub remove: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A single operation within a command.

@@ -540,7 +540,11 @@ fn redact_change(ch: &FieldChange, gm_only: &[String]) -> Option<FieldChange> {
         }
     }
     if changed {
-        Some(FieldChange { remove: false,
+        // Preserve the removal flag: redacting a nested GM-only subtree out of an
+        // ancestor-targeting change must not downgrade a key REMOVAL into a set-to-null
+        // (`null` != absent) for the recipient. Only `old`/`new` are stripped.
+        Some(FieldChange {
+            remove: ch.remove,
             path: ch.path.clone(),
             old,
             new,
@@ -1142,6 +1146,33 @@ mod tests {
         assert_eq!(
             gm_view.embedded.get("items").unwrap()[0].system["secret"],
             serde_json::json!(9)
+        );
+    }
+
+    #[test]
+    fn redact_change_preserves_remove_flag_on_ancestor_of_hidden_leaf() {
+        // A GM removes `/system/sheet` — a subtree that contains a nested gm_only leaf
+        // `/system/sheet/hidden`. The redacted broadcast to a non-privileged recipient must
+        // stay a REMOVAL (remove: true, new: Null), never downgrade to a set-to-null: the
+        // latter would leave the key present-as-null on the recipient's client (the
+        // `null` != absent violation this task exists to fix).
+        let ch = FieldChange {
+            remove: true,
+            path: "/system/sheet".into(),
+            old: serde_json::json!({ "shown": 1, "hidden": 42 }),
+            new: serde_json::Value::Null,
+        };
+        let redacted = redact_change(&ch, &["/system/sheet/hidden".to_string()]).unwrap();
+        assert!(redacted.remove, "removal flag preserved through redaction");
+        assert_eq!(
+            redacted.new,
+            serde_json::Value::Null,
+            "a removal carries no new value"
+        );
+        assert_eq!(
+            redacted.old,
+            serde_json::json!({ "shown": 1 }),
+            "hidden leaf stripped from the pre-image; shown sibling remains"
         );
     }
 
