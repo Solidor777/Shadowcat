@@ -231,9 +231,8 @@ impl Room {
                 // ungated — the create capability is already a privileged grant (GM or a
                 // place-token tool), and unrestricted initial placement is normal
                 // authoring behavior. This is not a movement-restriction bypass: it is
-                // the placement path, not the move path. (Resolved design question,
-                // Phase-1 cleanup burndown 2026-07-19 — see docs/design/ARCHITECTURE.md
-                // invariant 6.)
+                // the placement path, not the move path. (This scoping is intentional —
+                // see docs/design/ARCHITECTURE.md invariant 6.)
                 for op in &ops {
                     if let Operation::Update { doc_id, changes } = op {
                         // Validate the POST-IMAGE position over the committed `/engine` band
