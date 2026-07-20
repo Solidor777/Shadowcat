@@ -874,7 +874,7 @@ pub async fn handle_edit_message(
 
     let op = Operation::Update {
         doc_id: message_id,
-        changes: vec![FieldChange {
+        changes: vec![FieldChange { remove: false,
             path: "/engine".into(),
             old: cur.engine.unwrap_or_default(),
             new: new_engine,
@@ -938,7 +938,7 @@ pub async fn handle_delete_message(
 
     let op = Operation::Update {
         doc_id: message_id,
-        changes: vec![FieldChange {
+        changes: vec![FieldChange { remove: false,
             path: "/engine".into(),
             old: cur.engine.unwrap_or_default(),
             new: new_engine,

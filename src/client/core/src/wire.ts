@@ -181,6 +181,10 @@ export const FieldChangeSchema = z.object({
   path: z.string(),
   old: z.unknown(),
   new: z.unknown(),
+  // When true, REMOVE the object key at `path` (genuine absence) instead of
+  // setting `new`. Omitted on the wire when false (mirrors the server's
+  // `#[serde(skip_serializing_if)]`).
+  remove: z.boolean().optional(),
 });
 
 export const OperationSchema = z.discriminatedUnion("op", [

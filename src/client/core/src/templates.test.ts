@@ -163,6 +163,12 @@ describe("computePull + planToUpdate", () => {
     expect(baseChange.new).toEqual({ name: "T2", engine: null, system: { hp: 5 }, embedded: {} });
     // /name unchanged on the merged bands → no /name change emitted.
     expect(op.changes.some((c) => c.path === "/name")).toBe(false);
+    // REGRESSION (leaf-removal wire capability): the merge engine reconciles subtrees by
+    // WHOLE-BAND replacement, never per-leaf `remove` ops. No emitted change may carry the
+    // `remove` flag — key deletion inside a band happens by the new band value omitting the
+    // key (see `system.new` above dropping nothing here; a real deletion would just not
+    // include the key), NOT by a `remove: true` FieldChange.
+    expect(op.changes.every((c) => c.remove === undefined || c.remove === false)).toBe(true);
   });
 
   it("emits a whole /embedded/<coll> array change when a child was added by the template", () => {

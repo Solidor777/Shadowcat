@@ -10,3 +10,11 @@ import type { AppContext } from "./appContext";
 export function setField(ctx: AppContext, docId: string, path: string, old: unknown, value: unknown): void {
   ctx.dispatchIntent([{ op: "update", doc_id: docId, changes: [{ path, old: old ?? null, new: value }] }]);
 }
+
+// Remove the object key at `path`, making it GENUINELY ABSENT (`null` != absent).
+// `old` is the OCC pre-image of the value being removed (same INVARIANT as `setField`).
+// Server-side `remove_pointer` handles object keys only — array-element removal still
+// goes through `setField` with a whole-array replacement.
+export function unsetField(ctx: AppContext, docId: string, path: string, old: unknown): void {
+  ctx.dispatchIntent([{ op: "update", doc_id: docId, changes: [{ path, old: old ?? null, new: null, remove: true }] }]);
+}

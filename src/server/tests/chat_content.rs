@@ -1098,6 +1098,7 @@ async fn client_intent_update_to_message_still_forbidden() {
     let op = Operation::Update {
         doc_id: id,
         changes: vec![FieldChange {
+            remove: false,
             path: "/system/kind".into(),
             old: serde_json::json!("normal"),
             new: serde_json::json!("system"),
@@ -1132,6 +1133,7 @@ async fn server_message_revision_does_not_grant_permissions_write() {
     let op = Operation::Update {
         doc_id: id,
         changes: vec![FieldChange {
+            remove: false,
             path: "/permissions/default".into(),
             old: serde_json::to_value(doc.permissions.default).unwrap(),
             new: serde_json::json!("owner"),

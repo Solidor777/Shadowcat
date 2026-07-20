@@ -27,15 +27,29 @@ describe("SystemTreeEditor", () => {
     expect((getByDisplayValue("Goblin") as HTMLInputElement).disabled).toBe(true);
   });
 
-  it("removeField dispatches the CURRENT container value read fresh as old", async () => {
+  it("removeField on an object key dispatches a narrow-OCC leaf removal (remove: true)", async () => {
     const calls: unknown[] = [];
     const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
     const d = doc({ a: "1", b: "2" });
     const { getAllByRole } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
     const removeButtons = getAllByRole("button", { name: "sheets.tree.remove" });
     await fireEvent.click(removeButtons[0]);
+    // Leaf remove of the key `a` with only that key's pre-image as `old` — NOT a whole-
+    // container replacement — so a concurrent sibling edit to `b` does not conflict.
     expect(calls).toEqual([
-      [{ op: "update", doc_id: "d1", changes: [{ path: "/system", old: { a: "1", b: "2" }, new: { b: "2" } }] }],
+      [{ op: "update", doc_id: "d1", changes: [{ path: "/system/a", old: "1", new: null, remove: true }] }],
+    ]);
+  });
+
+  it("removeField on an array element stays whole-array replacement (no remove flag)", async () => {
+    const calls: unknown[] = [];
+    const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const d = doc({ arr: ["x", "y", "z"] });
+    const { getAllByRole } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system/arr", root: (d.system as { arr: unknown[] }).arr, readOnly: false }, context });
+    const removeButtons = getAllByRole("button", { name: "sheets.tree.remove" });
+    await fireEvent.click(removeButtons[1]);
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "d1", changes: [{ path: "/system/arr", old: ["x", "y", "z"], new: ["x", "z"] }] }],
     ]);
   });
 

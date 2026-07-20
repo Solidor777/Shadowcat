@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getAppContext } from "./appContext";
   import { getPointer, type WireDocument } from "@shadowcat/core";
-  import { setField } from "./sheetEdit";
+  import { setField, unsetField } from "./sheetEdit";
   import Self from "./SystemTreeEditor.svelte";
 
   // `root` is the resolved value at `basePath` on `doc` (the sheet passes the live system
@@ -54,12 +54,16 @@
 
   function removeField(key: string): void {
     if (Array.isArray(root)) {
+      // Array-element removal stays whole-array replacement: neither set_pointer nor
+      // remove_pointer can resize an array, so the WHOLE array is rewritten without it.
       const next = (root as unknown[]).filter((_, i) => i !== Number(key));
       setField(ctx, doc.id, basePath, getPointer(doc, basePath), next);
     } else if (root !== null && typeof root === "object") {
-      const next = { ...(root as Record<string, unknown>) };
-      delete next[key];
-      setField(ctx, doc.id, basePath, getPointer(doc, basePath), next);
+      // Object-key removal is a narrow-OCC leaf remove (server `remove_pointer`): only
+      // THIS key's pre-image is checked, so a concurrent edit to a sibling key does not
+      // spuriously conflict as whole-container replacement would.
+      const path = `${basePath}/${key}`;
+      unsetField(ctx, doc.id, path, getPointer(doc, path));
     }
   }
 

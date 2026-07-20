@@ -2216,7 +2216,7 @@ mod tests {
         // Mutate the engine field through the real apply_op chokepoint.
         ecs.apply_op(&Operation::Update {
             doc_id: wall_id,
-            changes: vec![crate::data::command::FieldChange {
+            changes: vec![crate::data::command::FieldChange { remove: false,
                 path: "/engine/blocksSight".into(),
                 old: json!(true),
                 new: json!(false),
@@ -2244,7 +2244,7 @@ mod tests {
         assert_eq!(ecs.entity_count(), 1);
         ecs.apply_op(&Operation::Update {
             doc_id: Uuid::from_u128(11),
-            changes: vec![crate::data::command::FieldChange {
+            changes: vec![crate::data::command::FieldChange { remove: false,
                 path: "/system/x".into(),
                 old: json!(null),
                 new: json!(5),
@@ -2335,6 +2335,7 @@ mod tests {
 
     fn fc(path: &str, new: serde_json::Value) -> crate::data::command::FieldChange {
         crate::data::command::FieldChange {
+            remove: false,
             path: path.into(),
             old: json!(0),
             new,
@@ -2635,7 +2636,7 @@ mod tests {
         );
         ecs.apply_op(&Operation::Update {
             doc_id: scene_id,
-            changes: vec![crate::data::command::FieldChange {
+            changes: vec![crate::data::command::FieldChange { remove: false,
                 path: "/engine".into(),
                 old: json!(null),
                 new: scene.engine.clone().unwrap(),
@@ -3060,7 +3061,7 @@ mod tests {
         // A field Update to the current world-settings singleton (id 110) is mirrored.
         ecs.apply_op(&Operation::Update {
             doc_id: Uuid::from_u128(110),
-            changes: vec![crate::data::command::FieldChange {
+            changes: vec![crate::data::command::FieldChange { remove: false,
                 path: "/system/scene/lightingEnabled".into(),
                 old: json!(null),
                 new: json!(true),
@@ -4088,7 +4089,7 @@ mod tests {
         let a = ecs.navmesh_for(scene, 0.4).expect("navmesh builds");
         ecs.apply_op(&Operation::Update {
             doc_id: scene,
-            changes: vec![crate::data::command::FieldChange {
+            changes: vec![crate::data::command::FieldChange { remove: false,
                 path: "/engine/bounds".into(),
                 old: json!(null),
                 new: json!({ "width": 40, "height": 40 }),
