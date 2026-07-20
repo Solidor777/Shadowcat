@@ -1342,7 +1342,12 @@ impl SceneEcs {
     /// Scene-shared lighting/wall inputs for the visibility mask. Computed once per scene per
     /// dispatch and reused for every vision source via `lighting_inputs`. `all_bright`
     /// short-circuits light raycasts under lighting-off or globalIllumination (spec §3/§6).
-    pub(crate) fn lighting_inputs(&self, scene: Uuid, settings: &ResolvedScene) -> LightingInputs {
+    pub(crate) fn lighting_inputs(
+        &self,
+        scene: Uuid,
+        settings: &ResolvedScene,
+        cell: f64,
+    ) -> LightingInputs {
         let all_bright = !settings.lighting_enabled
             || matches!(settings.light_mode, LightMode::GlobalIllumination);
         let lights = if all_bright {
@@ -1355,7 +1360,14 @@ impl SceneEcs {
         } else {
             self.light_walls(scene)
         };
-        Self::lighting_inputs_from(all_bright, lights, &light_walls, self.sight_walls(scene))
+        Self::lighting_inputs_from(
+            all_bright,
+            lights,
+            &light_walls,
+            self.sight_walls(scene),
+            settings.bounds,
+            cell,
+        )
     }
 
     /// Raycast step of `lighting_inputs`, split out so `visible_cells_cached` can gather the
@@ -1369,6 +1381,8 @@ impl SceneEcs {
         lights: Vec<lighting::Light>,
         light_walls: &[vision::Seg],
         sight_walls: Vec<vision::Seg>,
+        bounds: (f64, f64),
+        cell: f64,
     ) -> LightingInputs {
         let lit_polys: Vec<Vec<vision::P>> = lights
             .iter()
@@ -1377,10 +1391,18 @@ impl SceneEcs {
                 vision::visibility_polygon(l.pos, light_walls, b)
             })
             .collect();
+        // Boundary-projected environment occlusion (M10f/C1). Empty under all_bright (env is not
+        // the mechanism there); occluded by the SAME blocksLight walls as the placed lights.
+        let env_polys = if all_bright {
+            Vec::new()
+        } else {
+            lighting::env_light_polys(bounds, cell, light_walls)
+        };
         LightingInputs {
             all_bright,
             lights,
             lit_polys,
+            env_polys,
             sight_walls,
         }
     }
@@ -1490,7 +1512,7 @@ impl SceneEcs {
             }
             // Lighting inputs: under globalIllumination or lighting-off, every LOS cell is bright;
             // else compute per-cell from lights (occluded by blocksLight) + environment.
-            let li = self.lighting_inputs(scene, settings);
+            let li = self.lighting_inputs(scene, settings, cell);
 
             let entry = per_scene
                 .entry(scene)
@@ -1547,6 +1569,7 @@ impl SceneEcs {
                                 settings.env_color,
                                 &li.lights,
                                 &li.lit_polys,
+                                &li.env_polys,
                                 cell,
                             )
                         };
@@ -1646,7 +1669,7 @@ impl SceneEcs {
         }
 
         // Scene-shared lighting inputs (once), then per-source per-cell test.
-        let li = self.lighting_inputs(scene, &settings);
+        let li = self.lighting_inputs(scene, &settings, cell);
         accumulate_visible_cells(&mut out, &sources, &settings, cell, &li, lenient);
         out
     }
@@ -1733,7 +1756,14 @@ impl SceneEcs {
         self.visible_cells_recompute_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        let li = Self::lighting_inputs_from(all_bright, lights, &light_walls, sight_walls);
+        let li = Self::lighting_inputs_from(
+            all_bright,
+            lights,
+            &light_walls,
+            sight_walls,
+            settings.bounds,
+            cell,
+        );
         let mut mask = BTreeSet::new();
         accumulate_visible_cells(&mut mask, &sources, &settings, cell, &li, lenient);
 
@@ -1831,6 +1861,9 @@ pub(crate) struct LightingInputs {
     pub(crate) all_bright: bool,
     pub(crate) lights: Vec<lighting::Light>,
     pub(crate) lit_polys: Vec<Vec<vision::P>>,
+    /// Scene-boundary visibility polygons occluding the environment ambient (`env_light_polys`).
+    /// Empty under `all_bright` (env is not the mechanism there — every LOS cell is forced bright).
+    pub(crate) env_polys: Vec<Vec<vision::P>>,
     pub(crate) sight_walls: Vec<vision::Seg>,
 }
 
@@ -1870,6 +1903,7 @@ fn point_qualifies(
             settings.env_color,
             &li.lights,
             &li.lit_polys,
+            &li.env_polys,
             cell,
         )
     };
@@ -3615,6 +3649,166 @@ mod tests {
             strict, egress,
             "strict gate mask must equal the egress secrecy mask"
         );
+    }
+
+    /// An `environmentLight` scene at env intensity 1.0 with a player-owned normal-vision token
+    /// at cell (0,0) and a 4-wall box sealing cell (3,3) (center (350,350)). The walls are
+    /// `blocksSight` (so `bound_for` grows the scan to include the room) but LOS is OFF (so the
+    /// LOS polygon is the plain bound rectangle — no LOS occlusion, isolating the env-occlusion
+    /// effect). `blocks_light` toggles whether the box occludes the boundary-projected environment
+    /// light: `true` seals the interior (env cannot reach), `false` is the no-occlusion baseline.
+    fn env_lit_scene_with_room(blocks_light: bool) -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let wall = |id: u128, x1: f64, y1: f64, x2: f64, y2: f64| {
+            entity_doc_eng(
+                id,
+                10,
+                "wall",
+                json!({ "seg": {"x1":x1,"y1":y1,"x2":x2,"y2":y2},
+                        "blocksSight": true, "blocksMove": false, "blocksLight": blocks_light }),
+            )
+        };
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "bounds": { "width": 6.0, "height": 6.0 } }),
+        );
+        let mut ecs = SceneEcs::from_documents(
+            vec![
+                scene,
+                tok,
+                wall(31, 300.0, 300.0, 400.0, 300.0),
+                wall(32, 400.0, 300.0, 400.0, 400.0),
+                wall(33, 400.0, 400.0, 300.0, 400.0),
+                wall(34, 300.0, 400.0, 300.0, 300.0),
+            ],
+            0,
+        );
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "grid-stepped",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        (ecs, user, scene_id)
+    }
+
+    /// The `(i,j)` cell set of `player_lit_mask(user)` restricted to `scene`.
+    fn mask_cells(
+        ecs: &SceneEcs,
+        user: Uuid,
+        scene: Uuid,
+    ) -> std::collections::BTreeSet<(i32, i32)> {
+        ecs.player_lit_mask(user)
+            .into_iter()
+            .filter(|s| s.scene == scene)
+            .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
+            .collect()
+    }
+
+    #[test]
+    fn env_light_occlusion_narrows_the_mask_and_seals_the_interior() {
+        // Option B: env light is a genuine (fail-closed) visibility input. A blocksLight-sealed
+        // interior stops being visible to a normal-vision player; occlusion only REMOVES cells.
+        let (ecs_after, user, scene) = env_lit_scene_with_room(true); // sealed
+        let (ecs_before, _, _) = env_lit_scene_with_room(false); // no occlusion baseline
+        let after = mask_cells(&ecs_after, user, scene);
+        let before = mask_cells(&ecs_before, user, scene);
+        let interior = (3, 3); // center (350,350), inside the sealed box
+        assert!(
+            before.contains(&interior),
+            "baseline (blocksLight:false) still lights the interior"
+        );
+        assert!(
+            !after.contains(&interior),
+            "a blocksLight-sealed interior must drop out of a normal-vision player's mask"
+        );
+        assert!(
+            after.is_subset(&before),
+            "env occlusion is strictly narrowing: it only removes cells, never adds any"
+        );
+        assert!(
+            after.contains(&(0, 0)),
+            "the open exterior (the token's own cell) stays lit and visible"
+        );
+    }
+
+    /// A wall-less `environmentLight`/`globalIllumination` scene (env 1.0) with a player-owned
+    /// normal-vision token, used to prove open-scene equivalence: with nothing to occlude, the
+    /// edge-projected env light reaches every LOS cell exactly as the flat all-bright fill does.
+    fn open_env_lit_scene(mode: &str) -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "bounds": { "width": 6.0, "height": 6.0 } }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": mode,
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "grid-stepped",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        (ecs, user, scene_id)
+    }
+
+    #[test]
+    fn env_light_open_scene_equals_global_illumination_no_holes() {
+        // Open-scene equivalence: where there is nothing to occlude, edge-projected env at
+        // intensity 1.0 must reach every LOS cell — identical to globalIllumination's all-bright
+        // fill. A spurious occlusion hole (e.g. too-sparse boundary sampling) would drop a cell
+        // here and break the equality.
+        let (env_ecs, user, scene) = open_env_lit_scene("environmentLight");
+        let (gi_ecs, _, _) = open_env_lit_scene("globalIllumination");
+        let env_mask = mask_cells(&env_ecs, user, scene);
+        let gi_mask = mask_cells(&gi_ecs, user, scene);
+        assert!(!env_mask.is_empty(), "open env-lit scene is non-empty");
+        assert_eq!(
+            env_mask, gi_mask,
+            "wall-less env=1.0 mask equals the flat all-bright mask (no occlusion holes)"
+        );
+    }
+
+    #[test]
+    fn strict_parity_holds_with_env_light_occlusion() {
+        // §13 anti-drift with env occlusion active: the movement gate (visible_cells strict) must
+        // still equal the egress secrecy mask (player_lit_mask cells) when a blocksLight-sealed
+        // interior narrows both. Both consume the SAME env_polys via the same cell_illumination.
+        let (ecs, user, scene) = env_lit_scene_with_room(true);
+        assert_strict_parity(&ecs, user, scene);
     }
 
     #[test]

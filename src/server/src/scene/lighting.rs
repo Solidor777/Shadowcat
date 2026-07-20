@@ -5,8 +5,15 @@
 //! Mirrors the client `light-gradation`/`light`/`vision-modes` shapes in scene-docs.ts; the server
 //! stays structural-only (callers parse documents and pass these plain structs).
 
+use crate::scene::vision;
 use crate::scene::vision::point_in_poly;
 use crate::scene::vision::P;
+
+/// DoS bound on the number of boundary edge-samples projected as environment-light sources
+/// (`env_light_polys`). Matches the project's fail-closed-bound convention (cf.
+/// `pathfinding::MAX_PATH_NODES`): a scene whose perimeter would demand more samples is sampled
+/// coarsely rather than casting an unbounded number of visibility polygons.
+pub const MAX_ENV_LIGHT_SAMPLES: usize = 256;
 
 /// Photometric falloff curve across the dim band `(bright_radius, dim_radius]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -139,10 +146,91 @@ pub struct CellLight {
     pub tint: u32,
 }
 
-/// Compose illumination at a cell center from a flat environment ambient plus each light, taking the
-/// MAX contributor (no over-brightening, spec §6); `tint` follows the dominant contributor.
+/// Maps arc-length `d` along the perimeter of the rectangle `(0,0)–(w,h)` to a boundary point,
+/// walking `top → right → bottom → left`. `d` is wrapped into `[0, 2(w+h))`.
+fn perimeter_point(w: f64, h: f64, d: f64) -> P {
+    let perim = 2.0 * (w + h);
+    let d = d.rem_euclid(perim);
+    if d < w {
+        (d, 0.0)
+    } else if d < w + h {
+        (w, d - w)
+    } else if d < 2.0 * w + h {
+        (w - (d - (w + h)), h)
+    } else {
+        (0.0, h - (d - (2.0 * w + h)))
+    }
+}
+
+/// Boundary-projected environment-light occlusion polygons. Environment light enters the scene
+/// from OUTSIDE its boundary; a cell is lit iff an unobstructed line reaches it from some point on
+/// the scene-bounds rectangle past the `blocksLight` walls. The rectangle perimeter is sampled at
+/// ~one point per grid-unit (clamped to `[4, MAX_ENV_LIGHT_SAMPLES]`), and each sample's
+/// visibility polygon is computed with the SAME `vision::visibility_polygon` primitive placed
+/// lights and vision use (never a second, forked occlusion computation). A cell is environment-lit
+/// iff it lies inside ANY sample's polygon (composed by `env_lit`).
+///
+/// `bounds_grid` is the scene bounds in GRID units (`ResolvedScene.bounds`); `cell_size` is scene
+/// units per cell, so the rectangle in scene units is `(0,0)–(width×cell, height×cell)`. The
+/// raycast bound is that rectangle expanded by one cell so boundary samples sit strictly inside it.
+/// Fail-closed: non-finite or non-positive bounds/`cell_size` ⇒ empty (environment reaches
+/// nothing — under-reveal, never over-reveal). The boundary itself never occludes (only interior
+/// `blocksLight` walls do): light enters freely across the scene edge.
+pub fn env_light_polys(
+    bounds_grid: (f64, f64),
+    cell_size: f64,
+    light_walls: &[vision::Seg],
+) -> Vec<Vec<P>> {
+    let (wg, hg) = bounds_grid;
+    if !wg.is_finite()
+        || !hg.is_finite()
+        || wg <= 0.0
+        || hg <= 0.0
+        || !cell_size.is_finite()
+        || cell_size <= 0.0
+    {
+        return Vec::new();
+    }
+    let w = wg * cell_size;
+    let h = hg * cell_size;
+    let n = (2.0 * (wg + hg)).round() as usize;
+    let n = n.clamp(4, MAX_ENV_LIGHT_SAMPLES);
+    let margin = cell_size.max(1.0);
+    let bound = vision::Rect {
+        minx: -margin,
+        miny: -margin,
+        maxx: w + margin,
+        maxy: h + margin,
+    };
+    let perim = 2.0 * (w + h);
+    (0..n)
+        .map(|i| {
+            let d = (i as f64) / (n as f64) * perim;
+            vision::visibility_polygon(perimeter_point(w, h, d), light_walls, bound)
+        })
+        .collect()
+}
+
+/// Whether the environment reaches `center`: true iff `center` lies inside some boundary sample's
+/// visibility polygon. Fail-closed: an EMPTY `env_polys` (no boundary reachability computed) ⇒
+/// false (environment does not reach — under-reveal). Distinct from a placed light's per-`k` empty
+/// `lit_polys` entry (which fail-OPENS): there, "no occluder computed for this light" leaves the
+/// light unoccluded; here, the whole environment source is gated by the polygon SET, so an empty
+/// set means the source could not be projected at all and must not leak illumination.
+fn env_lit(env_polys: &[Vec<P>], center: P) -> bool {
+    !env_polys.is_empty() && env_polys.iter().any(|poly| point_in_poly(poly, center))
+}
+
+/// Compose illumination at a cell center from a boundary-projected environment ambient plus each
+/// light, taking the MAX contributor (no over-brightening, spec §6); `tint` follows the dominant
+/// contributor.
 /// `lit_polys[k]` is `lights[k]`'s `blocksLight` visibility polygon — a light contributes only if the
 /// cell center lies inside it (an EMPTY polygon means "no occluder computed" → never occludes).
+/// `env_polys` are the scene-boundary visibility polygons (`env_light_polys`): the environment
+/// ambient reaches this cell only if it is `env_lit` (inside some boundary polygon), so a
+/// `blocksLight`-sealed interior receives no ambient. This is strictly NARROWING: the occluded
+/// environment base is `0 ≤ env_intensity`, so the composed `level` is `≤` the pre-occlusion
+/// flat-floor level at every cell — visibility can only shrink, never widen.
 /// `cell_size` is world units per cell (light radii are in cells, so distance is divided by it);
 /// CALLER PRECONDITION: `cell_size` must be positive — a non-positive value is a caller error; the
 /// upstream caller guards it (a release-build fallback avoids division-by-zero but the value is wrong).
@@ -155,6 +243,7 @@ pub fn cell_illumination(
     env_color: u32,
     lights: &[Light],
     lit_polys: &[Vec<P>],
+    env_polys: &[Vec<P>],
     cell_size: f64,
 ) -> CellLight {
     debug_assert!(
@@ -162,8 +251,14 @@ pub fn cell_illumination(
         "INVARIANT: cell_size must be positive; light radii are in cells"
     );
     debug_assert!(env_intensity.is_finite(), "env_intensity must be finite");
+    // Environment ambient is now boundary-projected and blocksLight-occluded (see `env_polys`).
+    let env_reaches = env_intensity > 0.0 && env_lit(env_polys, center);
     let mut best = CellLight {
-        level: env_intensity.clamp(0.0, 1.0),
+        level: if env_reaches {
+            env_intensity.clamp(0.0, 1.0)
+        } else {
+            0.0
+        },
         tint: env_color,
     };
     for (k, light) in lights.iter().enumerate() {
@@ -289,6 +384,18 @@ mod tests {
         assert_eq!(mixed[0].name, "ok");
     }
 
+    /// A single boundary polygon covering the whole plane: an open scene where the environment
+    /// reaches every cell (the pre-occlusion flat-floor behavior, for tests that don't exercise
+    /// env occlusion).
+    fn open_env() -> Vec<Vec<P>> {
+        vec![vec![
+            (-1.0e9, -1.0e9),
+            (1.0e9, -1.0e9),
+            (1.0e9, 1.0e9),
+            (-1.0e9, 1.0e9),
+        ]]
+    }
+
     #[test]
     fn cell_illumination_takes_max_and_respects_occlusion() {
         let l = lamp(); // at origin, bright 2 / dim 6 cells, intensity 1, linear
@@ -299,17 +406,19 @@ mod tests {
             0x000000,
             std::slice::from_ref(&l),
             &[vec![]],
+            &[],
             100.0,
         );
         assert_eq!(c.level, 1.0);
         assert_eq!(c.tint, 0xFFEEAA);
-        // Environment ambient alone when no light reaches: env wins, env tint.
+        // Environment ambient alone when no light reaches (open scene → env reaches): env wins.
         let far = cell_illumination(
             (10_000.0, 0.0),
             0.3,
             0x0A0E1A,
             std::slice::from_ref(&l),
             &[vec![]],
+            &open_env(),
             100.0,
         );
         assert_eq!(far.level, 0.3);
@@ -321,12 +430,21 @@ mod tests {
             0x0A0E1A,
             std::slice::from_ref(&l),
             &[vec![]],
+            &open_env(),
             100.0,
         ); // 4 cells → 0.5
         assert_eq!(near.level, 0.6); // env 0.6 > light 0.5 (no over-brightening)
                                      // Occlusion: a light whose polygon excludes the cell contributes nothing.
         let occluded_poly = vec![(1000.0, 1000.0), (1001.0, 1000.0), (1001.0, 1001.0)]; // tiny, far away
-        let occ = cell_illumination((0.0, 0.0), 0.0, 0x000000, &[l], &[occluded_poly], 100.0);
+        let occ = cell_illumination(
+            (0.0, 0.0),
+            0.0,
+            0x000000,
+            &[l],
+            &[occluded_poly],
+            &[],
+            100.0,
+        );
         assert_eq!(occ.level, 0.0); // cell center not inside the light's poly → dark
     }
 
@@ -369,9 +487,78 @@ mod tests {
             0x000000,
             &[dim, bright],
             &[vec![]],
+            &[],
             100.0,
         );
         assert_eq!(c.level, 1.0);
         assert_eq!(c.tint, 0x00FF00);
+    }
+
+    #[test]
+    fn env_light_polys_open_scene_reaches_every_interior_cell() {
+        // No walls: every boundary sample sees the whole scene, so every interior point is env-lit.
+        let polys = env_light_polys((5.0, 5.0), 100.0, &[]);
+        assert!(!polys.is_empty());
+        for p in [(50.0, 50.0), (250.0, 250.0), (450.0, 450.0), (10.0, 490.0)] {
+            assert!(env_lit(&polys, p), "open scene lights interior point {p:?}");
+        }
+    }
+
+    #[test]
+    fn env_light_polys_seal_a_blocks_light_box_interior() {
+        // A closed 4-wall box around (250,250) spanning (200,200)–(300,300): no exterior boundary
+        // sample can see inside, so the interior is not env-lit; the open exterior still is.
+        let walls = vec![
+            vision::Seg {
+                a: (200.0, 200.0),
+                b: (300.0, 200.0),
+            },
+            vision::Seg {
+                a: (300.0, 200.0),
+                b: (300.0, 300.0),
+            },
+            vision::Seg {
+                a: (300.0, 300.0),
+                b: (200.0, 300.0),
+            },
+            vision::Seg {
+                a: (200.0, 300.0),
+                b: (200.0, 200.0),
+            },
+        ];
+        let polys = env_light_polys((5.0, 5.0), 100.0, &walls);
+        assert!(
+            !env_lit(&polys, (250.0, 250.0)),
+            "sealed interior is not env-lit"
+        );
+        assert!(env_lit(&polys, (50.0, 50.0)), "open exterior stays env-lit");
+    }
+
+    #[test]
+    fn env_light_polys_fail_closed_on_degenerate_bounds() {
+        // Degenerate bounds/cell ⇒ empty ⇒ env reaches nothing (under-reveal).
+        assert!(env_light_polys((0.0, 5.0), 100.0, &[]).is_empty());
+        assert!(env_light_polys((5.0, f64::NAN), 100.0, &[]).is_empty());
+        assert!(env_light_polys((5.0, 5.0), 0.0, &[]).is_empty());
+        assert!(
+            !env_lit(&[], (10.0, 10.0)),
+            "empty env_polys is fail-closed (dark)"
+        );
+    }
+
+    #[test]
+    fn cell_illumination_occludes_environment_outside_the_boundary_polys() {
+        // env_polys that exclude the cell → no ambient; a covering set → full ambient. No lights.
+        let excluding = vec![vec![(1000.0, 1000.0), (1001.0, 1000.0), (1001.0, 1001.0)]];
+        let dark = cell_illumination((0.0, 0.0), 0.5, 0x0A0E1A, &[], &[], &excluding, 100.0);
+        assert_eq!(
+            dark.level, 0.0,
+            "cell outside every boundary poly gets no ambient"
+        );
+        let lit = cell_illumination((0.0, 0.0), 0.5, 0x0A0E1A, &[], &[], &open_env(), 100.0);
+        assert_eq!(
+            lit.level, 0.5,
+            "cell inside a boundary poly gets the full ambient"
+        );
     }
 }
