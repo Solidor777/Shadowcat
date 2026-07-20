@@ -1110,6 +1110,15 @@ impl Repository for SqliteRepository {
         // `doc` is mutated in place (`&mut ops`) so `validate_engine_tree`
         // can normalize the engine band here and have that normalization
         // survive into Phase 2 storage AND the returned `Command` (broadcast).
+        //
+        // `claimed_singletons` tracks singleton doc_types already passed by an
+        // EARLIER Create in this SAME batch. Phase 2 (the actual inserts)
+        // only runs after every op in the batch clears Phase 1, so a batch
+        // containing two Creates of the same singleton doc_type would have
+        // both ops' `singleton_doc_exists` reads see nothing (neither has
+        // been inserted yet) and both pass the DB check alone — this set
+        // closes that intra-batch gap the DB check cannot see.
+        let mut claimed_singletons: std::collections::HashSet<String> = std::collections::HashSet::new();
         for op in &mut ops {
             match op {
                 Operation::Create { doc } => {
@@ -1203,14 +1212,21 @@ impl Repository for SqliteRepository {
                     // writer pool (`max_connections(1)`) serializes competing
                     // `apply_intent` transactions at connection-acquisition,
                     // and this query never touches `&self.pool` (which would
-                    // deadlock mid-transaction, not race).
-                    if SINGLETON_DOC_TYPES.contains(&doc.doc_type.as_str())
-                        && Self::singleton_doc_exists(&mut *tx, world_id, &doc.doc_type).await?
-                    {
-                        return Err(DataError::Conflict(format!(
-                            "a '{}' document already exists in this world",
-                            doc.doc_type
-                        )));
+                    // deadlock mid-transaction, not race). `claimed_singletons`
+                    // additionally covers a second same-batch Create of the
+                    // same singleton doc_type, which the DB read alone cannot
+                    // see (see the comment above the Phase-1 loop).
+                    if SINGLETON_DOC_TYPES.contains(&doc.doc_type.as_str()) {
+                        if claimed_singletons.contains(doc.doc_type.as_str())
+                            || Self::singleton_doc_exists(&mut *tx, world_id, &doc.doc_type)
+                                .await?
+                        {
+                            return Err(DataError::Conflict(format!(
+                                "a '{}' document already exists in this world",
+                                doc.doc_type
+                            )));
+                        }
+                        claimed_singletons.insert(doc.doc_type.clone());
                     }
                 }
                 Operation::Delete { doc } => {
@@ -6002,6 +6018,92 @@ mod tests {
         assert_eq!(
             ok_count, 1,
             "exactly one of two concurrent singleton Creates must succeed, never both, never neither"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_rejects_intra_batch_duplicate_singleton_creates() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        // A single Intent batching TWO Creates of the same singleton doc_type:
+        // neither has been inserted when the other's Phase-1 check runs, so
+        // the DB-only check alone would let both through. The second must be
+        // rejected by the intra-batch `claimed_singletons` tracking instead.
+        let err = r
+            .apply_intent(
+                &gm_ctx,
+                w.id,
+                vec![
+                    Operation::Create {
+                        doc: singleton_test_doc(1, w.id, "world-settings"),
+                    },
+                    Operation::Create {
+                        doc: singleton_test_doc(2, w.id, "world-settings"),
+                    },
+                ],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DataError::Conflict(_)),
+            "a second same-batch world-settings Create must be rejected"
+        );
+        // The whole batch is one transaction: the rejected second op must
+        // also roll back the first op's insert, not leave it half-applied.
+        assert!(
+            r.query_documents(w.id, "world-settings")
+                .await
+                .unwrap()
+                .is_empty(),
+            "a rejected batch must not partially commit"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_allows_different_singleton_doc_types_in_the_same_batch() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let result = r
+            .apply_intent(
+                &gm_ctx,
+                w.id,
+                vec![
+                    Operation::Create {
+                        doc: singleton_test_doc(1, w.id, "world-settings"),
+                    },
+                    Operation::Create {
+                        doc: singleton_test_doc(2, w.id, "faction-registry"),
+                    },
+                ],
+                1,
+                WriteOrigin::Client,
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "different singleton doc_types in the same batch must not over-reject"
         );
     }
 
