@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render, fireEvent } from "@testing-library/svelte";
 import SystemTreeEditor from "./SystemTreeEditor.svelte";
 import { setAppContextForTest } from "./__fixtures__/appContextTest";
-import type { WireDocument } from "@shadowcat/core";
+import { DocumentStore, type WireDocument, type WireCommand } from "@shadowcat/core";
 
 function doc(system: unknown): WireDocument {
   return { id: "d1", scope: { kind: "world", world_id: "w1" }, doc_type: "actor", schema_version: 1, name: null, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null }, embedded: {}, parent_id: null, system, created_at: 0, updated_at: 0 };
@@ -39,6 +39,23 @@ describe("SystemTreeEditor", () => {
     expect(calls).toEqual([
       [{ op: "update", doc_id: "d1", changes: [{ path: "/system/a", old: "1", new: null, remove: true }] }],
     ]);
+  });
+
+  it("removeField round-trips through the real store: the key is genuinely absent", async () => {
+    // End-to-end guard (not just the dispatched wire message): the emitted op, applied by the
+    // real DocumentStore, must DELETE the key — proving store.ts honors `remove: true`, the
+    // client-visible half of the null != absent guarantee.
+    const ops: WireCommand["ops"][] = [];
+    const context = setAppContextForTest({ dispatchIntent: (o) => ops.push(o), canEdit: () => true });
+    const d = doc({ a: "1", b: "2" });
+    const store = new DocumentStore();
+    store.applyCommand({ seq: 1, world_id: "w1", author: "t", ts: 0, ops: [{ op: "create", doc: d }] });
+    const { getAllByRole } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    await fireEvent.click(getAllByRole("button", { name: "sheets.tree.remove" })[0]);
+    store.applyCommand({ seq: 2, world_id: "w1", author: "t", ts: 0, ops: ops[0] });
+    const system = store.get("d1")!.system as Record<string, unknown>;
+    expect("a" in system).toBe(false); // genuinely absent, not null
+    expect(system.b).toBe("2");
   });
 
   it("removeField on an array element stays whole-array replacement (no remove flag)", async () => {

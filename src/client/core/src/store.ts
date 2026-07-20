@@ -51,6 +51,47 @@ export function setPointer(
   }
 }
 
+/** Remove the object key at JSON-pointer `pointer` in `root`, mirroring the server's
+ * `remove_pointer`: object keys only; removing an already-absent key — or one beneath an
+ * absent intermediate — is a silent no-op (no intermediate is created). Array-index removal
+ * throws (an array shrinks via whole-array replacement, never a leaf remove). A non-empty
+ * pointer must start with "/". */
+export function removePointer(root: unknown, pointer: string): void {
+  if (pointer === "") {
+    throw new Error("empty JSON pointer cannot target a field");
+  }
+  if (!pointer.startsWith("/")) {
+    throw new Error(`invalid JSON pointer: ${pointer}`);
+  }
+  const tokens = pointer
+    .split("/")
+    .slice(1)
+    .map((t) => t.replace(/~1/g, "/").replace(/~0/g, "~"));
+
+  let cur: unknown = root;
+  for (const tok of tokens.slice(0, -1)) {
+    if (Array.isArray(cur)) {
+      const idx = Number(tok);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= cur.length) return; // absent → no-op
+      cur = cur[idx];
+    } else if (cur !== null && typeof cur === "object") {
+      const obj = cur as Record<string, unknown>;
+      if (!(tok in obj)) return; // absent intermediate → no-op
+      cur = obj[tok];
+    } else {
+      throw new Error(`cannot descend into non-container at ${pointer}`);
+    }
+  }
+  const last = tokens[tokens.length - 1];
+  if (Array.isArray(cur)) {
+    throw new Error(`cannot remove an array index at ${pointer}`);
+  } else if (cur !== null && typeof cur === "object") {
+    delete (cur as Record<string, unknown>)[last];
+  } else {
+    throw new Error(`cannot remove field on non-container at ${pointer}`);
+  }
+}
+
 /** Reads the value at JSON-pointer `pointer` in `root`; `undefined` for any missing
  * segment or out-of-range array index. Never throws (the read-only mirror of
  * `setPointer`). An empty pointer returns `root`. */
@@ -89,7 +130,10 @@ export function applyOperation(
       const cur = docs.get(op.doc_id);
       if (!cur) return; // unknown doc (e.g. not yet resynced); server is authoritative
       const whole = structuredClone(cur) as unknown;
-      for (const ch of op.changes) setPointer(whole, ch.path, ch.new);
+      for (const ch of op.changes) {
+        if (ch.remove) removePointer(whole, ch.path);
+        else setPointer(whole, ch.path, ch.new);
+      }
       // Re-validate: a parse failure signals client/server schema drift.
       docs.set(op.doc_id, DocumentSchema.parse(whole));
       break;

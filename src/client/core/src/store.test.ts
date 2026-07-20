@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DocumentStore, setPointer, getPointer } from "./store";
+import { DocumentStore, setPointer, removePointer, getPointer } from "./store";
 import type { WireCommand, WireDocument } from "./wire";
 
 function doc(id: string, system: unknown): WireDocument {
@@ -51,6 +51,23 @@ describe("DocumentStore", () => {
     s.applyCommand(cmd(3, [{ op: "delete", doc: doc("d1", {}) }]));
     expect(s.get("d1")).toBeUndefined();
     expect(s.appliedSeq).toBe(3);
+  });
+
+  it("applies a remove:true change as GENUINE key absence, not set-to-null", () => {
+    const s = new DocumentStore();
+    s.applyCommand(cmd(1, [{ op: "create", doc: doc("d1", { a: "1", b: "2" }) }]));
+    s.applyCommand(
+      cmd(2, [
+        {
+          op: "update",
+          doc_id: "d1",
+          changes: [{ path: "/system/a", old: "1", new: null, remove: true }],
+        },
+      ]),
+    );
+    const system = s.get("d1")!.system as Record<string, unknown>;
+    expect("a" in system).toBe(false); // absent, NOT present-as-null
+    expect(system.b).toBe("2"); // sibling untouched
   });
 
   it("creates intermediate objects on a nested set", () => {
@@ -106,6 +123,27 @@ describe("setPointer", () => {
   it("rejects an out-of-range array index (no silent sparse extend)", () => {
     expect(() => setPointer({ a: [1, 2] }, "/a/5", 9)).toThrow();
     expect(() => setPointer({ a: [1, 2] }, "/a/x", 9)).toThrow();
+  });
+});
+
+describe("removePointer", () => {
+  it("deletes an object key so it is genuinely absent", () => {
+    const root = { a: 1, b: 2 };
+    removePointer(root, "/a");
+    expect("a" in root).toBe(false);
+    expect(root.b).toBe(2);
+  });
+  it("is a no-op on an already-absent key or absent intermediate", () => {
+    const root = { a: 1 };
+    removePointer(root, "/missing");
+    removePointer(root, "/missing/deep");
+    expect(root).toEqual({ a: 1 });
+  });
+  it("rejects array-index removal (arrays shrink via whole-array replacement)", () => {
+    expect(() => removePointer({ a: [1, 2, 3] }, "/a/1")).toThrow();
+  });
+  it("rejects a pointer without a leading slash", () => {
+    expect(() => removePointer({}, "a")).toThrow();
   });
 });
 

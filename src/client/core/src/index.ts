@@ -26,7 +26,7 @@ export type { Module, ModuleContext, ModuleInfo } from "./modules";
 export { loadModules } from "./loader";
 export type { ImportFn, ModuleEntry, ModuleLoadFailure, ModuleLoadResult } from "./loader";
 export { resolveCaps, canWritePath } from "./capabilities";
-export { DocumentStore, setPointer, getPointer, applyOperation } from "./store";
+export { DocumentStore, setPointer, removePointer, getPointer, applyOperation } from "./store";
 export type { Listener, ReadableDocuments } from "./store";
 export { ContributionRegistry, PANEL_CONTRACT } from "./contributions";
 export type { Contribution, Cardinality, PanelMeta, DefaultPlacement, ZoneId, SheetMeta } from "./contributions";

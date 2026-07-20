@@ -49,6 +49,14 @@ function updateOp(id: string, hp: number, prev: number): WireOperation {
   };
 }
 
+function removeOp(id: string, prevHp: number): WireOperation {
+  return {
+    op: "update",
+    doc_id: id,
+    changes: [{ path: "/system/hp", old: prevHp, new: null, remove: true }],
+  };
+}
+
 /** Wire an OptimisticClient to a WsClient against the server, return both plus
  * a helper to apply+send an intent. */
 async function connect(server: MockServer, author: string) {
@@ -105,6 +113,21 @@ describe("OptimisticClient", () => {
     await waitFor(() => oc.pendingIntents().length === 0);
     // Rejected → rolled back to the confirmed value.
     expect((oc.get("d1")!.system as { hp: number }).hp).toBe(10);
+  });
+
+  it("optimistically removes a key as GENUINE absence (view + confirmed base)", async () => {
+    const server = new MockServer();
+    const { oc, act } = await connect(server, "u1");
+    act([createOp("d1", 10)]);
+    await waitFor(() => oc.pendingIntents().length === 0);
+
+    act([removeOp("d1", 10)]);
+    // Optimistic view: hp is genuinely absent immediately, not present-as-null.
+    expect("hp" in (oc.get("d1")!.system as Record<string, unknown>)).toBe(false);
+
+    await waitFor(() => oc.pendingIntents().length === 0);
+    // Confirmed into base: still absent (the confirmed command applies the same removal).
+    expect("hp" in (oc.get("d1")!.system as Record<string, unknown>)).toBe(false);
   });
 
   it("a peer's event lands in the view while a local intent is pending", async () => {
