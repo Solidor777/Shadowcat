@@ -15,9 +15,26 @@ use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
     resolve_access_world, Access,
 };
+use crate::data::engine::{
+    CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
+};
 use crate::data::repository::Repository;
 use crate::data::validation;
 use crate::data::DataError;
+
+/// Doc_types capped at one document per world. Checked (transactionally,
+/// alongside the existing-id conflict check) at the `apply_intent` Create
+/// chokepoint — a stray second singleton doc would otherwise resolve
+/// nondeterministically-but-safely via lowest-UUID ordering (see
+/// `chat::settings::resolve_content_policy`'s doc comment); this closes that
+/// gap at construction time rather than leaving it to read-side tolerance.
+const SINGLETON_DOC_TYPES: &[&str] = &[
+    WORLD_SETTINGS_DOC_TYPE,
+    FACTION_REGISTRY_DOC_TYPE,
+    CONDITION_REGISTRY_DOC_TYPE,
+    crate::chat::CHAT_SETTINGS_DOC_TYPE,
+    crate::chat::DICE_SETTINGS_DOC_TYPE,
+];
 
 /// Auth-facing projection of a user row.
 #[derive(Debug, Clone)]
@@ -694,6 +711,30 @@ impl SqliteRepository {
         }
     }
 
+    /// Whether a document of `doc_type` already exists in `world_id`, on an
+    /// arbitrary executor (so it can run inside the `apply_intent`
+    /// transaction — see `SINGLETON_DOC_TYPES`). Mirrors `load_document`'s
+    /// tx-generic pattern rather than `query_documents`, which always binds
+    /// to `&self.pool` and would deadlock if called mid-transaction against
+    /// this single-writer (`max_connections(1)`) pool.
+    async fn singleton_doc_exists<'e, E>(
+        executor: E,
+        world_id: Uuid,
+        doc_type: &str,
+    ) -> Result<bool, DataError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        let row = sqlx::query(
+            "SELECT 1 FROM documents WHERE world_id = ? AND doc_type = ? LIMIT 1",
+        )
+        .bind(world_id.to_string())
+        .bind(doc_type)
+        .fetch_optional(executor)
+        .await?;
+        Ok(row.is_some())
+    }
+
     /// Depth-first descendant ids of `root` within one transaction (children
     /// before parents), via the `parent_id` index. Excludes `root`. Used to
     /// expand a parent delete into per-descendant reversible Delete ops.
@@ -1153,6 +1194,22 @@ impl Repository for SqliteRepository {
                         return Err(DataError::Conflict(format!(
                             "document {} already exists",
                             doc.id
+                        )));
+                    }
+                    // Singleton doc_type create-gate: check-then-insert runs
+                    // inside THIS transaction (same `tx` the existing-id check
+                    // and the eventual insert use), so a concurrent Create
+                    // racing this check cannot both pass it — the single-
+                    // writer pool (`max_connections(1)`) serializes competing
+                    // `apply_intent` transactions at connection-acquisition,
+                    // and this query never touches `&self.pool` (which would
+                    // deadlock mid-transaction, not race).
+                    if SINGLETON_DOC_TYPES.contains(&doc.doc_type.as_str())
+                        && Self::singleton_doc_exists(&mut *tx, world_id, &doc.doc_type).await?
+                    {
+                        return Err(DataError::Conflict(format!(
+                            "a '{}' document already exists in this world",
+                            doc.doc_type
                         )));
                     }
                 }
@@ -5749,6 +5806,203 @@ mod tests {
             )
             .await
             .is_ok());
+    }
+
+    /// A world-scoped document of `doc_type` with a valid `engine` body for
+    /// singleton create-gate tests. Mirrors `world_doc`/`tests_engine_doc`
+    /// but lets the caller pick `doc_type` (needed for the singleton types,
+    /// which `world_doc` hardcodes to "actor").
+    fn singleton_test_doc(id: u128, world: Uuid, doc_type: &str) -> Document {
+        let mut d = world_doc(id, world, serde_json::json!({}));
+        d.doc_type = doc_type.into();
+        d.engine = crate::data::document::tests::default_test_engine(doc_type);
+        d
+    }
+
+    #[tokio::test]
+    async fn create_rejects_a_second_singleton_doc_of_the_same_type() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let first = singleton_test_doc(1, w.id, "world-settings");
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: first }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let second = singleton_test_doc(2, w.id, "world-settings");
+        let err = r
+            .apply_intent(
+                &gm_ctx,
+                w.id,
+                vec![Operation::Create { doc: second }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DataError::Conflict(_)),
+            "a second world-settings doc in the same world must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_allows_singleton_doc_types_in_different_worlds() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm_a = r
+            .create_user("gm-a", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let gm_b = r
+            .create_user("gm-b", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world_a = r.create_world_owned("A", gm_a, 0).await.unwrap();
+        let world_b = r.create_world_owned("B", gm_b, 0).await.unwrap();
+        let ctx_a = PermissionContext {
+            user_id: gm_a,
+            world_role: WorldRole::Gm,
+        };
+        let ctx_b = PermissionContext {
+            user_id: gm_b,
+            world_role: WorldRole::Gm,
+        };
+
+        r.apply_intent(
+            &ctx_a,
+            world_a.id,
+            vec![Operation::Create {
+                doc: singleton_test_doc(1, world_a.id, "world-settings"),
+            }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let result = r
+            .apply_intent(
+                &ctx_b,
+                world_b.id,
+                vec![Operation::Create {
+                    doc: singleton_test_doc(2, world_b.id, "world-settings"),
+                }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "singleton scoping is per-world, not global"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_does_not_gate_non_singleton_doc_types() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: world_doc(1, w.id, serde_json::json!({})),
+            }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let second = r
+            .apply_intent(
+                &gm_ctx,
+                w.id,
+                vec![Operation::Create {
+                    doc: world_doc(2, w.id, serde_json::json!({})),
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await;
+        assert!(
+            second.is_ok(),
+            "non-singleton doc types (e.g. actor) must remain uncapped"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_gate_is_race_safe_under_concurrent_creates() {
+        use crate::data::membership::PermissionContext;
+        let r = std::sync::Arc::new(repo().await);
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let r1 = r.clone();
+        let ctx1 = gm_ctx;
+        let world_id = w.id;
+        let fut1 = r1.apply_intent(
+            &ctx1,
+            world_id,
+            vec![Operation::Create {
+                doc: singleton_test_doc(1, world_id, "faction-registry"),
+            }],
+            1,
+            WriteOrigin::Client,
+        );
+        let r2 = r.clone();
+        let ctx2 = gm_ctx;
+        let fut2 = r2.apply_intent(
+            &ctx2,
+            world_id,
+            vec![Operation::Create {
+                doc: singleton_test_doc(2, world_id, "faction-registry"),
+            }],
+            2,
+            WriteOrigin::Client,
+        );
+
+        let (res1, res2) = tokio::join!(fut1, fut2);
+        let ok_count = [res1.is_ok(), res2.is_ok()]
+            .iter()
+            .filter(|x| **x)
+            .count();
+        assert_eq!(
+            ok_count, 1,
+            "exactly one of two concurrent singleton Creates must succeed, never both, never neither"
+        );
     }
 
     #[tokio::test]

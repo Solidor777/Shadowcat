@@ -30,6 +30,13 @@ pub use token::{
 
 use crate::data::DataError;
 
+/// Doc_type for the world's singleton settings config document.
+pub const WORLD_SETTINGS_DOC_TYPE: &str = "world-settings";
+/// Doc_type for the world's singleton faction registry config document.
+pub const FACTION_REGISTRY_DOC_TYPE: &str = "faction-registry";
+/// Doc_type for the world's singleton condition registry config document.
+pub const CONDITION_REGISTRY_DOC_TYPE: &str = "condition-registry";
+
 /// Whether `doc_type` carries a typed `engine` band. The registry is a
 /// hardcoded match — there is no dynamic registration (the server runs no
 /// third-party code).
