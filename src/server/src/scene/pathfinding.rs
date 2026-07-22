@@ -287,8 +287,9 @@ mod astar_tests {
     fn hex_scene_astar_finds_a_route_around_a_wall() {
         // Pointy-top axial hex, size=100. The direct route (0,0)->(1,0)->(2,0) costs 2 (uniform
         // 1.0-per-hex-step, no DiagonalRule variance). A wall crossing exactly the center-to-
-        // center (0,0)->(1,0) step removes that edge, forcing a 3-step detour via (0,1)->(1,1)
-        // (both axial-adjacent to (1,0)) that still reaches the goal.
+        // center (0,0)->(1,0) step removes that edge (not the cell (1,0) itself, still reachable
+        // via its other 5 neighbor edges), forcing a 3-step detour cost 3.0 via one of two
+        // symmetric axial-adjacent-to-(1,0) paths (e.g. (1,-1)->(2,-1)) that still reaches the goal.
         let hx = 100.0 * 3.0_f64.sqrt() / 2.0; // x of the (0,0)->(1,0) step's midpoint
         let walls = vec![Seg {
             a: (hx, -50.0),
