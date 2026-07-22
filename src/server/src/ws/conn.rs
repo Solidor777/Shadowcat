@@ -867,13 +867,21 @@ async fn welcome_capability_requirements(
     world_id: Uuid,
     modules_dir: &std::path::Path,
 ) -> Vec<crate::data::document::CapabilityRequirement> {
-    let mut out = match repo.world_cap_requirements(world_id).await {
+    // Keyed by path_prefix so a GM-authored requirement and a module-declared
+    // requirement on the same prefix union their caps into one entry instead
+    // of the client seeing two separate entries for the same prefix.
+    let mut by_prefix: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    let world_reqs = match repo.world_cap_requirements(world_id).await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(world = %world_id, error = %e, "capability requirements unreadable; sending empty");
             Vec::new()
         }
     };
+    for r in world_reqs {
+        by_prefix.entry(r.path_prefix).or_default().extend(r.caps);
+    }
     let enabled = match repo.world_enabled_modules(world_id).await {
         Ok(e) => e,
         Err(e) => {
@@ -901,11 +909,24 @@ async fn welcome_capability_requirements(
                 .iter()
                 .find(|m| &m.id == id && crate::modules::engine_compat_ok(m))
             {
-                out.extend(m.requirements.iter().cloned());
+                for r in &m.requirements {
+                    by_prefix
+                        .entry(r.path_prefix.clone())
+                        .or_default()
+                        .extend(r.caps.iter().cloned());
+                }
             }
         }
     }
-    out
+    by_prefix
+        .into_iter()
+        .map(
+            |(path_prefix, caps)| crate::data::document::CapabilityRequirement {
+                path_prefix,
+                caps,
+            },
+        )
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1504,6 +1525,59 @@ mod tests {
         assert_eq!(
             repo.world_cap_requirements(world.id).await.unwrap().len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn welcome_capability_requirements_unions_caps_for_the_same_path_prefix() {
+        use crate::data::document::CapabilityRequirement;
+        use std::collections::BTreeSet;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("scene-mod")).unwrap();
+        std::fs::write(
+            dir.path().join("scene-mod").join("module.json"),
+            format!(
+                r#"{{"id":"scene-mod","version":"1.0.0","engines":{{"shadowcat":"^{}"}},"requirements":[{{"path_prefix":"/scene","caps":["write"]}}]}}"#,
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+        // A GM-authored requirement on "/scene" requiring cap "read", plus a
+        // module declaring a requirement on the SAME "/scene" prefix requiring
+        // "write".
+        repo.set_world_cap_requirements(
+            world.id,
+            &[CapabilityRequirement {
+                path_prefix: "/scene".into(),
+                caps: ["read".to_string()].into_iter().collect(),
+            }],
+        )
+        .await
+        .unwrap();
+        repo.set_world_enabled_modules(world.id, &["scene-mod".to_string()])
+            .await
+            .unwrap();
+
+        let reqs = welcome_capability_requirements(repo.as_ref(), world.id, dir.path()).await;
+
+        let scene_reqs: Vec<_> = reqs.iter().filter(|r| r.path_prefix == "/scene").collect();
+        assert_eq!(
+            scene_reqs.len(),
+            1,
+            "must not emit two entries for the same path_prefix"
+        );
+        assert_eq!(
+            scene_reqs[0].caps,
+            BTreeSet::from(["read".to_string(), "write".to_string()]),
+            "caps from both sources must be unioned, not one dropped"
         );
     }
 
