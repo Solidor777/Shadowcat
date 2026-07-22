@@ -186,6 +186,12 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   is not wired for popout groups, so that specific gesture does not flow through `applyOp` (M12e
   Task 5 scope was menu-only per spec §9/Decision 6; the drop-classification gap is logged in
   `docs/TODO.md`, not a defect in shipped scope).
+- `#expandGroupDockOp`'s "new group" index computation (`dockview.ts`) assumes the dragged whole
+  group is not already a member of the target zone — a same-zone whole-group reorder is a
+  KNOWN, code-documented index-computation gap (inline `TODO` at the bottom of `dockview.ts`),
+  distinct from the real-pointer-drop-fidelity manual-QA gap above: that one is about missing
+  e2e coverage for an otherwise-correct path, this one is a specific case the logic itself
+  doesn't handle correctly yet.
 - Popped-out windows never survive a page reload — `#rehydratePoppedOut` always converts
   persisted `poppedOut` ids back to floating at construction; there is no "reopen the popup on
   load" affordance (a real browser cannot open a window without a fresh user gesture).
