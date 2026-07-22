@@ -262,6 +262,74 @@ mod astar_tests {
         assert_eq!(cells.first(), Some(&(0, 0)));
         assert_eq!(cells.last(), Some(&(3, 3)));
     }
+
+    /// Hex-scene A* integration coverage: proves the fully-wired hex path behaves correctly
+    /// end-to-end, mirroring this module's square-scene coverage above. `rule` is irrelevant for
+    /// hex (kept only because `PathGrid` carries a single `rule` field used by `astar_leg`'s
+    /// heuristic; `HexGrid::neighbors_with_cost` itself ignores it — see `grid_shape.rs`).
+    fn open_hex(footprint: f64) -> PathGrid<'static> {
+        const NO_WALLS: [Seg; 0] = [];
+        let shape: &'static crate::scene::grid_shape::HexGrid =
+            Box::leak(Box::new(crate::scene::grid_shape::HexGrid { size: 100.0 }));
+        PathGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+            footprint_radius_cells: footprint,
+            walls: &NO_WALLS,
+            mask: None,
+            regions: None,
+            window: (-50, -50, 50, 50),
+            shape,
+        }
+    }
+
+    #[test]
+    fn hex_scene_astar_finds_a_route_around_a_wall() {
+        // Pointy-top axial hex, size=100. The direct route (0,0)->(1,0)->(2,0) costs 2 (uniform
+        // 1.0-per-hex-step, no DiagonalRule variance). A wall crossing exactly the center-to-
+        // center (0,0)->(1,0) step removes that edge, forcing a 3-step detour via (0,1)->(1,1)
+        // (both axial-adjacent to (1,0)) that still reaches the goal.
+        let hx = 100.0 * 3.0_f64.sqrt() / 2.0; // x of the (0,0)->(1,0) step's midpoint
+        let walls = vec![Seg {
+            a: (hx, -50.0),
+            b: (hx, 50.0),
+        }];
+        let mut g = open_hex(0.1);
+        g.walls = &walls;
+        let (cells, cost, _p) = astar_leg(&g, (0, 0), (2, 0), 0).unwrap();
+        assert_eq!(cells.first(), Some(&(0, 0)));
+        assert_eq!(cells.last(), Some(&(2, 0)));
+        assert!(
+            !cells.contains(&(1, 0)),
+            "the direct neighbor is unreachable once its entering step is wall-blocked"
+        );
+        assert!(
+            (cost - 3.0).abs() < 1e-9,
+            "uniform 1.0-per-hex-step cost over the 3-step detour"
+        );
+    }
+
+    #[test]
+    fn hex_scene_astar_respects_the_visibility_mask() {
+        // Same detour shape as the wall test above, but forced by mask exclusion instead of a
+        // wall: (1,0) is excluded from the mask, so the route must go around it via
+        // (0,1)->(1,1), never entering the masked-out cell.
+        let mut mask: BTreeSet<Cell> = BTreeSet::new();
+        mask.insert((0, 0));
+        mask.insert((0, 1));
+        mask.insert((1, 1));
+        mask.insert((2, 0));
+        // (1, 0) deliberately absent — the masked-out cell.
+        let mut g = open_hex(0.1);
+        g.mask = Some(&mask);
+        let (cells, cost, _p) = astar_leg(&g, (0, 0), (2, 0), 0).unwrap();
+        assert!(
+            !cells.contains(&(1, 0)),
+            "route must never enter the masked-out cell"
+        );
+        assert_eq!(cells.last(), Some(&(2, 0)));
+        assert!((cost - 3.0).abs() < 1e-9);
+    }
 }
 
 /// Why a path request fails. Mapped to a `PathError` message at the wire boundary.

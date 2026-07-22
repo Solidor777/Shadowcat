@@ -1687,4 +1687,135 @@ mod tests {
         let walk = gate_walk(&[], 100.0).unwrap();
         assert!(walk.is_empty());
     }
+
+    // -----------------------------------------------------------------------
+    // Hex-scene integration coverage: proves the fully-wired hex path (walls + the
+    // visibility mask) behaves correctly end-to-end through `execute_move`, mirroring this
+    // module's square-scene wall/mask tests above.
+    // -----------------------------------------------------------------------
+
+    /// Pointy-top axial hex center, matching `grid_shape::HexGrid`'s own formula exactly
+    /// (size=100, Red Blob Games convention).
+    fn hex_cell_center(q: i32, r: i32) -> (f64, f64) {
+        let size = 100.0;
+        let x = size * (3.0_f64.sqrt() * q as f64 + 3.0_f64.sqrt() / 2.0 * r as f64);
+        let y = size * (1.5 * r as f64);
+        (x, y)
+    }
+
+    /// Hex scene (`grid.kind: "hex"`, size=100) with a token at axial (0,0), no walls.
+    fn hex_clear_scene() -> (SceneEcs, Uuid, Uuid) {
+        let scene_id = Uuid::from_u128(20);
+        let token_id = Uuid::from_u128(21);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(
+                    20,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "hex", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    21,
+                    20,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
+            ],
+            0,
+        );
+        (ecs, scene_id, token_id)
+    }
+
+    /// Hex scene with a vertical `blocksMove` wall at `wall_x`.
+    fn hex_walled_scene(wall_x: f64) -> (SceneEcs, Uuid, Uuid) {
+        let scene_id = Uuid::from_u128(20);
+        let token_id = Uuid::from_u128(21);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(
+                    20,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "hex", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    21,
+                    20,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
+                entity_doc(
+                    22,
+                    20,
+                    "wall",
+                    json!({
+                        "seg": { "x1": wall_x, "y1": -50.0, "x2": wall_x, "y2": 50.0 },
+                        "blocksMove": true
+                    }),
+                ),
+            ],
+            0,
+        );
+        (ecs, scene_id, token_id)
+    }
+
+    #[test]
+    fn hex_scene_gate_walk_blocks_entry_at_a_wall() {
+        // Axial path (0,0)->(1,0)->(2,0). A wall crossing exactly the (1,0)->(2,0) center step
+        // stops the executor at (1,0), never reaching the goal.
+        let c1 = hex_cell_center(1, 0);
+        let c2 = hex_cell_center(2, 0);
+        let wall_x = (c1.0 + c2.0) / 2.0;
+        let (ecs, scene, token) = hex_walled_scene(wall_x);
+        let empty: BTreeSet<(i32, i32)> = BTreeSet::new();
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(0.0, 0.0), c1, c2],
+            MovementRestriction::Unrestricted,
+            &empty,
+            100.0,
+        )
+        .unwrap();
+        assert!(out.truncated, "must stop before crossing the hex wall");
+        assert!(
+            (out.stop.0 - c1.0).abs() < 1e-6 && (out.stop.1 - c1.1).abs() < 1e-6,
+            "stops at the last legal hex cell before the wall, got {:?}",
+            out.stop
+        );
+    }
+
+    #[test]
+    fn hex_scene_gate_walk_respects_the_visibility_mask() {
+        // Axial path (0,0)->(1,0)->(2,0) under Visible restriction; the mask covers (0,0) and
+        // (1,0) but excludes (2,0) — the executor must stop before entering the excluded cell.
+        let (ecs, scene, token) = hex_clear_scene();
+        let c1 = hex_cell_center(1, 0);
+        let c2 = hex_cell_center(2, 0);
+        let mut visible: BTreeSet<(i32, i32)> = BTreeSet::new();
+        visible.insert((0, 0));
+        visible.insert((1, 0));
+        // (2, 0) deliberately excluded.
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(0.0, 0.0), c1, c2],
+            MovementRestriction::Visible,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert!(
+            out.truncated,
+            "must not reach the masked-out hex cell (2,0)"
+        );
+        assert!(
+            out.stop.0 < c2.0 - 1e-6,
+            "stop must land before the excluded cell's center, got {:?}",
+            out.stop
+        );
+    }
 }
