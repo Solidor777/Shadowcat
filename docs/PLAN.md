@@ -1385,6 +1385,17 @@ Decomposed **M11a–d**:
 > (`Segment::DocLink`), and speak-as-token-instance (lifting the fail-closed
 > `ActorOwnerRef::TokenInstance` ingest rejection). These are the literal next items after this
 > plan.
+>
+> **Post-plan correction pass**: a follow-up audit of the rewritten `docs/TODO.md` found 3 more
+> "Blocked on X" entries carrying a stale or false premise (world/scene/user deletion conflating
+> a genuinely-unbuilt path with an already-reachable one; see-as-preview claiming an unbuilt
+> feature when only its `MoveStream` wiring was missing; an untrusted-bound design decision that
+> had already shipped). Corrected; the see-as `clip_move_stream` wiring gap was small enough to
+> build immediately (GM preview now reflects the see-as target's actual vision, narrowing-only,
+> security-buddy-checked). A fourth finding — hex-grid movement — turned out to need real new
+> server-side engine architecture (zero hex-aware movement infrastructure exists despite hex being
+> original scope and the client already rendering it correctly); design approved and committed
+> (`superpowers/specs/2026-07-22-hex-grid-server-movement-design.md`), implementation plan pending.
 - Purpose: (1) a playable generic system (stats, derived formulas, rolls to chat, items/effects
   modifying stats, template documents); (2) the reference implementation for system builders —
   built only against public seams, every friction point logged as an API bug report; second

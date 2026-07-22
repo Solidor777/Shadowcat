@@ -60,9 +60,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   section below).
   (Surfaced by the M11b-3 Task 5 code review.)
 
-## Actionable now — `clip_move_stream` doesn't thread the see-as target
-- TODO: GM see-as-player preview does not reflect the previewed player's actual `MoveStream` view. The see-as-player feature itself is NOT missing — it's fully built and live (`Stage.svelte`'s GM "view as" mode, `engine.ts`'s `setViewAsUser`, `ws-client.ts`'s `asUser` wire param, server-side `ws/conn.rs`'s `as_user` handling on `SceneSubscribe`). Only `clip_move_stream` (`ws/conn.rs`) doesn't thread the already-existing see-as target through — it keys its GM branch on `ctx.world_role == Gm` / `ctx.user_id` alone, ignoring the design §3.3 "see-as" effective-view-user concept used elsewhere (e.g. the `vision` subscription's `asUser`). Not a leak (a GM is authorized to see everything unclipped) but a UX-accuracy gap: a GM previewing as a specific player still gets the full unclipped trajectory instead of that player's clipped view, and a GM previewing as the mover gets no fog sweep (`mover_vision` stays `None` for any GM branch). Thread the see-as target through `clip_move_stream`.
-
 ## Blocked on multi-panel popout groups
 - TODO: an already-open popout window has no `onWillDrop` subscription wired
   (`#groupWillDropSubs` is populated only inside `apply()`'s zone loop) — dockview-core's own
@@ -93,8 +90,8 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   through any UI affordance. Orthogonal to the width-containment fix (`docs/CLOSED_BUGS.md`):
   giving `FakeEngine` its own menu is future work if a bespoke-fallback caller needs it.
 
-## Blocked on hex-grid pathfinding support
-- TODO: Hex-grid pathfinding (M10e-6 is square-grid-only; the ruler's hex distance is untouched by the `alternating` rule addition).
+## Actionable now — server-side hex-grid movement support (design approved, plan not yet written)
+- TODO: Hex grid was explicitly in original scope (`docs/PLAN.md`: "grid (square / hex)") and the client already renders/measures hex correctly, but the server has ZERO hex-aware movement infrastructure — `movement.rs`'s line-traversal primitive, `pathfinding.rs`'s A* router, and `scene/mod.rs`'s visibility-mask cell iteration (which feeds both fog-of-war secrecy and the movement gate) are all hardcoded square-grid. This was previously mis-filed as "blocked on hex-grid pathfinding support," which wrongly implied hex itself was unbuilt. Design approved: `docs/superpowers/specs/2026-07-22-hex-grid-server-movement-design.md` (a `GridShape` abstraction generalizing the existing square-grid modules, with a frozen-fixture parity proof before any hex cutover). Awaiting an implementation plan.
 
 ## Blocked on real-time per-recipient move-streaming
 - TODO: Live cross-animation concurrency for streamed move vision (`MoveStream`). M2 precomputes each move's per-recipient vision clip at *its* execute time, so two tokens moving simultaneously do NOT reveal each other mid-walk when a watcher's vision opens after the clip — it reconciles at the stop + next `vision` rebroadcast. Wanted eventually. Needs real-time per-recipient streaming (a per-move server loop recomputing each recipient's visibility of every concurrently-moving token as positions advance) instead of execute-time precompute. No correctness/secrecy impact today — only a missed transient reveal. (Design `2026-06-25-m2-streamed-continuous-vision-design.md` §8; user wants it as a follow-up.)
