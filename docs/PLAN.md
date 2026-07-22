@@ -1324,6 +1324,23 @@ Decomposed **M11a–d**:
 > (declarative server-side schema registry, subtree-scoped, data-only enforcement — own
 > sub-spec; invariant 6 intact).
 >
+> **M13e DONE** (11-task SDD plan, every task passed a two-reviewer or buddy-check gate —
+> 4 buddy-checks on the server authz boundary + the merge algorithm's embedded-recursion/
+> stamp/pull-revert core; whole-branch review clean): provenance-based, explicit pull/push/
+> revert 3-way merge over `name`/`engine`/`system`/`embedded` document bands, client-computed
+> (`@shadowcat/core`'s `merge.ts`/`templates.ts` — `structuralDiff`, `merge3Tree`, `merge3`,
+> `merge3Embedded`, `restampSubtree`, `takeTemplate`, `snapshotBase`, `stampInstance`,
+> `computePull`/`computeRevert`, `planToUpdate`, `applyResolutions`, `findInstances`,
+> `syncState`) and applied as an ordinary batched Update — the server gains only an opaque
+> `Document.base` snapshot field, `/base` `WRITE_FIELDS` authz + size cap, and a hardcoded
+> `OwnerOrGm`-only egress policy (found and closed during buddy-check: `base` can echo
+> GmOnly-hidden content, so it is never overridable and never sent to anyone but the doc's
+> owner or a GM). `TemplatesController`/`AppContext.templates` is the seam every sheet/module
+> reaches the merge engine through; the field-level `MergeConflictModal` resolves per-leaf
+> mine/theirs conflicts; host-rendered `TemplateControls`/`SheetHost` chrome gives every
+> doc_type's sheet pull/push/revert controls for free with no opt-in. New
+> `shadowcat-codebase-templates` skill. →
+>
 > **M13f — Server declarative schema registry (tier-2 structural validation): DONE.**
 > GM-controlled per-world SchemaDeclaration registry ((doc_type, /system/… pointer) → Schema
 > type-tree), enforced read-only in apply_intent (Create P1 / Update P2) via
