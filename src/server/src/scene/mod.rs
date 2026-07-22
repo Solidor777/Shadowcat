@@ -213,8 +213,12 @@ impl VisionMoveInputs {
         if self.empty {
             return Vec::new();
         }
-        let bound =
-            vision::bound_for_scene(viewpoint, &self.walls, self.scene_bounds, VISION_BOUND_MARGIN);
+        let bound = vision::bound_for_scene(
+            viewpoint,
+            &self.walls,
+            self.scene_bounds,
+            VISION_BOUND_MARGIN,
+        );
         let moving_poly = vision::visibility_polygon(viewpoint, &self.walls, bound);
         // Moving token's polygon first (index 0); static polygons follow.
         let mut out = Vec::with_capacity(1 + self.static_polys.len());
@@ -2274,7 +2278,8 @@ mod tests {
         // Mutate the engine field through the real apply_op chokepoint.
         ecs.apply_op(&Operation::Update {
             doc_id: wall_id,
-            changes: vec![crate::data::command::FieldChange { remove: false,
+            changes: vec![crate::data::command::FieldChange {
+                remove: false,
                 path: "/engine/blocksSight".into(),
                 old: json!(true),
                 new: json!(false),
@@ -2302,7 +2307,8 @@ mod tests {
         assert_eq!(ecs.entity_count(), 1);
         ecs.apply_op(&Operation::Update {
             doc_id: Uuid::from_u128(11),
-            changes: vec![crate::data::command::FieldChange { remove: false,
+            changes: vec![crate::data::command::FieldChange {
+                remove: false,
                 path: "/system/x".into(),
                 old: json!(null),
                 new: json!(5),
@@ -2694,7 +2700,8 @@ mod tests {
         );
         ecs.apply_op(&Operation::Update {
             doc_id: scene_id,
-            changes: vec![crate::data::command::FieldChange { remove: false,
+            changes: vec![crate::data::command::FieldChange {
+                remove: false,
                 path: "/engine".into(),
                 old: json!(null),
                 new: scene.engine.clone().unwrap(),
@@ -3119,7 +3126,8 @@ mod tests {
         // A field Update to the current world-settings singleton (id 110) is mirrored.
         ecs.apply_op(&Operation::Update {
             doc_id: Uuid::from_u128(110),
-            changes: vec![crate::data::command::FieldChange { remove: false,
+            changes: vec![crate::data::command::FieldChange {
+                remove: false,
                 path: "/system/scene/lightingEnabled".into(),
                 old: json!(null),
                 new: json!(true),
@@ -4307,7 +4315,8 @@ mod tests {
         let a = ecs.navmesh_for(scene, 0.4).expect("navmesh builds");
         ecs.apply_op(&Operation::Update {
             doc_id: scene,
-            changes: vec![crate::data::command::FieldChange { remove: false,
+            changes: vec![crate::data::command::FieldChange {
+                remove: false,
                 path: "/engine/bounds".into(),
                 old: json!(null),
                 new: json!({ "width": 40, "height": 40 }),

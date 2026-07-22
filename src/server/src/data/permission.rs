@@ -489,7 +489,8 @@ pub async fn filter_command(
                     // owner's OwnerOrGm fields are absent from `hidden` (can_see), so intact.
                     if changes.iter().any(|c| touches_permissions(&c.path)) {
                         for ptr in hidden {
-                            kept.push(FieldChange { remove: false,
+                            kept.push(FieldChange {
+                                remove: false,
                                 path: ptr,
                                 old: serde_json::Value::Null,
                                 new: serde_json::Value::Null,
@@ -1043,7 +1044,8 @@ mod tests {
             ts: 0,
             ops: vec![Operation::Update {
                 doc_id: d.id,
-                changes: vec![FieldChange { remove: false,
+                changes: vec![FieldChange {
+                    remove: false,
                     path: "/base".into(),
                     old: serde_json::json!({ "system": { "hp": 5 } }),
                     new: serde_json::json!({ "system": { "hp": 10 } }),
@@ -1351,12 +1353,14 @@ mod tests {
             ops: vec![Operation::Update {
                 doc_id: d.id,
                 changes: vec![
-                    FieldChange { remove: false,
+                    FieldChange {
+                        remove: false,
                         path: "/system/secret".into(),
                         old: serde_json::json!(1),
                         new: serde_json::json!(9),
                     },
-                    FieldChange { remove: false,
+                    FieldChange {
+                        remove: false,
                         path: "/system/public".into(),
                         old: serde_json::json!(2),
                         new: serde_json::json!(8),
@@ -1442,7 +1446,8 @@ mod tests {
             ts: 0,
             ops: vec![Operation::Update {
                 doc_id: d.id,
-                changes: vec![FieldChange { remove: false,
+                changes: vec![FieldChange {
+                    remove: false,
                     path: "/permissions/property_overrides".into(),
                     old: serde_json::json!({}),
                     new: serde_json::json!({ "/system/name": "owner_or_gm" }),
@@ -1546,7 +1551,8 @@ mod tests {
             ts: 0,
             ops: vec![Operation::Update {
                 doc_id: parent.id,
-                changes: vec![FieldChange { remove: false,
+                changes: vec![FieldChange {
+                    remove: false,
                     path: "/embedded/actor/0/permissions/property_overrides".into(),
                     old: serde_json::json!({}),
                     new: serde_json::json!({ "/system/name": "owner_or_gm" }),
@@ -1649,20 +1655,23 @@ mod tests {
                 doc_id: parent.id,
                 changes: vec![
                     // Direct write of the embedded child's gm-only field → dropped.
-                    FieldChange { remove: false,
+                    FieldChange {
+                        remove: false,
                         path: "/embedded/items/0/system/secret".into(),
                         old: serde_json::json!(1),
                         new: serde_json::json!(9),
                     },
                     // Wholesale rewrite of the child's /system (ancestor of the gm-only
                     // leaf) → the hidden leaf is stripped from old + new, sibling kept.
-                    FieldChange { remove: false,
+                    FieldChange {
+                        remove: false,
                         path: "/embedded/items/0/system".into(),
                         old: serde_json::json!({ "secret": 1, "shown": 2 }),
                         new: serde_json::json!({ "secret": 9, "shown": 3 }),
                     },
                     // Unrelated public parent field → kept.
-                    FieldChange { remove: false,
+                    FieldChange {
+                        remove: false,
                         path: "/system/public".into(),
                         old: serde_json::json!(0),
                         new: serde_json::json!(5),
@@ -1884,20 +1893,23 @@ mod tests {
                 doc_id: d.id,
                 changes: vec![
                     // Descendant of a GM-only pointer → dropped entirely.
-                    FieldChange { remove: false,
+                    FieldChange {
+                        remove: false,
                         path: "/system/secret/value".into(),
                         old: serde_json::json!(1),
                         new: serde_json::json!(9),
                     },
                     // Ancestor of a GM-only pointer → hidden child stripped from
                     // both pre-image and new value, siblings preserved.
-                    FieldChange { remove: false,
+                    FieldChange {
+                        remove: false,
                         path: "/system/sheet".into(),
                         old: serde_json::json!({ "hidden": 2, "shown": 3 }),
                         new: serde_json::json!({ "hidden": 20, "shown": 30 }),
                     },
                     // Unrelated public field → kept whole.
-                    FieldChange { remove: false,
+                    FieldChange {
+                        remove: false,
                         path: "/system/public".into(),
                         old: serde_json::json!(4),
                         new: serde_json::json!(40),

@@ -305,12 +305,14 @@ mod tests {
         let op = Operation::Update {
             doc_id: Uuid::from_u128(1),
             changes: vec![
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/system/a".into(),
                     old: serde_json::json!(1),
                     new: serde_json::json!(2),
                 },
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/system/b".into(),
                     old: serde_json::json!(3),
                     new: serde_json::json!(4),
@@ -323,12 +325,14 @@ mod tests {
             Operation::Update {
                 doc_id: Uuid::from_u128(1),
                 changes: vec![
-                    FieldChange { remove: false,
+                    FieldChange {
+                        remove: false,
                         path: "/system/b".into(),
                         old: serde_json::json!(4),
                         new: serde_json::json!(3)
                     },
-                    FieldChange { remove: false,
+                    FieldChange {
+                        remove: false,
                         path: "/system/a".into(),
                         old: serde_json::json!(2),
                         new: serde_json::json!(1)
@@ -349,7 +353,8 @@ mod tests {
                 Operation::Create { doc: doc(1) },
                 Operation::Update {
                     doc_id: Uuid::from_u128(1),
-                    changes: vec![FieldChange { remove: false,
+                    changes: vec![FieldChange {
+                        remove: false,
                         path: "/system/x".into(),
                         old: serde_json::json!(null),
                         new: serde_json::json!(7),
@@ -450,7 +455,10 @@ mod tests {
             remove_pointer(&mut v, "system/hp"),
             Err(DataError::BadPath(_))
         ));
-        assert!(matches!(remove_pointer(&mut v, ""), Err(DataError::BadPath(_))));
+        assert!(matches!(
+            remove_pointer(&mut v, ""),
+            Err(DataError::BadPath(_))
+        ));
         assert_eq!(v, serde_json::json!({ "system": { "hp": 10 } }));
     }
 
@@ -548,12 +556,14 @@ mod tests {
                 Operation::Update {
                     doc_id: Uuid::from_u128(1),
                     changes: vec![
-                        FieldChange { remove: false,
+                        FieldChange {
+                            remove: false,
                             path: "/system/hp/value".into(),
                             old: serde_json::json!(10),
                             new: serde_json::json!(3),
                         },
-                        FieldChange { remove: false,
+                        FieldChange {
+                            remove: false,
                             path: "/name".into(),
                             old: serde_json::json!(null),
                             new: serde_json::json!("Gandalf"),

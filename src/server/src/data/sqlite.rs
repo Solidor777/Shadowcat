@@ -11,12 +11,12 @@ use crate::data::document::{
     CapabilityRequirement, ContractDeclaration, Document, SchemaDeclaration, Scope, World,
     WorldCapDefaults, WorldRole,
 };
+use crate::data::engine::{
+    CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
+};
 use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
     resolve_access_world, Access,
-};
-use crate::data::engine::{
-    CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
 };
 use crate::data::repository::Repository;
 use crate::data::validation;
@@ -725,13 +725,12 @@ impl SqliteRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
-        let row = sqlx::query(
-            "SELECT 1 FROM documents WHERE world_id = ? AND doc_type = ? LIMIT 1",
-        )
-        .bind(world_id.to_string())
-        .bind(doc_type)
-        .fetch_optional(executor)
-        .await?;
+        let row =
+            sqlx::query("SELECT 1 FROM documents WHERE world_id = ? AND doc_type = ? LIMIT 1")
+                .bind(world_id.to_string())
+                .bind(doc_type)
+                .fetch_optional(executor)
+                .await?;
         Ok(row.is_some())
     }
 
@@ -1118,7 +1117,8 @@ impl Repository for SqliteRepository {
         // both ops' `singleton_doc_exists` reads see nothing (neither has
         // been inserted yet) and both pass the DB check alone — this set
         // closes that intra-batch gap the DB check cannot see.
-        let mut claimed_singletons: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut claimed_singletons: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for op in &mut ops {
             match op {
                 Operation::Create { doc } => {
@@ -1218,8 +1218,7 @@ impl Repository for SqliteRepository {
                     // see (see the comment above the Phase-1 loop).
                     if SINGLETON_DOC_TYPES.contains(&doc.doc_type.as_str()) {
                         if claimed_singletons.contains(doc.doc_type.as_str())
-                            || Self::singleton_doc_exists(&mut *tx, world_id, &doc.doc_type)
-                                .await?
+                            || Self::singleton_doc_exists(&mut *tx, world_id, &doc.doc_type).await?
                         {
                             return Err(DataError::Conflict(format!(
                                 "a '{}' document already exists in this world",
@@ -1520,7 +1519,8 @@ impl Repository for SqliteRepository {
                         .map(|ch| {
                             if ch.path == "/engine" || ch.path.starts_with("/engine/") {
                                 if let Some(v) = normalized_doc_json.pointer(&ch.path) {
-                                    return FieldChange { remove: false,
+                                    return FieldChange {
+                                        remove: false,
                                         path: ch.path.clone(),
                                         old: ch.old.clone(),
                                         new: v.clone(),
@@ -2811,7 +2811,8 @@ mod tests {
                 w.id,
                 vec![Operation::Update {
                     doc_id,
-                    changes: vec![FieldChange { remove: false,
+                    changes: vec![FieldChange {
+                        remove: false,
                         path: "/engine/seg/x1".into(),
                         old: serde_json::json!(0.0),
                         new: serde_json::json!("not-a-number"),
@@ -2971,7 +2972,8 @@ mod tests {
                 w.id,
                 vec![Operation::Update {
                     doc_id,
-                    changes: vec![FieldChange { remove: false,
+                    changes: vec![FieldChange {
+                        remove: false,
                         path: "/permissions/property_overrides".into(),
                         old: serde_json::json!({}),
                         new: serde_json::json!({ "/engine/": "gm_only" }),
@@ -3022,7 +3024,8 @@ mod tests {
                 w.id,
                 vec![Operation::Update {
                     doc_id,
-                    changes: vec![FieldChange { remove: false,
+                    changes: vec![FieldChange {
+                        remove: false,
                         path: "/permissions/property_overrides".into(),
                         old: serde_json::json!({}),
                         new: serde_json::json!({ "engine": "gm_only" }),
@@ -3072,7 +3075,8 @@ mod tests {
             w.id,
             vec![Operation::Update {
                 doc_id,
-                changes: vec![FieldChange { remove: false,
+                changes: vec![FieldChange {
+                    remove: false,
                     path: "/permissions/property_overrides".into(),
                     old: serde_json::json!({}),
                     new: serde_json::json!({ "/engine": "gm_only", "/name": "gm_only" }),
@@ -3125,7 +3129,8 @@ mod tests {
             w.id,
             vec![Operation::Update {
                 doc_id,
-                changes: vec![FieldChange { remove: false,
+                changes: vec![FieldChange {
+                    remove: false,
                     path: "/engine/seg/x1".into(),
                     old: serde_json::json!(0.0),
                     new: serde_json::json!(5.0),
@@ -3290,7 +3295,8 @@ mod tests {
                 w.id,
                 vec![Operation::Update {
                     doc_id,
-                    changes: vec![FieldChange { remove: false,
+                    changes: vec![FieldChange {
+                        remove: false,
                         path: "/engine".into(),
                         old: old_engine,
                         new: smuggled_engine,
@@ -3405,7 +3411,8 @@ mod tests {
                 w.id,
                 vec![Operation::Update {
                     doc_id,
-                    changes: vec![FieldChange { remove: false,
+                    changes: vec![FieldChange {
+                        remove: false,
                         path: "/engine/size/w".into(),
                         old: serde_json::json!(1.0),
                         new: serde_json::json!(5),
@@ -3508,7 +3515,8 @@ mod tests {
             w.id,
             vec![Operation::Update {
                 doc_id: d.id,
-                changes: vec![FieldChange { remove: false,
+                changes: vec![FieldChange {
+                    remove: false,
                     path: "/system/hp".into(),
                     old: serde_json::json!(10),
                     new: serde_json::json!(8),
@@ -3527,7 +3535,8 @@ mod tests {
                 w.id,
                 vec![Operation::Update {
                     doc_id: d.id,
-                    changes: vec![FieldChange { remove: false,
+                    changes: vec![FieldChange {
+                        remove: false,
                         path: "/system/vision/range".into(),
                         old: serde_json::json!(30),
                         new: serde_json::json!(60),
@@ -3547,7 +3556,8 @@ mod tests {
                 w.id,
                 vec![Operation::Update {
                     doc_id: d.id,
-                    changes: vec![FieldChange { remove: false,
+                    changes: vec![FieldChange {
+                        remove: false,
                         path: "/system".into(),
                         old: serde_json::json!({ "vision": { "range": 30 }, "hp": 8 }),
                         new: serde_json::json!({ "vision": { "range": 99 }, "hp": 8 }),
@@ -3565,7 +3575,8 @@ mod tests {
             w.id,
             vec![Operation::Update {
                 doc_id: d.id,
-                changes: vec![FieldChange { remove: false,
+                changes: vec![FieldChange {
+                    remove: false,
                     path: "/system/vision/range".into(),
                     old: serde_json::json!(30),
                     new: serde_json::json!(60),
@@ -3712,7 +3723,8 @@ mod tests {
             w.id,
             vec![Operation::Update {
                 doc_id: d.id,
-                changes: vec![FieldChange { remove: false,
+                changes: vec![FieldChange {
+                    remove: false,
                     path: "/system/name".into(),
                     old: serde_json::json!("Goblin"),
                     new: serde_json::json!("Orc"),
@@ -4610,7 +4622,8 @@ mod tests {
                 w.id,
                 vec![Operation::Update {
                     doc_id: msg_id,
-                    changes: vec![FieldChange { remove: false,
+                    changes: vec![FieldChange {
+                        remove: false,
                         path: "/system/kind".into(),
                         old: serde_json::json!("normal"),
                         new: serde_json::json!("system"),
@@ -4678,7 +4691,8 @@ mod tests {
     #[tokio::test]
     async fn message_update_rejected_for_client_allowed_for_server_revision() {
         let (repo, world, owner_ctx, msg_id) = seed_owned_message().await;
-        let change = FieldChange { remove: false,
+        let change = FieldChange {
+            remove: false,
             path: "/engine/content".into(),
             old: serde_json::json!([{ "kind": "text", "text": "hi" }]),
             new: serde_json::json!([{ "kind": "text", "text": "edited" }]),
@@ -4744,7 +4758,8 @@ mod tests {
             ts: 2,
             ops: vec![Operation::Update {
                 doc_id: Uuid::from_u128(1),
-                changes: vec![FieldChange { remove: false,
+                changes: vec![FieldChange {
+                    remove: false,
                     path: "/system/hp".into(),
                     old: serde_json::json!(10),
                     new: serde_json::json!(3),
@@ -4909,7 +4924,8 @@ mod tests {
             ts: 2,
             ops: vec![Operation::Update {
                 doc_id: Uuid::from_u128(1),
-                changes: vec![FieldChange { remove: false,
+                changes: vec![FieldChange {
+                    remove: false,
                     path: "/id".into(),
                     old: serde_json::json!(Uuid::from_u128(1)),
                     new: serde_json::json!(Uuid::from_u128(2)),
@@ -4947,7 +4963,8 @@ mod tests {
             ts: 42,
             ops: vec![Operation::Update {
                 doc_id: Uuid::from_u128(1),
-                changes: vec![FieldChange { remove: false,
+                changes: vec![FieldChange {
+                    remove: false,
                     path: "/system/hp".into(),
                     old: serde_json::json!(1),
                     new: serde_json::json!(2),
@@ -5083,7 +5100,8 @@ mod tests {
                 w.id,
                 vec![Operation::Update {
                     doc_id: doc.id,
-                    changes: vec![FieldChange { remove: false,
+                    changes: vec![FieldChange {
+                        remove: false,
                         path: "/system/hp".into(),
                         old: serde_json::json!(10),
                         new: serde_json::json!(5),
@@ -5102,7 +5120,8 @@ mod tests {
                 w.id,
                 vec![Operation::Update {
                     doc_id: doc.id,
-                    changes: vec![FieldChange { remove: false,
+                    changes: vec![FieldChange {
+                        remove: false,
                         path: "/system/hp".into(),
                         old: serde_json::json!(10),
                         new: serde_json::json!(1),
@@ -5279,7 +5298,8 @@ mod tests {
                     Operation::Create { doc: tok.clone() },
                     Operation::Update {
                         doc_id: tok.id,
-                        changes: vec![FieldChange { remove: false,
+                        changes: vec![FieldChange {
+                            remove: false,
                             path: "/engine/x".into(),
                             old: serde_json::json!(0.0),
                             new: serde_json::json!(999.0),
@@ -5342,7 +5362,8 @@ mod tests {
                 w.id,
                 vec![Operation::Update {
                     doc_id: doc.id,
-                    changes: vec![FieldChange { remove: false,
+                    changes: vec![FieldChange {
+                        remove: false,
                         path: "/system/x".into(),
                         old: serde_json::json!(null),
                         new: serde_json::json!(1),
@@ -5416,7 +5437,8 @@ mod tests {
     ) -> Operation {
         Operation::Update {
             doc_id,
-            changes: vec![FieldChange { remove: false,
+            changes: vec![FieldChange {
+                remove: false,
                 path: path.into(),
                 old,
                 new,
@@ -5923,10 +5945,7 @@ mod tests {
                 WriteOrigin::Client,
             )
             .await;
-        assert!(
-            result.is_ok(),
-            "singleton scoping is per-world, not global"
-        );
+        assert!(result.is_ok(), "singleton scoping is per-world, not global");
     }
 
     #[tokio::test]
@@ -6011,10 +6030,7 @@ mod tests {
         );
 
         let (res1, res2) = tokio::join!(fut1, fut2);
-        let ok_count = [res1.is_ok(), res2.is_ok()]
-            .iter()
-            .filter(|x| **x)
-            .count();
+        let ok_count = [res1.is_ok(), res2.is_ok()].iter().filter(|x| **x).count();
         assert_eq!(
             ok_count, 1,
             "exactly one of two concurrent singleton Creates must succeed, never both, never neither"
@@ -6212,7 +6228,8 @@ mod tests {
         let seq_before = r.get_world(w.id).await.unwrap().unwrap().seq;
         let update = Operation::Update {
             doc_id: doc.id,
-            changes: vec![FieldChange { remove: false,
+            changes: vec![FieldChange {
+                remove: false,
                 path: "/system/mechanics/version".into(),
                 old: serde_json::json!(1),
                 new: serde_json::json!("oops"),

@@ -887,9 +887,10 @@ async fn welcome_capability_requirements(
         // A panicked scan (JoinError) degrades to an empty Vec, matching the
         // missing-modules_dir behavior already in scan_installed_modules.
         let dir = modules_dir.to_path_buf();
-        let installed = tokio::task::spawn_blocking(move || crate::modules::scan_installed_modules(&dir))
-            .await
-            .unwrap_or_default();
+        let installed =
+            tokio::task::spawn_blocking(move || crate::modules::scan_installed_modules(&dir))
+                .await
+                .unwrap_or_default();
         for id in &enabled {
             // Re-check engine-compat here (not just at enable time): a module
             // enabled while compatible can go stale after a server downgrade

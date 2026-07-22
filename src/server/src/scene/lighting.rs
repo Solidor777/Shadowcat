@@ -519,10 +519,13 @@ mod tests {
             (9900.0, 9900.0),
             (100.0, 9900.0),
             (9900.0, 100.0),
-            (50.0, 5000.0),  // near the left edge, mid-height
-            (5000.0, 50.0),  // near the top edge, mid-width
+            (50.0, 5000.0), // near the left edge, mid-height
+            (5000.0, 50.0), // near the top edge, mid-width
         ] {
-            assert!(env_lit(&polys, p), "open scene at the cap lights point {p:?}");
+            assert!(
+                env_lit(&polys, p),
+                "open scene at the cap lights point {p:?}"
+            );
         }
     }
 

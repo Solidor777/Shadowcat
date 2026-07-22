@@ -606,12 +606,14 @@ impl Room {
         let pos_ops = vec![Operation::Update {
             doc_id: token,
             changes: vec![
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/engine/x".into(),
                     old: serde_json::json!(start.0),
                     new: serde_json::json!(outcome.stop.0),
                 },
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/engine/y".into(),
                     old: serde_json::json!(start.1),
                     new: serde_json::json!(outcome.stop.1),
@@ -1034,12 +1036,14 @@ mod room_tests {
         let mv = |nx: i64, ny: i64, ox: i64, oy: i64| Operation::Update {
             doc_id: token_id,
             changes: vec![
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/engine/x".into(),
                     old: json!(ox as f64),
                     new: json!(nx as f64),
                 },
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/engine/y".into(),
                     old: json!(oy as f64),
                     new: json!(ny as f64),
@@ -1052,7 +1056,8 @@ mod room_tests {
         // wall must be caught (the post-image, not a leaf-path match, is validated).
         let whole = Operation::Update {
             doc_id: token_id,
-            changes: vec![FieldChange { remove: false,
+            changes: vec![FieldChange {
+                remove: false,
                 path: "/engine".into(),
                 old: json!({ "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
                 new: json!({ "x": 10.0, "y": 10.0, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
@@ -1069,12 +1074,14 @@ mod room_tests {
         let dup = Operation::Update {
             doc_id: token_id,
             changes: vec![
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/engine/x".into(),
                     old: json!(0.0),
                     new: json!(1.0),
                 },
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/engine/x".into(),
                     old: json!(0.0),
                     new: json!(11.0),
@@ -1138,12 +1145,14 @@ mod room_tests {
         let write = Operation::Update {
             doc_id: h.token_id,
             changes: vec![
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/system/x".into(),
                     old: serde_json::Value::Null, // absent key reads as Null (no `system.x` default)
                     new: serde_json::json!(200.0),
                 },
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/system/y".into(),
                     old: serde_json::Value::Null,
                     new: serde_json::json!(150.0),
@@ -1206,12 +1215,14 @@ mod room_tests {
             let h = movement_scene_with_wall().await;
             let start_engine = stored_engine(&h).await;
             let changes = vec![
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/engine".into(),
                     old: start_engine.clone(),
                     new: wholesale_new.clone(),
                 },
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/engine/x".into(),
                     old: json!(50.0),
                     new: json!(20.0),
@@ -1248,12 +1259,14 @@ mod room_tests {
             let h = movement_scene_with_wall().await;
             let start_engine = stored_engine(&h).await;
             let changes = vec![
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/engine/x".into(),
                     old: json!(50.0),
                     new: json!(20.0),
                 },
-                FieldChange { remove: false,
+                FieldChange {
+                    remove: false,
                     path: "/engine".into(),
                     old: start_engine.clone(),
                     new: wholesale_new.clone(),
@@ -1622,12 +1635,14 @@ mod room_tests {
             Operation::Update {
                 doc_id: self.token_id,
                 changes: vec![
-                    FieldChange { remove: false,
+                    FieldChange {
+                        remove: false,
                         path: "/engine/x".into(),
                         old: serde_json::json!(ox),
                         new: serde_json::json!(x),
                     },
-                    FieldChange { remove: false,
+                    FieldChange {
+                        remove: false,
                         path: "/engine/y".into(),
                         old: serde_json::json!(oy),
                         new: serde_json::json!(y),
@@ -2426,7 +2441,8 @@ mod room_tests {
         // Float, for the OCC comparison -- exactly what `sendMoves` does.
         let ops = vec![Operation::Update {
             doc_id: h.token_id,
-            changes: vec![FieldChange { remove: false,
+            changes: vec![FieldChange {
+                remove: false,
                 path: "/engine/x".into(),
                 old: serde_json::Value::Number(serde_json::Number::from(150u64)),
                 new: serde_json::json!(160.0),
