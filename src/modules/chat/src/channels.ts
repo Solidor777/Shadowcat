@@ -97,12 +97,15 @@ export function deriveVisibleDocs(cache: ChatDerivationCache, allMessages: WireD
   }
   // Removal never happens in practice (messages are soft-tombstoned in
   // place, never hard-deleted from the store); skip the scan unless the
-  // store's message count actually shrank.
+  // store's message count actually shrank. Reconciles against `cache.refs`'s
+  // own key set, not just `cache.order` — a non-member id (member === false)
+  // is cached in `refs`/`members` but never enters `order`, so scanning only
+  // `order` would leave its entry behind forever once the doc disappears.
   if (seen.size !== cache.refs.size) {
-    for (let i = cache.order.length - 1; i >= 0; i--) {
-      const id = cache.order[i];
+    for (const id of cache.refs.keys()) {
       if (!seen.has(id)) {
-        cache.order.splice(i, 1);
+        const orderIdx = cache.order.indexOf(id);
+        if (orderIdx !== -1) cache.order.splice(orderIdx, 1);
         cache.refs.delete(id);
         cache.members.delete(id);
       }

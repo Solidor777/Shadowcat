@@ -186,6 +186,22 @@ describe("deriveVisibleDocs", () => {
     const result = deriveVisibleDocs(cache, docs, { kind: "all" }, 10);
     expect(result.map((d) => d.id)).toEqual(["a"]);
   });
+
+  test("evicts a non-member doc's cache entry when it disappears from allMessages", () => {
+    const cache = createChatDerivationCache();
+    // "b" fails the gm view filter (public audience), so it is cached in
+    // `refs`/`members` but never enters `order`.
+    const docs = [gmEngineMsg("a", 1), publicEngineMsg("b", 2)];
+    deriveVisibleDocs(cache, docs, { kind: "gm" }, 10);
+    expect(cache.refs.has("b")).toBe(true);
+    expect(cache.members.has("b")).toBe(true);
+    expect(cache.order).not.toContain("b");
+
+    // "b" disappears from the store (shrink); only the member doc "a" remains.
+    deriveVisibleDocs(cache, [docs[0]], { kind: "gm" }, 10);
+    expect(cache.refs.has("b")).toBe(false);
+    expect(cache.members.has("b")).toBe(false);
+  });
 });
 
 describe("computeVisibleWindow", () => {
