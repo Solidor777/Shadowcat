@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getAppContext, sizeClass } from "@shadowcat/ui-kit";
+  import { getAppContext, sizeClass, createMenuKeyboard } from "@shadowcat/ui-kit";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -32,42 +32,9 @@
     ctx.panels.toggle(id);
     closeMenu();
   }
-  function focusItem(index: number): void {
-    const n = itemEls.length;
-    if (n === 0) return;
-    itemEls[((index % n) + n) % n]?.focus();
-  }
+  const menuKeyboard = createMenuKeyboard(() => itemEls, closeMenu);
   function onItemKeydown(event: KeyboardEvent, index: number): void {
-    switch (event.key) {
-      case "ArrowDown":
-        event.preventDefault();
-        focusItem(index + 1);
-        break;
-      case "ArrowUp":
-        event.preventDefault();
-        focusItem(index - 1);
-        break;
-      case "Home":
-        event.preventDefault();
-        focusItem(0);
-        break;
-      case "End":
-        event.preventDefault();
-        focusItem(itemEls.length - 1);
-        break;
-      case "Escape":
-        event.preventDefault();
-        event.stopPropagation();
-        closeMenu();
-        break;
-      case "Tab":
-        // WAI-ARIA APG Menu Button pattern: Tab closes the menu and lets
-        // focus proceed natively to the next tabbable element — it does NOT
-        // bounce focus back to the trigger (that is Escape's job) or
-        // suppress the native Tab traversal.
-        closeMenu(false);
-        break;
-    }
+    menuKeyboard.handleKeydown(event, index);
   }
   function onTriggerKeydown(event: KeyboardEvent): void {
     if (event.key === "Escape" && open) {

@@ -7,6 +7,8 @@ export { default as Surface } from "./Surface.svelte";
 export { t, locale, i18n } from "./i18n.svelte";
 export { SceneInteractionBridge } from "./sceneInteraction";
 export type { SceneInteraction } from "./sceneInteraction";
+export { createMenuKeyboard } from "./MenuKeyboard";
+export type { MenuKeyboard } from "./MenuKeyboard";
 export { ActorSelection } from "./actorSelection.svelte";
 export { TokenSelection } from "./tokenSelection.svelte";
 export { SceneSelection } from "./sceneSelection.svelte";
