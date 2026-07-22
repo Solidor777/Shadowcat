@@ -16,3 +16,14 @@ export function computeFogBlendFactor(clock: number, tCur: number, tNext: number
   const f = (clock - tCur) / (tNext - tCur);
   return Math.min(1, Math.max(0, f));
 }
+
+/**
+ * Whether a cached cross-fade `RenderTexture` (captured by `existing`'s `{width, height,
+ * resolution}`) must be destroyed and recreated at the requested `width`/`height`/`resolution`,
+ * rather than reused in place. `null` (no texture captured yet, e.g. first call) always stales.
+ * Pure so `captureFog`'s reuse decision is unit-testable without a WebGL context.
+ */
+export function fogBlendRtStale(existing: { width: number; height: number; resolution: number } | null, width: number, height: number, resolution: number): boolean {
+  if (!existing) return true;
+  return existing.width !== width || existing.height !== height || existing.resolution !== resolution;
+}

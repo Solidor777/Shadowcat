@@ -3,6 +3,7 @@ import type { DisplayBackend } from "./backend";
 import type { LightingFrame } from "./lighting";
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point, ResolvedAnimatedSource } from "./types";
 import { computeAnimatedFrame } from "./token-animation";
+import { fogBlendRtStale } from "./fog-blend";
 
 /** Per-token render state (M10h). `container` is the outer, non-rotating node (position = token
  * center; badges are its direct children, so they stay upright); `visualContainer` rotates with
@@ -176,17 +177,24 @@ export class PixiBackend implements DisplayBackend {
    * `setVisibility` draws live, positioned/scaled to the current camera transform so the two
    * snapshots line up with what's on screen), then show both as complementary-alpha sprites — an
    * actual GPU alpha blend between two rasterized states, not a polygon-vertex morph. Recaptured
-   * on every call (a sweep ticks ~60/s) — the previous textures are destroyed first so a
-   * multi-second sweep doesn't leak GPU memory.
-   * TODO: cache/reuse the RenderTextures across ticks (recreate only on resize or fog-input
-   * change) instead of a full recapture every call. */
+   * on every call (a sweep ticks ~60/s), but `fogBlendFromRT`/`fogBlendToRT` themselves are
+   * reused across calls (`captureFog` renders fresh content into the same texture, which the
+   * renderer clears before drawing) — only destroyed and recreated when `fogBlendRtStale` finds
+   * the renderer's current size/resolution no longer matches (first call, a window resize, or a
+   * DPR change), avoiding a GPU alloc/free pair on every one of the ~60 calls/sec a sweep makes. */
   setVisibilityBlend(from: VisibilityInput, to: VisibilityInput, factor: number): void {
     const width = Math.max(1, this.app.screen.width);
     const height = Math.max(1, this.app.screen.height);
-    this.fogBlendFromRT?.destroy(true);
-    this.fogBlendToRT?.destroy(true);
-    this.fogBlendFromRT = this.captureFog(from, width, height);
-    this.fogBlendToRT = this.captureFog(to, width, height);
+    const resolution = this.app.renderer.resolution;
+    const current = this.fogBlendFromRT ? { width: this.fogBlendFromRT.width, height: this.fogBlendFromRT.height, resolution: this.fogBlendFromRT.source.resolution } : null;
+    if (fogBlendRtStale(current, width, height, resolution)) {
+      this.fogBlendFromRT?.destroy(true);
+      this.fogBlendToRT?.destroy(true);
+      this.fogBlendFromRT = null;
+      this.fogBlendToRT = null;
+    }
+    this.fogBlendFromRT = this.captureFog(from, width, height, resolution, this.fogBlendFromRT);
+    this.fogBlendToRT = this.captureFog(to, width, height, resolution, this.fogBlendToRT);
     this.fogBlendFrom.texture = this.fogBlendFromRT;
     this.fogBlendTo.texture = this.fogBlendToRT;
     const f = Math.min(1, Math.max(0, factor));
@@ -200,8 +208,11 @@ export class PixiBackend implements DisplayBackend {
 
   /** Rasterize one visibility sample's fog (the same sheet+hole technique as `setVisibility`)
    * into a screen-sized RenderTexture, applying the world container's CURRENT camera transform
-   * to the scratch capture container so the snapshot lines up with what is on screen right now. */
-  private captureFog(input: VisibilityInput, width: number, height: number): RenderTexture {
+   * to the scratch capture container so the snapshot lines up with what is on screen right now.
+   * Reuses `existing` (rendering into it clears+overwrites its prior content) when given, so a
+   * caller can hold a `RenderTexture` across ticks; creates a fresh one when `existing` is
+   * `null` (first call, or `setVisibilityBlend` just discarded a stale-sized pair). */
+  private captureFog(input: VisibilityInput, width: number, height: number, resolution: number, existing: RenderTexture | null): RenderTexture {
     const dark = new Graphics();
     const dim = new Graphics();
     const exploredHoles = new Graphics();
@@ -213,7 +224,7 @@ export class PixiBackend implements DisplayBackend {
     capture.scale.copyFrom(this.world.scale);
     // Match the renderer's device-pixel-ratio resolution (Application runs `autoDensity: true`
     // at `devicePixelRatio`) or the capture rasterizes at 1x and visibly blurs on HiDPI displays.
-    const texture = RenderTexture.create({ width, height, resolution: this.app.renderer.resolution });
+    const texture = existing ?? RenderTexture.create({ width, height, resolution });
     this.app.renderer.render({ container: capture, target: texture });
     capture.destroy({ children: true });
     return texture;

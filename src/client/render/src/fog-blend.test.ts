@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { computeFogBlendFactor } from "./fog-blend";
+import { computeFogBlendFactor, fogBlendRtStale } from "./fog-blend";
 
 describe("computeFogBlendFactor", () => {
   test("is 0 at tCur and 1 at tNext", () => {
@@ -27,5 +27,24 @@ describe("computeFogBlendFactor", () => {
     expect(computeFogBlendFactor(NaN, 0, 500)).toBe(1);
     expect(computeFogBlendFactor(100, NaN, 500)).toBe(1);
     expect(computeFogBlendFactor(100, 0, Infinity)).toBe(1);
+  });
+});
+
+describe("fogBlendRtStale", () => {
+  test("stales when there is no existing texture", () => {
+    expect(fogBlendRtStale(null, 800, 600, 1)).toBe(true);
+  });
+
+  test("does not stale when width/height/resolution are unchanged", () => {
+    expect(fogBlendRtStale({ width: 800, height: 600, resolution: 1 }, 800, 600, 1)).toBe(false);
+  });
+
+  test("stales on a width or height change", () => {
+    expect(fogBlendRtStale({ width: 800, height: 600, resolution: 1 }, 1024, 600, 1)).toBe(true);
+    expect(fogBlendRtStale({ width: 800, height: 600, resolution: 1 }, 800, 768, 1)).toBe(true);
+  });
+
+  test("stales on a resolution change", () => {
+    expect(fogBlendRtStale({ width: 800, height: 600, resolution: 1 }, 800, 600, 2)).toBe(true);
   });
 });
