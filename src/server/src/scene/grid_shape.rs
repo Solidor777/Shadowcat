@@ -137,9 +137,15 @@ impl GridShape for HexGrid {
         self.pixel_to_axial(p)
     }
 
-    /// Stubbed pending the trait's neighbor-enumeration semantics for hex adjacency.
-    fn neighbors_with_cost(&self, _c: Cell, _parity: u8) -> Vec<(Cell, f64, u8)> {
-        Vec::new()
+    /// Uniform 1-per-step cost, 6 axial neighbors — hex has no diagonal-rule analog, so `parity`
+    /// is passed through unchanged (per the design doc's H4/H5 decisions).
+    fn neighbors_with_cost(&self, c: Cell, parity: u8) -> Vec<(Cell, f64, u8)> {
+        const AXIAL_DIRS: [(i32, i32); 6] =
+            [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)];
+        AXIAL_DIRS
+            .iter()
+            .map(|&(dq, dr)| ((c.0 + dq, c.1 + dr), 1.0, parity))
+            .collect()
     }
     /// Stubbed pending the trait's hex supercover semantics.
     fn line_traversal(&self, _a: vision::P, _b: vision::P, _cell: f64) -> Option<BTreeSet<Cell>> {
@@ -240,6 +246,23 @@ mod tests {
         let center = g.cell_center((2, -1));
         let (q, r) = g.pixel_to_axial(center);
         assert_eq!((q, r), (2, -1));
+    }
+
+    #[test]
+    fn hex_grid_neighbors_with_cost_returns_6_uniform_cost_neighbors() {
+        let g = HexGrid { size: 50.0 };
+        let ns = g.neighbors_with_cost((0, 0), 3);
+        assert_eq!(ns.len(), 6, "hex has 6 neighbors, not 8");
+        for (_, cost, parity) in &ns {
+            assert!((cost - 1.0).abs() < 1e-9, "every hex step costs 1.0 uniformly");
+            assert_eq!(*parity, 3, "hex never touches parity — passed through unchanged");
+        }
+        // The 6 axial neighbor offsets (Red Blob Games pointy-top convention).
+        let mut got: Vec<Cell> = ns.iter().map(|(c, _, _)| *c).collect();
+        got.sort();
+        let mut want = vec![(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)];
+        want.sort();
+        assert_eq!(got, want);
     }
 
     #[test]
