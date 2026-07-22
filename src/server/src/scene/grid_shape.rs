@@ -147,9 +147,42 @@ impl GridShape for HexGrid {
             .map(|&(dq, dr)| ((c.0 + dq, c.1 + dr), 1.0, parity))
             .collect()
     }
-    /// Stubbed pending the trait's hex supercover semantics.
-    fn line_traversal(&self, _a: vision::P, _b: vision::P, _cell: f64) -> Option<BTreeSet<Cell>> {
-        None
+    /// Clean-room hex line-drawing: cube-coordinate linear interpolation + hex-round per sample
+    /// (Red Blob Games's standard technique; public-domain computational geometry, ARCHITECTURE
+    /// §7). Hex equivalent of `movement::supercover_cells` — every cell the segment `a -> b`
+    /// crosses, sampled at `N = max cube-axis delta` steps (same "N = max axial delta" idea as a
+    /// square Bresenham/DDA line needing `max(|dx|,|dy|)` samples).
+    fn line_traversal(&self, a: vision::P, b: vision::P, cell: f64) -> Option<BTreeSet<Cell>> {
+        if !a.0.is_finite() || !a.1.is_finite() || !b.0.is_finite() || !b.1.is_finite() {
+            return None;
+        }
+        let (aq, ar) = self.pixel_to_axial_frac(a);
+        let (bq, br) = self.pixel_to_axial_frac(b);
+        let ax = aq;
+        let az = ar;
+        let ay = -ax - az;
+        let bx = bq;
+        let bz = br;
+        let by = -bx - bz;
+        let n = ((ax - bx).abs().max((ay - by).abs()).max((az - bz).abs())).round() as i64;
+        const MAX_HEX_LINE_SAMPLES: i64 = 4096; // DoS bound, mirrors movement.rs's MAX_MOVE_CELLS class of guard
+        if !(0..=MAX_HEX_LINE_SAMPLES).contains(&n) {
+            return None;
+        }
+        let _ = cell; // hex cell size is baked into `self.size`; kept only for GridShape trait-signature
+                      // parity with SquareGrid, which DOES need it.
+        let mut out = BTreeSet::new();
+        if n == 0 {
+            out.insert(self.axial_round(aq, ar));
+            return Some(out);
+        }
+        for i in 0..=n {
+            let t = i as f64 / n as f64;
+            let qf = aq + (bq - aq) * t;
+            let rf = ar + (br - ar) * t;
+            out.insert(self.axial_round(qf, rf));
+        }
+        Some(out)
     }
     /// Stubbed pending the trait's hex footprint-overlap semantics.
     fn footprint_cells(&self, _anchor: Cell, _ctr: vision::P, _r_scene: f64, _cell: f64) -> Vec<Cell> {
@@ -263,6 +296,27 @@ mod tests {
         let mut want = vec![(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)];
         want.sort();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn hex_grid_line_traversal_includes_start_and_end_cells() {
+        let g = HexGrid { size: 50.0 };
+        let a_center = g.cell_center((0, 0));
+        let b_center = g.cell_center((3, 0));
+        let cells = g.line_traversal(a_center, b_center, 50.0).unwrap();
+        assert!(cells.contains(&(0, 0)));
+        assert!(cells.contains(&(3, 0)));
+        // A straight 3-cell traversal along one axial direction crosses exactly cells (0,0)..(3,0).
+        assert_eq!(cells.len(), 4);
+    }
+
+    #[test]
+    fn hex_grid_line_traversal_degenerate_same_point_returns_single_cell() {
+        let g = HexGrid { size: 50.0 };
+        let p = g.cell_center((2, -1));
+        let cells = g.line_traversal(p, p, 50.0).unwrap();
+        assert_eq!(cells.len(), 1);
+        assert!(cells.contains(&(2, -1)));
     }
 
     #[test]
