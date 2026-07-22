@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { test, expect } from "vitest";
 import type { SceneTool } from "@shadowcat/render";
@@ -8,6 +6,7 @@ import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DocumentStore, buildSceneDoc, type WireOperation } from "@shadowcat/core";
 import ToolRail from "./ToolRail.svelte";
+import toolRailSource from "./ToolRail.svelte?raw";
 
 /** A bridge with an attached host that records every setActiveTool call. */
 function captureScene(): { scene: SceneInteractionBridge; tools: (SceneTool | null)[] } {
@@ -144,8 +143,7 @@ test("the tool rail renders as a non-compact side rail under jsdom (expanded def
 test("select/input controls get a 44px coarse-pointer min-height", () => {
   // jsdom doesn't evaluate @media (pointer: coarse), so assert the rule's
   // presence directly in the component's source styles instead.
-  const source = readFileSync(fileURLToPath(import.meta.resolve("./ToolRail.svelte")), "utf-8");
-  const controlsRuleMatch = source.match(/\.controls select,\s*\.controls input\s*\{([^}]*@media[^}]*\{[^}]*\}[^}]*)\}/);
+  const controlsRuleMatch = toolRailSource.match(/\.controls select,\s*\.controls input\s*\{([^}]*@media[^}]*\{[^}]*\}[^}]*)\}/);
   expect(controlsRuleMatch).toBeTruthy();
   expect(controlsRuleMatch?.[1]).toMatch(/@media \(pointer: coarse\)\s*\{\s*min-height:\s*44px;\s*\}/);
 });
