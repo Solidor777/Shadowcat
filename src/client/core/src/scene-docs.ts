@@ -222,6 +222,38 @@ export function envelope(
   };
 }
 
+/** 32-bit FNV-1a mix, seeded, over `str`. Building block for `deterministicId`. */
+function fnv1a32(str: string, seed: number): number {
+  let h = seed >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** Deterministic UUID-v5-SHAPED id derived from `namespace` + `name`: same inputs always
+ * produce the same id, so independent callers (e.g. two GMs seeding a world-scoped singleton
+ * doc at once) converge on one id without a lookup. Built from four independently-seeded
+ * FNV-1a 32-bit mixes (128 bits total) rather than true SHA-1 UUIDv5, because Web Crypto's
+ * `subtle.digest` is async and every doc builder in this file — `envelope` included — is
+ * synchronous; the version(5)/variant nibbles are set purely for id-shape parity with
+ * `crypto.randomUUID()`, not RFC 4122 conformance. Collision risk is not a security boundary:
+ * the server's singleton create-gate rejects a duplicate Create by `doc_type`, not by id, so a
+ * (practically impossible) id collision would only ever surface as an ordinary id-uniqueness
+ * conflict. Reference id scheme for singleton config-doc seeders (`faction-registry`,
+ * `condition-registry`, `world-settings`, …). */
+export function deterministicId(namespace: string, name: string): string {
+  const input = `${namespace}:${name}`;
+  const hex = [0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35]
+    .map((seed) => fnv1a32(input, seed).toString(16).padStart(8, "0"))
+    .join("");
+  const versioned = hex.slice(0, 12) + "5" + hex.slice(13, 16);
+  const variantNibble = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const stamped = versioned.slice(0, 16) + variantNibble + versioned.slice(17);
+  return `${stamped.slice(0, 8)}-${stamped.slice(8, 12)}-${stamped.slice(12, 16)}-${stamped.slice(16, 20)}-${stamped.slice(20, 32)}`;
+}
+
 /** A top-level scene document with a default square/100 grid and no background.
  * Optional `vision`/`lighting` overrides, `grid.distance`, and `snapToGrid` are included
  * only when provided; absent keys fall back to world-settings defaults at resolution time.

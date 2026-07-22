@@ -1,7 +1,8 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildFactionRegistryDoc, resolveTokenActor, type Faction, type FactionRegistryEngine, type WireDocument } from "@shadowcat/core";
+  import { resolveTokenActor, type Faction, type FactionRegistryEngine, type WireDocument } from "@shadowcat/core";
+  import { seedFactionRegistryIfAbsent } from "./seed";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -16,23 +17,15 @@
     return Object.entries(sys?.factions ?? {});
   });
 
-  // Idempotent GM seed: create the registry with three defaults once, only when absent. The
-  // optimistic dispatch adds it to the store immediately, so a second reactive run sees it.
-  const SEED: Record<string, Faction> = {
-    friendly: { name: "Friendly", color: "#3fb950", stance: "friendly" },
-    neutral: { name: "Neutral", color: "#9e9e9e", stance: "neutral" },
-    hostile: { name: "Hostile", color: "#f85149", stance: "hostile" },
-  };
+  // Idempotent GM seed: create the registry (deterministic id, so racing GMs converge on one)
+  // once, only when absent. The optimistic dispatch adds it to the store immediately, so a
+  // second reactive run sees it and `seeded` short-circuits further attempts.
   let seeded = false;
   $effect(() => {
     if (ctx.role !== "gm" || seeded) return;
     subscribe();
-    if (ctx.documents.query("faction-registry").length > 0) {
-      seeded = true;
-      return;
-    }
     seeded = true;
-    ctx.dispatchIntent([{ op: "create", doc: buildFactionRegistryDoc(ctx.world, SEED) }]);
+    seedFactionRegistryIfAbsent(ctx.documents, ctx.world, ctx.dispatchIntent);
   });
 
   function update(id: string, patch: Partial<Faction>): void {
