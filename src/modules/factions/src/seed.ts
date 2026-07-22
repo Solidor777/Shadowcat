@@ -1,10 +1,11 @@
 import { buildFactionRegistryDoc, deterministicId, type Faction, type ReadableDocuments, type WireOperation } from "@shadowcat/core";
 
-/** Default three-faction seed content. Deterministic id + content mean two GMs racing to seed
- * a brand-new world dispatch byte-identical Creates: the server's singleton create-gate
- * (doc_type-scoped, not id-scoped) rejects the loser, and because both used the SAME id the
- * loser's rolled-back optimistic prediction and the winner's confirmed doc share one store key
- * — there is never a visible second registry to reconcile away. */
+/** Default three-faction seed content. Two GMs racing to seed a brand-new world dispatch
+ * Creates that share the SAME deterministic id — not byte-identical content, since `envelope()`
+ * stamps `created_at`/`updated_at` via `Date.now()` per call — so the server's singleton
+ * create-gate (doc_type-scoped, not id-scoped) rejects the loser, and because both used the
+ * same id the loser's rolled-back optimistic prediction and the winner's confirmed doc share
+ * one store key — there is never a visible second registry to reconcile away. */
 export const SEED: Record<string, Faction> = {
   friendly: { name: "Friendly", color: "#3fb950", stance: "friendly" },
   neutral: { name: "Neutral", color: "#9e9e9e", stance: "neutral" },

@@ -147,8 +147,10 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   (`scene-docs.ts`, re-exported from `@shadowcat/core`) — a synchronous UUID-v5-SHAPED hash (four
   seeded FNV-1a 32-bit mixes, not true SHA-1 UUIDv5, because every doc builder in `scene-docs.ts`
   is synchronous and Web Crypto's SHA-1 is async) rather than `crypto.randomUUID()`. Two GMs
-  racing to seed a brand-new world compute the SAME id, so their optimistic Creates are
-  byte-identical; the server's singleton create-gate (doc_type-scoped, not id-scoped — see
+  racing to seed a brand-new world compute the SAME id — the load-bearing property is SAME ID,
+  NOT byte-identical content: `envelope()`'s `created_at`/`updated_at` stamp via `Date.now()` per
+  call, so the two racers' Creates genuinely differ there. The server's singleton create-gate
+  (doc_type-scoped, not id-scoped — see
   `shadowcat-codebase-documents-permissions`) rejects the losing Create, the existing
   `WsClient.onReject` → `OptimisticClient.reject` rollback path discards the loser's local
   prediction automatically, and because both racers used the same id the winner's confirmed doc
