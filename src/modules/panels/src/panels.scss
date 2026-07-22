@@ -55,6 +55,25 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.sc-tab-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.125rem;
+  height: 1.125rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--surface-base);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+
+  &[hidden] {
+    display: none;
+  }
+}
 .sc-tab-menu-btn {
   flex: none;
   // Touch target floor (mobile invariant: interactive targets ≥24px).

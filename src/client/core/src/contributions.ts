@@ -18,6 +18,18 @@ export type DefaultPlacement =
   | { kind: "minimized" }
   | { kind: "floating" };
 
+/** Live tab-badge count seam (e.g. chat unread). A `PanelMeta` object is registered
+ * ONCE at module install and is otherwise static — this is the one field on it whose
+ * value changes over a session, independent of any panel-manager `apply()` cycle, so
+ * it carries its own subscribe/read pair rather than requiring the whole meta map to
+ * be rebuilt whenever the count changes. */
+export interface PanelBadge {
+  /** Current count; 0 (or omitted) renders no badge. */
+  get(): number;
+  /** Notifies on every count change; returns an unsubscribe. */
+  subscribe(cb: () => void): () => void;
+}
+
 /** Panel metadata for the `shadowcat.panel` contract (M12a panel-manager host).
  * Plain data — framework-neutral. `labelKey` is an i18n key the HOST resolves at
  * render (locale-reactive); `gmOnly` panels are hidden from non-GM users by the host. */
@@ -27,6 +39,8 @@ export interface PanelMeta {
   /** Advisory UI filter only; the host is responsible for hiding gmOnly panels. */
   gmOnly?: boolean;
   defaultPlacement?: DefaultPlacement;
+  /** Optional live unread/notification count rendered in the tab chrome. */
+  badge?: PanelBadge;
 }
 
 /** Contract id panel modules contribute under for the panel-manager host. */

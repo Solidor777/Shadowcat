@@ -5,7 +5,7 @@
   import { createSubscriber } from "svelte/reactivity";
   import { logout } from "./api";
   import { navigate } from "./route.svelte";
-  import { getPanelLayout, setPanelLayout } from "./sessionState.svelte";
+  import { getPanelLayout, setPanelLayout, getChatRead, setChatRead } from "./sessionState.svelte";
   import type { WorldSession } from "./worldSession.svelte";
 
   // `PanelHost` binds the real implementation into this bridge at its own
@@ -95,6 +95,8 @@
     uiState: {
       getPanelLayout: () => getPanelLayout(session.world!),
       setPanelLayout: (blob) => setPanelLayout(session.world!, blob),
+      getChatRead: () => getChatRead(session.world!),
+      setChatRead: (blob) => setChatRead(session.world!, blob),
     },
     panels,
     leaveWorld,

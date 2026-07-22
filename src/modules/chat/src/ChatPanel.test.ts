@@ -7,6 +7,7 @@ import ChatPanel from "./ChatPanel.svelte";
 import Probe from "./__fixtures__/CardProbe.svelte";
 import ComposerProbe from "./__fixtures__/ComposerProbe.svelte";
 import { getParseCallCount, resetParseCallCount } from "./channels";
+import { chatUnreadBadge } from "./unreadBadge";
 
 const cmd = (ops: WireOperation[]) => ({ seq: 1, world_id: "w1", author: "a", ts: 0, ops });
 function storeWith(...docs: WireDocument[]): DocumentStore {
@@ -389,5 +390,95 @@ describe("ChatPanel — hidden-tab scroll safety", () => {
     // gets the new-messages pill instead, mirroring the always-visible path.
     expect(messages.scrollTop).toBe(0);
     expect(screen.queryByText("chat.newMessages")).toBeTruthy();
+  });
+});
+
+describe("ChatPanel — unread tab badge (I3)", () => {
+  class FakeIntersectionObserver {
+    static instances: FakeIntersectionObserver[] = [];
+    callback: IntersectionObserverCallback;
+    target?: Element;
+    constructor(cb: IntersectionObserverCallback) {
+      this.callback = cb;
+      FakeIntersectionObserver.instances.push(this);
+    }
+    observe(target: Element): void {
+      this.target = target;
+    }
+    unobserve(): void {}
+    disconnect(): void {}
+    trigger(isIntersecting: boolean): void {
+      this.callback([{ isIntersecting, target: this.target } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+    }
+  }
+
+  afterEach(() => {
+    FakeIntersectionObserver.instances.length = 0;
+    vi.unstubAllGlobals();
+    chatUnreadBadge.set(0);
+  });
+
+  it("a message from another user arriving while the tab is hidden raises the badge", async () => {
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+    const store = storeWith();
+    render(ChatPanel, { context: setAppContextForTest({ role: "player", world: "w1", selfId: "self", documents: store, store, contributions: registryWithCard() }) });
+    expect(chatUnreadBadge.get()).toBe(0);
+
+    // offsetParent defaults to null under jsdom — matches a display:none-hidden tab.
+    store.applyCommand(cmd([{ op: "create", doc: publicMsg("m1", 1) }])); // authored by u1, not "self"
+    await vi.waitFor(() => expect(chatUnreadBadge.get()).toBe(1));
+  });
+
+  it("own messages arriving while hidden never raise the badge", async () => {
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+    const store = storeWith();
+    render(ChatPanel, { context: setAppContextForTest({ role: "player", world: "w1", selfId: "u1", documents: store, store, contributions: registryWithCard() }) });
+
+    store.applyCommand(cmd([{ op: "create", doc: publicMsg("m1", 1) }])); // authored by u1 === selfId
+    await Promise.resolve();
+    expect(chatUnreadBadge.get()).toBe(0);
+  });
+
+  it("becoming visible clears the badge and persists the new read marker", async () => {
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+    const setChatRead = vi.fn();
+    const store = storeWith();
+    const { container: root } = render(ChatPanel, {
+      context: setAppContextForTest({
+        role: "player",
+        world: "w1",
+        selfId: "self",
+        documents: store,
+        store,
+        contributions: registryWithCard(),
+        uiState: { getPanelLayout: () => null, setPanelLayout: () => {}, getChatRead: () => null, setChatRead },
+      }),
+    });
+    const messages = root.querySelector(".messages") as HTMLElement;
+
+    store.applyCommand(cmd([{ op: "create", doc: publicMsg("m1", 1) }]));
+    await vi.waitFor(() => expect(chatUnreadBadge.get()).toBe(1));
+
+    mockVisible(messages, true);
+    FakeIntersectionObserver.instances[0]?.trigger(true);
+    await vi.waitFor(() => expect(chatUnreadBadge.get()).toBe(0));
+    expect(setChatRead).toHaveBeenCalledWith(expect.objectContaining({ general: { createdAt: 1, id: "m1" } }));
+  });
+
+  it("a persisted read marker from a prior session survives reload: only genuinely new messages count", async () => {
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+    const store = storeWith(publicMsg("m1", 1), publicMsg("m2", 2));
+    render(ChatPanel, {
+      context: setAppContextForTest({
+        role: "player",
+        world: "w1",
+        selfId: "self",
+        documents: store,
+        store,
+        contributions: registryWithCard(),
+        uiState: { getPanelLayout: () => null, setPanelLayout: () => {}, getChatRead: () => ({ general: { createdAt: 1, id: "m1" } }), setChatRead: () => {} },
+      }),
+    });
+    await vi.waitFor(() => expect(chatUnreadBadge.get()).toBe(1)); // only m2 is newer than the persisted marker
   });
 });

@@ -29,7 +29,7 @@ export { resolveCaps, canWritePath } from "./capabilities";
 export { DocumentStore, setPointer, removePointer, getPointer, applyOperation } from "./store";
 export type { Listener, ReadableDocuments } from "./store";
 export { ContributionRegistry, PANEL_CONTRACT } from "./contributions";
-export type { Contribution, Cardinality, PanelMeta, DefaultPlacement, ZoneId, SheetMeta } from "./contributions";
+export type { Contribution, Cardinality, PanelMeta, PanelBadge, DefaultPlacement, ZoneId, SheetMeta } from "./contributions";
 export { reconcileTopology } from "./topology";
 export { I18n } from "./i18n";
 export type { Messages, I18nParams } from "./i18n";

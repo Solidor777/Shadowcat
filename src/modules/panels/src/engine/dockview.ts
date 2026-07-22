@@ -150,8 +150,16 @@ class PanelTabRenderer implements ITabRenderer {
   readonly element: HTMLElement;
   #iconEl: HTMLElement;
   #labelEl: HTMLElement;
+  #badgeEl: HTMLElement;
   #menuBtn: HTMLButtonElement;
   #unsubLocale: () => void;
+  // `PanelMeta.badge`'s own subscribe, bound once at construction: unlike
+  // icon/label (read live through `getMeta()` on every render, since the
+  // meta MAP can be rebuilt), the badge object itself is stable for a
+  // panel's whole lifetime (registered once at module install), and its
+  // count changes independently of any `apply()` cycle — see `PanelBadge`'s
+  // doc comment in contributions.ts.
+  #unsubBadge: (() => void) | null = null;
   #closeMenu: (() => void) | null = null;
 
   constructor(
@@ -166,15 +174,19 @@ class PanelTabRenderer implements ITabRenderer {
     this.#iconEl.setAttribute("aria-hidden", "true");
     this.#labelEl = document.createElement("span");
     this.#labelEl.className = "sc-tab-label";
+    this.#badgeEl = document.createElement("span");
+    this.#badgeEl.className = "sc-tab-badge";
     this.#menuBtn = document.createElement("button");
     this.#menuBtn.type = "button";
     this.#menuBtn.className = "sc-tab-menu-btn";
     this.#menuBtn.setAttribute("aria-haspopup", "menu");
     this.#menuBtn.setAttribute("aria-expanded", "false");
     this.#menuBtn.textContent = "⋮";
-    this.element.append(this.#iconEl, this.#labelEl, this.#menuBtn);
+    this.element.append(this.#iconEl, this.#labelEl, this.#badgeEl, this.#menuBtn);
     this.#renderLabels();
+    this.#renderBadge();
     this.#unsubLocale = i18n.subscribe(() => this.#renderLabels());
+    this.#unsubBadge = this.getMeta()?.badge?.subscribe(() => this.#renderBadge()) ?? null;
     this.#menuBtn.addEventListener("click", (event) => {
       // Never let a menu-button click bubble into the tab wrapper's own
       // click handling (`Tab#_onTabClick`), which would also activate this
@@ -193,6 +205,17 @@ class PanelTabRenderer implements ITabRenderer {
     this.#iconEl.textContent = meta?.icon ?? "";
     this.#labelEl.textContent = meta ? i18n.t(meta.labelKey) : this.id;
     this.#menuBtn.setAttribute("aria-label", i18n.t("panels.menu"));
+  }
+
+  #renderBadge(): void {
+    const count = this.getMeta()?.badge?.get() ?? 0;
+    if (count > 0) {
+      this.#badgeEl.textContent = String(count);
+      this.#badgeEl.hidden = false;
+    } else {
+      this.#badgeEl.textContent = "";
+      this.#badgeEl.hidden = true;
+    }
   }
 
   #toggleMenu(): void {
@@ -215,6 +238,7 @@ class PanelTabRenderer implements ITabRenderer {
   dispose(): void {
     this.#closeMenu?.();
     this.#unsubLocale();
+    this.#unsubBadge?.();
   }
 }
 

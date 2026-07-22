@@ -17,6 +17,8 @@
     computeVisibleWindow,
     type ChatView,
   } from "./channels";
+  import { computeUnreadCount, markAllRead, type ChatReadState } from "./unread";
+  import { chatUnreadBadge } from "./unreadBadge";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -41,6 +43,39 @@
       cachedView = view;
     }
     return deriveVisibleDocs(derivationCache, ctx.documents.query("message"), view, RENDER_CAP);
+  });
+
+  // Unread tab badge (I3): a per-channel read frontier persisted opaquely via
+  // ctx.uiState (chat owns the blob's shape, the shell only stores it). A
+  // persisted marker from a prior session is preferred as-is (so genuinely
+  // new messages since last visit count as unread even before this mount's
+  // first visibility check); with none, the baseline is EVERY message this
+  // mount already sees — otherwise a first-ever open would misreport the
+  // whole existing history as unread. Read state is over ALL channels the
+  // store holds, not just the active `view` — the badge means "unread
+  // anywhere in chat", not "unread in the channel currently on screen".
+  let readState = $state<ChatReadState>((ctx.uiState.getChatRead() as ChatReadState | null) ?? markAllRead(ctx.documents.query("message")));
+  const unreadCount = $derived.by((): number => {
+    subscribe();
+    return computeUnreadCount(ctx.documents.query("message"), readState, ctx.selfId);
+  });
+  $effect(() => {
+    chatUnreadBadge.set(unreadCount);
+  });
+  /** Snapshots every message the store currently holds as read, and persists
+   * it. Called whenever the panel is confirmed visible — both on a message
+   * arriving while already visible and on a hidden→visible reveal (the
+   * IntersectionObserver effect below), so a reader actively looking at the
+   * tab never accumulates a stale unread count. */
+  function markRead(): void {
+    const next = markAllRead(ctx.documents.query("message"));
+    readState = next;
+    ctx.uiState.setChatRead(next);
+  }
+  $effect(() => {
+    subscribe();
+    ctx.documents.query("message");
+    if (container && isVisible(container)) markRead();
   });
 
   const registry = $derived.by((): WireDocument | undefined => {
@@ -224,6 +259,7 @@
     const observer = new IntersectionObserver((entries) => {
       const entry = entries[entries.length - 1];
       if (!entry?.isIntersecting) return;
+      markRead();
       if (pendingScrollToBottom) scrollToBottom();
       else syncScrollState();
     });

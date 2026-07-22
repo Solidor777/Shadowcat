@@ -467,7 +467,7 @@ test("Finding 4 (buddy-check): a reload-restored popout's notice reaches the liv
     contributions: registry,
     role: "gm",
     t: (k, p) => i18n.t(k, p),
-    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {} },
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
   });
   const { container } = render(PanelHost, { props: { engine }, context });
   await Promise.resolve();

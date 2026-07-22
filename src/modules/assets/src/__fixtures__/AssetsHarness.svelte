@@ -34,7 +34,7 @@
     chat: { send: () => {}, edit: () => {}, delete: () => {} },
     leaveWorld: () => {},
     logout: async () => {},
-    uiState: { getPanelLayout: () => null, setPanelLayout: () => {} },
+    uiState: { getPanelLayout: () => null, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
     panels: new PanelsBridge(silentLogger),
     viewedSceneId: null,
     setGmViewedScene: () => {},

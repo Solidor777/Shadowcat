@@ -53,7 +53,9 @@ export interface UiState {
   global: { locale: string; lastWorld: string | null };
   // `panelLayout` is an opaque blob owned by @shadowcat/module-panels' persistence
   // codec (encodeLayout/decodeLayout) — the shell never inspects its shape.
-  worlds: Record<string, { panelLayout?: unknown }>;
+  // `chatRead` is likewise opaque, owned by the chat module's per-channel
+  // last-read-marker tracking (unread tab badge) — the shell only stores it.
+  worlds: Record<string, { panelLayout?: unknown; chatRead?: unknown }>;
 }
 
 function defaultUiState(): UiState {

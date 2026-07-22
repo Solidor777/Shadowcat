@@ -150,6 +150,10 @@ export interface AppContext {
   uiState: {
     getPanelLayout(): unknown | null;
     setPanelLayout(blob: unknown): void;
+    /** Opaque per-channel chat read-marker blob, owned by the chat module
+     * (unread tab badge). */
+    getChatRead(): unknown | null;
+    setChatRead(blob: unknown): void;
   };
   /** Imperative panel-host seam (open/close/focus/toggle by panel id) plus a
    * live read-only view (`minimized`/`metaMap`/`restore`) for surfaces that

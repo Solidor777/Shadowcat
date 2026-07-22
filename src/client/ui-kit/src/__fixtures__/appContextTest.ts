@@ -38,6 +38,8 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     uiState: over.uiState ?? {
       getPanelLayout: () => null,
       setPanelLayout: () => {},
+      getChatRead: () => null,
+      setChatRead: () => {},
     },
     panels: over.panels ?? new PanelsBridge(silentLogger),
     viewedSceneId: over.viewedSceneId ?? null,

@@ -1,5 +1,6 @@
 import { PANEL_CONTRACT, type Module } from "@shadowcat/core";
 import ChatPanel from "./ChatPanel.svelte";
+import { chatUnreadBadge } from "./unreadBadge";
 
 /** Chat panel host: contributes the default (order 0, docked right) panel and declares the
  * two singleton surfaces a composer/card module fills (chat.composer, chat.message).
@@ -22,7 +23,7 @@ export const chat: Module = {
       contract: PANEL_CONTRACT,
       order: 0,
       component: ChatPanel,
-      panel: { icon: "💬", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+      panel: { icon: "💬", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" }, badge: chatUnreadBadge },
     });
   },
 };

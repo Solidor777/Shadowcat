@@ -740,6 +740,85 @@ test("custom tab: renders icon + label from the meta map, not dockview's own tit
   expect(tabEl.querySelector(".sc-tab-menu-btn")).toBeTruthy();
 });
 
+class FakeBadge {
+  #count = 0;
+  #listeners = new Set<() => void>();
+  get(): number {
+    return this.#count;
+  }
+  set(count: number): void {
+    this.#count = count;
+    for (const cb of this.#listeners) cb();
+  }
+  subscribe(cb: () => void): () => void {
+    this.#listeners.add(cb);
+    return () => this.#listeners.delete(cb);
+  }
+}
+
+test("custom tab: renders no badge when meta has none, and hides a badge that drops to zero", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  engine.apply(layout.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]));
+
+  const tabEl = host.querySelector<HTMLElement>(".sc-tab")!;
+  const badgeEl = tabEl.querySelector<HTMLElement>(".sc-tab-badge")!;
+  expect(badgeEl.hidden).toBe(true);
+});
+
+test("custom tab: renders a live badge count and updates on the badge's own subscribe, independent of apply()", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+  const badge = new FakeBadge();
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  engine.apply(layout.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab", badge } as PanelMeta]]));
+
+  const tabEl = host.querySelector<HTMLElement>(".sc-tab")!;
+  const badgeEl = tabEl.querySelector<HTMLElement>(".sc-tab-badge")!;
+  expect(badgeEl.hidden).toBe(true);
+
+  // No `apply()` call between these two `set()`s — the tab renders the new count
+  // purely from the badge's own subscribe, which is the whole point of the seam.
+  badge.set(3);
+  expect(badgeEl.hidden).toBe(false);
+  expect(badgeEl.textContent).toBe("3");
+
+  badge.set(0);
+  expect(badgeEl.hidden).toBe(true);
+});
+
+test("custom tab: disposes its badge subscription so a stale tab never re-renders after removal", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+  const badge = new FakeBadge();
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  engine.apply(layout.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab", badge } as PanelMeta]]));
+
+  layout = applyOp(layout, { op: "close", id: "chat" });
+  engine.apply(layout.expanded, new Map());
+
+  expect(() => badge.set(5)).not.toThrow();
+});
+
 test("roving tabindex: ArrowRight/ArrowLeft move focus between tabs without activating; Enter activates the focused tab", () => {
   attachedHost = document.createElement("div");
   document.body.appendChild(attachedHost);

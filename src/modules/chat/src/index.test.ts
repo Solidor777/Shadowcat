@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { ContributionRegistry, PANEL_CONTRACT } from "@shadowcat/core";
 import { chat } from "./index";
+import { chatUnreadBadge } from "./unreadBadge";
 
 describe("chat module", () => {
   it("requires the panel surface and provides both singleton chat surfaces", () => {
@@ -22,6 +23,7 @@ describe("chat module", () => {
       icon: "💬",
       labelKey: "chat.tab",
       defaultPlacement: { kind: "docked", zone: "right" },
+      badge: chatUnreadBadge,
     });
   });
 });

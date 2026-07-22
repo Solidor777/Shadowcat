@@ -79,6 +79,16 @@ export function setPanelLayout(world: string, blob: unknown): void {
   schedulePersist();
 }
 
+export function getChatRead(world: string): unknown | null {
+  return state.worlds[world]?.chatRead ?? null;
+}
+
+export function setChatRead(world: string, blob: unknown): void {
+  const w = (state.worlds[world] ??= {});
+  w.chatRead = blob;
+  schedulePersist();
+}
+
 /** Force any pending persist to run now (test/teardown helper). */
 export async function flushSessionState(): Promise<void> {
   if (timer) {
