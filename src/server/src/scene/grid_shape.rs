@@ -184,9 +184,38 @@ impl GridShape for HexGrid {
         }
         Some(out)
     }
-    /// Stubbed pending the trait's hex footprint-overlap semantics.
-    fn footprint_cells(&self, _anchor: Cell, _ctr: vision::P, _r_scene: f64, _cell: f64) -> Vec<Cell> {
-        Vec::new()
+    /// Conservative disc-vs-hex-cell overlap: a candidate hex is included when its center is
+    /// within `r_scene + hex_inradius` of the disc center — an always-safe over-approximation
+    /// (a hex overlapping the true disc boundary is never excluded), mirroring the square
+    /// implementation's own AABB-vs-disc distance test, which is similarly conservative rather
+    /// than exact.
+    fn footprint_cells(&self, anchor: Cell, ctr: vision::P, r_scene: f64, _cell: f64) -> Vec<Cell> {
+        let mut out = Vec::new();
+        // Hex inradius (center-to-edge distance) for a pointy-top hex with outer radius `size`.
+        let inradius = self.size * 3.0_f64.sqrt() / 2.0;
+        // Scan radius in hex rings: a disc of radius r_scene can overlap hexes up to
+        // ceil(r_scene / (size * 1.5)) rings out (1.5*size is the hex row/column pitch) — bounded
+        // and small for any realistic footprint (MAX_FOOTPRINT_CELLS caps r_scene upstream).
+        let ring_radius = ((r_scene / (self.size * 1.5)).ceil() as i32).max(0) + 1;
+        for dq in -ring_radius..=ring_radius {
+            for dr in -ring_radius..=ring_radius {
+                let ds = -dq - dr;
+                if ds.abs() > ring_radius {
+                    continue; // outside the hex-shaped scan region
+                }
+                let c = (anchor.0 + dq, anchor.1 + dr);
+                let center = self.cell_center(c);
+                let dx = center.0 - ctr.0;
+                let dy = center.1 - ctr.1;
+                if (dx * dx + dy * dy).sqrt() <= r_scene + inradius {
+                    out.push(c);
+                }
+            }
+        }
+        if out.is_empty() {
+            out.push(anchor);
+        }
+        out
     }
 }
 
@@ -317,6 +346,27 @@ mod tests {
         let cells = g.line_traversal(p, p, 50.0).unwrap();
         assert_eq!(cells.len(), 1);
         assert!(cells.contains(&(2, -1)));
+    }
+
+    #[test]
+    fn hex_grid_footprint_cells_always_includes_the_anchor() {
+        let g = HexGrid { size: 50.0 };
+        let anchor = (2, -1);
+        let ctr = g.cell_center(anchor);
+        // Zero-radius footprint: only the anchor cell.
+        let cells = g.footprint_cells(anchor, ctr, 0.0, 50.0);
+        assert_eq!(cells, vec![anchor]);
+    }
+
+    #[test]
+    fn hex_grid_footprint_cells_large_radius_includes_neighbors() {
+        let g = HexGrid { size: 50.0 };
+        let anchor = (0, 0);
+        let ctr = g.cell_center(anchor);
+        // A footprint radius comparable to the hex's own size should pull in at least one neighbor.
+        let cells = g.footprint_cells(anchor, ctr, 60.0, 50.0);
+        assert!(cells.len() > 1, "a large-enough footprint overlaps more than just the anchor");
+        assert!(cells.contains(&anchor));
     }
 
     #[test]
