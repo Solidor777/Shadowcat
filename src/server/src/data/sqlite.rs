@@ -6072,6 +6072,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_rejects_n_way_intra_batch_duplicate_singleton_creates() {
+        use crate::data::membership::PermissionContext;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        // Five Creates of the same singleton doc_type in ONE batch: the first
+        // claims it, and every one of the remaining four must be rejected by
+        // `claimed_singletons`, not just the second.
+        let err = r
+            .apply_intent(
+                &gm_ctx,
+                w.id,
+                vec![
+                    Operation::Create {
+                        doc: singleton_test_doc(1, w.id, "world-settings"),
+                    },
+                    Operation::Create {
+                        doc: singleton_test_doc(2, w.id, "world-settings"),
+                    },
+                    Operation::Create {
+                        doc: singleton_test_doc(3, w.id, "world-settings"),
+                    },
+                    Operation::Create {
+                        doc: singleton_test_doc(4, w.id, "world-settings"),
+                    },
+                    Operation::Create {
+                        doc: singleton_test_doc(5, w.id, "world-settings"),
+                    },
+                ],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DataError::Conflict(_)),
+            "a same-batch world-settings Create beyond the first must be rejected"
+        );
+        // The whole batch is one transaction: rejection must roll back ALL
+        // preceding inserts in the batch, not leave any of them applied.
+        assert!(
+            r.query_documents(w.id, "world-settings")
+                .await
+                .unwrap()
+                .is_empty(),
+            "a rejected N-way batch must not partially commit"
+        );
+    }
+
+    #[tokio::test]
     async fn create_allows_different_singleton_doc_types_in_the_same_batch() {
         use crate::data::membership::PermissionContext;
         let r = repo().await;
