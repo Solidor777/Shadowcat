@@ -753,8 +753,14 @@ async fn observer_vision_polys_for_scene(
 /// Discrimination:
 /// - **Mover** (`ctx.user_id == frame.mover`): full frame forwarded unchanged (all
 ///   samples + `mover_vision` + `cost`).
-/// - **GM** (world role): all samples and the true `cost` forwarded (trusted, full
-///   information), `mover_vision` nulled, full `stop` and `duration_ms` preserved.
+/// - **GM** (world role) with NO applicable see-as: all samples and the true `cost`
+///   forwarded (trusted, full information), `mover_vision` nulled, full `stop` and
+///   `duration_ms` preserved.
+/// - **GM with an active see-as-player preview** (`see_as = Some(target)`) whose target has
+///   a vision source in the move's scene: the GM's OWN view is narrowed to exactly what the
+///   previewed target would see, via the SAME clip path a real observer gets (keyed on the
+///   target's vision, not the GM's). A see-as whose target has no source in the move's scene
+///   does not apply → full GM stream. This branch can only ever NARROW the GM's own view.
 /// - **Observer**: only samples whose `pos` lies within the recipient's authoritative
 ///   vision polygons are forwarded; `mover_vision` AND `cost` nulled; fully-occluded →
 ///   `None`. `stop` and `duration_ms` are clipped to the LAST VISIBLE sample — the true
@@ -773,6 +779,7 @@ async fn observer_vision_polys_for_scene(
 async fn clip_move_stream(
     msg: &ServerMsg,
     ctx: &PermissionContext,
+    see_as: Option<PermissionContext>,
     room: &crate::ws::room::Room,
 ) -> Option<ServerMsg> {
     let ServerMsg::MoveStream {
@@ -791,31 +798,71 @@ async fn clip_move_stream(
         return None;
     };
 
-    // Mover receives their own stream unchanged (all samples + mover_vision).
+    // Mover receives their own stream unchanged (all samples + mover_vision). Keyed on the
+    // REAL connection user_id, never the see-as target: a GM previewing as someone else is
+    // not "the mover" unless the GM's own token is what moves.
     if ctx.user_id == *mover {
         return Some(msg.clone());
     }
 
-    // GM: all position samples pass, but mover sightlines are never disclosed.
-    if ctx.world_role == crate::data::document::WorldRole::Gm {
-        return Some(ServerMsg::MoveStream {
-            request_id: *request_id,
-            token_id: *token_id,
-            mover: *mover,
-            scene: *scene,
-            start_server_ms: *start_server_ms,
-            duration_ms: *duration_ms,
-            stop: *stop,
-            samples: samples.clone(),
-            mover_vision: None,
-            cost: *cost,
-        });
-    }
+    // The full, unclipped GM stream: all position samples pass, mover sightlines and the
+    // authoritative cost are trusted-full. This is the GM's default (they are authorized to
+    // see everything) and the fallback whenever no see-as clip applies.
+    let full_gm_stream = || ServerMsg::MoveStream {
+        request_id: *request_id,
+        token_id: *token_id,
+        mover: *mover,
+        scene: *scene,
+        start_server_ms: *start_server_ms,
+        duration_ms: *duration_ms,
+        stop: *stop,
+        samples: samples.clone(),
+        mover_vision: None,
+        cost: *cost,
+    };
 
-    // Observer: clip to samples the recipient can see within their authoritative vision.
-    // The ECS read is dropped inside `observer_vision_polys_for_scene` before this
-    // function returns, so no lock crosses the `sink.send` await in the caller.
-    let polys = observer_vision_polys_for_scene(ctx.user_id, *scene, room).await;
+    // Choose whose authoritative vision this recipient's samples are clipped against — or
+    // return the full GM stream when no clip applies.
+    //
+    // INVARIANT (see-as-narrowing-only): the see-as branch is reached ONLY for a GM
+    //   (`world_role == Gm`); the observer and mover branches are structurally untouched by
+    //   `see_as`, so threading a see-as target can NEVER widen what a non-GM recipient
+    //   receives. Every see-as outcome (full stream, clipped, or suppressed) is `<=` what the
+    //   plain-GM fallthrough would disclose.
+    // INVARIANT (see-as-server-resolved): `see_as` carries the SERVER-RESOLVED target context
+    //   the caller read from this connection's own `scene_subs` (populated only by the
+    //   `SceneSubscribe` handler, which gates `as_user` to a GM and resolves the target role
+    //   via `member_role`). It is never client-trusted geometry.
+    // INVARIANT (see-as-scene-exact): the target's vision is computed for the move's EXACT
+    //   `scene` via `observer_vision_polys_for_scene`, which filters `player_vision_polygons`
+    //   by that scene id. A see-as whose target has NO vision source in the move's scene
+    //   (e.g. their token is in a different scene) yields zero polygons → the see-as does not
+    //   apply → the GM keeps the full stream. A target WITH a source in the scene but no
+    //   visible sample is suppressed, exactly like a real observer.
+    let clip_polys: Vec<Vec<crate::scene::vision::P>> =
+        if ctx.world_role == crate::data::document::WorldRole::Gm {
+            match see_as {
+                Some(target) => {
+                    let polys =
+                        observer_vision_polys_for_scene(target.user_id, *scene, room).await;
+                    if polys.is_empty() {
+                        // See-as target has no vision source in this scene → not applicable.
+                        return Some(full_gm_stream());
+                    }
+                    polys
+                }
+                None => return Some(full_gm_stream()),
+            }
+        } else {
+            // Observer: clip to samples within their OWN authoritative vision.
+            observer_vision_polys_for_scene(ctx.user_id, *scene, room).await
+        };
+
+    // Shared clip tail (a real observer, or a GM whose active see-as applies to this scene):
+    // keep only samples inside `clip_polys`. The ECS read is dropped inside
+    // `observer_vision_polys_for_scene` before this point, so no lock crosses the `sink.send`
+    // await in the caller.
+    let polys = clip_polys;
     use crate::scene::vision::point_in_poly;
     use crate::ws::protocol::PosSample;
     let visible: Vec<PosSample> = samples
@@ -1160,7 +1207,30 @@ async fn egress_loop<S>(
                         // frame passes through the generic permission filter unchanged.
                         let should_break = match msg.as_ref() {
                             ServerMsg::MoveStream { .. } => {
-                                match clip_move_stream(msg.as_ref(), &ctx, &room).await {
+                                // Resolve this connection's active see-as-player target, if any:
+                                // a `vision`-channel scene subscription whose resolved `view_ctx`
+                                // is a DIFFERENT user than the connection's own (a GM see-as, M9c-2).
+                                // Only a GM can hold such a sub — the `SceneSubscribe` handler gates
+                                // `as_user` to a GM and server-resolves the target role — so the
+                                // `world_role == Gm` guard here is belt-and-suspenders. Vision subs
+                                // are world-wide (not scene-scoped); scene-exactness is enforced
+                                // inside `clip_move_stream` by computing the target's vision for the
+                                // move's own `scene`. The client maintains a single see-as target,
+                                // so `find` (first match) is deterministic in practice.
+                                let see_as = if ctx.world_role
+                                    == crate::data::document::WorldRole::Gm
+                                {
+                                    scene_subs
+                                        .values()
+                                        .find(|s| {
+                                            s.channel == "vision"
+                                                && s.view_ctx.user_id != ctx.user_id
+                                        })
+                                        .map(|s| s.view_ctx)
+                                } else {
+                                    None
+                                };
+                                match clip_move_stream(msg.as_ref(), &ctx, see_as, &room).await {
                                     Some(out) => sink.send(text(&out)).await.is_err(),
                                     None => false, // suppressed: do not send
                                 }
@@ -2301,7 +2371,7 @@ mod tests {
             cost: Some(2.0),
         };
 
-        let result = clip_move_stream(&frame, &ctx, &room).await;
+        let result = clip_move_stream(&frame, &ctx, None, &room).await;
 
         assert!(result.is_some(), "mover must receive a frame");
         match result.unwrap() {
@@ -2355,7 +2425,7 @@ mod tests {
             cost: Some(2.0),
         };
 
-        let result = clip_move_stream(&frame, &obs_ctx, &room).await;
+        let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
 
         assert!(
             result.is_none(),
@@ -2406,7 +2476,7 @@ mod tests {
             cost: Some(2.0),
         };
 
-        let result = clip_move_stream(&frame, &obs_ctx, &room).await;
+        let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
 
         assert!(
             result.is_some(),
@@ -2500,7 +2570,7 @@ mod tests {
             cost: Some(3.0),
         };
 
-        let result = clip_move_stream(&frame, &obs_ctx, &room).await;
+        let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
 
         assert!(
             result.is_some(),
@@ -2581,7 +2651,7 @@ mod tests {
             cost: Some(2.0),
         };
 
-        let result = clip_move_stream(&frame, &obs_ctx, &room).await;
+        let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
 
         // Must be None (fully suppressed), NOT Some(MoveStream { samples: [], .. }).
         // The secrecy invariant: zero frames sent, never an empty-samples frame.
@@ -2653,7 +2723,7 @@ mod tests {
             cost: Some(2.0),
         };
 
-        let result = clip_move_stream(&frame, &gm_ctx, &room).await;
+        let result = clip_move_stream(&frame, &gm_ctx, None, &room).await;
 
         assert!(result.is_some(), "GM must receive a frame");
         match result.unwrap() {
@@ -2680,5 +2750,210 @@ mod tests {
             }
             other => panic!("expected MoveStream, got {other:?}"),
         }
+    }
+
+    /// A GM previewing AS a specific player (`see_as = Some(target)`) whose token is in the
+    /// move's scene has their OWN view narrowed to what that player would actually see mid-move,
+    /// via the same clip path a real observer gets. Setup mirrors
+    /// `clip_observer_sees_near_side_prefix`: target token at (50,50), vertical `blocksSight`
+    /// wall at x=100, samples at (50,50)/(150,50)/(250,50). Only the near-side sample is visible.
+    ///
+    /// This is the core behavior change — before threading `see_as`, the GM branch ALWAYS
+    /// returned the full unclipped stream regardless of the active see-as target.
+    #[tokio::test]
+    async fn clip_gm_see_as_clips_to_target_vision() {
+        use crate::ws::protocol::PosSample;
+
+        let wall_sys = json!({
+            "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
+            "blocksSight": true
+        });
+        // `obs` is the see-as target: a player with a token at (50,50).
+        let (room, gm_ctx, target_ctx, scene_id) =
+            setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
+
+        let mover_id = Uuid::from_u128(0xAABB);
+        let frame = ServerMsg::MoveStream {
+            request_id: Uuid::from_u128(1),
+            token_id: Uuid::from_u128(2),
+            mover: mover_id,
+            scene: scene_id,
+            start_server_ms: 1000.0,
+            duration_ms: 600.0,
+            stop: [250.0, 50.0],
+            samples: vec![
+                PosSample {
+                    t_ms: 0.0,
+                    pos: [50.0, 50.0], // near side — target can see this
+                },
+                PosSample {
+                    t_ms: 200.0,
+                    pos: [150.0, 50.0], // behind wall — occluded from the target
+                },
+                PosSample {
+                    t_ms: 400.0,
+                    pos: [250.0, 50.0], // further behind — occluded from the target
+                },
+            ],
+            mover_vision: None,
+            cost: Some(2.0),
+        };
+
+        // GM previewing as `target`.
+        let result = clip_move_stream(&frame, &gm_ctx, Some(target_ctx), &room).await;
+
+        assert!(
+            result.is_some(),
+            "GM see-as preview with a visible sample must receive a clipped frame"
+        );
+        match result.unwrap() {
+            ServerMsg::MoveStream {
+                samples: s,
+                mover_vision: mv,
+                stop: out_stop,
+                duration_ms: out_duration_ms,
+                cost,
+                ..
+            } => {
+                assert_eq!(
+                    s.len(),
+                    1,
+                    "GM see-as must be clipped to the target's vision (near-side only); got {} \
+                     samples: {s:?}",
+                    s.len()
+                );
+                assert_eq!(s[0].pos, [50.0_f64, 50.0_f64]);
+                assert_eq!(mv, None, "mover_vision stays None for a see-as preview");
+                assert_eq!(
+                    out_stop,
+                    [50.0_f64, 50.0_f64],
+                    "stop clips to the target's last visible sample, not the true goal"
+                );
+                assert!(
+                    (out_duration_ms - 0.0_f64).abs() < 1e-9,
+                    "duration_ms clips to the target's last visible sample t_ms, got {out_duration_ms}"
+                );
+                assert_eq!(
+                    cost, None,
+                    "cost nulled for a clipped see-as preview (same secrecy as a real observer)"
+                );
+            }
+            other => panic!("expected MoveStream, got {other:?}"),
+        }
+    }
+
+    /// A see-as whose target has NO vision source in the move's scene (their token is in a
+    /// DIFFERENT scene) must NOT clip — the see-as is not applicable to this scene, so the GM
+    /// keeps the full unclipped stream (today's plain-GM behavior). Scene-exactness guard: the
+    /// target's token lives in `scene_id`, but the move targets an unrelated scene, so
+    /// `player_vision_polygons(target)` (tagged with `scene_id`) filters to empty for the move's
+    /// scene.
+    #[tokio::test]
+    async fn clip_gm_see_as_different_scene_not_clipped() {
+        use crate::ws::protocol::PosSample;
+
+        // Target token at (50,50) in `scene_id`; a wall that WOULD occlude if it applied.
+        let wall_sys = json!({
+            "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
+            "blocksSight": true
+        });
+        let (room, gm_ctx, target_ctx, _scene_id) =
+            setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
+
+        // The move happens in a DIFFERENT scene where the target has no token.
+        let other_scene = Uuid::from_u128(0xE099);
+        let mover_id = Uuid::from_u128(0xAABB);
+        let samples = vec![
+            PosSample {
+                t_ms: 0.0,
+                pos: [50.0, 50.0],
+            },
+            PosSample {
+                t_ms: 200.0,
+                pos: [150.0, 50.0],
+            },
+            PosSample {
+                t_ms: 400.0,
+                pos: [250.0, 50.0],
+            },
+        ];
+        let frame = ServerMsg::MoveStream {
+            request_id: Uuid::from_u128(1),
+            token_id: Uuid::from_u128(2),
+            mover: mover_id,
+            scene: other_scene,
+            start_server_ms: 1000.0,
+            duration_ms: 600.0,
+            stop: [250.0, 50.0],
+            samples: samples.clone(),
+            mover_vision: None,
+            cost: Some(2.0),
+        };
+
+        let result = clip_move_stream(&frame, &gm_ctx, Some(target_ctx), &room).await;
+
+        assert!(result.is_some(), "different-scene see-as must not suppress the GM's frame");
+        match result.unwrap() {
+            ServerMsg::MoveStream {
+                samples: s, cost, ..
+            } => {
+                assert_eq!(
+                    s, samples,
+                    "a see-as for a different scene must not clip — GM keeps all samples"
+                );
+                assert_eq!(
+                    cost,
+                    Some(2.0),
+                    "a see-as for a different scene must not null the GM's cost"
+                );
+            }
+            other => panic!("expected MoveStream, got {other:?}"),
+        }
+    }
+
+    /// A see-as target who IS in the move's scene but cannot see ANY sample (the whole move is
+    /// behind a `gm_only` wall, from the target's viewpoint) is suppressed entirely — the GM's
+    /// faithful preview shows zero frames, exactly like the previewed player would receive.
+    #[tokio::test]
+    async fn clip_gm_see_as_fully_occluded_suppressed() {
+        use crate::ws::protocol::PosSample;
+
+        // gm_only wall at x=100; target token at (50,50) cannot see x>100.
+        let wall_sys = json!({
+            "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
+            "blocksSight": true
+        });
+        let (room, gm_ctx, target_ctx, scene_id) =
+            setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), true /* gm_only */).await;
+
+        let mover_id = Uuid::from_u128(0xAABB);
+        let frame = ServerMsg::MoveStream {
+            request_id: Uuid::from_u128(1),
+            token_id: Uuid::from_u128(2),
+            mover: mover_id,
+            scene: scene_id,
+            start_server_ms: 1000.0,
+            duration_ms: 400.0,
+            stop: [250.0, 50.0],
+            samples: vec![
+                PosSample {
+                    t_ms: 0.0,
+                    pos: [150.0, 50.0], // behind the wall from the target's viewpoint
+                },
+                PosSample {
+                    t_ms: 200.0,
+                    pos: [250.0, 50.0], // further behind
+                },
+            ],
+            mover_vision: None,
+            cost: Some(2.0),
+        };
+
+        let result = clip_move_stream(&frame, &gm_ctx, Some(target_ctx), &room).await;
+
+        assert!(
+            result.is_none(),
+            "a see-as preview of a wholly-occluded move must be suppressed (None); got {result:?}"
+        );
     }
 }
