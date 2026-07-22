@@ -1347,37 +1347,36 @@ Decomposed **M11a–d**:
 > validate_system_schema_tree; rejection rides the existing rejected-intent path
 > (DataError::SchemaViolation, no new wire frame); broadcast in Welcome for parity.
 >
-> **Phase-1 cleanup burndown DONE** (branch `phase1-cleanup-burndown`, 48-task/10-workstream SDD
+> **Phase-1 cleanup burndown DONE** (branch `phase1-cleanup-burndown`, a 48-task/10-workstream SDD
 > plan, ~40 fixes/refactors/tests/features landed across server + client, every mandatory
 > security buddy-check and skill-update gate closed) — headline items: `FieldChange.remove`
-> leaf-level deletion replacing the never-built `set_pointer`-based removal design (Task 8;
-> buddy-check found and closed a Critical where the client silently never removed anything
-> end-to-end despite correct server persistence); construction-time singleton `doc_type`
-> create-gate closing both the cross-call and intra-batch race (Task 9); edge-projected,
-> `blocksLight`-occludable environment light as a provably narrowing secrecy input (Task 11, C1);
-> wall-less-scene full intrascene vision via a grow-only scene-bounds union, applied to both the
-> client vision-polygon path and the more load-bearing `player_lit_mask`/movement-gate path
-> (Task 12 + its own-review follow-up, C2); `ActorsPanel` split into `VisualKindEditor.svelte` +
-> `FaceSwapPalette.svelte` (Tasks 19-20); a shared `MenuKeyboard.ts` primitive de-duplicating
-> `LauncherMenu`/`PanelMenu` (Task 22); chat `request_id` correlation + a single
+> leaf-level deletion replacing the never-built `set_pointer`-based removal design, with a
+> buddy-check finding and closing a Critical where the client silently never removed anything
+> end-to-end despite correct server persistence; a construction-time singleton `doc_type`
+> create-gate closing both the cross-call and intra-batch race; edge-projected,
+> `blocksLight`-occludable environment light as a provably narrowing secrecy input; wall-less-scene
+> full intrascene vision via a grow-only scene-bounds union, applied to both the client
+> vision-polygon path and the more load-bearing `player_lit_mask`/movement-gate path, with an
+> own-review follow-up closing a second, related gap; `ActorsPanel` split into
+> `VisualKindEditor.svelte` + `FaceSwapPalette.svelte`; a shared `MenuKeyboard.ts` primitive
+> de-duplicating `LauncherMenu`/`PanelMenu`; chat `request_id` correlation plus a single
 > `ChatError{request_id,message}` reason channel for send/edit/delete failures, closing an
-> id/existence oracle (Task 43, opus-tier buddy-check); unread badges on the chat tab via a new
-> `PanelBadge` live-binding seam (Task 42); an accessible `RollTooltip` replacing the native
-> title tooltip, with a touch-tap affordance fix after review caught an iOS-unreachable
-> regression (Task 41). Standing decisions made mid-burndown: the movement-collision gate's
-> `Operation::Update`-only scoping documented as intentional, not a gap (Task 10); Task 29
-> (content-independent `groupIdFor` group identity) legitimately skipped as a stretch item — a
-> real schema migration, not a small swap; Task 39 (scene-background authoring UI) held as a
-> genuinely-unbuilt-feature deferral, with `docs/TODO.md`'s own false premise corrected rather
-> than silently built or ignored. Every bug/TODO surfaced mid-burndown was fixed inline per the
-> standing no-deferral directive (2026-07-21) rather than logged and left; the two items above
-> are the only legitimate deferrals. Full Rust + JS/TS suites, typecheck, lint, and clippy green
-> throughout. Plan:
+> id/existence oracle (found via an opus-tier buddy-check); unread badges on the chat tab via a new
+> `PanelBadge` live-binding seam; an accessible `RollTooltip` replacing the native title tooltip,
+> with a touch-tap affordance fix after review caught an iOS-unreachable regression. Standing
+> decisions made mid-burndown: the movement-collision gate's `Operation::Update`-only scoping
+> documented as intentional, not a gap; content-independent `groupIdFor` group identity legitimately
+> skipped as a stretch item — a real schema migration, not a small swap; scene-background authoring
+> UI held as a genuinely-unbuilt-feature deferral, with `docs/TODO.md`'s own false premise
+> corrected rather than silently built or ignored. Every bug/TODO surfaced mid-burndown was fixed
+> inline per the standing no-deferral directive (2026-07-21) rather than logged and left; the two
+> items above are the only legitimate deferrals. Full Rust + JS/TS suites, typecheck, lint, and
+> clippy green throughout. Plan:
 > [`superpowers/plans/2026-07-19-phase1-cleanup-burndown.md`](superpowers/plans/2026-07-19-phase1-cleanup-burndown.md).
 >
 > **Remaining before Phase 1 can be declared closed**: M13 is complete, `docs/OPEN_BUGS.md` is
-> empty, and `docs/TODO.md` is reduced to only genuinely-blocked items (Task 46's rewrite, commit
-> `3d6af3c`). What remains is the set of follow-on feature sub-projects the user chose to build
+> empty, and `docs/TODO.md` is reduced to only genuinely-blocked items (a rewrite tracked via
+> commit `3d6af3c`). What remains is the set of follow-on feature sub-projects the user chose to build
 > ALL of (bucket C), each needing its own brainstorm → spec → plan cycle before it lands:
 > recalc-from-chat (persisted `spec`/`raws` on `RollEmbed`), link-preview extensions
 > (server-fetch-cache-as-asset image pipeline + shared preview cache + oEmbed), per-world
