@@ -49,7 +49,7 @@
   function describeOp(op: LayoutOp): string | null {
     const label = (id: string): string => {
       const meta = ctrl.metaMap.get(id);
-      return meta ? t(meta.labelKey) : id;
+      return meta ? t(meta.labelKey) : t("panels.unknownPanel", { id });
     };
     let where: string;
     switch (op.op) {

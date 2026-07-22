@@ -215,6 +215,7 @@ export const en: Messages = {
   "panels.popoutBlocked": "Pop-out was blocked; opened as a floating window instead",
   "panels.popoutRestoredFloating": "Popped-out panels reopen as floating windows after reload",
   "panels.moreViews": "More views",
+  "panels.unknownPanel": "Unknown panel ({id})",
   "panels.crashed": "Panel crashed",
   "panels.reload": "Reload",
   "panels.layoutReset": "Panel layout was reset to default",

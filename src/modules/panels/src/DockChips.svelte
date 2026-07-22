@@ -27,10 +27,10 @@
       type="button"
       class="chip"
       data-testid="chip-{id}"
-      aria-label="{t('panels.restore')} {m ? t(m.labelKey) : id}"
-      title="{t('panels.restore')} {m ? t(m.labelKey) : id}"
+      aria-label="{t('panels.restore')} {m ? t(m.labelKey) : t('panels.unknownPanel', { id })}"
+      title="{t('panels.restore')} {m ? t(m.labelKey) : t('panels.unknownPanel', { id })}"
       onclick={() => onRestore(id)}
-    >{m?.icon ?? ""} {m ? t(m.labelKey) : id}</button>
+    >{m?.icon ?? ""} {m ? t(m.labelKey) : t('panels.unknownPanel', { id })}</button>
   {/each}
 </div>
 
