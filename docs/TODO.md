@@ -1,13 +1,17 @@
 # TODO — Deferred Work
 
-Actionable, externally-logged deferrals, each blocked by an unbuilt capability.
-Bugs go in `OPEN_BUGS.md`, not here. As of the Phase-1 cleanup burndown
-(2026-07-19), every item below is retained ONLY because its blocking
-capability doesn't exist yet — nothing here is a "someday maybe," each has
-a concrete unblocking condition.
+Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
+As of the Phase-1 cleanup burndown (2026-07-19), most items below are
+retained because their blocking capability doesn't exist yet — a concrete
+unblocking condition, not a "someday maybe." A few headings are explicitly
+labeled "Actionable now": these are NOT blocked on anything — the underlying
+capability already exists — but are deferred as out-of-scope-for-now work.
 
-## Blocked on world/scene/user deletion
-- TODO: Purge `explored_fog` rows on world/scene/user deletion. The M9c table denormalizes `world_id` for a world-scoped purge, but no deletion path consumes it yet (worlds aren't deletable; scene deletion goes through the `apply_intent` document cascade, which doesn't touch `explored_fog`). Orphaned rows are harmless (reads key on the exact never-reused `(scene_id, user_id)` UUIDs) but accumulate unboundedly over a server's lifetime. Wire a `DELETE FROM explored_fog WHERE world_id = ?` (and a per-scene purge into the scene-delete cascade) when world/scene deletion lands; index `world_id` then. (Surfaced by the M9c-1 buddy check.)
+## Blocked on world/user deletion
+- TODO: Purge `explored_fog` rows on world/user deletion. Neither has a route at all — world and user are DB rows, not documents, and no deletion path exists yet. The M9c table denormalizes `world_id` for a world-scoped purge; wire a `DELETE FROM explored_fog WHERE world_id = ?` when world deletion lands, and index `world_id` then. (Surfaced by the M9c-1 buddy check.)
+
+## Actionable now — `explored_fog` purge on scene deletion
+- TODO: Scene deletion is already reachable today via the generic `DELETE /api/documents/{id}` route (`http/routes.rs::delete_document`, which reaches `Operation::Delete` for ANY document, scenes included — no doc_type restriction) — but nothing purges the scene's `explored_fog` rows when that happens, and there's no GM-facing "delete this scene" button in the UI yet. Since scene deletion already works mechanically, closing the fog-purge gap is now simple: wire a `DELETE FROM explored_fog WHERE scene_id = ?` into the scene-delete path. Orphaned rows are harmless in the meantime (reads key on the exact never-reused `(scene_id, user_id)` UUIDs) but accumulate unboundedly over a server's lifetime.
 
 ## Blocked on a per-turn movement-budget system (Phase-2 combat)
 - TODO: `move_exec.rs`'s `MoveOutcome.cost` accumulates only the entered cell's terrain multiplier per step (`cost += regions.terrain_multiplier(region_cell)`); `pathfinding.rs`'s router cost also multiplies by the diagonal-rule `step_cost` (`sc * mult`, where `sc` is 1.0/2.0/√2/alternating depending on `world-settings.pathfinding.diagonalRule`). The two "cost" values are not numerically comparable once diagonal movement is involved under any non-Chebyshev rule — they coincide only because Chebyshev's diagonal step cost is 1.0. This is a deliberate M10g Task 7 scoping decision (move_exec's center-cell, terrain-only accounting model), not an oversight, and nothing currently consumes or compares the two values. Resolve before any per-turn movement-budget system consumes `MoveOutcome.cost`/`MoveStream.cost`: decide whether move_exec should thread the diagonal rule + per-step parity to match the router's preview cost, or whether route-preview cost and execution cost are intentionally distinct quantities. (Surfaced by the M10g Task 7 buddy check.)
@@ -56,8 +60,8 @@ a concrete unblocking condition.
   section below).
   (Surfaced by the M11b-3 Task 5 code review.)
 
-## Blocked on the see-as-preview feature buildout
-- TODO: GM see-as-player preview does not reflect the previewed player's actual `MoveStream` view. `clip_move_stream` (`ws/conn.rs`) keys its GM branch on `ctx.world_role == Gm` / `ctx.user_id`, ignoring the design §3.3 "see-as" effective-view-user concept used elsewhere (e.g. the `vision` subscription's `asUser`). Not a leak (a GM is authorized to see everything unclipped) but a UX-accuracy gap: a GM previewing as a specific player still gets the full unclipped trajectory instead of that player's clipped view, and a GM previewing as the mover gets no fog sweep (`mover_vision` stays `None` for any GM branch). Thread the see-as target through `clip_move_stream` when the see-as-preview feature is built out.
+## Actionable now — `clip_move_stream` doesn't thread the see-as target
+- TODO: GM see-as-player preview does not reflect the previewed player's actual `MoveStream` view. The see-as-player feature itself is NOT missing — it's fully built and live (`Stage.svelte`'s GM "view as" mode, `engine.ts`'s `setViewAsUser`, `ws-client.ts`'s `asUser` wire param, server-side `ws/conn.rs`'s `as_user` handling on `SceneSubscribe`). Only `clip_move_stream` (`ws/conn.rs`) doesn't thread the already-existing see-as target through — it keys its GM branch on `ctx.world_role == Gm` / `ctx.user_id` alone, ignoring the design §3.3 "see-as" effective-view-user concept used elsewhere (e.g. the `vision` subscription's `asUser`). Not a leak (a GM is authorized to see everything unclipped) but a UX-accuracy gap: a GM previewing as a specific player still gets the full unclipped trajectory instead of that player's clipped view, and a GM previewing as the mover gets no fog sweep (`mover_vision` stays `None` for any GM branch). Thread the see-as target through `clip_move_stream`.
 
 ## Blocked on multi-panel popout groups
 - TODO: an already-open popout window has no `onWillDrop` subscription wired
@@ -94,18 +98,6 @@ a concrete unblocking condition.
 
 ## Blocked on real-time per-recipient move-streaming
 - TODO: Live cross-animation concurrency for streamed move vision (`MoveStream`). M2 precomputes each move's per-recipient vision clip at *its* execute time, so two tokens moving simultaneously do NOT reveal each other mid-walk when a watcher's vision opens after the clip — it reconciles at the stop + next `vision` rebroadcast. Wanted eventually. Needs real-time per-recipient streaming (a per-move server loop recomputing each recipient's visibility of every concurrently-moving token as positions advance) instead of execute-time precompute. No correctness/secrecy impact today — only a missed transient reveal. (Design `2026-06-25-m2-streamed-continuous-vision-design.md` §8; user wants it as a follow-up.)
-
-## Blocked on a design decision for the untrusted dice expertise bound
-- Bound `SuccessConfig.expertise` (u32) at the M11d untrusted-transport boundary,
-  alongside the per-roll dice-count cap: `eval::expertise::allocate` is `O(N·E²)`, so
-  an unbounded `E` from an untrusted `RollSpec` is a DoS vector via `die_values`'s
-  `(0..=e).map(...).collect()`, which allocates `e+1` entries per kept die with no cap.
-  Additionally, `adjust`'s `let k = k as i32` cast could silently wrap to a negative
-  value if `k`/`e` ever exceeded `i32::MAX` (still representable in the `u32` field),
-  moving a face the wrong direction instead of erroring — both facets are resolved
-  together by whatever sane bound gets enforced at that boundary (design intent: `E` is
-  single digits in every real system). Pure-library M11b-2 stays cap-agnostic by design.
-  (Surfaced by the M11b-2 Task 2/Task 3 code reviews.)
 
 ## Blocked on `@shadowcat/formula` gaining more consumer-callback resolver boundaries
 - TODO: `evaluate.ts`'s `ref` case and `template.ts`'s `substituteIdentifier` both wrap a consumer resolver call in a near-identical try/catch → `resolver-error` FormulaError. `graph.ts`'s equivalent catch is entangled with the internal `NeedsDependency` trampoline signal and can't share a naive helper without leaking that control-flow type across `internal.ts`'s validation-only boundary — so only `evaluate.ts`/`template.ts` are realistically unifiable. Factor a small shared helper for those two call sites if `@shadowcat/formula` grows more consumer-callback boundaries. (Surfaced by the M13a whole-branch buddy-check fix-confirmation review.)
