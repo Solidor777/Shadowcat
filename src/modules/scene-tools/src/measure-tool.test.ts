@@ -1,4 +1,4 @@
-import { test, expect } from "vitest";
+import { test, expect, vi } from "vitest";
 import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, type WireOperation, type MoveStream } from "@shadowcat/core";
 import type { Point } from "@shadowcat/render";
 import { SceneInteractionBridge, TokenSelection } from "@shadowcat/ui-kit";
@@ -327,6 +327,51 @@ test("a stale route-preview pathfind response is still ignored via the existing 
   await flush();
 
   expect(measures.at(-1)!.label).toContain("20 ft"); // request #2's budget: cost(4) × perCell(5)
+});
+
+test("a move suppressed by the debounce still fires once the cooldown elapses, even with no further move event (hover-only stop)", async () => {
+  const calls: number[] = [];
+  const pathfind: ToolContext["pathfind"] = () =>
+    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false }); });
+
+  vi.useFakeTimers();
+  try {
+    const { tool } = setupRoute({ pathfind }); // no injected `now` — Date.now() is faked
+
+    tool.onPointerDown({ x: 50, y: 50 }, ev());
+    tool.onPointerMove({ x: 60, y: 50 }, ev()); // leading-edge: fires immediately
+    tool.onPointerMove({ x: 70, y: 50 }, ev()); // suppressed (within cooldown)
+    expect(calls.length).toBe(1);
+
+    // The cursor comes to rest here — no further onPointerMove ever arrives.
+    await vi.advanceTimersByTimeAsync(200); // well past the debounce window
+    expect(calls.length).toBe(2); // the deferred fire sent the latest suppressed goal
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("clearing the route before the deferred timer elapses cancels it (no leaked-timer stray request)", async () => {
+  const calls: number[] = [];
+  const pathfind: ToolContext["pathfind"] = () =>
+    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false }); });
+
+  vi.useFakeTimers();
+  try {
+    const { tool } = setupRoute({ pathfind });
+
+    tool.onPointerDown({ x: 50, y: 50 }, ev());
+    tool.onPointerMove({ x: 60, y: 50 }, ev()); // leading-edge: fires immediately
+    tool.onPointerMove({ x: 70, y: 50 }, ev()); // suppressed — schedules a deferred timer
+    expect(calls.length).toBe(1);
+
+    tool.onPointerUp({ x: 70, y: 50 }, ev()); // release: clearRoute() must cancel the timer
+
+    await vi.advanceTimersByTimeAsync(200); // past when the deferred fire would have run
+    expect(calls.length).toBe(1); // no stray request from the leaked timer
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 // --- Route-commit (double-click) tests ---

@@ -341,6 +341,12 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // Leading-edge debounce state for route-preview requests (reduces REQUEST volume only;
   // the pendingSeq staleness guard above is untouched and still governs stale RESPONSES).
   let lastRouteRequestAt = -Infinity;
+  // Deferred-fire state: a move suppressed by the debounce window still needs to reach the
+  // server once the cursor settles (no further onPointerMove ever arrives after a hover-only
+  // stop). `pendingRouteGoal` holds the latest suppressed goal; `pendingRouteTimer` fires it
+  // once the remaining cooldown elapses, unless a newer request already fired in the meantime.
+  let pendingRouteGoal: Point | null = null;
+  let pendingRouteTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** True when the measure tool should operate in route mode (see above). */
   function inRouteMode(): boolean {
@@ -408,9 +414,47 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     );
   }
 
+  /** Cancel any pending deferred-fire timer and discard its goal. Must run whenever route
+   * mode ends or a fresh request already supersedes it — a leaked timer firing after the
+   * tool has moved on (teardown, tool swap, route clear) would be its own bug. */
+  function clearPendingRouteTimer(): void {
+    if (pendingRouteTimer !== null) {
+      clearTimeout(pendingRouteTimer);
+      pendingRouteTimer = null;
+    }
+    pendingRouteGoal = null;
+  }
+
+  /** Fires once the debounce window elapses for a move that was suppressed. Re-checks
+   * `committing` (mirrors onPointerMove's guard: firing here would otherwise bump
+   * `pendingSeq` mid-commit via `requestRoute` and invalidate the in-flight commit's seq
+   * guard) and re-resolves scene/start fresh rather than trusting values captured at
+   * suppression time. */
+  function firePendingRoute(): void {
+    pendingRouteTimer = null;
+    const goal = pendingRouteGoal;
+    pendingRouteGoal = null;
+    if (!goal || committing) return;
+    const scene = activeScene(ctx);
+    const start = tokenCenter();
+    if (!scene || !start) return;
+    lastRouteRequestAt = now();
+    requestRoute(scene, start, goal);
+  }
+
+  /** (Re)schedule the deferred fire for the remaining cooldown time, cancelling any prior
+   * pending timer first — only the LATEST suppressed goal must ever fire. */
+  function schedulePendingRouteFire(goal: Point): void {
+    if (pendingRouteTimer !== null) clearTimeout(pendingRouteTimer);
+    pendingRouteGoal = goal;
+    const remaining = Math.max(0, ROUTE_PREVIEW_DEBOUNCE_MS - (now() - lastRouteRequestAt));
+    pendingRouteTimer = setTimeout(firePendingRoute, remaining);
+  }
+
   /** Clear all route-mode overlays and reset waypoints (mid-gesture-clear invariant). */
   function clearRoute(): void {
     pendingSeq++; // invalidate any in-flight request
+    clearPendingRouteTimer();
     ctx.scene.clearOverlay();
     ctx.scene.clearMeasure();
     waypoints = [];
@@ -531,7 +575,13 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
           const t = now();
           if (t - lastRouteRequestAt >= ROUTE_PREVIEW_DEBOUNCE_MS) {
             lastRouteRequestAt = t;
+            clearPendingRouteTimer(); // this fire supersedes any earlier suppressed goal
             requestRoute(scene, start, goal);
+          } else {
+            // Suppressed: still update the pending goal and (re)schedule a deferred fire
+            // for when the cooldown elapses, so a hover-only stop (no further move event)
+            // still eventually sends the latest position instead of freezing the preview.
+            schedulePendingRouteFire(goal);
           }
         }
         return;
