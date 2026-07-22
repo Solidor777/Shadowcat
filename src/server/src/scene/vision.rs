@@ -61,7 +61,9 @@ impl Rect {
 }
 
 /// The bounding rect of `walls` + `viewpoint`, expanded by `margin` (so every ray terminates
-/// on the box when it hits no wall). A wall-less scene yields a tiny box around the viewpoint.
+/// on the box when it hits no wall). A wall-less scene yields a tiny box around the viewpoint —
+/// callers computing vision for a specific scene should use `bound_for_scene` instead so a
+/// wall-less (or near-wall-less) scene reveals its own full extent rather than this small box.
 pub fn bound_for(viewpoint: P, walls: &[Seg], margin: f64) -> Rect {
     let mut minx = viewpoint.0;
     let mut miny = viewpoint.1;
@@ -82,6 +84,25 @@ pub fn bound_for(viewpoint: P, walls: &[Seg], margin: f64) -> Rect {
         miny: miny - margin,
         maxx: maxx + margin,
         maxy: maxy + margin,
+    }
+}
+
+/// `bound_for`, unioned with the scene's own extent (`(0,0)` to `scene_bounds`, clamped to
+/// non-negative). A wall-derived bound smaller than the scene's extent is grown to cover the
+/// whole scene instead — a wall-less (or near-wall-less) scene reveals its own full bounded
+/// extent rather than a small `margin` box around the viewpoint. A wall-derived bound that
+/// already exceeds the scene's extent (e.g. a wall placed beyond the authored bounds) is left
+/// unchanged: this only ever grows the bound, never shrinks it.
+pub fn bound_for_scene(viewpoint: P, walls: &[Seg], scene_bounds: (f64, f64), margin: f64) -> Rect {
+    let wall_bound = bound_for(viewpoint, walls, margin);
+    let (width, height) = scene_bounds;
+    let scene_maxx = width.max(0.0);
+    let scene_maxy = height.max(0.0);
+    Rect {
+        minx: wall_bound.minx.min(0.0),
+        miny: wall_bound.miny.min(0.0),
+        maxx: wall_bound.maxx.max(scene_maxx),
+        maxy: wall_bound.maxy.max(scene_maxy),
     }
 }
 

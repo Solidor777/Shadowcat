@@ -197,6 +197,9 @@ pub(crate) struct VisionMoveInputs {
     /// Vision polygons for every owned token in the scene EXCEPT the moving token, at their
     /// committed (stationary) positions. Constant across all samples of one move.
     static_polys: Vec<Vec<vision::P>>,
+    /// The scene's own bounded extent (`ResolvedScene.bounds`) — so `polygons_at`'s per-sample
+    /// bound stays scene-bounds-aware identically to `player_vision_polygons` (no fork).
+    scene_bounds: (f64, f64),
     /// True when the user owns no token in this scene: `polygons_at` returns empty (fail-closed).
     empty: bool,
 }
@@ -210,7 +213,8 @@ impl VisionMoveInputs {
         if self.empty {
             return Vec::new();
         }
-        let bound = vision::bound_for(viewpoint, &self.walls, VISION_BOUND_MARGIN);
+        let bound =
+            vision::bound_for_scene(viewpoint, &self.walls, self.scene_bounds, VISION_BOUND_MARGIN);
         let moving_poly = vision::visibility_polygon(viewpoint, &self.walls, bound);
         // Moving token's polygon first (index 0); static polygons follow.
         let mut out = Vec::with_capacity(1 + self.static_polys.len());
@@ -809,7 +813,8 @@ impl SceneEcs {
         let mut out = Vec::with_capacity(viewpoints.len());
         for (scene, vp) in viewpoints {
             let walls = self.sight_walls(scene);
-            let bound = vision::bound_for(vp, &walls, VISION_BOUND_MARGIN);
+            let scene_bounds = self.resolve_scene(scene).bounds;
+            let bound = vision::bound_for_scene(vp, &walls, scene_bounds, VISION_BOUND_MARGIN);
             out.push((scene, vision::visibility_polygon(vp, &walls, bound)));
         }
         out
@@ -847,10 +852,12 @@ impl SceneEcs {
                 static_vps.push((t.x, t.y));
             }
         }
+        let scene_bounds = self.resolve_scene(scene).bounds;
         if !has_owned {
             return VisionMoveInputs {
                 walls: Vec::new(),
                 static_polys: Vec::new(),
+                scene_bounds,
                 empty: true,
             };
         }
@@ -860,13 +867,14 @@ impl SceneEcs {
         let static_polys = static_vps
             .iter()
             .map(|&vp| {
-                let bound = vision::bound_for(vp, &walls, VISION_BOUND_MARGIN);
+                let bound = vision::bound_for_scene(vp, &walls, scene_bounds, VISION_BOUND_MARGIN);
                 vision::visibility_polygon(vp, &walls, bound)
             })
             .collect();
         VisionMoveInputs {
             walls,
             static_polys,
+            scene_bounds,
             empty: false,
         }
     }
@@ -5049,6 +5057,111 @@ mod tests {
         assert!(
             !vision::point_in_poly(&polys_gm[0], (150.0, 50.0)),
             "gm_only wall must occlude (150,50): point must not be inside the polygon"
+        );
+    }
+
+    // --- wall-less scene full intrascene vision (C2) ---
+
+    /// A wall-less 40x40-unit scene must reveal its own full bounded extent, not a small
+    /// `VISION_BOUND_MARGIN` box around the viewpoint.
+    #[test]
+    fn wall_less_scene_gives_full_intrascene_vision_not_a_degenerate_box() {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 5.0, "y": 5.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "bounds": { "width": 500.0, "height": 500.0 } }),
+        );
+        let ecs = SceneEcs::from_documents(vec![scene, tok], 0);
+
+        let polys = ecs.player_vision_polygons(user);
+        let (_, poly) = polys
+            .iter()
+            .find(|(sid, _)| *sid == scene_id)
+            .expect("scene present");
+
+        let far_corner = (490.0, 490.0);
+        assert!(
+            vision::point_in_poly(poly, far_corner),
+            "a wall-less scene must reveal its own full bounded extent, not a small box around the viewpoint"
+        );
+    }
+
+    /// The wall-less-scene vision fix must stay bounded to the scene's own extent — never
+    /// unbounded, never leaking beyond `bounds`.
+    #[test]
+    fn wall_less_scene_vision_does_not_leak_beyond_its_own_bounds() {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 5.0, "y": 5.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "bounds": { "width": 500.0, "height": 500.0 } }),
+        );
+        let ecs = SceneEcs::from_documents(vec![scene, tok], 0);
+
+        let polys = ecs.player_vision_polygons(user);
+        let (_, poly) = polys.iter().find(|(sid, _)| *sid == scene_id).unwrap();
+
+        let beyond_bounds = (1000.0, 1000.0);
+        assert!(
+            !vision::point_in_poly(poly, beyond_bounds),
+            "vision must stay bounded to the scene's own extent, never unbounded"
+        );
+    }
+
+    /// `player_vision_polygons` and `player_vision_inputs` (via its `polygons_at` per-sample
+    /// path) must not fork: same wall set (empty), same scene-bounds-aware bound.
+    #[test]
+    fn player_vision_polygons_and_player_vision_inputs_agree_on_wall_less_bound() {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 5.0, "y": 5.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "bounds": { "width": 500.0, "height": 500.0 } }),
+        );
+        let ecs = SceneEcs::from_documents(vec![scene, tok], 0);
+
+        let poly_from_polygons = ecs
+            .player_vision_polygons(user)
+            .into_iter()
+            .find(|(sid, _)| *sid == scene_id)
+            .map(|(_, p)| p);
+        let poly_from_inputs = ecs
+            .player_vision_polygons_at(user, scene_id, token_id, (5.0, 5.0))
+            .into_iter()
+            .next();
+
+        assert_eq!(
+            poly_from_polygons, poly_from_inputs,
+            "player_vision_polygons and player_vision_inputs must compute the identical bound for the same wall-less scene"
         );
     }
 
