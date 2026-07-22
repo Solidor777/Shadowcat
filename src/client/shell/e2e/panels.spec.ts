@@ -92,7 +92,7 @@ test("the layout grid keys compact/expanded off the single 48rem axis", async ({
   // world as GM, so the rail renders). The rail must carry the compact class and
   // its tool buttons must remain reachable in the horizontal strip.
   await expect(page.locator(".tool-rail")).toHaveClass(/\bcompact\b/);
-  const firstTool = page.locator(".tool-rail .tool").first();
+  const firstTool = page.locator('[data-testid^="tool-"]').first();
   await firstTool.scrollIntoViewIfNeeded();
   await expect(firstTool).toBeVisible();
 });
