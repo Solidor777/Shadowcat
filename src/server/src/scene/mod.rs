@@ -1692,7 +1692,8 @@ impl SceneEcs {
 
         // Scene-shared lighting inputs (once), then per-source per-cell test.
         let li = self.lighting_inputs(scene, &settings, cell);
-        accumulate_visible_cells(&mut out, &sources, &settings, cell, &li, lenient);
+        let grid = grid_shape::SquareGrid { cell, rule: self.resolved_diagonal_rule() };
+        accumulate_visible_cells(&mut out, &sources, &settings, cell, &li, lenient, &grid);
         out
     }
 
@@ -1786,8 +1787,9 @@ impl SceneEcs {
             settings.bounds,
             cell,
         );
+        let grid = grid_shape::SquareGrid { cell, rule: self.resolved_diagonal_rule() };
         let mut mask = BTreeSet::new();
-        accumulate_visible_cells(&mut mask, &sources, &settings, cell, &li, lenient);
+        accumulate_visible_cells(&mut mask, &sources, &settings, cell, &li, lenient, &grid);
 
         let mut cache = self.visible_cells_cache.lock().unwrap();
         cache.insert((user, scene), (snapshot, mask.clone()));
@@ -1990,6 +1992,7 @@ fn accumulate_visible_cells(
     cell: f64,
     li: &LightingInputs,
     lenient: bool,
+    grid: &dyn grid_shape::GridShape,
 ) {
     for src in sources {
         let poly = source_los_poly(
@@ -2029,7 +2032,7 @@ fn accumulate_visible_cells(
                 // Strict: center only. Lenient: center first (so §13 strict cells are always
                 // included), then corners if center fails — a cell whose polygon merely clips
                 // a corner still qualifies under leniency.
-                let center = ((i as f64 + 0.5) * cell, (j as f64 + 0.5) * cell);
+                let center = grid.cell_center((i, j));
                 let corners = [
                     (i as f64 * cell, j as f64 * cell),
                     ((i + 1) as f64 * cell, j as f64 * cell),
@@ -5315,5 +5318,20 @@ mod tests {
             mask.contains(&(4, 4)),
             "visible_cells (via source_los_poly) must not diverge from player_vision_polygons' bound for the same wall-less scene"
         );
+    }
+
+    /// Pins the exact movement-gate cell set for an open all-bright scene. `accumulate_visible_cells`
+    /// computes each candidate cell's CENTER via `GridShape::cell_center`; `SquareGrid::cell_center`
+    /// equals the hardcoded `((i+0.5)*cell,(j+0.5)*cell)` square formula, so a regression to
+    /// non-square center math in that function diverges from this frozen set immediately, without
+    /// depending on the broader frozen-fixture parity battery. Reuses
+    /// `wall_less_large_scene_all_bright` (one owned token, no walls, all-bright, 500x500/cell-100).
+    #[test]
+    fn accumulate_visible_cells_routes_through_grid_shape_cell_center_not_hardcoded() {
+        let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
+        let got = ecs.visible_cells(user, scene_id, false);
+        let expected: std::collections::BTreeSet<(i32, i32)> =
+            (-1..=4).flat_map(|i| (-1..=4).map(move |j| (i, j))).collect();
+        assert_eq!(got, expected);
     }
 }
