@@ -47,6 +47,20 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   chokepoint — called on every Create/Update POST-IMAGE (after all `FieldChange`s apply),
   including embedded children, so a wholesale `/engine` replacement, a leaf `/engine/x` write, and
   an embedded child's engine write are all covered by one call site.
+- `src/server/src/data/command.rs`'s `FieldChange.remove: bool` — a leaf-level object-key-removal
+  discriminator on the existing `Operation::Update`/`FieldChange` wire shape, not a new `Command`
+  variant: it reuses the same OCC pre-image check (`old`) and capability check
+  (`required_cap_for_path`) as an ordinary `set` change. `remove: true` deletes the object key at
+  `path` instead of writing `new` (unused, conventionally `Null`), making the key genuinely
+  absent (`null` != absent); `#[serde(default)]` on ingest and `skip_serializing_if` on egress
+  keep it omitted on the wire when false, and the client Zod mirror makes it optional to match.
+  The mutation itself is `remove_pointer(root, pointer)`: **object keys only — a leaf array-index
+  removal (e.g. `/tags/1`) is rejected with `DataError::BadPath`, unmutated** (array shrink is
+  whole-array replacement only, per the merge-engine invariant; a leaf remove of an index has no
+  defined shift semantics), while a missing intermediate ancestor is treated as an already-absent
+  no-op rather than an error. Sibling mechanism to `set_pointer` (leaf-SET-only: it can create or
+  overwrite a key/index but can never delete a key or resize an array) — the pair covers set vs.
+  remove, with array resize handled exclusively by whole-array replacement, not by either pointer op.
 - `src/server/src/data/permission.rs` — the redaction core:
   - `resolve_access(user, world_role, doc) -> Access` (and `resolve_access_world`) builds the
     per-connection `Access { caps, all, see_gm_only, is_owner }`.

@@ -73,6 +73,19 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   invalidated by a token-level mutation that changes `/embedded/actor/0/...` — this is the same
   failure shape as the two test bugs above, generalized to a case with no test coverage to catch
   it, so it stays on the direct, uncached `engine_as` path.
+  **`visible_cells_cached` (Phase-1 perf item, resolved):** `SceneEcs::visible_cells_cached(user,
+  scene, lenient) -> BTreeSet<(i32,i32)>` is a per-`(user, scene)` memoized wrapper around the same
+  mask `visible_cells` computes for the M10e-4 movement gate — `visible_cells` itself and every
+  other existing caller (pathfinder, §13 parity tests) are unchanged and still call the uncached
+  primitive. Keyed on `VisibilityInputsSnapshot` (`{lenient, settings, cell, sources: Vec<(id, vp,
+  floors)>, lights, light_walls, sight_walls}`) — a VALUE-COMPARISON cache like `engine_as_cached`,
+  not mutation-site invalidation: a cached mask is reused only when a freshly rebuilt snapshot
+  compares equal to the one stored alongside it, so correctness is independent of which code path
+  mutated the underlying documents (`apply_op`, `set_world_config`/`set_actors`, or any other
+  setter). `sources` is sorted by id before hashing so hecs' non-stable iteration order can't cause
+  a spurious mismatch. The snapshot already covers everything `env_light_polys` occlusion depends
+  on (`settings.bounds`, `cell`, `light_walls`), so the M13-0-era `env_polys` addition to
+  `lighting_inputs_from` needed no cache-key change to stay correct.
 - `src/server/src/scene/movement.rs` — pure `supercover_cells(a0, a1, cell) -> Option<BTreeSet<(i32,i32)>>`
   (M10e-4): every cell the move segment crosses (supercover, not a thin line — an exact corner crossing
   emits BOTH flanking cells so a diagonal can't thread an unseen cell). `None` ⇒ caller fails closed
@@ -660,14 +673,27 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `player_lit_mask` resolves a per-cell hint via the highest-floor admitting vision mode (`None` wins
   ties). Fail-closed (no source / dark scene ⇒ empty; cell scans bounded by
   `explored::MAX_CELLS_PER_POLYGON` with a `saturating_mul` span guard). Egress is ADDITIVE —
-  `polygons` + the post-lock `explored` are unchanged, GM stays `mode:"all"`. **Client lighting
-  render is COSMETIC — fog stays the secrecy gate**; the per-cell `hint_idx` refines the visual
-  (darkening + tint + desaturate) but never widens visibility or the secrecy mask. **Constraint:**
-  environment light is a flat ambient, NOT edge-projected/occludable. Originally blocked on scenes
-  being dimensionless; **M10f-0 added `scene.system.bounds` so a boundary now exists**, but
-  edge-projected light is deliberately still homed to M12 (design review 2026-07-02) — the bound
-  primitive alone does not implement the projection. Placed-light `blocksLight` occlusion IS
-  implemented (see `docs/TODO.md`).
+  `polygons` + the post-lock `explored` are unchanged, GM stays `mode:"all"`. **Environment light
+  is now edge-projected and `blocksLight`-occludable SERVER-SIDE (`lighting::env_light_polys`,
+  `mod.rs`'s `lighting_inputs_from`) — this is a genuine secrecy input, not cosmetic.** A cell's
+  illumination (`lighting::cell_illumination`) composes the boundary-projected environment ambient
+  with placed lights and feeds `point_qualifies`/`cell_visible`, which gates both `player_lit_mask`
+  and the M10e-4 movement gate (`visible_cells`/`visible_cells_cached`) — so occluding the
+  environment ambient behind a `blocksLight` wall genuinely narrows what a non-GM can see and move
+  into, the same as a placed light's occlusion. `env_light_polys` samples the scene-bounds
+  perimeter (`MAX_ENV_LIGHT_SAMPLES=256`, clamped `[4, 256]`) and reuses the SAME
+  `vision::visibility_polygon` primitive + `light_walls` set placed lights already use — no forked
+  occlusion computation. **Fail-closed/strictly-narrowing by construction:** the occluded
+  environment base is `≤` the pre-occlusion flat-floor level everywhere (an empty `env_polys` set
+  or a cell outside every boundary polygon contributes 0, never negative), so the composed
+  illumination — and therefore the derived visibility mask — can only SHRINK relative to the prior
+  flat-ambient behavior, never grow; this monotonicity is what makes the projection safe to ship as
+  a secrecy input even independent of `env_light_polys`'s own occlusion-computation correctness.
+  **The CLIENT-side render (`lighting.ts`) is UNCHANGED and remains purely COSMETIC** — it resolves
+  band→darkening alpha + tint + `renderHint` desaturation for display only; fog stays the sole
+  *rendered* secrecy gate on the client, and the client performs no occlusion computation of its
+  own. Do not conflate the two: server-side environment occlusion is a load-bearing secrecy input,
+  client-side lighting is display-only.
 
 - **The pathfinder route is footprint-STRICTER than the center-based authoritative gate on WALLS,
   but its MASK predicate is now a superset of the gate's (M3, spec §3 of the M3 design doc).**

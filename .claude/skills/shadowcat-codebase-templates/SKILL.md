@@ -77,10 +77,16 @@ interprets or merges anything itself.
     falsely `template_changed` (a merged-result snapshot would already differ from the
     template's live state the instant the template changes again, or in edge cases immediately).
     **Emits whole-band `FieldChange`s (`/name`, `/engine`, `/system`, `/embedded/<coll>`),
-    never per-leaf changes** — the server's `set_pointer` (`command.rs`) cannot delete a key or
-    shrink/grow an array via a leaf-path Update, so a merge result that removes a key or changes
-    an array's length MUST replace the whole containing band, not patch individual leaves. This
-    is a hard invariant of the wire boundary, not a style choice.
+    never per-leaf changes** — deliberately, not because no leaf-removal mechanism exists: a
+    merge result can add/remove/reorder embedded collection members and touch multiple leaves
+    across `name`/`engine`/`system`/`embedded` at once, and whole-band replacement is the
+    simpler, correct operation for reconciling that across a 3-way merge, distinct from
+    `FieldChange.remove`'s narrow single-leaf-deletion use case (see the `command.rs`
+    `remove_pointer` entry in `shadowcat-codebase-documents-permissions`, and
+    `SystemTreeEditor.removeField` for its consumer). `set_pointer` itself still cannot delete a
+    key or resize an array via a leaf-path Update — that part of the wire boundary is unchanged
+    — but `planToUpdate` choosing band-level emission over per-leaf `FieldChange.remove`s is a
+    design choice for merge results, not a limitation being worked around.
   - `applyResolutions(mergedBands, conflicts, theirs: Set<string>) -> MergeBands` — folds a
     user's per-conflict "mine"/"theirs" picks (from the modal) back into the merged result.
   - `findInstances(templateId, all: Iterable<WireDocument>) -> WireDocument[]` — same-world scan
@@ -135,11 +141,18 @@ interprets or merges anything itself.
 - **Embedded correlation is by `source.id`, never index/position** — see `merge3Embedded` above;
   this is the load-bearing fix for embedded children that get reordered/added/removed on either
   side between syncs.
-- **Merge emission is band-level, never per-leaf** — `planToUpdate` always emits whole-band
+- **Merge emission is band-level, never per-leaf.** `planToUpdate` always emits whole-band
   `FieldChange`s (`/name`, `/engine`, `/system`, one per changed `/embedded/<coll>` — the WHOLE
-  collection array, never a per-index path) because `set_pointer` cannot delete keys or resize
-  arrays via a leaf path. Any future change to `planToUpdate` that tries to emit finer-grained
-  changes must first confirm the server-side `set_pointer` semantics have changed too.
+  collection array, never a per-index path) — deliberate for merge results, since a merge can
+  add/remove/reorder embedded collection members and touch multiple leaves at once, making
+  whole-band replacement simpler and correct there. This is distinct from `FieldChange.remove`
+  (`command.rs`'s `remove_pointer`), a sibling leaf-level object-key-deletion mechanism on the
+  same `Operation::Update`/`FieldChange` wire shape, used by `SystemTreeEditor.removeField` for
+  narrow-OCC single-leaf deletion — `planToUpdate` not using it for merge results is a design
+  choice, not evidence no such mechanism exists. `set_pointer` itself remains leaf-set-only
+  (still cannot delete a key or resize an array via a leaf-path Update); any future change to
+  `planToUpdate` that tries to emit finer-grained changes must confirm it's actually the better
+  fit for the merge-result case, not just that a leaf-removal path exists.
 - **Placement exclusions are per-doc_type and checked everywhere** (`isPlacementExcluded`/
   `placementExclusions`) — pull, revert, AND `syncState`'s "changed" determination must all
   exclude the same paths, or a token's own on-scene position would spuriously flag as
