@@ -92,6 +92,7 @@ fn route(rule: DiagonalRule, field: &RegionField) -> PathOutcome {
         &[],
         None,
         Some(field),
+        &SquareGrid { cell: 100.0, rule },
     )
     .expect("forced diagonal staircase is reachable under every rule")
 }

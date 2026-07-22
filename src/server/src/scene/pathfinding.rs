@@ -34,8 +34,8 @@ pub struct PathGrid<'a> {
     pub mask: Option<&'a BTreeSet<Cell>>,
     pub regions: Option<&'a crate::scene::regions::RegionField>,
     pub window: (i32, i32, i32, i32),
-    /// Cell geometry for this scene (`SquareGrid` or a future `HexGrid`). Owns no state beyond
-    /// `cell`/`rule`, constructed fresh per search in `find()`.
+    /// Cell geometry for this scene (`SquareGrid` or `HexGrid`), resolved by the caller from the
+    /// scene's `grid.kind` and passed into `find()`.
     pub shape: &'a dyn crate::scene::grid_shape::GridShape,
 }
 
@@ -438,6 +438,7 @@ pub fn find(
     walls: &[vision::Seg],
     mask: Option<&BTreeSet<Cell>>,
     regions: Option<&crate::scene::regions::RegionField>,
+    shape: &dyn crate::scene::grid_shape::GridShape,
 ) -> Result<PathOutcome, PathFail> {
     // Validation (fail-closed): all degenerate inputs => Invalid.
     if waypoints.is_empty() || waypoints.len() > MAX_WAYPOINTS {
@@ -480,7 +481,6 @@ pub fn find(
         (maxy / cell).floor() as i32 + WINDOW_MARGIN,
     );
 
-    let shape = crate::scene::grid_shape::SquareGrid { cell, rule };
     let grid = PathGrid {
         cell,
         rule,
@@ -489,7 +489,7 @@ pub fn find(
         mask,
         regions,
         window,
-        shape: &shape,
+        shape,
     };
 
     // Run each leg, threading end-parity into the next leg's start_parity so the route is priced as
@@ -583,6 +583,10 @@ mod find_tests {
 
     const NO_WALLS: [Seg; 0] = [];
 
+    fn sq(cell: f64, rule: DiagonalRule) -> crate::scene::grid_shape::SquareGrid {
+        crate::scene::grid_shape::SquareGrid { cell, rule }
+    }
+
     #[test]
     fn empty_waypoints_is_invalid() {
         let r = find(
@@ -594,6 +598,7 @@ mod find_tests {
             &NO_WALLS,
             None,
             None,
+            &sq(100.0, DiagonalRule::Chebyshev),
         );
         assert_eq!(r, Err(PathFail::Invalid));
     }
@@ -610,7 +615,8 @@ mod find_tests {
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
-                None
+                None,
+                &sq(100.0, DiagonalRule::Chebyshev)
             ),
             Err(PathFail::Invalid)
         );
@@ -624,7 +630,8 @@ mod find_tests {
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
-                None
+                None,
+                &sq(100.0, DiagonalRule::Chebyshev)
             ),
             Err(PathFail::Invalid)
         );
@@ -638,7 +645,8 @@ mod find_tests {
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
-                None
+                None,
+                &sq(0.0, DiagonalRule::Chebyshev)
             ),
             Err(PathFail::Invalid)
         );
@@ -652,7 +660,8 @@ mod find_tests {
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
-                None
+                None,
+                &sq(100.0, DiagonalRule::Chebyshev)
             ),
             Err(PathFail::Invalid)
         );
@@ -666,7 +675,8 @@ mod find_tests {
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
-                None
+                None,
+                &sq(100.0, DiagonalRule::Chebyshev)
             ),
             Err(PathFail::Invalid)
         );
@@ -680,7 +690,8 @@ mod find_tests {
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
-                None
+                None,
+                &sq(100.0, DiagonalRule::Chebyshev)
             ),
             Err(PathFail::Invalid)
         );
@@ -698,6 +709,7 @@ mod find_tests {
             &NO_WALLS,
             None,
             None,
+            &sq(100.0, DiagonalRule::Chebyshev),
         )
         .unwrap();
         assert!((outcome.cost - 2.0).abs() < 1e-9);
@@ -722,6 +734,7 @@ mod find_tests {
             &NO_WALLS,
             None,
             None,
+            &sq(100.0, DiagonalRule::Alternating),
         )
         .unwrap();
         assert!(
@@ -744,7 +757,8 @@ mod find_tests {
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
-                None
+                None,
+                &sq(100.0, DiagonalRule::Chebyshev)
             ),
             Err(PathFail::Invalid)
         );
@@ -762,7 +776,8 @@ mod find_tests {
                 DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 Some(&mask),
-                None
+                None,
+                &sq(100.0, DiagonalRule::Chebyshev)
             ),
             Err(PathFail::Unreachable)
         );
@@ -791,6 +806,7 @@ mod find_tests {
             &walls,
             None,
             None,
+            &sq(c, DiagonalRule::Chebyshev),
         );
         assert_eq!(result, Err(PathFail::Unreachable));
     }
@@ -833,6 +849,7 @@ mod find_tests {
             &NO_WALLS,
             None,
             Some(&field),
+            &sq(100.0, DiagonalRule::Chebyshev),
         )
         .unwrap();
         assert!(outcome.arrested);
@@ -858,6 +875,7 @@ mod find_tests {
             &NO_WALLS,
             None,
             None,
+            &sq(100.0, DiagonalRule::Chebyshev),
         )
         .unwrap();
         assert!(!outcome.arrested);

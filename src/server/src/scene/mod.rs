@@ -676,6 +676,34 @@ impl SceneEcs {
             .unwrap_or(pathfinding::DiagonalRule::Chebyshev)
     }
 
+    /// Resolves `scene`'s `GridShape` implementation from its own `engine.grid.kind`. `"hex"`
+    /// selects `HexGrid { size: cell }`; anything else (including `"square"`, an unrecognized
+    /// string, or an absent/malformed scene doc) fails closed to the already-hardened
+    /// `SquareGrid { cell, rule: resolved_diagonal_rule() }` — mirrors `resolved_diagonal_rule`'s
+    /// own structural-guard convention. `cell` is the caller's own already-resolved grid size
+    /// (`scene_grid_sizes()`), not re-derived here, so this can never disagree with a caller's own
+    /// cell-size resolution.
+    pub(crate) fn resolve_grid_shape(
+        &self,
+        scene: Uuid,
+        cell: f64,
+    ) -> Box<dyn grid_shape::GridShape> {
+        let kind = self
+            .index
+            .get(&scene)
+            .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
+            .and_then(|c| self.engine_as_cached::<eng::SceneEngine>(scene, &c.doc))
+            .map(|s| s.grid.kind);
+        if kind.as_deref() == Some("hex") {
+            Box::new(grid_shape::HexGrid { size: cell })
+        } else {
+            Box::new(grid_shape::SquareGrid {
+                cell,
+                rule: self.resolved_diagonal_rule(),
+            })
+        }
+    }
+
     /// Resolved animation token speed in cells/second. World-scoped (no per-scene override;
     /// mirrors `resolved_diagonal_rule`'s structural guard). Reads
     /// `world-settings.animation.speedCellsPerSec`; falls back to 6 when the doc is absent or
@@ -1070,6 +1098,7 @@ impl SceneEcs {
             .copied()
             .unwrap_or(100.0);
         let rule = self.resolved_diagonal_rule();
+        let grid_shape = self.resolve_grid_shape(scene, cell);
         let walls = self.move_walls(scene);
         // Hoisted so `movement_model` is available to the dispatch below regardless of `is_gm`
         // (a GM can also route on a continuous scene) — the grid branch's OWN behavior is
@@ -1112,6 +1141,7 @@ impl SceneEcs {
                     &walls,
                     mask.as_ref(),
                     Some(&regions),
+                    &*grid_shape,
                 )
             }
             MovementModel::Continuous => {
@@ -1133,6 +1163,7 @@ impl SceneEcs {
                         &walls,
                         mask.as_ref(),
                         Some(&regions),
+                        &*grid_shape,
                     )?;
                     // `find` reports cost in CELLS; the continuous engine reports SCENE UNITS
                     // (parity with the polyanya path below). Convert before smoothing carries it
@@ -1199,10 +1230,7 @@ impl SceneEcs {
             .get(&scene)
             .copied()
             .unwrap_or(100.0);
-        let grid = crate::scene::grid_shape::SquareGrid {
-            cell,
-            rule: self.resolved_diagonal_rule(),
-        };
+        let grid = self.resolve_grid_shape(scene, cell);
         let mut builder = regions::RegionField::builder();
         for e in self.world.query::<&SceneEntity>().iter() {
             let doc = &e.doc;
@@ -1240,7 +1268,7 @@ impl SceneEcs {
                 _ => regions::RegionBehavior::Terrain,
             };
             let cost = region_eng.cost.max(1.0);
-            builder.add(&shape, behavior, cost, cell, &grid);
+            builder.add(&shape, behavior, cost, cell, &*grid);
         }
         builder.build()
     }
@@ -1530,9 +1558,7 @@ impl SceneEcs {
             if cell <= 0.0 {
                 continue;
             }
-            use grid_shape::GridShape as _;
-            let cell_grid =
-                grid_shape::SquareGrid { cell, rule: self.resolved_diagonal_rule() };
+            let cell_grid = self.resolve_grid_shape(scene, cell);
             // Lighting inputs: under globalIllumination or lighting-off, every LOS cell is bright;
             // else compute per-cell from lights (occluded by blocksLight) + environment.
             let li = self.lighting_inputs(scene, settings, cell);
@@ -1697,8 +1723,8 @@ impl SceneEcs {
 
         // Scene-shared lighting inputs (once), then per-source per-cell test.
         let li = self.lighting_inputs(scene, &settings, cell);
-        let grid = grid_shape::SquareGrid { cell, rule: self.resolved_diagonal_rule() };
-        accumulate_visible_cells(&mut out, &sources, &settings, cell, &li, lenient, &grid);
+        let grid = self.resolve_grid_shape(scene, cell);
+        accumulate_visible_cells(&mut out, &sources, &settings, cell, &li, lenient, &*grid);
         out
     }
 
@@ -1792,9 +1818,9 @@ impl SceneEcs {
             settings.bounds,
             cell,
         );
-        let grid = grid_shape::SquareGrid { cell, rule: self.resolved_diagonal_rule() };
+        let grid = self.resolve_grid_shape(scene, cell);
         let mut mask = BTreeSet::new();
-        accumulate_visible_cells(&mut mask, &sources, &settings, cell, &li, lenient, &grid);
+        accumulate_visible_cells(&mut mask, &sources, &settings, cell, &li, lenient, &*grid);
 
         let mut cache = self.visible_cells_cache.lock().unwrap();
         cache.insert((user, scene), (snapshot, mask.clone()));
@@ -2240,6 +2266,7 @@ pub fn compute_derived(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grid_shape::GridShape as _;
     use serde_json::json;
 
     fn doc(id: u128, parent: Option<u128>, ty: &str) -> Document {
@@ -2264,6 +2291,46 @@ mod tests {
         );
         assert_eq!(ecs.entity_count(), 2);
         assert_eq!(ecs.committed_seq(), 0);
+    }
+
+    #[test]
+    fn resolve_grid_shape_selects_hex_grid_for_hex_kind_scenes() {
+        let scene_id = Uuid::from_u128(10);
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "hex", "size": 50.0 }, "background": null }),
+        );
+        let ecs = SceneEcs::from_documents(vec![scene], 0);
+        let shape = ecs.resolve_grid_shape(scene_id, 50.0);
+        let want = grid_shape::HexGrid { size: 50.0 };
+        assert_eq!(shape.cell_center((1, 0)), want.cell_center((1, 0)));
+        assert_ne!(
+            shape.cell_center((1, 0)),
+            grid_shape::SquareGrid {
+                cell: 50.0,
+                rule: pathfinding::DiagonalRule::Chebyshev
+            }
+            .cell_center((1, 0)),
+            "hex and square cell centers must differ for the same cell index/size"
+        );
+    }
+
+    #[test]
+    fn resolve_grid_shape_falls_back_to_square_grid_for_unrecognized_kind() {
+        let scene_id = Uuid::from_u128(10);
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "triangle", "size": 50.0 }, "background": null }),
+        );
+        let ecs = SceneEcs::from_documents(vec![scene], 0);
+        let shape = ecs.resolve_grid_shape(scene_id, 50.0);
+        let want = grid_shape::SquareGrid {
+            cell: 50.0,
+            rule: ecs.resolved_diagonal_rule(),
+        };
+        assert_eq!(shape.cell_center((1, 0)), want.cell_center((1, 0)));
     }
 
     #[test]

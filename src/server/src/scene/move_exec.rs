@@ -30,10 +30,7 @@ use std::collections::BTreeSet;
 
 use uuid::Uuid;
 
-use crate::scene::{
-    grid_shape::{GridShape, SquareGrid},
-    MovementRestriction, SceneEcs,
-};
+use crate::scene::{MovementRestriction, SceneEcs};
 
 /// Epsilon for path[0]-vs-committed-position comparison (scene units).
 /// A client rounding the center-of-cell to the nearest float can drift by at most
@@ -307,13 +304,9 @@ pub(crate) fn execute_move(
     let regions = ecs.region_field(scene, None);
 
     // The mask gate's segment-crossing set is engine-agnostic geometry (`GridShape::
-    // line_traversal`), not a hardcoded square-grid call. `rule` is inert here — a segment's
-    // supercover crossing does not depend on the diagonal-cost rule, only A* step cost does
-    // (`grid_shape.rs`) — but the scene's actual resolved rule is threaded through for clarity.
-    let grid = SquareGrid {
-        cell,
-        rule: ecs.resolved_diagonal_rule(),
-    };
+    // line_traversal`), routed through the scene's own resolved grid shape (square or hex) rather
+    // than a hardcoded square-grid call.
+    let grid = ecs.resolve_grid_shape(scene, cell);
 
     // --- Per-step walk over the DENSE gate walk ---
     let mut stop_idx = 0usize; // index into `walk`
