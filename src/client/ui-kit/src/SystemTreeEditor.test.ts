@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, fireEvent } from "@testing-library/svelte";
 import SystemTreeEditor from "./SystemTreeEditor.svelte";
+import systemTreeEditorSource from "./SystemTreeEditor.svelte?raw";
 import { setAppContextForTest } from "./__fixtures__/appContextTest";
 import { DocumentStore, type WireDocument, type WireCommand } from "@shadowcat/core";
 
@@ -124,5 +125,13 @@ describe("SystemTreeEditor", () => {
     const input = getByDisplayValue("x");
     await fireEvent.change(input, { target: { value: "y" } });
     expect(calls).toEqual([[{ op: "update", doc_id: "d1", changes: [{ path: "/system/a/b", old: "x", new: "y" }] }]]);
+  });
+
+  it("the text/number/checkbox leaf inputs carry the shared coarse-pointer touch-sizing rule", () => {
+    // jsdom doesn't evaluate @media (pointer: coarse), so assert the rule's
+    // presence directly in the component's source styles instead (mirrors ToolRail.test.ts).
+    const ruleMatch = systemTreeEditorSource.match(/\.node input\s*\{([^}]*@media[^}]*\{[^}]*\}[^}]*)\}/);
+    expect(ruleMatch).toBeTruthy();
+    expect(ruleMatch?.[1]).toMatch(/@media \(pointer: coarse\)\s*\{\s*min-height:\s*var\(--input-height-coarse\);\s*\}/);
   });
 });

@@ -519,3 +519,11 @@
     </fieldset>
   {/if}
 </section>
+
+<style lang="scss">
+  input {
+    @media (pointer: coarse) {
+      min-height: var(--input-height-coarse);
+    }
+  }
+</style>

@@ -124,4 +124,9 @@
   input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .remove { min-width: 24px; min-height: 24px; border: 1px solid var(--border); border-radius: var(--radius-1); background: var(--surface-raised); }
   @media (pointer: coarse) { .remove, .add button { min-height: 44px; min-width: 44px; } }
+  .node input {
+    @media (pointer: coarse) {
+      min-height: var(--input-height-coarse);
+    }
+  }
 </style>

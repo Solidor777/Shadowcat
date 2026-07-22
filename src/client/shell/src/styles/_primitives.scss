@@ -34,4 +34,10 @@
   --radius-1: 4px;
   --radius-2: 8px;
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  // Coarse-pointer (touch) input minimum: WCAG 2.5.5 / iOS HIG target size.
+  // Consumed globally via `var(--input-height-coarse)` — every package already
+  // reads shell's :root custom properties this way (--space-*, --accent, etc.)
+  // without a Sass `@use` dependency, so this follows the same convention.
+  --input-height-coarse: 44px;
 }
