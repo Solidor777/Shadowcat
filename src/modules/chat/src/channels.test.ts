@@ -130,7 +130,7 @@ function engineDoc(id: string, created_at: number, engine: Record<string, unknow
     name: null,
     source: null,
     owner: "u1",
-    permissions: { default: "observer", users: {} } as WireDocument["permissions"],
+    permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
     embedded: {},
     parent_id: null,
     engine,
