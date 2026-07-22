@@ -107,6 +107,17 @@ runtime set is a **host change** (extend `RUNTIME_ENTRIES` + the import map in
 `src/client/shell`), not something a module can do on its own. Stick to the set
 above, or open an issue against Shadowcat to have the subpath added.
 
+The import map has exact-match entries for package **roots** only. Importing a
+subpath of any package in the list above — `@shadowcat/core/something`,
+`@shadowcat/ui-kit/anything` — is an unresolvable bare specifier: the import
+map has no entry for it, and it fails to load as a clean browser-level error.
+This is a completeness caveat of the current import-map shape, not a
+single-instance-runtime violation (Global Constraint 1 concerns duplicate
+instances, not import resolution). `scripts/check-svelte-runtime-entries.mjs`
+guards `svelte/*` subpaths specifically; this broader package-subpath caveat —
+which applies to every package in the import map, not just `svelte` — has no
+automated guard of its own.
+
 ## Dev flow (parity: never statically bundled, even in dev)
 
 1. Clone a Shadowcat checkout. Clone your module's repo into
