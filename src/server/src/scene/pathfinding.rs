@@ -568,7 +568,7 @@ pub fn find(
         }
     }
 
-    let path: Vec<vision::P> = cells.into_iter().map(|c| cell_center(c, cell)).collect();
+    let path: Vec<vision::P> = cells.into_iter().map(|c| grid.shape.cell_center(c)).collect();
     Ok(PathOutcome {
         path,
         cost: total,
