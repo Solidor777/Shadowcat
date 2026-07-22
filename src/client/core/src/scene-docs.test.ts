@@ -7,6 +7,7 @@ import {
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc } from "./scene-docs";
 import { buildRegionDoc, setRegionVisibility, type RegionEngine } from "./scene-docs";
 import { DocumentStore } from "./store";
+import { resolveTokenActor, resolveTokenBox } from "./actor";
 
 function storeWith(...docs: WireDocument[]): DocumentStore {
   const s = new DocumentStore();
@@ -246,6 +247,25 @@ test("buildTokenFromActor instance mode embeds an independent copy with provenan
   expect(copy.name).toBe("Goblin");
   expect(copy.engine).toEqual(actorEngine);
   expect(copy.engine).not.toBe(actor.engine); // independent by value, not aliased
+});
+
+test("buildTokenFromActor seeds w/h=cellSize solely as the dangling-link fallback (not consumed on the actor-backed render path)", () => {
+  const actor = buildActorDoc("w1", "Goblin", actorEngine, "act1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 50, "tok1");
+  expect((token.engine as TokenEngine).w).toBe(50);
+  expect((token.engine as TokenEngine).h).toBe(50);
+
+  // Actor-backed render path: resolveTokenBox derives size from actor.size × cellSize,
+  // NOT the seeded token.engine.w/h.
+  const store = storeWith(actor, token);
+  const box = resolveTokenBox(token, store, resolveTokenActor(token, store));
+  expect(box.w).toBe(1 * 100); // actorEngine.size.w=1 × the store's default 100px cell, not the seeded 50
+
+  // Dangling link (actor removed) — the seeded w/h becomes the real fallback.
+  const withoutActor = new DocumentStore();
+  withoutActor.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: token }] });
+  const danglingBox = resolveTokenBox(token, withoutActor, resolveTokenActor(token, withoutActor));
+  expect(danglingBox.w).toBe(50); // now the seeded engine.w is what's actually used
 });
 
 test("setNameHidden sets and clears the OwnerOrGm override on /name", () => {

@@ -357,6 +357,12 @@ export function buildTokenFromActor(
   cellSize: number,
   id?: string,
 ): WireDocument {
+  // `w`/`h` are seeded solely as the dangling-link fallback: resolveTokenBox (actor.ts)
+  // uses this ONLY when the linked/instanced actor is missing (actor.ts's missing-actor
+  // branch, `eng?.w ?? 0`). The actor-backed render path never reads these — size resolves
+  // through EffectiveActor.size x grid-cell instead. This is an explicit, documented
+  // fallback rather than a lazy derivation from the token's last-known actor size, which
+  // would introduce a second size-derivation path.
   const base: TokenEngine = {
     x: pos.x, y: pos.y, w: cellSize, h: cellSize, rotation: 0,
     visual: null, actor_id: null, overrides: null, face: null,
