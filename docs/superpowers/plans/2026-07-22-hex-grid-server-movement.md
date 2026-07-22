@@ -561,6 +561,55 @@ and DoS cap unchanged. Behavior unchanged for square scenes."
 
 - [ ] **Step 8: Mandatory security buddy-check** — dispatch two independent reviewers (opus-tier per this plan's Buddy-check directives) to confirm: (a) the refactor is genuinely behavior-preserving for every existing square-scene test, not just the ones re-run in Step 5; (b) no new code path can produce a WIDER visibility/movement mask than before (fail-closed direction preserved); (c) `player_lit_mask` and `visible_cells`/`visible_cells_cached` both still derive from the identical `accumulate_visible_cells` call, no divergence introduced between the two consumers.
 
+**Post-task finding (both security buddy-check reviewers independently confirmed; reviewer B raised it, reviewer A's own point 3 assumed it away and needs correction):** point (c) above is FALSE as originally stated. `player_lit_mask` does NOT call `accumulate_visible_cells` — it has its OWN separate hardcoded cell-center loop (`scene/mod.rs`, inside `player_lit_mask`, `let cx = (i as f64 + 0.5) * cell; let cy = (j as f64 + 0.5) * cell;`). Task 5 only migrated `visible_cells`/`visible_cells_cached`'s shared helper. For square scenes this is harmless (both formulas are byte-identical today), but it means `player_lit_mask` (secrecy egress) and `visible_cells` (movement gate) are TWO independent center-math sites, not one — a real gap the original Task 5 brief's framing missed. Added as Task 5b below, with the same rigor (opus-tier, mandatory buddy-check) since it's the identical secrecy-critical code class.
+
+---
+
+## Task 5b: Wire `player_lit_mask`'s own separate cell-center loop through `GridShape` `[sec]`
+
+**Files:**
+- Modify: `src/server/src/scene/mod.rs` (`player_lit_mask`, the `let cx = (i as f64 + 0.5) * cell; let cy = (j as f64 + 0.5) * cell;` lines inside its per-scene cell-accumulation loop — read the full function, currently starting at `pub fn player_lit_mask(&self, user: Uuid) -> Vec<LitScene> {`, to find the exact loop and the `cell` local it resolves per-scene via a `grid.get(&scene)` lookup)
+- Test: `scene/mod.rs`'s existing `player_lit_mask` test suite (must pass unchanged)
+
+**Interfaces:** Same pattern as Task 5 — construct a `SquareGrid { cell, rule }` from the loop's already-resolved per-scene `cell` (and the scene's resolved diagonal rule, via whatever accessor Task 5's implementation used — mirror it exactly for consistency) and replace `(cx, cy) = ((i+0.5)*cell, (j+0.5)*cell)` with `grid.cell_center((i, j))`. Bounding-box scan and the `MAX_CELLS_PER_POLYGON`-equivalent cap in this function stay untouched, mirroring Task 5's scope discipline.
+
+- [ ] **Step 1: Write the failing test**
+
+Add a pinning test to `scene/mod.rs`'s `player_lit_mask` test module asserting the exact returned `LitScene` cell set for a fixed fixture (mirror Task 5's `accumulate_visible_cells_routes_through_grid_shape_cell_center_not_hardcoded` pattern — same style, applied to `player_lit_mask`'s output instead).
+
+- [ ] **Step 2: Run test to verify it fails or passes as a pin**
+
+Run: `cargo test --manifest-path src/server/Cargo.toml player_lit_mask -- --nocapture`
+Expected: passes immediately as a pin (same caveat as this plan's other pinning-test steps) — proceed to Step 3 regardless.
+
+- [ ] **Step 3: Refactor**
+
+Replace the inline `cx`/`cy` computation with `grid.cell_center((i, j))`, threading a `SquareGrid` constructed from the loop's per-scene `cell` local.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `cargo test --manifest-path src/server/Cargo.toml --lib` (full lib suite, same rationale as Task 5 — this is the OTHER secrecy-egress consumer)
+Expected: PASS, every pre-existing `player_lit_mask` test unchanged.
+
+- [ ] **Step 5: Full server gate**
+
+Run: `cargo test --manifest-path src/server/Cargo.toml --all-targets && cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -D warnings`
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/server/src/scene/mod.rs
+git commit -m "refactor(server/scene): route player_lit_mask's cell-center through GridShape [sec]
+
+player_lit_mask had its own separate hardcoded cell-center loop,
+independent of accumulate_visible_cells (Task 5 only migrated the
+visible_cells/visible_cells_cached shared helper). Both secrecy-egress
+and movement-gate center math now go through the same GridShape
+abstraction. Behavior unchanged for square scenes."
+```
+
+- [ ] **Step 7: Mandatory security buddy-check** — same requirements as Task 5's Step 8, applied to this function: behavior-preservation for every existing test, fail-closed/no-widening direction, and (now genuinely) confirm `player_lit_mask` and `visible_cells`/`visible_cells_cached` compute IDENTICAL cell centers for the same `(i,j,cell)` input even though they're two separate call sites.
+
 ---
 
 ## Task 6: Frozen-fixture parity gate — prove `SquareGrid`-via-abstraction matches pre-refactor square behavior end-to-end `[sec]`
