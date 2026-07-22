@@ -474,11 +474,23 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   singleton config doc (id→`{name}` map, GM-seeded `{general}` via the reactive-seed idiom;
   add/rename are single-key updates but **remove is a WHOLE-FIELD replace of
   `/engine/channels`** (M13-0 re-root, was `/system/channels`) with the key deleted — `set_pointer` cannot delete keys; a null
-  tombstone was reviewed and rejected). Render cap: last 200 per view. Scroll: stick-to-bottom
-  + "new messages" pill; the pill effect tracks the previous count in a non-reactive closure +
-  `untrack`ed `atBottom` (scrolling alone must not re-trigger), and all scroll measurement
-  bails while the tab is `display:none`-hidden (an IntersectionObserver re-syncs on
-  visibility — panels stay mounted in the tabbed sidebar).
+  tombstone was reviewed and rejected). Render cap: last 200 per view, derived incrementally via
+  `channels.ts`'s `ChatDerivationCache` (`deriveVisibleDocs`) — `channel`/`audience` are frozen at
+  creation (see `handle_edit_message` above), so an id's view membership and sorted position are
+  parsed/computed once and never revisited; a subsequent edit (a new WireDocument reference for a
+  known id) only refreshes the cached reference, an O(log n) binary-search insertion handles a
+  genuinely new id, and the full history is never re-sorted. The cache is reset (a fresh
+  `ChatDerivationCache`) on `view` object-identity change, since membership is view-scoped.
+  Mounting is windowed a second time within that 200-cap: `computeVisibleWindow` maps the
+  `.messages` container's scroll-fraction onto an index range (+`VIRTUALIZE_OVERSCAN` each side)
+  rather than dividing by an assumed fixed row height, since message rows vary in height; it
+  falls back to the full range when `clientHeight` is unmeasured or content doesn't overflow.
+  Scroll: stick-to-bottom + "new messages" pill; the pill effect tracks the previous count in a
+  non-reactive closure + `untrack`ed `atBottom` (scrolling alone must not re-trigger), and all
+  scroll measurement bails while the tab is `display:none`-hidden (an IntersectionObserver
+  re-syncs on visibility — panels stay mounted in the tabbed sidebar). Both `scrollToBottom` and
+  the visibility-reveal path must call the same scroll-state sync used by the `onscroll` handler,
+  or the virtualized window silently goes stale after a programmatic (non-event-firing) scroll.
 - **`src/modules/chat-composer`** — Enter sends / Shift+Enter newline / `e.isComposing` IME
   guard; validation on the TRIMMED length (what's actually sent); NO client command parsing
   (`/`-commands ride verbatim — the server parses); the "Speak as" picker (M11d-2) sends
