@@ -16,17 +16,19 @@ import type { SceneSelection } from "./sceneSelection.svelte";
  * reactive implementation). */
 export type TFunc = (key: string, params?: Record<string, string | number>) => string;
 
-/** Chat transport seam (see `AppContext.chat`). Fire-and-forget: none of these
- * calls resolve/reject — the server applies or rejects out-of-band. */
+/** Chat transport seam (see `AppContext.chat`). Each call resolves when the op
+ * is accepted (success-assumed after a short window with no error), and rejects
+ * with the server's player-presentable reason on a correlated rejection so the
+ * caller can surface it instead of the op silently vanishing. */
 export interface ChatApi {
   send(opts: {
     channel: string;
     content: string;
     actorOwner?: WireActorOwnerRef | null;
     audience?: WireAudience;
-  }): void;
-  edit(messageId: string, content: string): void;
-  delete(messageId: string): void;
+  }): Promise<void>;
+  edit(messageId: string, content: string): Promise<void>;
+  delete(messageId: string): Promise<void>;
 }
 
 /** Template pull/push/revert/stamp seam (§6.3). Thin orchestration over `store`/`documents` +

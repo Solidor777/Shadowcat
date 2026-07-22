@@ -296,13 +296,21 @@ with zero message-specific plumbing in any of those subsystems.
   parse path** — proven by an exhaustive test over every command token, not just the default
   fallthrough — `System` is reserved for a future server-authored-notice producer that does not
   go through this parser at all.
-- `src/server/src/ws/protocol.rs` — `ClientMsg::SendMessage { channel, content, actor_owner:
-  Option<ActorOwnerRef>, audience: Audience }` (ts-rs exported; `audience` is `#[serde(default)]`,
-  so an omitted field parses as `Audience::Public`). `ClientMsg::EditMessage { message_id, content
-  }` and `ClientMsg::DeleteMessage { message_id }` (both ts-rs exported, c-3) are the ONLY
-  client-facing ways to mutate an existing stored message. None of the three carries an
-  `intent_id`, so a rejection has nothing to correlate a `Reject` frame to and is logged only (no
-  failure frame sent to the requester).
+- `src/server/src/ws/protocol.rs` — `ClientMsg::SendMessage { request_id, channel, content,
+  actor_owner: Option<ActorOwnerRef>, audience: Audience }` (ts-rs exported; `audience` is
+  `#[serde(default)]`, so an omitted field parses as `Audience::Public`).
+  `ClientMsg::EditMessage { request_id, message_id, content }` and
+  `ClientMsg::DeleteMessage { request_id, message_id }` (both ts-rs exported, c-3) are the ONLY
+  client-facing ways to mutate an existing stored message. **All three now carry a REQUIRED
+  `request_id: Uuid`** (mirroring the `Search`/`Pathfind`/`MoveRequest` correlation pattern):
+  success is still confirmed only by the broadcast `Event` echo, but a rejection is now surfaced
+  to the sender as a `ServerMsg::ChatError { request_id, message }` (one shared error frame for all
+  three ops — they share one `SendMessageError` enum + one `Display`). `message` is
+  `SendMessageError`'s `Display`, which is `[sec]`-classified: validation-class variants surface a
+  specific reason, but authorization/existence/internal-class variants (`ActorNotSpeakable`,
+  `Forbidden`, `NotFound`, `Data`) collapse to a fixed generic string — `NotFound`==`Forbidden`
+  (no existence oracle), `Data` never leaks its inner detail. See the `Display` impl at the
+  `SendMessageError` enum (`chat/mod.rs`).
 - `src/server/src/ws/conn.rs` — three chat dispatch points plus the `Intent` guard:
   - `ClientMsg::Intent { ops, .. }` arm: calls `chat::ops_target_message(&ops)` BEFORE
     `room.publish`; if true, sends `ServerMsg::Reject{reason: Forbidden}` and `continue`s without
@@ -311,7 +319,9 @@ with zero message-specific plumbing in any of those subsystems.
   - `ClientMsg::EditMessage { .. }` arm: calls `chat::handle_edit_message`.
   - `ClientMsg::DeleteMessage { .. }` arm: calls `chat::handle_delete_message`.
   - All three chat arms confirm success only by the broadcast echo of the authored `Event` (same
-    pattern as `Intent`), not a direct reply; a failure is `tracing::debug!`-logged only.
+    pattern as `Intent`), not a direct reply; a failure is `tracing::debug!`-logged AND emits a
+    `ServerMsg::ChatError { request_id, message: e.to_string() }` to the SENDER's connection only
+    (`etx`, never broadcast) so the rejection is surfaced instead of vanishing.
 - `src/server/src/http/routes.rs` (`write_ops`, around line 242) — mirrors the WS ingress guard:
   `if chat::ops_target_message(&ops) { return Err(AppError::Forbidden); }` before the room/repo
   write path. Both transports must independently apply this guard. (`EditMessage`/`DeleteMessage`
@@ -424,10 +434,21 @@ with zero message-specific plumbing in any of those subsystems.
 
 ## Gotchas
 
-- **No `SendMessage`/`EditMessage`/`DeleteMessage` frame carries an `intent_id`.** A rejection
-  from any of the three has no request to correlate a `Reject` to — it is logged server-side only,
-  not surfaced to the sending client as a distinct failure frame. A future UX pass may need to add
-  correlation (currently out of scope).
+- **The three chat frames carry `request_id`, NOT `intent_id`, and correlate to `ChatError`, not
+  `Reject`.** A rejected send/edit/delete is now surfaced to the sender via a `request_id`-
+  correlated `ServerMsg::ChatError` (sender-only, never broadcast) — no longer log-only. Client
+  side: `WsClient.sendChatMessage`/`editChatMessage`/`deleteChatMessage` return `Promise<void>`
+  tracked in a `chatPending` map. Chat correlation is ASYMMETRIC: only a rejection replies, so the
+  promise RESOLVES on a `CHAT_ERROR_WINDOW_MS` (15s) timeout (success-assumed) and REJECTS on a
+  `chat_error` frame; `failPending` rejects in-flight ops on disconnect. `AppContext.chat.send`/
+  `edit`/`delete` (ui-kit) are now `Promise<void>`; the composer surfaces the reason inline
+  (`errorMsg`).
+- **`SendMessageError`'s `Display` is a `[sec]` security boundary — do not widen it.** It is what
+  `ChatError.message` carries. Validation-class variants (`Empty`/`TooLong`/`RateLimited`/
+  `UnknownRecipient`/`AudienceLocked`/`RollImmutable`) surface a specific reason; authorization/
+  existence/internal-class (`ActorNotSpeakable`/`Forbidden`/`NotFound`/`Data`) return a FIXED
+  generic string that ignores the inner value. `NotFound`==`Forbidden` (existence-oracle close);
+  `Data(_)` never echoes the inner `DataError`. Adding a variant means classifying it here.
 - **`Segment` now has `Html` alongside `Text`.** A pre-c-3 assumption that `content` is always
   literal, inert text is no longer valid — `sanitize()` produces `Segment::Html{sanitized_html}`
   whenever the world's `chat-settings` policy has `markdown` or `html` enabled, and the client is

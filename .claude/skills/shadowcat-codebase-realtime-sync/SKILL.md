@@ -77,7 +77,11 @@ optimistically and roll back on divergence.
 - **One-shot correlated request pairs** (`Search`→`SearchResult`/`SearchError`;
   `Pathfind`→`PathResult`/`PathError`) route replies to the requesting connection only (never
   broadcast); correlated by `request_id` via the `pending` map in `WsClient`. See
-  `src/client/core/src/ws-client.ts` and `src/server/src/ws/protocol.rs`.
+  `src/client/core/src/ws-client.ts` and `src/server/src/ws/protocol.rs`. **Chat ops
+  (`SendMessage`/`EditMessage`/`DeleteMessage`) also carry `request_id` but are ASYMMETRIC**: only
+  a REJECTION replies (`ServerMsg::ChatError`, sender-only), while success is confirmed by the
+  broadcast `Event` echo. They use a separate `chatPending` map whose timer resolves
+  (success-assumed) rather than rejects on timeout — see `shadowcat-codebase-chat`.
 - **MoveRequest → MoveStream (M2, broadcast):** `MoveStream` is an **aux broadcast frame** — sent
   via `Room::broadcast_aux` like `ScenePing`, carrying NO seq number (it is cosmetic playback data,
   not an authoritative document event; it never touches the `RingBuffer`/gap-resync path).

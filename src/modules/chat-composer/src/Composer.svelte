@@ -40,6 +40,10 @@
 
   let value = $state("");
   let textarea = $state<HTMLTextAreaElement | undefined>(undefined);
+  // The server's player-presentable rejection reason for the last send, shown
+  // inline so a refused message does not vanish silently. Already classified
+  // server-side (authorization/existence/internal errors are generic there).
+  let errorMsg = $state<string | null>(null);
 
   const trimmed = $derived(value.trim());
   // Cap/counter/send-gating derive from the TRIMMED length, matching what send()
@@ -63,12 +67,25 @@
 
   function send(): void {
     if (!canSend) return;
+    errorMsg = null;
     // /-commands (e.g. "/roll 1d6") ride verbatim — the server (chat::parse_command)
     // is the sole parser; the composer never inspects or branches on content shape.
     const actorOwner: WireActorOwnerRef | undefined = selectedActorId ? { kind: "actor", actor_id: selectedActorId } : undefined;
-    ctx.chat.send(actorOwner ? { channel, content: trimmed, audience, actorOwner } : { channel, content: trimmed, audience });
+    // Clear the input optimistically; a server rejection surfaces inline via `errorMsg`
+    // (correlated by request_id under the seam) instead of the message vanishing.
+    Promise.resolve(
+      ctx.chat.send(actorOwner ? { channel, content: trimmed, audience, actorOwner } : { channel, content: trimmed, audience }),
+    ).catch((e: unknown) => {
+      errorMsg = e instanceof Error ? e.message : t("chat.composer.sendFailed");
+    });
     value = "";
     queueMicrotask(autoGrow);
+  }
+
+  // Clear a stale rejection notice as soon as the author starts a fresh message.
+  function onInput(): void {
+    errorMsg = null;
+    autoGrow();
   }
 
   function onKeydown(e: KeyboardEvent): void {
@@ -98,11 +115,14 @@
     bind:value
     {placeholder}
     onkeydown={onKeydown}
-    oninput={autoGrow}
+    oninput={onInput}
     rows="1"
   ></textarea>
   <button type="button" onclick={send} disabled={!canSend}>{t("chat.composer.send")}</button>
 </div>
+{#if errorMsg}
+  <div class="send-error" role="alert">{errorMsg}</div>
+{/if}
 {#if showCounter}
   <div class="counter" class:over={overLimit}>{t("chat.composer.count", { used: trimmed.length, max: MAX_MESSAGE_CHARS })}</div>
 {/if}
@@ -136,6 +156,11 @@
     &.over {
       color: var(--danger);
     }
+  }
+  .send-error {
+    margin-top: var(--space-1);
+    font-size: 0.85em;
+    color: var(--danger);
   }
   .visually-hidden {
     position: absolute;

@@ -387,12 +387,13 @@ async fn handle_socket(
                                 }
                             }
                         }
-                        Ok(ClientMsg::SendMessage { channel, content, actor_owner, audience }) => {
+                        Ok(ClientMsg::SendMessage { request_id, channel, content, actor_owner, audience }) => {
                             // Server-authoritative chat ingest: flood-limit, validate, CONSTRUCT
                             // the message doc, and publish. Success is confirmed by the broadcast
-                            // echo of the authored Event (like Intent); a `SendMessage` frame
-                            // carries no intent_id, so a rejection has no matching frame to
-                            // correlate a Reject to and is logged only.
+                            // echo of the authored Event (like Intent). On rejection, a
+                            // `ChatError` correlated by `request_id` is sent to the sender ONLY
+                            // (never broadcast) so the failure is surfaced instead of vanishing;
+                            // `message` is the classified, no-leak `Display` text.
                             if let Err(e) = crate::chat::handle_send_message(
                                 &room,
                                 repo.as_ref(),
@@ -409,11 +410,17 @@ async fn handle_socket(
                             .await
                             {
                                 tracing::debug!(world = %world_id, user = %user_id, ?e, "message rejected");
+                                if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                    request_id,
+                                    message: e.to_string(),
+                                }))).await.is_err() {
+                                    break;
+                                }
                             }
                         }
-                        Ok(ClientMsg::EditMessage { message_id, content }) => {
-                            // Same confirm-by-broadcast-echo shape as SendMessage; a
-                            // rejection is logged only (no intent_id to correlate to).
+                        Ok(ClientMsg::EditMessage { request_id, message_id, content }) => {
+                            // Same confirm-by-broadcast-echo shape as SendMessage; a rejection is
+                            // surfaced to the sender only via a `request_id`-correlated `ChatError`.
                             if let Err(e) = crate::chat::handle_edit_message(
                                 &room,
                                 repo.as_ref(),
@@ -428,11 +435,17 @@ async fn handle_socket(
                             .await
                             {
                                 tracing::debug!(world = %world_id, user = %user_id, ?e, "edit rejected");
+                                if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                    request_id,
+                                    message: e.to_string(),
+                                }))).await.is_err() {
+                                    break;
+                                }
                             }
                         }
-                        Ok(ClientMsg::DeleteMessage { message_id }) => {
+                        Ok(ClientMsg::DeleteMessage { request_id, message_id }) => {
                             // Same confirm-by-broadcast-echo shape as SendMessage/EditMessage; a
-                            // rejection is logged only (no intent_id to correlate to).
+                            // rejection is surfaced to the sender only via a correlated `ChatError`.
                             if let Err(e) = crate::chat::handle_delete_message(
                                 &room,
                                 repo.as_ref(),
@@ -445,6 +458,12 @@ async fn handle_socket(
                             .await
                             {
                                 tracing::debug!(world = %world_id, user = %user_id, ?e, "delete rejected");
+                                if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                    request_id,
+                                    message: e.to_string(),
+                                }))).await.is_err() {
+                                    break;
+                                }
                             }
                         }
                         Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius }) => {

@@ -384,6 +384,7 @@ describe("SendMessageSchema", () => {
     expect(
       SendMessageSchema.parse({
         type: "send_message",
+        request_id: "00000000-0000-0000-0000-0000000000aa",
         channel: "all",
         content: "hi",
         actor_owner: {
@@ -394,9 +395,21 @@ describe("SendMessageSchema", () => {
     ).toBe("actor");
   });
 
+  it("requires request_id", () => {
+    expect(
+      SendMessageSchema.safeParse({
+        type: "send_message",
+        channel: "all",
+        content: "hi",
+        actor_owner: null,
+      }).success,
+    ).toBe(false);
+  });
+
   it("defaults audience to public when omitted", () => {
     const parsed = SendMessageSchema.parse({
       type: "send_message",
+      request_id: "00000000-0000-0000-0000-0000000000aa",
       channel: "all",
       content: "hi",
       actor_owner: null,
@@ -407,6 +420,7 @@ describe("SendMessageSchema", () => {
   it("parses a whisper audience with recipients", () => {
     const parsed = SendMessageSchema.parse({
       type: "send_message",
+      request_id: "00000000-0000-0000-0000-0000000000aa",
       channel: "whispers",
       content: "psst",
       actor_owner: null,
@@ -424,6 +438,7 @@ describe("SendMessageSchema", () => {
   it("parses a gm_only audience", () => {
     const parsed = SendMessageSchema.parse({
       type: "send_message",
+      request_id: "00000000-0000-0000-0000-0000000000aa",
       channel: "gm",
       content: "for your eyes only",
       actor_owner: null,

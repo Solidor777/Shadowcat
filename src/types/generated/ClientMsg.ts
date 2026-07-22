@@ -11,4 +11,4 @@ export type ClientMsg = { "type": "hello", world: string, last_seq: bigint | nul
  * Ordered cell-center scene points: start … goal (inclusive). Type is `[f64; 2]` not a
  * tuple so the TS binding emits `[number, number][]` (array literal, not tuple object).
  */
-path: Array<[number, number]>, } | { "type": "send_message", channel: string, content: string, actor_owner: ActorOwnerRef | null, audience: Audience, } | { "type": "edit_message", message_id: string, content: string, } | { "type": "delete_message", message_id: string, };
+path: Array<[number, number]>, } | { "type": "send_message", request_id: string, channel: string, content: string, actor_owner: ActorOwnerRef | null, audience: Audience, } | { "type": "edit_message", request_id: string, message_id: string, content: string, } | { "type": "delete_message", request_id: string, message_id: string, };

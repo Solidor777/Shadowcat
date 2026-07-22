@@ -252,25 +252,28 @@ export class WorldSession {
     return this.#ws.moveRequest(scene, tokenId, path);
   }
 
-  /** Send a chat message. Fire-and-forget; no-op when disconnected — thin delegate
-   * to `WsClient.sendChatMessage`. */
+  /** Send a chat message. Resolves/rejects with the correlated outcome; rejects
+   * immediately when there is no live transport (the caller surfaces it). */
   sendChatMessage(opts: {
     channel: string;
     content: string;
     actorOwner?: WireActorOwnerRef | null;
     audience?: WireAudience;
-  }): void {
-    this.#ws?.sendChatMessage(opts);
+  }): Promise<void> {
+    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    return this.#ws.sendChatMessage(opts);
   }
 
-  /** Edit an existing chat message. Fire-and-forget; no-op when disconnected. */
-  editChatMessage(messageId: string, content: string): void {
-    this.#ws?.editChatMessage(messageId, content);
+  /** Edit an existing chat message. Resolves/rejects with the correlated outcome. */
+  editChatMessage(messageId: string, content: string): Promise<void> {
+    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    return this.#ws.editChatMessage(messageId, content);
   }
 
-  /** Delete an existing chat message. Fire-and-forget; no-op when disconnected. */
-  deleteChatMessage(messageId: string): void {
-    this.#ws?.deleteChatMessage(messageId);
+  /** Delete an existing chat message. Resolves/rejects with the correlated outcome. */
+  deleteChatMessage(messageId: string): Promise<void> {
+    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    return this.#ws.deleteChatMessage(messageId);
   }
 
   /** Subscribe to a SceneDerived channel. Returns a synchronous handle; the

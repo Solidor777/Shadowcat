@@ -90,7 +90,10 @@ pub enum ClientMsg {
     /// Author a chat message. The server sanitizes `content` and CONSTRUCTS the
     /// stored message doc (server-authoritative ingest). The sole message-
     /// authoring path — a client `Create` of a `message` doc is rejected.
+    /// `request_id` correlates a rejection back to the sender via `ChatError`
+    /// (success is confirmed by the broadcast `Event` echo, same as `Intent`).
     SendMessage {
+        request_id: Uuid,
         channel: String,
         content: String,
         #[serde(default)]
@@ -100,10 +103,19 @@ pub enum ClientMsg {
     },
     /// Edit an existing message the requester owns (or any, if GM). The server
     /// re-runs the sanitize+command pipeline; audience/channel are frozen.
-    EditMessage { message_id: Uuid, content: String },
+    /// `request_id` correlates a rejection back to the sender via `ChatError`.
+    EditMessage {
+        request_id: Uuid,
+        message_id: Uuid,
+        content: String,
+    },
     /// Soft-delete a message the requester owns (or any, if GM): the doc stays
     /// in the sequenced log as a tombstone (content cleared, deleted_at set).
-    DeleteMessage { message_id: Uuid },
+    /// `request_id` correlates a rejection back to the sender via `ChatError`.
+    DeleteMessage {
+        request_id: Uuid,
+        message_id: Uuid,
+    },
 }
 
 /// Which tier served a resync.
@@ -283,6 +295,14 @@ pub enum ServerMsg {
     /// A `MoveRequest` was rejected (token already moving, caller not owner, malformed path, etc.).
     /// Addressed to the originating connection only; never broadcast.
     MoveError { request_id: Uuid, message: String },
+    /// A `SendMessage`/`EditMessage`/`DeleteMessage` was rejected. One shared
+    /// variant covers all three chat ops: they share a single error enum
+    /// (`chat::SendMessageError`) and its player-presentable `Display`; the
+    /// failed op is implicit in which request `request_id` belongs to.
+    /// Addressed to the originating connection only; never broadcast. `message`
+    /// is `SendMessageError`'s `Display` text — authorization/existence/internal
+    /// classes are already collapsed to a generic string there (no leak).
+    ChatError { request_id: Uuid, message: String },
     /// Broadcast to the scene, then clipped per recipient at egress: the mover receives the full
     /// trajectory and `mover_vision`; observers receive only the position samples their own vision
     /// admits, with `mover_vision` nulled; a fully-occluded recipient receives nothing.
@@ -653,15 +673,17 @@ mod protocol_tests {
 
     #[test]
     fn send_message_frame_parses() {
-        let raw = r#"{"type":"send_message","channel":"all","content":"hi","actor_owner":null}"#;
+        let raw = r#"{"type":"send_message","request_id":"00000000-0000-0000-0000-0000000000aa","channel":"all","content":"hi","actor_owner":null}"#;
         let msg: ClientMsg = serde_json::from_str(raw).unwrap();
         match msg {
             ClientMsg::SendMessage {
+                request_id,
                 channel,
                 content,
                 actor_owner,
                 audience,
             } => {
+                assert_eq!(request_id, Uuid::from_u128(0xaa));
                 assert_eq!(channel, "all");
                 assert_eq!(content, "hi");
                 assert!(actor_owner.is_none());
@@ -676,8 +698,41 @@ mod protocol_tests {
     }
 
     #[test]
+    fn edit_and_delete_frames_carry_request_id() {
+        let edit: ClientMsg = serde_json::from_str(
+            r#"{"type":"edit_message","request_id":"00000000-0000-0000-0000-0000000000ab","message_id":"00000000-0000-0000-0000-000000000001","content":"fixed"}"#,
+        )
+        .unwrap();
+        match edit {
+            ClientMsg::EditMessage { request_id, .. } => assert_eq!(request_id, Uuid::from_u128(0xab)),
+            _ => panic!("wrong variant"),
+        }
+        let del: ClientMsg = serde_json::from_str(
+            r#"{"type":"delete_message","request_id":"00000000-0000-0000-0000-0000000000ac","message_id":"00000000-0000-0000-0000-000000000001"}"#,
+        )
+        .unwrap();
+        match del {
+            ClientMsg::DeleteMessage { request_id, .. } => assert_eq!(request_id, Uuid::from_u128(0xac)),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn chat_error_frame_round_trips_and_is_tagged() {
+        let e = ServerMsg::ChatError {
+            request_id: Uuid::from_u128(9),
+            message: "You are not permitted to send this message.".into(),
+        };
+        // Correlated reply, not a sequenced Event: never buffered/resynced.
+        assert_eq!(e.event_seq(), None);
+        let s = serde_json::to_string(&e).unwrap();
+        assert!(s.contains("\"type\":\"chat_error\""), "got {s}");
+        let _back: ServerMsg = serde_json::from_str(&s).unwrap();
+    }
+
+    #[test]
     fn send_message_frame_parses_whisper_audience() {
-        let raw = r#"{"type":"send_message","channel":"all","content":"psst","actor_owner":null,"audience":{"kind":"whisper","recipients":["00000000-0000-0000-0000-000000000001"]}}"#;
+        let raw = r#"{"type":"send_message","request_id":"00000000-0000-0000-0000-0000000000aa","channel":"all","content":"psst","actor_owner":null,"audience":{"kind":"whisper","recipients":["00000000-0000-0000-0000-000000000001"]}}"#;
         let msg: ClientMsg = serde_json::from_str(raw).unwrap();
         match msg {
             ClientMsg::SendMessage { audience, .. } => {
@@ -694,7 +749,7 @@ mod protocol_tests {
 
     #[test]
     fn send_message_frame_parses_gm_only_audience() {
-        let raw = r#"{"type":"send_message","channel":"gm","content":"for your eyes only","actor_owner":null,"audience":{"kind":"gm_only"}}"#;
+        let raw = r#"{"type":"send_message","request_id":"00000000-0000-0000-0000-0000000000aa","channel":"gm","content":"for your eyes only","actor_owner":null,"audience":{"kind":"gm_only"}}"#;
         let msg: ClientMsg = serde_json::from_str(raw).unwrap();
         match msg {
             ClientMsg::SendMessage { audience, .. } => {

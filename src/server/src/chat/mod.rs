@@ -401,6 +401,54 @@ pub enum SendMessageError {
     ActorNotSpeakable,
 }
 
+/// Player-presentable text for the sender's failure notice (correlated `ChatError`
+/// wire frame). Classified per `[sec]`: only the SENDER'S OWN input / an immutable
+/// product rule may be surfaced verbatim; every authorization-, existence-, or
+/// internal-error-class variant collapses to a fixed generic string so a sender
+/// cannot probe permission/ownership/existence structure through error text.
+///
+/// INVARIANT (no-leak): `Data`, `Forbidden`, `NotFound`, and `ActorNotSpeakable`
+/// MUST ignore any inner value. `NotFound` and `Forbidden` are deliberately
+/// IDENTICAL — distinguishing them is a message existence+ownership oracle.
+impl std::fmt::Display for SendMessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // Validation-class: reveals only the sender's own input or a product rule.
+            SendMessageError::Empty => f.write_str("Message cannot be empty."),
+            SendMessageError::TooLong => f.write_str("Message is too long."),
+            SendMessageError::RateLimited => {
+                f.write_str("You are sending messages too quickly. Please wait a moment.")
+            }
+            SendMessageError::UnknownRecipient => {
+                // Safe: the world roster is already member-visible (`list_members`),
+                // so this discloses nothing a sender cannot already enumerate; the
+                // offending id is never echoed.
+                f.write_str("One or more whisper recipients are not members of this world.")
+            }
+            SendMessageError::AudienceLocked => {
+                f.write_str("You cannot change who can see a message after it is sent.")
+            }
+            SendMessageError::RollImmutable => {
+                f.write_str("A roll cannot be edited once it has been sent.")
+            }
+            // Authorization-class: generic only. The inner value is deliberately unused.
+            SendMessageError::ActorNotSpeakable => {
+                f.write_str("You are not permitted to send this message.")
+            }
+            SendMessageError::Forbidden | SendMessageError::NotFound => {
+                f.write_str("You are not permitted to modify this message.")
+            }
+            // Internal error: generic; never leaks the inner DataError (SQL/constraint/path text).
+            SendMessageError::Data(_) => {
+                f.write_str("The message could not be delivered. Please try again.")
+            }
+            // Never surfaced here (caught upstream, authored as a System notice); kept
+            // total + player-safe via RollError's own presentable Display.
+            SendMessageError::Roll(e) => write!(f, "{e}"),
+        }
+    }
+}
+
 /// Server-authoritative message ingest: flood-limit, validate, CONSTRUCT the
 /// message doc, and publish it via the authoritative path. The sole message-
 /// authoring entry point (see module-level INVARIANT comment) — a client can
@@ -1267,6 +1315,59 @@ mod tests {
             "only the owner is individually listed — every GM sees it dynamically via gm_role"
         );
         assert_eq!(doc.permissions.users.get(&owner), Some(&DocRole::Owner));
+    }
+
+    #[test]
+    fn send_message_error_display_classifies_authorization_vs_validation() {
+        use super::SendMessageError as E;
+
+        // Validation-class (safe to surface verbatim): each describes the SENDER'S
+        // OWN input or an immutable product rule, disclosing nothing about another
+        // user's permissions, a document's existence, or ownership structure.
+        assert_eq!(E::Empty.to_string(), "Message cannot be empty.");
+        assert_eq!(E::TooLong.to_string(), "Message is too long.");
+        assert_eq!(
+            E::RateLimited.to_string(),
+            "You are sending messages too quickly. Please wait a moment."
+        );
+        assert_eq!(
+            E::UnknownRecipient.to_string(),
+            "One or more whisper recipients are not members of this world."
+        );
+        assert_eq!(
+            E::AudienceLocked.to_string(),
+            "You cannot change who can see a message after it is sent."
+        );
+        assert_eq!(
+            E::RollImmutable.to_string(),
+            "A roll cannot be edited once it has been sent."
+        );
+
+        // Authorization-class (GENERIC only): surfacing the specific reason would
+        // let a sender probe permission/ownership/existence structure.
+        let generic_send = "You are not permitted to send this message.";
+        let generic_modify = "You are not permitted to modify this message.";
+        // The [sec] variant: never disclose whether the actor exists or who owns it.
+        assert_eq!(E::ActorNotSpeakable.to_string(), generic_send);
+        assert_eq!(E::Forbidden.to_string(), generic_modify);
+        // Existence-oracle close: NotFound is INDISTINGUISHABLE from Forbidden, so a
+        // caller cannot tell "message doesn't exist" from "message isn't yours".
+        assert_eq!(E::NotFound.to_string(), generic_modify);
+        assert_eq!(E::NotFound.to_string(), E::Forbidden.to_string());
+
+        // Internal error: generic; must NEVER leak the inner DataError detail (which
+        // can carry SQL / constraint / path text).
+        let secret = "unique_constraint_secret_column";
+        let data = E::Data(DataError::Conflict(secret.to_string())).to_string();
+        assert_eq!(data, "The message could not be delivered. Please try again.");
+        assert!(
+            !data.contains(secret),
+            "Data(_) Display must not leak the inner DataError detail"
+        );
+
+        // Roll: never reaches the wire error channel (caught upstream and authored
+        // as a System notice), but Display must be total and player-safe.
+        assert!(!E::Roll(rolls::RollError::Unterminated).to_string().is_empty());
     }
 
     #[tokio::test]

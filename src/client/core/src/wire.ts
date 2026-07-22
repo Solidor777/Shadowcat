@@ -311,6 +311,11 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     message: z.string(),
   }),
   z.object({
+    type: z.literal("chat_error"),
+    request_id: z.string(),
+    message: z.string(),
+  }),
+  z.object({
     type: z.literal("move_stream"),
     request_id: z.string(),
     token_id: z.string(),
@@ -381,13 +386,14 @@ export type ClientMsg =
     }
   | {
       type: "send_message";
+      request_id: string;
       channel: string;
       content: string;
       actor_owner: WireActorOwnerRef | null;
       audience: WireAudience;
     }
-  | { type: "edit_message"; message_id: string; content: string }
-  | { type: "delete_message"; message_id: string };
+  | { type: "edit_message"; request_id: string; message_id: string; content: string }
+  | { type: "delete_message"; request_id: string; message_id: string };
 
 /**
  * Standalone Zod mirror of the `send_message` `ClientMsg` variant. `ClientMsg`
@@ -397,6 +403,7 @@ export type ClientMsg =
  */
 export const SendMessageSchema = z.object({
   type: z.literal("send_message"),
+  request_id: z.string(),
   channel: z.string(),
   content: z.string(),
   actor_owner: ActorOwnerRefSchema.nullable(),

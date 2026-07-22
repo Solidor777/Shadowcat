@@ -24,15 +24,15 @@ function ownedActor(id: string, owner: string, name: string): WireDocument {
 function renderComposer(
   opts: {
     audience?: WireAudience;
-    send?: ReturnType<typeof vi.fn<(o: unknown) => void>>;
+    send?: ReturnType<typeof vi.fn<(o: unknown) => Promise<void>>>;
     documents?: DocumentStore;
     role?: WorldRole;
     selfId?: string;
   } = {},
 ) {
-  const send = opts.send ?? vi.fn<(o: unknown) => void>();
+  const send = opts.send ?? vi.fn<(o: unknown) => Promise<void>>(async () => {});
   const context = setAppContextForTest({
-    chat: { send, edit: vi.fn(), delete: vi.fn() },
+    chat: { send, edit: vi.fn(async () => {}), delete: vi.fn(async () => {}) },
     documents: opts.documents ?? new DocumentStore(),
     role: opts.role ?? "player",
     selfId: opts.selfId ?? "u-self",
@@ -137,6 +137,33 @@ describe("Composer — sending", () => {
     await fireEvent.input(textarea, { target: { value: "via button" } });
     await fireEvent.click(screen.getByText("chat.composer.send"));
     expect(send).toHaveBeenCalledWith({ channel: "general", content: "via button", audience: publicAudience });
+  });
+
+  it("surfaces a server rejection inline instead of the message silently vanishing", async () => {
+    const send = vi
+      .fn<(o: unknown) => Promise<void>>()
+      .mockRejectedValue(new Error("Rate limit exceeded, try again shortly."));
+    renderComposer({ send });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "spam" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledTimes(1);
+    // Input still clears optimistically; the rejection is what surfaces.
+    expect(textarea.value).toBe("");
+    expect(await screen.findByText(/Rate limit exceeded/i)).toBeTruthy();
+  });
+
+  it("clears a prior rejection notice once the author starts typing again", async () => {
+    const send = vi
+      .fn<(o: unknown) => Promise<void>>()
+      .mockRejectedValue(new Error("Message is too long."));
+    renderComposer({ send });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "x" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(await screen.findByText(/too long/i)).toBeTruthy();
+    await fireEvent.input(textarea, { target: { value: "y" } });
+    expect(screen.queryByText(/too long/i)).toBeNull();
   });
 });
 

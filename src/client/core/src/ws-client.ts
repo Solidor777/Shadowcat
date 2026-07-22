@@ -113,6 +113,11 @@ export interface WsClientOptions {
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
+/** How long a correlated chat op waits for a `chat_error` before assuming
+ * success. Comfortably beyond the server's synchronous link-preview deadline
+ * (5s) so a slow-but-successful send never resolves ahead of a would-be error. */
+const CHAT_ERROR_WINDOW_MS = 15_000;
+
 export class WsClient {
   private transport: Transport | null = null;
   private running_ = false;
@@ -141,6 +146,15 @@ export class WsClient {
   private scenePending = new Map<
     string,
     { resolve: (s: SceneSubscription) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >();
+  /** In-flight chat ops (send/edit/delete), keyed by request_id. Chat is
+   * asymmetric: ONLY a rejection replies (a `chat_error` frame); a successful
+   * op is confirmed by the broadcast Event echo, with no direct reply. So the
+   * timer RESOLVES (success-assumed) and cleans the entry up when no error
+   * arrives within the window. */
+  private chatPending = new Map<
+    string,
+    { resolve: () => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
   >();
 
   private readonly now: () => number;
@@ -188,6 +202,13 @@ export class WsClient {
     // Scene subscriptions are bound to this socket; WorldSession re-subscribes on
     // the next Welcome, so drop them here.
     this.sceneSubs.clear();
+    // Chat ops were sent on a socket that will not answer; whether the op landed
+    // is unknown, so reject rather than silently resolve.
+    for (const p of this.chatPending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error(reason));
+    }
+    this.chatPending.clear();
   }
 
   /** Run a consumer callback in isolation: a throw is routed to `onError` and
@@ -371,6 +392,17 @@ export class WsClient {
         if (p) {
           clearTimeout(p.timer);
           this.pending.delete(msg.request_id);
+          p.reject(new Error(msg.message));
+        }
+        break;
+      }
+      case "chat_error": {
+        // A rejected send/edit/delete: reject the correlated op so the composer
+        // surfaces the reason (already classified server-side — no leak).
+        const p = this.chatPending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.chatPending.delete(msg.request_id);
           p.reject(new Error(msg.message));
         }
         break;
@@ -593,37 +625,62 @@ export class WsClient {
     return () => this.moveStreamListeners.delete(cb);
   }
 
+  /** Register a correlated chat op: resolves (success-assumed) when no
+   * `chat_error` arrives within the window, rejects with the server's reason
+   * when one does. The timer is unref'd where supported so it never keeps a
+   * test's event loop alive. */
+  private trackChatOp(request_id: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.chatPending.delete(request_id);
+        resolve();
+      }, CHAT_ERROR_WINDOW_MS);
+      (timer as unknown as { unref?: () => void }).unref?.();
+      this.chatPending.set(request_id, { resolve, reject, timer });
+    });
+  }
+
   /**
-   * Send a chat message. Fire-and-forget: this frame carries no correlation id
-   * by design — server-side rejections are logged server-side only, and the
-   * composer pre-validates the cheap rejects (empty content, unknown channel)
-   * client-side before calling this.
+   * Send a chat message. Resolves when the send is accepted (confirmed by the
+   * broadcast Event echo; assumed after `CHAT_ERROR_WINDOW_MS` with no error),
+   * rejects with the server's player-presentable reason on a correlated
+   * `chat_error`. The composer surfaces the rejection instead of it vanishing.
    */
   sendChatMessage(opts: {
     channel: string;
     content: string;
     actorOwner?: WireActorOwnerRef | null;
     audience?: WireAudience;
-  }): void {
+  }): Promise<void> {
+    const request_id = crypto.randomUUID();
+    const p = this.trackChatOp(request_id);
     this.send({
       type: "send_message",
+      request_id,
       channel: opts.channel,
       content: opts.content,
       actor_owner: opts.actorOwner ?? null,
       audience: opts.audience ?? { kind: "public" },
     });
+    return p;
   }
 
-  /** Edit an existing chat message. Fire-and-forget (no correlation id); the
-   * server enforces edit ownership and rejects out-of-band. */
-  editChatMessage(messageId: string, content: string): void {
-    this.send({ type: "edit_message", message_id: messageId, content });
+  /** Edit an existing chat message. Resolves/rejects like `sendChatMessage`; the
+   * server enforces edit ownership and rejects via a correlated `chat_error`. */
+  editChatMessage(messageId: string, content: string): Promise<void> {
+    const request_id = crypto.randomUUID();
+    const p = this.trackChatOp(request_id);
+    this.send({ type: "edit_message", request_id, message_id: messageId, content });
+    return p;
   }
 
-  /** Delete an existing chat message. Fire-and-forget (no correlation id); the
-   * server enforces delete ownership and rejects out-of-band. */
-  deleteChatMessage(messageId: string): void {
-    this.send({ type: "delete_message", message_id: messageId });
+  /** Delete an existing chat message. Resolves/rejects like `sendChatMessage`; the
+   * server enforces delete ownership and rejects via a correlated `chat_error`. */
+  deleteChatMessage(messageId: string): Promise<void> {
+    const request_id = crypto.randomUUID();
+    const p = this.trackChatOp(request_id);
+    this.send({ type: "delete_message", request_id, message_id: messageId });
+    return p;
   }
 
   private applyEvent(cmd: WireCommand): void {

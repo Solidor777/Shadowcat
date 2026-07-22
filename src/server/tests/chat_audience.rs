@@ -161,6 +161,7 @@ fn send_message_frame(channel: &str, content: &str, audience: serde_json::Value)
     Message::Text(
         serde_json::json!({
             "type": "send_message",
+            "request_id": Uuid::new_v4(),
             "channel": channel,
             "content": content,
             "actor_owner": null,

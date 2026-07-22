@@ -188,6 +188,7 @@ export const en: Messages = {
   "chat.composer.myself": "Myself",
   "chat.composer.send": "Send",
   "chat.composer.count": "{used} / {max}",
+  "chat.composer.sendFailed": "Message could not be sent.",
   "chat.edited": "(edited)",
   "chat.deleted": "Message deleted",
   "chat.whisperTo": "to {names}",

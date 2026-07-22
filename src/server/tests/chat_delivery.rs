@@ -141,6 +141,7 @@ async fn send_message_is_broadcast_as_message_document_event() {
     ws_p.send(Message::Text(
         serde_json::json!({
             "type": "send_message",
+            "request_id": Uuid::new_v4(),
             "channel": "all",
             "content": "hello",
             "actor_owner": null,
@@ -164,4 +165,37 @@ async fn send_message_is_broadcast_as_message_document_event() {
     // The authoritative log agrees: exactly one durable event, a message create.
     let seqs = h.repo.events_since(h.world, 0).await.unwrap();
     assert_eq!(seqs.len(), 1);
+}
+
+/// A rejected `send_message` (empty content) is surfaced to the SENDER as a
+/// `chat_error` frame correlated by `request_id`, instead of vanishing silently.
+/// End-to-end proof of the conn.rs dispatch + `SendMessageError` Display wiring.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rejected_send_returns_a_correlated_chat_error_to_the_sender() {
+    let h = spawn().await;
+    let cookie_p = h.add_member("player", WorldRole::Player).await;
+    let mut ws_p = h.connect_with(&cookie_p).await;
+    recv_until(&mut ws_p, "welcome").await;
+
+    let request_id = Uuid::new_v4();
+    ws_p.send(Message::Text(
+        serde_json::json!({
+            "type": "send_message",
+            "request_id": request_id,
+            "channel": "all",
+            "content": "   ", // whitespace-only -> SendMessageError::Empty
+            "actor_owner": null,
+        })
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+
+    let err = recv_until(&mut ws_p, "chat_error").await;
+    assert_eq!(err["request_id"], request_id.to_string());
+    assert_eq!(err["message"], "Message cannot be empty.");
+
+    // Nothing was persisted: the rejection never reached the authoritative log.
+    let seqs = h.repo.events_since(h.world, 0).await.unwrap();
+    assert!(seqs.is_empty());
 }
