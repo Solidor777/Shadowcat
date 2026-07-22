@@ -18,6 +18,9 @@ class FakeMediaQueryList {
     this.matches = matches;
     for (const cb of this.#listeners) cb();
   }
+  get listenerCount(): number {
+    return this.#listeners.length;
+  }
 }
 
 // `sizeClass.svelte.ts` reads `matchMedia` once at module load, so the mock must
@@ -32,4 +35,12 @@ test("sizeClass() reflects a mocked matchMedia and updates on listener fire", as
 
   mql.fire(true);
   await waitFor(() => expect(screen.getByTestId("size").textContent).toBe("expanded"));
+});
+
+test("sizeClass's createSubscriber removes its matchMedia listener on teardown", () => {
+  const { unmount } = render(Probe);
+  expect(mql.listenerCount).toBe(1);
+
+  unmount();
+  expect(mql.listenerCount).toBe(0);
 });

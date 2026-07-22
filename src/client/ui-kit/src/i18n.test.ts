@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/svelte";
-import { test, expect, afterEach } from "vitest";
+import { test, expect, afterEach, vi } from "vitest";
 import Probe from "./__fixtures__/I18nProbe.svelte";
 import { i18n, t } from "./i18n.svelte";
 
@@ -20,4 +20,17 @@ test("switching locale re-renders components using t", async () => {
 
 test("t interpolates params", () => {
   expect(t("settings.role", { role: "gm" })).toBe("Role: gm");
+});
+
+test("i18n's createSubscriber unsubscribes from i18n.subscribe on teardown", () => {
+  const unsubscribeSpy = vi.fn();
+  const subscribeSpy = vi.spyOn(i18n, "subscribe").mockReturnValue(unsubscribeSpy);
+
+  const { unmount } = render(Probe);
+  expect(subscribeSpy).toHaveBeenCalled();
+
+  unmount();
+  expect(unsubscribeSpy).toHaveBeenCalled();
+
+  subscribeSpy.mockRestore();
 });
