@@ -1527,7 +1527,12 @@ impl SceneEcs {
                 .or_insert_with(|| (cell, BTreeMap::new()));
             for src in sources.iter().filter(|s| s.scene == scene) {
                 // LOS polygon for this source (or, LOS off, the whole bound box as a polygon).
-                let poly = source_los_poly(src.vp, &li.sight_walls, settings.los_restriction);
+                let poly = source_los_poly(
+                    src.vp,
+                    &li.sight_walls,
+                    settings.los_restriction,
+                    settings.bounds,
+                );
                 if poly.len() < 3 {
                     continue;
                 }
@@ -1978,7 +1983,12 @@ fn accumulate_visible_cells(
     lenient: bool,
 ) {
     for src in sources {
-        let poly = source_los_poly(src.vp, &li.sight_walls, settings.los_restriction);
+        let poly = source_los_poly(
+            src.vp,
+            &li.sight_walls,
+            settings.los_restriction,
+            settings.bounds,
+        );
         if poly.len() < 3 {
             continue;
         }
@@ -2068,13 +2078,19 @@ fn cell_visible(floors: &[(f64, f64, Option<String>)], cl_level: f64, dist_cells
 
 /// The LOS polygon for one vision source: the raycast visibility polygon when `los_restriction`
 /// is on, else the whole bound box as a rectangle (whole-scene visible). Source: M9 raycast
-/// (`vision::visibility_polygon`).
+/// (`vision::visibility_polygon`). `scene_bounds` (`ResolvedScene.bounds`) is unioned into the
+/// wall-derived bound so a wall-less (or sparsely-walled) scene reveals its own full authored
+/// extent instead of a degenerate `viewpoint±VISION_BOUND_MARGIN` box — the same
+/// `vision::bound_for_scene` fix `player_vision_polygons`/`player_vision_inputs` already apply,
+/// generalized to this shared source (feeds both `player_lit_mask` and `visible_cells`/
+/// `visible_cells_cached`, never a forked bound computation).
 fn source_los_poly(
     vp: vision::P,
     sight_walls: &[vision::Seg],
     los_restriction: bool,
+    scene_bounds: (f64, f64),
 ) -> Vec<vision::P> {
-    let b = vision::bound_for(vp, sight_walls, VISION_BOUND_MARGIN);
+    let b = vision::bound_for_scene(vp, sight_walls, scene_bounds, VISION_BOUND_MARGIN);
     if los_restriction {
         vision::visibility_polygon(vp, sight_walls, b)
     } else {
@@ -5187,6 +5203,103 @@ mod tests {
         assert!(
             polys.is_empty(),
             "user with no owned token must get empty polygons (fail-closed)"
+        );
+    }
+
+    // --- source_los_poly wall-less degenerate box (C2 follow-up: player_lit_mask/visible_cells) ---
+
+    /// A wall-less 500x500-unit scene, all-bright lighting (isolates the bound-box defect from
+    /// illumination), `losRestriction` off (so `source_los_poly` takes the plain-rectangle branch
+    /// — the same branch the original C2 bug hit). Cell (4,4) — center (450,450) — lies within the
+    /// scene's authored bounds but strictly outside a degenerate
+    /// `viewpoint±VISION_BOUND_MARGIN(100)` box around the token at (50,50): `[-50,-50]..[150,150]`.
+    fn wall_less_large_scene_all_bright() -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "bounds": { "width": 500.0, "height": 500.0 } }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "grid-stepped",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        (ecs, user, scene_id)
+    }
+
+    /// `player_lit_mask` (the egress/secrecy gate) must cover a wall-less scene's full authored
+    /// bounds, not a degenerate box around the viewpoint — the same C2 defect class fixed in
+    /// `player_vision_polygons`/`player_vision_inputs`, applied here to `source_los_poly`, the
+    /// primitive `player_lit_mask` shares with `visible_cells`.
+    #[test]
+    fn player_lit_mask_wall_less_scene_covers_full_bounds_not_a_degenerate_box() {
+        let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
+        let cells: std::collections::BTreeSet<(i32, i32)> = ecs
+            .player_lit_mask(user)
+            .into_iter()
+            .filter(|s| s.scene == scene_id)
+            .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
+            .collect();
+        assert!(
+            cells.contains(&(4, 4)),
+            "a wall-less scene's lit mask must cover its full authored bounds, not a degenerate box around the viewpoint"
+        );
+    }
+
+    /// `visible_cells` (the movement gate) must cover a wall-less scene's full authored bounds,
+    /// not a degenerate box — same defect class as above, mirrored to the movement-gate consumer.
+    #[test]
+    fn visible_cells_wall_less_scene_covers_full_bounds_not_a_degenerate_box() {
+        let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
+        let mask = ecs.visible_cells(user, scene_id, false);
+        assert!(
+            mask.contains(&(4, 4)),
+            "a wall-less scene's movement-gate mask must cover its full authored bounds, not a degenerate box around the viewpoint"
+        );
+    }
+
+    /// No-fork parity: `source_los_poly`'s bound (as exercised via `visible_cells`) must agree
+    /// with `player_vision_polygons`'s bound (via `vision::bound_for_scene` directly) on the same
+    /// wall-less scene — closing the "two/three vision paths diverge" defect class the original
+    /// C2 fix's brief warned about, generalized to this third path.
+    #[test]
+    fn visible_cells_agrees_with_player_vision_polygons_bound_on_wall_less_scene() {
+        let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
+
+        let polys = ecs.player_vision_polygons(user);
+        let (_, poly) = polys
+            .iter()
+            .find(|(sid, _)| *sid == scene_id)
+            .expect("scene present");
+        let far_corner = (490.0, 490.0);
+        assert!(
+            vision::point_in_poly(poly, far_corner),
+            "player_vision_polygons must reveal the scene's own full bounded extent"
+        );
+
+        let mask = ecs.visible_cells(user, scene_id, false);
+        assert!(
+            mask.contains(&(4, 4)),
+            "visible_cells (via source_los_poly) must not diverge from player_vision_polygons' bound for the same wall-less scene"
         );
     }
 }
