@@ -569,7 +569,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
 });
 
 describe("MessageCard — inline roll chip (roll_embed inside Normal/Emote content)", () => {
-  it("shows successes over total, with a title tooltip of formula + kept die values", () => {
+  it("shows successes over total, with a rich popover of the per-die table", async () => {
     const doc = msgDoc("m1", baseSystem({
       kind: "normal",
       content: [
@@ -587,11 +587,16 @@ describe("MessageCard — inline roll chip (roll_embed inside Normal/Emote conte
       props: { message: doc, showChannel: false },
       context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
     });
-    const chip = container.querySelector(".roll-chip");
-    expect(chip?.textContent).toBe("2");
-    expect(chip?.getAttribute("title")).toBe("2d6: 3");
+    const chip = container.querySelector(".roll-tooltip-trigger");
+    expect(chip?.textContent?.trim()).toBe("2");
     // Not rendered as a block — inline within the normal paragraph.
     expect(container.querySelector(".roll-block")).toBeNull();
+
+    await fireEvent.focus(chip as Element);
+    const tooltip = container.querySelector('[role="tooltip"]');
+    expect(tooltip?.textContent).toContain("3");
+    expect(tooltip?.textContent).toContain("4");
+    expect(tooltip?.querySelector('[data-dropped="true"]')?.textContent).toContain("4");
   });
 
   it("shows total when successes is null", () => {
@@ -603,7 +608,7 @@ describe("MessageCard — inline roll chip (roll_embed inside Normal/Emote conte
       props: { message: doc, showChannel: false },
       context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
     });
-    expect(container.querySelector(".roll-chip")?.textContent).toBe("15");
+    expect(container.querySelector(".roll-tooltip-trigger")?.textContent?.trim()).toBe("15");
   });
 });
 

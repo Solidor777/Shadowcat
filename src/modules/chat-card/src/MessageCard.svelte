@@ -9,8 +9,8 @@
     type UnknownSegment,
     type WireActorOwnerRef,
     type WireDocument,
-    type RollOutcome,
   } from "@shadowcat/core";
+  import RollTooltip from "./RollTooltip.svelte";
 
   type RollEmbedSegment = Extract<ChatSegment, { kind: "roll_embed" }>;
   type RollButtonSegment = Extract<ChatSegment, { kind: "roll_button" }>;
@@ -134,16 +134,6 @@
     if (known.length === 1 && known[0].kind === "roll_embed") return known[0] as RollEmbedSegment;
     return null;
   });
-
-  function keptValues(outcome: RollOutcome): string {
-    return outcome.records.filter((r) => r.kept).map((r) => String(r.value)).join(", ");
-  }
-
-  /** Native `title` tooltip for an inline roll chip: formula + kept die values (v1, no
-   * rich popover — spec §7/§10). */
-  function inlineRollTitle(s: RollEmbedSegment): string {
-    return `${s.formula}: ${keptValues(s.outcome)}`;
-  }
 
   /** Roll-button click: a fresh, public, sender-attributed `/roll` on the carrying
    * message's channel — never re-executes the carrying message's own roll (spec §2/§7). */
@@ -288,7 +278,7 @@
                 is rendered with plain `{...}` text bindings, never innerHTML. -->
                 <span class="seg-html">{@html s.sanitized_html}</span>
               {:else if s.kind === "roll_embed"}
-                <span class="roll-chip" title={inlineRollTitle(s)}>{s.outcome.successes ?? s.outcome.total}</span>
+                <RollTooltip outcome={s.outcome} />
               {:else if s.kind === "roll_button"}
                 <button type="button" class="roll-btn" onclick={() => sendRollButton(s)}>
                   {s.label ?? s.formula}
@@ -436,13 +426,6 @@
   }
   .counter.negative {
     color: var(--danger, crimson);
-  }
-  .roll-chip {
-    display: inline-flex;
-    padding: 0 6px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-1);
-    font-weight: 700;
   }
   .roll-btn {
     // Touch floor: matches .actions button (spec §7 — 44px target).
