@@ -18,7 +18,9 @@
 
 ## Model/Effort directives
 
-Written and executed mainline in this session (Sonnet 5), per explicit user choice at the writing-plans tier-switch checkpoint — no dedicated plan-writer or execution-tier model switch.
+Written mainline in this session (Sonnet 5), per explicit user choice at the writing-plans tier-switch checkpoint — no dedicated plan-writer model switch.
+
+**Execution dispatcher:** this mainline session owns the subagent-driven-development loop directly (not a delegated `sdd-dispatcher` subagent), per explicit user choice at the SDD dispatcher-tier checkpoint. Implementer/reviewer subagents still run at their own configured tiers (see task-by-task dispatch decisions below); this session's own reasoning effort is kept low for routing/bookkeeping between dispatches.
 
 ## Buddy-check directives
 
