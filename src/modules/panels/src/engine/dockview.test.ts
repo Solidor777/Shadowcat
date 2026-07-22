@@ -161,6 +161,7 @@ function fireWillDrop(
     kind: DockviewWillDropEvent["kind"];
     position: DockviewWillDropEvent["position"];
     panelId: string | null;
+    groupId: string;
     group: unknown;
   }>,
 ): { defaultPrevented: boolean } {
@@ -170,7 +171,7 @@ function fireWillDrop(
     position: overrides.position ?? "top",
     panel: undefined,
     group: overrides.group,
-    getData: () => ({ viewId: "v", groupId: "g", panelId: overrides.panelId ?? null }),
+    getData: () => ({ viewId: "v", groupId: overrides.groupId ?? "g", panelId: overrides.panelId ?? null }),
     get defaultPrevented() {
       return prevented;
     },
@@ -207,6 +208,61 @@ test("Finding 1+2: a whole-group transfer at a zone-edge position is ALSO vetoed
 
   const event = fireWillDrop(engine, { kind: "edge", position: "right", panelId: null });
   expect(event.defaultPrevented).toBe(true);
+});
+
+test("a whole-group drag translates into ordered per-tab dock ops instead of being vetoed", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["tab-1", "tab-2", "tab-3"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "tab-1" }, { id: "tab-2" }, { id: "tab-3" }]);
+  layout = applyOp(layout, { op: "dock", id: "tab-1", zone: "right", group: "new" });
+  layout = applyOp(layout, { op: "dock", id: "tab-2", zone: "right", group: 0 });
+  layout = applyOp(layout, { op: "dock", id: "tab-3", zone: "right", group: 0 });
+  engine.apply(layout.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  // Real dockview group id for the "right" zone's single group, derived from
+  // its first tab (`groupIdFor`) — a titlebar drag of that whole group to the
+  // (empty) "left" edge.
+  const event = fireWillDrop(engine, { kind: "edge", position: "left", panelId: null, groupId: "sc-group:tab-1" });
+
+  expect(ops).toEqual([
+    { op: "dock", id: "tab-1", zone: "left", group: "new" },
+    { op: "dock", id: "tab-2", zone: "left", group: 0, tabIndex: 1 },
+    { op: "dock", id: "tab-3", zone: "left", group: 0, tabIndex: 2 },
+  ]);
+  expect(event.defaultPrevented).toBe(true);
+});
+
+test("a whole-group drag onto an unclassifiable target still vetoes (fail-closed unchanged for the newly-translated group case)", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["tab-1", "tab-2"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "tab-1" }, { id: "tab-2" }]);
+  layout = applyOp(layout, { op: "dock", id: "tab-1", zone: "right", group: "new" });
+  layout = applyOp(layout, { op: "dock", id: "tab-2", zone: "right", group: 0 });
+  engine.apply(layout.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  // The container's TOP edge: no "top" ZoneId exists (spec D4) — genuinely
+  // unclassifiable regardless of whether the transfer is a single tab or a
+  // whole group.
+  const event = fireWillDrop(engine, { kind: "edge", position: "top", panelId: null, groupId: "sc-group:tab-1" });
+
+  expect(event.defaultPrevented).toBe(true);
+  expect(ops).toHaveLength(0);
 });
 
 test("Finding 5: a will-drop event before any apply() fails closed (defaultPrevented)", () => {
@@ -289,7 +345,7 @@ test("Finding 4 (mixed): a zone group naming BOTH the stage id and a real panel 
   expect(stagePanel!.group.id).toBe("sc-stage-group");
 });
 
-test("group-onto-group: a whole-group transfer targeting an existing group's content is vetoed via the per-group onWillDrop wire", () => {
+test("group-onto-group: a whole-group transfer targeting an existing group's content is intercepted (defaultPrevented) and translated into a dock op per tab of the dragged group, via the per-group onWillDrop wire", () => {
   // Regression test for the residual the fix-confirmation buddy-check
   // flagged: `DockviewApi.onWillDrop` (subscribed once in `init()`) NEVER
   // fires for a drop targeting an existing group — the component only
@@ -301,6 +357,8 @@ test("group-onto-group: a whole-group transfer targeting an existing group's con
   // emitter — the SAME emitter `group.model.onWillDrop(cb)` subscribes to in
   // production (mirrors the file's existing `_onDidDimensionChange.fire`
   // pattern for testing a real dockview event without a native drag gesture).
+  // The "assets" group here has a single tab ("assets" itself), so its
+  // translated ops are identical in shape to a single-tab drop of that id.
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat", "assets"]);
@@ -310,6 +368,9 @@ test("group-onto-group: a whole-group transfer targeting an existing group's con
   engine.apply(twoPanelLayout().expanded, new Map());
 
   const chatGroup = engine.debugApi!.getPanel("chat")!.group;
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
 
   let prevented = false;
   const event = {
@@ -331,6 +392,7 @@ test("group-onto-group: a whole-group transfer targeting an existing group's con
   (chatGroup.model as any)._onWillDrop.fire(event);
 
   expect(prevented).toBe(true);
+  expect(ops).toEqual([{ op: "dock", id: "assets", zone: "right", group: 0, tabIndex: 1 }]);
 });
 
 test("group-onto-group: an ALLOWED single-panel drop onto an existing group's content is intercepted (defaultPrevented) and redispatched as exactly one dock op, via the per-group onWillDrop wire", () => {

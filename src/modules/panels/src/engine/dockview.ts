@@ -642,12 +642,15 @@ export class DockviewEngine implements EngineAdapter {
    * back into dockview (cross-group moves: see `apply()`'s
    * remove+re-add-under-groupId branch). Fails CLOSED on anything this
    * translation layer cannot classify: a null layout (pre-first-`apply()`) or
-   * a payload `#toDropSite` cannot resolve into a `DropSite` (notably a
-   * whole-GROUP transfer — `PanelTransfer`'s `panelId` is null for a titlebar
-   * drag of an entire group, per `groupDragSource.ts`) are vetoed outright
-   * rather than let through unpoliced. A whole-group drop targeting the
-   * container's TOP edge would otherwise land ABOVE the stage (W1/D4
-   * violation) since `classifyDrop` never runs against it.
+   * a payload `#toDropSite`/`#handleGroupWillDrop` cannot resolve into a
+   * `DropSite` are vetoed outright rather than let through unpoliced. A
+   * whole-GROUP transfer (`PanelTransfer.panelId` null for a titlebar drag of
+   * an entire group, per `groupDragSource.ts`) is translated into one `dock`
+   * op per tab of the dragged group (`#handleGroupWillDrop`), classified
+   * against the group's FIRST tab as a representative subject — the same
+   * `classifyDrop` rules apply, so a whole-group drop targeting the
+   * container's TOP edge still vetoes (no "top" `ZoneId` exists, W1/D4) exactly
+   * as a single-tab edge drop would.
    *
    * Two independent wires feed this SAME method: `init()`'s `api.onWillDrop`
    * (fires only for root/edge drops — `dockviewComponent.ts`'s
@@ -666,12 +669,17 @@ export class DockviewEngine implements EngineAdapter {
       event.preventDefault();
       return;
     }
-    const site = this.#toDropSite(event);
+    const data = event.getData();
+    if (data && data.panelId === null) {
+      this.#handleGroupWillDrop(event, data.groupId, layout);
+      return;
+    }
+    const site = this.#toDropSite(event, data?.panelId);
     if (!site) {
-      // Whole-group transfers and any other unclassifiable payload shape —
-      // vetoed rather than silently let through (see doc comment above).
+      // Any other unclassifiable payload shape — vetoed rather than silently
+      // let through (see doc comment above).
       event.preventDefault();
-      this.#logger.warn("panels: vetoed drop (unclassifiable payload, e.g. a whole-group transfer)");
+      this.#logger.warn("panels: vetoed drop (unclassifiable payload)");
       return;
     }
     const result = classifyDrop(site, layout);
@@ -685,17 +693,94 @@ export class DockviewEngine implements EngineAdapter {
     for (const cb of this.#opListeners) cb(result);
   }
 
-  /** Translator for `onWillDrop`'s `DropSite`. `onDidDrop` is unwired (see the
-   * class doc comment), so `kind` is always the real value dockview supplies
-   * on the will-drop event — no approximation branch is needed here anymore. */
-  #toDropSite(event: DockviewWillDropEvent): DropSite | null {
-    const data = event.getData();
-    const id = data?.panelId;
-    // Whole-group drags (`PanelTransfer.panelId === null`, a titlebar drag of
-    // an entire group) carry no single subject id — `classifyDrop` has no
-    // vocabulary for a group-as-subject, so this returns null. The caller
-    // (`#handleWillDrop`) vetoes every null-site result outright — for BOTH
-    // the wires that feed it (component-level edge drops, per-group drops).
+  /** Translates a whole-group transfer (`PanelTransfer.panelId === null`,
+   * `groupId` = the SOURCE group's own dockview id, per `groupDragSource.ts`/
+   * `tabGroups.js`) into one `dock` `LayoutOp` per tab of the dragged group,
+   * preserving their relative order, with a SINGLE `preventDefault()` for the
+   * whole transfer. Classifies against the group's FIRST tab as a
+   * representative subject — every tab in the dragged group moves to the
+   * SAME target, so one `classifyDrop` call settles the target zone/group/
+   * position for all of them (`#expandGroupDockOp` fans that single result
+   * out per-tab). Fails closed (veto, single `preventDefault()`) when the
+   * source group can't be resolved (empty tab list — e.g. a stale/foreign
+   * group id) or the representative classification itself vetoes, exactly
+   * like the single-tab path in `#handleWillDrop`. */
+  #handleGroupWillDrop(event: DockviewWillDropEvent, sourceGroupId: string, layout: ExpandedLayout): void {
+    const tabs = this.#api
+      ?.getGroup(sourceGroupId)
+      ?.model.panels.map((p) => p.id)
+      .filter((id) => id !== STAGE_ID);
+    if (!tabs || tabs.length === 0) {
+      event.preventDefault();
+      this.#logger.warn("panels: vetoed drop (unclassifiable payload, e.g. an unresolvable whole-group transfer)");
+      return;
+    }
+    const site = this.#toDropSite(event, tabs[0]);
+    if (!site) {
+      event.preventDefault();
+      this.#logger.warn("panels: vetoed drop (unclassifiable payload, e.g. an unresolvable whole-group transfer)");
+      return;
+    }
+    const result = classifyDrop(site, layout);
+    event.preventDefault();
+    if ("veto" in result) {
+      this.#logger.warn(`panels: vetoed drop (${result.reason})`, site);
+      return;
+    }
+    if (result.op !== "dock") {
+      // `classifyDrop` only ever returns a "dock" op for the "edge"/"group"
+      // `DropSite` kinds `#toDropSite` produces (the only kinds a drag event
+      // can construct) — defensive only, never reached in practice.
+      for (const cb of this.#opListeners) cb(result);
+      return;
+    }
+    for (const op of this.#expandGroupDockOp(result, tabs, event, layout)) {
+      for (const cb of this.#opListeners) cb(op);
+    }
+  }
+
+  /** Fans a single representative `dock` op out into one op per tab of the
+   * dragged group, preserving relative order. `group: "new"` (an edge drop)
+   * creates a fresh group for the FIRST tab only — every op after that
+   * targets that SAME new group by numeric index (`group: "new"` a second
+   * time would instead create ANOTHER new group), computed as the target
+   * zone's CURRENT group count in `layout` (the tree as it stood before any
+   * of these ops apply). This assumes the dragged group is not already a
+   * member of the target zone (the overwhelmingly common real gesture — a
+   * titlebar drag to a DIFFERENT zone's edge); a same-zone whole-group
+   * reorder is a residual approximation, matching this file's existing
+   * documented fidelity limits (see `#toDropSite`'s target-group-outside-our-
+   * zone-bookkeeping approximation). An existing-group target (`group` a
+   * number already) instead reuses that same numeric index for every tab,
+   * inserting each at a consecutive `tabIndex` starting from the
+   * representative op's own resolved position (or the target group's current
+   * tab count, when the drop was a "content" drop with no explicit index). */
+  #expandGroupDockOp(
+    op: Extract<LayoutOp, { op: "dock" }>,
+    tabs: readonly string[],
+    event: DockviewWillDropEvent,
+    layout: ExpandedLayout,
+  ): LayoutOp[] {
+    if (op.group === "new") {
+      const newGroupIndex = layout.zones[op.zone].groups.length;
+      return tabs.map((id, i) =>
+        i === 0
+          ? { op: "dock", id, zone: op.zone, group: "new" }
+          : { op: "dock", id, zone: op.zone, group: newGroupIndex, tabIndex: i },
+      );
+    }
+    const targetGroup = op.group;
+    const baseIndex = op.tabIndex ?? event.group?.model.panels.length ?? 0;
+    return tabs.map((id, i) => ({ op: "dock", id, zone: op.zone, group: targetGroup, tabIndex: baseIndex + i }));
+  }
+
+  /** Translator for `onWillDrop`'s `DropSite`, given an explicit subject
+   * `id` (the dragged panel's own id for a single-tab drag, or a whole
+   * dragged group's representative first tab for `#handleGroupWillDrop`).
+   * `onDidDrop` is unwired (see the class doc comment), so `kind` is always
+   * the real value dockview supplies on the will-drop event — no
+   * approximation branch is needed here anymore. */
+  #toDropSite(event: DockviewWillDropEvent, id: string | null | undefined): DropSite | null {
     if (!id) return null;
     const targetGroupId = event.group?.id;
     const stageGroup = targetGroupId === STAGE_GROUP_ID;
@@ -1066,9 +1151,8 @@ export class DockviewEngine implements EngineAdapter {
 // classification fidelity for real pointer geometry (edge vs center vs
 // tab-strip index resolution against an actual drag gesture, which jsdom
 // cannot simulate) before shipping.
-// Whole-GROUP drag transfers (`PanelTransfer.panelId === null`) are vetoed
-// outright in v1 (see `#handleWillDrop`'s doc comment) for both the
-// container-edge path (component-level `api.onWillDrop`) and the
-// group-onto-group path (per-group `group.model.onWillDrop`, `#groupWillDropSubs`).
-// TODO: Translate whole-group transfers into per-tab dock ops to re-enable
-// the group-drag gesture.
+// TODO: `#expandGroupDockOp`'s "new group" index computation assumes the
+// dragged group is not already a member of the target zone — a same-zone
+// whole-group reorder is a residual approximation (see that method's doc
+// comment), same class of limitation as the target-group-outside-our-zone
+// fallback above.
