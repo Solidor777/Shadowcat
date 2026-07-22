@@ -185,17 +185,25 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `MoveStream`. `handle_move_request` broadcasts the FULL (unclipped) `MoveStream` via
   `room.broadcast_aux` — the full trajectory lives only in-process. `egress_loop`'s dedicated
   `MoveStream` branch (`clip_move_stream` + `observer_vision_polys_for_scene`) runs BEFORE the sink
-  write, per connection, in three branches: the mover gets `samples` + `mover_vision` unchanged;
-  a GM gets the FULL `samples` unclipped (GMs bypass position secrecy) but `mover_vision` forced
-  to `None` (a GM has no fog to sweep); every other (non-GM, non-mover) recipient gets `samples`
-  clipped to those whose `pos` falls inside the recipient's OWN authoritative vision polygons
-  (`point_in_poly`, recomputed off the current ECS read — never a stale cache; the ECS guard drops
-  before any await) with `mover_vision` also forced to `None`; a wholly-invisible move (empty clip)
-  is **not sent at all** (suppressed, not an empty-`samples` frame — asserted by a dedicated test).
-  `send_filtered` intentionally panics if a
-  `MoveStream` reaches it — the clip MUST happen in the dedicated `egress_loop` branch, never the
-  generic per-recipient filter path. `MoveError` stays mover-only via `etx`, generic (no path/vision
-  geometry disclosed).
+  write, per connection, in four branches: the mover gets `samples` + `mover_vision` unchanged
+  (keyed on the REAL connection `user_id`, never a see-as target — a GM previewing as someone else
+  is not "the mover" unless the GM's own token is what moves); a plain GM (no active see-as) gets
+  the FULL `samples` unclipped (GMs bypass position secrecy) but `mover_vision` forced to `None` (a
+  GM has no fog to sweep); a GM with an active see-as (`SceneSubscribe`-set `scene_subs` target)
+  gets `samples` clipped to the see-as TARGET's own authoritative vision
+  (`observer_vision_polys_for_scene(target.user_id, scene, room)`) instead of the plain-GM full
+  stream — an empty result (target has no vision source in this move's scene) falls back to the
+  full GM stream rather than clipping to nothing, since the see-as doesn't apply there; every other
+  (non-GM, non-mover) recipient gets `samples` clipped to those whose `pos` falls inside the
+  recipient's OWN authoritative vision polygons (`point_in_poly`, recomputed off the current ECS
+  read — never a stale cache; the ECS guard drops before any await) with `mover_vision` also forced
+  to `None`; a wholly-invisible move (empty clip) is **not sent at all** (suppressed, not an
+  empty-`samples` frame — asserted by a dedicated test). The see-as branch can only NARROW what a
+  GM receives relative to the plain-GM fallthrough, never widen a non-GM recipient's own view (see-
+  as is GM-only, gated by `SceneSubscribe`'s `as_user` handler). `send_filtered` intentionally
+  panics if a `MoveStream` reaches it — the clip MUST happen in the dedicated `egress_loop` branch,
+  never the generic per-recipient filter path. `MoveError` stays mover-only via `etx`, generic (no
+  path/vision geometry disclosed).
 - `src/server/src/scene/explored.rs` — `ExploredSet` fog memory: `mark_polygons(polys, cell_size)`,
   `to_bytes`/`from_bytes` (persistence), cell-based.
 - `src/server/src/scene/regions.rs` (M10g) — pure region geometry, no ECS/I/O (mirrors
