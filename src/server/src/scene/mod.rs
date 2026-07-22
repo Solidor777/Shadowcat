@@ -1527,6 +1527,9 @@ impl SceneEcs {
             if cell <= 0.0 {
                 continue;
             }
+            use grid_shape::GridShape as _;
+            let cell_grid =
+                grid_shape::SquareGrid { cell, rule: self.resolved_diagonal_rule() };
             // Lighting inputs: under globalIllumination or lighting-off, every LOS cell is bright;
             // else compute per-cell from lights (occluded by blocksLight) + environment.
             let li = self.lighting_inputs(scene, settings, cell);
@@ -1567,8 +1570,7 @@ impl SceneEcs {
                 }
                 for i in i0..=i1 {
                     for j in j0..=j1 {
-                        let cx = (i as f64 + 0.5) * cell;
-                        let cy = (j as f64 + 0.5) * cell;
+                        let (cx, cy) = cell_grid.cell_center((i, j));
                         if !crate::scene::vision::point_in_poly(&poly, (cx, cy)) {
                             continue;
                         }
@@ -5330,6 +5332,28 @@ mod tests {
     fn accumulate_visible_cells_routes_through_grid_shape_cell_center_not_hardcoded() {
         let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
         let got = ecs.visible_cells(user, scene_id, false);
+        let expected: std::collections::BTreeSet<(i32, i32)> =
+            (-1..=4).flat_map(|i| (-1..=4).map(move |j| (i, j))).collect();
+        assert_eq!(got, expected);
+    }
+
+    /// Pins the exact secrecy-egress cell set `player_lit_mask` emits for an open all-bright scene.
+    /// `player_lit_mask` computes each candidate cell's CENTER via `GridShape::cell_center`;
+    /// `SquareGrid::cell_center` equals the hardcoded `((i+0.5)*cell,(j+0.5)*cell)` square formula,
+    /// so a regression to non-square center math in that function diverges from this frozen set
+    /// immediately. Companion to `accumulate_visible_cells_routes_through_grid_shape_cell_center_not_hardcoded`,
+    /// applied to the OTHER (separate) secrecy-egress call site; the pinned set matches the strict
+    /// movement-gate set (spec §13: `visible_cells` strict ≡ `player_lit_mask` cells). Reuses
+    /// `wall_less_large_scene_all_bright` (one owned token, no walls, all-bright, 500x500/cell-100).
+    #[test]
+    fn player_lit_mask_routes_through_grid_shape_cell_center_not_hardcoded() {
+        let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
+        let got: std::collections::BTreeSet<(i32, i32)> = ecs
+            .player_lit_mask(user)
+            .into_iter()
+            .filter(|s| s.scene == scene_id)
+            .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
+            .collect();
         let expected: std::collections::BTreeSet<(i32, i32)> =
             (-1..=4).flat_map(|i| (-1..=4).map(move |j| (i, j))).collect();
         assert_eq!(got, expected);
