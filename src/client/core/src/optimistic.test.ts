@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { OptimisticClient } from "./optimistic";
 import { WsClient } from "./ws-client";
 import { MockServer } from "./mock-server";
+import { buildFactionRegistryDoc, deterministicId } from "./scene-docs";
 import type { ClientMsg, WireOperation } from "./wire";
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
@@ -152,5 +153,43 @@ describe("OptimisticClient", () => {
     const av = (a.oc.get("shared")!.system as { hp: number }).hp;
     const bv = (b.oc.get("shared")!.system as { hp: number }).hp;
     expect(av).toBe(bv);
+  });
+
+  it("a deterministic-id singleton Create race rolls the loser back and converges both clients on the winner's confirmed doc", async () => {
+    const worldId = "world-1";
+    const id = deterministicId(worldId, "faction-registry");
+    // Simulates the server's doc_type-scoped singleton create-gate: since both racers compute
+    // the same deterministic id, the gate degenerates to a plain id-conflict check here.
+    const created = new Set<string>();
+    const server = new MockServer({
+      rejectRule: (ctx) => {
+        for (const op of ctx.ops) {
+          if (op.op === "create") {
+            if (created.has(op.doc.id)) return "conflict";
+            created.add(op.doc.id);
+          }
+        }
+        return null;
+      },
+    });
+    const a = await connect(server, "gmA");
+    const b = await connect(server, "gmB");
+
+    // Same id, but envelope() stamps created_at/updated_at via Date.now() per call, so the two
+    // racers' payloads genuinely differ in content — only the id is guaranteed identical.
+    const seed = { friendly: { name: "Friendly", color: "#3fb950", stance: "friendly" as const } };
+    a.act([{ op: "create", doc: buildFactionRegistryDoc(worldId, seed, id) }]);
+    b.act([{ op: "create", doc: buildFactionRegistryDoc(worldId, seed, id) }]);
+
+    await waitFor(
+      () => a.oc.pendingIntents().length === 0 && b.oc.pendingIntents().length === 0,
+    );
+
+    // Exactly one doc for that id on each side, no phantom/duplicate/stale entry, and both
+    // converge on the SAME winner (the loser's rolled-back prediction leaves no residue).
+    expect(a.oc.query("faction-registry")).toHaveLength(1);
+    expect(b.oc.query("faction-registry")).toHaveLength(1);
+    expect(a.oc.get(id)).toBeDefined();
+    expect(b.oc.get(id)).toEqual(a.oc.get(id));
   });
 });
