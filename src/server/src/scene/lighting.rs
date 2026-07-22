@@ -505,6 +505,28 @@ mod tests {
     }
 
     #[test]
+    fn env_light_polys_open_scene_equals_global_illumination_at_the_sample_cap() {
+        // bounds (100,100): raw n = round(2*(100+100)) = 400, clamped to MAX_ENV_LIGHT_SAMPLES
+        // (256) — confirm the clamp actually engages (one polygon per sample).
+        let polys = env_light_polys((100.0, 100.0), 100.0, &[]);
+        assert_eq!(polys.len(), MAX_ENV_LIGHT_SAMPLES);
+        // No walls: even capped at 256 samples over a 40000-unit perimeter, every interior and
+        // near-boundary cell is still reached — the wall-less-equals-global-illumination
+        // equivalence holds at the cap, not just for small/typical scenes.
+        for p in [
+            (5000.0, 5000.0), // center
+            (100.0, 100.0),
+            (9900.0, 9900.0),
+            (100.0, 9900.0),
+            (9900.0, 100.0),
+            (50.0, 5000.0),  // near the left edge, mid-height
+            (5000.0, 50.0),  // near the top edge, mid-width
+        ] {
+            assert!(env_lit(&polys, p), "open scene at the cap lights point {p:?}");
+        }
+    }
+
+    #[test]
     fn env_light_polys_seal_a_blocks_light_box_interior() {
         // A closed 4-wall box around (250,250) spanning (200,200)–(300,300): no exterior boundary
         // sample can see inside, so the interior is not env-lit; the open exterior still is.
