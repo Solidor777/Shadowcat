@@ -577,6 +577,12 @@ mod tests {
     fn empty_field() -> RegionField {
         RegionField::builder().build()
     }
+    fn test_grid() -> crate::scene::grid_shape::SquareGrid {
+        crate::scene::grid_shape::SquareGrid {
+            cell: 100.0,
+            rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+        }
+    }
     fn terrain_on(x0: f64, y0: f64, x1: f64, y1: f64, mult: f64) -> RegionField {
         let mut b = RegionField::builder();
         b.add(
@@ -584,6 +590,7 @@ mod tests {
             RegionBehavior::Terrain,
             mult,
             100.0,
+            &test_grid(),
         );
         b.build()
     }
@@ -594,6 +601,7 @@ mod tests {
             RegionBehavior::Arrest,
             1.0,
             100.0,
+            &test_grid(),
         );
         b.build()
     }
@@ -690,6 +698,7 @@ mod tests {
             RegionBehavior::Impassable,
             1.0,
             100.0,
+            &test_grid(),
         );
         let out = los_smooth(oc(L_ROUTE.to_vec()), &[], None, &b.build(), 100.0, 0.1);
         assert_eq!(
@@ -777,6 +786,7 @@ mod tests {
             RegionBehavior::Impassable,
             1.0,
             100.0,
+            &test_grid(),
         );
         let field = b.build();
         let a = (50.0, 50.0);

@@ -1196,6 +1196,10 @@ impl SceneEcs {
             .get(&scene)
             .copied()
             .unwrap_or(100.0);
+        let grid = crate::scene::grid_shape::SquareGrid {
+            cell,
+            rule: self.resolved_diagonal_rule(),
+        };
         let mut builder = regions::RegionField::builder();
         for e in self.world.query::<&SceneEntity>().iter() {
             let doc = &e.doc;
@@ -1233,7 +1237,7 @@ impl SceneEcs {
                 _ => regions::RegionBehavior::Terrain,
             };
             let cost = region_eng.cost.max(1.0);
-            builder.add(&shape, behavior, cost, cell);
+            builder.add(&shape, behavior, cost, cell, &grid);
         }
         builder.build()
     }

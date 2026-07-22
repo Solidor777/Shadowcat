@@ -818,6 +818,10 @@ mod find_tests {
             RegionBehavior::Arrest,
             1.0,
             100.0,
+            &crate::scene::grid_shape::SquareGrid {
+                cell: 100.0,
+                rule: DiagonalRule::Chebyshev,
+            },
         );
         let field = b.build();
         let outcome = find(
@@ -1049,6 +1053,10 @@ mod tests {
             RegionBehavior::Impassable,
             1.0,
             100.0,
+            &crate::scene::grid_shape::SquareGrid {
+                cell: 100.0,
+                rule: DiagonalRule::Chebyshev,
+            },
         );
         let field = b.build();
         let walls: Vec<Seg> = vec![];
@@ -1083,6 +1091,10 @@ mod tests {
             RegionBehavior::Terrain,
             3.0,
             100.0,
+            &crate::scene::grid_shape::SquareGrid {
+                cell: 100.0,
+                rule: DiagonalRule::Chebyshev,
+            },
         );
         let field = b.build();
         let walls: Vec<Seg> = vec![];

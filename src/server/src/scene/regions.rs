@@ -41,7 +41,11 @@ pub(crate) const MAX_REGION_CELLS: i64 = 100_000;
 /// degenerate shape (non-finite coords, non-positive circle radius, polygon with `< 3` vertices)
 /// or an over-cap AABB — never returns a partial or silently-empty result that a caller could
 /// mistake for "shape covers no cells".
-pub(crate) fn rasterize(shape: &RegionShape, cell: f64) -> Option<Vec<Cell>> {
+pub(crate) fn rasterize(
+    shape: &RegionShape,
+    cell: f64,
+    grid: &dyn crate::scene::grid_shape::GridShape,
+) -> Option<Vec<Cell>> {
     if !cell.is_finite() || cell <= 0.0 {
         return None;
     }
@@ -103,7 +107,7 @@ pub(crate) fn rasterize(shape: &RegionShape, cell: f64) -> Option<Vec<Cell>> {
     let mut out = Vec::new();
     for i in i0..=i1 {
         for j in j0..=j1 {
-            let ctr = ((i as f64 + 0.5) * cell, (j as f64 + 0.5) * cell);
+            let ctr = grid.cell_center((i as i32, j as i32));
             if cell_center_in_shape(ctr, shape) {
                 out.push((i as i32, j as i32));
             }
@@ -230,8 +234,9 @@ impl RegionFieldBuilder {
         behavior: RegionBehavior,
         cost: f64,
         cell: f64,
+        grid: &dyn crate::scene::grid_shape::GridShape,
     ) {
-        let Some(cells) = rasterize(shape, cell) else {
+        let Some(cells) = rasterize(shape, cell, grid) else {
             return;
         };
         for c in cells {
@@ -281,6 +286,13 @@ pub(crate) fn parse_region_shape(shape: &crate::data::engine::RegionShape) -> Op
 mod tests {
     use super::*;
 
+    fn sq(cell: f64) -> crate::scene::grid_shape::SquareGrid {
+        crate::scene::grid_shape::SquareGrid {
+            cell,
+            rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+        }
+    }
+
     #[test]
     fn has_terrain_or_impassable_detects_weight_but_not_arrest() {
         let cell = 100.0;
@@ -291,26 +303,28 @@ mod tests {
             y1: 100.0,
         };
 
+        let grid = sq(cell);
+
         let mut b = RegionField::builder();
-        b.add(&rect, RegionBehavior::Terrain, 2.0, cell);
+        b.add(&rect, RegionBehavior::Terrain, 2.0, cell, &grid);
         assert!(
             b.build().has_terrain_or_impassable(),
             "terrain mult>1 counts"
         );
 
         let mut b = RegionField::builder();
-        b.add(&rect, RegionBehavior::Impassable, 1.0, cell);
+        b.add(&rect, RegionBehavior::Impassable, 1.0, cell, &grid);
         assert!(b.build().has_terrain_or_impassable(), "impassable counts");
 
         let mut b = RegionField::builder();
-        b.add(&rect, RegionBehavior::Arrest, 1.0, cell);
+        b.add(&rect, RegionBehavior::Arrest, 1.0, cell, &grid);
         assert!(
             !b.build().has_terrain_or_impassable(),
             "arrest alone does not count"
         );
 
         let mut b = RegionField::builder();
-        b.add(&rect, RegionBehavior::Terrain, 1.0, cell);
+        b.add(&rect, RegionBehavior::Terrain, 1.0, cell, &grid);
         assert!(
             !b.build().has_terrain_or_impassable(),
             "terrain mult==1 is a no-op, does not count"
@@ -320,6 +334,27 @@ mod tests {
             !RegionField::builder().build().has_terrain_or_impassable(),
             "empty field"
         );
+    }
+
+    #[test]
+    fn rasterize_routes_through_grid_shape_cell_center_not_hardcoded() {
+        use crate::scene::grid_shape::SquareGrid;
+        use crate::scene::pathfinding::DiagonalRule;
+        let shape = RegionShape::Rect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 250.0,
+            y1: 250.0,
+        };
+        let grid_shape = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+        };
+        let cells = rasterize(&shape, 100.0, &grid_shape).unwrap();
+        assert!(cells.contains(&(0, 0)));
+        assert!(cells.contains(&(1, 0)));
+        assert!(cells.contains(&(0, 1)));
+        assert!(cells.contains(&(1, 1)));
     }
 
     #[test]
@@ -333,7 +368,7 @@ mod tests {
             x1: 250.0,
             y1: 150.0,
         };
-        let cells = rasterize(&shape, 100.0).unwrap();
+        let cells = rasterize(&shape, 100.0, &sq(100.0)).unwrap();
         assert!(cells.contains(&(0, 0)));
         assert!(cells.contains(&(1, 1)));
         assert!(
@@ -349,7 +384,7 @@ mod tests {
             cy: 150.0,
             r: 60.0,
         };
-        let cells = rasterize(&shape, 100.0).unwrap();
+        let cells = rasterize(&shape, 100.0, &sq(100.0)).unwrap();
         assert!(
             cells.contains(&(1, 1)),
             "center cell (150,150) is the circle's own center"
@@ -367,7 +402,7 @@ mod tests {
         let shape = RegionShape::Polygon {
             points: vec![(0.0, 0.0), (300.0, 0.0), (0.0, 300.0)],
         };
-        let cells = rasterize(&shape, 100.0).unwrap();
+        let cells = rasterize(&shape, 100.0, &sq(100.0)).unwrap();
         assert!(cells.contains(&(0, 0)));
         assert!(!cells.contains(&(2, 2)));
     }
@@ -381,7 +416,8 @@ mod tests {
                     cy: 0.0,
                     r: 0.0
                 },
-                100.0
+                100.0,
+                &sq(100.0)
             ),
             None
         );
@@ -392,7 +428,8 @@ mod tests {
                     cy: 0.0,
                     r: f64::NAN
                 },
-                100.0
+                100.0,
+                &sq(100.0)
             ),
             None
         );
@@ -401,7 +438,8 @@ mod tests {
                 &RegionShape::Polygon {
                     points: vec![(0.0, 0.0), (1.0, 1.0)]
                 },
-                100.0
+                100.0,
+                &sq(100.0)
             ),
             None,
             "fewer than 3 vertices is degenerate"
@@ -416,7 +454,7 @@ mod tests {
             x1: 1e12,
             y1: 1e12,
         };
-        assert_eq!(rasterize(&shape, 100.0), None);
+        assert_eq!(rasterize(&shape, 100.0, &sq(100.0)), None);
     }
 
     #[test]
@@ -428,7 +466,7 @@ mod tests {
             y1: 0.0,
         };
         assert_eq!(
-            rasterize(&shape, 100.0),
+            rasterize(&shape, 100.0, &sq(100.0)),
             None,
             "extreme AABB extent must fail closed, not overflow/hang"
         );
@@ -440,7 +478,7 @@ mod tests {
             y1: 100.0,
         };
         assert_eq!(
-            rasterize(&shape2, 100.0),
+            rasterize(&shape2, 100.0, &sq(100.0)),
             None,
             "large-magnitude-but-small-span coords must fail closed, not truncate/alias"
         );
@@ -482,6 +520,7 @@ mod tests {
 
     #[test]
     fn region_field_builder_composes_across_overlapping_regions() {
+        let grid = sq(100.0);
         let mut b = RegionField::builder();
         b.add(
             &RegionShape::Rect {
@@ -493,6 +532,7 @@ mod tests {
             RegionBehavior::Terrain,
             2.0,
             100.0,
+            &grid,
         );
         b.add(
             &RegionShape::Rect {
@@ -504,6 +544,7 @@ mod tests {
             RegionBehavior::Terrain,
             3.0,
             100.0,
+            &grid,
         );
         let field = b.build();
         assert_eq!(
@@ -532,6 +573,7 @@ mod tests {
             RegionBehavior::Impassable,
             1.0,
             100.0,
+            &sq(100.0),
         );
         let field = b.build();
         assert!(
