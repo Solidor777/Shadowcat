@@ -485,7 +485,19 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
 
 - **`src/modules/chat`** (`@shadowcat/module-chat`, the host) — contributes the sidebar tab
   (order 0 = the default tab; `settings` was moved to order 6 to keep 0 unique) and DECLARES
-  the singleton surfaces `shadowcat.surface:chat.composer` / `chat.message`. Reads both
+  the singleton surfaces `shadowcat.surface:chat.composer` / `chat.message`. **Unread badge
+  (Phase-1 cleanup):** the chat tab is dockview-rendered imperatively via `PanelTabRenderer`, not a
+  Svelte component, so the badge is a new `PanelBadge` subscribe/get LIVE-BINDING seam on
+  `PanelMeta` (a plain static count field would go stale, since `DockviewEngine.apply()` reassigns
+  the whole `#meta` map to a fresh `Map` on every rebuild while `PanelMeta` object references
+  themselves stay stable — see `shadowcat-codebase-panels`). Unread tracking is a pure `unread.ts`
+  module: a per-channel `ReadMarker{createdAt,id}` frontier matching `channels.ts`'s `byCreation`
+  tie-break (no per-message seq field exists on `WireDocument` for the client to key off), spanning
+  ALL channels combined into one tab-level pip (not per-channel sub-badges), excluding the reader's
+  own posts. Persisted via `ctx.uiState.getChatRead`/`setChatRead`, an opaque sibling key to the
+  existing `panelLayout` `ui_state` path (same debounced-persist mechanism). Cleared via the same
+  `offsetParent===null` keep-mounted-hidden idiom M11d-1 established for scroll-safety, plus a real
+  `IntersectionObserver`-driven `markRead()` on tab reveal. Reads both
   contributions DIRECTLY from the registry (not `<Surface>`) because it must pass reactive
   instance props: per-message `{message, showChannel}` to the card, the current
   `postTarget(view)` `{channel, audience, placeholderName}` to the composer. Views:
@@ -517,6 +529,18 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   (`/`-commands ride verbatim — the server parses); the "Speak as" picker (M11d-2) sends
   `actor_owner` `Actor` refs, server-ownership-validated at ingest (see Dice wire above).
 - **`src/modules/chat-card`** — fail-closed render (`parseMessageEngine` null ⇒ nothing).
+  **`RollTooltip.svelte` (Phase-1 cleanup):** an accessible focus/hover-triggered popover
+  replacing the earlier native `title` tooltip on a roll segment, showing the full
+  `outcome.records[]` table with dropped dice distinguished. Popover `id` is derived per-instance
+  (`$props().id()`, the `LauncherMenu.svelte` convention) — never hardcoded, since a message can
+  contain multiple inline rolls and many `MessageCard`s render simultaneously in the chat log.
+  Touch affordance: `onclick` toggle gated on `matchMedia("(hover: hover)")` so a tap opens it on
+  touch devices without a hover-just-opened tooltip re-closing on a desktop click (a hover-capable
+  BUT touch-driven hybrid device, e.g. a touchscreen laptop, is a disclosed narrow residual gap).
+  Touch target is an invisible absolutely-positioned 44×44 `::after` hit-slop, NOT visible sizing
+  (visible sizing would balloon an inline text-flow chip). Escape dismisses via a document-level
+  listener while open (not just the focused-trigger keydown, so it also dismisses from a
+  hover-only-open state).
   **THE `{@html}` INVARIANT: the module's single `{@html}` sink renders only an
   `isKnownSegment`-narrowed `kind:"html"` segment's `sanitized_html` (ammonia-produced);
   Text segments are text nodes (`white-space: pre-wrap`); every other string interpolates

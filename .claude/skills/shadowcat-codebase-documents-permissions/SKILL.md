@@ -111,6 +111,19 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   `world_schemas_key(world)` — same storage shape as other world-settings singletons, not a new
   table. Broadcast: `ServerMsg::Welcome.schema_declarations` (parity only; the client never
   enforces from it, see the Hard Invariants entry below).
+- `src/server/src/data/sqlite.rs`'s `apply_intent` — the singleton-`doc_type` create-gate:
+  `SINGLETON_DOC_TYPES` (world-settings/light-gradation/vision-modes/chat-settings/dice-settings/
+  channel-registry/faction-registry/condition-registry — ≤8 entries) + a tx-scoped
+  `singleton_doc_exists` DB check reject a second `Create` of a singleton type. That DB check alone
+  closes only the CROSS-CALL race (relies on the single-writer `max_connections(1)` pool + a
+  tx-scoped executor). A `claimed_singletons: HashSet<String>` seeded before Phase 1's per-op loop
+  and checked alongside the DB read closes the separate INTRA-BATCH race: two same-doc_type
+  singleton `Create`s inside ONE `apply_intent` call's `ops` both read the DB as empty during
+  Phase-1 validation (validated before any Phase-2 insert), so the DB check alone lets both pass; the
+  `HashSet` is populated only after both checks pass, so the second op in the same batch is rejected
+  regardless of N or ordering. A rejection unwinds the WHOLE `apply_intent` call (no partial insert of
+  the batch's other ops) — this is the same whole-batch-rollback semantics every other
+  `apply_intent` validation failure already has, not a new rollback path.
 - `src/server/src/data/sqlite.rs`'s `apply_intent` — Phase-1 OCC pre-image comparison
   (`values_semantically_eq`) is **numeric-variant-aware, not raw equality** (M13-0). Same-variant
   integer pairs (both `PosInt`/`NegInt`) compare EXACTLY as `i128`, no magnitude limit — this never
@@ -230,6 +243,12 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   that matters.
 - **Path-prefix authz covers ancestor (subtree-replacing) writes AND whole-doc Create**, not just
   descendant field updates [[path-prefix-authz-covers-ancestor-and-create]].
+- **The singleton create-gate must close BOTH cross-call and intra-batch duplicate-`Create` races,
+  via two independent mechanisms.** A tx-scoped DB existence check alone is sufficient for
+  cross-call races (serialized by the single-writer pool) but NOT for two same-doc_type Creates
+  inside one `apply_intent` batch, since Phase 1 validates every op before Phase 2 inserts any of
+  them — both same-batch DB reads see an empty table. The in-memory `claimed_singletons` HashSet
+  closes that second gap; do not remove either mechanism assuming the other already covers it.
 - **Check-then-act across two queries needs one transaction** — TOCTOU-racy even at
   `max_connections(1)` [[two-query-guard-needs-tx]].
 - **`INSERT … ON CONFLICT(id)` on a mutated id duplicates rather than moves** the row

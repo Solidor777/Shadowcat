@@ -47,7 +47,14 @@ existing M6b `ModuleRegistry`.
   the batch); `checkEngineCompat`; fail-closed when `opts.shadowcatVersion` is absent.
 - `src/client/core/src/modules.ts` — `ModuleRegistry.activate()` is per-module isolated: a throwing
   `register()` or a singleton-contract collision is logged + skipped, the topo loop continues, the
-  first provider stays sole-active.
+  first provider stays sole-active. **Rollback-on-throw:** a `register()` throw mid-registration is
+  caught, then `activate()` calls the module's own `unload(id)` to roll back any partial side
+  effects (hooks/services/middleware/contributions) it already registered before throwing — safe by
+  construction since `r.active` is still `false` at the catch point (`activeDependentsOf(id)` is
+  therefore always empty, topoSort guarantees no dependent activates before its dependency). The
+  `unload(id)` call is itself wrapped in its own try/catch (logged, not propagated) so a SECOND
+  throw during rollback can't abort the whole activation loop — modules ordered after the failing
+  one still activate.
 - `src/client/core/src/module-rest.ts` — `listInstalledModules` / `getEnabledModules` /
   `setEnabledModules` REST wrappers (consume `InstalledModuleInfo` via unchecked cast — no Zod).
 - `src/client/core/src/manifest.ts` — `engines?: ModuleEngines` (optional; first-party modules never
@@ -58,7 +65,15 @@ existing M6b `ModuleRegistry`.
 - `src/client/shell/vite.config.ts` — `RUNTIME_ENTRIES` multi-entry (svelte, svelte/internal/client,
   svelte/internal/disclose-version, svelte/reactivity, @shadowcat/{core,ui-kit,formula,types}) →
   stable `runtime/<name>.js` chunks + **`preserveEntrySignatures: "strict"`**; `index.html` import
-  map maps each bare specifier to its chunk.
+  map maps each bare specifier to its chunk. `RUNTIME_ENTRIES` is exported (not duplicated) for the
+  CI guard below.
+- `scripts/check-svelte-runtime-entries.mjs` — a build-time CI guard scanning all client/module
+  source for `svelte/*` bare-specifier imports, failing if any resolve to a subpath NOT present in
+  `vite.config.ts`'s (exported) `RUNTIME_ENTRIES` — catches the "import map serves a FIXED
+  svelte-subpath set" gotcha below at build time instead of a runtime `SyntaxError`. Wired into
+  `.github/workflows/ci.yml`'s web job + `package.json`'s `check:svelte-runtime` script. Its
+  CLI-entry-point detection uses `pathToFileURL(...).href` (not a raw `file://${argv[1]}` string
+  compare, which never matches on Windows — wrong scheme/separator/drive-letter handling).
 - `src/client/shell/src/lib/worldSession.svelte.ts` — `#loadExternalModules(world, serverVersion)`
   sourced from `w.server_version`; fetch enabled set → `loadModules` → activate; keyed on `info.id`.
 - `src/modules/settings/src/ModuleManager.svelte` — GM installed-module management UI; toggle/save
@@ -92,6 +107,7 @@ existing M6b `ModuleRegistry`.
 - **The import map serves a FIXED svelte-subpath set** — a module importing a subpath the host does
   not serve (`svelte/store`, `svelte/transition`, …) hard-fails with a runtime `SyntaxError`; adding
   one is a host change (`RUNTIME_ENTRIES` + import map), not a module change. See `module-authoring.md`.
+  `scripts/check-svelte-runtime-entries.mjs` (above) catches an unserved subpath import at CI time.
 - **`loadModules`'s contract CHANGED** from `Promise<void>` throw-on-first-failure to the contained
   `ModuleLoadResult`; any doc describing the old throw behavior is stale.
 - **Adding a required field to `Welcome`** (e.g. `server_version`) breaks untyped frame fixtures in
