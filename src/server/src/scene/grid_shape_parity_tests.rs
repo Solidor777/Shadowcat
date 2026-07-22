@@ -201,6 +201,77 @@ fn gate_walk_mask_gate_parity_pins_diagonal_truncation_point() {
 }
 
 // -------------------------------------------------------------------------------------------
+// Fixture 2b: gate_walk FLANKER enforcement — truncation driven by a hidden off-diagonal cell,
+// not by a hidden endpoint. This is the discriminating case the whole gate exists to protect: a
+// diagonal king-step crosses the shared lattice corner, so `SquareGrid::line_traversal`
+// (supercover) MUST emit both off-diagonal flanker cells alongside the two endpoint cells,
+// preventing a diagonal from threading an unseen cell (anti-corner-cutting).
+//
+// Same three-cell diagonal path as Fixture 2, but the mask is built so BOTH endpoints of the
+// step-3 diagonal ((2,2)->(3,3)) ARE visible, along with one of that step's two flankers ((2,3)).
+// Only the OTHER flanker (3,2) is masked out. Correct supercover for the step is
+// {(2,2),(3,3),(3,2),(2,3)}; the missing (3,2) forces truncation on the step INTO (3,3), stopping
+// at (200,200) = cell (2,2), cost 2.0 (baseline over the two entered cells (1,1),(2,2)).
+//
+// Discrimination proof (why this case has teeth Fixture 2 lacks): a hypothetical regression whose
+// `line_traversal` emitted only the two diagonal ENDPOINT cells {(2,2),(3,3)} — dropping the
+// flankers — would find both endpoints visible here and admit the step, running the move through
+// to (300,300) UN-truncated (cost 3.0). That over-permissive outcome differs from the asserted one,
+// so this fixture fails on exactly the flanker-dropping class Fixture 2 (which hides the endpoint
+// (3,3) and would truncate identically with or without flankers) cannot detect.
+// -------------------------------------------------------------------------------------------
+
+#[test]
+fn gate_walk_flanker_gate_truncates_with_both_diagonal_endpoints_visible() {
+    let (ecs, scene, token) = clear_scene();
+    // Steps 1 and 2 fully covered. Step 3: both endpoints (2,2),(3,3) visible + flanker (2,3);
+    // the other flanker (3,2) is omitted so ONLY a hidden flanker can cause truncation.
+    let visible: BTreeSet<(i32, i32)> = [
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (1, 1),
+        (1, 2),
+        (2, 1),
+        (2, 2),
+        (2, 3),
+        (3, 3),
+    ]
+    .into_iter()
+    .collect();
+    let out = execute_move(
+        &ecs,
+        scene,
+        token,
+        &[(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 300.0)],
+        MovementRestriction::Visible,
+        &visible,
+        100.0,
+    )
+    .expect("clear token, in-bounds path");
+
+    // Correct flanker-aware supercover truncates at (2,2) despite (2,2) AND (3,3) both visible; a
+    // flanker-dropping regression would instead run through to (300,300) un-truncated.
+    assert_eq!(
+        out.stop,
+        (200.0, 200.0),
+        "hidden flanker (3,2) truncates the diagonal step"
+    );
+    assert_eq!(
+        out.render_path,
+        vec![(0.0, 0.0), (100.0, 100.0), (200.0, 200.0)],
+    );
+    assert!(
+        out.truncated,
+        "move must not reach (3,3) with a hidden flanker"
+    );
+    assert!(
+        (out.cost - 2.0).abs() < 1e-9,
+        "baseline cost for 2 entered cells"
+    );
+}
+
+// -------------------------------------------------------------------------------------------
 // Fixture 3: visible_cells on an open all-bright scene with two vision sources.
 //
 // A wall-less scene (bounds 500x500 grid units, cell 100), lighting disabled (all-bright), LOS

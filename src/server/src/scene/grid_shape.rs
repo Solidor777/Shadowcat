@@ -4,9 +4,10 @@
 //! implementation mirroring the client's `grid.ts` exactly.
 //!
 //! `cell_center` is wired into `accumulate_visible_cells`, `player_lit_mask`, and
-//! `regions::rasterize`; `cell_of`/`neighbors_with_cost`/`line_traversal`/`footprint_cells` are
-//! not yet called from production code (proven only by the tests below) — allowed dead code until
-//! a later cutover finishes replacing the hardcoded square math with calls through this trait.
+//! `regions::rasterize`; `neighbors_with_cost`/`footprint_cells`/`line_traversal` are wired into
+//! `pathfinding::astar_leg`/`cell_enterable`; `line_traversal` is also wired into
+//! `move_exec::execute_move`. `cell_of` is not yet called from production code (proven only by
+//! the tests below) — allowed dead code until a later cutover calls it too.
 #![allow(dead_code)]
 
 use crate::scene::pathfinding::{self, Cell, DiagonalRule};
