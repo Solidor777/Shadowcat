@@ -25,6 +25,14 @@ export default [
       }],
     },
   },
+  // Node-executed build scripts (not bundled, not typechecked) run outside the
+  // browser global set js.configs.recommended assumes.
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: { process: "readonly", console: "readonly" },
+    },
+  },
   // Allow _-prefixed identifiers to signal intentionally unused parameters/variables.
   ...tseslint.config({
     files: ["**/*.ts"],

@@ -29,7 +29,7 @@ const target = process.env.SHADOWCAT_SERVER ?? "http://127.0.0.1:30000";
 // guide. `shadowcat-types` is deliberately a zero-export chunk: `@shadowcat/types`
 // is type-only and fully erased by tsc, so an empty runtime module is correct,
 // not a bug.
-const RUNTIME_ENTRIES: Record<string, string> = {
+export const RUNTIME_ENTRIES: Record<string, string> = {
   svelte: "svelte",
   "svelte-internal-client": "svelte/internal/client",
   "svelte-internal-disclose-version": "svelte/internal/disclose-version",

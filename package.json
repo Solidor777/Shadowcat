@@ -8,7 +8,9 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "lint": "eslint .",
-    "build": "pnpm --filter @shadowcat/shell build"
+    "build": "pnpm --filter @shadowcat/shell build",
+    "check:svelte-runtime": "node scripts/check-svelte-runtime-entries.mjs",
+    "test:scripts": "vitest run scripts/check-svelte-runtime-entries.test.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

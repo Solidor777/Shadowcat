@@ -81,8 +81,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r typecheck
       - run: pnpm -r test
+      - run: pnpm run test:scripts
       - run: pnpm lint
       - run: pnpm --filter @shadowcat/shell build
+      # Guards the single-instance-runtime import map: fails the build if any
+      # svelte/* subpath import isn't enumerated in RUNTIME_ENTRIES.
+      - run: pnpm run check:svelte-runtime
 
   # Cross-runtime end-to-end: the real @shadowcat/core client driven against the
   # real Rust test_server. Needs both toolchains, so it is its own single-OS job
