@@ -69,6 +69,11 @@ const DOUBLE_CLICK_MS = 350;
 /** Maximum scene-coord distance between two pointer-downs to count as a double-click
  * (generous: post-snap, a double-click lands on the same cell center). */
 const COMMIT_RADIUS = 12;
+/** Leading-edge debounce window for route-preview pathfind requests: the first move in a
+ * burst fires immediately, then at most one request per window (mirrors DRAG_THROTTLE_MS's
+ * leading-edge-coalescing shape). Arming only on an actual fire — never re-armed per event —
+ * is what keeps this from starving under continuous pointer movement. */
+const ROUTE_PREVIEW_DEBOUNCE_MS = 100;
 
 /** Owns the active-tool + selected-asset UI state and routes activation to the engine
  * via the scene bridge. */
@@ -333,6 +338,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // Double-click detection state: timestamp and snapped position of the last pointer-down.
   let lastDownAt = -Infinity;
   let lastDownPt: Point = { x: 0, y: 0 };
+  // Leading-edge debounce state for route-preview requests (reduces REQUEST volume only;
+  // the pendingSeq staleness guard above is untouched and still governs stale RESPONSES).
+  let lastRouteRequestAt = -Infinity;
 
   /** True when the measure tool should operate in route mode (see above). */
   function inRouteMode(): boolean {
@@ -407,6 +415,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     ctx.scene.clearMeasure();
     waypoints = [];
     lastPreviewedPath = null;
+    lastRouteRequestAt = -Infinity; // next gesture's first move fires leading-edge
   }
 
   /** Commit a route from the selected token's center to `goal`: send a MoveRequest to
@@ -513,7 +522,17 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
         const start = tokenCenter();
         if (scene && start) {
           const goal = ctx.scene.snap(p);
-          requestRoute(scene, start, goal);
+          // Leading-edge debounce: the first move in a burst fires immediately; moves
+          // arriving within the cooldown window are suppressed. Never re-arms on every
+          // event — only a request that actually fires advances the clock — so this
+          // cannot starve under continuous pointer movement. Whichever move happens to
+          // be current once the window elapses always carries the freshest goal, since
+          // `goal` is computed fresh from the triggering event, never queued.
+          const t = now();
+          if (t - lastRouteRequestAt >= ROUTE_PREVIEW_DEBOUNCE_MS) {
+            lastRouteRequestAt = t;
+            requestRoute(scene, start, goal);
+          }
         }
         return;
       }

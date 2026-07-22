@@ -45,6 +45,7 @@ test("measuring draws the distance label and persists nothing", () => {
 function setupRoute(over: {
   pathfind?: ToolContext["pathfind"];
   tokenIds?: string[];
+  now?: ToolContext["now"];
 } = {}) {
   const docs = new DocumentStore();
   // Scene with grid.distance so the budget label can be computed.
@@ -90,6 +91,7 @@ function setupRoute(over: {
     sendPing: () => {},
     tokenSelection: sel,
     pathfind: over.pathfind,
+    now: over.now,
   };
 
   return { tool: makeMeasureTool(ctx), overlays, measures, overlayClears: () => overlayClears, measureClears: () => measureClears };
@@ -284,6 +286,47 @@ test("route mode: an arrested PathResult appends an arrest marker to the budget 
 
   expect(measures.at(-1)!.label).toContain("10 ft"); // budget = cost(2) × perCell(5)
   expect(measures.at(-1)!.label).toContain("⚠"); // arrest marker
+});
+
+test("rapid pointer moves during route preview are debounced to a bounded request rate, leading-edge", () => {
+  const calls: number[] = [];
+  const pathfind: ToolContext["pathfind"] = () =>
+    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false }); });
+  const now = makeFakeNow();
+  const { tool } = setupRoute({ pathfind, now });
+
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 60, y: 50 }, ev()); // leading-edge: fires immediately
+  tool.onPointerMove({ x: 70, y: 50 }, ev()); // fires immediately after — suppressed
+  tool.onPointerMove({ x: 80, y: 50 }, ev()); // still within the debounce window — suppressed
+  expect(calls.length).toBe(1); // leading-edge: only the FIRST move in the burst fired
+
+  now.advance(1000); // well past the debounce window
+  tool.onPointerMove({ x: 90, y: 50 }, ev()); // idle again — next move fires immediately
+  expect(calls.length).toBe(2);
+});
+
+test("a stale route-preview pathfind response is still ignored via the existing pendingSeq guard", async () => {
+  // Regression guard: the debounce must not touch/weaken the pre-existing last-write-wins
+  // staleness check — only reduce REQUEST volume.
+  const resolvers: Array<(r: { path: [number, number][]; cost: number; arrested: boolean }) => void> = [];
+  const pathfind: ToolContext["pathfind"] = () => new Promise((res) => { resolvers.push(res); });
+  const now = makeFakeNow();
+  const { tool, measures } = setupRoute({ pathfind, now });
+
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 60, y: 50 }, ev()); // request #1 (leading-edge)
+  now.advance(1000); // idle again
+  tool.onPointerMove({ x: 200, y: 50 }, ev()); // request #2 (leading-edge)
+  expect(resolvers.length).toBe(2);
+
+  // Resolve the NEWER request first, then the STALE one — the stale one must be ignored.
+  resolvers[1]({ path: [[50, 50], [200, 50]], cost: 4, arrested: false });
+  await flush();
+  resolvers[0]({ path: [[50, 50], [60, 50]], cost: 1, arrested: false });
+  await flush();
+
+  expect(measures.at(-1)!.label).toContain("20 ft"); // request #2's budget: cost(4) × perCell(5)
 });
 
 // --- Route-commit (double-click) tests ---
