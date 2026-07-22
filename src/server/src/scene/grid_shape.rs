@@ -1,10 +1,12 @@
 //! `GridShape` abstracts the per-cell geometry every movement/vision/pathfinding module needs,
 //! so square and hex scenes share one code path instead of two. `SquareGrid` is a byte-identical
-//! port of the pre-existing hardcoded square math; `HexGrid` is the pointy-top axial
+//! port of the pre-existing hardcoded square math; a later `HexGrid` will be the pointy-top axial
 //! implementation mirroring the client's `grid.ts` exactly.
 //!
-//! Not yet wired to any call site (proven only by the tests below); allowed dead code until a
-//! later cutover replaces the hardcoded square math with a call through this trait.
+//! `cell_center` is wired into `accumulate_visible_cells`, `player_lit_mask`, and
+//! `regions::rasterize`; `cell_of`/`neighbors_with_cost`/`line_traversal`/`footprint_cells` are
+//! not yet called from production code (proven only by the tests below) — allowed dead code until
+//! a later cutover finishes replacing the hardcoded square math with calls through this trait.
 #![allow(dead_code)]
 
 use crate::scene::pathfinding::{self, Cell, DiagonalRule};
