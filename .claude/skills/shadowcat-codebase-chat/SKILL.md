@@ -532,7 +532,7 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   **`RollTooltip.svelte` (Phase-1 cleanup):** an accessible focus/hover-triggered popover
   replacing the earlier native `title` tooltip on a roll segment, showing the full
   `outcome.records[]` table with dropped dice distinguished. Popover `id` is derived per-instance
-  (`$props().id()`, the `LauncherMenu.svelte` convention) — never hardcoded, since a message can
+  (`$props.id()`, the `LauncherMenu.svelte` convention) — never hardcoded, since a message can
   contain multiple inline rolls and many `MessageCard`s render simultaneously in the chat log.
   Touch affordance: `onclick` toggle gated on `matchMedia("(hover: hover)")` so a tap opens it on
   touch devices without a hover-just-opened tooltip re-closing on a desktop click (a hover-capable
