@@ -101,6 +101,28 @@ test("a module whose register() throws is left inactive but a sibling module sti
   expect(warnings.some((w) => w.includes("broken") && w.includes("boom"))).toBe(true);
 });
 
+test("activate() containment survives unload() itself throwing during rollback", async () => {
+  const warnings: string[] = [];
+  const logger = { ...silentLogger, warn: (m: string) => warnings.push(m) };
+  const contributions = new ContributionRegistry();
+  vi.spyOn(contributions, "removeModule").mockImplementation(() => {
+    throw new Error("unload boom");
+  });
+  const r = new ModuleRegistry({ ...deps(), logger, contributions });
+  const after = vi.fn();
+  r.add({
+    manifest: { id: "broken", version: "1.0.0", dependencies: {} },
+    register: () => {
+      throw new Error("register boom");
+    },
+  });
+  r.add({ manifest: { id: "after", version: "1.0.0", dependencies: {} }, register: after });
+  await expect(r.activate()).resolves.toBeUndefined();
+  expect(r.list().find((m) => m.id === "broken")!.active).toBe(false);
+  expect(r.list().find((m) => m.id === "after")!.active).toBe(true);
+  expect(after).toHaveBeenCalledOnce();
+});
+
 test("activate() rolls back partial side effects when register() throws after contributing", async () => {
   const reg = new ContributionRegistry();
   const d = { ...deps(), contributions: reg };

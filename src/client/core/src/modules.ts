@@ -140,8 +140,18 @@ export class ModuleRegistry {
         // r.active is still false here (only set true after register() returns),
         // so unload's activeDependentsOf/unregister guards correctly no-op — this
         // only tears down whatever partial hooks/services/contributions register()
-        // made before throwing.
-        await this.unload(id);
+        // made before throwing. unload() itself is contained too: a throw here must
+        // not propagate out of this per-module catch and abort the loop for the
+        // modules still ordered after `id`.
+        try {
+          await this.unload(id);
+        } catch (unloadErr) {
+          this.deps.logger.warn(
+            `module ${id} failed to unload during activation rollback: ${
+              unloadErr instanceof Error ? unloadErr.message : String(unloadErr)
+            }`,
+          );
+        }
       }
     }
   }
