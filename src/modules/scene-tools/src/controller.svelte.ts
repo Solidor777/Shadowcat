@@ -29,6 +29,13 @@ export interface ToolContext {
   sendPing: (x: number, y: number) => void;
   /** Monotonic clock for drag-intent coalescing; defaults to Date.now (injected in tests). */
   now?: () => number;
+  /** Timer scheduler backing the measure tool's deferred route-preview fire; defaults to the
+   * real `setTimeout`. Tests that inject a logical `now` (advanced without advancing real
+   * time) must inject this too, or a scheduled deferred-fire timer is armed against REAL wall
+   * time regardless of `now` and can fire during a later, unrelated test. */
+  scheduleTimeout?: (fn: () => void, ms: number) => unknown;
+  /** Cancels a handle returned by `scheduleTimeout`; defaults to the real `clearTimeout`. */
+  clearScheduledTimeout?: (handle: unknown) => void;
   /** Grid A* pathfind seam (from AppContext). When present and a single token is
    * selected, the measure tool routes through it instead of the plain gridDistance
    * mode. When absent (older host or not connected), the tool falls back gracefully. */
@@ -335,6 +342,12 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
 
   // Monotonic clock (injected in tests; defaults to Date.now).
   const now = ctx.now ?? ((): number => Date.now());
+  // Timer scheduler backing the deferred route-preview fire (injected in tests alongside
+  // `now`; defaults to the real setTimeout/clearTimeout). Keeping this behind the same
+  // injection seam as `now` means a test that fakes the clock also controls the timer,
+  // instead of arming a real background timer regardless of the faked `now`.
+  const scheduleTimeout = ctx.scheduleTimeout ?? ((fn: () => void, ms: number): unknown => setTimeout(fn, ms));
+  const clearScheduledTimeout = ctx.clearScheduledTimeout ?? ((handle: unknown): void => clearTimeout(handle as ReturnType<typeof setTimeout>));
   // Double-click detection state: timestamp and snapped position of the last pointer-down.
   let lastDownAt = -Infinity;
   let lastDownPt: Point = { x: 0, y: 0 };
@@ -346,7 +359,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // stop). `pendingRouteGoal` holds the latest suppressed goal; `pendingRouteTimer` fires it
   // once the remaining cooldown elapses, unless a newer request already fired in the meantime.
   let pendingRouteGoal: Point | null = null;
-  let pendingRouteTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingRouteTimer: unknown | null = null;
 
   /** True when the measure tool should operate in route mode (see above). */
   function inRouteMode(): boolean {
@@ -419,7 +432,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * tool has moved on (teardown, tool swap, route clear) would be its own bug. */
   function clearPendingRouteTimer(): void {
     if (pendingRouteTimer !== null) {
-      clearTimeout(pendingRouteTimer);
+      clearScheduledTimeout(pendingRouteTimer);
       pendingRouteTimer = null;
     }
     pendingRouteGoal = null;
@@ -445,10 +458,10 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   /** (Re)schedule the deferred fire for the remaining cooldown time, cancelling any prior
    * pending timer first — only the LATEST suppressed goal must ever fire. */
   function schedulePendingRouteFire(goal: Point): void {
-    if (pendingRouteTimer !== null) clearTimeout(pendingRouteTimer);
+    if (pendingRouteTimer !== null) clearScheduledTimeout(pendingRouteTimer);
     pendingRouteGoal = goal;
     const remaining = Math.max(0, ROUTE_PREVIEW_DEBOUNCE_MS - (now() - lastRouteRequestAt));
-    pendingRouteTimer = setTimeout(firePendingRoute, remaining);
+    pendingRouteTimer = scheduleTimeout(firePendingRoute, remaining);
   }
 
   /** Clear all route-mode overlays and reset waypoints (mid-gesture-clear invariant). */

@@ -1,4 +1,4 @@
-import { test, expect, vi } from "vitest";
+import { test, expect } from "vitest";
 import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, type WireOperation, type MoveStream } from "@shadowcat/core";
 import type { Point } from "@shadowcat/render";
 import { SceneInteractionBridge, TokenSelection } from "@shadowcat/ui-kit";
@@ -46,6 +46,8 @@ function setupRoute(over: {
   pathfind?: ToolContext["pathfind"];
   tokenIds?: string[];
   now?: ToolContext["now"];
+  scheduleTimeout?: ToolContext["scheduleTimeout"];
+  clearScheduledTimeout?: ToolContext["clearScheduledTimeout"];
 } = {}) {
   const docs = new DocumentStore();
   // Scene with grid.distance so the budget label can be computed.
@@ -92,6 +94,8 @@ function setupRoute(over: {
     tokenSelection: sel,
     pathfind: over.pathfind,
     now: over.now,
+    scheduleTimeout: over.scheduleTimeout,
+    clearScheduledTimeout: over.clearScheduledTimeout,
   };
 
   return { tool: makeMeasureTool(ctx), overlays, measures, overlayClears: () => overlayClears, measureClears: () => measureClears };
@@ -288,12 +292,55 @@ test("route mode: an arrested PathResult appends an arrest marker to the budget 
   expect(measures.at(-1)!.label).toContain("⚠"); // arrest marker
 });
 
+/** A deterministic logical clock + timer scheduler pair for route-preview debounce tests.
+ * Pairs with `ctx.now`/`ctx.scheduleTimeout`/`ctx.clearScheduledTimeout` so `advance()` moves
+ * BOTH the logical clock and any scheduled deferred-fire timers together — no real `setTimeout`
+ * is ever armed, so a test that ends after a suppressed move (without a subsequent immediate-fire
+ * or explicit teardown) cannot leave a background timer to fire during a later, unrelated test. */
+interface FakeClock {
+  now: () => number;
+  scheduleTimeout: (fn: () => void, ms: number) => unknown;
+  clearScheduledTimeout: (handle: unknown) => void;
+  /** Advances the logical clock by `ms`, synchronously firing (in due-time order) any scheduled
+   * timers whose due time falls within the advanced window. */
+  advance(ms: number): void;
+}
+
+function makeFakeClock(initial = 0): FakeClock {
+  let t = initial;
+  let nextId = 1;
+  const timers = new Map<number, { at: number; fn: () => void }>();
+  return {
+    now: () => t,
+    scheduleTimeout: (fn, ms) => {
+      const id = nextId++;
+      timers.set(id, { at: t + ms, fn });
+      return id;
+    },
+    clearScheduledTimeout: (handle) => { timers.delete(handle as number); },
+    advance(ms) {
+      const target = t + ms;
+      for (;;) {
+        let due: [number, { at: number; fn: () => void }] | null = null;
+        for (const entry of timers) {
+          if (entry[1].at <= target && (due === null || entry[1].at < due[1].at)) due = entry;
+        }
+        if (due === null) break;
+        timers.delete(due[0]);
+        t = due[1].at;
+        due[1].fn();
+      }
+      t = target;
+    },
+  };
+}
+
 test("rapid pointer moves during route preview are debounced to a bounded request rate, leading-edge", () => {
   const calls: number[] = [];
   const pathfind: ToolContext["pathfind"] = () =>
     new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false }); });
-  const now = makeFakeNow();
-  const { tool } = setupRoute({ pathfind, now });
+  const clock = makeFakeClock();
+  const { tool } = setupRoute({ pathfind, now: clock.now, scheduleTimeout: clock.scheduleTimeout, clearScheduledTimeout: clock.clearScheduledTimeout });
 
   tool.onPointerDown({ x: 50, y: 50 }, ev());
   tool.onPointerMove({ x: 60, y: 50 }, ev()); // leading-edge: fires immediately
@@ -301,9 +348,9 @@ test("rapid pointer moves during route preview are debounced to a bounded reques
   tool.onPointerMove({ x: 80, y: 50 }, ev()); // still within the debounce window — suppressed
   expect(calls.length).toBe(1); // leading-edge: only the FIRST move in the burst fired
 
-  now.advance(1000); // well past the debounce window
+  clock.advance(1000); // well past the debounce window; also fires the deferred timer
   tool.onPointerMove({ x: 90, y: 50 }, ev()); // idle again — next move fires immediately
-  expect(calls.length).toBe(2);
+  expect(calls.length).toBe(3); // the deferred fire (from the last suppressed move) + this one
 });
 
 test("a stale route-preview pathfind response is still ignored via the existing pendingSeq guard", async () => {
@@ -311,12 +358,12 @@ test("a stale route-preview pathfind response is still ignored via the existing 
   // staleness check — only reduce REQUEST volume.
   const resolvers: Array<(r: { path: [number, number][]; cost: number; arrested: boolean }) => void> = [];
   const pathfind: ToolContext["pathfind"] = () => new Promise((res) => { resolvers.push(res); });
-  const now = makeFakeNow();
-  const { tool, measures } = setupRoute({ pathfind, now });
+  const clock = makeFakeClock();
+  const { tool, measures } = setupRoute({ pathfind, now: clock.now, scheduleTimeout: clock.scheduleTimeout, clearScheduledTimeout: clock.clearScheduledTimeout });
 
   tool.onPointerDown({ x: 50, y: 50 }, ev());
   tool.onPointerMove({ x: 60, y: 50 }, ev()); // request #1 (leading-edge)
-  now.advance(1000); // idle again
+  clock.advance(1000); // idle again
   tool.onPointerMove({ x: 200, y: 50 }, ev()); // request #2 (leading-edge)
   expect(resolvers.length).toBe(2);
 
@@ -329,49 +376,39 @@ test("a stale route-preview pathfind response is still ignored via the existing 
   expect(measures.at(-1)!.label).toContain("20 ft"); // request #2's budget: cost(4) × perCell(5)
 });
 
-test("a move suppressed by the debounce still fires once the cooldown elapses, even with no further move event (hover-only stop)", async () => {
+test("a move suppressed by the debounce still fires once the cooldown elapses, even with no further move event (hover-only stop)", () => {
   const calls: number[] = [];
   const pathfind: ToolContext["pathfind"] = () =>
     new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false }); });
+  const clock = makeFakeClock();
+  const { tool } = setupRoute({ pathfind, now: clock.now, scheduleTimeout: clock.scheduleTimeout, clearScheduledTimeout: clock.clearScheduledTimeout });
 
-  vi.useFakeTimers();
-  try {
-    const { tool } = setupRoute({ pathfind }); // no injected `now` — Date.now() is faked
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 60, y: 50 }, ev()); // leading-edge: fires immediately
+  tool.onPointerMove({ x: 70, y: 50 }, ev()); // suppressed (within cooldown)
+  expect(calls.length).toBe(1);
 
-    tool.onPointerDown({ x: 50, y: 50 }, ev());
-    tool.onPointerMove({ x: 60, y: 50 }, ev()); // leading-edge: fires immediately
-    tool.onPointerMove({ x: 70, y: 50 }, ev()); // suppressed (within cooldown)
-    expect(calls.length).toBe(1);
-
-    // The cursor comes to rest here — no further onPointerMove ever arrives.
-    await vi.advanceTimersByTimeAsync(200); // well past the debounce window
-    expect(calls.length).toBe(2); // the deferred fire sent the latest suppressed goal
-  } finally {
-    vi.useRealTimers();
-  }
+  // The cursor comes to rest here — no further onPointerMove ever arrives.
+  clock.advance(200); // well past the debounce window; synchronously fires the deferred timer
+  expect(calls.length).toBe(2); // the deferred fire sent the latest suppressed goal
 });
 
-test("clearing the route before the deferred timer elapses cancels it (no leaked-timer stray request)", async () => {
+test("clearing the route before the deferred timer elapses cancels it (no leaked-timer stray request)", () => {
   const calls: number[] = [];
   const pathfind: ToolContext["pathfind"] = () =>
     new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false }); });
+  const clock = makeFakeClock();
+  const { tool } = setupRoute({ pathfind, now: clock.now, scheduleTimeout: clock.scheduleTimeout, clearScheduledTimeout: clock.clearScheduledTimeout });
 
-  vi.useFakeTimers();
-  try {
-    const { tool } = setupRoute({ pathfind });
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 60, y: 50 }, ev()); // leading-edge: fires immediately
+  tool.onPointerMove({ x: 70, y: 50 }, ev()); // suppressed — schedules a deferred timer
+  expect(calls.length).toBe(1);
 
-    tool.onPointerDown({ x: 50, y: 50 }, ev());
-    tool.onPointerMove({ x: 60, y: 50 }, ev()); // leading-edge: fires immediately
-    tool.onPointerMove({ x: 70, y: 50 }, ev()); // suppressed — schedules a deferred timer
-    expect(calls.length).toBe(1);
+  tool.onPointerUp({ x: 70, y: 50 }, ev()); // release: clearRoute() must cancel the timer
 
-    tool.onPointerUp({ x: 70, y: 50 }, ev()); // release: clearRoute() must cancel the timer
-
-    await vi.advanceTimersByTimeAsync(200); // past when the deferred fire would have run
-    expect(calls.length).toBe(1); // no stray request from the leaked timer
-  } finally {
-    vi.useRealTimers();
-  }
+  clock.advance(200); // past when the deferred fire would have run — must NOT re-fire it
+  expect(calls.length).toBe(1); // no stray request from the leaked timer
 });
 
 // --- Route-commit (double-click) tests ---
