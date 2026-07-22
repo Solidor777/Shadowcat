@@ -91,26 +91,37 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   malformed `AnimatedSource` (`isValidAnimated`: non-finite/`<=0` `fps`, an empty `frames` array, or
   a non-positive/non-integer `rows`/`cols` for a `sheet` source). Optional pre-resolved `eff` avoids
   a second `resolveTokenActor` call, mirroring `resolveTokenBox`'s convention.
-- `src/modules/actors/{ActorsPanel.svelte,VisualKindEditor.svelte,index.ts}` — `ActorsPanel`:
-  create/list/pick actors; hide-name control; faction assignment; shape (`square`/`circle`) + size
-  (fractional grid-cells) editing in the create form and in the per-row GM inline editor;
-  darkvision range authoring (create + per-row), writing `engine.vision: [{ mode: "darkvision",
-  range }]` (M13-0 re-root, was `system.vision`; omitted when range 0). **Visual authoring (M10h;
-  extracted into `VisualKindEditor.svelte`, a pure intra-module split with no behavior change):**
-  a visual-kind editor (image / faces / animated) in the actor-creation form, mounted by
-  `ActorsPanel` and driven by an `onBuild` callback prop (`ActorsPanel` still owns
-  `conditionOptions` and the aggregate create-form reset, calling the child's exposed `reset()`).
-  `buildVisual()` (now in `VisualKindEditor.svelte`) validates per-kind completeness for EVERY
-  face row (an image row needs `asset`; an
-  animated row needs non-empty `frames` or a chosen `sheetAsset` — a failing row nulls the WHOLE
-  `faces` visual, disabling submit), face-row name uniqueness (a duplicate name nulls the visual),
-  and that `defaultFace` names an existing row (else nulls the visual); a stale `faceMapRows` entry
-  referencing a since-renamed/removed face is silently DROPPED rather than failing the whole visual.
-  A separate per-TOKEN face-swap palette (distinct from the per-actor creation-form editor) shows
-  only when the selected token's effective visual (via `resolveTokenActor`, the canonical
-  read-through — **still the load-bearing entry point for token/actor resolution, unchanged by
-  M10h**) is `"faces"`; clicking a face name dispatches a `/engine/face` (M13-0 re-root, was
-  `/system/face`) update on the TOKEN doc.
+  `selectedFaceNamesFor(token, store) -> string[]` — the effective face-name list for a
+  `"faces"`-union visual (`[]` if the effective visual isn't `"faces"`); shares `resolveTokenActor`'s
+  projection with `resolveTokenVisual`, so the face-swap palette (`FaceSwapPalette.svelte`, below)
+  can't diverge from what actually renders.
+- `src/modules/actors/{ActorsPanel.svelte,VisualKindEditor.svelte,FaceSwapPalette.svelte,index.ts}`
+  — `ActorsPanel`: create/list/pick actors; hide-name control; faction assignment; shape
+  (`square`/`circle`) + size (fractional grid-cells) editing in the create form and in the per-row
+  GM inline editor; darkvision range authoring (create + per-row), writing `engine.vision: [{
+  mode: "darkvision", range }]` (M13-0 re-root, was `system.vision`; omitted when range 0).
+  **Visual authoring (M10h; extracted into `VisualKindEditor.svelte`, a pure intra-module split
+  with no behavior change):** a visual-kind editor (image / faces / animated) in the
+  actor-creation form, mounted by `ActorsPanel` and driven by an `onBuild` callback prop
+  (`ActorsPanel` still owns `conditionOptions` and the aggregate create-form reset, calling the
+  child's exposed `reset()`). `buildVisual()` (in `VisualKindEditor.svelte`) validates per-kind
+  completeness for EVERY face row (an image row needs `asset`; an animated row needs non-empty
+  `frames` or a chosen `sheetAsset` — a failing row nulls the WHOLE `faces` visual, disabling
+  submit) via the shared `animSourceComplete(anim)` helper (also backs the top-level animated-kind
+  completeness check — a single "frames-nonempty AND sheet-asset-present" rule, not two divergent
+  copies), face-row name uniqueness (a duplicate name nulls the visual), and that `defaultFace`
+  names an existing row (else nulls the visual); a stale `faceMapRows` entry referencing a
+  since-renamed/removed face is silently DROPPED rather than failing the whole visual.
+  **Per-TOKEN face-swap palette (extracted into `FaceSwapPalette.svelte`, prop `{ tokenId: string
+  | null }`, mounted by `ActorsPanel` as `<FaceSwapPalette tokenId={selectedTokenId} />`):**
+  distinct from the per-actor creation-form editor; shows only when the selected token's effective
+  visual is `"faces"`, resolved via `selectedFaceNamesFor(token, store)` in `actor.ts` — a thin
+  wrapper over `resolveTokenActor` that reads the SAME override-projected `EffectiveActor` that
+  `resolveTokenVisual` independently resolves through `resolveTokenActor` too, so a token's
+  `overrides.visual` faces-union can never diverge between what renders and what the palette
+  offers to swap to (pinned by an `actor.test.ts` case combining an `overrides.visual` faces-union
+  with an active `token.engine.face`). Clicking a face name dispatches a `/engine/face` (M13-0
+  re-root, was `/system/face`) update on the TOKEN doc.
   **Load-bearing convention: the dispatched update's `old` reads the RAW stored `token.engine.face`**
   (never a resolved/defaulted value) — the same raw-`old` convention already established for other
   config-doc field-toggle editors in this codebase (e.g. the M10f-3 `snapToGrid` toggle) — a
