@@ -30,7 +30,10 @@ use std::collections::BTreeSet;
 
 use uuid::Uuid;
 
-use crate::scene::{movement::supercover_cells, MovementRestriction, SceneEcs};
+use crate::scene::{
+    grid_shape::{GridShape, SquareGrid},
+    MovementRestriction, SceneEcs,
+};
 
 /// Epsilon for path[0]-vs-committed-position comparison (scene units).
 /// A client rounding the center-of-cell to the nearest float can drift by at most
@@ -303,6 +306,15 @@ pub(crate) fn execute_move(
     // could see (§6).
     let regions = ecs.region_field(scene, None);
 
+    // The mask gate's segment-crossing set is engine-agnostic geometry (`GridShape::
+    // line_traversal`), not a hardcoded square-grid call. `rule` is inert here — a segment's
+    // supercover crossing does not depend on the diagonal-cost rule, only A* step cost does
+    // (`grid_shape.rs`) — but the scene's actual resolved rule is threaded through for clarity.
+    let grid = SquareGrid {
+        cell,
+        rule: ecs.resolved_diagonal_rule(),
+    };
+
     // --- Per-step walk over the DENSE gate walk ---
     let mut stop_idx = 0usize; // index into `walk`
     let mut stopped_early = false;
@@ -326,7 +338,7 @@ pub(crate) fn execute_move(
         // gate_walk exists: supercover_cells is well-defined and dense enough to cover the
         // swept footprint for an any-angle segment, not just a king step.
         if check_mask {
-            let Some(cells) = supercover_cells(prev, next, cell) else {
+            let Some(cells) = grid.line_traversal(prev, next, cell) else {
                 stopped_early = true;
                 break;
             };
@@ -566,6 +578,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.stop, (100.0, 0.0));
+        assert!(out.truncated);
+    }
+
+    /// Pins the mask gate's behavior once its `supercover_cells` call routes through
+    /// `SquareGrid::line_traversal` instead of the free function directly. A pure diagonal
+    /// king-step from a lattice corner (`(0,0)->(100,100)`, cell=100) crosses the shared
+    /// corner exactly, so the mask check must see all 4 cells the corner-crossing branch
+    /// emits: the two diagonal cells AND both off-diagonal flankers (mirrors
+    /// `movement::pure_diagonal_through_corner_includes_both_flanking_cells`). Excluding the
+    /// flanker `(1,0)` from the mask must still truncate the move at the start cell.
+    #[test]
+    fn gate_walk_mask_gate_routes_through_grid_shape_not_hardcoded_supercover() {
+        let (ecs, scene, token) = clear_scene();
+        let mut visible: BTreeSet<(i32, i32)> = BTreeSet::new();
+        visible.insert((0, 0));
+        visible.insert((0, 1));
+        visible.insert((1, 1));
+        // (1,0) deliberately excluded — the corner-crossing flanker cell.
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(0.0, 0.0), (200.0, 200.0)],
+            MovementRestriction::Visible,
+            &visible,
+            100.0,
+        )
+        .unwrap();
+        assert_eq!(out.stop, (0.0, 0.0));
         assert!(out.truncated);
     }
 
