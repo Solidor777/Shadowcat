@@ -59,6 +59,7 @@ export type LayoutOp =
   | { op: "activeTab"; zone: ZoneId; group: number; id: string }
   | { op: "resizeZone"; zone: ZoneId; size: number }
   | { op: "resizeGroup"; zone: ZoneId; group: number; size: number }
+  | { op: "resizeFloating"; id: string; rect: Rect }
   | { op: "compactView"; id: string }
   | { op: "popOut"; id: string }
   | { op: "popIn"; id: string };
@@ -321,6 +322,27 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
       if (!group || group.size === o.size) return l;
       const groups = zoneNode.groups.map((g, i) => (i === o.group ? { ...g, size: o.size } : g));
       return { ...l, expanded: { ...l.expanded, zones: { ...l.expanded.zones, [o.zone]: { ...zoneNode, groups } } } };
+    }
+
+    case "resizeFloating": {
+      // Live re-drag/resize sync of an ALREADY-floating panel (mirrors
+      // "resizeZone"/"resizeGroup"'s in-place update, not "float"'s
+      // detach-and-reinsert). No-ops for an id not currently floating —
+      // engine-side, this op is only ever emitted for a panel the engine
+      // itself already has open in a floating dockview group.
+      const index = l.expanded.floating.findIndex((f) => f.id === o.id);
+      if (index === -1) return l;
+      const current = l.expanded.floating[index];
+      if (
+        current.rect.x === o.rect.x &&
+        current.rect.y === o.rect.y &&
+        current.rect.w === o.rect.w &&
+        current.rect.h === o.rect.h
+      ) {
+        return l;
+      }
+      const floating = l.expanded.floating.map((f, i) => (i === index ? { ...f, rect: o.rect } : f));
+      return { ...l, expanded: { ...l.expanded, floating } };
     }
 
     case "compactView": {

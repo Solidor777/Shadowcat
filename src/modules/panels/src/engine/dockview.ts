@@ -18,7 +18,7 @@ import { mount, unmount } from "svelte";
 import { consoleLogger, type Logger, type PanelMeta, type ZoneId } from "@shadowcat/core";
 import { i18n } from "@shadowcat/ui-kit";
 import type { EngineAdapter } from "./adapter";
-import type { ExpandedLayout, LayoutOp } from "../layout/tree";
+import type { ExpandedLayout, LayoutOp, Rect } from "../layout/tree";
 import { classifyDrop, opForMenuCommand, MENU_FLOAT_RECT, STAGE_ID, type DropSite, type MenuCommand } from "./policy";
 import PanelMenu from "../PanelMenu.svelte";
 // Minimal wiring: imports dockview's base stylesheet + our token overrides —
@@ -313,6 +313,14 @@ export class DockviewEngine implements EngineAdapter {
   // Finding 1: the invoker entry now survives the transient churn intact,
   // available to a LATER, real close of the floating panel.
   #floatTransitionIds = new Set<string>();
+  // Last rect (px, relative to the dockview root) `apply()` last placed a
+  // floating panel at OR this class last emitted via `resizeFloating` —
+  // whichever happened most recently. Read by `#handleFloatingLayoutChange`
+  // to detect a real user-driven drift and to suppress re-emitting a rect
+  // the tree already knows about. Deleted alongside `#floatingEscapeSubs`/
+  // `#floatInvokers` in `#teardownFloatingA11y` (mirrors their per-id
+  // add/dispose lifecycle) and cleared wholesale in `destroy()`.
+  #lastFloatingRect = new Map<string, Rect>();
   #noticeListeners = new Set<(key: string) => void>();
   // Popout group id -> the panel ids it hosts, recorded when a pop-out succeeds
   // so `onDidRemovePopoutGroup` (window closed by the user) can translate a
@@ -391,6 +399,7 @@ export class DockviewEngine implements EngineAdapter {
       api.onDidRemovePanel((panel) => this.#handleDidRemovePanel(panel)),
       api.onDidActivePanelChange((event) => this.#handleActivePanelChange(event)),
       api.onDidRemovePopoutGroup((event) => this.#handleRemovePopoutGroup(event)),
+      api.onDidLayoutChange(() => this.#handleFloatingLayoutChange()),
     );
   }
 
@@ -583,6 +592,7 @@ export class DockviewEngine implements EngineAdapter {
     this.#floatingEscapeSubs.delete(id);
     const invoker = this.#floatInvokers.get(id);
     this.#floatInvokers.delete(id);
+    this.#lastFloatingRect.delete(id);
     if (invoker && document.contains(invoker)) invoker.focus();
   }
 
@@ -846,8 +856,12 @@ export class DockviewEngine implements EngineAdapter {
           });
           this.#wireFloatingA11y(f.id, meta.get(f.id));
         }
-        // Position/size sync of an ALREADY-floating panel is deferred — see
-        // TODO below.
+        // Snapshot the tree's own rect as the baseline `#handleFloatingLayoutChange`
+        // diffs against, whether this iteration created/relocated the panel or
+        // left an already-floating one untouched — see that method's doc comment
+        // for why this snapshot (not `#applying`) is what suppresses self-caused
+        // churn from a `resizeFloating` op's own round trip back through `apply()`.
+        this.#lastFloatingRect.set(f.id, f.rect);
       }
 
       // Panels/groups no longer named by the tree are removed. Minimized
@@ -922,6 +936,61 @@ export class DockviewEngine implements EngineAdapter {
     }
   }
 
+  /** F3: translates a live re-drag or re-resize of an ALREADY-floating panel
+   * into a `resizeFloating` op, mirroring `#handleGroupDimensionsChange`'s role
+   * for docked zones. Bound to `DockviewApi.onDidLayoutChange` rather than a
+   * per-panel `onDidDimensionsChange` subscription, for two reasons found by
+   * tracing the vendored source (`overlay.js`, `floatingGroupService.js`):
+   * a floating group's `onDidDimensionsChange` only ever carries width/height
+   * (`panelApi.js`'s `_onDidDimensionChange`), so a pure re-POSITION drag with
+   * no size change never fires it at all; `onDidLayoutChange` is what
+   * `Overlay#onDidChangeEnd` (fired once per completed drag OR resize gesture,
+   * not per pointermove) actually feeds, via `floatingGroupService.js`'s
+   * `overlay.onDidChangeEnd(() => host.fireLayoutChange())`.
+   *
+   * Deliberately NOT gated by `#applying`, unlike every other handler in this
+   * class: `DockviewApi.onDidLayoutChange` is dockview's own `AsapEvent`
+   * (`events.js`), which defers every listener to the NEXT microtask via
+   * `queueMicrotask` — by the time this fires, `apply()`'s synchronous
+   * `finally { this.#applying = false }` has already run, so `#applying` would
+   * always read `false` here regardless of cause and provide no real
+   * protection (a false sense of one is worse than none). Self-caused churn is
+   * instead suppressed by diffing against `#lastFloatingRect`, which `apply()`'s
+   * floating loop snapshots to the TREE's own rect on every reconcile: a
+   * `resizeFloating` op's round trip back through the reducer and into a later
+   * `apply()` call re-snapshots the identical rect, so this handler's diff
+   * against that same value reads as unchanged and emits nothing, with no
+   * dependency on `apply()`'s synchronous window at all. */
+  #handleFloatingLayoutChange(): void {
+    const api = this.#api;
+    const expanded = this.#expanded;
+    if (!api || !expanded) return;
+    for (const f of expanded.floating) {
+      const panel = api.getPanel(f.id);
+      if (!panel || panel.group.api.location.type !== "floating") continue;
+      const box = panel.group.api.boundingBox;
+      if (!box) continue;
+      const rect: Rect = {
+        x: Math.round(box.left),
+        y: Math.round(box.top),
+        w: Math.round(box.width),
+        h: Math.round(box.height),
+      };
+      const last = this.#lastFloatingRect.get(f.id);
+      if (
+        last &&
+        Math.abs(last.x - rect.x) < 1 &&
+        Math.abs(last.y - rect.y) < 1 &&
+        Math.abs(last.w - rect.w) < 1 &&
+        Math.abs(last.h - rect.h) < 1
+      ) {
+        continue;
+      }
+      this.#lastFloatingRect.set(f.id, rect);
+      for (const cb of this.#opListeners) cb({ op: "resizeFloating", id: f.id, rect });
+    }
+  }
+
   /** Test helper: the underlying dockview API, for driving/asserting engine
    * internals directly (e.g. the W3 guard test calls `debugApi.removePanel`
    * on the stage panel the way an external bug or a future dockview version
@@ -976,6 +1045,7 @@ export class DockviewEngine implements EngineAdapter {
     this.#floatInvokers.clear();
     this.#lastZonePx.clear();
     this.#lastGroupPx.clear();
+    this.#lastFloatingRect.clear();
     this.#poppedOutGroupPanels.clear();
     this.#pendingPopouts.clear();
     this.#poppedOutOriginGroups.clear();
@@ -988,9 +1058,6 @@ export class DockviewEngine implements EngineAdapter {
   }
 }
 
-// TODO: floating-panel position/size sync in `apply()` for an
-// ALREADY-floating panel (creation is handled; live re-drag/resize of an
-// existing floating window is not yet mirrored back into the tree).
 // TODO: `#toDropSite`'s target-group-outside-our-zone-bookkeeping fallback is
 // a best-effort approximation (falls back to an edge-zone dock). The
 // intercept-and-redispatch translation mechanism itself (preventDefault +

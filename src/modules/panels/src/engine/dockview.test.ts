@@ -504,6 +504,70 @@ test("Finding 3: dimension changes synchronously triggered from inside apply() a
   expect(ops.filter((o) => o.op === "resizeZone" || o.op === "resizeGroup")).toHaveLength(0);
 });
 
+test("F3: a live drag/resize of an already-floating panel emits a resizeFloating op syncing its new Rect", async () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  engine.apply(layout.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  // jsdom never runs real layout, so `boundingBox`'s `getBoundingClientRect`
+  // reads are stubbed directly on the floating group's element to simulate
+  // the box a real drag/resize gesture would leave behind.
+  const groupEl = engine.debugApi!.getPanel("chat")!.group.element;
+  groupEl.getBoundingClientRect = () =>
+    ({ left: 50, top: 60, width: 220, height: 160, right: 270, bottom: 220, x: 50, y: 60, toJSON: () => ({}) }) as DOMRect;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (engine.debugApi as any).component._bufferOnDidLayoutChange.fire();
+  // `onDidLayoutChange` is dockview's `AsapEvent` — listeners run on the next microtask.
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(ops).toContainEqual({ op: "resizeFloating", id: "chat", rect: { x: 50, y: 60, w: 220, h: 160 } });
+});
+
+test("F3: a resizeFloating op's own round trip through apply() does not re-emit (self-caused churn is suppressed)", async () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  engine.apply(layout.expanded, new Map());
+
+  // Round-trip the SAME rect the panel is already at back through the
+  // reducer and into another `apply()` call, mirroring what the real
+  // controller does with an emitted op.
+  layout = applyOp(layout, { op: "resizeFloating", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  engine.apply(layout.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  const groupEl = engine.debugApi!.getPanel("chat")!.group.element;
+  groupEl.getBoundingClientRect = () =>
+    ({ left: 10, top: 10, width: 200, height: 150, right: 210, bottom: 160, x: 10, y: 10, toJSON: () => ({}) }) as DOMRect;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (engine.debugApi as any).component._bufferOnDidLayoutChange.fire();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(ops.filter((o) => o.op === "resizeFloating")).toHaveLength(0);
+});
+
 test("a genuine engine-side removal (outside apply()) still emits exactly one close op", () => {
   // Not every removal is a drop: dockview's own default tab close button
   // calls `panel.api.close()` -> `removePanel` directly, outside any

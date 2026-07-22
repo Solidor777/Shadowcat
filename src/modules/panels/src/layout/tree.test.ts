@@ -420,6 +420,32 @@ describe("op: resizeZone / resizeGroup", () => {
   });
 });
 
+describe("op: resizeFloating", () => {
+  it("updates an already-floating panel's rect in place (no detach/z churn)", () => {
+    let l = base();
+    l = applyOp(l, { op: "float", id: "assets", rect: { x: 10, y: 20, w: 300, h: 200 } });
+    const zBefore = l.expanded.floating.find((f) => f.id === "assets")!.z;
+    l = applyOp(l, { op: "resizeFloating", id: "assets", rect: { x: 50, y: 60, w: 220, h: 160 } });
+    const entry = l.expanded.floating.find((f) => f.id === "assets")!;
+    expect(entry.rect).toEqual({ x: 50, y: 60, w: 220, h: 160 });
+    expect(entry.z).toBe(zBefore);
+    expect(l.expanded.floating).toHaveLength(1);
+  });
+
+  it("no-ops (same reference) when the rect is unchanged", () => {
+    let l = base();
+    l = applyOp(l, { op: "float", id: "assets", rect: { x: 10, y: 20, w: 300, h: 200 } });
+    const l2 = applyOp(l, { op: "resizeFloating", id: "assets", rect: { x: 10, y: 20, w: 300, h: 200 } });
+    expect(l2).toBe(l);
+  });
+
+  it("no-ops on an id that is not currently floating", () => {
+    const l = base();
+    const l2 = applyOp(l, { op: "resizeFloating", id: "assets", rect: { x: 0, y: 0, w: 1, h: 1 } });
+    expect(l2).toBe(l);
+  });
+});
+
 describe("op: compactView", () => {
   it("sets activeView for a known id", () => {
     let l = base();
@@ -510,6 +536,7 @@ describe("every op is total (no throw on any prior location)", () => {
     { op: "activeTab", zone: "right", group: 5, id: "ghost" },
     { op: "resizeZone", zone: "right", size: 100 },
     { op: "resizeGroup", zone: "right", group: 5, size: 0.5 },
+    { op: "resizeFloating", id: "ghost", rect: { x: 0, y: 0, w: 1, h: 1 } },
     { op: "compactView", id: "ghost" },
   ];
 
@@ -560,6 +587,7 @@ describe("every op is total against a POPULATED layout (not just a fresh empty o
     { op: "activeTab", zone: "right", group: 1, id: "p3" },
     { op: "resizeZone", zone: "right", size: 500 },
     { op: "resizeGroup", zone: "right", group: 1, size: 0.9 },
+    { op: "resizeFloating", id: "p5", rect: { x: 5, y: 5, w: 50, h: 50 } },
     { op: "compactView", id: "p2" },
     // Out-of-bounds / negative clamp paths against a POPULATED (non-empty) zone.
     { op: "dock", id: "p5", zone: "right", group: 99 },
