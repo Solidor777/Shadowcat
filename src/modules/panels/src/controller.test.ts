@@ -245,7 +245,7 @@ test("late registrations against an empty-registry construction restore their SA
   expect(locate(ctrl.layout, "settings")).toEqual({ where: "minimized" });
   // factions was closed-but-known in the saved blob — stays closed, never re-defaulted.
   expect(locate(ctrl.layout, "factions")).toEqual({ where: "closed" });
-  expect(ctrl.layout.compact.order).toContain("factions");
+  expect(ctrl.layout.compact.order).toEqual(["chat", "assets", "actors", "settings", "factions"]);
 
   // No call along the way persisted a defaults-shaped tree that discarded the customization
   // — every persisted snapshot must already carry the restored (non-default) positions.
