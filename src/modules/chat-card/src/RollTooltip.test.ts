@@ -1,8 +1,25 @@
-import { describe, it, expect } from "vitest";
-import { render, fireEvent } from "@testing-library/svelte";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { render, fireEvent, cleanup } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import type { RollOutcome } from "@shadowcat/core";
 import RollTooltip from "./RollTooltip.svelte";
+
+/** Stubs `window.matchMedia("(hover: hover)")` for the touch-vs-mouse branch RollTooltip's
+ * onClick reads. `hoverCapable: false` simulates a touch device (no mouseenter/focus-on-tap),
+ * where a tap must toggle the popover open. */
+function stubHoverCapable(hoverCapable: boolean): void {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: query === "(hover: hover)" ? hoverCapable : false,
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+}
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 /** Mirrors dice::outcome::DieRecord's defaults, overridable per test (same shape as
  * MessageCard.test.ts's local fixture — RollOutcome only cares about `kept`/`value` here). */
@@ -74,5 +91,74 @@ describe("RollTooltip", () => {
     // than `document.activeElement`.
     await fireEvent.keyDown(trigger, { key: "Escape" });
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
+  });
+
+  it("tapping the chip on a touch device (no hover) toggles the popover open, then closed", async () => {
+    stubHoverCapable(false);
+    const outcome = testRollOutcome({ records: [dieRecord({ kept: true, value: 3 })] });
+    const { getByRole, queryByRole } = render(RollTooltip, {
+      props: { outcome },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+
+    const trigger = getByRole("button", { name: /roll details/i });
+    await fireEvent.click(trigger);
+    expect(getByRole("tooltip")).toBeTruthy();
+
+    await fireEvent.click(trigger);
+    expect(queryByRole("tooltip")).toBeNull();
+  });
+
+  it("clicking the chip on a hover-capable (mouse) device does not toggle it closed", async () => {
+    stubHoverCapable(true);
+    const outcome = testRollOutcome({ records: [dieRecord({ kept: true, value: 3 })] });
+    const { getByRole } = render(RollTooltip, {
+      props: { outcome },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+
+    const trigger = getByRole("button", { name: /roll details/i });
+    await fireEvent.mouseEnter(trigger);
+    expect(getByRole("tooltip")).toBeTruthy();
+
+    // Hover already opened it; a click on a hover-capable device must not toggle it closed
+    // (mouseenter fires before click, so a naive toggle would immediately re-close it).
+    await fireEvent.click(trigger);
+    expect(getByRole("tooltip")).toBeTruthy();
+  });
+
+  it("a document-level Escape dismisses a hover-opened (not focused) popover", async () => {
+    stubHoverCapable(true);
+    const outcome = testRollOutcome({ records: [dieRecord({ kept: true, value: 3 })] });
+    const { getByRole, queryByRole } = render(RollTooltip, {
+      props: { outcome },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+
+    const trigger = getByRole("button", { name: /roll details/i });
+    await fireEvent.mouseEnter(trigger);
+    expect(getByRole("tooltip")).toBeTruthy();
+
+    await fireEvent.keyDown(document, { key: "Escape" });
+    expect(queryByRole("tooltip")).toBeNull();
+  });
+
+  it("two mounted RollTooltips never produce duplicate popover ids", async () => {
+    const outcomeA = testRollOutcome({ records: [dieRecord({ value: 1 })] });
+    const outcomeB = testRollOutcome({ records: [dieRecord({ value: 2 })] });
+    const context = setAppContextForTest({ t: fakeT });
+    const { getAllByRole } = render(RollTooltip, { props: { outcome: outcomeA }, context });
+    render(RollTooltip, { props: { outcome: outcomeB }, context });
+
+    const triggers = getAllByRole("button", { name: /roll details/i });
+    expect(triggers).toHaveLength(2);
+    await fireEvent.focus(triggers[0]);
+    await fireEvent.focus(triggers[1]);
+
+    const tooltips = document.querySelectorAll('[role="tooltip"]');
+    expect(tooltips).toHaveLength(2);
+    expect(tooltips[0].id).not.toBe(tooltips[1].id);
+    expect(tooltips[0].id).not.toBe("");
+    expect(tooltips[1].id).not.toBe("");
   });
 });
