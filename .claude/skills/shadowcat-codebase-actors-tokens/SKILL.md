@@ -139,8 +139,22 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   so an abandoned query's late first page can otherwise overwrite a newer query's results (found
   during M12d Task 7 review, traced against the real `WsClient` dispatch order). Each row also
   gets an "Open sheet" button (`ctx.openDocument({docId: a.id})`, [[shadowcat-codebase-sheets]]).
-- `src/modules/factions/{FactionsPanel.svelte,index.ts}` — GM editor + idempotent seed of the
-  faction registry; faction-colored token border + select-by-faction.
+- `src/modules/factions/{FactionsPanel.svelte,seed.ts,index.ts}` — GM editor + idempotent seed of
+  the faction registry (extracted into `seed.ts`'s `seedFactionRegistryIfAbsent(store, worldId,
+  dispatchIntent)` for testability); faction-colored token border + select-by-faction.
+  **Deterministic singleton-seed id (reference implementation for other config-doc seeders):**
+  the seed doc's id is `deterministicId(worldId, "faction-registry")`
+  (`scene-docs.ts`, re-exported from `@shadowcat/core`) — a synchronous UUID-v5-SHAPED hash (four
+  seeded FNV-1a 32-bit mixes, not true SHA-1 UUIDv5, because every doc builder in `scene-docs.ts`
+  is synchronous and Web Crypto's SHA-1 is async) rather than `crypto.randomUUID()`. Two GMs
+  racing to seed a brand-new world compute the SAME id, so their optimistic Creates are
+  byte-identical; the server's singleton create-gate (doc_type-scoped, not id-scoped — see
+  `shadowcat-codebase-documents-permissions`) rejects the losing Create, the existing
+  `WsClient.onReject` → `OptimisticClient.reject` rollback path discards the loser's local
+  prediction automatically, and because both racers used the same id the winner's confirmed doc
+  lands under that same store key — no explicit conflict-catching code is needed (or possible:
+  `AppContext.dispatchIntent` is fire-and-forget with no per-call reject signal exposed to
+  modules). `seedFactionRegistryIfAbsent` short-circuits via `store.get(id)` before dispatching.
 - `src/modules/conditions/{ConditionsPanel.svelte,index.ts}` — GM editor + idempotent emoji seed
   of the condition registry + a token-selection-driven toggle palette; render via
   `TokenNodeSpec.badges` (upright glyph chips). Toggle gated by `AppContext.canEdit(doc, path)`
