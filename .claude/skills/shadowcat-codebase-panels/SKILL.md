@@ -21,7 +21,9 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
 
 - `src/modules/panels/src/layout/tree.ts` — `PanelLayoutV1` (expanded zones right/bottom/left +
   floating + minimized + `poppedOut: string[]`, compact view state), `LayoutOp` (incl.
-  `popOut`/`popIn`), `applyOp` reducer, `defaultLayout`, `locate`, `prune`,
+  `popOut`/`popIn`, `resizeFloating` — an already-floating panel's in-place rect update, mirroring
+  `resizeZone`/`resizeGroup` rather than `float`'s detach-and-reinsert), `applyOp` reducer,
+  `defaultLayout`, `locate`, `prune`,
   `placeNewRegistrations`, `placeFromPersistedLocation`. **Same-reference no-op contract**: an
   op that changes nothing returns the SAME layout object (callers/tests rely on `toBe`).
   `SHEET_CASCADE_BASE`/`STEP` (the late-registration rehydration cascade) must stay numerically
@@ -136,6 +138,22 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   `STAGE_ID` skip. All three read correct on inspection but are exactly the class of bug this
   file's Task 5 buddy-check found twice under adversarial testing — do not trust inspection
   alone for changes here.
+- **`#applying` is a synchronous-only guard — it cannot suppress an `AsapEvent` listener** (F3,
+  live floating re-drag/resize sync). `DockviewApi.onDidLayoutChange` is dockview's `AsapEvent`
+  (`events.js`): `.fire()` schedules delivery via `queueMicrotask`, so every listener runs on the
+  NEXT microtask, after `apply()`'s synchronous `finally { this.#applying = false }` has already
+  reset the flag. A handler bound to this event that checks `#applying` gets a permanent `false`
+  regardless of cause — worse than no guard, since it reads as protected. `#handleFloatingLayoutChange`
+  instead diffs the freshly-read `boundingBox` against `#lastFloatingRect`, a per-id cache
+  `apply()`'s floating loop snapshots to the TREE's own rect on every reconcile (whether or not
+  that iteration touched dockview); a `resizeFloating` op's own round trip re-snapshots the
+  identical rect, so the diff reads unchanged and nothing re-fires, with no dependency on
+  `apply()`'s synchronous window. Also why re-position sync can't reuse the per-group
+  `onDidDimensionsChange` pattern used for docked zones — that event only ever carries
+  width/height (`panelApi.js`), so a pure drag with no size change never fires it at all; only
+  `onDidLayoutChange` (fed by `Overlay#onDidChangeEnd` in `floatingGroupService.js`) covers both
+  gestures. Found by tracing the vendored `dockview-core@7.0.2` source directly, not the wrapper
+  code alone — re-verify on any dockview-core version bump, same as the pop-out invariants above.
 
 ## Gotchas
 
@@ -177,6 +195,11 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   verified against the vendored source) rather than simulating a real popup; the actual
   cross-window re-parent + stylesheet clone is dockview's own (spike-verified) machinery plus a
   manual-QA item, same class as the existing real-pointer-drag gap below.
+- jsdom never runs real layout, so `boundingBox` (backed by `getBoundingClientRect()`) always
+  reads all-zero unless a test stubs it — `dockview.test.ts`'s F3 tests assign a replacement
+  `getBoundingClientRect` directly onto the floating panel's `group.element`, then fire
+  `(api as any).component._bufferOnDidLayoutChange.fire()` and `await Promise.resolve()` twice
+  (the `AsapEvent` microtask hop) rather than simulating a real resize-handle/title-bar drag.
 
 ## Pointers
 
