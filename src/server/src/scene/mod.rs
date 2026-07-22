@@ -3,6 +3,7 @@
 //! engine-owned systems (M9 vision, M10 pathfinding) can query spatial state.
 
 pub mod explored;
+pub(crate) mod grid_shape;
 pub mod lighting;
 pub(crate) mod move_exec;
 pub(crate) mod move_stream;
