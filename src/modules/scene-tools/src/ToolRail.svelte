@@ -171,6 +171,10 @@
   .controls select,
   .controls input {
     min-height: 32px;
+
+    @media (pointer: coarse) {
+      min-height: 44px;
+    }
   }
 
   /* Compact bottom strip: lay tools out horizontally with overflow scroll
