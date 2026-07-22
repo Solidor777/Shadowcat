@@ -13,6 +13,9 @@ pub(crate) mod pathfinding;
 pub(crate) mod regions;
 pub mod vision;
 
+#[cfg(test)]
+mod grid_shape_parity_tests;
+
 use std::collections::{BTreeMap, HashMap};
 
 use uuid::Uuid;
