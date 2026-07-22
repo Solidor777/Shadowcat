@@ -395,6 +395,71 @@ test("group-onto-group: a whole-group transfer targeting an existing group's con
   expect(ops).toEqual([{ op: "dock", id: "assets", zone: "right", group: 0, tabIndex: 1 }]);
 });
 
+test("group-onto-group: a whole-group transfer targeting a SPECIFIC tab-strip position in an existing group produces sequential tabIndex ops starting at that position, correctly displacing the target group's own tabs", () => {
+  // Regression coverage for `#expandGroupDockOp`'s existing-group branch: the
+  // prior tests only covered a "new group" edge drop and a single-tab
+  // content drop (no explicit `tabIndex`, falling back to append-at-end).
+  // This exercises a real tab-strip drop target (`kind: "tab"`, `event.panel`
+  // set) at a specific position WITHIN an existing multi-tab target group,
+  // dragging a multi-tab group onto it.
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat", "p2", "p3", "tab-1", "tab-2"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }, { id: "p2" }, { id: "p3" }, { id: "tab-1" }, { id: "tab-2" }]);
+  layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
+  layout = applyOp(layout, { op: "dock", id: "p2", zone: "right", group: 0 });
+  layout = applyOp(layout, { op: "dock", id: "p3", zone: "right", group: 0 });
+  layout = applyOp(layout, { op: "dock", id: "tab-1", zone: "left", group: "new" });
+  layout = applyOp(layout, { op: "dock", id: "tab-2", zone: "left", group: 0 });
+  engine.apply(layout.expanded, new Map());
+
+  const chatGroup = engine.debugApi!.getPanel("chat")!.group;
+  const p2Panel = engine.debugApi!.getPanel("p2")!;
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  let prevented = false;
+  const event = {
+    kind: "tab",
+    position: "center",
+    // A real tab-strip drop target: "p2" is the tab the pointer is hovering
+    // over, at index 1 within chat's group ([chat, p2, p3]).
+    panel: p2Panel,
+    group: chatGroup,
+    // panelId: null — a whole-GROUP transfer (a titlebar drag of the "left"
+    // zone's ["tab-1", "tab-2"] group) dropped at "p2"'s tab-strip position.
+    getData: () => ({ viewId: "v", groupId: "sc-group:tab-1", panelId: null }),
+    get defaultPrevented() {
+      return prevented;
+    },
+    preventDefault() {
+      prevented = true;
+    },
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (chatGroup.model as any)._onWillDrop.fire(event);
+
+  expect(prevented).toBe(true);
+  // Both dragged tabs land at consecutive indices starting at "p2"'s
+  // position (1), preserving their own relative order.
+  expect(ops).toEqual([
+    { op: "dock", id: "tab-1", zone: "right", group: 0, tabIndex: 1 },
+    { op: "dock", id: "tab-2", zone: "right", group: 0, tabIndex: 2 },
+  ]);
+
+  // Applying the emitted ops through the reducer confirms the target
+  // group's own tabs ("p2", "p3") are correctly displaced rather than
+  // overwritten.
+  let final = layout;
+  for (const op of ops) final = applyOp(final, op);
+  expect(final.expanded.zones.right.groups[0].tabs).toEqual(["chat", "tab-1", "tab-2", "p2", "p3"]);
+});
+
 test("group-onto-group: an ALLOWED single-panel drop onto an existing group's content is intercepted (defaultPrevented) and redispatched as exactly one dock op, via the per-group onWillDrop wire", () => {
   // An allowed classification always calls preventDefault() too — dockview's
   // own internal move machinery never completes the drop; the classified op
