@@ -74,6 +74,83 @@ impl GridShape for SquareGrid {
     }
 }
 
+/// Pointy-top axial hex grid (Red Blob Games convention), mirroring
+/// `src/client/render/src/grid.ts`'s `Grid` class's hex math exactly — same coordinate formulas,
+/// same `size` = outer-radius convention, so client and server cell indices always agree.
+pub(crate) struct HexGrid {
+    pub size: f64,
+}
+
+impl HexGrid {
+    /// Fractional axial coordinates for scene point `p` (pre-rounding).
+    fn pixel_to_axial_frac(&self, p: vision::P) -> (f64, f64) {
+        let q = ((3.0_f64.sqrt() / 3.0) * p.0 - (1.0 / 3.0) * p.1) / self.size;
+        let r = (2.0 / 3.0 * p.1) / self.size;
+        (q, r)
+    }
+
+    /// Round fractional axial `(q, r)` to the nearest integer hex, via cube-coordinate rounding
+    /// (Red Blob Games's standard technique: round each cube axis independently, then fix up the
+    /// axis with the largest rounding error so `x + y + z == 0` is restored exactly).
+    fn axial_round(&self, qf: f64, rf: f64) -> (i32, i32) {
+        let xf = qf;
+        let zf = rf;
+        let yf = -xf - zf;
+        let mut x = xf.round();
+        let y = yf.round();
+        let mut z = zf.round();
+        let dx = (x - xf).abs();
+        let dy = (y - yf).abs();
+        let dz = (z - zf).abs();
+        // Only x and z are returned; when dy is the largest rounding error, y would be the
+        // axis fixed up, but it never feeds back into the returned (x, z) pair.
+        if dx > dy && dx > dz {
+            x = -y - z;
+        } else if dy > dz {
+            // y-fixup intentionally omitted (see comment above).
+        } else {
+            z = -x - y;
+        }
+        (x as i32, z as i32)
+    }
+
+    /// Scene-space center of axial hex `(q, r)`.
+    fn axial_to_pixel(&self, q: i32, r: i32) -> vision::P {
+        let x = self.size * (3.0_f64.sqrt() * q as f64 + 3.0_f64.sqrt() / 2.0 * r as f64);
+        let y = self.size * (3.0 / 2.0 * r as f64);
+        (x, y)
+    }
+
+    /// Exposed for the round-trip test above; not part of the `GridShape` trait.
+    fn pixel_to_axial(&self, p: vision::P) -> (i32, i32) {
+        let (qf, rf) = self.pixel_to_axial_frac(p);
+        self.axial_round(qf, rf)
+    }
+}
+
+impl GridShape for HexGrid {
+    fn cell_center(&self, c: Cell) -> vision::P {
+        self.axial_to_pixel(c.0, c.1)
+    }
+
+    fn cell_of(&self, p: vision::P) -> Cell {
+        self.pixel_to_axial(p)
+    }
+
+    /// Stubbed pending the trait's neighbor-enumeration semantics for hex adjacency.
+    fn neighbors_with_cost(&self, _c: Cell, _parity: u8) -> Vec<(Cell, f64, u8)> {
+        Vec::new()
+    }
+    /// Stubbed pending the trait's hex supercover semantics.
+    fn line_traversal(&self, _a: vision::P, _b: vision::P, _cell: f64) -> Option<BTreeSet<Cell>> {
+        None
+    }
+    /// Stubbed pending the trait's hex footprint-overlap semantics.
+    fn footprint_cells(&self, _anchor: Cell, _ctr: vision::P, _r_scene: f64, _cell: f64) -> Vec<Cell> {
+        Vec::new()
+    }
+}
+
 /// Ported verbatim from `pathfinding.rs`'s private `step_cost`.
 fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
     let diagonal = di != 0 && dj != 0;
@@ -154,5 +231,26 @@ mod tests {
         got.sort();
         want.sort();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn hex_grid_axial_round_trip_pixel_to_axial_to_pixel() {
+        let g = HexGrid { size: 50.0 };
+        // Round-tripping a cell's own center through pixel->axial->pixel should be a fixed point.
+        let center = g.cell_center((2, -1));
+        let (q, r) = g.pixel_to_axial(center);
+        assert_eq!((q, r), (2, -1));
+    }
+
+    #[test]
+    fn hex_grid_cell_of_matches_axial_round_for_a_known_point() {
+        // size=50: cell (0,0)'s center is (0,0) in pointy-top axial pixel space (Red Blob Games
+        // convention, matching client/src/render/src/grid.ts's pixelToAxial/axialToPixel exactly).
+        let g = HexGrid { size: 50.0 };
+        assert_eq!(g.cell_of((0.0, 0.0)), (0, 0));
+        // A point well inside cell (1,0)'s hex (center at axial (1,0) -> pixel via axialToPixel)
+        // should resolve back to (1,0).
+        let c10_center = g.cell_center((1, 0));
+        assert_eq!(g.cell_of(c10_center), (1, 0));
     }
 }
