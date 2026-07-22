@@ -11,13 +11,11 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - TODO: `axum_test::TestServer` builds request URLs via the `url` crate's `Url::set_path`, which performs WHATWG dot-segment normalization CLIENT-SIDE before the request is ever sent — a path segment that is an EXACT match to `.`/`..`/`%2e`/`%2e%2e` (and case variants) is silently collapsed/popped before it reaches the router, let alone a handler. Any HTTP-level test in this codebase that tries to smuggle a bare dot-segment through `TestServer::get`/`.post` to exercise a server-side path-traversal guard is vacuous — it proves nothing about the guard logic, since the segment never survives to hit it (confirmed: `serve_module_file_rejects_an_id_segment_that_escapes_the_modules_root` in `src/server/src/http/module_routes.rs` still passes against a deliberately-reverted, vulnerable guard). Segments that are NOT an exact dot-form match (e.g. `%2e%2e%2fsecret.txt` as one combined segment) are NOT normalized and do reach the handler intact — only bare exact-match dot segments are affected. Write future path-traversal HTTP tests either as (a) a pure unit test of the containment predicate itself, (b) a symlink/alias-based HTTP repro (module_routes.rs's `self-link`-style test), or (c) an encoded segment embedded inside a longer non-exact-match string. (Surfaced by the M13-1 Task 5 buddy-check fix-confirmation review.)
 
 ## Repo hygiene
-- RESOLVED (M10h merge): `.superpowers/sdd/task-5-report.md` and `.superpowers/sdd/task-8-report.md` were tracked in git despite `.superpowers/sdd/.gitignore` declaring `*` — `task-5-report.md` first force-added at or before the M2 checkpoint (`3505a7c`), carried forward by filename reuse across M10g/M10f-1/M10f-2/M10f-3/M10h; `task-8-report.md` was a fresh instance of the same mistake introduced mid-M10h (a fix-round implementer's broad `git add` picked it up for the first time). During M10h's Task 9 review, a reviewer subagent ran `git checkout -- .superpowers/sdd/task-5-report.md` without checking diff/stashing first, discarding that session's uncommitted report content — no durable work was lost (redundant with the real code commit + the SDD progress ledger + the session transcript), but it was the second real incident this bug enabled. Both files `git rm --cached` at the M10h merge (working-tree copies preserved; not rewriting history). If a future checkpoint's `git add` re-tracks another `.superpowers/sdd/*.md` file, repeat this cleanup at that checkpoint's merge.
 
 ## Client / formula library (M13a)
 - TODO: `evaluate.ts`'s `ref` case and `template.ts`'s `substituteIdentifier` both wrap a consumer resolver call in a near-identical try/catch → `resolver-error` FormulaError. `graph.ts`'s equivalent catch is entangled with the internal `NeedsDependency` trampoline signal and can't share a naive helper without leaking that control-flow type across `internal.ts`'s validation-only boundary — so only `evaluate.ts`/`template.ts` are realistically unifiable. Factor a small shared helper for those two call sites if `@shadowcat/formula` grows more consumer-callback boundaries. (Surfaced by the M13a whole-branch buddy-check fix-confirmation review.)
 
 ## Server / lint hygiene
-- RESOLVED: `move_exec.rs::region_doc` (test helper) tripped `clippy::too_many_arguments` (8 positional params) under `cargo clippy --all-targets -- -D warnings`. Fixed by bundling the four rect coordinates into a single `rect: (f64, f64, f64, f64)` tuple param (destructured via `let (x0, y0, x1, y1) = rect;`), reducing the signature to 5 params; all 9 call sites updated to pass a tuple. No `#[allow(...)]` suppression used.
 
 ## Server / pathfinding
 - TODO: Buddy-check Minor (B2): the A* search window = AABB{start∪waypoints∪wall-endpoints}+8-cell margin; a legitimate route whose detour must bulge >8 cells beyond that AABB is reported Unreachable (fail-closed). Inert until a real map hits it; add a `tracing::debug!` at window-edge leg failures for future tuning if needed.
@@ -43,7 +41,6 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - TODO: M10e-6 optional cleanups (non-blocking polish, none security/correctness): `point_segment_distance` degenerate-segment threshold uses `f64::EPSILON` vs a geometry-scale ~1e-10 (inert at scene scale); `pathfinding.rs` module `use` decls sit mid-file vs top-of-file idiom; `grid.test.ts` could add an explicit `dmin=2 → 3` alternating assert; `Stage.svelte` inner `scene` var shadows the outer AppContext `scene` (rename to `activeSceneDoc`); `ws-client.test.ts` re-serializes a parsed object (fragile); the `pending` map union (`SearchPage|PathResult`) could use a `PendingResult` alias before it grows.
 
 ## Client / UI
-- RESOLVED (phase1-bugs-todo-sweep): `FactionsPanel.svelte` and `ConditionsPanel.svelte`'s per-field `update()` helpers hardcoded `old: null` in their dispatched field-update intents (config-doc singleton editors), rather than reading the raw stored value like `controller.svelte.ts`'s `sendMoves` does. `Repository::apply_intent`'s field-level OCC check rejects an `Update` whose `old` doesn't match the current stored value, so once any of these fields had been written once (stored value ≠ absent/null), every SUBSEQUENT edit to that same field within a session sent a stale `old: null` and got rejected with `Conflict` — the editor silently stopped taking effect after the first successful write per field per session. Both `update()` helpers now read `sys.factions[id]?.[k] ?? null` / `sys.conditions[id]?.[k] ?? null` from the registry's current stored system body before dispatching, mirroring `GameSettingsPanel.svelte`'s already-fixed `set()` pattern (M11d-2 Task 8). Regression tests added covering a second same-session edit to the same field in both panels.
 - TODO: Game-settings scene picker shows raw scene UUIDs; display a human-readable scene name/label once scene docs carry one.
 - TODO: Make the M10b `module-factions` GM seed safe against a multi-GM first-entry race. The seed `$effect` creates the `faction-registry` only when absent + a local `seeded` guard, which is correct for the single-GM norm; two GMs entering a brand-new world simultaneously could each create a registry before the other's create broadcasts back, forking two registries. Resolve with a deterministic registry id (and dedupe-on-conflict) or server-side seeding when multi-GM concurrency matters. (Noted in the M10b plan; harmless for single-GM.)
 - TODO: Extend `reconcileTopology` beyond presence-by-`module_id` to flag version and `provides`/`requires` mismatches for modules present on both sides (a stale local build providing a contract the world no longer declares currently reconciles silently). Land with module management / hard topology enforcement.
@@ -58,27 +55,11 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 
 ## Client / render
 - TODO: Lerp token rotation along the shortest signed delta (`((b-a+540)%360)-180`) with a wrap-aware ε-settle, when M8d-2 adds rotation control. M8d-1's `TokenAnimator` lerps rotation as a raw scalar (350°→10° tweens the long way); cannot manifest until rotation is authorable. (Surfaced by the M8d-1 buddy check.)
-- RESOLVED (M12d): active-scene selection landed — `resolveViewedScene` (client-side resolver:
-  a resolvable `gmViewedScene` GM-local roam → a resolvable `world-settings.activeScene` →
-  the first scene) replaces every bare `query("scene")[0]` call site across `WorldSession`,
-  the render engine (`toVisibility`/`toLighting`/the reconciler/all five doc views), Stage's
-  grid driver, and scene-tools. `sceneScopedDocs` scene-filters every doc view by `parent_id`.
 - TODO: Build a minimal scene-**background** authoring UI, then add a browser e2e asserting the background renders (Scene `engine.background` → sprite). The render-consumption half already works (`SceneBrowserPanel` shows the thumbnail via `bgOf`, the stage paints the sprite), but no client UI anywhere sets `engine.background`: `buildSceneDoc` accepts a `background` field, yet the only call site (`SceneBrowserPanel.create()`) never supplies one, and `configure()` merely deep-links to `GameSettingsPanel`, which has no background control. Add a background-asset picker (e.g. on `SceneBrowserPanel`'s existing thumbnail slot) that OCC-dispatches an `Update` to `/engine/background` with the raw current stored value as `old` (mirroring `activate()`/`setScene()`'s raw-old-value convention) — then add the e2e assertion once that UI exists.
 - TODO: Give a wall-less scene full intrascene vision instead of the degenerate viewpoint-bound box. M9b's `player_vision_polygons` bounds a wall-less scene to a viewpoint±margin box (leak-safe under-reveal, but a player in an open scene sees only a small square). A payload-level `mode:"all"` shortcut is NOT viable — it clears fog globally and would reveal a *different* walled scene (cross-scene leak, and M12d's `viewedSceneId`/`pendingDerived` fix now specifically guards against this class). The fix needs a per-scene vision mode (or a scene-extent so the wall-less polygon can cover the whole scene). (Surfaced by the M9b buddy check.)
 - TODO: Cache/reuse the two cross-fade `RenderTexture`s across ticks in `pixi-backend.ts`'s `captureFog` (recreate only on resize or fog-input change) instead of a full screen-sized recapture on every `setVisibilityBlend` call — a sweep ticks ~60/s, so this is two full-screen renders/tick for the duration of every in-flight move animation. No correctness impact; a real cost only if profiling shows it hot. (Surfaced by the M2 Task 7 review.)
 
 ## Server / dice (M11a)
-- RESOLVED (M11a Task 9): `DieKind::Numeric { min, max }` with `min > max` (or a degenerate non-positive span) was only guarded by a `debug_assert!` inside `rng::roll_uniform` — a release build reaching it silently returned a value unrelated to the intended range instead of erroring. The notation parser (`dice::notation::parser::factor`) now rejects a non-positive sides count at parse time (`ParseError::InvalidDieSides`), before a `DieKind::Numeric` is ever constructed from untrusted notation input. `dice::spec`/`dice::rng` themselves remain unvalidated by design (pure library, M11a scope) — the `debug_assert!` in `rng::roll_uniform` still stands as the last-resort guard for any caller that bypasses the parser. Re-check when M11d wires a wire-facing `RollSpec` construction path — that boundary needs the same `sides < 1` validation independent of the notation parser, since it can build a `RollSpec` directly.
-- RESOLVED (M11d-2 Task 1): every `Option<>` field on types reachable from `RollSpec` now
-  carries `#[serde(default)]` (incl. `Tier.label`/`tier_value`, `TotalConfig.difficulty`,
-  `SuccessConfig.required_successes`/`crit_success`/`crit_fail`, `Face.value`), pinned by a
-  partial-JSON deserialization test — closing the original gap: `RollSpec.success`/`required_successes` lacked `#[serde(default)]` — today's only round-trip always populates every field, so it passes, but a future hand-built or partial JSON (an M11d wire payload, or an older persisted `RollSpec` after a schema addition) that omits these keys will fail to deserialize with "missing field" instead of defaulting to `None`. Add `#[serde(default)]` before M11d exposes these types past the pure-library boundary. (Surfaced by the M11a Task 2 code review.)
-- RESOLVED (M11d-2 Tasks 1+3 + buddy-check): the transport boundary now caps
-  `MAX_ROLL_DICE=100`/`MAX_ROLL_RECORDS=1000` (`chat/rolls.rs`), `RawRoll::push` guards
-  `next_id` via `checked_add` (debug-assert + saturate), and `eval::sum::fold` saturates BOTH
-  the per-group sum AND — a buddy-check catch beyond this entry's original scope — every
-  `Expr::Bin` Add/Sub/Mul arm (unbounded `Const` terms/`*` chains were deterministically
-  overflowable with zero dice). Original entry: two overflow sites shared the root cause — no per-roll dice-count ceiling — and the same resolution path (whatever cap Task 9 / M11d establishes): (1) `RawRoll::push` (`dice/outcome.rs`) increments `next_id: DieId (u32)` with no overflow guard — release profile has no `overflow-checks`, so wraparound is silent, not a panic, and a sufficiently long-lived `RawRoll` could reissue id `0` and collide with a retained entry, violating the doc comment's own "ids never collide" invariant; (2) `eval::sum::fold` (`dice/eval/sum.rs`) sums a `Dice` group's kept records into an `i64` with no cap on `DiceGroup.count`, so an uncapped count is an unbounded-work / overflow surface at evaluation time as well as at roll time. Neither is reachable within one roll today (`DiceGroup::count` bound doesn't exist yet, see the min>max validation TODO above), but both become real once Task 9 / a transport boundary lifts that ceiling. Add `checked_add`/saturating guards at both sites alongside whatever per-roll dice-count cap Task 9 (or M11d) establishes — mirrors the `roll_uniform` full-span guard already added in `rng.rs` (commit `49c63ed`). (Surfaced by the M11a Task 3 code review; broadened by the M11a Task 6 buddy-check.)
 - Bound `SuccessConfig.expertise` (u32) at the M11d untrusted-transport boundary,
   alongside the per-roll dice-count cap: `eval::expertise::allocate` is `O(N·E²)`, so
   an unbounded `E` from an untrusted `RollSpec` is a DoS vector via `die_values`'s
@@ -89,9 +70,6 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   together by whatever sane bound gets enforced at that boundary (design intent: `E` is
   single digits in every real system). Pure-library M11b-2 stays cap-agnostic by design.
   (Surfaced by the M11b-2 Task 2/Task 3 code reviews.)
-- RESOLVED (M11d-2 Task 1): `ParseError` (and `Token`) now implement player-presentable
-  `Display`, consumed by the chat System error notices; pinned by a no-debug-artifacts test
-  over every variant. Original entry: messages were raw Rust `Debug`-formatted `Token` values (e.g. `Some(BangP)`), not human-readable text. Fine while errors stay server-internal, but before M11c/d surfaces a parse failure directly to a player in a chat UI, add a `Display` impl for `Token` (and route the error arms through it) so the message reads as dice notation, not a Rust enum dump. (Surfaced by the M11a Task 9 review fix — `ParseError::DuplicateSuccessRule` was added with a clean fixed message; the pre-existing variants were not.)
 - Dice notation: extended math functions (floor/ceil/round/abs/min/max) are not yet
   parsed. M11a covers dice + arithmetic +-*/() + keep/drop/explode/reroll + cs/cf. Add
   as the notation grammar grows with system demand.
@@ -157,10 +135,6 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
 - Send/edit/delete failure surfacing: the chat frames carry no correlation id, so server
   rejections (e.g. flood limit) are invisible to the sender beyond client pre-validation —
   needs a protocol-level reason channel (pre-existing M11c deferral, re-affirmed).
-- RESOLVED (M12a): the TabbedSurface roving-tabindex and sidebar-collapse-persistence entries
-  are obsolete — the tabbed sidebar and `TabbedSurface` were deleted wholesale; panels now dock/
-  float/minimize via `module-panels` (dockview supplies the tab keyboard model; layout persists
-  per-world in `ui_state.worlds[w].panelLayout`).
 - Server shortcodes: pre-parse replacement also fires inside markdown code spans; refine to
   skip code spans if it ever matters in practice.
 
@@ -224,13 +198,6 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   multi-panel popout groups become a supported gesture.
 
 ## Client / panels (M12a Task 6 — DockviewEngine)
-- RESOLVED (M12a Task 6 buddy-check fix wave): live resize (`resizeZone`/`resizeGroup`)
-  translation is now wired — `group.api.onDidDimensionsChange` (`DockviewGroupPanelApi`, inherited
-  from `PanelApi` via `GridviewPanelApi`) fires per managed group; `DockviewEngine` subscribes one
-  listener per group at creation (disposed on removal/`destroy()`) and emits `resizeZone`/
-  `resizeGroup` ops, guarded by `#applying` and a sub-pixel-delta dedupe. The original entry's
-  premise ("no event surface found") was false — a buddy-check reviewer traced the event through
-  `dockview-core`'s own source.
 - TODO: Whole-GROUP drag transfers (a titlebar drag of an entire tab group, `PanelTransfer`'s
   `panelId === null`) are vetoed outright in v1 rather than translated into per-tab dock ops.
   `DockviewEngine#handleWillDrop` fails closed on any payload it cannot classify into a
@@ -245,16 +212,6 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   panel — creation is handled (`api.addPanel({..., floating: {...}})`), but a live re-drag or
   resize of an existing floating window is not mirrored back into the tree, so the persisted
   `Rect` can drift from what the user sees.
-- RESOLVED (M12a Task 6 fix round 3): `DockviewEngine`'s gesture contract is now uniformly
-  "classify → veto or redispatch; dockview never self-mutates from drops" — `#handleWillDrop`
-  `preventDefault()`s an ALLOWED classification too and emits the classified `LayoutOp` itself,
-  so dockview's own internal move machinery (`_onMove`) is never reached for a completed
-  same-instance drag, and `onDidRemovePanel` can no longer see an internal-move removal outside
-  `apply()`'s `#applying` window (closing the spurious-close-op defect a real browser drag used
-  to hit). `onDidDrop`/`#handleDidDrop` are removed: `onDidDrop` only fires when a drop's
-  `PanelTransfer.viewId` doesn't match this instance's own `accessor.id`, which no drag reaching
-  this class (one `DockviewApi` per `PanelHost`, no popout/multi-instance support) can ever
-  satisfy.
 - TODO: `DockviewEngine#toDropSite`'s one remaining fallback branch (a drop's target group
   falling outside the engine's own zone bookkeeping) is a best-effort approximation (falls back
   to an edge-zone dock), not exhaustively verified against every dockview drag path. The
@@ -270,14 +227,6 @@ Actionable, externally-logged deferrals. Bugs go in `OPEN_BUGS.md`, not here.
   recreated rather than patched in place (harmless: content survives via the persistent slot
   element; only the dockview chrome/tab-order animation resets). A finer, content-independent
   diff is future work if this churn becomes visible in practice.
-- RESOLVED (M12a Task 9): docked-panel-to-floating was itself a latent gap in `apply()`'s
-  floating loop — it only handled floating-panel CREATION (`!api.getPanel(f.id)`), never a
-  panel already docked that the tree newly lists under `expanded.floating`, leaving it
-  stranded in its old (tree-orphaned) group. Fixed with the same remove+re-add-under-groupId
-  pattern the zone loop already used for cross-group moves, keyed on
-  `existing.group.api.location.type !== "floating"` (dockview's own public location
-  discriminant). Surfaced by wiring the `PanelMenu`'s "Float" command — the first UI affordance
-  to ever trigger a "float" op against the production engine.
 - TODO: `PanelMenu`'s "Float" command is the ONLY current trigger for a `float` `LayoutOp`, and
   floating a panel via its OWN tab menu necessarily destroys that same tab (and its menu
   button) as part of the docked→floating transition. `DockviewEngine`'s focus-return-to-invoker
