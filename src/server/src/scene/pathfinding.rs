@@ -16,7 +16,6 @@ pub enum DiagonalRule {
     Alternating,
 }
 
-use crate::scene::movement;
 use crate::scene::vision::{self, point_segment_distance};
 use std::collections::{BTreeSet, BinaryHeap, HashMap};
 
@@ -35,6 +34,9 @@ pub struct PathGrid<'a> {
     pub mask: Option<&'a BTreeSet<Cell>>,
     pub regions: Option<&'a crate::scene::regions::RegionField>,
     pub window: (i32, i32, i32, i32),
+    /// Cell geometry for this scene (`SquareGrid` or a future `HexGrid`). Owns no state beyond
+    /// `cell`/`rule`, constructed fresh per search in `find()`.
+    pub shape: &'a dyn crate::scene::grid_shape::GridShape,
 }
 
 /// Center of cell `c` in scene coords.
@@ -83,8 +85,8 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
         return false;
     }
     let r_scene = grid.footprint_radius_cells.max(0.0) * grid.cell;
-    let ctr = cell_center(to, grid.cell);
-    let a = cell_center(from, grid.cell);
+    let ctr = grid.shape.cell_center(to);
+    let a = grid.shape.cell_center(from);
 
     // (1) Footprint disc vs every blocksMove wall.
     for w in grid.walls {
@@ -103,12 +105,12 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     // flanker cells). `None` (degenerate/over-cap span) fails closed: not enterable, mirroring
     // the gate's `None ⇒ Forbidden`.
     if let Some(mask) = grid.mask {
-        for c in footprint_cells(to, ctr, r_scene, grid.cell) {
+        for c in grid.shape.footprint_cells(to, ctr, r_scene, grid.cell) {
             if !mask.contains(&c) {
                 return false;
             }
         }
-        match movement::supercover_cells(a, ctr, grid.cell) {
+        match grid.shape.line_traversal(a, ctr, grid.cell) {
             Some(step_cells) => {
                 if !step_cells.iter().all(|c| mask.contains(c)) {
                     return false;
@@ -131,7 +133,7 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     // `find()`'s route assembly (arrest truncation) and in `astar_leg`'s step cost (terrain),
     // both keyed on cell-center only — mirroring `move_exec.rs`'s existing center-cell model.
     if let Some(regions) = grid.regions {
-        for c in footprint_cells(to, ctr, r_scene, grid.cell) {
+        for c in grid.shape.footprint_cells(to, ctr, r_scene, grid.cell) {
             if regions.is_impassable(c) {
                 return false;
             }
@@ -148,6 +150,8 @@ mod astar_tests {
 
     fn open(rule: DiagonalRule, footprint: f64) -> PathGrid<'static> {
         const NO_WALLS: [Seg; 0] = [];
+        let shape: &'static crate::scene::grid_shape::SquareGrid =
+            Box::leak(Box::new(crate::scene::grid_shape::SquareGrid { cell: 100.0, rule }));
         PathGrid {
             cell: 100.0,
             rule,
@@ -156,6 +160,7 @@ mod astar_tests {
             mask: None,
             regions: None,
             window: (-50, -50, 50, 50),
+            shape,
         }
     }
 
@@ -220,6 +225,10 @@ mod astar_tests {
                 b: (4.0 * c, 4.0 * c),
             },
         ];
+        let shape = crate::scene::grid_shape::SquareGrid {
+            cell: c,
+            rule: DiagonalRule::Chebyshev,
+        };
         let g = PathGrid {
             cell: c,
             rule: DiagonalRule::Chebyshev,
@@ -228,6 +237,7 @@ mod astar_tests {
             mask: None,
             regions: None,
             window: (-10, -10, 10, 10),
+            shape: &shape,
         };
         assert_eq!(astar_leg(&g, (0, 0), (3, 3), 0), Err(PathFail::Unreachable));
     }
@@ -239,6 +249,18 @@ mod astar_tests {
         assert_eq!(cells, vec![(2, 2)]);
         assert!(cost.abs() < 1e-9);
         assert_eq!(p, 1, "parity is carried unchanged when no step is taken");
+    }
+
+    #[test]
+    fn astar_leg_routes_through_grid_shape_not_hardcoded_dirs() {
+        // Same assertions as `chebyshev_diagonal_is_cost_one_per_step`, but this test exists
+        // specifically to fail if a future edit reintroduces a hardcoded `dirs`/`step_cost` path
+        // instead of going through `grid.shape.neighbors_with_cost(...)`.
+        let g = open(DiagonalRule::Chebyshev, 0.1);
+        let (cells, cost, _p) = astar_leg(&g, (0, 0), (3, 3), 0).unwrap();
+        assert!((cost - 3.0).abs() < 1e-9);
+        assert_eq!(cells.first(), Some(&(0, 0)));
+        assert_eq!(cells.last(), Some(&(3, 3)));
     }
 }
 
@@ -279,25 +301,6 @@ impl Ord for QNode {
 impl PartialOrd for QNode {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
-    }
-}
-
-/// Step cost and successor parity for moving by `(di, dj)` (each in -1..=1, not both 0) under `rule`
-/// from a node with diagonal-parity `parity`. Source: standard grid metrics; `Alternating` is the
-/// PF1e/3.5 5-10-5 rule (k-th diagonal costs 1 if k odd else 2).
-fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
-    let diagonal = di != 0 && dj != 0;
-    if !diagonal {
-        return (1.0, parity);
-    }
-    match rule {
-        DiagonalRule::Chebyshev => (1.0, parity),
-        DiagonalRule::Manhattan => (2.0, parity),
-        DiagonalRule::Euclidean => (std::f64::consts::SQRT_2, parity),
-        DiagonalRule::Alternating => {
-            let cost = if parity == 0 { 1.0 } else { 2.0 };
-            (cost, 1 - parity)
-        }
     }
 }
 
@@ -346,16 +349,6 @@ pub(crate) fn astar_leg(
         parity: start_parity,
     });
 
-    let dirs = [
-        (1, 0),
-        (-1, 0),
-        (0, 1),
-        (0, -1),
-        (1, 1),
-        (1, -1),
-        (-1, 1),
-        (-1, -1),
-    ];
     let mut expansions = 0usize;
 
     while let Some(QNode {
@@ -388,12 +381,10 @@ pub(crate) fn astar_leg(
         if expansions > MAX_PATH_NODES {
             return Err(PathFail::Exceeded);
         }
-        for (di, dj) in dirs {
-            let next = (cell.0 + di, cell.1 + dj);
+        for (next, sc, next_parity) in grid.shape.neighbors_with_cost(cell, parity) {
             if !cell_enterable(grid, cell, next) {
                 continue;
             }
-            let (sc, next_parity) = step_cost(grid.rule, di, dj, parity);
             let mult = grid.regions.map_or(1.0, |r| r.terrain_multiplier(next));
             let tentative = g_popped + sc * mult;
             let key = (next, next_parity);
@@ -489,6 +480,7 @@ pub fn find(
         (maxy / cell).floor() as i32 + WINDOW_MARGIN,
     );
 
+    let shape = crate::scene::grid_shape::SquareGrid { cell, rule };
     let grid = PathGrid {
         cell,
         rule,
@@ -497,6 +489,7 @@ pub fn find(
         mask,
         regions,
         window,
+        shape: &shape,
     };
 
     // Run each leg, threading end-parity into the next leg's start_parity so the route is priced as
@@ -545,10 +538,10 @@ pub fn find(
 
     // Arrest truncation (spec §5): the route is cut at the FIRST visible arrest cell after the
     // start (a token already standing in a cell is not "entering" it). Recompute the truncated
-    // cost by replaying `step_cost` across the surviving prefix — parity threading is purely
-    // sequential (order-dependent, not leg-boundary-dependent), so replaying from parity 0 over
-    // the assembled `cells` reproduces exactly the cost the original per-leg accumulation gives
-    // for that same prefix.
+    // cost by replaying the per-step cost across the surviving prefix via `grid.shape` — parity
+    // threading is purely sequential (order-dependent, not leg-boundary-dependent), so replaying
+    // from parity 0 over the assembled `cells` reproduces exactly the cost the original per-leg
+    // accumulation gives for that same prefix.
     let mut arrested = false;
     if let Some(rf) = regions {
         if let Some(idx) = cells
@@ -563,8 +556,12 @@ pub fn find(
             let mut p = 0u8;
             total = 0.0;
             for w in cells.windows(2) {
-                let (di, dj) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
-                let (sc, next_p) = step_cost(rule, di, dj, p);
+                let (_, sc, next_p) = grid
+                    .shape
+                    .neighbors_with_cost(w[0], p)
+                    .into_iter()
+                    .find(|(next, _, _)| *next == w[1])
+                    .expect("cells adjacent along an already-found route are a valid grid_shape neighbor pair");
                 total += sc * rf.terrain_multiplier(w[1]);
                 p = next_p;
             }
@@ -875,6 +872,11 @@ mod tests {
         mask: Option<&'a BTreeSet<Cell>>,
         footprint: f64,
     ) -> PathGrid<'a> {
+        let shape: &'static crate::scene::grid_shape::SquareGrid =
+            Box::leak(Box::new(crate::scene::grid_shape::SquareGrid {
+                cell: 100.0,
+                rule: DiagonalRule::Chebyshev,
+            }));
         PathGrid {
             cell: 100.0,
             rule: DiagonalRule::Chebyshev,
@@ -883,6 +885,7 @@ mod tests {
             mask,
             regions: None,
             window: (-100, -100, 100, 100),
+            shape,
         }
     }
 
