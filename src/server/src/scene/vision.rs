@@ -191,15 +191,15 @@ pub fn visibility_polygon(viewpoint: P, walls: &[Seg], bound: Rect) -> Vec<P> {
 /// Euclidean distance from point `p` to segment `a→b`, clamping the projection to the segment.
 /// Source: standard point-to-segment projection (clean-room). Used by the pathfinder footprint
 /// clearance: a footprint disc of radius R is wall-clear iff this distance ≥ R for every wall.
-// TODO: remove once the grid pathfinder A* body is live and calls cell_enterable.
-#[allow(dead_code)]
 pub(crate) fn point_segment_distance(p: P, a: P, b: P) -> f64 {
     let (px, py) = p;
     let (ax, ay) = a;
     let (bx, by) = b;
     let (dx, dy) = (bx - ax, by - ay);
     let len2 = dx * dx + dy * dy;
-    let t = if len2 <= f64::EPSILON {
+    // Geometry-scale threshold (grid/scene coordinates are unit-cell scale, not
+    // near f64::EPSILON): a segment this short is degenerate at any cell size in use.
+    let t = if len2 <= 1e-10 {
         0.0 // degenerate segment: distance to point `a`
     } else {
         (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
@@ -219,6 +219,20 @@ mod tests {
             maxx: 100.0,
             maxy: 100.0,
         }
+    }
+
+    #[test]
+    fn point_segment_distance_degenerate_segment_uses_geometry_scale_epsilon() {
+        // A segment with near-zero (but not exactly zero) length, below the old
+        // f64::EPSILON threshold but meaningfully non-degenerate at scene scale.
+        let a = (0.0, 0.0);
+        let b = (1e-9, 0.0); // len2 = 1e-18, well below both thresholds — still degenerate
+        let point = (5.0, 0.0);
+        let dist = point_segment_distance(point, a, b);
+        assert!(
+            (dist - 5.0).abs() < 1e-6,
+            "a genuinely-degenerate segment collapses to point-distance from `a`"
+        );
     }
 
     #[test]

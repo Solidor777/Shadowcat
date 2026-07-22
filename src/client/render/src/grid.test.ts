@@ -74,3 +74,10 @@ test("chebyshev remains 1-per-diagonal (default)", () => {
   const g = makeGrid({ kind: "square", size: 100, diagonalRule: "chebyshev" });
   expect(g.distance({ x: 50, y: 50 }, { x: 350, y: 350 })).toBe(3);
 });
+
+test("alternating (5-10-5) rule: two diagonal steps (dmin=2) cost 3, not 2", () => {
+  const g = makeGrid({ kind: "square", size: 100, diagonalRule: "alternating" });
+  // dmin=dmax=2 → (dmax-dmin) + dmin + floor(dmin/2) = 0 + 2 + 1 = 3.
+  // Costing this as dmin*1=2 (ignoring the 1,2,1,2… alternation) would be wrong.
+  expect(g.distance({ x: 50, y: 50 }, { x: 250, y: 250 })).toBe(3);
+});

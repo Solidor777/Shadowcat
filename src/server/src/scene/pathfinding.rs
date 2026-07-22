@@ -18,7 +18,7 @@ pub enum DiagonalRule {
 
 use crate::scene::movement;
 use crate::scene::vision::{self, point_segment_distance};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, BinaryHeap, HashMap};
 
 /// A grid cell `(i, j)`; cell `(i,j)` covers `[i*cell,(i+1)*cell) × [j*cell,(j+1)*cell)`.
 pub type Cell = (i32, i32);
@@ -241,8 +241,6 @@ mod astar_tests {
         assert_eq!(p, 1, "parity is carried unchanged when no step is taken");
     }
 }
-
-use std::collections::{BinaryHeap, HashMap};
 
 /// Why a path request fails. Mapped to a `PathError` message at the wire boundary.
 #[derive(Debug, PartialEq, Eq)]

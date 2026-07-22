@@ -59,6 +59,9 @@ export interface MoveStream {
   cost: number | null;
 }
 
+/** The union of results a correlated request in `pending` can resolve to. */
+export type PendingResult = SearchPage | PathResult | MoveStream;
+
 /** Handle to an active live search subscription (Core.subscribeSearch). */
 export interface SubscriptionHandle {
   unsubscribe(): void;
@@ -122,7 +125,7 @@ export class WsClient {
   private pending = new Map<
     string,
     {
-      resolve: (result: SearchPage | PathResult | MoveStream) => void;
+      resolve: (result: PendingResult) => void;
       reject: (e: Error) => void;
       timer: ReturnType<typeof setTimeout>;
     }
@@ -434,7 +437,7 @@ export class WsClient {
         this.pending.delete(request_id);
         reject(new Error("search request timeout"));
       }, timeoutMs);
-      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult | MoveStream) => void, reject, timer });
+      this.pending.set(request_id, { resolve: resolve as (r: PendingResult) => void, reject, timer });
       this.send({
         type: "search",
         request_id,
@@ -547,7 +550,7 @@ export class WsClient {
         this.pending.delete(request_id);
         reject(new Error("pathfind request timeout"));
       }, timeoutMs);
-      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult | MoveStream) => void, reject, timer });
+      this.pending.set(request_id, { resolve: resolve as (r: PendingResult) => void, reject, timer });
       this.send({ type: "pathfind", request_id, scene, start, waypoints, footprint_radius: footprintRadius });
     });
   }
@@ -575,7 +578,7 @@ export class WsClient {
         this.pending.delete(request_id);
         reject(new Error("move_request timeout"));
       }, timeoutMs);
-      this.pending.set(request_id, { resolve: resolve as (r: SearchPage | PathResult | MoveStream) => void, reject, timer });
+      this.pending.set(request_id, { resolve: resolve as (r: PendingResult) => void, reject, timer });
       this.send({ type: "move_request", request_id, scene, token_id: tokenId, path });
     });
   }

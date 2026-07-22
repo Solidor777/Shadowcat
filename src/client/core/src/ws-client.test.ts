@@ -422,7 +422,8 @@ describe("WsClient", () => {
     await client.start();
 
     const p = client.pathfind("scene-1", [50, 50], [[250, 50]], 0.5);
-    const sentFrame = JSON.parse(sent.find((s) => JSON.parse(s).type === "pathfind")!);
+    const firstIndex = sent.findIndex((s) => JSON.parse(s).type === "pathfind");
+    const sentFrame = JSON.parse(sent[firstIndex]);
     expect(sentFrame.type).toBe("pathfind");
     onMessage(
       JSON.stringify({
@@ -436,7 +437,7 @@ describe("WsClient", () => {
     await expect(p).resolves.toEqual({ path: [[50, 50], [250, 50]], cost: 2, arrested: false });
 
     const p2 = client.pathfind("scene-1", [50, 50], [[9999, 9999]], 0.5);
-    const sentFrame2 = JSON.parse(sent.find((s, i) => i > sent.indexOf(JSON.stringify(sentFrame)) && JSON.parse(s).type === "pathfind")!);
+    const sentFrame2 = JSON.parse(sent.find((s, i) => i > firstIndex && JSON.parse(s).type === "pathfind")!);
     onMessage(
       JSON.stringify({
         type: "path_error",
