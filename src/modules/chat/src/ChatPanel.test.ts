@@ -6,6 +6,7 @@ import { DocumentStore, buildChannelRegistryDoc, type WireDocument, type WireOpe
 import ChatPanel from "./ChatPanel.svelte";
 import Probe from "./__fixtures__/CardProbe.svelte";
 import ComposerProbe from "./__fixtures__/ComposerProbe.svelte";
+import { getParseCallCount, resetParseCallCount } from "./channels";
 
 const cmd = (ops: WireOperation[]) => ({ seq: 1, world_id: "w1", author: "a", ts: 0, ops });
 function storeWith(...docs: WireDocument[]): DocumentStore {
@@ -22,7 +23,7 @@ function msgDoc(id: string, created_at: number, engine: Record<string, unknown>)
     name: null,
     source: null,
     owner: "u1",
-    permissions: { default: "observer", users: {} } as WireDocument["permissions"],
+    permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null } as WireDocument["permissions"],
     embedded: {},
     parent_id: null,
     engine,
@@ -248,6 +249,38 @@ function mockScrollMetrics(el: HTMLElement, m: { scrollTop: number; clientHeight
   Object.defineProperty(el, "clientHeight", { configurable: true, get: () => m.clientHeight });
   Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => m.scrollHeight });
 }
+
+describe("ChatPanel — virtualization + narrowed re-derivation", () => {
+  it("editing a message outside the current render window does not re-parse the full history", async () => {
+    resetParseCallCount();
+    const docs = Array.from({ length: 5000 }, (_, i) => publicMsg(`m${i}`, i));
+    const store = storeWith(...docs);
+    render(ChatPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, contributions: registryWithCard() }) });
+    const countAfterMount = getParseCallCount();
+    expect(countAfterMount).toBeGreaterThan(0); // the initial build does parse every message once
+
+    // m10 is well outside the last-RENDER_CAP window (m4800..m4999).
+    const oldContent = [{ kind: "text", text: "msg-m10" }];
+    store.applyCommand(cmd([{ op: "update", doc_id: "m10", changes: [{ path: "/engine/content", old: oldContent, new: [{ kind: "text", text: "edited" }] }] }]));
+    await Promise.resolve();
+
+    expect(getParseCallCount()).toBe(countAfterMount); // no re-parse of any already-known message
+  });
+
+  it("the message list only mounts the measured scroll window plus overscan, not the full render-cap slice", () => {
+    const docs = Array.from({ length: 5000 }, (_, i) => publicMsg(`m${i}`, i));
+    const store = storeWith(...docs);
+    const { container: root } = render(ChatPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, contributions: registryWithCard() }) });
+    const messages = root.querySelector(".messages") as HTMLElement;
+    // A real, disproportionate scroll geometry: the 200-message render-cap
+    // slice would already satisfy a loose "<300" bound unwindowed, so this
+    // asserts a much tighter bound only true windowing can meet.
+    mockScrollMetrics(messages, { scrollTop: 0, clientHeight: 400, scrollHeight: 50000 });
+    fireEvent.scroll(messages);
+    const mountedRows = root.querySelectorAll("[data-message-row]");
+    expect(mountedRows.length).toBeLessThan(60);
+  });
+});
 
 describe("ChatPanel — new-message scroll/pill behavior", () => {
   it("scrolling up alone (no new message) never shows the new-messages pill", async () => {

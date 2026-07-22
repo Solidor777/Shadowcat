@@ -1,6 +1,16 @@
 import { describe, expect, test } from "vitest";
 import type { ChatMessageEngine, WireDocument } from "@shadowcat/core";
-import { postTarget, inView, byCreation, RENDER_CAP, type ChatView } from "./channels";
+import {
+  postTarget,
+  inView,
+  byCreation,
+  RENDER_CAP,
+  createChatDerivationCache,
+  deriveVisibleDocs,
+  computeVisibleWindow,
+  VIRTUALIZE_OVERSCAN,
+  type ChatView,
+} from "./channels";
 
 function sys(over: Partial<ChatMessageEngine> = {}): ChatMessageEngine {
   return {
@@ -109,4 +119,109 @@ describe("byCreation", () => {
 
 test("RENDER_CAP is 200", () => {
   expect(RENDER_CAP).toBe(200);
+});
+
+function engineDoc(id: string, created_at: number, engine: Record<string, unknown>): WireDocument {
+  return {
+    id,
+    scope: { kind: "world", world_id: "w1" },
+    doc_type: "message",
+    schema_version: 1,
+    name: null,
+    source: null,
+    owner: "u1",
+    permissions: { default: "observer", users: {} } as WireDocument["permissions"],
+    embedded: {},
+    parent_id: null,
+    engine,
+    system: {},
+    created_at,
+    updated_at: created_at,
+  } as WireDocument;
+}
+const publicEngineMsg = (id: string, created_at: number, text = `msg-${id}`) =>
+  engineDoc(id, created_at, { channel: "general", user_owner: "u1", kind: "normal", audience: { kind: "public" }, content: [{ kind: "text", text }] });
+const gmEngineMsg = (id: string, created_at: number) =>
+  engineDoc(id, created_at, { channel: "general", user_owner: "u1", kind: "normal", audience: { kind: "gm_only" }, content: [{ kind: "text", text: `msg-${id}` }] });
+
+describe("deriveVisibleDocs", () => {
+  test("returns in-view messages sorted by creation, capped to the last N", () => {
+    const cache = createChatDerivationCache();
+    const docs = [publicEngineMsg("a", 3), publicEngineMsg("b", 1), publicEngineMsg("c", 2)];
+    const result = deriveVisibleDocs(cache, docs, { kind: "all" }, 10);
+    expect(result.map((d) => d.id)).toEqual(["b", "c", "a"]);
+  });
+
+  test("excludes messages that fail the view filter", () => {
+    const cache = createChatDerivationCache();
+    const docs = [publicEngineMsg("a", 1), gmEngineMsg("b", 2)];
+    const result = deriveVisibleDocs(cache, docs, { kind: "gm" }, 10);
+    expect(result.map((d) => d.id)).toEqual(["b"]);
+  });
+
+  test("caps to the last `cap` entries, dropping the oldest", () => {
+    const cache = createChatDerivationCache();
+    const docs = Array.from({ length: 5 }, (_, i) => publicEngineMsg(`m${i}`, i));
+    const result = deriveVisibleDocs(cache, docs, { kind: "all" }, 3);
+    expect(result.map((d) => d.id)).toEqual(["m2", "m3", "m4"]);
+  });
+
+  test("a subsequent call with a new (edited) reference for a known id refreshes content without reordering", () => {
+    const cache = createChatDerivationCache();
+    const docs = [publicEngineMsg("a", 1), publicEngineMsg("b", 2)];
+    const first = deriveVisibleDocs(cache, docs, { kind: "all" }, 10);
+    expect(first.map((d) => d.id)).toEqual(["a", "b"]);
+
+    const editedA = publicEngineMsg("a", 1, "edited");
+    const second = deriveVisibleDocs(cache, [editedA, docs[1]], { kind: "all" }, 10);
+    expect(second.map((d) => d.id)).toEqual(["a", "b"]); // order unchanged
+    expect((second[0].engine as { content: { text: string }[] }).content[0].text).toBe("edited");
+  });
+
+  test("a doc with an unchanged reference is skipped without re-deriving membership", () => {
+    const cache = createChatDerivationCache();
+    const docs = [publicEngineMsg("a", 1)];
+    deriveVisibleDocs(cache, docs, { kind: "all" }, 10);
+    // Same array, same object references: nothing new to process.
+    const result = deriveVisibleDocs(cache, docs, { kind: "all" }, 10);
+    expect(result.map((d) => d.id)).toEqual(["a"]);
+  });
+});
+
+describe("computeVisibleWindow", () => {
+  test("returns the full range when the container has no measured layout (clientHeight <= 0)", () => {
+    expect(computeVisibleWindow(0, 0, 0, 500)).toEqual({ start: 0, end: 500 });
+  });
+
+  test("returns the full range when content fits without overflowing the container", () => {
+    expect(computeVisibleWindow(0, 400, 300, 500)).toEqual({ start: 0, end: 500 });
+  });
+
+  test("returns zero range for an empty list", () => {
+    expect(computeVisibleWindow(0, 400, 5000, 0)).toEqual({ start: 0, end: 0 });
+  });
+
+  test("scrolled to the top windows near the start, padded by overscan", () => {
+    const { start, end } = computeVisibleWindow(0, 400, 50000, 200);
+    expect(start).toBe(0);
+    expect(end).toBeLessThan(30);
+  });
+
+  test("scrolled to the bottom windows near the end, padded by overscan", () => {
+    const { start, end } = computeVisibleWindow(50000 - 400, 400, 50000, 200);
+    expect(end).toBe(200);
+    expect(start).toBeGreaterThan(150);
+  });
+
+  test("a custom overscan widens the window on both sides", () => {
+    const narrow = computeVisibleWindow(25000, 400, 50000, 200, 0);
+    const wide = computeVisibleWindow(25000, 400, 50000, 200, 20);
+    expect(wide.start).toBeLessThanOrEqual(narrow.start);
+    expect(wide.end).toBeGreaterThanOrEqual(narrow.end);
+    expect(wide.end - wide.start).toBeGreaterThan(narrow.end - narrow.start);
+  });
+
+  test("VIRTUALIZE_OVERSCAN is the default overscan", () => {
+    expect(computeVisibleWindow(25000, 400, 50000, 200)).toEqual(computeVisibleWindow(25000, 400, 50000, 200, VIRTUALIZE_OVERSCAN));
+  });
 });

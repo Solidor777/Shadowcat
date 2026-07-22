@@ -5,12 +5,18 @@
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
     buildChannelRegistryDoc,
-    parseMessageEngine,
     type ChannelRegistryEngine,
     type WireAudience,
     type WireDocument,
   } from "@shadowcat/core";
-  import { postTarget, inView, byCreation, RENDER_CAP, type ChatView } from "./channels";
+  import {
+    postTarget,
+    RENDER_CAP,
+    createChatDerivationCache,
+    deriveVisibleDocs,
+    computeVisibleWindow,
+    type ChatView,
+  } from "./channels";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -19,19 +25,22 @@
   const subscribeContributions = createSubscriber((update) => ctx.contributions.subscribe(update));
 
   // All chat messages this client has (already redacted per-recipient by the
-  // server), parsed + filtered by the active view + sorted + capped to the last
-  // RENDER_CAP for render — the store may hold more via search/resync.
+  // server), parsed + filtered by the active view + sorted + capped to the
+  // last RENDER_CAP for render — the store may hold more via search/resync.
+  // `derivationCache` carries sort/parse state across reactive re-runs so a
+  // mutation to one message only re-derives that message, not the whole
+  // history (see channels.ts's deriveVisibleDocs); it is reset whenever the
+  // active view changes, since membership is view-scoped.
   let view = $state<ChatView>({ kind: "all" });
+  let derivationCache = createChatDerivationCache();
+  let cachedView: ChatView | undefined;
   const visibleDocs = $derived.by((): WireDocument[] => {
     subscribe();
-    const inViewDocs = ctx.documents
-      .query("message")
-      .filter((doc) => {
-        const sys = parseMessageEngine(doc);
-        return sys !== null && inView(view, sys);
-      })
-      .sort(byCreation);
-    return inViewDocs.slice(Math.max(0, inViewDocs.length - RENDER_CAP));
+    if (cachedView !== view) {
+      derivationCache = createChatDerivationCache();
+      cachedView = view;
+    }
+    return deriveVisibleDocs(derivationCache, ctx.documents.query("message"), view, RENDER_CAP);
   });
 
   const registry = $derived.by((): WireDocument | undefined => {
@@ -128,13 +137,38 @@
   // panel becomes visible again (see the IntersectionObserver effect below).
   let pendingScrollToBottom = false;
 
+  // Scroll geometry backing the virtualized window below — kept as $state so
+  // computeVisibleWindow re-runs reactively, but only written from real
+  // measurement points (scroll, scroll-to-bottom, mount, visibility reveal),
+  // never inferred.
+  let scrollTop = $state(0);
+  let clientHeight = $state(0);
+  let scrollHeight = $state(0);
+  function syncScrollState(): void {
+    if (!container) return;
+    scrollTop = container.scrollTop;
+    clientHeight = container.clientHeight;
+    scrollHeight = container.scrollHeight;
+  }
+
+  // Only the rows within the measured scroll range (plus overscan) are
+  // mounted; RENDER_CAP above bounds what's reactively derived at all, this
+  // narrows what's actually placed in the DOM within that bound.
+  const windowed = $derived.by(() => computeVisibleWindow(scrollTop, clientHeight, scrollHeight, visibleDocs.length));
+  const windowedDocs = $derived.by(() => visibleDocs.slice(windowed.start, windowed.end));
+  // Spacer heights approximate real row height from the measured scrollHeight
+  // so the scrollbar's proportion/position stays stable as the window moves.
+  const avgRowHeight = $derived.by(() => (visibleDocs.length > 0 && scrollHeight > 0 ? scrollHeight / visibleDocs.length : 0));
+
   function checkAtBottom(): void {
     if (!container) return;
+    syncScrollState();
     atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 4;
   }
   function scrollToBottom(): void {
     if (!container) return;
     container.scrollTop = container.scrollHeight;
+    syncScrollState();
     atBottom = true;
     showNewMessagesPill = false;
     pendingScrollToBottom = false;
@@ -189,10 +223,19 @@
     const el = container;
     const observer = new IntersectionObserver((entries) => {
       const entry = entries[entries.length - 1];
-      if (entry?.isIntersecting && pendingScrollToBottom) scrollToBottom();
+      if (!entry?.isIntersecting) return;
+      if (pendingScrollToBottom) scrollToBottom();
+      else syncScrollState();
     });
     observer.observe(el);
     return () => observer.disconnect();
+  });
+
+  // Establishes real scroll geometry once the container mounts (re-runs
+  // harmlessly if the element reference ever changes).
+  $effect(() => {
+    if (!container) return;
+    syncScrollState();
   });
 </script>
 
@@ -224,12 +267,20 @@
   {/if}
 
   <div class="messages" bind:this={container} onscroll={checkAtBottom}>
-    {#each visibleDocs as m (m.id)}
+    {#if windowed.start > 0}
+      <div class="row-spacer" style="height: {windowed.start * avgRowHeight}px" aria-hidden="true"></div>
+    {/if}
+    {#each windowedDocs as m (m.id)}
       {#if cardComp}
         {@const Card = cardComp}
-        <Card message={m} showChannel={view.kind === "all"} />
+        <div data-message-row>
+          <Card message={m} showChannel={view.kind === "all"} />
+        </div>
       {/if}
     {/each}
+    {#if windowed.end < visibleDocs.length}
+      <div class="row-spacer" style="height: {(visibleDocs.length - windowed.end) * avgRowHeight}px" aria-hidden="true"></div>
+    {/if}
   </div>
 
   {#if showNewMessagesPill}
