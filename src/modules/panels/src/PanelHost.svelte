@@ -82,6 +82,21 @@
     return t("panels.moved", { panel: label(op.id), where });
   }
 
+  // `AppContext.panels` is typed as `PanelsApi & PanelsChipsView`, which
+  // intentionally omits `bind` (a proxy-rebind affordance, not part of the
+  // general contract other callers use). This rests on composition-root
+  // convention, not the type system: `Table.svelte` is the sole place that
+  // constructs the concrete `PanelsBridge` and assigns it to `ctx.panels`,
+  // so this is the sole binding site — guarded at runtime rather than cast
+  // unchecked, so a violated convention fails loudly here instead of
+  // surfacing as a confusing error deeper inside `PanelsController`.
+  if (typeof (ctx.panels as Partial<PanelsBridgeLike>)?.bind !== "function") {
+    throw new Error(
+      "PanelHost expects AppContext.panels to be a PanelsBridgeLike (missing .bind) — check the composition-root binding in Table.svelte",
+    );
+  }
+  const bridge: PanelsBridgeLike = ctx.panels as unknown as PanelsBridgeLike;
+
   const ctrl = untrack(
     () =>
       controller ??
@@ -90,13 +105,7 @@
         role: ctx.role,
         getPanelLayout: () => ctx.uiState.getPanelLayout(),
         setPanelLayout: (blob) => ctx.uiState.setPanelLayout(blob),
-        // `AppContext.panels` is typed as `PanelsApi & PanelsChipsView`, which
-        // intentionally omits `bind` (a proxy-rebind affordance, not part of
-        // the general contract other callers use). This cast rests on
-        // composition-root convention, not the type system: `Table.svelte` is
-        // the sole place that constructs the concrete `PanelsBridge` and
-        // assigns it to `ctx.panels`, so this is the sole binding site.
-        bridge: ctx.panels as unknown as PanelsBridgeLike,
+        bridge,
         logger: log,
         // The controller already logs a reset via `logger.warn`; `onReset` is
         // the seam a visible toast (e.g. a statusbar live region) hangs off

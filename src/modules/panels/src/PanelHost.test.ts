@@ -1,6 +1,7 @@
 import { test, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
+import type { AppContext } from "@shadowcat/ui-kit";
 import { ContributionRegistry, PANEL_CONTRACT, silentLogger } from "@shadowcat/core";
 import type { EngineAdapter } from "./engine/adapter";
 import { applyOp, defaultLayout } from "./layout/tree";
@@ -549,4 +550,24 @@ test("live region: unmounting unsubscribes the engine's onNotice listener (unsub
   // write never re-renders the detached node whether or not the listener
   // was actually removed; see the getter's doc comment above.)
   expect(engine.noticeListenerCount).toBe(0);
+});
+
+test("PanelHost throws a clear error if ctx.panels doesn't look like a PanelsBridgeLike", () => {
+  const registry = new ContributionRegistry();
+  const context = setAppContextForTest({
+    contributions: registry,
+    role: "gm",
+    panels: { notBind: true } as unknown as AppContext["panels"],
+  });
+  expect(() => render(PanelHost, { context })).toThrow(/PanelsBridgeLike/);
+});
+
+test("PanelHost mounts normally when ctx.panels has a bind method", () => {
+  const registry = new ContributionRegistry();
+  const context = setAppContextForTest({
+    contributions: registry,
+    role: "gm",
+    panels: { bind: vi.fn() } as unknown as AppContext["panels"],
+  });
+  expect(() => render(PanelHost, { context })).not.toThrow();
 });
