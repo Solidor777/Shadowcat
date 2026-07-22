@@ -43,8 +43,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
     no `{kind:"faces"}` inside a face; an animated face falls out of the same boundary with no
     separate mechanism). `TokenVisual = RenderVisual | {kind:"faces", faces: Record<string,
     FaceVisual>, default: string, faceMap?: Record<string,string>}` — `default` is REQUIRED (no
-    `?`), per `scene-docs.ts:181`; `ActorsPanel.buildVisual()` always supplies it and nulls the
-    whole visual if unset. `ActorEngine.visual` and
+    `?`), per `scene-docs.ts:181`; `VisualKindEditor.svelte`'s `buildVisual()` always supplies it
+    and nulls the whole visual if unset. `ActorEngine.visual` and
     `TokenOverrides.visual` both carry `TokenVisual` (a token can override the actor's whole visual,
     faces-union included). `TokenEngine.face?: string` — the per-token ACTIVE face selection; only
     meaningful when the effective visual resolves to `"faces"`, ignored otherwise; token-local
@@ -91,13 +91,17 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   malformed `AnimatedSource` (`isValidAnimated`: non-finite/`<=0` `fps`, an empty `frames` array, or
   a non-positive/non-integer `rows`/`cols` for a `sheet` source). Optional pre-resolved `eff` avoids
   a second `resolveTokenActor` call, mirroring `resolveTokenBox`'s convention.
-- `src/modules/actors/{ActorsPanel.svelte,index.ts}` — create/list/pick actors; hide-name control;
-  faction assignment; shape (`square`/`circle`) + size (fractional grid-cells) editing in the
-  create form and in the per-row GM inline editor; darkvision range authoring (create + per-row),
-  writing `engine.vision: [{ mode: "darkvision", range }]` (M13-0 re-root, was `system.vision`;
-  omitted when range 0). **Visual
-  authoring (M10h):** a visual-kind editor (image / faces / animated) in the actor-creation form;
-  `buildVisual()` validates per-kind completeness for EVERY face row (an image row needs `asset`; an
+- `src/modules/actors/{ActorsPanel.svelte,VisualKindEditor.svelte,index.ts}` — `ActorsPanel`:
+  create/list/pick actors; hide-name control; faction assignment; shape (`square`/`circle`) + size
+  (fractional grid-cells) editing in the create form and in the per-row GM inline editor;
+  darkvision range authoring (create + per-row), writing `engine.vision: [{ mode: "darkvision",
+  range }]` (M13-0 re-root, was `system.vision`; omitted when range 0). **Visual authoring (M10h;
+  extracted into `VisualKindEditor.svelte`, a pure intra-module split with no behavior change):**
+  a visual-kind editor (image / faces / animated) in the actor-creation form, mounted by
+  `ActorsPanel` and driven by an `onBuild` callback prop (`ActorsPanel` still owns
+  `conditionOptions` and the aggregate create-form reset, calling the child's exposed `reset()`).
+  `buildVisual()` (now in `VisualKindEditor.svelte`) validates per-kind completeness for EVERY
+  face row (an image row needs `asset`; an
   animated row needs non-empty `frames` or a chosen `sheetAsset` — a failing row nulls the WHOLE
   `faces` visual, disabling submit), face-row name uniqueness (a duplicate name nulls the visual),
   and that `defaultFace` names an existing row (else nulls the visual); a stale `faceMapRows` entry
