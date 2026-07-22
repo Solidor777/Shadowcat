@@ -101,6 +101,22 @@ test("a module whose register() throws is left inactive but a sibling module sti
   expect(warnings.some((w) => w.includes("broken") && w.includes("boom"))).toBe(true);
 });
 
+test("activate() rolls back partial side effects when register() throws after contributing", async () => {
+  const reg = new ContributionRegistry();
+  const d = { ...deps(), contributions: reg };
+  const r = new ModuleRegistry(d);
+  r.add({
+    manifest: { id: "throwing-module", version: "1.0.0", dependencies: {} },
+    register: (ctx) => {
+      ctx.contributions.contribute({ id: "p", contract: "s:sidebar", component: {} });
+      throw new Error("boom mid-register");
+    },
+  });
+  await expect(r.activate()).resolves.toBeUndefined();
+  expect(r.list().find((m) => m.id === "throwing-module")!.active).toBe(false);
+  expect(reg.contributionsFor("s:sidebar")).toHaveLength(0);
+});
+
 test("allows two providers of a multi contract", async () => {
   const r = new ModuleRegistry(deps());
   r.add({

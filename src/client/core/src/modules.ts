@@ -137,6 +137,11 @@ export class ModuleRegistry {
         this.deps.logger.warn(
           `module ${id} failed to activate: ${e instanceof Error ? e.message : String(e)}`,
         );
+        // r.active is still false here (only set true after register() returns),
+        // so unload's activeDependentsOf/unregister guards correctly no-op — this
+        // only tears down whatever partial hooks/services/contributions register()
+        // made before throwing.
+        await this.unload(id);
       }
     }
   }
