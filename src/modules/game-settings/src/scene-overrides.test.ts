@@ -165,4 +165,27 @@ describe("per-scene overrides", () => {
     const sel = screen.getByLabelText("gameSettings.scene.pick") as HTMLSelectElement;
     expect(sel.value).toBe("sB");
   });
+
+  it("the scene picker shows the scene's name, not its raw UUID", async () => {
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const sA = { ...buildSceneDoc("w1", {}, "sA"), name: "The Sunken Temple" };
+    const sB = buildSceneDoc("w1", {}, "sB");
+    const store = gmStoreWith(ws, sA, sB);
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store }) });
+
+    const option = screen.getByRole("option", { name: /The Sunken Temple/ }) as HTMLOptionElement;
+    expect(option.value).not.toBe("The Sunken Temple");
+    expect(option.textContent).not.toContain("sA");
+  });
+
+  it("a scene with no name falls back to its id", async () => {
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const sA = buildSceneDoc("w1", {}, "sA");
+    const sB = buildSceneDoc("w1", {}, "sB");
+    const store = gmStoreWith(ws, sA, sB);
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store }) });
+
+    const option = screen.getByRole("option", { name: "sA" }) as HTMLOptionElement;
+    expect(option).toBeTruthy();
+  });
 });

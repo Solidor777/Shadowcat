@@ -321,7 +321,7 @@
           {ctx.t("gameSettings.scene.pick")}
           <select aria-label="gameSettings.scene.pick" value={scene.id}
             onchange={(e) => (selectedSceneId = (e.currentTarget as HTMLSelectElement).value)}>
-            {#each scenes as s}<option value={s.id}>{s.id}</option>{/each}
+            {#each scenes as s}<option value={s.id}>{s.name ?? s.id}</option>{/each}
           </select>
         </label>
       {/if}
