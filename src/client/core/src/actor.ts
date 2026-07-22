@@ -140,6 +140,15 @@ export function footprintRadius(eff: Pick<EffectiveActor, "shape" | "size">): nu
   return eff.shape === "circle" ? Math.max(w, h) / 2 : Math.hypot(w, h) / 2;
 }
 
+/** The effective face names for a token's `faces`-union visual (the actor's own faces, with any
+ * per-token `overrides.visual` union projected in) — the face-swap palette's option list. Reads
+ * the same `resolveTokenActor` projection `resolveTokenVisual` reads, so the palette can never
+ * diverge from what actually renders. Empty when the effective visual isn't `"faces"`. */
+export function selectedFaceNamesFor(token: WireDocument, store: ReadableDocuments): string[] {
+  const eff = resolveTokenActor(token, store);
+  return eff?.visual?.kind === "faces" ? Object.keys(eff.visual.faces) : [];
+}
+
 /** Resolve a `faces` visual to the active face's RenderVisual. Precedence: a valid manual
  * `token.engine.face` > the first `faceMap` entry whose condition id is in `conditions` (in
  * `conditions` array order — a v1 simplification, no severity ranking across simultaneously

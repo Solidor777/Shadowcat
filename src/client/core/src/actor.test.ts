@@ -2,7 +2,7 @@ import { describe, it, expect, test } from "vitest";
 import { DocumentStore, type ReadableDocuments } from "./store";
 import type { WireDocument } from "./wire";
 import { buildActorDoc, buildSceneDoc, buildTokenDoc, buildTokenFromActor, buildConditionRegistryDoc, type ActorEngine, type TokenEngine } from "./scene-docs";
-import { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, footprintRadius, resolveTokenVisual } from "./actor";
+import { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, footprintRadius, resolveTokenVisual, selectedFaceNamesFor } from "./actor";
 import type { TokenVisual } from "./scene-docs";
 
 const NAME = "Goblin";
@@ -300,5 +300,40 @@ describe("resolveTokenVisual", () => {
     const actor = actorWith({ kind: "faces", faces: { bad: nested }, default: "bad", faceMap: null });
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
     expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
+  it("resolveTokenActor and resolveTokenVisual agree when a token has both a faces-union visual override AND an active face-swap", () => {
+    const actor = actorWith({ kind: "image", asset: "base-asset" });
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    (token.engine as TokenEngine).overrides = {
+      visual: {
+        kind: "faces",
+        faces: { smile: { kind: "image", asset: "smile-asset" }, frown: { kind: "image", asset: "frown-asset" } },
+        default: "smile",
+        faceMap: null,
+      },
+      name: null,
+      size: null,
+      shape: null,
+      vision: null,
+    };
+    (token.engine as TokenEngine).face = "frown"; // active manual face-swap
+
+    const store = storeWith(actor);
+    const eff = resolveTokenActor(token, store);
+    expect(eff?.visual).toEqual({
+      kind: "faces",
+      faces: { smile: { kind: "image", asset: "smile-asset" }, frown: { kind: "image", asset: "frown-asset" } },
+      default: "smile",
+      faceMap: null,
+    });
+
+    const renderVisual = resolveTokenVisual(token, store);
+    expect(renderVisual).toEqual({ kind: "image", asset: "frown-asset" }); // the active face-swap wins over the union's own default
+
+    // The face-swap palette's own face-name list must read the SAME projected override, not a
+    // second independent resolution.
+    const selected = selectedFaceNamesFor(token, store);
+    expect(selected).toContain("frown");
   });
 });

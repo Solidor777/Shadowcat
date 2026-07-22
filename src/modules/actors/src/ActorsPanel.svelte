@@ -1,8 +1,9 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildActorDoc, setNameHidden, actorDisplayName, resolveTokenActor, type ActorEngine, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
+  import { buildActorDoc, setNameHidden, actorDisplayName, type ActorEngine, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
   import VisualKindEditor from "./VisualKindEditor.svelte";
+  import FaceSwapPalette from "./FaceSwapPalette.svelte";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -63,39 +64,13 @@
     return Object.entries(reg?.conditions ?? {});
   });
 
-  /** The single selected token, if any — drives the per-token face-swap palette below. */
-  const selectedFaceToken = $derived.by((): WireDocument | null => {
+  /** The single selected token's id, if any — drives the per-token face-swap palette below. */
+  const selectedTokenId = $derived.by((): string | null => {
     subscribe();
     const ids = ctx.tokenSelection.ids;
     if (ids.size === 0) return null;
-    return ctx.documents.query("token").find((t) => ids.has(t.id)) ?? null;
+    return ctx.documents.query("token").find((t) => ids.has(t.id))?.id ?? null;
   });
-
-  /** The actor's declared faces map, if the selected token's actor visual is `faces` — drives
-   * whether the palette shows at all (a plain image/animated token has nothing to swap). Routed
-   * through `resolveTokenActor`, the single read-through every token-decoration consumer uses,
-   * so a per-token `overrides.visual` is honored rather than bypassed. */
-  const selectedFaceNames = $derived.by((): string[] => {
-    subscribe();
-    const tok = selectedFaceToken;
-    if (!tok) return [];
-    const eff = resolveTokenActor(tok, ctx.documents);
-    return eff?.visual?.kind === "faces" ? Object.keys(eff.visual.faces) : [];
-  });
-
-  /** Reads the RAW currently-stored face (never a resolved/defaulted value) — this is the
-   * required `old` for the `/engine/face` Update below; the server's field-level optimistic-
-   * concurrency check rejects any Update whose `old` doesn't match the actual stored value. */
-  function currentFace(tok: WireDocument): string | null {
-    return (tok.engine as { face?: string } | undefined)?.face ?? null;
-  }
-
-  function swapFace(faceName: string): void {
-    const tok = selectedFaceToken;
-    if (!tok || !ctx.canEdit(tok, "/engine/face")) return;
-    const old = currentFace(tok);
-    ctx.dispatchIntent([{ op: "update", doc_id: tok.id, changes: [{ path: "/engine/face", old, new: faceName }] }]);
-  }
 
   const factionOptions = $derived.by((): [string, Faction][] => {
     subscribe();
@@ -146,14 +121,7 @@
 
 <section class="actors">
   <h3>{t("actors.title")}</h3>
-  {#if selectedFaceToken && selectedFaceNames.length > 0}
-    <p class="hint">{t("actors.faceSwapHint")}</p>
-    <div class="face-palette">
-      {#each selectedFaceNames as name (name)}
-        <button type="button" class:active={currentFace(selectedFaceToken) === name} onclick={() => swapFace(name)}>{name}</button>
-      {/each}
-    </div>
-  {/if}
+  <FaceSwapPalette tokenId={selectedTokenId} />
   <input
     class="actor-search"
     type="search"
@@ -259,30 +227,6 @@
     flex-direction: column;
     gap: var(--space-1);
     padding: var(--space-1);
-  }
-  .hint {
-    margin: 0;
-    color: var(--text-secondary);
-    font-size: 0.85em;
-  }
-  .face-palette {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-1);
-  }
-  .face-palette button {
-    min-width: 44px;
-    min-height: 44px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-1);
-    background: var(--surface-raised);
-    color: var(--text-primary);
-    cursor: pointer;
-  }
-  .face-palette button.active {
-    border-color: var(--accent);
-    background: var(--accent);
-    color: var(--on-accent);
   }
   .actor-search {
     min-height: 44px;

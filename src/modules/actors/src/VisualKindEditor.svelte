@@ -36,16 +36,19 @@
       : { type: "sheet", asset: s.sheetAsset ?? "", rows: s.rows, cols: s.cols, count: s.count };
   }
 
+  // Shared "frames-nonempty AND sheet-asset-present" completeness check for an animated source,
+  // used both per-face-row and for the top-level animated kind — an incomplete source (no frames
+  // picked / no sheet asset) must block the whole visual, not silently persist an empty one.
+  function animSourceComplete(anim: AnimSourceState): boolean {
+    return (anim.sourceType === "frames" && anim.frames.length > 0) || (anim.sourceType === "sheet" && !!anim.sheetAsset);
+  }
+
   type FaceRowState = { name: string; kind: "image" | "animated"; asset: string | null; anim: AnimSourceState };
   function faceRowToVisual(f: FaceRowState): FaceVisual {
     return f.kind === "image" ? { kind: "image", asset: f.asset ?? "" } : { kind: "animated", source: animSourceToSource(f.anim), fps: f.anim.fps, loop: f.anim.loop };
   }
-  // Same completeness check the top-level image/animated branches apply to themselves,
-  // applied per-row: an incomplete row (no asset picked / no frames or sheet asset)
-  // must block the whole faces visual, not silently persist an empty asset/frame set.
   function faceRowComplete(f: FaceRowState): boolean {
-    if (f.kind === "image") return !!f.asset;
-    return (f.anim.sourceType === "frames" && f.anim.frames.length > 0) || (f.anim.sourceType === "sheet" && !!f.anim.sheetAsset);
+    return f.kind === "image" ? !!f.asset : animSourceComplete(f.anim);
   }
 
   let visualKind = $state<"image" | "faces" | "animated">("image");
@@ -57,8 +60,7 @@
   function buildVisual(): TokenVisual | null {
     if (visualKind === "image") return assetId ? { kind: "image", asset: assetId } : null;
     if (visualKind === "animated") {
-      if (topAnim.sourceType === "frames" && topAnim.frames.length === 0) return null;
-      if (topAnim.sourceType === "sheet" && !topAnim.sheetAsset) return null;
+      if (!animSourceComplete(topAnim)) return null;
       return { kind: "animated", source: animSourceToSource(topAnim), fps: topAnim.fps, loop: topAnim.loop };
     }
     if (faceRows.length === 0 || !defaultFace || faceRows.some((f) => !f.name)) return null;
