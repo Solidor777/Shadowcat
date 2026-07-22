@@ -882,7 +882,14 @@ async fn welcome_capability_requirements(
         }
     };
     if !enabled.is_empty() {
-        let installed = crate::modules::scan_installed_modules(modules_dir);
+        // Blocking std::fs I/O; run off the async worker on every WS-connect
+        // Welcome path, matching the spawn_blocking convention in auth/password.rs.
+        // A panicked scan (JoinError) degrades to an empty Vec, matching the
+        // missing-modules_dir behavior already in scan_installed_modules.
+        let dir = modules_dir.to_path_buf();
+        let installed = tokio::task::spawn_blocking(move || crate::modules::scan_installed_modules(&dir))
+            .await
+            .unwrap_or_default();
         for id in &enabled {
             // Re-check engine-compat here (not just at enable time): a module
             // enabled while compatible can go stale after a server downgrade
@@ -1550,6 +1557,45 @@ mod tests {
         );
         assert_eq!(reqs[0].path_prefix, "/system/vision");
         assert!(!reqs.iter().any(|r| r.path_prefix == "/system/stale"));
+    }
+
+    /// Behavior-preservation test for the `spawn_blocking` wrap around
+    /// `scan_installed_modules` in `welcome_capability_requirements`: proves the
+    /// Welcome path still resolves an enabled module's declared requirements
+    /// correctly when the scan runs off the async worker thread. Not a
+    /// red/green blocking-detection test (blocking-vs-non-blocking isn't
+    /// directly unit-testable) — mirrors
+    /// `welcome_unions_enabled_modules_requirements_with_gm_authored_ones`'s
+    /// setup and must pass both before and after the refactor.
+    #[tokio::test]
+    async fn welcome_capability_requirements_still_resolves_module_requirements_via_spawn_blocking()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("blocking-mod")).unwrap();
+        std::fs::write(
+            dir.path().join("blocking-mod").join("module.json"),
+            format!(
+                r#"{{"id":"blocking-mod","version":"1.0.0","engines":{{"shadowcat":"^{}"}},"requirements":[{{"path_prefix":"/system/blocking","caps":["blocking:write"]}}]}}"#,
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.set_world_enabled_modules(world.id, &["blocking-mod".to_string()])
+            .await
+            .unwrap();
+
+        let reqs = welcome_capability_requirements(repo.as_ref(), world.id, dir.path()).await;
+        assert!(
+            reqs.iter().any(|r| r.path_prefix == "/system/blocking"),
+            "module-declared requirements must still resolve correctly when scan runs via spawn_blocking"
+        );
     }
 
     /// The M9c dispatch-layer accumulation: a masked vision payload grows + persists the player's
