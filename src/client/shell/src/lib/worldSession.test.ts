@@ -563,6 +563,32 @@ test("onMoveOutcome: a move_stream whose stop matches the requested goal fires '
   expect(got[0]).toEqual({ tokenId: "tok1", outcome: "executed" });
 });
 
+test("onMoveOutcome: a region arrest landing exactly on the requested goal still fires 'executed'", async () => {
+  // move_exec.rs: an arrest region stops the walk AT cell entry (stop_index == path.len()-1
+  // on a final-step arrest), so `MoveOutcome.truncated = true` server-side even though `stop`
+  // equals the requested goal exactly — the token DID reach the goal; only further movement
+  // from there is barred. Since `truncated` never crosses the wire, this locks in that the
+  // stop-vs-goal comparison intentionally reads this case as "executed", not "truncated" —
+  // documented here so a future reader knows it's by design, not an oversight.
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const got: Array<{ tokenId: string; outcome: string }> = [];
+  session.onMoveOutcome((m) => got.push(m));
+  const resolved = session.moveRequest("s1", "tok1", [[0, 0], [50, 0], [100, 0]]);
+  await vi.waitFor(() => expect(sent.some((m) => m.type === "move_request")).toBe(true));
+  const reqId = sent.find((m) => m.type === "move_request")!.request_id as string;
+  // stop exactly at the requested goal, as an arrest-on-final-cell outcome would report.
+  push({ ...moveStreamFrame("s1"), request_id: reqId, stop: [100, 0] });
+  await resolved;
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0]).toEqual({ tokenId: "tok1", outcome: "executed" });
+});
+
 test("onMoveOutcome: a move_stream whose stop falls short of the requested goal fires 'truncated'", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);

@@ -254,17 +254,28 @@ export class WorldSession {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     const p = this.#ws.moveRequest(scene, tokenId, path);
     // M14b observability signal, derived from THIS SAME promise without altering its
-    // resolution for the caller: `MoveOutcome.truncated` (move_exec.rs) never crosses the
-    // wire, so the client infers truncated-vs-executed from `stream.stop` — the mover's own
-    // exact, unclipped resting position — against the requested goal. The two are bit-for-bit
-    // equal unless the server's wall/mask/region gate cut the move short (the executor
-    // preserves an untruncated authored vertex exactly; see move_exec.rs's identity guarantee).
+    // resolution for the caller. `MoveOutcome.truncated` (move_exec.rs) never crosses the
+    // wire, so this infers from geometry instead: `stream.stop` is the mover's own exact,
+    // unclipped resting position, compared against the requested goal.
+    // "executed" = stop reached the requested goal POSITION. Note this is reached-goal, not
+    // "not truncated": a region ARREST landing exactly on the final cell also sets the
+    // server's `MoveOutcome.truncated = true` while `stop` still equals the goal (move_exec.rs:
+    // arrest stops AT cell entry, so `stop_index == path.len()-1` on a final-step arrest) — the
+    // token DID reach the goal, only further movement from there is barred, so this reads
+    // "executed" by design (see the dedicated regression test below for this exact case).
+    // "truncated" = stop landed SHORT of the goal — a wall/mask/impassable-region gate cut the
+    // move off before it arrived.
     const goal = path.at(-1) ?? null;
     p.then(
       (stream) => {
         const executed = goal !== null && stream.stop[0] === goal[0] && stream.stop[1] === goal[1];
         for (const cb of this.#moveOutcomeListeners) cb({ tokenId, outcome: executed ? "executed" : "truncated" });
       },
+      // "rejected" covers every way this promise can fail to resolve with a MoveStream: a
+      // genuine server `MoveError`, the 10s correlated-request timeout, or a transport
+      // disconnect — not exclusively "the server refused the move". Fail-safe by construction:
+      // a legal move whose confirmation is merely lost/delayed surfaces as "rejected", never
+      // as a false "executed".
       () => {
         for (const cb of this.#moveOutcomeListeners) cb({ tokenId, outcome: "rejected" });
       },
