@@ -479,10 +479,6 @@ pub(crate) const MAX_FOOTPRINT_CELLS: f64 = 64.0;
 /// Search-window margin (cells) added around the point/wall AABB so detours around walls stay reachable.
 const WINDOW_MARGIN: i32 = 8;
 
-fn to_cell(p: vision::P, cell: f64) -> Cell {
-    ((p.0 / cell).floor() as i32, (p.1 / cell).floor() as i32)
-}
-
 /// The result of a `find()` route: cell-center scene points (incl. start + goal, or truncated at
 /// an arrest cell), the total weighted cost in cells, and whether an arrest region cut the route
 /// short (spec §5: "arrest is honest in preview" — the player-facing router must never show a
@@ -543,11 +539,19 @@ pub fn find(
         acc(w.a.0, w.a.1);
         acc(w.b.0, w.b.1);
     }
+    // Grid-correct cell box of the pixel AABB, then WINDOW_MARGIN cells of detour room. Square
+    // returns the byte-identical `floor(min/cell)`/`floor(max/cell)` box; hex returns the padded
+    // axial preimage box (a per-axis pixel floor would be a WRONG, clipping box on hex — the
+    // axial↔pixel shear means a valid hex route's cells fall outside a square-index rectangle,
+    // reading spuriously Unreachable). INVARIANT: the window only bounds SEARCH extent — the
+    // per-cell gate lives in `cell_enterable`, so reshaping the window never approves a cell the
+    // executor would reject.
+    let (bi0, bj0, bi1, bj1) = shape.cell_bounds((minx, miny), (maxx, maxy), cell);
     let window = (
-        (minx / cell).floor() as i32 - WINDOW_MARGIN,
-        (miny / cell).floor() as i32 - WINDOW_MARGIN,
-        (maxx / cell).floor() as i32 + WINDOW_MARGIN,
-        (maxy / cell).floor() as i32 + WINDOW_MARGIN,
+        bi0 - WINDOW_MARGIN,
+        bj0 - WINDOW_MARGIN,
+        bi1 + WINDOW_MARGIN,
+        bj1 + WINDOW_MARGIN,
     );
 
     let grid = PathGrid {
@@ -571,9 +575,14 @@ pub fn find(
     let mut cells: Vec<Cell> = Vec::new();
     let mut total = 0.0;
     let mut parity = 0u8;
-    let mut from = to_cell(start, cell);
+    // Grid-correct pixel→cell mapping (square floor / hex axial-round). MUST agree with the window
+    // above: both derive from `grid.shape`, so a hex goal's axial cell always lands inside the
+    // axial window. A prior square-only `to_cell` here paired with the square window silently routed
+    // a hex request to the WRONG destination cell; fixing only one side would instead make the goal
+    // fall outside the other's box, reading spuriously Unreachable.
+    let mut from = grid.shape.cell_of(start);
     for (leg_index, wp) in waypoints.iter().enumerate() {
-        let goal = to_cell(*wp, cell);
+        let goal = grid.shape.cell_of(*wp);
         let (leg, cost, end_parity) = match astar_leg(&grid, from, goal, parity) {
             Ok(v) => v,
             Err(PathFail::Unreachable) => {
@@ -785,6 +794,41 @@ mod find_tests {
         assert_eq!(outcome.path.first(), Some(&(50.0, 50.0)));
         assert_eq!(outcome.path.last(), Some(&(250.0, 50.0)));
         assert_eq!(outcome.path.len(), 3);
+    }
+
+    #[test]
+    fn hex_route_off_the_square_diagonal_resolves_to_its_goal() {
+        use crate::scene::grid_shape::{GridShape as _, HexGrid};
+        // Hex scene: cell size == HexGrid outer radius (`resolve_grid_shape` passes `cell` as
+        // `size`). Route along axial direction (1,-1) to (70,-70) — "off the square diagonal": the
+        // goal's pixel x is ~0.866·70·cell, so a square `floor(x/cell)+margin` window (=68) clips
+        // its axial q (=70), and a square pixel→cell map would resolve the goal to the WRONG axial
+        // cell. Only the hex-correct window + `cell_of` (both from `grid.shape`) resolve the route.
+        let hex = HexGrid { size: 100.0 };
+        let start = hex.cell_center((0, 0));
+        let goal_cell = (70, -70);
+        let goal = hex.cell_center(goal_cell);
+        // Documents that the fix is load-bearing: the pre-hex square window would clip this goal.
+        assert!(
+            (goal.0 / 100.0).floor() as i32 + WINDOW_MARGIN < goal_cell.0,
+            "fixture must exercise the window-clipping case"
+        );
+        let outcome = find(
+            start,
+            &[goal],
+            0.1,
+            100.0,
+            DiagonalRule::Chebyshev,
+            &NO_WALLS,
+            None, // GM / unconstrained: only the window (not a mask) can gate reachability here
+            None,
+            &hex,
+        )
+        .expect("a reachable hex route must resolve, not read Unreachable");
+        assert_eq!(outcome.path.first(), Some(&start));
+        assert_eq!(outcome.path.last(), Some(&goal), "route reaches the correct hex goal cell");
+        // 70 uniform-cost axial steps along the (1,-1) direction.
+        assert!((outcome.cost - 70.0).abs() < 1e-9, "cost = {}", outcome.cost);
     }
 
     #[test]

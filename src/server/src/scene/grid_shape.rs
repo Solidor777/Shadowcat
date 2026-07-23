@@ -51,6 +51,16 @@ pub(crate) trait GridShape {
         cell: f64,
         max_cells: i64,
     ) -> Option<Vec<Cell>>;
+    /// The inclusive cell-coordinate bounding box `(min_i, min_j, max_i, max_j)` of every cell whose
+    /// geometry could overlap the pixel-space AABB `[min.0, max.0] × [min.1, max.1]`. Square:
+    /// `floor(min/cell)..=floor(max/cell)` per axis. Hex: the axial bounding box of the 4
+    /// pixel-corner preimages, padded by `HEX_BOUNDS_PAD` — the axial↔pixel shear means a
+    /// pixel-space axis-aligned box is NOT axial-aligned, so a per-axis floor of the pixel min/max
+    /// would CLIP reachable hexes. `cells_in_bounds` enumerates this box, and the A* router seeds
+    /// its search window from it (then adds its own detour margin). Assumes finite `min`/`max`/`cell`
+    /// (finiteness is the caller's guard — `find()` validates it upstream, `cells_in_bounds` checks
+    /// it before delegating here); an extreme coordinate saturates via `f64 as i32`.
+    fn cell_bounds(&self, min: vision::P, max: vision::P, cell: f64) -> (i32, i32, i32, i32);
     /// The cell's polygon vertices in scene coordinates (for leniency corner-clip tests): 4 for a
     /// square, 6 for a pointy-top hex.
     fn cell_vertices(&self, c: Cell, cell: f64) -> Vec<vision::P>;
@@ -123,10 +133,7 @@ impl GridShape for SquareGrid {
         {
             return None;
         }
-        let i0 = (min.0 / cell).floor() as i32;
-        let i1 = (max.0 / cell).floor() as i32;
-        let j0 = (min.1 / cell).floor() as i32;
-        let j1 = (max.1 / cell).floor() as i32;
+        let (i0, j0, i1, j1) = self.cell_bounds(min, max, cell);
         let w = i1 as i64 - i0 as i64 + 1;
         let h = j1 as i64 - j0 as i64 + 1;
         if w.saturating_mul(h) > max_cells {
@@ -139,6 +146,18 @@ impl GridShape for SquareGrid {
             }
         }
         Some(out)
+    }
+
+    /// Byte-identical to the pre-hex window computation (`floor(min/cell)`/`floor(max/cell)` per
+    /// axis) so square routes are unchanged. `f64 as i32` saturates on an extreme coordinate,
+    /// matching `cells_in_bounds`' own overflow behavior.
+    fn cell_bounds(&self, min: vision::P, max: vision::P, cell: f64) -> (i32, i32, i32, i32) {
+        (
+            (min.0 / cell).floor() as i32,
+            (min.1 / cell).floor() as i32,
+            (max.0 / cell).floor() as i32,
+            (max.1 / cell).floor() as i32,
+        )
     }
 
     /// The 4 corners of cell `(i, j)`, in the exact order `accumulate_visible_cells`'s `corners`
@@ -298,11 +317,10 @@ impl GridShape for HexGrid {
         out
     }
 
-    /// Convert the 4 AABB corners to axial via `cell_of`, take the axial bounding box, pad by
-    /// `HEX_BOUNDS_PAD` (see its doc for the affine-preimage safety argument), and enumerate the
-    /// padded axial rectangle. A safe SUPERSET — never misses a cell whose center lies in the AABB
-    /// (proven by test); the caller's per-cell center/vertex test filters it. Same caller-supplied
-    /// `max_cells` span cap and fail-closed degenerate handling as the square scan.
+    /// Enumerate the padded axial rectangle `cell_bounds` returns. A safe SUPERSET — never misses a
+    /// cell whose center lies in the AABB (proven by test); the caller's per-cell center/vertex test
+    /// filters it. Same caller-supplied `max_cells` span cap and fail-closed degenerate handling as
+    /// the square scan.
     fn cells_in_bounds(
         &self,
         min: vision::P,
@@ -319,19 +337,7 @@ impl GridShape for HexGrid {
         {
             return None;
         }
-        let corners = [(min.0, min.1), (max.0, min.1), (min.0, max.1), (max.0, max.1)];
-        let (mut min_q, mut min_r, mut max_q, mut max_r) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
-        for &corner in &corners {
-            let (q, r) = self.cell_of(corner);
-            min_q = min_q.min(q);
-            min_r = min_r.min(r);
-            max_q = max_q.max(q);
-            max_r = max_r.max(r);
-        }
-        let q0 = min_q.saturating_sub(HEX_BOUNDS_PAD);
-        let q1 = max_q.saturating_add(HEX_BOUNDS_PAD);
-        let r0 = min_r.saturating_sub(HEX_BOUNDS_PAD);
-        let r1 = max_r.saturating_add(HEX_BOUNDS_PAD);
+        let (q0, r0, q1, r1) = self.cell_bounds(min, max, cell);
         let w = q1 as i64 - q0 as i64 + 1;
         let h = r1 as i64 - r0 as i64 + 1;
         if w.saturating_mul(h) > max_cells {
@@ -344,6 +350,29 @@ impl GridShape for HexGrid {
             }
         }
         Some(out)
+    }
+
+    /// Convert the 4 AABB corners to axial via `cell_of`, take the axial bounding box, and pad by
+    /// `HEX_BOUNDS_PAD` (see its doc for the affine-preimage safety argument). A safe SUPERSET of
+    /// every hex whose center lies in the pixel AABB — the axial↔pixel shear makes a per-axis floor
+    /// of the pixel min/max a WRONG (clipping) box on hex. `cell` is unused (hex cell size is baked
+    /// into `self.size`); kept for `GridShape` signature parity with `SquareGrid`.
+    fn cell_bounds(&self, min: vision::P, max: vision::P, _cell: f64) -> (i32, i32, i32, i32) {
+        let corners = [(min.0, min.1), (max.0, min.1), (min.0, max.1), (max.0, max.1)];
+        let (mut min_q, mut min_r, mut max_q, mut max_r) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for &corner in &corners {
+            let (q, r) = self.cell_of(corner);
+            min_q = min_q.min(q);
+            min_r = min_r.min(r);
+            max_q = max_q.max(q);
+            max_r = max_r.max(r);
+        }
+        (
+            min_q.saturating_sub(HEX_BOUNDS_PAD),
+            min_r.saturating_sub(HEX_BOUNDS_PAD),
+            max_q.saturating_add(HEX_BOUNDS_PAD),
+            max_r.saturating_add(HEX_BOUNDS_PAD),
+        )
     }
 
     /// The 6 pointy-top hex vertices around `cell_center(c)`, vertex `k` at angle `60·k − 30`
@@ -624,6 +653,37 @@ mod tests {
         assert!(center_in_count > 0, "fixture must exercise at least one in-bounds hex");
         // Stays bounded — a tight superset of a ~4×4-hex region, not a runaway scan.
         assert!(got.len() < 100, "hex candidate set should stay small for a small AABB");
+    }
+
+    #[test]
+    fn square_cell_bounds_is_the_corner_floor_box() {
+        // Byte-identical to the pre-hex A* window's `floor(min/cell)`/`floor(max/cell)` computation,
+        // so square routes are unchanged.
+        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
+        assert_eq!(g.cell_bounds((0.0, -250.0), (250.0, 50.0), 100.0), (0, -3, 2, 0));
+        assert_eq!(g.cell_bounds((-330.0, -220.0), (-110.0, -140.0), 100.0), (-4, -3, -2, -2));
+    }
+
+    #[test]
+    fn hex_cell_bounds_contains_a_cell_a_square_floor_window_would_clip() {
+        // Hex (70,-70): the "off the square diagonal" axial (1,-1) direction. Its pixel x is
+        // ~0.866·70·size, so a square `floor(x/cell)` q-bound (=60) sits far BELOW its axial q (=70)
+        // — the pre-hex window clipped it, spuriously reporting a reachable route Unreachable.
+        let g = HexGrid { size: 100.0 };
+        let goal = (70, -70);
+        let gc = g.cell_center(goal); // (~6062, -10500)
+                                      // AABB of start (0,0) and the goal center.
+        let (min, max) = ((0.0, gc.1), (gc.0, 0.0));
+        let (i0, j0, i1, j1) = g.cell_bounds(min, max, 100.0);
+        assert!(i0 <= goal.0 && goal.0 <= i1, "axial q {} must lie in [{i0},{i1}]", goal.0);
+        assert!(j0 <= goal.1 && goal.1 <= j1, "axial r {} must lie in [{j0},{j1}]", goal.1);
+        // The square floor of the pixel-x max caps the q-bound strictly below the goal's axial q:
+        // this is exactly the clipping the hex-correct bounds avoid.
+        assert!(
+            (gc.0 / 100.0).floor() as i32 + 8 < goal.0,
+            "a square floor(max_x/cell)+margin window would clip axial q={}",
+            goal.0
+        );
     }
 
     #[test]
