@@ -2061,19 +2061,20 @@ fn accumulate_visible_cells(
             }
             // Strict: center only. Lenient: center first (so §13 strict cells are always
             // included), then corners if center fails — a cell whose polygon merely clips
-            // a corner still qualifies under leniency. `cell_vertices` returns the 4 square
-            // corners (byte-identical order) or the 6 pointy-top hex vertices.
+            // a corner still qualifies under leniency.
             let center = grid.cell_center((i, j));
-            let corners = grid.cell_vertices((i, j), cell);
             let mut found = false;
             if lenient {
-                // Check center first, then corners.
+                // Check center first, then corners. `cell_vertices` (the 4 square corners in
+                // byte-identical order, or the 6 pointy-top hex vertices) is computed ONLY on this
+                // path — the strict movement-gate mask never pays for it (6 sin/cos per hex cell).
                 if vision::point_in_poly(&poly, center)
                     && point_qualifies(center, src.vp, &src.floors, settings, li, cell)
                 {
                     found = true;
                 }
                 if !found {
+                    let corners = grid.cell_vertices((i, j), cell);
                     for &corner in &corners {
                         if vision::point_in_poly(&poly, corner)
                             && point_qualifies(corner, src.vp, &src.floors, settings, li, cell)
