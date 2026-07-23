@@ -667,6 +667,7 @@ async fn handle_move_request(
 async fn enrich_vision_explored(
     payload: &mut serde_json::Value,
     grid: &std::collections::HashMap<Uuid, f64>,
+    grid_shapes: &std::collections::HashMap<Uuid, Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>>,
     repo: &SqliteRepository,
     world: Uuid,
     user: Uuid,
@@ -701,11 +702,26 @@ async fn enrich_vision_explored(
     let mut explored_out: Vec<serde_json::Value> = Vec::with_capacity(by_scene.len());
     for (scene, scene_polys) in by_scene {
         let cell = grid.get(&scene).copied().unwrap_or(100.0);
+        // Index this scene's explored fog through its own resolved grid shape (hex axial on a hex
+        // scene, byte-identical square math otherwise) so the accumulated cells compose with the
+        // `Revealed` gate's hex `line_traversal` move-cells. A scene absent from `grid_shapes`
+        // (never expected — the recipient's vision polygons only reference live scenes) falls back
+        // to a square grid at `cell`, mirroring the `unwrap_or(100.0)` cell-size fallback above.
+        let fallback = crate::scene::grid_shape::SquareGrid {
+            cell,
+            rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+        };
+        // `+ Send + Sync` so the borrow may live across the `get_explored` await below (the egress
+        // task future must be `Send`); coerces to `&dyn GridShape` at the `mark_polygons` call.
+        let shape: &(dyn crate::scene::grid_shape::GridShape + Send + Sync) = grid_shapes
+            .get(&scene)
+            .map(|b| b.as_ref())
+            .unwrap_or(&fallback);
         let mut set = match repo.get_explored(scene, user).await {
             Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob),
             _ => crate::scene::explored::ExploredSet::new(),
         };
-        if accumulate && set.mark_polygons(&scene_polys, cell) > 0 {
+        if accumulate && set.mark_polygons(&scene_polys, shape, cell) > 0 {
             let _ = repo.set_explored(world, scene, user, &set.to_bytes()).await;
         }
         let cells: Vec<i32> = set.iter().flat_map(|(i, j)| [i, j]).collect();
@@ -1143,14 +1159,14 @@ async fn egress_loop<S>(
                         // Read the ECS and the seq it reflects under one borrow, then drop it before
                         // awaiting the sink. Grid sizes are captured under the same lock for the
                         // post-lock explored step. Computed for `view_ctx` (own, or the see-as target).
-                        let (payload, seq, grid) = {
+                        let (payload, seq, grid, grid_shapes) = {
                             let ecs = room.scene().read().await;
-                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx), ecs.committed_seq(), ecs.scene_grid_sizes())
+                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
                         };
                         match payload {
                             Some(mut p) => {
                                 if channel == "vision" {
-                                    enrich_vision_explored(&mut p, &grid, repo.as_ref(), world_id, view_ctx.user_id, accumulate).await;
+                                    enrich_vision_explored(&mut p, &grid, &grid_shapes, repo.as_ref(), world_id, view_ctx.user_id, accumulate).await;
                                 }
                                 let f = ServerMsg::SceneDerived {
                                     request_id,
@@ -1302,7 +1318,7 @@ async fn egress_loop<S>(
                 // Re-evaluate derived scene subscriptions against the current ECS, each with its
                 // own effective view ctx (own, or a GM see-as target); push only when a channel's
                 // payload changed. The read borrow is dropped before awaiting the sink.
-                let (seq, snapshot, grid) = {
+                let (seq, snapshot, grid, grid_shapes) = {
                     let ecs = room.scene().read().await;
                     let mut out = Vec::new();
                     for (id, s) in scene_subs.iter() {
@@ -1313,14 +1329,14 @@ async fn egress_loop<S>(
                             crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx),
                         ));
                     }
-                    (ecs.committed_seq(), out, ecs.scene_grid_sizes())
+                    (ecs.committed_seq(), out, ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
                 };
                 for (id, channel, view_ctx, payload) in snapshot {
                     if let Some(mut p) = payload {
                         if channel == "vision" {
                             // See-as (view_ctx != own) is read-only: emit the target's explored, never persist.
                             let accumulate = view_ctx.user_id == ctx.user_id;
-                            enrich_vision_explored(&mut p, &grid, repo.as_ref(), world_id, view_ctx.user_id, accumulate).await;
+                            enrich_vision_explored(&mut p, &grid, &grid_shapes, repo.as_ref(), world_id, view_ctx.user_id, accumulate).await;
                         }
                         if let Some(sub) = scene_subs.get_mut(&id) {
                             if sub.fingerprint.as_ref() != Some(&p) {
@@ -1762,6 +1778,25 @@ mod tests {
         );
     }
 
+    /// Build the square `GridShape` companion map the production `enrich_vision_explored` captures
+    /// via `SceneEcs::scene_grid_shapes` — one `SquareGrid` per scene at its cell size, so a
+    /// square-grid test indexes explored fog byte-identically to the pre-migration hardcoded math.
+    fn square_grid_shapes(
+        grid: &std::collections::HashMap<Uuid, f64>,
+    ) -> std::collections::HashMap<Uuid, Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>> {
+        grid.iter()
+            .map(|(&scene, &cell)| {
+                (
+                    scene,
+                    Box::new(crate::scene::grid_shape::SquareGrid {
+                        cell,
+                        rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+                    }) as Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>,
+                )
+            })
+            .collect()
+    }
+
     /// The M9c dispatch-layer accumulation: a masked vision payload grows + persists the player's
     /// explored fog and gains a scene-tagged `explored` set; a revisit re-emits without growing; a
     /// GM `mode:"all"` payload is untouched (no fog → no explored).
@@ -1772,13 +1807,14 @@ mod tests {
         let scene = Uuid::from_u128(10);
         let user = Uuid::from_u128(20);
         let grid = std::collections::HashMap::from([(scene, 100.0)]);
+        let grid_shapes = square_grid_shapes(&grid);
 
         // A masked payload with a visibility polygon covering a 3×3 cell block in `scene`.
         let mut payload = json!({
             "mode": "masked",
             "polygons": [{ "scene": scene, "points": [0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0] }]
         });
-        enrich_vision_explored(&mut payload, &grid, &repo, world, user, true).await;
+        enrich_vision_explored(&mut payload, &grid, &grid_shapes, &repo, world, user, true).await;
 
         // The payload gained a scene-tagged explored cell set (9 cells × 2 coords).
         let explored = payload["explored"].as_array().unwrap();
@@ -1798,7 +1834,7 @@ mod tests {
             "mode": "masked",
             "polygons": [{ "scene": scene, "points": [0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0] }]
         });
-        enrich_vision_explored(&mut again, &grid, &repo, world, user, true).await;
+        enrich_vision_explored(&mut again, &grid, &grid_shapes, &repo, world, user, true).await;
         assert_eq!(
             again["explored"][0]["cells"].as_array().unwrap().len(),
             9 * 2
@@ -1814,7 +1850,7 @@ mod tests {
 
         // A GM payload (no fog) is left untouched — no explored memory.
         let mut gm = json!({ "mode": "all" });
-        enrich_vision_explored(&mut gm, &grid, &repo, world, user, true).await;
+        enrich_vision_explored(&mut gm, &grid, &grid_shapes, &repo, world, user, true).await;
         assert_eq!(gm, json!({ "mode": "all" }));
     }
 
@@ -1827,11 +1863,16 @@ mod tests {
         let scene = Uuid::from_u128(10);
         let target = Uuid::from_u128(20);
         let grid = std::collections::HashMap::from([(scene, 100.0)]);
+        let grid_shapes = square_grid_shapes(&grid);
 
         // Seed the target with one explored cell (as if they'd been there).
         let mut seed = crate::scene::explored::ExploredSet::new();
         seed.mark_polygons(
             &[vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0]],
+            &crate::scene::grid_shape::SquareGrid {
+                cell: 100.0,
+                rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+            },
             100.0,
         );
         repo.set_explored(world, scene, target, &seed.to_bytes())
@@ -1844,7 +1885,7 @@ mod tests {
             "mode": "masked",
             "polygons": [{ "scene": scene, "points": [0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0] }]
         });
-        enrich_vision_explored(&mut payload, &grid, &repo, world, target, false).await;
+        enrich_vision_explored(&mut payload, &grid, &grid_shapes, &repo, world, target, false).await;
         assert_eq!(
             payload["explored"][0]["cells"].as_array().unwrap().len(),
             2, // one stored cell × 2 coords
@@ -2205,10 +2246,12 @@ mod tests {
     async fn enrich_token_less_player_emits_no_explored() {
         let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
         let grid = std::collections::HashMap::new();
+        let grid_shapes = square_grid_shapes(&grid);
         let mut payload = json!({ "mode": "masked", "polygons": [] });
         enrich_vision_explored(
             &mut payload,
             &grid,
+            &grid_shapes,
             &repo,
             Uuid::from_u128(1),
             Uuid::from_u128(2),

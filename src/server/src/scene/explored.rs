@@ -7,6 +7,7 @@
 //! grid cell — sufficient for the dimmed "explored memory" layer per spec §7). Accumulation is a
 //! set union, so revisiting marks nothing new (bounded by O(explored area), no growth on revisit).
 
+use crate::scene::grid_shape::GridShape;
 use std::collections::BTreeSet;
 
 /// A grid-cell coordinate. `BTreeSet` ordering gives a deterministic serialization.
@@ -47,11 +48,22 @@ impl ExploredSet {
     }
 
     /// Mark every cell whose center lies inside any polygon in `polys` (flat `[x,y,…]` coords),
-    /// at `cell_size` world units per cell. Returns the count of newly-added cells (0 ⇒ no growth).
-    /// Each polygon's candidate cells are bounded by its bbox (the visibility polygon is
-    /// wall/viewpoint-bounded for a sane scene); a polygon whose bbox would span more than
-    /// `MAX_CELLS_PER_POLYGON` cells is skipped (under-reveal) to bound the dispatch-path cost.
-    pub fn mark_polygons(&mut self, polys: &[Vec<f64>], cell_size: f64) -> usize {
+    /// indexed through `grid` at `cell_size` world units per cell. Returns the count of newly-added
+    /// cells (0 ⇒ no growth). `grid` supplies both the candidate-cell enumeration
+    /// (`GridShape::cells_in_bounds`) and each candidate's center (`GridShape::cell_center`), so a
+    /// hex scene indexes hex axial cells while a square scene stays byte-identical to the prior
+    /// hardcoded `floor(min/cell)..=floor(max/cell)` rectangle + `(i+0.5)*cell` center math.
+    /// Correctness (the `Revealed` gate composes this set with `GridShape::line_traversal`
+    /// move-cells) requires `grid` to be the SAME resolved shape (`resolve_grid_shape`) the gate and
+    /// the vision mask use for this scene. A polygon whose bbox is over-cap
+    /// (> `MAX_CELLS_PER_POLYGON`) or degenerate (`cells_in_bounds` → `None`) is skipped
+    /// (under-reveal) to bound the dispatch-path cost.
+    pub(crate) fn mark_polygons(
+        &mut self,
+        polys: &[Vec<f64>],
+        grid: &dyn GridShape,
+        cell_size: f64,
+    ) -> usize {
         if cell_size <= 0.0 {
             return 0;
         }
@@ -68,25 +80,17 @@ impl ExploredSet {
                 maxx = maxx.max(x);
                 maxy = maxy.max(y);
             }
-            // `f64 as i32` saturates (no UB) on an extreme coordinate; the cap below then skips it.
-            let i0 = (minx / cell_size).floor() as i32;
-            let i1 = (maxx / cell_size).floor() as i32;
-            let j0 = (miny / cell_size).floor() as i32;
-            let j1 = (maxy / cell_size).floor() as i32;
-            let w = i1 as i64 - i0 as i64 + 1;
-            let h = j1 as i64 - j0 as i64 + 1;
-            let span = w.saturating_mul(h);
-            if span > MAX_CELLS_PER_POLYGON {
-                tracing::warn!(span, "explored cell scan exceeds cap; skipping polygon");
+            // `cells_in_bounds` is a SUPERSET candidate filter (never misses a cell whose center is
+            // in the AABB); `None` on the same over-cap/degenerate conditions the prior inline scan's
+            // `MAX_CELLS_PER_POLYGON`/`saturating_mul` guard enforced → skip (under-reveal, fail-safe).
+            let Some(candidates) = grid.cells_in_bounds((minx, miny), (maxx, maxy), cell_size) else {
+                tracing::warn!("explored cell scan over-cap or degenerate; skipping polygon");
                 continue;
-            }
-            for i in i0..=i1 {
-                for j in j0..=j1 {
-                    let cx = (i as f64 + 0.5) * cell_size;
-                    let cy = (j as f64 + 0.5) * cell_size;
-                    if point_in_poly(&pts, cx, cy) {
-                        self.cells.insert((i, j));
-                    }
+            };
+            for c in candidates {
+                let (cx, cy) = grid.cell_center(c);
+                if point_in_poly(&pts, cx, cy) {
+                    self.cells.insert(c);
                 }
             }
         }
@@ -138,6 +142,14 @@ fn point_in_poly(poly: &[(f64, f64)], px: f64, py: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::grid_shape::{HexGrid, SquareGrid};
+    use crate::scene::pathfinding::DiagonalRule;
+
+    /// A square grid at `cell` size — the shape every square-parity test indexes through. The
+    /// diagonal rule is irrelevant to `cells_in_bounds`/`cell_center`, so any rule serves.
+    fn sq(cell: f64) -> SquareGrid {
+        SquareGrid { cell, rule: DiagonalRule::Chebyshev }
+    }
 
     /// A square covering one cell's center marks exactly that cell (resolution = cell).
     #[test]
@@ -145,7 +157,7 @@ mod tests {
         let mut set = ExploredSet::new();
         // A 100×100 square from (0,0) to (100,100); cell_size 100 → cell (0,0) center (50,50) is in.
         let poly = vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0];
-        let grew = set.mark_polygons(&[poly], 100.0);
+        let grew = set.mark_polygons(&[poly], &sq(100.0), 100.0);
         assert_eq!(grew, 1);
         assert!(set.contains((0, 0)));
         assert!(!set.contains((1, 0)));
@@ -155,9 +167,9 @@ mod tests {
     fn accumulation_is_monotone_no_growth_on_revisit() {
         let mut set = ExploredSet::new();
         let poly = vec![0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0];
-        let first = set.mark_polygons(std::slice::from_ref(&poly), 100.0);
+        let first = set.mark_polygons(std::slice::from_ref(&poly), &sq(100.0), 100.0);
         assert_eq!(first, 9); // a 3×3 block of cells
-        let again = set.mark_polygons(&[poly], 100.0);
+        let again = set.mark_polygons(&[poly], &sq(100.0), 100.0);
         assert_eq!(again, 0, "revisiting the same area adds no cells");
         assert_eq!(set.len(), 9);
     }
@@ -167,6 +179,7 @@ mod tests {
         let mut set = ExploredSet::new();
         set.mark_polygons(
             &[vec![0.0, 0.0, 250.0, 0.0, 250.0, 250.0, 0.0, 250.0]],
+            &sq(100.0),
             100.0,
         );
         let bytes = set.to_bytes();
@@ -191,18 +204,36 @@ mod tests {
         // A 3000×3000 polygon at cell_size 1 → 9,000,000 candidate cells > the 4M cap → skipped
         // (under-reveal) rather than stalling the dispatch path.
         let big = vec![0.0, 0.0, 3000.0, 0.0, 3000.0, 3000.0, 0.0, 3000.0];
-        assert_eq!(set.mark_polygons(&[big], 1.0), 0);
+        assert_eq!(set.mark_polygons(&[big], &sq(1.0), 1.0), 0);
         assert!(set.is_empty());
     }
 
     #[test]
     fn empty_polygon_and_nonpositive_cell_size_mark_nothing() {
         let mut set = ExploredSet::new();
-        assert_eq!(set.mark_polygons(&[vec![0.0, 0.0]], 100.0), 0); // < 3 points
+        assert_eq!(set.mark_polygons(&[vec![0.0, 0.0]], &sq(100.0), 100.0), 0); // < 3 points
         assert_eq!(
-            set.mark_polygons(&[vec![0.0, 0.0, 9.0, 0.0, 9.0, 9.0]], 0.0),
+            set.mark_polygons(&[vec![0.0, 0.0, 9.0, 0.0, 9.0, 9.0]], &sq(1.0), 0.0),
             0
         ); // bad size
         assert!(set.is_empty());
+    }
+
+    /// On a hex grid, `mark_polygons` indexes HEX axial cells (through `GridShape`), not square
+    /// cells: a polygon around a hex cell's center marks that hex's own axial coordinate, and the
+    /// resulting `contains` composes with hex `line_traversal` move-cells. Proves the indexing is
+    /// grid-shape-driven, not hardcoded square math.
+    #[test]
+    fn hex_grid_marks_the_hex_axial_cell_containing_a_covered_center() {
+        let g = HexGrid { size: 100.0 };
+        // Cover a small AABB tightly around hex (1,0)'s center; only that hex's center falls in it.
+        let (cx, cy) = g.cell_center((1, 0));
+        let poly = vec![
+            cx - 10.0, cy - 10.0, cx + 10.0, cy - 10.0, cx + 10.0, cy + 10.0, cx - 10.0, cy + 10.0,
+        ];
+        let mut set = ExploredSet::new();
+        let grew = set.mark_polygons(&[poly], &g, 100.0);
+        assert_eq!(grew, 1, "exactly the one hex whose center the AABB covers");
+        assert!(set.contains((1, 0)), "hex axial (1,0) is marked, not a square index");
     }
 }

@@ -2246,6 +2246,10 @@ mod room_tests {
                 0.0,
                 6.0 * cell,
             ]],
+            &crate::scene::grid_shape::SquareGrid {
+                cell,
+                rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+            },
             cell,
         );
         h.repo
@@ -2351,6 +2355,74 @@ mod room_tests {
             .publish(&h.repo, &h.gm, vec![op], 0, WriteOrigin::Client)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn movement_restriction_hex_revealed_unions_hex_indexed_explored_memory() {
+        // On a hex scene the explored set is HEX-axial-indexed (via `ExploredSet::mark_polygons`
+        // routing through `GridShape`) and must compose with the `Revealed` gate's hex
+        // `line_traversal` move-cells: an unseen hex cell seeded into explored via the HEX grid is
+        // reachable, while a never-seen/never-explored hex cell is rejected.
+        //
+        // Discriminates hex vs square indexing: the explored corridor is seeded as five TIGHT 20×20
+        // boxes, one around each hex center on the +r axial path (0,0)->(0,4). Under hex indexing
+        // each box marks exactly that hex, so explored = {(0,0),(0,1),(0,2),(0,3),(0,4)}. A square
+        // (floor(x/cell),floor(y/cell)) indexing of the same pixel centers yields
+        // {(0,0),(0,1),(1,3),(2,4),(3,6)}, which lacks hex move-cells (0,2)/(0,3)/(0,4) — such a
+        // set rejects this exact move, so a passing move proves the set is hex-indexed.
+        let h = movement_scene_hex("revealed", /*with_light=*/ true).await;
+        let cell = 100.0_f64;
+        let grid = {
+            let scene = h.room.scene().read().await;
+            scene.resolve_grid_shape(h.scene_id, cell)
+        };
+
+        // Seed explored with one tight box per hex cell on the (0,0)->(0,4) axial path.
+        let path_cells = [(0, 0), (0, 1), (0, 2), (0, 3), (0, 4)];
+        let polys: Vec<Vec<f64>> = path_cells
+            .iter()
+            .map(|&c| {
+                let (cx, cy) = grid.cell_center(c);
+                vec![
+                    cx - 10.0, cy - 10.0, cx + 10.0, cy - 10.0, cx + 10.0, cy + 10.0, cx - 10.0,
+                    cy + 10.0,
+                ]
+            })
+            .collect();
+        let mut seed = crate::scene::explored::ExploredSet::new();
+        seed.mark_polygons(&polys, grid.as_ref(), cell);
+        assert_eq!(
+            seed.len(),
+            5,
+            "each tight box marks exactly one hex axial cell under hex indexing"
+        );
+        for &c in &path_cells {
+            assert!(seed.contains(c), "hex axial {c:?} must be in the seeded explored set");
+        }
+        h.repo
+            .set_explored(h.world_id, h.scene_id, h.player.user_id, &seed.to_bytes())
+            .await
+            .unwrap();
+
+        // ALLOW: move into hex (0,4) — unseen (center well past the light's dimRadius) but explored.
+        // Under Revealed, visible ∪ explored covers the whole hex traversal.
+        let dest = grid.cell_center((0, 4));
+        let op = h.mv_to(dest.0, dest.1).await;
+        h.room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await
+            .expect("Revealed must allow a move into a hex-indexed explored cell");
+
+        // REJECT: from (0,4), move to a never-seen, never-explored, unlit cell — forbidden.
+        let op = h.mv_to(9000.0, 9000.0).await;
+        let blocked = h
+            .room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await;
+        assert!(
+            matches!(blocked, Err(crate::data::DataError::Forbidden)),
+            "a move into an unexplored + unseen hex cell must be rejected"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2877,6 +2949,10 @@ mod room_tests {
                 0.0,
                 6.0 * cell,
             ]],
+            &crate::scene::grid_shape::SquareGrid {
+                cell,
+                rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+            },
             cell,
         );
         h.repo

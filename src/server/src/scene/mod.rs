@@ -687,7 +687,12 @@ impl SceneEcs {
         &self,
         scene: Uuid,
         cell: f64,
-    ) -> Box<dyn grid_shape::GridShape> {
+    ) -> Box<dyn grid_shape::GridShape + Send + Sync> {
+        // `+ Send + Sync`: `enrich_vision_explored`'s post-lock explored write (conn.rs) holds a
+        // per-scene map of resolved shapes by shared reference across the spawned egress task's
+        // `.await` boundary (a `&Map` is `Send` only when the values are `Sync`). The bound only
+        // widens the returned value's capability; every synchronous caller (publish gate, executor)
+        // is unaffected, and both concrete impls hold only `f64`/enum fields (trivially `Send + Sync`).
         let kind = self
             .index
             .get(&scene)
@@ -702,6 +707,22 @@ impl SceneEcs {
                 rule: self.resolved_diagonal_rule(),
             })
         }
+    }
+
+    /// The resolved `GridShape` for every scene entity, keyed by scene id — the grid-shape
+    /// companion to `scene_grid_sizes`. Captured under the ECS read lock so the post-lock explored
+    /// accumulation (`enrich_vision_explored`, conn.rs) can index each scene's fog through its own
+    /// hex/square geometry without re-borrowing the ECS. Each shape resolves via
+    /// `resolve_grid_shape(scene, size)` with the scene's own resolved cell size, so it matches the
+    /// movement gate and vision mask exactly.
+    pub(crate) fn scene_grid_shapes(
+        &self,
+    ) -> std::collections::HashMap<Uuid, Box<dyn grid_shape::GridShape + Send + Sync>> {
+        let mut out = std::collections::HashMap::new();
+        for (scene, size) in self.scene_grid_sizes() {
+            out.insert(scene, self.resolve_grid_shape(scene, size));
+        }
+        out
     }
 
     /// Resolved animation token speed in cells/second. World-scoped (no per-scene override;
@@ -5038,8 +5059,13 @@ mod tests {
         let cell = 100.0;
         let mut explored = crate::scene::explored::ExploredSet::new();
         // Mark cells (0,0)..(3,0) as explored (a straight corridor).
+        let grid = crate::scene::grid_shape::SquareGrid {
+            cell,
+            rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+        };
         explored.mark_polygons(
             &[vec![0.0, 0.0, 4.0 * cell, 0.0, 4.0 * cell, cell, 0.0, cell]],
+            &grid,
             cell,
         );
         let r = ecs.pathfind(
