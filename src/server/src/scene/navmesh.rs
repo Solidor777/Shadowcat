@@ -327,8 +327,10 @@ pub(crate) fn clip_to_visible_mask(
         return outcome;
     }
     // Defense-in-depth, mirroring `build_navmesh`'s guard style/ordering (same file, same
-    // convention): `cell` and `footprint_radius_cells` flow into `r_scene` and then into
-    // `pathfinding::footprint_cells`, which has NO internal cap on its nested cell-scan loop — an
+    // convention): `cell` and `footprint_radius_cells` flow into `r_scene` and then into the
+    // shape's `footprint_cells`. `SquareGrid`'s impl delegates to `pathfinding::footprint_cells`,
+    // which has NO internal cap on its nested cell-scan loop (`HexGrid`'s own impl is ring-bounded,
+    // so this guard is load-bearing specifically for the square path) — an
     // ordinary-looking oversized-but-finite `footprint_radius_cells` (e.g. `1e6`, no NaN/Inf
     // needed) drives a catastrophic iteration count, and an extreme value saturates the `as i32`
     // cast (Rust's `f64 as i32` is a stable saturating cast: `Infinity -> i32::MAX`, `-Infinity ->
@@ -423,7 +425,7 @@ pub(crate) fn clip_to_visible_mask(
 /// weighted route this smooths is itself a route of `grid`-space cell centers. Fail-closed on two
 /// independent levels: (1) whole-input
 /// short-circuit — `< 3` vertices, or a degenerate `cell`/`footprint_radius_cells`, returns the
-/// input unchanged; (2) per-span fallback — an over-cap/degenerate `supercover_cells` for one
+/// input unchanged; (2) per-span fallback — an over-cap/degenerate `line_traversal` for one
 /// candidate chord fails only that chord, leaving that span at its single unconditional grid step
 /// while smoothing continues over the rest of the path.
 pub(crate) fn los_smooth(
@@ -451,7 +453,7 @@ pub(crate) fn los_smooth(
         let samples = crate::scene::move_stream::sample_path(&[a, b], cell, 1.0);
         if samples.len() < 2 {
             // Coincident/near-coincident endpoints (`sample_path`'s `total_len < 1e-9` guard):
-            // no supercover span exists to check the chord's own cell against the region field,
+            // no traversal span exists to check the chord's own cell against the region field,
             // mask, or walls. Refuse rather than silently passing an unchecked cell.
             return false;
         }
