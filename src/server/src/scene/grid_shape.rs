@@ -259,40 +259,114 @@ impl GridShape for HexGrid {
             .map(|&(dq, dr)| ((c.0 + dq, c.1 + dr), 1.0, parity))
             .collect()
     }
-    /// Clean-room hex line-drawing: cube-coordinate linear interpolation + hex-round per sample
-    /// (Red Blob Games's standard technique; public-domain computational geometry, ARCHITECTURE
-    /// §7). Hex equivalent of `movement::supercover_cells` — every cell the segment `a -> b`
-    /// crosses, sampled at `N = max cube-axis delta` steps (same "N = max axial delta" idea as a
-    /// square Bresenham/DDA line needing `max(|dx|,|dy|)` samples).
+    /// Clean-room hex SUPERCOVER — every hex the segment `a -> b` touches, never a thin line.
+    /// Hex equivalent of `movement::supercover_cells`, and conservative in the same direction:
+    /// over-inclusion can only over-restrict a move, omission would let a move graze an unseen hex.
+    ///
+    /// Method (public-domain computational geometry, ARCHITECTURE §7; Red Blob Games cube
+    /// coordinates for the axial↔cube map). `cell_of` is cube-rounding, i.e. nearest-center
+    /// assignment, so a hex is the Voronoi cell of its center: the intersection of the six
+    /// perpendicular-bisector half-planes against its six neighbors. Writing the fractional cube
+    /// coordinates of `p` as `x,y,z` (affine in `p`, summing to 0), those bisectors are exactly the
+    /// level sets `ψ₁ = x−y`, `ψ₂ = z−y`, `ψ₃ = x−z` at INTEGER values — three families of parallel
+    /// lines that therefore carry every hex boundary, so `cell_of` is constant on each face of
+    /// their arrangement. (The naive `x`/`y`/`z`-at-half-integer families do NOT: they bound the
+    /// smaller inner hexagon where all three coordinates round independently, leaving the six
+    /// cube-rounding fixup triangles — real parts of the hex — unbounded.) Collecting every integer
+    /// `ψ` crossing parameter `t` and sampling the MIDPOINT of each resulting interval visits every
+    /// face the segment passes through, hence every hex it enters.
+    ///
+    /// A fixed-count cube lerp cannot do this: it samples at a spacing of one full hex pitch, so it
+    /// skips hexes the segment genuinely crosses — and when the cube-axis delta rounds to 0 it
+    /// omits even the far ENDPOINT's own hex.
+    ///
+    /// A crossing point is additionally probed one `VERTEX_PROBE` perpendicular offset to each
+    /// side, so a segment running exactly along a hex edge, or exactly through a hex vertex, emits
+    /// the hexes flanking it — the same deliberate corner over-inclusion the square supercover
+    /// documents, so a segment cannot thread an unseen hex along a boundary.
+    ///
+    /// `None` ⇒ caller must fail closed: a non-finite endpoint, or a span whose cube-axis delta
+    /// exceeds `MAX_HEX_LINE_SAMPLES`.
     fn line_traversal(&self, a: vision::P, b: vision::P, cell: f64) -> Option<BTreeSet<Cell>> {
         if !a.0.is_finite() || !a.1.is_finite() || !b.0.is_finite() || !b.1.is_finite() {
             return None;
         }
         let (aq, ar) = self.pixel_to_axial_frac(a);
         let (bq, br) = self.pixel_to_axial_frac(b);
-        let ax = aq;
-        let az = ar;
+        let (ax, az) = (aq, ar);
         let ay = -ax - az;
-        let bx = bq;
-        let bz = br;
+        let (bx, bz) = (bq, br);
         let by = -bx - bz;
+        // DoS bound on the hex-distance span, unchanged from the pre-supercover sampler. What it
+        // bounds changed: the boundary-crossing count is `Σ|Δψₖ| + 3 ≤ 4n + 3` rather than the old
+        // `n + 1` samples — same order, so the worst case is ~16k crossings at the same n cap.
+        const MAX_HEX_LINE_SAMPLES: i64 = 4096;
         let n = ((ax - bx).abs().max((ay - by).abs()).max((az - bz).abs())).round() as i64;
-        const MAX_HEX_LINE_SAMPLES: i64 = 4096; // DoS bound, mirrors movement.rs's MAX_MOVE_CELLS class of guard
         if !(0..=MAX_HEX_LINE_SAMPLES).contains(&n) {
             return None;
         }
         let _ = cell; // hex cell size is baked into `self.size`; kept only for GridShape trait-signature
                       // parity with SquareGrid, which DOES need it.
+
         let mut out = BTreeSet::new();
-        if n == 0 {
-            out.insert(self.axial_round(aq, ar));
-            return Some(out);
+        // Endpoint hexes are always included, matching the square supercover's contract.
+        out.insert(self.axial_round(aq, ar));
+        out.insert(self.axial_round(bq, br));
+
+        // Every integer crossing of each bisector coordinate ψ, as a parameter t in (0, 1).
+        let mut ts: Vec<f64> = Vec::new();
+        for (u0, u1) in [(ax - ay, bx - by), (az - ay, bz - by), (ax - az, bx - bz)] {
+            let du = u1 - u0;
+            if du == 0.0 {
+                continue; // this family never crosses a boundary line
+            }
+            let (lo, hi) = if du > 0.0 { (u0, u1) } else { (u1, u0) };
+            let k0 = lo.ceil();
+            let k1 = hi.floor();
+            if !k0.is_finite() || !k1.is_finite() || k1 < k0 {
+                continue;
+            }
+            let steps = (k1 - k0) as i64;
+            if steps > 4 * MAX_HEX_LINE_SAMPLES {
+                return None; // fail closed rather than allocate an unbounded crossing list
+            }
+            for s in 0..=steps {
+                let t = (k0 + s as f64 - u0) / du;
+                if t > 0.0 && t < 1.0 {
+                    ts.push(t);
+                }
+            }
         }
-        for i in 0..=n {
-            let t = i as f64 / n as f64;
-            let qf = aq + (bq - aq) * t;
-            let rf = ar + (br - ar) * t;
-            out.insert(self.axial_round(qf, rf));
+        ts.sort_by(|p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
+
+        let d = (b.0 - a.0, b.1 - a.1);
+        let at = |t: f64| (a.0 + d.0 * t, a.1 + d.1 * t);
+        // Midpoint of each inter-crossing interval: `cell_of` is constant across the interval, so
+        // this names exactly the hex the segment occupies there.
+        let mut prev = 0.0_f64;
+        for &t in ts.iter().chain(std::iter::once(&1.0)) {
+            out.insert(self.cell_of(at((prev + t) * 0.5)));
+            prev = t;
+        }
+
+        // Boundary-grazing over-inclusion (safe direction only): probe both sides of each crossing.
+        let len = (d.0 * d.0 + d.1 * d.1).sqrt();
+        if len > 0.0 {
+            /// Perpendicular probe offset, as a fraction of the hex outer radius. Large enough to
+            /// clear cube-rounding noise at scene-scale coordinates, small enough that it only ever
+            /// pulls in a hex the segment is already touching to within a millionth of a cell.
+            const VERTEX_PROBE: f64 = 1e-6;
+            let off = self.size * VERTEX_PROBE;
+            let nx = -d.1 / len * off;
+            let ny = d.0 / len * off;
+            // Endpoints are probed too: an endpoint sitting exactly ON a boundary produces its
+            // crossing at t == 0 or t == 1, which is not an interior interval split, so the
+            // midpoint pass alone would name only whichever side `cell_of` happens to pick.
+            for &t in ts.iter().chain([0.0, 1.0].iter()) {
+                let p = at(t);
+                out.insert(self.cell_of((p.0 + nx, p.1 + ny)));
+                out.insert(self.cell_of((p.0 - nx, p.1 - ny)));
+            }
         }
         Some(out)
     }
@@ -884,6 +958,263 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// EXACT oracle: the set of hexes whose INTERIOR the segment `a -> b` overlaps over a
+    /// positive-length interval, computed by Cyrus-Beck clipping of the segment against each
+    /// candidate hex's 6 half-planes (`cell_vertices`). Independent of `line_traversal`.
+    fn true_hexes_crossed(g: &HexGrid, a: vision::P, b: vision::P, eps: f64) -> BTreeSet<Cell> {
+        let (ca, cb) = (g.cell_of(a), g.cell_of(b));
+        let pad = 4;
+        let (q0, q1) = (ca.0.min(cb.0) - pad, ca.0.max(cb.0) + pad);
+        let (r0, r1) = (ca.1.min(cb.1) - pad, ca.1.max(cb.1) + pad);
+        let d = (b.0 - a.0, b.1 - a.1);
+        let len = (d.0 * d.0 + d.1 * d.1).sqrt();
+        let mut out = BTreeSet::new();
+        for q in q0..=q1 {
+            for r in r0..=r1 {
+                let c = (q, r);
+                let verts = g.cell_vertices(c, 0.0);
+                let ctr = g.cell_center(c);
+                let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
+                let mut empty = false;
+                for k in 0..6 {
+                    let v0 = verts[k];
+                    let v1 = verts[(k + 1) % 6];
+                    // Inward normal for edge v0->v1 (sign fixed by the center being inside).
+                    let e = (v1.0 - v0.0, v1.1 - v0.1);
+                    let mut n = (-e.1, e.0);
+                    if n.0 * (ctr.0 - v0.0) + n.1 * (ctr.1 - v0.1) < 0.0 {
+                        n = (-n.0, -n.1);
+                    }
+                    // f(t) = n . (a + t*d - v0) >= 0 keeps the point inside.
+                    let f0 = n.0 * (a.0 - v0.0) + n.1 * (a.1 - v0.1);
+                    let fd = n.0 * d.0 + n.1 * d.1;
+                    if fd.abs() < 1e-18 {
+                        if f0 < 0.0 {
+                            empty = true;
+                            break;
+                        }
+                        continue;
+                    }
+                    let t = -f0 / fd;
+                    if fd > 0.0 {
+                        t0 = t0.max(t);
+                    } else {
+                        t1 = t1.min(t);
+                    }
+                    if t0 > t1 {
+                        empty = true;
+                        break;
+                    }
+                }
+                if !empty && (t1 - t0) * len > eps {
+                    out.insert(c);
+                }
+            }
+        }
+        out
+    }
+
+    /// Deterministic LCG so the search is reproducible.
+    struct Lcg(u64);
+    impl Lcg {
+        fn next_f64(&mut self) -> f64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+        fn range(&mut self, lo: f64, hi: f64) -> f64 {
+            lo + (hi - lo) * self.next_f64()
+        }
+    }
+
+    /// Structured adversarial endpoint pool: hex centers, all 6 vertices, all 6 edge midpoints,
+    /// and small offsets off each, for a ring of hexes around the origin.
+    fn adversarial_points(g: &HexGrid) -> Vec<vision::P> {
+        let mut pts = Vec::new();
+        for q in -2..=2 {
+            for r in -2..=2 {
+                let c = (q, r);
+                let ctr = g.cell_center(c);
+                pts.push(ctr);
+                let verts = g.cell_vertices(c, 0.0);
+                for k in 0..6 {
+                    let v = verts[k];
+                    let w = verts[(k + 1) % 6];
+                    pts.push(v);
+                    pts.push(((v.0 + w.0) * 0.5, (v.1 + w.1) * 0.5));
+                    // Just inside / just outside the vertex, along the center->vertex ray.
+                    for f in [0.999_999, 1.000_001, 0.5] {
+                        pts.push((ctr.0 + (v.0 - ctr.0) * f, ctr.1 + (v.1 - ctr.1) * f));
+                    }
+                }
+            }
+        }
+        pts
+    }
+
+    /// THE security property: `line_traversal` must never omit a hex the segment geometrically
+    /// crosses, or a non-GM could route a move that grazes an unseen hex without that hex being
+    /// checked against the visibility mask (a fog probe) — the exact failure the square supercover
+    /// is documented to prevent. Checked against `true_hexes_crossed`, an EXACT oracle (Cyrus-Beck
+    /// clipping against each hex's own `cell_vertices` polygon), not dense sampling — dense
+    /// sampling is only a subset oracle and would pass over a barely-clipped hex.
+    ///
+    /// Search: 3 hex sizes × {random long segments, random sub-hex segments, pairs drawn from a
+    /// pool of hex centers/vertices/edge-midpoints/near-vertex offsets, and chords parallel to each
+    /// of the 6 hex edge directions at 121 perpendicular offsets each}.
+    #[test]
+    fn hex_line_traversal_never_omits_a_hex_the_segment_crosses() {
+        use std::cell::{Cell as C, RefCell};
+        let misses = C::new(0usize);
+        let first: RefCell<Option<String>> = RefCell::new(None);
+        let checked = C::new(0usize);
+        let over = C::new(0usize);
+        let over_max = C::new(0usize);
+        let check = |g: &HexGrid, a: vision::P, b: vision::P, eps: f64| {
+            let got = match g.line_traversal(a, b, g.size) {
+                Some(s) => s,
+                None => return,
+            };
+            let want = true_hexes_crossed(g, a, b, eps);
+            checked.set(checked.get() + 1);
+            let extra = got.len() - want.intersection(&got).count();
+            over.set(over.get() + extra);
+            over_max.set(over_max.get().max(extra));
+            if !want.is_subset(&got) {
+                misses.set(misses.get() + 1);
+                if first.borrow().is_none() {
+                    let missing: Vec<Cell> = want.difference(&got).copied().collect();
+                    *first.borrow_mut() = Some(format!(
+                        "size={} a={a:?} b={b:?}\n got={got:?}\nwant={want:?}\nmissing={missing:?}",
+                        g.size
+                    ));
+                }
+            }
+        };
+        for &size in &[1.0_f64, 50.0, 137.5] {
+            let g = HexGrid { size };
+            let mut rng = Lcg(0x5EED_1234);
+            // Random long + short segments.
+            for _ in 0..8000 {
+                let sp = size * 6.0;
+                let a = (rng.range(-sp, sp), rng.range(-sp, sp));
+                let b = (rng.range(-sp, sp), rng.range(-sp, sp));
+                check(&g, a, b, 1e-9 * size);
+                let tiny = size * 0.01;
+                let b2 = (a.0 + rng.range(-tiny, tiny), a.1 + rng.range(-tiny, tiny));
+                check(&g, a, b2, 1e-9 * size);
+            }
+            // Structured adversarial pairs.
+            let pts = adversarial_points(&g);
+            let mut rng2 = Lcg(0xC0FF_EE01);
+            for _ in 0..20000 {
+                let a = pts[(rng2.next_f64() * pts.len() as f64) as usize % pts.len()];
+                let b = pts[(rng2.next_f64() * pts.len() as f64) as usize % pts.len()];
+                check(&g, a, b, 1e-9 * size);
+            }
+            // Segments parallel to each of the three hex edge directions, at many offsets.
+            for k in 0..6 {
+                let ang = std::f64::consts::PI / 180.0 * (60.0 * k as f64);
+                let (dx, dy) = (ang.cos(), ang.sin());
+                let (px, py) = (-dy, dx);
+                for i in -60..=60 {
+                    let off = i as f64 * size / 37.0;
+                    let a = (px * off - dx * size * 4.0, py * off - dy * size * 4.0);
+                    let b = (px * off + dx * size * 4.0, py * off + dy * size * 4.0);
+                    check(&g, a, b, 1e-9 * size);
+                }
+            }
+        }
+        if let Some(f) = first.borrow().clone() {
+            panic!("omitted a crossed hex in {}/{}: {f}", misses.get(), checked.get());
+        }
+        assert!(checked.get() > 100_000, "the search must actually run: {}", checked.get());
+        // Over-inclusion is the SAFE direction (it can only over-restrict a move, never over-permit),
+        // but it must stay bounded or legitimate moves get rejected. The boundary probe adds at most
+        // a small constant per segment, and only for segments that genuinely run along or through a
+        // hex boundary — generic segments (the random groups) get essentially none.
+        assert!(
+            over_max.get() <= 12,
+            "per-segment over-inclusion must stay small, got {}",
+            over_max.get()
+        );
+    }
+
+    /// Generic (non-boundary-aligned) segments must be effectively EXACT — the conservative
+    /// boundary probe must not silently over-restrict ordinary moves.
+    #[test]
+    fn hex_line_traversal_is_near_exact_for_generic_segments() {
+        let g = HexGrid { size: 50.0 };
+        let mut rng = Lcg(0x5EED_1234);
+        let (mut checked, mut extra_total) = (0usize, 0usize);
+        for _ in 0..8000 {
+            let a = (rng.range(-300.0, 300.0), rng.range(-300.0, 300.0));
+            let b = (rng.range(-300.0, 300.0), rng.range(-300.0, 300.0));
+            let Some(got) = g.line_traversal(a, b, 50.0) else { continue };
+            let want = true_hexes_crossed(&g, a, b, 1e-9 * g.size);
+            assert!(want.is_subset(&got), "a={a:?} b={b:?}");
+            extra_total += got.len() - want.intersection(&got).count();
+            checked += 1;
+        }
+        assert!(checked > 7900);
+        assert!(
+            extra_total * 100 < checked,
+            "fewer than 1 in 100 generic segments may gain a spurious hex: {extra_total}/{checked}"
+        );
+    }
+
+    #[test]
+    fn hex_line_traversal_includes_the_far_endpoint_hex_on_a_sub_hex_step() {
+        // Reduced counterexample. A step short enough that the max cube-axis delta rounds to 0 still
+        // crosses a hex boundary: (-40, 0) sits in hex (0,0) (inradius 43.3), (-50, 0) in hex (-1,0).
+        // The pre-fix fixed-count cube lerp took `n = 0` and returned ONLY the start hex, omitting
+        // even the far endpoint's own hex — an unseen hex a token could step into ungated.
+        let g = HexGrid { size: 50.0 };
+        let (a, b) = ((-40.0, 0.0), (-50.0, 0.0));
+        assert_eq!(g.cell_of(a), (0, 0));
+        assert_eq!(g.cell_of(b), (-1, 0));
+        let cells = g.line_traversal(a, b, 50.0).expect("finite, in-bounds");
+        assert!(cells.contains(&(0, 0)), "start hex: {cells:?}");
+        assert!(cells.contains(&(-1, 0)), "far ENDPOINT hex must be present: {cells:?}");
+    }
+
+    #[test]
+    fn hex_line_traversal_includes_a_corner_clipped_hex() {
+        // Reduced counterexample. This segment clips a short sliver of hex (-1,0) near the vertex it
+        // shares with (0,0)/(0,-1); the pre-fix sampler's one-hex-pitch spacing straddled the sliver
+        // entirely and never named it.
+        let g = HexGrid { size: 50.0 };
+        let a = (-51.640_685_867_085_56, 82.356_123_493_857_9);
+        let b = (-32.076_474_134_396_726, -54.002_821_619_560_066);
+        let cells = g.line_traversal(a, b, 50.0).expect("finite, in-bounds");
+        let want = true_hexes_crossed(&g, a, b, 1e-6);
+        assert!(want.contains(&(-1, 0)), "fixture must actually clip (-1,0): {want:?}");
+        assert!(want.is_subset(&cells), "want={want:?} got={cells:?}");
+    }
+
+    #[test]
+    fn hex_line_traversal_emits_both_hexes_flanking_a_traversed_edge() {
+        // A segment running exactly along the shared edge of two hexes touches both. Same deliberate
+        // over-inclusion the square supercover documents for a shared corner, so a move cannot
+        // thread an unseen hex by riding a boundary.
+        let g = HexGrid { size: 50.0 };
+        // Hexes (0,0) (center (0,0)) and (-1,0) (center (-86.6,0)) share the vertical edge x = -43.3
+        // spanning y in [-25, 25].
+        let x = -50.0 * 3.0_f64.sqrt() / 2.0;
+        let cells = g.line_traversal((x, -20.0), (x, 20.0), 50.0).expect("finite, in-bounds");
+        assert!(cells.contains(&(0, 0)), "{cells:?}");
+        assert!(cells.contains(&(-1, 0)), "{cells:?}");
+    }
+
+    #[test]
+    fn hex_line_traversal_still_fails_closed_on_non_finite_and_over_cap() {
+        let g = HexGrid { size: 50.0 };
+        assert_eq!(g.line_traversal((f64::NAN, 0.0), (10.0, 10.0), 50.0), None);
+        assert_eq!(g.line_traversal((0.0, 0.0), (f64::INFINITY, 0.0), 50.0), None);
+        assert_eq!(g.line_traversal((0.0, f64::NEG_INFINITY), (0.0, 0.0), 50.0), None);
+        // Past the 4096-hex span cap.
+        assert_eq!(g.line_traversal((0.0, 0.0), (1.0e9, 0.0), 50.0), None);
     }
 
     #[test]
