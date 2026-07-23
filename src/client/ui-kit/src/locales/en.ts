@@ -145,6 +145,8 @@ export const en: Messages = {
   "gameSettings.scene.environment": "Environment lighting (override)",
   "gameSettings.scene.envColor": "Environment light color (override)",
   "gameSettings.scene.envIntensity": "Environment light intensity (override)",
+  "gameSettings.scene.gridKind": "Grid kind",
+  "gameSettings.scene.gridSize": "Grid cell size (pixels)",
   "gameSettings.scene.distancePerCell": "Distance per cell (override)",
   "gameSettings.scene.distanceUnit": "Distance unit (override)",
   "gameSettings.scene.bounds": "Scene size (grid units)",

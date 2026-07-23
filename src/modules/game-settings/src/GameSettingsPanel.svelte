@@ -89,6 +89,7 @@
   }
 
   const MOVEMENT = ["visible", "revealed", "unrestricted"] as const;
+  const GRID_KIND = ["square", "hex"] as const;
   const MOVEMENT_MODEL = ["grid-stepped", "continuous"] as const;
   const LIGHTMODE = ["environmentLight", "globalIllumination"] as const;
   const DIAGONAL = ["chebyshev", "alternating", "euclidean", "manhattan"] as const;
@@ -480,6 +481,24 @@
             }} />
         </label>
       {/if}
+
+      <!-- Grid kind/size: per-scene INTRINSIC values (there is no world-level grid kind), so
+           these follow the plain-value pattern (like scene bounds below), not the ""=inherit
+           tri-state the vision/lighting overrides above use. -->
+      <label>
+        {ctx.t("gameSettings.scene.gridKind")}
+        <select aria-label="gameSettings.scene.gridKind" value={ssys.grid?.kind ?? "square"}
+          onchange={(e) => setScene("/engine/grid/kind", ssys.grid?.kind ?? "square", (e.currentTarget as HTMLSelectElement).value)}>
+          {#each GRID_KIND as k}<option value={k}>{k}</option>{/each}
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.gridSize")}
+        <input type="number" min="1" step="1" aria-label="gameSettings.scene.gridSize"
+          value={ssys.grid?.size ?? 100}
+          onchange={(e) => setScene("/engine/grid/size", ssys.grid?.size ?? 100, Number((e.currentTarget as HTMLInputElement).value))} />
+      </label>
 
       <!-- Grid distance override: un-edited sibling is read from the current override when
            present, or falls back to the defaults that resolveSceneSettings uses (5 ft/cell). -->
