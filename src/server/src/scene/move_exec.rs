@@ -20,7 +20,7 @@
 //! INVARIANT (spec §13 / M10e-4 per-cell parity): step 2 calls the SAME
 //! `GridShape::line_traversal(prev, next, cell)` (via `ecs.resolve_grid_shape`) and checks
 //! `all ∈ visible` that the M10e-4 gate in `Room::publish` does — square delegates to
-//! `movement::supercover_cells`, hex to cube-coordinate interpolation, so the two callers agree
+//! `movement::supercover_cells`, hex to a ψ-crossing supercover, so the two callers agree
 //! on every cell on BOTH grid kinds, not square alone. The caller pre-computes `visible` off the
 //! ECS read lock (mirroring `publish`'s `visible_cache`), so this executor is pure and imposes
 //! no lock ordering.
@@ -232,8 +232,9 @@ pub(crate) enum MoveReject {
 /// # Parity with M10e-4 (`Room::publish`) — per-cell decision only
 ///
 /// The per-cell decision (step 1 + step 2) uses the SAME primitives as the M10e-4 gate in
-/// `Room::publish`: `blocks_move`, `GridShape::line_traversal` (square supercover or hex
-/// cube-interpolation, per `ecs.resolve_grid_shape`), and the pre-computed `visible` set.
+/// `Room::publish`: `blocks_move`, `GridShape::line_traversal` (a supercover on both grid kinds —
+/// square cell-walk, hex ψ-crossing, per `ecs.resolve_grid_shape`), and the pre-computed `visible`
+/// set.
 /// This executor and the `publish` gate agree on every cell for every restriction mode, on
 /// BOTH square and hex scenes. For a grid input this executor is byte-identical in outcome to
 /// the pre-M10f-2 king-step executor (proved via a differential oracle during M10f-2 and now
