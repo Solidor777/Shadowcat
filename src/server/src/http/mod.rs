@@ -89,6 +89,15 @@ pub async fn router(state: AppState) -> Router {
             delete(routes::remove_member),
         )
         .route(
+            "/api/worlds/{id}/invites",
+            post(routes::create_invite).get(routes::list_invites),
+        )
+        .route(
+            "/api/worlds/{id}/invites/{code_id}",
+            delete(routes::revoke_invite),
+        )
+        .route("/api/invites/{code}/accept", post(routes::accept_invite))
+        .route(
             "/api/worlds/{id}/capability-defaults",
             get(routes::get_world_capability_defaults).put(routes::set_world_capability_defaults),
         )
@@ -781,36 +790,33 @@ pub(crate) mod tests {
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
-    // --- GM member-add by username ---
+    // --- GM member-add (by user id only) ---
 
     #[tokio::test]
-    async fn add_member_accepts_a_username_and_still_accepts_a_uuid() {
+    async fn add_member_seats_by_user_id_and_refuses_to_name_an_account() {
         let f = user_routes_fixture().await;
         let world_id = &f.world_id;
-        f.admin
-            .post("/api/users")
-            .json(&serde_json::json!({ "username": "seated", "password": "pw-seated" }))
-            .await
-            .assert_status_ok();
+        let seated_id = seed_user(&f.state, "seated").await;
 
-        // The GM seats the account by the name the admin issued.
         f.gm.post(&format!("/api/worlds/{world_id}/members"))
-            .json(&serde_json::json!({ "username": "seated", "role": "player" }))
+            .json(&serde_json::json!({ "user": seated_id, "role": "player" }))
             .await
             .assert_status(StatusCode::NO_CONTENT);
         let members: Vec<serde_json::Value> =
             f.gm.get(&format!("/api/worlds/{world_id}/members"))
                 .await
                 .json();
-        let seated = members
-            .iter()
-            .find(|m| m["username"] == "seated")
-            .expect("seated by username");
-        assert_eq!(seated["role"], "player");
+        assert_eq!(
+            members
+                .iter()
+                .find(|m| m["username"] == "seated")
+                .expect("seated by id")["role"],
+            "player"
+        );
 
         // The same call is an idempotent role change, not a duplicate seat.
         f.gm.post(&format!("/api/worlds/{world_id}/members"))
-            .json(&serde_json::json!({ "username": "seated", "role": "spectator" }))
+            .json(&serde_json::json!({ "user": seated_id, "role": "spectator" }))
             .await
             .assert_status(StatusCode::NO_CONTENT);
         let members: Vec<serde_json::Value> =
@@ -826,44 +832,51 @@ pub(crate) mod tests {
             "spectator"
         );
 
-        // The pre-existing uuid form is untouched.
-        let uuid_target = seed_user(&f.state, "by-uuid").await;
-        f.gm.post(&format!("/api/worlds/{world_id}/members"))
-            .json(&serde_json::json!({ "user": uuid_target, "role": "player" }))
-            .await
-            .assert_status(StatusCode::NO_CONTENT);
+        // The by-name form is GONE: naming an account made this route a
+        // username-existence oracle (a hit seats the target, observable through
+        // list_members), and any authenticated user can create a world to
+        // become a GM. A username body is now simply an unparseable request,
+        // and it seats nobody.
+        let by_name = f
+            .gm
+            .post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "username": "plain-player", "role": "player" }))
+            .await;
+        assert_eq!(by_name.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+        // An unknown name is rejected identically to a known one — no oracle.
+        let unknown_name = f
+            .gm
+            .post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "username": "no-such-user", "role": "player" }))
+            .await;
+        assert_eq!(unknown_name.status_code(), by_name.status_code());
 
-        // A non-GM member still cannot seat anyone by username.
+        // A non-GM member cannot seat anyone; nor can an anonymous caller.
         f.player
             .post(&format!("/api/worlds/{world_id}/members"))
-            .json(&serde_json::json!({ "username": "by-uuid", "role": "gm" }))
+            .json(&serde_json::json!({ "user": seated_id, "role": "gm" }))
             .await
             .assert_status(StatusCode::FORBIDDEN);
-        // Nor can an anonymous caller.
         f.anon
             .post(&format!("/api/worlds/{world_id}/members"))
-            .json(&serde_json::json!({ "username": "by-uuid", "role": "gm" }))
+            .json(&serde_json::json!({ "user": seated_id, "role": "gm" }))
             .await
             .assert_status(StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn add_member_username_branch_cannot_escalate_a_server_role() {
+    async fn add_member_cannot_escalate_a_server_role() {
         let f = user_routes_fixture().await;
         let world_id = &f.world_id;
-        f.admin
-            .post("/api/users")
-            .json(&serde_json::json!({ "username": "victim", "password": "pw-victim" }))
-            .await
-            .assert_status_ok();
+        let victim_id = seed_user(&f.state, "victim").await;
 
         // `role` deserializes as WorldRole, a closed gm/player/spectator enum:
         // no server-tier token is representable on this path.
         for escalation in [
-            serde_json::json!({ "username": "victim", "role": "admin" }),
-            serde_json::json!({ "username": "victim", "role": "user" }),
+            serde_json::json!({ "user": victim_id, "role": "admin" }),
+            serde_json::json!({ "user": victim_id, "role": "user" }),
             // A stray server_role field is not part of the request shape.
-            serde_json::json!({ "username": "victim", "role": "player", "server_role": "admin" }),
+            serde_json::json!({ "user": victim_id, "role": "player", "server_role": "admin" }),
         ] {
             let res =
                 f.gm.post(&format!("/api/worlds/{world_id}/members"))
@@ -891,7 +904,7 @@ pub(crate) mod tests {
         // Even the maximal legitimate outcome — world GM — leaves the server
         // tier alone: the seated account still cannot reach an admin route.
         f.gm.post(&format!("/api/worlds/{world_id}/members"))
-            .json(&serde_json::json!({ "username": "victim", "role": "gm" }))
+            .json(&serde_json::json!({ "user": victim_id, "role": "gm" }))
             .await
             .assert_status(StatusCode::NO_CONTENT);
         assert_eq!(
@@ -904,12 +917,7 @@ pub(crate) mod tests {
                 .server_role,
             ServerRole::User
         );
-        let victim = anon_server(&f.state).await;
-        victim
-            .post("/api/login")
-            .json(&serde_json::json!({ "username": "victim", "password": "pw-victim" }))
-            .await
-            .assert_status(StatusCode::NO_CONTENT);
+        let victim = login_server(&f.state, "victim").await;
         victim
             .get("/api/users")
             .await
@@ -922,32 +930,556 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn add_member_rejects_unknown_ambiguous_and_absent_targets() {
+    async fn add_member_rejects_unknown_and_absent_targets() {
         let f = user_routes_fixture().await;
         let world_id = &f.world_id;
 
-        // Unknown username, and an unknown uuid (which would otherwise trip the
-        // world_members foreign key and surface as a 500).
-        f.gm.post(&format!("/api/worlds/{world_id}/members"))
-            .json(&serde_json::json!({ "username": "no-such-user", "role": "player" }))
-            .await
-            .assert_status(StatusCode::NOT_FOUND);
+        // An unknown uuid would otherwise trip the world_members foreign key
+        // and surface as a 500.
         f.gm.post(&format!("/api/worlds/{world_id}/members"))
             .json(&serde_json::json!({ "user": Uuid::from_u128(4242), "role": "player" }))
             .await
             .assert_status(StatusCode::NOT_FOUND);
 
-        // Both identifiers, or neither, is ambiguous.
-        f.gm.post(&format!("/api/worlds/{world_id}/members"))
-            .json(&serde_json::json!({
-                "user": Uuid::from_u128(1), "username": "plain-player", "role": "player"
-            }))
-            .await
-            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+        // A body with no target at all is unparseable.
         f.gm.post(&format!("/api/worlds/{world_id}/members"))
             .json(&serde_json::json!({ "role": "player" }))
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // --- World invites (mint / list / revoke / redeem) ---
+
+    /// A GM with a world, a second GM with their OWN world, an outsider with
+    /// no world, and an anonymous caller.
+    struct InviteFixture {
+        state: AppState,
+        gm: axum_test::TestServer,
+        other_gm: axum_test::TestServer,
+        outsider: axum_test::TestServer,
+        anon: axum_test::TestServer,
+        world_id: String,
+        other_world_id: String,
+    }
+
+    async fn invite_fixture() -> InviteFixture {
+        let state = initialized_state().await;
+        seed_user(&state, "gm-alpha").await;
+        seed_user(&state, "gm-beta").await;
+        seed_user(&state, "outsider").await;
+        let gm = login_server(&state, "gm-alpha").await;
+        let other_gm = login_server(&state, "gm-beta").await;
+        let outsider = login_server(&state, "outsider").await;
+        let anon = anon_server(&state).await;
+
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "Alpha" }))
+            .await
+            .json();
+        let other: serde_json::Value = other_gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "Beta" }))
+            .await
+            .json();
+
+        InviteFixture {
+            state,
+            gm,
+            other_gm,
+            outsider,
+            anon,
+            world_id: world["id"].as_str().unwrap().to_string(),
+            other_world_id: other["id"].as_str().unwrap().to_string(),
+        }
+    }
+
+    /// Mint an invite for `world` as `gm`, returning `(code_id, code)`.
+    async fn mint_invite(
+        gm: &axum_test::TestServer,
+        world: &str,
+        role: &str,
+    ) -> (String, String) {
+        let res = gm
+            .post(&format!("/api/worlds/{world}/invites"))
+            .json(&serde_json::json!({ "role": role }))
+            .await;
+        res.assert_status_ok();
+        let body: serde_json::Value = res.json();
+        (
+            body["id"].as_str().unwrap().to_string(),
+            body["code"].as_str().unwrap().to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn minting_listing_and_revoking_require_gm_of_that_world() {
+        let f = invite_fixture().await;
+        let w = &f.world_id;
+        let mint = serde_json::json!({ "role": "player" });
+
+        // The world's own GM may mint.
+        let (code_id, _) = mint_invite(&f.gm, w, "player").await;
+
+        // A GM of ANOTHER world is a non-member here: mint, list, and revoke
+        // are each refused, and the refusal is the same as for any outsider.
+        for caller in [&f.other_gm, &f.outsider] {
+            caller
+                .post(&format!("/api/worlds/{w}/invites"))
+                .json(&mint)
+                .await
+                .assert_status(StatusCode::FORBIDDEN);
+            caller
+                .get(&format!("/api/worlds/{w}/invites"))
+                .await
+                .assert_status(StatusCode::FORBIDDEN);
+            caller
+                .delete(&format!("/api/worlds/{w}/invites/{code_id}"))
+                .await
+                .assert_status(StatusCode::FORBIDDEN);
+        }
+        // An anonymous caller is unauthenticated on every one.
+        f.anon
+            .post(&format!("/api/worlds/{w}/invites"))
+            .json(&mint)
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+        f.anon
+            .get(&format!("/api/worlds/{w}/invites"))
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+        f.anon
+            .delete(&format!("/api/worlds/{w}/invites/{code_id}"))
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+
+        // A seated PLAYER of this world is still not a GM.
+        let player_id = seed_user(&f.state, "seated-player").await;
+        let player = login_server(&f.state, "seated-player").await;
+        f.gm.post(&format!("/api/worlds/{w}/members"))
+            .json(&serde_json::json!({ "user": player_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        player
+            .post(&format!("/api/worlds/{w}/invites"))
+            .json(&mint)
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+        player
+            .get(&format!("/api/worlds/{w}/invites"))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+        player
+            .delete(&format!("/api/worlds/{w}/invites/{code_id}"))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        // The invite survived every rejected revoke: it still redeems.
+        let listing: Vec<serde_json::Value> =
+            f.gm.get(&format!("/api/worlds/{w}/invites")).await.json();
+        assert_eq!(listing.len(), 1);
+        assert!(listing[0]["revoked_at"].is_null());
+    }
+
+    #[tokio::test]
+    async fn a_gm_of_one_world_cannot_revoke_another_worlds_invite() {
+        let f = invite_fixture().await;
+        let (code_id, code) = mint_invite(&f.gm, &f.world_id, "player").await;
+
+        // gm-beta is the GM of their OWN world, so `require_gm` passes for that
+        // world — the invite must still be untouchable, because the revoke is
+        // scoped to the world in SQL.
+        let other = &f.other_world_id;
+        f.other_gm
+            .delete(&format!("/api/worlds/{other}/invites/{code_id}"))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+
+        // Indistinguishable from an id that exists nowhere.
+        let ghost = Uuid::new_v4();
+        f.other_gm
+            .delete(&format!("/api/worlds/{other}/invites/{ghost}"))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+
+        // ...and the invite still works.
+        f.outsider
+            .post(&format!("/api/invites/{code}/accept"))
+            .await
+            .assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn redeeming_an_invite_seats_the_caller_at_the_invited_role() {
+        let f = invite_fixture().await;
+        let (_, code) = mint_invite(&f.gm, &f.world_id, "spectator").await;
+
+        // Before redeeming, the outsider sees no worlds and is refused the roster.
+        let worlds: Vec<serde_json::Value> = f.outsider.get("/api/worlds").await.json();
+        assert!(worlds.is_empty());
+        f.outsider
+            .get(&format!("/api/worlds/{}/members", f.world_id))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        let res = f
+            .outsider
+            .post(&format!("/api/invites/{code}/accept"))
+            .await;
+        res.assert_status_ok();
+        let entry: serde_json::Value = res.json();
+        assert_eq!(entry["id"], f.world_id);
+        assert_eq!(entry["name"], "Alpha");
+        assert_eq!(entry["role"], "spectator");
+
+        // The seat is real and at the invited role.
+        let members: Vec<serde_json::Value> =
+            f.gm.get(&format!("/api/worlds/{}/members", f.world_id))
+                .await
+                .json();
+        let seated = members
+            .iter()
+            .find(|m| m["username"] == "outsider")
+            .expect("redeemer seated");
+        assert_eq!(seated["role"], "spectator");
+    }
+
+    #[tokio::test]
+    async fn every_unusable_code_fails_identically() {
+        let f = invite_fixture().await;
+        let w = &f.world_id;
+
+        // Baseline: a well-formed code for an invite that never existed.
+        let unknown = format!("{}.{}", Uuid::new_v4().simple(), "ab".repeat(16));
+
+        // Already consumed.
+        let (_, consumed) = mint_invite(&f.gm, w, "player").await;
+        f.outsider
+            .post(&format!("/api/invites/{consumed}/accept"))
+            .await
+            .assert_status_ok();
+
+        // Revoked.
+        let (revoked_id, revoked) = mint_invite(&f.gm, w, "player").await;
+        f.gm.delete(&format!("/api/worlds/{w}/invites/{revoked_id}"))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // Expired: written directly with a past expiry (no clock to wind).
+        let expired_mint = crate::auth::invite::mint().unwrap();
+        let gm_id = f
+            .state
+            .repo
+            .user_by_username("gm-alpha")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        assert!(f
+            .state
+            .repo
+            .create_invite(
+                crate::data::sqlite::NewInvite {
+                    id: expired_mint.id,
+                    world: Uuid::parse_str(w).unwrap(),
+                    secret_hash: &expired_mint.secret_hash,
+                    role: crate::data::document::WorldRole::Player,
+                    created_by: gm_id,
+                    now: 1,
+                    expires_at: 2,
+                },
+                64,
+            )
+            .await
+            .unwrap());
+        let expired = expired_mint.code.clone();
+
+        // Right selector, wrong secret.
+        let (live_id, _) = mint_invite(&f.gm, w, "player").await;
+        let wrong_secret = format!("{}.{}", live_id.replace('-', ""), "cd".repeat(16));
+
+        let malformed = "not-a-code";
+        let empty_secret = format!("{}.", Uuid::new_v4().simple());
+
+        let mut seen: Vec<(StatusCode, String)> = Vec::new();
+        for code in [
+            unknown.as_str(),
+            consumed.as_str(),
+            revoked.as_str(),
+            expired.as_str(),
+            wrong_secret.as_str(),
+            malformed,
+            empty_secret.as_str(),
+        ] {
+            let res = f
+                .other_gm
+                .post(&format!("/api/invites/{code}/accept"))
+                .await;
+            seen.push((res.status_code(), res.text()));
+        }
+        let first = seen[0].clone();
+        for (i, got) in seen.iter().enumerate() {
+            assert_eq!(
+                *got, first,
+                "redemption failure {i} is distinguishable from the baseline"
+            );
+        }
+        assert_eq!(first.0, StatusCode::NOT_FOUND);
+        // Nothing about the world behind an unusable code is disclosed, and the
+        // caller is not seated anywhere by a failed redemption.
+        assert!(!first.1.contains("Alpha"));
+        assert!(!first.1.contains(w.as_str()));
+        let worlds: Vec<serde_json::Value> = f.other_gm.get("/api/worlds").await.json();
+        assert_eq!(worlds.len(), 1, "only gm-beta's own world");
+        assert_eq!(worlds[0]["name"], "Beta");
+    }
+
+    #[tokio::test]
+    async fn an_invite_is_single_use_even_for_a_different_caller() {
+        let f = invite_fixture().await;
+        let (_, code) = mint_invite(&f.gm, &f.world_id, "player").await;
+
+        f.outsider
+            .post(&format!("/api/invites/{code}/accept"))
+            .await
+            .assert_status_ok();
+        // The same code, presented by anyone, is spent.
+        f.outsider
+            .post(&format!("/api/invites/{code}/accept"))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+        f.other_gm
+            .post(&format!("/api/invites/{code}/accept"))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+
+        // gm-beta was never seated by the refused redemption.
+        let members: Vec<serde_json::Value> =
+            f.gm.get(&format!("/api/worlds/{}/members", f.world_id))
+                .await
+                .json();
+        assert!(!members.iter().any(|m| m["username"] == "gm-beta"));
+    }
+
+    #[tokio::test]
+    async fn revocation_takes_effect_immediately() {
+        let f = invite_fixture().await;
+        let w = &f.world_id;
+        let (code_id, code) = mint_invite(&f.gm, w, "player").await;
+
+        f.gm.delete(&format!("/api/worlds/{w}/invites/{code_id}"))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        f.outsider
+            .post(&format!("/api/invites/{code}/accept"))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+        assert!(f
+            .state
+            .repo
+            .member_role(
+                Uuid::parse_str(w).unwrap(),
+                f.state
+                    .repo
+                    .user_by_username("outsider")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .id
+            )
+            .await
+            .unwrap()
+            .is_none());
+
+        // Revoking twice is not a second success.
+        f.gm.delete(&format!("/api/worlds/{w}/invites/{code_id}"))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn an_invite_cannot_carry_a_server_role() {
+        let f = invite_fixture().await;
+        let w = &f.world_id;
+
+        // `role` is a WorldRole: a server tier is not expressible in the body.
+        for bad in ["admin", "user"] {
+            f.gm.post(&format!("/api/worlds/{w}/invites"))
+                .json(&serde_json::json!({ "role": bad }))
+                .await
+                .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        // A stray server_role field is not part of the request shape.
+        let res =
+            f.gm.post(&format!("/api/worlds/{w}/invites"))
+                .json(&serde_json::json!({ "role": "gm", "server_role": "admin" }))
+                .await;
+        res.assert_status_ok();
+        let code = res.json::<serde_json::Value>()["code"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Redeeming the maximal invite (world GM) leaves the server tier alone.
+        f.outsider
+            .post(&format!("/api/invites/{code}/accept"))
+            .await
+            .assert_status_ok();
+        assert_eq!(
+            f.state
+                .repo
+                .user_by_username("outsider")
+                .await
+                .unwrap()
+                .unwrap()
+                .server_role,
+            ServerRole::User
+        );
+        f.outsider
+            .get("/api/users")
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn redeeming_never_demotes_an_existing_membership() {
+        let f = invite_fixture().await;
+        let w = &f.world_id;
+        // The world's own GM redeems a spectator invite for their own world.
+        let (_, code) = mint_invite(&f.gm, w, "spectator").await;
+        f.gm.post(&format!("/api/invites/{code}/accept"))
+            .await
+            .assert_status_ok();
+
+        let members: Vec<serde_json::Value> =
+            f.gm.get(&format!("/api/worlds/{w}/members")).await.json();
+        assert_eq!(
+            members
+                .iter()
+                .find(|m| m["username"] == "gm-alpha")
+                .unwrap()["role"],
+            "gm",
+            "an invite may grant access, never change a role already held"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_listing_never_exposes_a_code_or_its_hash() {
+        let f = invite_fixture().await;
+        let w = &f.world_id;
+        let (code_id, code) = mint_invite(&f.gm, w, "player").await;
+        let secret = code.split_once('.').unwrap().1;
+
+        let res = f.gm.get(&format!("/api/worlds/{w}/invites")).await;
+        res.assert_status_ok();
+        let text = res.text();
+        assert!(!text.contains(secret), "listing leaks the invite secret");
+        assert!(!text.contains("$argon2"), "listing leaks a PHC hash");
+        assert!(!text.contains("secret"), "listing exposes a secret field");
+
+        let entries: Vec<serde_json::Value> = res.json();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["id"], code_id);
+        assert_eq!(entries[0]["role"], "player");
+        assert!(entries[0]["consumed_at"].is_null());
+        assert!(entries[0].get("code").is_none());
+
+        // After redemption the listing reports it consumed, still without a code.
+        f.outsider
+            .post(&format!("/api/invites/{code}/accept"))
+            .await
+            .assert_status_ok();
+        let entries: Vec<serde_json::Value> =
+            f.gm.get(&format!("/api/worlds/{w}/invites")).await.json();
+        assert!(entries[0]["consumed_at"].is_number());
+        assert!(!f
+            .gm
+            .get(&format!("/api/worlds/{w}/invites"))
+            .await
+            .text()
+            .contains(secret));
+    }
+
+    #[tokio::test]
+    async fn active_invites_per_world_are_capped() {
+        let f = invite_fixture().await;
+        let w = &f.world_id;
+        for _ in 0..64 {
+            f.gm.post(&format!("/api/worlds/{w}/invites"))
+                .json(&serde_json::json!({ "role": "player" }))
+                .await
+                .assert_status_ok();
+        }
+        let over = f
+            .gm
+            .post(&format!("/api/worlds/{w}/invites"))
+            .json(&serde_json::json!({ "role": "player" }))
+            .await;
+        over.assert_status(StatusCode::CONFLICT);
+
+        // Revoking one frees a slot; the cap counts LIVE invites only.
+        let listing: Vec<serde_json::Value> =
+            f.gm.get(&format!("/api/worlds/{w}/invites")).await.json();
+        let victim = listing[0]["id"].as_str().unwrap();
+        f.gm.delete(&format!("/api/worlds/{w}/invites/{victim}"))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        f.gm.post(&format!("/api/worlds/{w}/invites"))
+            .json(&serde_json::json!({ "role": "player" }))
+            .await
+            .assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn accepting_requires_authentication() {
+        let f = invite_fixture().await;
+        let (_, code) = mint_invite(&f.gm, &f.world_id, "player").await;
+        f.anon
+            .post(&format!("/api/invites/{code}/accept"))
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn setup_and_bootstrap_enforce_the_ascii_username_policy() {
+        // `/api/setup` is an insertion path into `users` that bypassed
+        // `validate_username`: a non-ASCII first admin is not case-folded by
+        // SQLite's ASCII-only NOCASE, so a homoglyph account could not collide
+        // with it and would be indistinguishable in a roster.
+        for bad in ["\u{0430}dmin", "ab", "has space", &"a".repeat(33)] {
+            let server = fresh_server().await;
+            server
+                .post("/api/setup")
+                .json(&serde_json::json!({ "username": bad, "password": "pw-admin" }))
+                .await
+                .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+
+        // Surrounding whitespace is normalized, matching `/api/users`.
+        let server = fresh_server().await;
+        server
+            .post("/api/setup")
+            .json(&serde_json::json!({ "username": "  ops-admin  ", "password": "pw-admin" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": "ops-admin", "password": "pw-admin" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // The headless bootstrap path is validated too, and a misconfigured
+        // username fails startup rather than silently seeding no admin.
+        let state = test_state().await;
+        let cfg = crate::config::Config {
+            admin_user: Some("\u{0430}dmin".into()),
+            admin_password: Some("pw-boot".into()),
+            ..crate::config::Config::default()
+        };
+        assert!(crate::auth::setup::bootstrap_admin(&state.repo, &cfg)
+            .await
+            .is_err());
+        assert!(!state.repo.admin_exists().await.unwrap());
     }
 
     fn doc_json(

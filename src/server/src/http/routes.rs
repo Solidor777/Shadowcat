@@ -241,7 +241,12 @@ const MIN_PASSWORD_LEN: usize = 8;
 const MAX_PASSWORD_BYTES: usize = 256;
 
 /// Normalize (trim) and validate a username against the account policy.
-fn validate_username(raw: &str) -> Result<String, AppError> {
+/// Applied at EVERY insertion path — `create_user` here, and `create_admin`
+/// (which `/api/setup` and the headless `bootstrap_admin` both funnel through)
+/// — so `create_user_unique`'s documented ASCII invariant holds for every row
+/// in `users`. A non-ASCII first admin would not be case-folded by SQLite's
+/// ASCII-only `NOCASE`, leaving a homoglyph account able to impersonate it.
+pub(crate) fn validate_username(raw: &str) -> Result<String, AppError> {
     let name = raw.trim();
     if name.len() < MIN_USERNAME_LEN || name.len() > MAX_USERNAME_LEN {
         return Err(AppError::Unprocessable(format!(
@@ -480,21 +485,22 @@ pub async fn list_members(
     ))
 }
 
-/// Identifies the target of a membership write by id or by username; exactly
-/// one must be supplied.
+/// Identifies the target of a membership write.
+///
+/// The target is a user id the caller already holds — there is deliberately no
+/// by-name form. Naming an arbitrary account would make this route a
+/// username-existence oracle (seating on a hit is observable through
+/// `list_members`), and `create_world` is open to every authenticated account,
+/// so "GM-only" would bound nothing. Seating a stranger goes through
+/// `create_invite`/`accept_invite`, where the invited user redeems from their
+/// own session.
 ///
 /// `role` is a [`WorldRole`] — a closed enum of `gm`/`player`/`spectator`. No
 /// server-tier value is representable here, so this GM-reachable route cannot
 /// express, let alone grant, a `ServerRole`.
 #[derive(Deserialize)]
 pub struct AddMemberRequest {
-    #[serde(default)]
-    pub user: Option<Uuid>,
-    /// Username alternative to `user`. A GM seats a player by the name the
-    /// admin issued, so no server-wide user directory has to be exposed to
-    /// GMs. Matched case-sensitively, exactly like `/api/login`.
-    #[serde(default)]
-    pub username: Option<String>,
+    pub user: Uuid,
     pub role: WorldRole,
 }
 
@@ -506,36 +512,195 @@ pub async fn add_member(
     Json(body): Json<AddMemberRequest>,
 ) -> Result<StatusCode, AppError> {
     require_gm(&state, &user, world).await?;
-    // Resolve to a user id first: `world_members.user_id` is a foreign key, so
-    // an unknown target must be rejected here as a 404 rather than surfacing as
-    // a constraint violation (a 500).
-    let target = match (body.user, body.username.as_deref()) {
-        (Some(id), None) => {
-            if !state.repo.user_exists(id).await? {
-                return Err(AppError::NotFound);
-            }
-            id
-        }
-        (None, Some(name)) => {
-            state
-                .repo
-                .user_by_username(name.trim())
-                .await?
-                .ok_or(AppError::NotFound)?
-                .id
-        }
-        _ => {
-            return Err(AppError::Unprocessable(
-                "exactly one of 'user' or 'username' is required".into(),
-            ))
-        }
-    };
+    // `world_members.user_id` is a foreign key, so an unknown target must be
+    // rejected here as a 404 rather than surfacing as a constraint violation
+    // (a 500).
+    let target = body.user;
+    if !state.repo.user_exists(target).await? {
+        return Err(AppError::NotFound);
+    }
     if state.repo.member_role(world, target).await?.is_some() {
         state.repo.set_role(world, target, body.role).await?;
     } else {
         state.repo.add_member(world, target, body.role).await?;
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+// --- World invites ---
+
+/// Lifetime of a minted invite. An unredeemed code stops working after this
+/// even if the GM forgets it exists — a bearer credential must not be
+/// perpetual.
+const INVITE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// Live (unconsumed, unrevoked, unexpired) invites a single world may hold.
+/// Bounds table growth from a GM minting in a loop; far above any real table.
+const MAX_ACTIVE_INVITES_PER_WORLD: i64 = 64;
+
+#[derive(Deserialize)]
+pub struct CreateInviteRequest {
+    /// The world role the redeemer is seated at. A [`WorldRole`], so no
+    /// server tier is representable — an invite can never confer a `ServerRole`.
+    pub role: WorldRole,
+}
+
+/// A freshly minted invite. `code` is the bearer credential and appears here
+/// once and nowhere else: the server stores only a hash of its secret half, so
+/// it cannot be re-read from the listing or recovered from the database.
+#[derive(Serialize)]
+pub struct MintedInvite {
+    pub id: Uuid,
+    pub code: String,
+    pub role: WorldRole,
+    pub expires_at: i64,
+}
+
+/// An invite as the minting GM's listing sees it. Carries no credential
+/// material — neither the code nor its hash is a field here.
+#[derive(Serialize)]
+pub struct InviteEntry {
+    pub id: Uuid,
+    pub role: WorldRole,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub revoked_at: Option<i64>,
+    pub consumed_at: Option<i64>,
+}
+
+impl From<crate::data::sqlite::InviteRecord> for InviteEntry {
+    fn from(r: crate::data::sqlite::InviteRecord) -> Self {
+        InviteEntry {
+            id: r.id,
+            role: r.role,
+            created_at: r.created_at,
+            expires_at: r.expires_at,
+            revoked_at: r.revoked_at,
+            consumed_at: r.consumed_at,
+        }
+    }
+}
+
+/// Mint a single-use invite for this world. GM of THIS world only.
+pub async fn create_invite(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+    Json(body): Json<CreateInviteRequest>,
+) -> Result<Json<MintedInvite>, AppError> {
+    require_gm(&state, &user, world).await?;
+    let minted = crate::auth::invite::mint().map_err(|_| AppError::Internal)?;
+    let now = now_millis();
+    let expires_at = now.saturating_add(INVITE_TTL_MS);
+    let stored = state
+        .repo
+        .create_invite(
+            crate::data::sqlite::NewInvite {
+                id: minted.id,
+                world,
+                secret_hash: &minted.secret_hash,
+                role: body.role,
+                created_by: user.id,
+                now,
+                expires_at,
+            },
+            MAX_ACTIVE_INVITES_PER_WORLD,
+        )
+        .await?;
+    if !stored {
+        return Err(AppError::Conflict(format!(
+            "too many active invites (max {MAX_ACTIVE_INVITES_PER_WORLD}); revoke one first"
+        )));
+    }
+    Ok(Json(MintedInvite {
+        id: minted.id,
+        code: minted.code,
+        role: body.role,
+        expires_at,
+    }))
+}
+
+/// This world's invites. GM of THIS world only; codes are not recoverable here.
+pub async fn list_invites(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+) -> Result<Json<Vec<InviteEntry>>, AppError> {
+    require_gm(&state, &user, world).await?;
+    let invites = state.repo.list_invites(world).await?;
+    Ok(Json(invites.into_iter().map(InviteEntry::from).collect()))
+}
+
+/// Revoke an invite, effective immediately (redemption re-checks revocation in
+/// its consume statement). GM of THIS world only, and the revoke is scoped to
+/// the world in SQL — a GM of another world gets the same 404 for an id that
+/// exists elsewhere as for one that exists nowhere.
+pub async fn revoke_invite(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path((world, code_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, AppError> {
+    require_gm(&state, &user, world).await?;
+    if !state.repo.revoke_invite(world, code_id, now_millis()).await? {
+        return Err(AppError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Redeem an invite: seat the CALLER into the invite's world at the invite's
+/// role. Any authenticated user; the code is the only authorization.
+///
+/// Every rejection — malformed, unknown, wrong secret, expired, revoked,
+/// already consumed — returns exactly `AppError::NotFound` after exactly one
+/// Argon2 verify, so the failures are indistinguishable by status, body, or
+/// timing. Nothing about a world the caller holds no valid code for is
+/// disclosed: the world id and name are read only after a successful consume.
+pub async fn accept_invite(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+) -> Result<Json<WorldEntry>, AppError> {
+    use crate::auth::invite;
+
+    let parsed = invite::parse(&code);
+    let record = match parsed {
+        Some((id, _)) => state.repo.invite_by_id(id).await?,
+        None => None,
+    };
+    // Exactly one verify on every path — against the stored hash when a row
+    // was found, else a throwaway hash — mirroring `anti_enumeration_phc` on
+    // the login path.
+    let (secret, target) = match (&parsed, &record) {
+        (Some((_, secret)), Some(rec)) => (secret.clone(), rec.secret_hash.clone()),
+        _ => (
+            invite::DUMMY_SECRET.to_owned(),
+            invite::dummy_phc().to_owned(),
+        ),
+    };
+    let verified = verify_password_async(secret, target).await;
+
+    let Some(rec) = record.filter(|_| verified) else {
+        return Err(AppError::NotFound);
+    };
+    // Expiry, revocation, and single-use are decided HERE, by one guarded
+    // statement — never by a preceding read of `rec` (that would be both a
+    // TOCTOU double-seat and a second, distinguishable failure shape).
+    let Some((world, role)) = state
+        .repo
+        .consume_invite(rec.id, user.id, now_millis())
+        .await?
+    else {
+        return Err(AppError::NotFound);
+    };
+    let w = state
+        .repo
+        .get_world(world)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(WorldEntry {
+        id: w.id,
+        name: w.name,
+        role,
+    }))
 }
 
 pub async fn remove_member(

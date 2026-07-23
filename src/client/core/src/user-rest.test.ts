@@ -1,5 +1,11 @@
 import { expect, test, vi, afterEach } from "vitest";
-import { listUsers, createUser, addWorldMemberByUsername } from "./user-rest";
+import {
+  listUsers,
+  createUser,
+  createWorldInvite,
+  listWorldInvites,
+  revokeWorldInvite,
+} from "./user-rest";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -78,25 +84,69 @@ test("createUser falls back to the status when the body is not JSON", async () =
   await expect(createUser({ username: "x-user", password: "pw-x" })).rejects.toThrow(/500/);
 });
 
-test("addWorldMemberByUsername POSTs a username + world role to the members route", async () => {
-  const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+test("createWorldInvite POSTs only a world role and returns the minted code", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      id: "i-1",
+      code: "0123456789abcdef0123456789abcdef.fedcba9876543210fedcba9876543210",
+      role: "player",
+      expires_at: 1000,
+    }),
+  });
   vi.stubGlobal("fetch", fetchMock);
-  await addWorldMemberByUsername("w1", "seated", "player");
+  const got = await createWorldInvite("w1", "player");
 
   const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-  expect(url).toBe("/api/worlds/w1/members");
+  expect(url).toBe("/api/worlds/w1/invites");
   expect(init.method).toBe("POST");
-  // No `user` id and no server-tier field: the GM path carries a name and a
-  // WorldRole, nothing else.
-  expect(JSON.parse(init.body as string)).toEqual({ username: "seated", role: "player" });
+  // No account is named and no server-tier field is sent: the request carries
+  // a WorldRole and nothing else.
+  expect(JSON.parse(init.body as string)).toEqual({ role: "player" });
+  expect(got.code).toContain(".");
 });
 
-test("addWorldMemberByUsername surfaces an unknown-account rejection", async () => {
+test("createWorldInvite surfaces the server's rejection reason", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ error: "forbidden" }),
+    }),
+  );
+  await expect(createWorldInvite("w1", "player")).rejects.toThrow(/forbidden/);
+});
+
+test("listWorldInvites GETs the world's invites", async () => {
+  const entry = {
+    id: "i-1",
+    role: "player",
+    created_at: 1,
+    expires_at: 2,
+    revoked_at: null,
+    consumed_at: null,
+  };
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => [entry] });
+  vi.stubGlobal("fetch", fetchMock);
+  const got = await listWorldInvites("w1");
+  expect(fetchMock).toHaveBeenCalledWith("/api/worlds/w1/invites", expect.any(Object));
+  expect(got).toEqual([entry]);
+});
+
+test("revokeWorldInvite DELETEs the invite by id", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+  vi.stubGlobal("fetch", fetchMock);
+  await revokeWorldInvite("w1", "i-1");
+  const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  expect(url).toBe("/api/worlds/w1/invites/i-1");
+  expect(init.method).toBe("DELETE");
+});
+
+test("revokeWorldInvite surfaces a rejection", async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn().mockResolvedValue({ ok: false, status: 404, json: async () => ({ error: "not found" }) }),
   );
-  await expect(addWorldMemberByUsername("w1", "ghost-user", "player")).rejects.toThrow(
-    /not found/,
-  );
+  await expect(revokeWorldInvite("w1", "i-ghost")).rejects.toThrow(/not found/);
 });

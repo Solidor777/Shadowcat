@@ -18,16 +18,23 @@ pub fn now_millis() -> i64 {
 /// Single audited path that hashes a password and writes the first admin user.
 /// Returns the new id, or `None` when an admin already exists (the insert is
 /// guarded so concurrent first-run callers cannot both create an admin).
+///
+/// The username goes through the same `validate_username` policy as an
+/// admin-created account: both entry points to this function (`/api/setup` and
+/// the headless `bootstrap_admin`) would otherwise insert an unvalidated name,
+/// breaking the ASCII invariant `create_user_unique` relies on for its
+/// `NOCASE` uniqueness guard.
 pub async fn create_admin(
     repo: &SqliteRepository,
     username: &str,
     password: &str,
     now: i64,
 ) -> Result<Option<Uuid>, AppError> {
+    let username = crate::http::routes::validate_username(username)?;
     let hash = hash_password_async(password.to_owned())
         .await
         .map_err(|_| AppError::Internal)?;
-    repo.create_admin_if_none(username, &hash, now)
+    repo.create_admin_if_none(&username, &hash, now)
         .await
         .map_err(|_| AppError::Internal)
 }
@@ -36,9 +43,15 @@ pub async fn create_admin(
 /// whether it created an account. The remote-hosting path.
 pub async fn bootstrap_admin(repo: &SqliteRepository, config: &Config) -> anyhow::Result<bool> {
     if let (Some(u), Some(p)) = (&config.admin_user, &config.admin_password) {
-        let created = create_admin(repo, u, p, now_millis())
-            .await
-            .map_err(|_| anyhow::anyhow!("bootstrap admin creation failed"))?;
+        // A configured username that fails the account policy is a startup
+        // failure, not a silently-skipped seed: the operator asked for an admin
+        // and must not be left believing one exists.
+        let created = create_admin(repo, u, p, now_millis()).await.map_err(|_| {
+            anyhow::anyhow!(
+                "bootstrap admin creation failed (username must be 3-32 characters of \
+                 [A-Za-z0-9._-])"
+            )
+        })?;
         if created.is_some() {
             tracing::info!(username = %u, "bootstrapped admin from config");
             return Ok(true);

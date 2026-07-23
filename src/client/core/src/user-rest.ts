@@ -45,20 +45,57 @@ export async function createUser(opts: {
   return (await res.json()) as ServerUser;
 }
 
-/** Seat an existing account in a world (or change its world role) by username.
- * GM-only. `role` is a WorldRole — the route accepts no server-tier value, so
- * this can never grant server administration. */
-export async function addWorldMemberByUsername(
+/** A minted invite. `code` is a bearer credential the server keeps only as a
+ * hash — it is returned once, at mint, and is unrecoverable afterwards. */
+export interface MintedInvite {
+  id: string;
+  code: string;
+  role: WorldRole;
+  expires_at: number;
+}
+
+/** An invite in a GM's listing. Carries no credential material. */
+export interface InviteEntry {
+  id: string;
+  role: WorldRole;
+  created_at: number;
+  expires_at: number;
+  revoked_at: number | null;
+  consumed_at: number | null;
+}
+
+/** Mint a single-use invite for a world. GM of that world only. `role` is a
+ * WorldRole — an invite cannot express, let alone confer, a server tier.
+ *
+ * The GM never names the invited account: naming one would make the membership
+ * route a username-existence oracle. The invited user redeems the code from
+ * their own session instead. */
+export async function createWorldInvite(
   world: string,
-  username: string,
   role: WorldRole,
-): Promise<void> {
-  const res = await fetch(`/api/worlds/${world}/members`, {
+): Promise<MintedInvite> {
+  const res = await fetch(`/api/worlds/${world}/invites`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username, role }),
+    body: JSON.stringify({ role }),
   });
-  if (!res.ok) throw new Error(await restError(res, "add member failed"));
+  if (!res.ok) throw new Error(await restError(res, "create invite failed"));
+  return (await res.json()) as MintedInvite;
+}
+
+/** A world's invites. GM of that world only; codes are not recoverable here. */
+export async function listWorldInvites(world: string): Promise<InviteEntry[]> {
+  const res = await fetch(`/api/worlds/${world}/invites`, {
+    headers: { accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(await restError(res, "list invites failed"));
+  return (await res.json()) as InviteEntry[];
+}
+
+/** Revoke an invite, effective immediately. GM of that world only. */
+export async function revokeWorldInvite(world: string, codeId: string): Promise<void> {
+  const res = await fetch(`/api/worlds/${world}/invites/${codeId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await restError(res, "revoke invite failed"));
 }
 
 /** The server's `{ error }` body when present, else the bare status. Handlers

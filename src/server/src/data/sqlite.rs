@@ -45,6 +45,36 @@ pub struct UserRecord {
     pub server_role: ServerRole,
 }
 
+/// A world invite as stored. `secret_hash` is an Argon2 PHC string over the
+/// code's verifier half; the code itself is never stored. The lifecycle
+/// columns are read-only context for the GM's listing — they are NOT the
+/// redemption gate, which lives entirely in `consume_invite`'s single guarded
+/// UPDATE (see [[two-query-guard-needs-tx]]).
+#[derive(Debug, Clone)]
+pub struct InviteRecord {
+    pub id: Uuid,
+    pub world_id: Uuid,
+    pub secret_hash: String,
+    pub role: WorldRole,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub revoked_at: Option<i64>,
+    pub consumed_at: Option<i64>,
+}
+
+/// The fields of an invite row at mint time.
+pub struct NewInvite<'a> {
+    /// Selector half of the minted code — the row id and the code must agree.
+    pub id: Uuid,
+    pub world: Uuid,
+    /// Argon2 PHC string over the code's verifier half.
+    pub secret_hash: &'a str,
+    pub role: WorldRole,
+    pub created_by: Uuid,
+    pub now: i64,
+    pub expires_at: i64,
+}
+
 /// SQLite-backed storage. Holds a connection pool; migrations are embedded
 /// from `migrations/` and run at connect time.
 pub struct SqliteRepository {
@@ -757,6 +787,186 @@ impl SqliteRepository {
                 .map_err(|e| DataError::OpFailed(e.to_string()))
         })
         .transpose()
+    }
+
+    // --- World invites ---
+
+    /// Insert an invite for `world`, bounded by `max_active` live invites
+    /// (unconsumed, unrevoked, unexpired). Returns whether it was stored;
+    /// `false` means the world is at the cap. Count and insert share one
+    /// transaction: on two connections the pair would be a TOCTOU that lets the
+    /// cap be exceeded.
+    ///
+    /// `NewInvite::id` is the selector half of the caller's minted code — the
+    /// row id and the code MUST agree, so it is supplied rather than generated
+    /// here.
+    pub async fn create_invite(
+        &self,
+        invite: NewInvite<'_>,
+        max_active: i64,
+    ) -> Result<bool, DataError> {
+        let NewInvite {
+            id,
+            world,
+            secret_hash,
+            role,
+            created_by,
+            now,
+            expires_at,
+        } = invite;
+        let mut tx = self.pool.begin().await?;
+        let active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM world_invites WHERE world_id = ? \
+             AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ?",
+        )
+        .bind(world.to_string())
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await?;
+        if active >= max_active {
+            return Ok(false);
+        }
+        sqlx::query(
+            "INSERT INTO world_invites \
+             (id, world_id, secret_hash, role, created_by, created_at, expires_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(world.to_string())
+        .bind(secret_hash)
+        .bind(serde_json::to_value(role)?.as_str().unwrap().to_string())
+        .bind(created_by.to_string())
+        .bind(now)
+        .bind(expires_at)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// An invite row by id, in ANY lifecycle state. Redemption reads this only
+    /// to obtain the stored hash — expiry/revocation/single-use are decided by
+    /// `consume_invite`, so that every unusable code reaches the caller through
+    /// one indistinguishable path.
+    pub async fn invite_by_id(&self, id: Uuid) -> Result<Option<InviteRecord>, DataError> {
+        let row = sqlx::query(
+            "SELECT id, world_id, secret_hash, role, created_at, expires_at, \
+             revoked_at, consumed_at FROM world_invites WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(Self::invite_row).transpose()
+    }
+
+    /// A world's invites, newest first. Never selects `secret_hash`: the GM
+    /// listing must not be able to leak credential material.
+    pub async fn list_invites(&self, world: Uuid) -> Result<Vec<InviteRecord>, DataError> {
+        let rows = sqlx::query(
+            "SELECT id, world_id, '' AS secret_hash, role, created_at, expires_at, \
+             revoked_at, consumed_at FROM world_invites WHERE world_id = ? \
+             ORDER BY created_at DESC, id",
+        )
+        .bind(world.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(Self::invite_row).collect()
+    }
+
+    /// Revoke an invite, scoped to `world`. Returns whether a row changed —
+    /// `false` covers both "no such invite" and "belongs to another world", so
+    /// a GM cannot use this route to probe another world's invite ids.
+    pub async fn revoke_invite(
+        &self,
+        world: Uuid,
+        id: Uuid,
+        now: i64,
+    ) -> Result<bool, DataError> {
+        let res = sqlx::query(
+            "UPDATE world_invites SET revoked_at = ? \
+             WHERE id = ? AND world_id = ? AND revoked_at IS NULL AND consumed_at IS NULL",
+        )
+        .bind(now)
+        .bind(id.to_string())
+        .bind(world.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() == 1)
+    }
+
+    /// Redeem an invite for `user`: mark it consumed and seat them. Returns the
+    /// world and the user's resulting membership role, or `None` when the
+    /// invite is unknown, expired, revoked, or already consumed.
+    ///
+    /// The consume is ONE guarded `UPDATE ... RETURNING`: the lifecycle
+    /// predicates and the write are the same statement, so two concurrent
+    /// redemptions of one code cannot both observe it as available and
+    /// double-seat (a check-then-act pair could — [[two-query-guard-needs-tx]]).
+    /// The seating shares the transaction, so a burned invite always
+    /// corresponds to a seated member.
+    ///
+    /// An existing membership is left ALONE (`INSERT OR IGNORE`): redeeming an
+    /// invite may only grant access, never change a role the caller already
+    /// holds, so a `spectator` invite cannot be used to demote a world's GM.
+    pub async fn consume_invite(
+        &self,
+        id: Uuid,
+        user: Uuid,
+        now: i64,
+    ) -> Result<Option<(Uuid, WorldRole)>, DataError> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            "UPDATE world_invites SET consumed_at = ?, consumed_by = ? \
+             WHERE id = ? AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ? \
+             RETURNING world_id, role",
+        )
+        .bind(now)
+        .bind(user.to_string())
+        .bind(id.to_string())
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let world = Uuid::parse_str(row.get::<String, _>("world_id").as_str())
+            .map_err(|e| DataError::OpFailed(e.to_string()))?;
+        let invited_role: WorldRole =
+            serde_json::from_value(serde_json::Value::String(row.get::<String, _>("role")))?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO world_members (world_id, user_id, role) VALUES (?, ?, ?)",
+        )
+        .bind(world.to_string())
+        .bind(user.to_string())
+        .bind(serde_json::to_value(invited_role)?.as_str().unwrap().to_string())
+        .execute(&mut *tx)
+        .await?;
+        let seated: String =
+            sqlx::query_scalar("SELECT role FROM world_members WHERE world_id = ? AND user_id = ?")
+                .bind(world.to_string())
+                .bind(user.to_string())
+                .fetch_one(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        Ok(Some((
+            world,
+            serde_json::from_value(serde_json::Value::String(seated))?,
+        )))
+    }
+
+    fn invite_row(r: sqlx::sqlite::SqliteRow) -> Result<InviteRecord, DataError> {
+        Ok(InviteRecord {
+            id: Uuid::parse_str(r.get::<String, _>("id").as_str())
+                .map_err(|e| DataError::OpFailed(e.to_string()))?,
+            world_id: Uuid::parse_str(r.get::<String, _>("world_id").as_str())
+                .map_err(|e| DataError::OpFailed(e.to_string()))?,
+            secret_hash: r.get("secret_hash"),
+            role: serde_json::from_value(serde_json::Value::String(r.get::<String, _>("role")))?,
+            created_at: r.get("created_at"),
+            expires_at: r.get("expires_at"),
+            revoked_at: r.get("revoked_at"),
+            consumed_at: r.get("consumed_at"),
+        })
     }
 
     /// Load a document envelope by id on an arbitrary executor (so it can run
@@ -6308,5 +6518,151 @@ mod tests {
         assert!(matches!(err, DataError::SchemaViolation { .. }));
         let seq_after = r.get_world(w.id).await.unwrap().unwrap().seq;
         assert_eq!(seq_before, seq_after);
+    }
+
+    // --- World invites ---
+
+    /// A world with a GM and two redeemers, plus one live invite.
+    async fn invite_fixture(role: WorldRole) -> (SqliteRepository, Uuid, Uuid, Uuid, Uuid) {
+        use crate::auth::role::ServerRole;
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let a = r.create_user("a", None, ServerRole::User, 0).await.unwrap();
+        let b = r.create_user("b", None, ServerRole::User, 0).await.unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let id = Uuid::new_v4();
+        assert!(r
+            .create_invite(
+                NewInvite {
+                    id,
+                    world: w.id,
+                    secret_hash: "phc",
+                    role,
+                    created_by: gm,
+                    now: 10,
+                    expires_at: 1_000_000,
+                },
+                64
+            )
+            .await
+            .unwrap());
+        (r, w.id, id, a, b)
+    }
+
+    #[tokio::test]
+    async fn consume_invite_seats_exactly_one_redeemer() {
+        let (r, world, invite, a, b) = invite_fixture(WorldRole::Player).await;
+
+        let first = r.consume_invite(invite, a, 20).await.unwrap();
+        assert_eq!(first, Some((world, WorldRole::Player)));
+        // The guarded UPDATE is the whole gate: a second redemption of the same
+        // row cannot observe it as available, so b is never seated.
+        assert_eq!(r.consume_invite(invite, b, 21).await.unwrap(), None);
+        assert_eq!(
+            r.member_role(world, a).await.unwrap(),
+            Some(WorldRole::Player)
+        );
+        assert_eq!(r.member_role(world, b).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn consume_invite_refuses_expired_and_revoked_rows() {
+        let (r, world, invite, a, _) = invite_fixture(WorldRole::Player).await;
+        // `now` past the row's expiry.
+        assert_eq!(r.consume_invite(invite, a, 2_000_000).await.unwrap(), None);
+        assert_eq!(r.member_role(world, a).await.unwrap(), None);
+        // The row was still live at a valid `now` — expiry is the only reason
+        // it failed above. Revoked, it fails for a second, distinct reason.
+        assert!(r.revoke_invite(world, invite, 30).await.unwrap());
+        assert_eq!(r.consume_invite(invite, a, 40).await.unwrap(), None);
+        assert_eq!(r.member_role(world, a).await.unwrap(), None);
+        // Revoking a revoked row is not a second success.
+        assert!(!r.revoke_invite(world, invite, 50).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn revoke_invite_is_scoped_to_its_world() {
+        use crate::auth::role::ServerRole;
+        let (r, world, invite, a, _) = invite_fixture(WorldRole::Player).await;
+        let other_gm = r
+            .create_user("other", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let other = r.create_world_owned("Other", other_gm, 0).await.unwrap();
+
+        // Another world's id does not unlock this invite.
+        assert!(!r.revoke_invite(other.id, invite, 30).await.unwrap());
+        assert_eq!(
+            r.consume_invite(invite, a, 40).await.unwrap(),
+            Some((world, WorldRole::Player))
+        );
+    }
+
+    #[tokio::test]
+    async fn consume_invite_never_changes_a_role_already_held() {
+        let (r, world, invite, _, _) = invite_fixture(WorldRole::Spectator).await;
+        let gm = r.list_members(world).await.unwrap()[0].0;
+        assert_eq!(r.member_role(world, gm).await.unwrap(), Some(WorldRole::Gm));
+
+        assert_eq!(
+            r.consume_invite(invite, gm, 20).await.unwrap(),
+            Some((world, WorldRole::Gm)),
+            "the returned role is the membership actually held"
+        );
+        assert_eq!(r.member_role(world, gm).await.unwrap(), Some(WorldRole::Gm));
+    }
+
+    #[tokio::test]
+    async fn list_invites_never_returns_the_stored_hash() {
+        let (r, world, invite, _, _) = invite_fixture(WorldRole::Player).await;
+        let listed = r.list_invites(world).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, invite);
+        assert_eq!(listed[0].secret_hash, "");
+        // The by-id lookup, redemption's only reader, still sees it.
+        assert_eq!(
+            r.invite_by_id(invite).await.unwrap().unwrap().secret_hash,
+            "phc"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_invite_caps_live_invites_and_a_spent_one_frees_a_slot() {
+        let (r, world, first, a, _) = invite_fixture(WorldRole::Player).await;
+        // Cap of 1: the world already holds one live invite.
+        assert!(!r
+            .create_invite(
+                NewInvite {
+                    id: Uuid::new_v4(),
+                    world,
+                    secret_hash: "phc",
+                    role: WorldRole::Player,
+                    created_by: a,
+                    now: 10,
+                    expires_at: 1_000_000,
+                },
+                1
+            )
+            .await
+            .unwrap());
+        r.consume_invite(first, a, 20).await.unwrap().unwrap();
+        assert!(r
+            .create_invite(
+                NewInvite {
+                    id: Uuid::new_v4(),
+                    world,
+                    secret_hash: "phc",
+                    role: WorldRole::Player,
+                    created_by: a,
+                    now: 20,
+                    expires_at: 1_000_000,
+                },
+                1
+            )
+            .await
+            .unwrap());
     }
 }

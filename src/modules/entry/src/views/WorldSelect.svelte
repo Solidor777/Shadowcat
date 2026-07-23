@@ -1,11 +1,12 @@
 <script lang="ts">
   import type { WorldEntry } from "@shadowcat/types";
-  import { listWorlds, createWorld } from "../entryApi";
+  import { listWorlds, createWorld, acceptInvite } from "../entryApi";
   import { t } from "@shadowcat/ui-kit";
 
   let { onEnter }: { onEnter: (worldId: string) => void } = $props();
   let worlds = $state<WorldEntry[]>([]);
   let newName = $state("");
+  let inviteCode = $state("");
   let error = $state("");
 
   async function refresh() {
@@ -30,6 +31,23 @@
       error = t("worlds.errorCreate");
     }
   }
+
+  // Redeeming seats the caller in the invite's world. The server answers every
+  // unusable code identically, so this reports one generic failure — inferring
+  // a reason would re-create the oracle the invite flow exists to remove.
+  async function redeem(e: SubmitEvent) {
+    e.preventDefault();
+    if (!inviteCode.trim()) return;
+    error = "";
+    const world = await acceptInvite(inviteCode.trim());
+    if (!world) {
+      error = t("worlds.errorRedeem");
+      return;
+    }
+    inviteCode = "";
+    await refresh();
+    onEnter(world.id);
+  }
 </script>
 
 <main class="entry">
@@ -48,6 +66,15 @@
   <form onsubmit={create}>
     <input bind:value={newName} placeholder={t("worlds.newName")} aria-label={t("worlds.newName")} />
     <button type="submit">{t("worlds.create")}</button>
+  </form>
+  <form onsubmit={redeem}>
+    <input
+      bind:value={inviteCode}
+      placeholder={t("worlds.redeemCode")}
+      aria-label={t("worlds.redeemCode")}
+      autocomplete="off"
+    />
+    <button type="submit">{t("worlds.redeem")}</button>
   </form>
 </main>
 

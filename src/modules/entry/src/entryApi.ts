@@ -51,3 +51,16 @@ export async function createWorld(name: string): Promise<WorldEntry> {
   if (!res.ok) throw new Error(`/api/worlds → ${res.status}`);
   return (await res.json()) as WorldEntry;
 }
+
+/** Redeem a world invite, seating the caller in the invite's world. Any
+ * authenticated user; the code is the only authorization.
+ *
+ * Every rejection — unknown, malformed, expired, revoked, already used — is
+ * one indistinguishable 404 by design, so the caller learns nothing about a
+ * world they hold no valid code for. Callers must surface a single generic
+ * failure rather than trying to explain which case it was. */
+export async function acceptInvite(code: string): Promise<WorldEntry | null> {
+  const res = await postJson(`/api/invites/${encodeURIComponent(code)}/accept`, {});
+  if (!res.ok) return null;
+  return (await res.json()) as WorldEntry;
+}
