@@ -4691,14 +4691,15 @@ mod tests {
                 None,
             )
             .expect("weighted continuous route");
+        // Tight pin (not a loose range): the forced-Euclidean detour is exactly 2 diagonal steps
+        // (each √2 cells) around the mult-5 cell, so the cost is 2·√2·cell = ~282.84 scene units. A
+        // loose bound here would silently pass a regression to the world diagonal rule (Chebyshev
+        // diagonals cost 1 → 200 units) — that reversion is precisely the M10f-4 forced-Euclidean gap
+        // this pin guards, so the expected value must be the Euclidean one, epsilon-tight.
+        let expected = 2.0 * std::f64::consts::SQRT_2 * 100.0;
         assert!(
-            out.cost < 400.0,
-            "detour taken (scene units ~283), got {}",
-            out.cost
-        );
-        assert!(
-            out.cost > 150.0,
-            "cost is scene units, not cells, got {}",
+            (out.cost - expected).abs() < 0.5,
+            "forced-Euclidean detour cost is 2·√2·cell ≈ {expected:.3} scene units, got {}",
             out.cost
         );
         assert!(
