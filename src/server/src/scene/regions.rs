@@ -76,17 +76,19 @@ pub(crate) fn rasterize(
             (minx, miny, maxx, maxy)
         }
     };
+    // `Cell = (i32, i32)`: an extreme finite coordinate must fail closed to `None` (reject), never
+    // alias onto a real cell. This pre-check is RETAINED rather than delegated to `cells_in_bounds`:
+    // that primitive's `f64 as i32` cast SATURATES to `i32::MAX/MIN` on a large-but-small-span
+    // coordinate (e.g. 1e13) and the saturated span then passes the cell-count cap, so the aliased
+    // candidate survives to the per-cell center test and yields `Some(empty)` — not the `None` this
+    // region gate requires. Bounding `floor(coord/cell)` to i32's safe range here forces every such
+    // input to `None` before enumeration. `-1e300` (huge span) is also caught here (its floor index
+    // exceeds the bound); either way the extreme-coordinate contract is reject, never alias.
+    const MAX_CELL_COORD: f64 = (i32::MAX as f64) - 1.0;
     let i0f = (minx / cell).floor();
     let i1f = (maxx / cell).floor();
     let j0f = (miny / cell).floor();
     let j1f = (maxy / cell).floor();
-    // `Cell = (i32, i32)`: any raw index outside i32's safe range must fail closed BEFORE any
-    // i64 arithmetic or the final `as i32` cast — an extreme-magnitude finite coordinate (e.g.
-    // -1e300) saturates the float->int cast to i64::MIN/MAX, and unchecked `i1 - i0 + 1` on that
-    // overflows i64 itself (wraps in release, panics in debug) before `checked_mul` is reached;
-    // a large-magnitude-but-small-span coordinate (e.g. 1e13) stays a valid, in-range i64 but
-    // would silently truncate/wrap under `as i32`, aliasing onto an unrelated real cell.
-    const MAX_CELL_COORD: f64 = (i32::MAX as f64) - 1.0;
     if !(i0f.abs() <= MAX_CELL_COORD
         && i1f.abs() <= MAX_CELL_COORD
         && j0f.abs() <= MAX_CELL_COORD
@@ -94,23 +96,19 @@ pub(crate) fn rasterize(
     {
         return None;
     }
-    let (i0, i1, j0, j1) = (i0f as i64, i1f as i64, j0f as i64, j1f as i64);
-    // Defensive: unreachable given minx<=maxx/miny<=maxy above and the floor()-monotonic bound
-    // check, but kept as a guard against a future refactor that decouples the two invariants.
-    if i1 < i0 || j1 < j0 {
-        return None;
-    }
-    let count = (i1 - i0 + 1).checked_mul(j1 - j0 + 1)?;
-    if count > MAX_REGION_CELLS {
-        return None;
-    }
+    // Candidate enumeration via `GridShape::cells_in_bounds` (square: byte-identical
+    // `floor(min/cell)..=floor(max/cell)` row-major rectangle; hex: axial-bounds superset), capped
+    // at `MAX_REGION_CELLS` — the 40× tighter region DoS bound, passed explicitly so routing
+    // through the shared primitive can't loosen it to the vision scans' cap. The per-cell center
+    // test below (via the SAME `GridShape`) narrows the superset to the exact covered cells, so
+    // rasterize and `move_exec`'s `grid.cell_of` lookup agree on which cell (square or hex) the
+    // shape occupies.
+    let candidates = grid.cells_in_bounds((minx, miny), (maxx, maxy), cell, MAX_REGION_CELLS)?;
     let mut out = Vec::new();
-    for i in i0..=i1 {
-        for j in j0..=j1 {
-            let ctr = grid.cell_center((i as i32, j as i32));
-            if cell_center_in_shape(ctr, shape) {
-                out.push((i as i32, j as i32));
-            }
+    for c in candidates {
+        let ctr = grid.cell_center(c);
+        if cell_center_in_shape(ctr, shape) {
+            out.push(c);
         }
     }
     Some(out)

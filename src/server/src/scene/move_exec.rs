@@ -294,10 +294,6 @@ pub(crate) fn execute_move(
     // walk.len() >= 2 always here: path.len() >= 2 is already guaranteed above, and the loop
     // inside gate_walk appends at least one sample per authored segment.
 
-    let to_cell = |p: (f64, f64)| -> (i32, i32) {
-        ((p.0 / cell).floor() as i32, (p.1 / cell).floor() as i32)
-    };
-
     // Whether the vision-mask check (step 2) applies for this restriction mode.
     let check_mask = !matches!(restriction, MovementRestriction::Unrestricted);
 
@@ -310,6 +306,13 @@ pub(crate) fn execute_move(
     // line_traversal`), routed through the scene's own resolved grid shape (square or hex) rather
     // than a hardcoded square-grid call.
     let grid = ecs.resolve_grid_shape(scene, cell);
+
+    // Region-cell lookup goes through the SAME resolved grid shape as rasterization
+    // (`region_field`) and the mask's `line_traversal` — `grid.cell_of` is the hex-correct point→
+    // cell mapping (square: `floor(p/cell)`; hex: pixel→axial round). A hardcoded square `floor`
+    // here would test hex moves against square-indexed cells while `region_field` rasterized onto
+    // axial cells — two incompatible coordinate systems on a hex scene.
+    let to_cell = |p: (f64, f64)| -> (i32, i32) { grid.cell_of(p) };
 
     // --- Per-step walk over the DENSE gate walk ---
     let mut stop_idx = 0usize; // index into `walk`
@@ -958,6 +961,71 @@ mod tests {
         )
         .unwrap();
         assert!((out.cost - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn impassable_hex_region_stops_a_hex_move_at_the_correct_hex_cell() {
+        use crate::scene::grid_shape::{GridShape, HexGrid};
+        // Hex scene (size=50): rasterize's candidate enumeration (`GridShape::cells_in_bounds`) and
+        // move_exec's region lookup (`grid.cell_of`) must both resolve hex (axial) cells. A rect
+        // enclosing ONLY hex cell (1,0)'s center must (a) rasterize onto hex (1,0), and (b) stop a
+        // move from (0,0) toward (1,0) before entry. A square-on-hex enumeration or lookup would
+        // rasterize onto the wrong axial cell and the move would sail straight through.
+        let hex = HexGrid { size: 50.0 };
+        let c10 = hex.cell_center((1, 0)); // (50·√3, 0) ≈ (86.6, 0)
+
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "hex", "size": 50.0 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 50.0, "h": 50.0, "rotation": 0.0 }),
+                ),
+                // Rect around hex (1,0)'s center only — excludes (0,0) at x=0, (2,0) at x≈173.2, and
+                // every neighbor of (1,0) (their centers sit at |y|≈75, outside [-25,25]).
+                region_doc(12, 10, "impassable", 1.0, (61.0, -25.0, 112.0, 25.0)),
+            ],
+            0,
+        );
+
+        // (a) The rect rasterizes onto hex cell (1,0) via GridShape, not a square index.
+        let field = ecs.region_field(scene_id, None);
+        assert!(
+            field.is_impassable((1, 0)),
+            "rect rasterizes onto hex cell (1,0)"
+        );
+        assert!(
+            !field.is_impassable((0, 0)),
+            "hex (0,0) is outside the rect"
+        );
+
+        // (b) The move stops before entering hex (1,0). Unrestricted → the vision mask is skipped.
+        let visible = BTreeSet::new();
+        let out = execute_move(
+            &ecs,
+            scene_id,
+            token_id,
+            &[(0.0, 0.0), c10],
+            MovementRestriction::Unrestricted,
+            &visible,
+            50.0,
+        )
+        .unwrap();
+        assert!(out.truncated, "an impassable hex region truncates the move");
+        assert_eq!(
+            hex.cell_of(out.stop),
+            (0, 0),
+            "the move never enters impassable hex (1,0); it halts in hex (0,0)"
+        );
     }
 
     #[test]

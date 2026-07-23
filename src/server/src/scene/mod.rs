@@ -1611,7 +1611,12 @@ impl SceneEcs {
                 // `floor(min/cell)..=floor(max/cell)` row-major rectangle; hex: axial-bounds
                 // superset). `cells_in_bounds` enforces the same MAX_CELLS_PER_POLYGON span cap —
                 // `None` maps to the pre-existing skip-with-warn (same message + `continue`).
-                let candidates = match cell_grid.cells_in_bounds((minx, miny), (maxx, maxy), cell) {
+                let candidates = match cell_grid.cells_in_bounds(
+                    (minx, miny),
+                    (maxx, maxy),
+                    cell,
+                    crate::scene::explored::MAX_CELLS_PER_POLYGON,
+                ) {
                     Some(c) => c,
                     None => {
                         tracing::warn!("lit mask cell scan exceeds cap; skipping source");
@@ -2069,7 +2074,12 @@ fn accumulate_visible_cells(
         let pad_px = if lenient { cell } else { 0.0 };
         let min = (minx - pad_px, miny - pad_px);
         let max = (maxx + pad_px, maxy + pad_px);
-        let candidates = match grid.cells_in_bounds(min, max, cell) {
+        let candidates = match grid.cells_in_bounds(
+            min,
+            max,
+            cell,
+            crate::scene::explored::MAX_CELLS_PER_POLYGON,
+        ) {
             Some(c) => c,
             None => {
                 tracing::warn!("visible_cells scan exceeds cap; skipping source");

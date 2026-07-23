@@ -83,7 +83,9 @@ impl ExploredSet {
             // `cells_in_bounds` is a SUPERSET candidate filter (never misses a cell whose center is
             // in the AABB); `None` on the same over-cap/degenerate conditions the prior inline scan's
             // `MAX_CELLS_PER_POLYGON`/`saturating_mul` guard enforced → skip (under-reveal, fail-safe).
-            let Some(candidates) = grid.cells_in_bounds((minx, miny), (maxx, maxy), cell_size) else {
+            let Some(candidates) =
+                grid.cells_in_bounds((minx, miny), (maxx, maxy), cell_size, MAX_CELLS_PER_POLYGON)
+            else {
                 tracing::warn!("explored cell scan over-cap or degenerate; skipping polygon");
                 continue;
             };

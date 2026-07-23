@@ -3,11 +3,13 @@
 //! port of the pre-existing hardcoded square math; a later `HexGrid` will be the pointy-top axial
 //! implementation mirroring the client's `grid.ts` exactly.
 //!
-//! `cell_center` is wired into `accumulate_visible_cells`, `player_lit_mask`, and
-//! `regions::rasterize`; `neighbors_with_cost`/`footprint_cells`/`line_traversal` are wired into
+//! `cell_center`/`cells_in_bounds` are wired into `accumulate_visible_cells`, `player_lit_mask`,
+//! `explored::mark_polygons`, and `regions::rasterize`;
+//! `neighbors_with_cost`/`footprint_cells`/`line_traversal` are wired into
 //! `pathfinding::astar_leg`/`cell_enterable`; `line_traversal` is also wired into
-//! `move_exec::execute_move`. `cell_of` is not yet called from production code (proven only by
-//! the tests below) — allowed dead code until a later cutover calls it too.
+//! `move_exec::execute_move`; `cell_of` is wired into `move_exec::execute_move`'s region-cell
+//! lookup (and `HexGrid::cells_in_bounds`'s corner mapping). `cell_vertices` is proven only by the
+//! tests below until the leniency corner-clip cutover calls it — allowed dead code until then.
 #![allow(dead_code)]
 
 use crate::scene::pathfinding::{self, Cell, DiagonalRule};
@@ -36,10 +38,19 @@ pub(crate) trait GridShape {
     /// Every candidate cell whose geometry could overlap the pixel-space AABB
     /// `[min.0, max.0] × [min.1, max.1]`. A SUPERSET filter, not an exact one — the caller's own
     /// per-cell center/vertex membership test narrows it. `None` on a degenerate input (non-finite
-    /// `min`/`max`/`cell`, `cell <= 0.0`) or an over-cap span (> `explored::MAX_CELLS_PER_POLYGON`),
-    /// mirroring the existing per-site scans' fail-closed `skip` — callers fail closed on `None`.
+    /// `min`/`max`/`cell`, `cell <= 0.0`) or an over-cap span (> `max_cells`), mirroring the
+    /// existing per-site scans' fail-closed `skip` — callers fail closed on `None`. `max_cells` is
+    /// the caller's own DoS bound (vision/explored scans pass `explored::MAX_CELLS_PER_POLYGON`,
+    /// region rasterization passes the 40× tighter `regions::MAX_REGION_CELLS`) — never hardcoded
+    /// here, so routing a tighter-capped caller through this primitive can't LOOSEN its bound.
     /// MUST never MISS a cell whose center lies inside the AABB (proven by test).
-    fn cells_in_bounds(&self, min: vision::P, max: vision::P, cell: f64) -> Option<Vec<Cell>>;
+    fn cells_in_bounds(
+        &self,
+        min: vision::P,
+        max: vision::P,
+        cell: f64,
+        max_cells: i64,
+    ) -> Option<Vec<Cell>>;
     /// The cell's polygon vertices in scene coordinates (for leniency corner-clip tests): 4 for a
     /// square, 6 for a pointy-top hex.
     fn cell_vertices(&self, c: Cell, cell: f64) -> Vec<vision::P>;
@@ -95,8 +106,14 @@ impl GridShape for SquareGrid {
     /// Byte-identical to the per-site square scans in `accumulate_visible_cells`/`explored.rs`/
     /// `player_lit_mask`: `floor(min/cell)..=floor(max/cell)` on each axis, row-major
     /// (`for i { for j }`). `f64 as i32` saturates on an extreme coordinate; the `saturating_mul`
-    /// span check then fails closed exactly as the existing scans' cap does.
-    fn cells_in_bounds(&self, min: vision::P, max: vision::P, cell: f64) -> Option<Vec<Cell>> {
+    /// span check then fails closed against the caller-supplied `max_cells` bound.
+    fn cells_in_bounds(
+        &self,
+        min: vision::P,
+        max: vision::P,
+        cell: f64,
+        max_cells: i64,
+    ) -> Option<Vec<Cell>> {
         if !min.0.is_finite()
             || !min.1.is_finite()
             || !max.0.is_finite()
@@ -112,7 +129,7 @@ impl GridShape for SquareGrid {
         let j1 = (max.1 / cell).floor() as i32;
         let w = i1 as i64 - i0 as i64 + 1;
         let h = j1 as i64 - j0 as i64 + 1;
-        if w.saturating_mul(h) > crate::scene::explored::MAX_CELLS_PER_POLYGON {
+        if w.saturating_mul(h) > max_cells {
             return None;
         }
         let mut out = Vec::new();
@@ -284,9 +301,15 @@ impl GridShape for HexGrid {
     /// Convert the 4 AABB corners to axial via `cell_of`, take the axial bounding box, pad by
     /// `HEX_BOUNDS_PAD` (see its doc for the affine-preimage safety argument), and enumerate the
     /// padded axial rectangle. A safe SUPERSET — never misses a cell whose center lies in the AABB
-    /// (proven by test); the caller's per-cell center/vertex test filters it. Same
-    /// `MAX_CELLS_PER_POLYGON` span cap and fail-closed degenerate handling as the square scan.
-    fn cells_in_bounds(&self, min: vision::P, max: vision::P, cell: f64) -> Option<Vec<Cell>> {
+    /// (proven by test); the caller's per-cell center/vertex test filters it. Same caller-supplied
+    /// `max_cells` span cap and fail-closed degenerate handling as the square scan.
+    fn cells_in_bounds(
+        &self,
+        min: vision::P,
+        max: vision::P,
+        cell: f64,
+        max_cells: i64,
+    ) -> Option<Vec<Cell>> {
         if !min.0.is_finite()
             || !min.1.is_finite()
             || !max.0.is_finite()
@@ -311,7 +334,7 @@ impl GridShape for HexGrid {
         let r1 = max_r.saturating_add(HEX_BOUNDS_PAD);
         let w = q1 as i64 - q0 as i64 + 1;
         let h = r1 as i64 - r0 as i64 + 1;
-        if w.saturating_mul(h) > crate::scene::explored::MAX_CELLS_PER_POLYGON {
+        if w.saturating_mul(h) > max_cells {
             return None;
         }
         let mut out = Vec::new();
@@ -515,24 +538,28 @@ mod tests {
         out
     }
 
+    /// The DoS bound the vision/explored scans pass; the cell-span tests exercise `cells_in_bounds`
+    /// at this cap.
+    const CAP: i64 = crate::scene::explored::MAX_CELLS_PER_POLYGON;
+
     #[test]
     fn square_cells_in_bounds_equals_hand_written_floor_rectangle() {
         let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
         // Origin-anchored 3×3.
         let (min, max) = ((0.0, 0.0), (250.0, 250.0));
-        assert_eq!(g.cells_in_bounds(min, max, 100.0), Some(hand_floor_rect(min, max, 100.0)));
+        assert_eq!(g.cells_in_bounds(min, max, 100.0, CAP), Some(hand_floor_rect(min, max, 100.0)));
         // Straddling the origin (negative coords).
         let (min, max) = ((-150.0, -50.0), (50.0, 50.0));
-        assert_eq!(g.cells_in_bounds(min, max, 100.0), Some(hand_floor_rect(min, max, 100.0)));
+        assert_eq!(g.cells_in_bounds(min, max, 100.0, CAP), Some(hand_floor_rect(min, max, 100.0)));
         // Wholly negative.
         let (min, max) = ((-330.0, -220.0), (-110.0, -140.0));
-        assert_eq!(g.cells_in_bounds(min, max, 100.0), Some(hand_floor_rect(min, max, 100.0)));
+        assert_eq!(g.cells_in_bounds(min, max, 100.0, CAP), Some(hand_floor_rect(min, max, 100.0)));
     }
 
     #[test]
     fn square_cells_in_bounds_is_row_major() {
         let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
-        let got = g.cells_in_bounds((0.0, 0.0), (150.0, 150.0), 100.0).unwrap();
+        let got = g.cells_in_bounds((0.0, 0.0), (150.0, 150.0), 100.0, CAP).unwrap();
         // for i { for j } → (0,0),(0,1),(1,0),(1,1).
         assert_eq!(got, vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
     }
@@ -541,29 +568,44 @@ mod tests {
     fn cells_in_bounds_span_cap_returns_none() {
         // 3001×3001 ≈ 9.0M candidate cells > the 4M MAX_CELLS_PER_POLYGON cap → None.
         let g = SquareGrid { cell: 1.0, rule: DiagonalRule::Chebyshev };
-        assert_eq!(g.cells_in_bounds((0.0, 0.0), (3000.0, 3000.0), 1.0), None);
+        assert_eq!(g.cells_in_bounds((0.0, 0.0), (3000.0, 3000.0), 1.0, CAP), None);
         // A hex scene with an equally-huge AABB is capped by the same span check.
         let hx = HexGrid { size: 1.0 };
-        assert_eq!(hx.cells_in_bounds((0.0, 0.0), (5000.0, 5000.0), 1.0), None);
+        assert_eq!(hx.cells_in_bounds((0.0, 0.0), (5000.0, 5000.0), 1.0, CAP), None);
+    }
+
+    #[test]
+    fn cells_in_bounds_honors_the_caller_supplied_cap() {
+        // A 3×3 (9-cell) AABB is accepted under the vision cap but rejected under a tighter
+        // per-caller bound — the cap is the passed `max_cells`, never a hardcoded constant, so
+        // routing a tighter-capped caller (region rasterization) through this primitive can't
+        // loosen its bound.
+        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
+        let (min, max) = ((0.0, 0.0), (250.0, 250.0));
+        assert!(g.cells_in_bounds(min, max, 100.0, CAP).is_some());
+        assert_eq!(g.cells_in_bounds(min, max, 100.0, 8), None, "9 cells > cap of 8");
+        // Same for hex — the span cap is honored on both grid kinds.
+        let hx = HexGrid { size: 50.0 };
+        assert_eq!(hx.cells_in_bounds((0.0, 0.0), (200.0, 200.0), 50.0, 1), None);
     }
 
     #[test]
     fn cells_in_bounds_fails_closed_on_degenerate_input() {
         let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
-        assert_eq!(g.cells_in_bounds((f64::NAN, 0.0), (10.0, 10.0), 100.0), None);
-        assert_eq!(g.cells_in_bounds((0.0, 0.0), (f64::INFINITY, 10.0), 100.0), None);
-        assert_eq!(g.cells_in_bounds((0.0, 0.0), (10.0, 10.0), 0.0), None);
-        assert_eq!(g.cells_in_bounds((0.0, 0.0), (10.0, 10.0), -5.0), None);
+        assert_eq!(g.cells_in_bounds((f64::NAN, 0.0), (10.0, 10.0), 100.0, CAP), None);
+        assert_eq!(g.cells_in_bounds((0.0, 0.0), (f64::INFINITY, 10.0), 100.0, CAP), None);
+        assert_eq!(g.cells_in_bounds((0.0, 0.0), (10.0, 10.0), 0.0, CAP), None);
+        assert_eq!(g.cells_in_bounds((0.0, 0.0), (10.0, 10.0), -5.0, CAP), None);
         let hx = HexGrid { size: 50.0 };
-        assert_eq!(hx.cells_in_bounds((0.0, 0.0), (10.0, f64::NAN), 50.0), None);
-        assert_eq!(hx.cells_in_bounds((0.0, 0.0), (10.0, 10.0), 0.0), None);
+        assert_eq!(hx.cells_in_bounds((0.0, 0.0), (10.0, f64::NAN), 50.0, CAP), None);
+        assert_eq!(hx.cells_in_bounds((0.0, 0.0), (10.0, 10.0), 0.0, CAP), None);
     }
 
     #[test]
     fn hex_cells_in_bounds_includes_every_cell_whose_center_is_in_the_aabb() {
         let g = HexGrid { size: 50.0 };
         let (min, max) = ((0.0, 0.0), (200.0, 200.0));
-        let got = g.cells_in_bounds(min, max, 50.0).expect("bounded, not over-cap");
+        let got = g.cells_in_bounds(min, max, 50.0, CAP).expect("bounded, not over-cap");
         let got_set: BTreeSet<Cell> = got.iter().copied().collect();
         // The candidate set must be a SUPERSET of every hex whose center lies in the AABB.
         let mut center_in_count = 0;
