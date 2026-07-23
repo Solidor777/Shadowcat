@@ -240,6 +240,25 @@ impl Room {
                         // write or duplicate `/engine/x` changes can't present a safe target
                         // while committing an unsafe one.
                         if let Some((scene_id, a0, a1)) = scene.token_move(*doc_id, changes) {
+                            // Coordinate-magnitude admissibility, checked before ANY geometry
+                            // work. Coupling: this is the SAME `MAX_GATE_WALK_COORD` bound
+                            // `move_exec::gate_walk` applies to every path it walks, reused (not
+                            // duplicated) so the two movement gates agree on which inputs are
+                            // admissible, not merely on which cells are visible. Checked for every
+                            // restriction mode — including `Unrestricted`, which `gate_walk` also
+                            // bounds — so the agreement holds in all modes. Beyond the bound the
+                            // downstream primitives lose their guarantees (`gate_walk`'s
+                            // magnitude-scaled identity tolerance, `HexGrid::line_traversal`'s
+                            // absolute `VERTEX_PROBE` offset), so an over-magnitude endpoint fails
+                            // closed exactly as a `line_traversal` `None` does.
+                            let bound = crate::scene::move_exec::MAX_GATE_WALK_COORD;
+                            if a0.0.abs() > bound
+                                || a0.1.abs() > bound
+                                || a1.0.abs() > bound
+                                || a1.1.abs() > bound
+                            {
+                                return Err(DataError::Forbidden);
+                            }
                             // M9a wall gate (unchanged): a wall crossing short-circuits before
                             // any mask work.
                             if scene.blocks_move(scene_id, a0, a1) {
@@ -2424,6 +2443,96 @@ mod room_tests {
                 0,
                 WriteOrigin::Client,
             )
+            .await;
+        assert!(matches!(blocked, Err(crate::data::DataError::Forbidden)));
+    }
+
+    #[tokio::test]
+    async fn publish_move_gate_rejects_over_magnitude_coordinate_on_a_square_scene() {
+        // The `publish` gate and `move_exec::gate_walk` must agree on which coordinates are
+        // ADMISSIBLE, not only on which cells are visible. `unrestricted` is the discriminating
+        // mode: the mask check is skipped there, so the ONLY thing that can reject this move is
+        // the shared `MAX_GATE_WALK_COORD` bound.
+        let h = movement_scene("unrestricted", /*with_light=*/ false).await;
+        let seq0 = h.room.current_seq();
+
+        let over = crate::scene::move_exec::MAX_GATE_WALK_COORD + 1.0;
+        let op = h.mv_to(over, 50.0).await;
+        let blocked = h
+            .room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await;
+        assert!(
+            matches!(blocked, Err(crate::data::DataError::Forbidden)),
+            "over-magnitude endpoint must fail closed at the publish gate"
+        );
+        assert_eq!(
+            h.room.current_seq(),
+            seq0,
+            "rejected move consumes no seq (pre-write rejection)"
+        );
+
+        // Legitimate play is unaffected: an ordinary adjacent move still commits.
+        let op = h.mv_to(h.adj.0, h.adj.1).await;
+        h.room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await
+            .unwrap();
+        assert_eq!(h.room.current_seq(), seq0 + 1);
+    }
+
+    #[tokio::test]
+    async fn publish_move_gate_rejects_over_magnitude_coordinate_on_a_hex_scene() {
+        // Same bound on the hex path: the guard precedes `resolve_grid_shape`/`line_traversal`,
+        // so it is grid-kind-independent by construction — pinned here rather than assumed.
+        let h = movement_scene_hex("unrestricted", /*with_light=*/ false).await;
+        let seq0 = h.room.current_seq();
+
+        let over = crate::scene::move_exec::MAX_GATE_WALK_COORD + 1.0;
+        let op = h.mv_to(50.0, over).await;
+        let blocked = h
+            .room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await;
+        assert!(
+            matches!(blocked, Err(crate::data::DataError::Forbidden)),
+            "over-magnitude endpoint must fail closed on hex too"
+        );
+        assert_eq!(h.room.current_seq(), seq0);
+
+        let op = h.mv_to(h.adj.0, h.adj.1).await;
+        h.room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn publish_move_gate_admissibility_bound_equals_gate_walks() {
+        // Anti-drift: the two gates share ONE constant and ONE comparison sense (strictly `>`).
+        // Exercised behaviorally at the exact boundary so a future edit to either side that
+        // changes the value or flips `>` to `>=` breaks this test.
+        use crate::scene::move_exec::{gate_walk, MAX_GATE_WALK_COORD};
+        let cell = 100.0_f64;
+        let at = MAX_GATE_WALK_COORD;
+        let over = MAX_GATE_WALK_COORD + 1.0;
+
+        // gate_walk side.
+        assert!(gate_walk(&[(at - cell, 50.0), (at, 50.0)], cell).is_some());
+        assert!(gate_walk(&[(over - cell, 50.0), (over, 50.0)], cell).is_none());
+
+        // publish side, same two magnitudes, mask-free (`unrestricted`) scene.
+        let h = movement_scene("unrestricted", /*with_light=*/ false).await;
+        let op = h.mv_to(at, 50.0).await;
+        h.room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await
+            .expect("a coordinate exactly AT the bound is admissible on both gates");
+
+        let op = h.mv_to(over, 50.0).await;
+        let blocked = h
+            .room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
             .await;
         assert!(matches!(blocked, Err(crate::data::DataError::Forbidden)));
     }
