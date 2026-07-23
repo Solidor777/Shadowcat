@@ -251,8 +251,19 @@ impl Room {
                             // magnitude-scaled identity tolerance, `HexGrid::line_traversal`'s
                             // absolute `VERTEX_PROBE` offset), so an over-magnitude endpoint fails
                             // closed exactly as a `line_traversal` `None` does.
+                            // Non-finite is rejected first, mirroring `gate_walk`'s own ordering:
+                            // `NaN.abs() > bound` is false, so a magnitude-only test admits NaN,
+                            // and `Unrestricted` `continue`s before any downstream finiteness
+                            // check could catch it. No reachable input produces NaN today
+                            // (`token_move` sources both coords via `Value::as_f64` and serde_json
+                            // parses no NaN literal), so this is what makes the admissibility
+                            // agreement above hold literally rather than only for reachable input.
                             let bound = crate::scene::move_exec::MAX_GATE_WALK_COORD;
-                            if a0.0.abs() > bound
+                            if !a0.0.is_finite()
+                                || !a0.1.is_finite()
+                                || !a1.0.is_finite()
+                                || !a1.1.is_finite()
+                                || a0.0.abs() > bound
                                 || a0.1.abs() > bound
                                 || a1.0.abs() > bound
                                 || a1.1.abs() > bound
@@ -2445,6 +2456,59 @@ mod room_tests {
             )
             .await;
         assert!(matches!(blocked, Err(crate::data::DataError::Forbidden)));
+    }
+
+    /// The guard tests BOTH endpoints, not just the destination. A token whose COMMITTED position
+    /// is already over the bound (seatable only by a GM, who bypasses this gate entirely, or by an
+    /// ungated `Create`) must not be moveable by a player even to an in-bound target: `a0` still
+    /// feeds `blocks_move` and `line_traversal`, whose guarantees lapse beyond the bound. Without
+    /// this case the `a0` disjuncts could be deleted with the suite still green.
+    #[tokio::test]
+    async fn publish_move_gate_rejects_an_over_magnitude_start_coordinate() {
+        use crate::data::command::FieldChange;
+        let h = movement_scene("unrestricted", /*with_light=*/ false).await;
+        let over = crate::scene::move_exec::MAX_GATE_WALK_COORD + 1.0;
+
+        // A GM seats the token over the bound — GMs never reach this gate (`world_role != Gm`),
+        // so this is the reachable way such a position comes to exist.
+        let seed = h.mv_to(over, 50.0).await;
+        h.room
+            .publish(&h.repo, &h.gm, vec![seed], 0, WriteOrigin::Client)
+            .await
+            .expect("a GM bypasses the movement gate and may seat any position");
+
+        // The player now moves to a perfectly ordinary in-bound destination. Only `a0` is over.
+        let seq0 = h.room.current_seq();
+        let op = Operation::Update {
+            doc_id: h.token_id,
+            changes: vec![
+                FieldChange {
+                    remove: false,
+                    path: "/engine/x".into(),
+                    old: serde_json::json!(over),
+                    new: serde_json::json!(150.0),
+                },
+                FieldChange {
+                    remove: false,
+                    path: "/engine/y".into(),
+                    old: serde_json::json!(50.0),
+                    new: serde_json::json!(150.0),
+                },
+            ],
+        };
+        let blocked = h
+            .room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await;
+        assert!(
+            matches!(blocked, Err(crate::data::DataError::Forbidden)),
+            "an over-magnitude START coordinate must fail closed even with an in-bound destination"
+        );
+        assert_eq!(
+            h.room.current_seq(),
+            seq0,
+            "rejected move consumes no seq (pre-write rejection)"
+        );
     }
 
     #[tokio::test]
