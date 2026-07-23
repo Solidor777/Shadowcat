@@ -748,16 +748,106 @@ mod tests {
         assert_eq!(g.heuristic((7, -2), (7, -2)), 0.0);
     }
 
+    /// Shortest-path cost from `from` to every cell of the open box `|i| <= r`, `|j| <= r`,
+    /// relaxed to a fixpoint over the REAL `GridShape::neighbors_with_cost` edges (Bellman-Ford —
+    /// chosen over Dijkstra because it needs no ordering of `f64` keys and stays obviously correct
+    /// for the non-uniform square step costs). The reference cost therefore comes from the neighbor
+    /// function itself, never from a restatement of the heuristic's formula.
+    ///
+    /// The axial box is closed under shortest hex paths: a shortest path can always be taken
+    /// monotone in cube coordinates (at most two of the six directions, each step moving `q` and
+    /// `r` monotonically toward the target), so every intermediate cell has `q` between the two
+    /// endpoints' `q` and `r` between their `r`. Confining the search to the box thus cannot
+    /// inflate the true cost between any two of its cells.
+    fn true_costs_from(
+        g: &dyn GridShape,
+        from: Cell,
+        r: i32,
+    ) -> std::collections::BTreeMap<Cell, f64> {
+        let cells: Vec<Cell> = (-r..=r).flat_map(|i| (-r..=r).map(move |j| (i, j))).collect();
+        let mut dist: std::collections::BTreeMap<Cell, f64> =
+            cells.iter().map(|&c| (c, f64::INFINITY)).collect();
+        dist.insert(from, 0.0);
+        loop {
+            let mut changed = false;
+            for &c in &cells {
+                let d = dist[&c];
+                if !d.is_finite() {
+                    continue;
+                }
+                for (next, step, _) in g.neighbors_with_cost(c, 0) {
+                    if !dist.contains_key(&next) {
+                        continue; // outside the searched box
+                    }
+                    if d + step < dist[&next] - 1e-12 {
+                        dist.insert(next, d + step);
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        dist.retain(|_, d| d.is_finite());
+        dist
+    }
+
     #[test]
-    fn hex_heuristic_is_admissible_never_exceeds_a_true_uniform_cost_route() {
-        // The axial distance IS the exact shortest step count under `neighbors_with_cost`'s uniform
-        // 1-per-step cost, so the heuristic is admissible (equal, never over) for every delta.
+    fn hex_heuristic_never_exceeds_the_true_neighbor_graph_cost() {
+        // Admissibility against the ACTUAL neighbor graph: for every ordered pair in an open
+        // radius-4 axial box, the heuristic must lower-bound the cost of the cheapest route
+        // `neighbors_with_cost` admits. A heuristic that overestimates any reachable pair makes A*
+        // return suboptimal hex routes.
+        const R: i32 = 4;
         let g = HexGrid { size: 50.0 };
-        for dq in -6..=6i32 {
-            for dr in -6..=6i32 {
-                let h = g.heuristic((0, 0), (dq, dr));
-                let true_cost = axial_distance((0, 0), (dq, dr));
-                assert!(h <= true_cost + 1e-9, "heuristic {h} must not exceed true cost {true_cost}");
+        let cells: Vec<Cell> = (-R..=R).flat_map(|q| (-R..=R).map(move |r| (q, r))).collect();
+        let mut checked = 0usize;
+        let mut tight = 0usize;
+        for &from in &cells {
+            let costs = true_costs_from(&g, from, R);
+            for &to in &cells {
+                let true_cost = *costs
+                    .get(&to)
+                    .unwrap_or_else(|| panic!("open box is connected: {from:?} -> {to:?}"));
+                let h = g.heuristic(from, to);
+                assert!(
+                    h <= true_cost + 1e-9,
+                    "heuristic {h} exceeds true neighbor-graph cost {true_cost} for {from:?} -> {to:?}"
+                );
+                checked += 1;
+                if to != from && (h - true_cost).abs() < 1e-9 {
+                    tight += 1;
+                }
+            }
+        }
+        assert_eq!(checked, cells.len() * cells.len(), "every ordered pair is covered");
+        // Non-vacuity: the bound is not passing merely because every true cost is huge — the
+        // heuristic is EXACT (tight) on non-trivial pairs, which is what keeps A* efficient.
+        assert!(tight > 0, "the heuristic must be tight on at least one non-trivial pair");
+    }
+
+    #[test]
+    fn square_heuristic_never_exceeds_the_true_neighbor_graph_cost() {
+        // Same independent check for every square diagonal rule, so the trait's admissibility
+        // contract is proven on both grid kinds against their own neighbor functions. `Alternating`
+        // is excluded: its step cost depends on the carried parity, so a parity-blind uniform-cost
+        // search is not its true cost function (its admissibility is pinned by the square parity
+        // tests in `pathfinding.rs`).
+        const R: i32 = 4;
+        let cells: Vec<Cell> = (-R..=R).flat_map(|i| (-R..=R).map(move |j| (i, j))).collect();
+        for rule in [DiagonalRule::Chebyshev, DiagonalRule::Manhattan, DiagonalRule::Euclidean] {
+            let g = SquareGrid { cell: 100.0, rule };
+            for &from in &cells {
+                let costs = true_costs_from(&g, from, R);
+                for &to in &cells {
+                    let true_cost = costs[&to];
+                    let h = g.heuristic(from, to);
+                    assert!(
+                        h <= true_cost + 1e-9,
+                        "{rule:?}: heuristic {h} exceeds true cost {true_cost} for {from:?} -> {to:?}"
+                    );
+                }
             }
         }
     }

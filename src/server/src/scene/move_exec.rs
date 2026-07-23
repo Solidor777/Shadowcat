@@ -1029,6 +1029,78 @@ mod tests {
     }
 
     #[test]
+    fn arrest_hex_region_stops_at_entry_composed_with_a_hex_visibility_mask() {
+        use crate::scene::grid_shape::{GridShape, HexGrid};
+        // Composes the two hex-indexed gates the executor runs per cell-entry — the `Visible` mask
+        // gate and the region gate — on ONE hex scene (size=50), and pins both against the
+        // square-indexed math that would be used if either lookup regressed.
+        //
+        // Geometry: a rect enclosing ONLY hex (2,0)'s center (173.2, 0) marks it `arrest`. The
+        // square index of that same point is (3,0), so a square `floor(p/cell)` region lookup finds
+        // no arrest there and the move sails through. The mask is the exact hex traversal
+        // {(0,0),(1,0),(2,0),(3,0)}; the square supercover of the same segment reaches (5,0), so a
+        // square-indexed mask gate would instead truncate early, for the wrong reason.
+        let hex = HexGrid { size: 50.0 };
+        let c30 = hex.cell_center((3, 0)); // (150·√3, 0) ≈ (259.8, 0)
+
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "hex", "size": 50.0 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 50.0, "h": 50.0, "rotation": 0.0 }),
+                ),
+                region_doc(12, 10, "arrest", 1.0, (148.0, -25.0, 198.0, 25.0)),
+            ],
+            0,
+        );
+
+        let field = ecs.region_field(scene_id, None);
+        assert!(field.is_arrest((2, 0)), "rect rasterizes onto hex cell (2,0)");
+        assert!(
+            !field.is_arrest((3, 0)),
+            "the SQUARE index of the arrest rect's location carries no arrest — a square-indexed \
+             region lookup would miss it entirely"
+        );
+
+        let visible: BTreeSet<(i32, i32)> = [(0, 0), (1, 0), (2, 0), (3, 0)].into_iter().collect();
+        let square_cells = crate::scene::movement::supercover_cells((0.0, 0.0), c30, 50.0)
+            .expect("bounded square supercover");
+        assert!(
+            square_cells.iter().any(|c| !visible.contains(c)),
+            "a square-indexed mask gate would truncate this move for the wrong reason: {square_cells:?}"
+        );
+
+        let out = execute_move(
+            &ecs,
+            scene_id,
+            token_id,
+            &[(0.0, 0.0), c30],
+            MovementRestriction::Visible,
+            &visible,
+            50.0,
+        )
+        .unwrap();
+        assert!(out.truncated, "the arrest hex cell truncates the move");
+        assert_eq!(
+            hex.cell_of(out.stop),
+            (2, 0),
+            "arrest stops AT entry into hex (2,0), never before it and never past it"
+        );
+        // Two cell entries accrue (hex (1,0) then the arrest cell (2,0)); no terrain weighting.
+        assert!((out.cost - 2.0).abs() < 1e-9, "cost {} accrues per hex cell entry", out.cost);
+    }
+
+    #[test]
     fn authoritative_field_springs_a_secret_region_a_player_was_routed_through() {
         // A gm_only impassable region: move_exec must still enforce it (it always uses the
         // authoritative field, spec §6), even though a player's pathfind field never saw it.

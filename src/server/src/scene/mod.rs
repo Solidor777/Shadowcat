@@ -5557,4 +5557,51 @@ mod tests {
             "hex (3,0) vertex clips the mask -> lenient includes"
         );
     }
+
+    /// End-to-end composition of the hex leniency path: `GridShape::cell_vertices` (six hex corners)
+    /// widens `visible_cells`, and the widened mask is what the authoritative executor gates
+    /// against. The SAME move into hex (3,0) — whose center is outside the LOS rectangle but whose
+    /// left vertex clips it — completes under leniency and truncates under strict center sampling.
+    /// This is the composed behavior no per-site test covers: leniency is only meaningful if the
+    /// executor consumes the widened mask.
+    #[test]
+    fn hex_lenient_mask_lets_the_executor_enter_a_cell_the_strict_mask_stops_at() {
+        let (ecs, user, scene) = hex_open_scene();
+        let cell = 50.0;
+        let token = Uuid::from_u128(11);
+        let grid = ecs.resolve_grid_shape(scene, cell);
+        let dest = grid.cell_center((3, 0));
+
+        let lenient_mask = ecs.visible_cells(user, scene, true);
+        let out = crate::scene::move_exec::execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(0.0, 0.0), dest],
+            MovementRestriction::Visible,
+            &lenient_mask,
+            cell,
+        )
+        .expect("a token move on a hex scene executes");
+        assert!(!out.truncated, "the lenient mask admits every traversed hex cell");
+        assert_eq!(grid.cell_of(out.stop), (3, 0), "the move reaches hex (3,0)");
+
+        let strict_mask = ecs.visible_cells(user, scene, false);
+        let out = crate::scene::move_exec::execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(0.0, 0.0), dest],
+            MovementRestriction::Visible,
+            &strict_mask,
+            cell,
+        )
+        .expect("a token move on a hex scene executes");
+        assert!(out.truncated, "strict center sampling excludes hex (3,0)");
+        assert_ne!(
+            grid.cell_of(out.stop),
+            (3, 0),
+            "the strict move never enters hex (3,0)"
+        );
+    }
 }

@@ -1918,6 +1918,108 @@ mod room_tests {
         }
     }
 
+    /// A wall-less, all-bright hex scene (pointy-top, size 100) with authored bounds 1500x1500 and
+    /// one player-owned token at (50,50). Lighting is OFF (`lightingEnabled: false`), so the mask is
+    /// pure LOS: every hex whose center lies inside the bounds-derived LOS rectangle. That rectangle
+    /// is axis-aligned in PIXEL space, so its hex preimage is a sheared parallelogram — which is what
+    /// lets a destination exist whose hex traversal leaves the mask while the square-indexed
+    /// traversal of the same segment does not (`movement_restriction_hex_rejects_unseen_cell_a_
+    /// square_indexed_gate_would_allow`). `partialCellLeniency: false` (strict center sampling), so
+    /// the mask is exactly the §13 strict set.
+    async fn movement_scene_hex_open(restriction: &str) -> MovementHandle {
+        use crate::data::document::DocRole;
+        use serde_json::json;
+
+        let (repo, world_id, gm) = repo_with_world().await;
+        let p = repo
+            .create_user("player_hex_open", None, crate::auth::role::ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world_id, p, WorldRole::Player).await.unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let (scene_id, token_id, ws_id) = (
+            Uuid::from_u128(0x5CF0),
+            Uuid::from_u128(0x5CF1),
+            Uuid::from_u128(0x5CF2),
+        );
+
+        let mut ws = wdoc(world_id, ws_id, "world-settings");
+        ws.owner = Some(gm.user_id);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": restriction,
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        ws.engine = Some(ws_engine(ws.system.clone()));
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut scene = wdoc(world_id, scene_id, "scene");
+        scene.owner = Some(gm.user_id);
+        scene.system = json!({ "grid": { "kind": "hex", "size": 100 } });
+        scene.engine = Some(json!({ "grid": { "kind": "hex", "size": 100.0 }, "background": null,
+                                    "bounds": { "width": 1500.0, "height": 1500.0 } }));
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut token = wdoc(world_id, token_id, "token");
+        token.parent_id = Some(scene_id);
+        token.owner = Some(p);
+        token.permissions.users.insert(p, DocRole::Owner);
+        token.engine = Some(token_engine(50.0, 50.0));
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: token }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        MovementHandle {
+            room,
+            repo,
+            gm,
+            player,
+            world_id,
+            scene_id,
+            token_id,
+            start: (50.0, 50.0),
+            lit_goal: (50.0, 150.0),
+            adj: (150.0, 50.0),
+            adj2: (250.0, 50.0),
+        }
+    }
+
     /// Two lit pockets (near (50,50) and far (950,950)) with a dark gap between
     /// cells 2–8. movementRestriction="visible", partialCellLeniency=false.
     async fn movement_scene_two_lit_pockets() -> MovementHandle {
@@ -2423,6 +2525,135 @@ mod room_tests {
             matches!(blocked, Err(crate::data::DataError::Forbidden)),
             "a move into an unexplored + unseen hex cell must be rejected"
         );
+    }
+
+    /// SECRECY (reject) direction of the hex movement gate, and the one direction a square-indexed
+    /// gate gets WRONG toward over-reveal: a move whose HEX traversal enters unseen hex cells, but
+    /// whose SQUARE-indexed traversal of the same segment lies entirely inside the (hex-indexed)
+    /// mask, must be Forbidden.
+    ///
+    /// Non-vacuity is asserted in-test, not merely argued: the test reads the gate's own mask off
+    /// the ECS and pins BOTH halves — at least one hex traversal cell is outside it (so the correct
+    /// gate rejects) AND every square supercover cell of the same segment is inside it (so a
+    /// square-indexed gate would have allowed this exact move). The geometry works because the
+    /// bounds-derived LOS rectangle is axis-aligned in PIXEL space while the mask is indexed in
+    /// AXIAL space: toward -x/+y the hex preimage of that rectangle shears away from the square
+    /// index rectangle, so square indices stay inside the mask where hex cells have already left it.
+    #[tokio::test]
+    async fn movement_restriction_hex_rejects_unseen_cell_a_square_indexed_gate_would_allow() {
+        let h = movement_scene_hex_open("visible").await;
+        let cell = 100.0_f64;
+        let dest = (-200.0, 825.0);
+
+        let (mask, hex_cells, square_cells) = {
+            let scene = h.room.scene().read().await;
+            let lenient = scene.resolve_scene(h.scene_id).partial_cell_leniency;
+            let grid = scene.resolve_grid_shape(h.scene_id, cell);
+            let mask = scene.visible_cells(h.player.user_id, h.scene_id, lenient);
+            let hex_cells = grid
+                .line_traversal(h.start, dest, cell)
+                .expect("bounded hex traversal");
+            let square_cells = crate::scene::movement::supercover_cells(h.start, dest, cell)
+                .expect("bounded square supercover");
+            (mask, hex_cells, square_cells)
+        };
+
+        assert!(
+            hex_cells.iter().any(|c| !mask.contains(c)),
+            "fixture must put at least one HEX traversal cell outside the mask: hex={hex_cells:?}"
+        );
+        assert!(
+            square_cells.iter().all(|c| mask.contains(c)),
+            "fixture must keep every SQUARE supercover cell inside the mask (otherwise the reject \
+             below would also fire under square math and prove nothing): square={square_cells:?}"
+        );
+
+        let op = h.mv_to(dest.0, dest.1).await;
+        let blocked = h
+            .room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await;
+        assert!(
+            matches!(blocked, Err(crate::data::DataError::Forbidden)),
+            "a move whose hex traversal enters unseen hex cells must be rejected"
+        );
+    }
+
+    /// `Revealed` on hex, both directions, with the mask under exact test control: the scene is
+    /// fully dark (`environment` intensity 0, no lights), so `visible_cells` is empty and the gate's
+    /// mask IS the explored set. Seeding explored with the SQUARE supercover of the move (read as
+    /// axial indices) must still reject — those cells are not the hex cells the move traverses —
+    /// while seeding it with the HEX traversal allows. The reject half is the non-vacuous one: it is
+    /// precisely the set a square-indexed gate would have checked and passed.
+    #[tokio::test]
+    async fn movement_restriction_hex_revealed_rejects_a_square_indexed_explored_corridor() {
+        let h = movement_scene_hex("revealed", /*with_light=*/ false).await;
+        let cell = 100.0_f64;
+        let dest = (-200.0, 825.0);
+
+        let (grid, hex_cells, square_cells) = {
+            let scene = h.room.scene().read().await;
+            assert!(
+                scene
+                    .visible_cells(h.player.user_id, h.scene_id, true)
+                    .is_empty(),
+                "a dark scene has an empty visible mask, so explored alone drives the gate"
+            );
+            let grid = scene.resolve_grid_shape(h.scene_id, cell);
+            let hex_cells = grid.line_traversal(h.start, dest, cell).expect("bounded");
+            let square_cells =
+                crate::scene::movement::supercover_cells(h.start, dest, cell).expect("bounded");
+            (grid, hex_cells, square_cells)
+        };
+        assert!(
+            hex_cells.iter().any(|c| !square_cells.contains(c)),
+            "fixture must have a hex traversal cell the square supercover omits"
+        );
+
+        // Seed explored from a set of cells by marking one tight box around each cell's HEX center.
+        let seed_explored = |cells: Vec<(i32, i32)>| {
+            let polys: Vec<Vec<f64>> = cells
+                .iter()
+                .map(|&c| {
+                    let (cx, cy) = grid.cell_center(c);
+                    vec![
+                        cx - 10.0, cy - 10.0, cx + 10.0, cy - 10.0, cx + 10.0, cy + 10.0, cx - 10.0,
+                        cy + 10.0,
+                    ]
+                })
+                .collect();
+            let mut set = crate::scene::explored::ExploredSet::new();
+            set.mark_polygons(&polys, grid.as_ref(), cell);
+            set
+        };
+
+        // REJECT: only the square-indexed corridor is explored.
+        let seeded = seed_explored(square_cells.iter().copied().collect());
+        h.repo
+            .set_explored(h.world_id, h.scene_id, h.player.user_id, &seeded.to_bytes())
+            .await
+            .unwrap();
+        let op = h.mv_to(dest.0, dest.1).await;
+        let blocked = h
+            .room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await;
+        assert!(
+            matches!(blocked, Err(crate::data::DataError::Forbidden)),
+            "explored cells taken from the SQUARE supercover do not cover the hex traversal"
+        );
+
+        // ALLOW: the same move, with the hex traversal explored instead.
+        let seeded = seed_explored(hex_cells.iter().copied().collect());
+        h.repo
+            .set_explored(h.world_id, h.scene_id, h.player.user_id, &seeded.to_bytes())
+            .await
+            .unwrap();
+        let op = h.mv_to(dest.0, dest.1).await;
+        h.room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await
+            .expect("Revealed allows a move whose whole hex traversal is explored");
     }
 
     // -----------------------------------------------------------------------
