@@ -367,15 +367,15 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   shared call.
   - `navmesh::los_smooth(outcome, walls, mask, field, cell, footprint_radius_cells)` — cost-guarded
     LOS string-pull smoothing for the weighted continuous path. A span `path[i]..path[j]`
-    straightens only when every cell its chord enters (`footprint_cells ∪ supercover_cells`, the
-    SAME union `cell_enterable`/`clip_to_visible_mask` use) is in `mask` (when `Some`), not
+    straightens only when every cell its chord enters (`grid.footprint_cells ∪ grid.line_traversal`,
+    the SAME union `cell_enterable`/`clip_to_visible_mask` use) is in `mask` (when `Some`), not
     impassable, not arrest, and not weighted terrain (`terrain_multiplier > 1.0`), and the chord
     crosses no `blocksMove` wall — so a straightened chord can never shortcut INTO terrain/
     impassable/arrest the weighted search deliberately routed around or truncated at. **The single
     grid step `path[i] -> path[i+1]` is ALWAYS kept unconditionally** (it already passed `find`'s
     per-cell gate), guaranteeing goal progress even when nothing else can straighten. Fail-closed on
     two levels: a whole-input short-circuit (`<3` vertices, degenerate `cell`/`footprint_radius_cells`)
-    returns the input unchanged; a per-span fallback (an over-cap/degenerate `supercover_cells` for
+    returns the input unchanged; a per-span fallback (an over-cap/degenerate `line_traversal` for
     one candidate chord) fails only that chord, leaving it at its single grid step while smoothing
     continues over the rest of the path. `cost`/`arrested` are carried through UNCHANGED (not
     recomputed) — the pre-smoothing weighted grid cost is a conservative (never-cheaper) budget for
@@ -433,7 +433,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
     **fog-safe + wall-safe preview post-filter**, THE security-critical function in this module
     (buddy-checked; every M9/M10e/M2/M10g/M3 milestone touching this invariant class has been).
     Arc-length-samples the route (`move_stream::sample_path`) and truncates at the first sample
-    whose footprint cells (`footprint_cells ∪ supercover_cells`, the SAME predicate
+    whose footprint cells (`grid.footprint_cells ∪ grid.line_traversal`, the SAME predicate
     `pathfinding::cell_enterable`'s mask check applies) leave `mask` — `mask: None` skips this
     check (GM/unrestricted). **Independently**, every chord (from the previous retained sample) is
     also tested against `walls` via `segments_cross`, ALWAYS (even when `mask: None`) — this is a
@@ -660,8 +660,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   asymmetry is fail-safe); `Unrestricted` ⇒ walls only. GM exempt. **The gate mask is the SAME mask as
   egress** (`visible_cells` strict ≡ `player_lit_mask`) — never fork the per-cell decision (spec §13).
   **Hex-correct (Task 14d):** the traversed-cell set comes from `scene.resolve_grid_shape(scene_id,
-  cell).line_traversal(a0, a1, cell)` — square delegates to `movement::supercover_cells`, hex to
-  cube-coordinate interpolation — the SAME primitive `move_exec::execute_move` gates against, so a
+  cell).line_traversal(a0, a1, cell)` — a SUPERCOVER on both grid kinds (square delegates to
+  `movement::supercover_cells`; hex uses a ψ-crossing supercover, see the gotcha below) — the SAME
+  primitive `move_exec::execute_move` gates against, so a
   select/move-tool drag (which writes `/engine/x,y` directly via this `publish` gate, not
   `moveRequest`) and an executed move agree on every cell on BOTH grid kinds. A prior version called
   the square-only `supercover_cells` free function directly here, testing square-indexed cells
@@ -726,15 +727,31 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `SceneEcs::pathfind` builds the per-`(user,scene)` visibility mask exactly once and passes the
   SAME reference into both the grid (`pathfinding::find`) and continuous (`navmesh::
   clip_to_visible_mask`) branches — never a forked mask computation. `clip_to_visible_mask` applies
-  the identical `footprint_cells ∪ supercover_cells` predicate `cell_enterable` uses, so a
+  the identical `grid.footprint_cells ∪ grid.line_traversal` predicate `cell_enterable` uses, so a
   continuous-scene route preview is fog-safe by the same mechanism the grid router already proved.
   Any future third routing engine MUST reuse this same mask-passing shape, not recompute visibility.
+  **Passing the same MASK is necessary but not sufficient — the same GRID SHAPE must travel with it
+  (Task 14e-7, `[sec]`).** This invariant was written assuming a square grid on the continuous
+  engine and was false on hex: `clip_to_visible_mask`, `los_smooth::chord_ok` and
+  `truncate_at_arrest` indexed route samples with square `floor(p/cell)` while the `mask` and
+  `RegionField` handed to them were hex-axial. All three now take `&dyn GridShape`, and the caller
+  MUST pass the same `resolve_grid_shape`-derived shape those sets were built from — in the weighted
+  branch that means `&*grid_shape`, NOT the Euclidean-ruled `euclid_shape` in scope (the diagonal
+  rule feeds step cost and the heuristic, never cell identity: `rule` is a `SquareGrid`-only field
+  read solely by `neighbors_with_cost`/`heuristic`). Shape identity IS the invariant; a shared mask
+  indexed in two coordinate systems is not a shared mask.
 - **M1 executor per-cell parity (spec §13):** `execute_move` uses the SAME `blocks_move` +
-  `GridShape::line_traversal` (via `ecs.resolve_grid_shape`; square delegates to
-  `supercover_cells`, hex to cube-coordinate interpolation) + `visible` membership as the M10e-4
+  `GridShape::line_traversal` (via `ecs.resolve_grid_shape`; a supercover on both kinds — square
+  cell-walk, hex ψ-crossing) + `visible` membership as the M10e-4
   `publish` move gate — per-cell decision parity, NO fork, on BOTH grid kinds (Task 14d closed a
   square-only gap in `publish`'s call — see the movement-restriction bullet above). A divergence
   between the executor and the gate equals a movement-into-fog leak.
+  **Admissibility parity is a SECOND, DISTINCT axis of the same never-fork rule (Task 14e-9):** both
+  gates also share `move_exec::MAX_GATE_WALK_COORD` (1e9) as a coordinate-MAGNITUDE bound, checked
+  before any traversal call and in every restriction mode (including `Unrestricted`, which
+  short-circuits later). Per-cell agreement is not enough if the two gates disagree about which
+  inputs are admissible at all. An anti-drift test exercises BOTH gates at the exact bound and at
+  bound+1.0 through the shared symbol, so a value change or a `>`/`>=` flip on either side fails.
   **(M10f-2 revision)** The executor is no longer stricter on authored path shape — the pre-M10f-2
   king-step-adjacency requirement (reject any >1-cell authored jump) is REMOVED; `gate_walk`
   subdivides a >1-cell jump into dense ≤1-cell samples and gates each one, so a >1-cell authored
@@ -857,6 +874,30 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (`filter_properties` now special-cases all three top-level pointers identically) — a secret
   region's declared override moved from `/system` to `/engine` as part of that same re-root (see
   `shadowcat-codebase-documents-permissions` for the generalized rule).
+- **A fixed-count cube lerp is a THIN LINE, not a supercover (Task 14e-8, `[sec]`).** `HexGrid::
+  line_traversal` originally sampled `n+1` points with `n = max cube-axis delta` (the standard
+  Red Blob hex line-draw). Its sample spacing is one full hex PITCH — a hex's minimum width — so
+  corner slivers fall between samples: it omitted a geometrically crossed hex on ~55% of random
+  segments, and when `n` rounded to 0 it dropped the destination's own hex, breaking its own
+  "both endpoint cells always included" contract. Because this is the hex movement gate's primitive
+  in BOTH `Room::publish` and `move_exec`, every omitted hex was one a non-GM could move through
+  unchecked against the visibility mask. It is now a **ψ-crossing supercover**: `cell_of` is
+  nearest-center, so a hex is its center's Voronoi cell and every hex boundary lies on an integer
+  level set of ψ₁=x−y, ψ₂=z−y, ψ₃=x−z (fractional cube coords) — enumerate every integer ψ crossing,
+  sample each interval's midpoint, plus a perpendicular epsilon probe either side of each crossing
+  and both endpoints (edge-riding / vertex / endpoint-on-boundary). Over-inclusion is the only
+  failure mode and is safe HERE because this set feeds gates only, never a reveal write (the sole
+  explored-set writer, `conn.rs`'s `enrich_vision_explored`, is fed by vision polygons via
+  `mark_polygons`) — re-check that property before reusing it anywhere else.
+- **"The square failure mode can't happen here" is not a safety argument (Task 14e-8; design
+  decision H6/H5).** Hex genuinely has no analog of the square diagonal-corner-tie bug — 6 uniform
+  neighbors, no orthogonal/diagonal split — and that true statement is what let the thin-line
+  traversal ship unexamined: hex had its OWN omission class. Establishing that a known failure mode
+  is absent says nothing about which failure modes the new geometry has of its own. Related and
+  identical in shape: `navmesh.rs` was excused from the Task 14e hex audit as "the continuous-model
+  router, orthogonal to grid kind" — but grid kind and movement model are INDEPENDENT axes, so they
+  COMBINE (`hex` + `continuous` is a live scene) rather than exclude, and it was square-on-hex at
+  three sites (Task 14e-7). Independence is a reason to CHECK a site, never to skip it.
 - **RESOLVED (`docs/CLOSED_BUGS.md`): `supercover_cells`'s corner-crossing branch no longer drifts
   past the target on a diagonal king-step whose leg endpoints both sit exactly on 4-way grid-line
   intersections.** (M10f-2 discovered this via a Task 6 fixture-derivation error; a later fix
