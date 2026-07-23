@@ -110,7 +110,7 @@
 {#if !booted}
   <p class="connecting">Loading…</p>
 {:else if route.name === "world" && session?.role && session?.world}
-  <Table {session} {leaveWorld} />
+  <Table {session} {leaveWorld} serverRole={me?.server_role === "admin" ? "admin" : "user"} />
 {:else if route.name === "world"}
   <p class="connecting">Connecting…</p>
 {:else}

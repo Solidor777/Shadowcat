@@ -528,6 +528,72 @@ impl SqliteRepository {
         })
     }
 
+    /// Whether a user row with this id exists. Used to reject a membership
+    /// write against an unknown user id with a client-actionable 404 instead of
+    /// letting the `world_members.user_id` foreign key surface as a 500.
+    pub async fn user_exists(&self, id: Uuid) -> Result<bool, DataError> {
+        let row = sqlx::query("SELECT 1 FROM users WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
+    /// Insert a user only if no existing username matches case-insensitively,
+    /// in a single guarded statement. Returns the new id, or `None` on a
+    /// collision. Single-statement like `create_admin_if_none`, so the
+    /// check-then-create race cannot split across two queries.
+    ///
+    /// INVARIANT: usernames reaching this method are ASCII-restricted at the
+    /// HTTP boundary (`validate_username`), so SQLite's ASCII-only `NOCASE`
+    /// collation is a complete case-fold — `Alice` and `alice` cannot coexist
+    /// and impersonate one another in a member roster.
+    pub async fn create_user_unique(
+        &self,
+        username: &str,
+        password_hash: &str,
+        role: ServerRole,
+        now: i64,
+    ) -> Result<Option<Uuid>, DataError> {
+        let id = Uuid::new_v4();
+        let res = sqlx::query(
+            "INSERT INTO users (id, username, password_hash, server_role, created_at) \
+             SELECT ?, ?, ?, ?, ? \
+             WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = ? COLLATE NOCASE)",
+        )
+        .bind(id.to_string())
+        .bind(username)
+        .bind(password_hash)
+        .bind(role.as_str())
+        .bind(now)
+        .bind(username)
+        .execute(&self.pool)
+        .await?;
+        Ok((res.rows_affected() == 1).then_some(id))
+    }
+
+    /// Every account, for the admin user-management surface. Deliberately
+    /// projects only the three non-secret columns — the password hash is never
+    /// selected, so it cannot reach a response body by accident.
+    pub async fn list_users(&self) -> Result<Vec<(Uuid, String, ServerRole)>, DataError> {
+        let rows = sqlx::query(
+            "SELECT id, username, server_role FROM users ORDER BY username COLLATE NOCASE",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| {
+                let id = Uuid::parse_str(r.get::<String, _>("id").as_str())
+                    .map_err(|e| DataError::OpFailed(e.to_string()))?;
+                let role = match r.get::<String, _>("server_role").as_str() {
+                    "admin" => ServerRole::Admin,
+                    _ => ServerRole::User,
+                };
+                Ok((id, r.get("username"), role))
+            })
+            .collect()
+    }
+
     pub async fn admin_exists(&self) -> Result<bool, DataError> {
         let row = sqlx::query("SELECT 1 FROM users WHERE server_role = 'admin' LIMIT 1")
             .fetch_optional(&self.pool)

@@ -15,6 +15,7 @@
     documents: undefined as never,
     world: "w1",
     role: "gm",
+    serverRole: "user",
     selfId: "u1",
     canEdit: () => true,
     openDocument: () => {},

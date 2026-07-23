@@ -61,6 +61,11 @@ export interface AppContext {
   documents: ReadableDocuments;
   world: string;
   role: WorldRole;
+  /** The caller's SERVER tier, orthogonal to `role` (per-world). Only
+   * `"admin"` reaches the server-administration routes, and no world role
+   * confers it. Advisory: it decides whether an admin-only control is
+   * rendered; the server re-checks every request. */
+  serverRole: "admin" | "user";
   /** The current user's id (ownership checks). */
   selfId: string;
   /** Advisory client-side edit gate (mirrors the server's Update-path check) for showing/hiding

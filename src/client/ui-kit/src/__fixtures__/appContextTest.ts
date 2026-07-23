@@ -17,6 +17,9 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     assets: over.assets ?? new AssetResolver(),
     world: over.world ?? "w1",
     role: over.role ?? "gm",
+    // Defaults to a plain user: a world GM is not a server admin, so
+    // admin-only surfaces stay hidden unless a test opts in explicitly.
+    serverRole: over.serverRole ?? "user",
     selfId: over.selfId ?? "u-self",
     canEdit: over.canEdit ?? (() => true),
     openDocument: over.openDocument ?? (() => {}),

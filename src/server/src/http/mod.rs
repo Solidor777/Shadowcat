@@ -73,6 +73,10 @@ pub async fn router(state: AppState) -> Router {
         .route("/api/logout", post(routes::logout))
         .route("/api/setup", post(routes::setup))
         .route(
+            "/api/users",
+            post(routes::create_user).get(routes::list_users),
+        )
+        .route(
             "/api/worlds",
             post(routes::create_world).get(routes::list_worlds),
         )
@@ -518,6 +522,432 @@ pub(crate) mod tests {
             .create_user(username, Some(&hash), ServerRole::User, 0)
             .await
             .unwrap()
+    }
+
+    async fn seed_admin(state: &AppState, username: &str) -> Uuid {
+        let hash = hash_password("pw").unwrap();
+        state
+            .repo
+            .create_user(username, Some(&hash), ServerRole::Admin, 0)
+            .await
+            .unwrap()
+    }
+
+    /// An unauthenticated TestServer over `state` (no login performed).
+    async fn anon_server(state: &AppState) -> axum_test::TestServer {
+        axum_test::TestServer::builder()
+            .save_cookies()
+            .build(router(state.clone()).await)
+            .unwrap()
+    }
+
+    // --- Account administration (`/api/users`) ---
+
+    /// Seats a world-GM, a plain player, and an anonymous caller against one
+    /// admin, so every authz assertion below shares one fixture.
+    struct UserRoutesFixture {
+        state: AppState,
+        admin: axum_test::TestServer,
+        gm: axum_test::TestServer,
+        player: axum_test::TestServer,
+        anon: axum_test::TestServer,
+        world_id: String,
+    }
+
+    async fn user_routes_fixture() -> UserRoutesFixture {
+        let state = initialized_state().await;
+        seed_admin(&state, "root-admin").await;
+        seed_user(&state, "world-gm").await;
+        let player_id = seed_user(&state, "plain-player").await;
+        let admin = login_server(&state, "root-admin").await;
+        let gm = login_server(&state, "world-gm").await;
+        let player = login_server(&state, "plain-player").await;
+        let anon = anon_server(&state).await;
+
+        // `world-gm` is a GM of a real world — the point of the matrix is that
+        // world-tier authority never satisfies the server-tier admin gate.
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "W" }))
+            .await
+            .json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+        gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": player_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        UserRoutesFixture {
+            state,
+            admin,
+            gm,
+            player,
+            anon,
+            world_id,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_user_is_admin_only_and_never_returns_a_hash() {
+        let f = user_routes_fixture().await;
+        let body = serde_json::json!({ "username": "new-player", "password": "pw-new-player" });
+
+        // A world GM, a plain player, and an anonymous caller are each rejected.
+        f.gm.post("/api/users")
+            .json(&body)
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+        f.player
+            .post("/api/users")
+            .json(&body)
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+        f.anon
+            .post("/api/users")
+            .json(&body)
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+
+        // ...and none of them created anything.
+        assert!(f
+            .state
+            .repo
+            .user_by_username("new-player")
+            .await
+            .unwrap()
+            .is_none());
+
+        // The admin is allowed.
+        let res = f.admin.post("/api/users").json(&body).await;
+        res.assert_status_ok();
+        let created: serde_json::Value = res.json();
+        assert_eq!(created["username"], "new-player");
+        assert_eq!(created["server_role"], "user");
+        assert!(created["id"].is_string());
+
+        // No credential material anywhere in the response.
+        let text = res.text();
+        assert!(
+            !text.contains("password"),
+            "response leaks a password field"
+        );
+        assert!(!text.contains("hash"), "response leaks a hash field");
+        assert!(!text.contains("$argon2"), "response leaks a PHC hash");
+
+        // The account is real: it can authenticate.
+        anon_server(&f.state)
+            .await
+            .post("/api/login")
+            .json(&serde_json::json!({
+                "username": "new-player", "password": "pw-new-player"
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn list_users_is_admin_only() {
+        let f = user_routes_fixture().await;
+
+        f.gm.get("/api/users")
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+        f.player
+            .get("/api/users")
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+        f.anon
+            .get("/api/users")
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+
+        let res = f.admin.get("/api/users").await;
+        res.assert_status_ok();
+        let users: Vec<serde_json::Value> = res.json();
+        let names: Vec<&str> = users
+            .iter()
+            .map(|u| u["username"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"root-admin"));
+        assert!(names.contains(&"world-gm"));
+        assert!(names.contains(&"plain-player"));
+        // The listing projects only the non-secret columns.
+        assert!(!res.text().contains("$argon2"), "listing leaks a PHC hash");
+        for u in &users {
+            assert!(u.get("password_hash").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn create_user_can_mint_an_admin_but_only_for_an_admin_caller() {
+        let f = user_routes_fixture().await;
+        let body = serde_json::json!({
+            "username": "second-admin", "password": "pw-second-admin", "server_role": "admin"
+        });
+
+        // A GM cannot mint an admin (rejected at the extractor, before the body).
+        f.gm.post("/api/users")
+            .json(&body)
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        let created: serde_json::Value = f.admin.post("/api/users").json(&body).await.json();
+        assert_eq!(created["server_role"], "admin");
+        assert_eq!(
+            f.state
+                .repo
+                .user_by_username("second-admin")
+                .await
+                .unwrap()
+                .unwrap()
+                .server_role,
+            ServerRole::Admin
+        );
+    }
+
+    #[tokio::test]
+    async fn create_user_rejects_duplicate_usernames_case_insensitively() {
+        let f = user_routes_fixture().await;
+        f.admin
+            .post("/api/users")
+            .json(&serde_json::json!({ "username": "dup-user", "password": "pw-dup-user" }))
+            .await
+            .assert_status_ok();
+
+        // Exact duplicate, and a case variant that would otherwise be able to
+        // impersonate the first account in a roster — both a clean 409, never a
+        // 500 from the unique constraint.
+        for name in ["dup-user", "DUP-User"] {
+            f.admin
+                .post("/api/users")
+                .json(&serde_json::json!({ "username": name, "password": "pw-other-user" }))
+                .await
+                .assert_status(StatusCode::CONFLICT);
+        }
+        // Colliding with an account created outside this route is also rejected.
+        f.admin
+            .post("/api/users")
+            .json(&serde_json::json!({ "username": "World-GM", "password": "pw-other-user" }))
+            .await
+            .assert_status(StatusCode::CONFLICT);
+
+        let all = f.state.repo.list_users().await.unwrap();
+        assert_eq!(
+            all.iter()
+                .filter(|(_, n, _)| n.eq_ignore_ascii_case("dup-user"))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn create_user_enforces_the_username_and_password_policy() {
+        let f = user_routes_fixture().await;
+        let bad_names = [
+            "ab",            // too short
+            &"a".repeat(33), // too long
+            "has space",     // whitespace inside
+            "sla/sh",        // path-ish punctuation
+            "adm\u{0131}n",  // non-ASCII homoglyph
+            "",              // empty
+        ];
+        for name in bad_names {
+            f.admin
+                .post("/api/users")
+                .json(&serde_json::json!({ "username": name, "password": "pw-valid-1" }))
+                .await
+                .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+
+        // Surrounding whitespace is normalized away, not rejected.
+        let created: serde_json::Value = f
+            .admin
+            .post("/api/users")
+            .json(&serde_json::json!({ "username": "  trimmed  ", "password": "pw-valid-1" }))
+            .await
+            .json();
+        assert_eq!(created["username"], "trimmed");
+
+        // Password floor and ceiling.
+        f.admin
+            .post("/api/users")
+            .json(&serde_json::json!({ "username": "short-pw", "password": "1234567" }))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+        f.admin
+            .post("/api/users")
+            .json(&serde_json::json!({ "username": "long-pw", "password": "x".repeat(257) }))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // --- GM member-add by username ---
+
+    #[tokio::test]
+    async fn add_member_accepts_a_username_and_still_accepts_a_uuid() {
+        let f = user_routes_fixture().await;
+        let world_id = &f.world_id;
+        f.admin
+            .post("/api/users")
+            .json(&serde_json::json!({ "username": "seated", "password": "pw-seated" }))
+            .await
+            .assert_status_ok();
+
+        // The GM seats the account by the name the admin issued.
+        f.gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "username": "seated", "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let members: Vec<serde_json::Value> =
+            f.gm.get(&format!("/api/worlds/{world_id}/members"))
+                .await
+                .json();
+        let seated = members
+            .iter()
+            .find(|m| m["username"] == "seated")
+            .expect("seated by username");
+        assert_eq!(seated["role"], "player");
+
+        // The same call is an idempotent role change, not a duplicate seat.
+        f.gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "username": "seated", "role": "spectator" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let members: Vec<serde_json::Value> =
+            f.gm.get(&format!("/api/worlds/{world_id}/members"))
+                .await
+                .json();
+        assert_eq!(
+            members.iter().filter(|m| m["username"] == "seated").count(),
+            1
+        );
+        assert_eq!(
+            members.iter().find(|m| m["username"] == "seated").unwrap()["role"],
+            "spectator"
+        );
+
+        // The pre-existing uuid form is untouched.
+        let uuid_target = seed_user(&f.state, "by-uuid").await;
+        f.gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": uuid_target, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // A non-GM member still cannot seat anyone by username.
+        f.player
+            .post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "username": "by-uuid", "role": "gm" }))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+        // Nor can an anonymous caller.
+        f.anon
+            .post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "username": "by-uuid", "role": "gm" }))
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn add_member_username_branch_cannot_escalate_a_server_role() {
+        let f = user_routes_fixture().await;
+        let world_id = &f.world_id;
+        f.admin
+            .post("/api/users")
+            .json(&serde_json::json!({ "username": "victim", "password": "pw-victim" }))
+            .await
+            .assert_status_ok();
+
+        // `role` deserializes as WorldRole, a closed gm/player/spectator enum:
+        // no server-tier token is representable on this path.
+        for escalation in [
+            serde_json::json!({ "username": "victim", "role": "admin" }),
+            serde_json::json!({ "username": "victim", "role": "user" }),
+            // A stray server_role field is not part of the request shape.
+            serde_json::json!({ "username": "victim", "role": "player", "server_role": "admin" }),
+        ] {
+            let res =
+                f.gm.post(&format!("/api/worlds/{world_id}/members"))
+                    .json(&escalation)
+                    .await;
+            assert_ne!(
+                res.status_code(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "escalation attempt must not fault the server"
+            );
+            // Whatever the outcome, the account's SERVER role is unchanged.
+            assert_eq!(
+                f.state
+                    .repo
+                    .user_by_username("victim")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .server_role,
+                ServerRole::User,
+                "world-membership write must never touch the server tier"
+            );
+        }
+
+        // Even the maximal legitimate outcome — world GM — leaves the server
+        // tier alone: the seated account still cannot reach an admin route.
+        f.gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "username": "victim", "role": "gm" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        assert_eq!(
+            f.state
+                .repo
+                .user_by_username("victim")
+                .await
+                .unwrap()
+                .unwrap()
+                .server_role,
+            ServerRole::User
+        );
+        let victim = anon_server(&f.state).await;
+        victim
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": "victim", "password": "pw-victim" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        victim
+            .get("/api/users")
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+        victim
+            .post("/api/users")
+            .json(&serde_json::json!({ "username": "minted", "password": "pw-minted" }))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn add_member_rejects_unknown_ambiguous_and_absent_targets() {
+        let f = user_routes_fixture().await;
+        let world_id = &f.world_id;
+
+        // Unknown username, and an unknown uuid (which would otherwise trip the
+        // world_members foreign key and surface as a 500).
+        f.gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "username": "no-such-user", "role": "player" }))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+        f.gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": Uuid::from_u128(4242), "role": "player" }))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+
+        // Both identifiers, or neither, is ambiguous.
+        f.gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({
+                "user": Uuid::from_u128(1), "username": "plain-player", "role": "player"
+            }))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+        f.gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "role": "player" }))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     fn doc_json(

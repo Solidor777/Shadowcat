@@ -223,6 +223,118 @@ pub async fn setup(
     }
 }
 
+// --- Account administration ---
+
+/// Username policy for admin-created accounts: 3–32 characters drawn from
+/// `[A-Za-z0-9._-]`. Constraining the identity space to ASCII is load-bearing,
+/// not cosmetic: it makes SQLite's ASCII-only `NOCASE` uniqueness guard in
+/// `create_user_unique` a complete case-fold, and it removes the whitespace and
+/// Unicode-homoglyph variants that would otherwise let one account impersonate
+/// another in a member roster or chat attribution.
+const MIN_USERNAME_LEN: usize = 3;
+const MAX_USERNAME_LEN: usize = 32;
+/// Floor on an admin-issued password. The server never stores plaintext, so
+/// this only guards against trivially guessable seeded accounts.
+const MIN_PASSWORD_LEN: usize = 8;
+/// Ceiling on the plaintext handed to Argon2. Hash cost grows with input past
+/// the block size, so an unbounded password is a CPU amplification vector.
+const MAX_PASSWORD_BYTES: usize = 256;
+
+/// Normalize (trim) and validate a username against the account policy.
+fn validate_username(raw: &str) -> Result<String, AppError> {
+    let name = raw.trim();
+    if name.len() < MIN_USERNAME_LEN || name.len() > MAX_USERNAME_LEN {
+        return Err(AppError::Unprocessable(format!(
+            "username must be {MIN_USERNAME_LEN}-{MAX_USERNAME_LEN} characters"
+        )));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err(AppError::Unprocessable(
+            "username may contain only letters, digits, '.', '_' and '-'".into(),
+        ));
+    }
+    Ok(name.to_owned())
+}
+
+#[derive(Deserialize)]
+pub struct CreateUserRequest {
+    pub username: String,
+    pub password: String,
+    /// Server tier of the new account; omitted means `User`. Only an admin can
+    /// reach this field at all (the `AdminUser` extractor runs before the body
+    /// is deserialized), so admin-minting stays an admin-only capability.
+    #[serde(default)]
+    pub server_role: Option<ServerRole>,
+}
+
+/// An account as exposed to the admin surface. Carries no credential material:
+/// the password hash is neither a field here nor selected by `list_users`.
+#[derive(Serialize)]
+pub struct UserEntry {
+    pub id: Uuid,
+    pub username: String,
+    pub server_role: ServerRole,
+}
+
+/// Create an account. Admin-only via the `AdminUser` extractor, which gates on
+/// `ServerRole::Admin` alone — never on world role, which `permission_context`
+/// would resolve to GM for an admin and which no world-tier grant can confer.
+pub async fn create_user(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    Json(body): Json<CreateUserRequest>,
+) -> Result<Json<UserEntry>, AppError> {
+    let username = validate_username(&body.username)?;
+    if body.password.len() < MIN_PASSWORD_LEN {
+        return Err(AppError::Unprocessable(format!(
+            "password must be at least {MIN_PASSWORD_LEN} characters"
+        )));
+    }
+    if body.password.len() > MAX_PASSWORD_BYTES {
+        return Err(AppError::Unprocessable(format!(
+            "password must be at most {MAX_PASSWORD_BYTES} bytes"
+        )));
+    }
+    let server_role = body.server_role.unwrap_or(ServerRole::User);
+    let hash = crate::auth::password::hash_password_async(body.password)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    // Guarded single-statement insert: a case-insensitive collision yields
+    // `None` rather than a unique-constraint error surfacing as a 500.
+    let id = state
+        .repo
+        .create_user_unique(&username, &hash, server_role, now_millis())
+        .await?
+        .ok_or_else(|| AppError::Conflict("username already taken".into()))?;
+    Ok(Json(UserEntry {
+        id,
+        username,
+        server_role,
+    }))
+}
+
+/// Every account. Admin-only: a world GM manages world membership by username
+/// and is deliberately never handed a server-wide user directory.
+pub async fn list_users(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<UserEntry>>, AppError> {
+    let users = state.repo.list_users().await?;
+    Ok(Json(
+        users
+            .into_iter()
+            .map(|(id, username, server_role)| UserEntry {
+                id,
+                username,
+                server_role,
+            })
+            .collect(),
+    ))
+}
+
 // --- Worlds, membership, and documents (M5) ---
 
 /// Run `ops` through the one authoritative write path for `world`, broadcasting
@@ -368,9 +480,21 @@ pub async fn list_members(
     ))
 }
 
+/// Identifies the target of a membership write by id or by username; exactly
+/// one must be supplied.
+///
+/// `role` is a [`WorldRole`] — a closed enum of `gm`/`player`/`spectator`. No
+/// server-tier value is representable here, so this GM-reachable route cannot
+/// express, let alone grant, a `ServerRole`.
 #[derive(Deserialize)]
 pub struct AddMemberRequest {
-    pub user: Uuid,
+    #[serde(default)]
+    pub user: Option<Uuid>,
+    /// Username alternative to `user`. A GM seats a player by the name the
+    /// admin issued, so no server-wide user directory has to be exposed to
+    /// GMs. Matched case-sensitively, exactly like `/api/login`.
+    #[serde(default)]
+    pub username: Option<String>,
     pub role: WorldRole,
 }
 
@@ -382,10 +506,34 @@ pub async fn add_member(
     Json(body): Json<AddMemberRequest>,
 ) -> Result<StatusCode, AppError> {
     require_gm(&state, &user, world).await?;
-    if state.repo.member_role(world, body.user).await?.is_some() {
-        state.repo.set_role(world, body.user, body.role).await?;
+    // Resolve to a user id first: `world_members.user_id` is a foreign key, so
+    // an unknown target must be rejected here as a 404 rather than surfacing as
+    // a constraint violation (a 500).
+    let target = match (body.user, body.username.as_deref()) {
+        (Some(id), None) => {
+            if !state.repo.user_exists(id).await? {
+                return Err(AppError::NotFound);
+            }
+            id
+        }
+        (None, Some(name)) => {
+            state
+                .repo
+                .user_by_username(name.trim())
+                .await?
+                .ok_or(AppError::NotFound)?
+                .id
+        }
+        _ => {
+            return Err(AppError::Unprocessable(
+                "exactly one of 'user' or 'username' is required".into(),
+            ))
+        }
+    };
+    if state.repo.member_role(world, target).await?.is_some() {
+        state.repo.set_role(world, target, body.role).await?;
     } else {
-        state.repo.add_member(world, body.user, body.role).await?;
+        state.repo.add_member(world, target, body.role).await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }

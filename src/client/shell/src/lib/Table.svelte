@@ -13,8 +13,15 @@
   // a no-op, warned once via the injected logger.
   const panels = new PanelsBridge(consoleLogger());
 
-  let { session, leaveWorld }: { session: WorldSession; leaveWorld: () => void } =
-    $props();
+  let {
+    session,
+    leaveWorld,
+    serverRole,
+  }: {
+    session: WorldSession;
+    leaveWorld: () => void;
+    serverRole: "admin" | "user";
+  } = $props();
 
   // Sheet panels: the controller registers `sheet:<docId>` contributions on demand; the
   // panel host mounts + floats them. Constructed before setAppContext so `openDocument` is
@@ -65,6 +72,7 @@
     documents: session.documents,
     world: session.world!,
     role: session.role!,
+    serverRole,
     selfId: session.selfId,
     canEdit: (doc, path) => session.canEdit(doc, path),
     openDocument: (ref) => sheets.openDocument(ref),
