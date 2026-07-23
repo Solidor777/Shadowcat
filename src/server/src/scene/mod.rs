@@ -688,6 +688,22 @@ impl SceneEcs {
         scene: Uuid,
         cell: f64,
     ) -> Box<dyn grid_shape::GridShape + Send + Sync> {
+        self.resolve_grid_shape_with_rule(scene, cell, self.resolved_diagonal_rule())
+    }
+
+    /// `resolve_grid_shape` with an explicit `SquareGrid` diagonal rule instead of the world-resolved
+    /// one. The continuous (navmesh) engine's weighted grid sub-path passes `DiagonalRule::Euclidean`
+    /// here so the grid it routes on uses the Euclidean base metric (its cost and its admissible
+    /// heuristic both come from the shape), never the world's configured diagonal rule (M10f-4:
+    /// continuous ignores the world diagonal rule; only cell topology + terrain multiplier come from
+    /// the grid). `rule` is inert on a hex scene — `HexGrid` uses uniform 1-cost steps and the
+    /// axial heuristic regardless.
+    pub(crate) fn resolve_grid_shape_with_rule(
+        &self,
+        scene: Uuid,
+        cell: f64,
+        rule: pathfinding::DiagonalRule,
+    ) -> Box<dyn grid_shape::GridShape + Send + Sync> {
         // `+ Send + Sync`: `enrich_vision_explored`'s post-lock explored write (conn.rs) holds a
         // per-scene map of resolved shapes by shared reference across the spawned egress task's
         // `.await` boundary (a `&Map` is `Send` only when the values are `Sync`). The bound only
@@ -702,10 +718,7 @@ impl SceneEcs {
         if kind.as_deref() == Some("hex") {
             Box::new(grid_shape::HexGrid { size: cell })
         } else {
-            Box::new(grid_shape::SquareGrid {
-                cell,
-                rule: self.resolved_diagonal_rule(),
-            })
+            Box::new(grid_shape::SquareGrid { cell, rule })
         }
     }
 
@@ -1118,7 +1131,6 @@ impl SceneEcs {
             .get(&scene)
             .copied()
             .unwrap_or(100.0);
-        let rule = self.resolved_diagonal_rule();
         let grid_shape = self.resolve_grid_shape(scene, cell);
         let walls = self.move_walls(scene);
         // Hoisted so `movement_model` is available to the dispatch below regardless of `is_gm`
@@ -1158,7 +1170,6 @@ impl SceneEcs {
                     waypoints,
                     footprint_radius,
                     cell,
-                    rule,
                     &walls,
                     mask.as_ref(),
                     Some(&regions),
@@ -1175,16 +1186,21 @@ impl SceneEcs {
                 // regions spring only at `move_exec`).
                 let regions = self.region_field(scene, if is_gm { None } else { Some(user) });
                 if regions.has_terrain_or_impassable() {
+                    // Euclidean base metric (M10f-4): the grid's step cost AND its admissible
+                    // heuristic both come from this shape, so the weighted continuous route ignores
+                    // the world's configured diagonal rule — only cell topology + terrain multiplier
+                    // come from the grid. A hex scene's shape is rule-agnostic (uniform 1-cost).
+                    let euclid_shape =
+                        self.resolve_grid_shape_with_rule(scene, cell, pathfinding::DiagonalRule::Euclidean);
                     let weighted = pathfinding::find(
                         start,
                         waypoints,
                         footprint_radius,
                         cell,
-                        pathfinding::DiagonalRule::Euclidean,
                         &walls,
                         mask.as_ref(),
                         Some(&regions),
-                        &*grid_shape,
+                        &*euclid_shape,
                     )?;
                     // `find` reports cost in CELLS; the continuous engine reports SCENE UNITS
                     // (parity with the polyanya path below). Convert before smoothing carries it

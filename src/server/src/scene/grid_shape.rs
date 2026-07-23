@@ -64,6 +64,12 @@ pub(crate) trait GridShape {
     /// The cell's polygon vertices in scene coordinates (for leniency corner-clip tests): 4 for a
     /// square, 6 for a pointy-top hex.
     fn cell_vertices(&self, c: Cell, cell: f64) -> Vec<vision::P>;
+    /// Admissible A* heuristic (lower bound on the true `neighbors_with_cost` path cost) from cell
+    /// `from` to cell `to`. Guides search ORDER only — never gates a cell — so it cannot affect the
+    /// `route ⊆ gate-allowed` invariant. `SquareGrid` returns the existing `DiagonalRule`-based
+    /// square distance; `HexGrid` returns the axial (cube) hex distance, which the square distance
+    /// OVERESTIMATES for opposite-sign axial deltas (non-admissible on hex → suboptimal routes).
+    fn heuristic(&self, from: Cell, to: Cell) -> f64;
 }
 
 /// Axial-box padding for `HexGrid::cells_in_bounds`. The axial↔pixel map is affine, so a pixel-space
@@ -170,6 +176,13 @@ impl GridShape for SquareGrid {
             (i as f64 * cell, (j + 1) as f64 * cell),
             ((i + 1) as f64 * cell, (j + 1) as f64 * cell),
         ]
+    }
+
+    /// Byte-identical to the pre-existing free `pathfinding::heuristic(self.rule, ...)` — the same
+    /// admissible+consistent `DiagonalRule`-based square estimate `astar_leg` used before the trait
+    /// dispatch, so every square route (all 4 diagonal rules) is unchanged.
+    fn heuristic(&self, from: Cell, to: Cell) -> f64 {
+        pathfinding::heuristic(self.rule, from, to)
     }
 }
 
@@ -386,6 +399,19 @@ impl GridShape for HexGrid {
                 (center.0 + self.size * ang.cos(), center.1 + self.size * ang.sin())
             })
             .collect()
+    }
+
+    /// Admissible axial (cube) hex distance `(|dq| + |dr| + |dq+dr|)/2` — the exact minimum number
+    /// of uniform 1-cost steps (`neighbors_with_cost`) between two hexes (Red Blob Games; ARCHITECTURE
+    /// §7 public-source computational geometry), so it never overestimates the true path cost and A*
+    /// stays optimal. Deltas widen to `i64` before the sum so a large-coordinate pair can't overflow
+    /// `i32`. The square `DiagonalRule` distance the pre-trait code used here OVERESTIMATES this for
+    /// opposite-sign deltas (e.g. Manhattan is 2× on the `(1,-1)` axial line), which is what made the
+    /// old shared heuristic non-admissible on hex.
+    fn heuristic(&self, from: Cell, to: Cell) -> f64 {
+        let dq = to.0 as i64 - from.0 as i64;
+        let dr = to.1 as i64 - from.1 as i64;
+        ((dq.abs() + dr.abs() + (dq + dr).abs()) as f64) / 2.0
     }
 }
 
@@ -693,6 +719,81 @@ mod tests {
             g.cell_vertices((2, 3), 100.0),
             vec![(200.0, 300.0), (300.0, 300.0), (200.0, 400.0), (300.0, 400.0)]
         );
+    }
+
+    /// Independent reference for the intended axial (cube) hex distance, so the assertion below
+    /// isn't tautological with the impl under test.
+    fn axial_distance(from: Cell, to: Cell) -> f64 {
+        let dq = to.0 as i64 - from.0 as i64;
+        let dr = to.1 as i64 - from.1 as i64;
+        ((dq.abs() + dr.abs() + (dq + dr).abs()) as f64) / 2.0
+    }
+
+    #[test]
+    fn hex_heuristic_equals_axial_distance_including_opposite_sign_deltas() {
+        let g = HexGrid { size: 50.0 };
+        // Same-sign axial delta (the (1,1) direction): distance = |dq| + |dr|.
+        assert_eq!(g.heuristic((0, 0), (3, 3)), axial_distance((0, 0), (3, 3)));
+        assert_eq!(g.heuristic((0, 0), (3, 3)), 6.0);
+        // Opposite-sign axial delta (the (1,-1) direction): distance = max(|dq|, |dr|) — this is
+        // the case the square Manhattan/Euclidean estimate OVERESTIMATES.
+        assert_eq!(g.heuristic((0, 0), (4, -4)), axial_distance((0, 0), (4, -4)));
+        assert_eq!(g.heuristic((0, 0), (4, -4)), 4.0);
+        // Mixed / off-axis deltas, both delta orderings.
+        assert_eq!(g.heuristic((2, -1), (5, -6)), axial_distance((2, -1), (5, -6)));
+        assert_eq!(g.heuristic((5, -6), (2, -1)), axial_distance((5, -6), (2, -1)));
+        // Symmetric.
+        assert_eq!(g.heuristic((-3, 2), (1, -4)), g.heuristic((1, -4), (-3, 2)));
+        // Zero delta.
+        assert_eq!(g.heuristic((7, -2), (7, -2)), 0.0);
+    }
+
+    #[test]
+    fn hex_heuristic_is_admissible_never_exceeds_a_true_uniform_cost_route() {
+        // The axial distance IS the exact shortest step count under `neighbors_with_cost`'s uniform
+        // 1-per-step cost, so the heuristic is admissible (equal, never over) for every delta.
+        let g = HexGrid { size: 50.0 };
+        for dq in -6..=6i32 {
+            for dr in -6..=6i32 {
+                let h = g.heuristic((0, 0), (dq, dr));
+                let true_cost = axial_distance((0, 0), (dq, dr));
+                assert!(h <= true_cost + 1e-9, "heuristic {h} must not exceed true cost {true_cost}");
+            }
+        }
+    }
+
+    #[test]
+    fn square_manhattan_overestimates_the_true_hex_distance_on_opposite_sign_deltas() {
+        // Documents WHY the shared square heuristic was non-admissible on hex: on the (1,-1) axial
+        // line the true hex distance is `max(|dq|,|dr|)` but the square Manhattan distance is
+        // `|dq|+|dr|` — a 2× overestimate. The hex heuristic returns the admissible value instead.
+        let hex = HexGrid { size: 50.0 };
+        let sq_manhattan = SquareGrid { cell: 50.0, rule: DiagonalRule::Manhattan };
+        let (from, to) = ((0, 0), (4, -4));
+        assert_eq!(hex.heuristic(from, to), 4.0, "true hex distance");
+        assert_eq!(sq_manhattan.heuristic(from, to), 8.0, "square Manhattan overestimates 2x");
+        assert!(sq_manhattan.heuristic(from, to) > hex.heuristic(from, to));
+    }
+
+    #[test]
+    fn square_heuristic_is_byte_identical_to_the_free_pathfinding_heuristic() {
+        // The trait dispatch must not change square scenes: `SquareGrid::heuristic` returns exactly
+        // the free `pathfinding::heuristic(self.rule, ...)` `astar_leg` called before.
+        for rule in [
+            DiagonalRule::Chebyshev,
+            DiagonalRule::Manhattan,
+            DiagonalRule::Euclidean,
+            DiagonalRule::Alternating,
+        ] {
+            let g = SquareGrid { cell: 100.0, rule };
+            for &(from, to) in &[((0, 0), (3, 5)), ((-2, 4), (7, -1)), ((5, 5), (5, 5))] {
+                assert_eq!(
+                    g.heuristic(from, to),
+                    crate::scene::pathfinding::heuristic(rule, from, to),
+                    "square heuristic must equal the free rule-based heuristic for {rule:?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,5 +1,7 @@
 //! Server-authoritative grid A* pathfinder (M10e-6). Pure + headless: callers pass parsed inputs
-//! (walls, mask, cell size, rule, footprint); this module owns no I/O and borrows no ECS.
+//! (walls, mask, cell size, grid shape, footprint); this module owns no I/O and borrows no ECS. The
+//! `GridShape` (square/hex) is the single source of the diagonal rule — it owns both the step-cost
+//! and the admissible heuristic, so `find` takes no separate rule argument.
 //! Engine-owned geometry (ARCHITECTURE §6 exception); clean-room A* (Hart, Nilsson & Raphael 1968).
 //!
 //! INVARIANT (spec §13): the per-cell mask test consumes the SAME `visible_cells` set the M10e-4
@@ -28,7 +30,6 @@ pub type Cell = (i32, i32);
 /// wander unboundedly.
 pub struct PathGrid<'a> {
     pub cell: f64,
-    pub rule: DiagonalRule,
     pub footprint_radius_cells: f64,
     pub walls: &'a [vision::Seg],
     pub mask: Option<&'a BTreeSet<Cell>>,
@@ -154,7 +155,6 @@ mod astar_tests {
             Box::leak(Box::new(crate::scene::grid_shape::SquareGrid { cell: 100.0, rule }));
         PathGrid {
             cell: 100.0,
-            rule,
             footprint_radius_cells: footprint,
             walls: &NO_WALLS,
             mask: None,
@@ -231,7 +231,6 @@ mod astar_tests {
         };
         let g = PathGrid {
             cell: c,
-            rule: DiagonalRule::Chebyshev,
             footprint_radius_cells: 0.1,
             walls: &walls,
             mask: None,
@@ -264,16 +263,15 @@ mod astar_tests {
     }
 
     /// Hex-scene A* integration coverage: proves the fully-wired hex path behaves correctly
-    /// end-to-end, mirroring this module's square-scene coverage above. `rule` is irrelevant for
-    /// hex (kept only because `PathGrid` carries a single `rule` field used by `astar_leg`'s
-    /// heuristic; `HexGrid::neighbors_with_cost` itself ignores it — see `grid_shape.rs`).
+    /// end-to-end, mirroring this module's square-scene coverage above. The diagonal rule is a
+    /// `SquareGrid`-only concept (`HexGrid` uses uniform 1-cost steps and the admissible axial
+    /// heuristic), so a `HexGrid` shape carries no rule at all — see `grid_shape.rs`.
     fn open_hex(footprint: f64) -> PathGrid<'static> {
         const NO_WALLS: [Seg; 0] = [];
         let shape: &'static crate::scene::grid_shape::HexGrid =
             Box::leak(Box::new(crate::scene::grid_shape::HexGrid { size: 100.0 }));
         PathGrid {
             cell: 100.0,
-            rule: DiagonalRule::Chebyshev,
             footprint_radius_cells: footprint,
             walls: &NO_WALLS,
             mask: None,
@@ -331,6 +329,53 @@ mod astar_tests {
         assert_eq!(cells.last(), Some(&(2, 0)));
         assert!((cost - 3.0).abs() < 1e-9);
     }
+
+    #[test]
+    fn hex_astar_returns_the_true_shortest_route_via_the_admissible_heuristic() {
+        // Pins hex A* route optimality: the axial heuristic (`HexGrid::heuristic`) is admissible, so
+        // A* returns the true shortest hex route. A square `DiagonalRule` heuristic OVERESTIMATES the
+        // true axial distance for opposite-sign axial deltas (Manhattan is 2x on the (1,-1) line),
+        // which is non-admissible on hex and yields a valid but longer route. This maze isolates that
+        // case: the goal's cheap axis-neighbor approach (-1,0) is masked out, forcing the shortest
+        // route to approach through the OPPOSITE-SIGN neighbor (-1,1) — the cell a square heuristic
+        // deprioritizes. The admissible heuristic yields the true shortest route
+        // (-3,1)->(-2,1)->(-1,1)->(0,0) at cost 3 over 4 cells; a square-Manhattan estimate over this
+        // same maze yields the 4-cost, 5-cell detour (-3,1)->(-2,0)->(-1,-1)->(0,-1)->(0,0) instead,
+        // so any non-admissible replacement of `HexGrid::heuristic` fails this assertion.
+        let hx = crate::scene::grid_shape::HexGrid { size: 100.0 };
+        // Mask = hex disc (radius 4 in every axis incl. the third cube axis q+r) MINUS the goal's
+        // cheap axis neighbor (-1,0): the detour cells stay present, only the cheap approach closes.
+        let mut mask: BTreeSet<Cell> = BTreeSet::new();
+        let r = 4i32;
+        for q in -r..=r {
+            for rr in -r..=r {
+                if (q + rr).abs() <= r && (q, rr) != (-1, 0) {
+                    mask.insert((q, rr));
+                }
+            }
+        }
+        let g = PathGrid {
+            cell: 100.0,
+            footprint_radius_cells: 0.1,
+            walls: &[],
+            mask: Some(&mask),
+            regions: None,
+            window: (-50, -50, 50, 50),
+            shape: &hx,
+        };
+        let (cells, cost, _p) = astar_leg(&g, (-3, 1), (0, 0), 0).unwrap();
+        assert_eq!(
+            cells,
+            vec![(-3, 1), (-2, 1), (-1, 1), (0, 0)],
+            "admissible hex heuristic must yield the true shortest route through the opposite-sign \
+             approach (-1,1), not the longer detour a square heuristic would pick"
+        );
+        assert!(
+            (cost - 3.0).abs() < 1e-9,
+            "true hex distance is 3, not the square heuristic's 4-cost detour; got {cost}"
+        );
+        assert_eq!(cells.len(), 4, "shortest route is 4 cells (3 uniform-cost hex steps)");
+    }
 }
 
 /// Why a path request fails. Mapped to a `PathError` message at the wire boundary.
@@ -384,7 +429,11 @@ impl PartialOrd for QNode {
 /// Euclidean √2, Alternating 1); for Alternating the optimistic bound (Chebyshev = dmax) gives
 /// Δh ≤ 1, which is the cheapest diagonal cost. Consistency is load-bearing: it makes the first
 /// goal-pop optimal and makes the post-goal stale-pop skip safe (see `astar_leg`).
-fn heuristic(rule: DiagonalRule, c: Cell, goal: Cell) -> f64 {
+///
+/// `pub(crate)` so `SquareGrid::heuristic` (grid_shape.rs) can return this byte-identical value —
+/// `astar_leg` calls it only through `grid.shape.heuristic(...)` now, never directly, so square
+/// scenes keep the exact rule-based estimate while hex scenes get the admissible axial distance.
+pub(crate) fn heuristic(rule: DiagonalRule, c: Cell, goal: Cell) -> f64 {
     let di = (goal.0 - c.0).abs();
     let dj = (goal.1 - c.1).abs();
     let (dmax, dmin) = (di.max(dj) as f64, di.min(dj) as f64);
@@ -412,7 +461,7 @@ pub(crate) fn astar_leg(
     let mut open = BinaryHeap::new();
     g_score.insert((start, start_parity), 0.0);
     open.push(QNode {
-        f: heuristic(grid.rule, start, goal),
+        f: grid.shape.heuristic(start, goal),
         g: 0.0,
         cell: start,
         parity: start_parity,
@@ -461,7 +510,7 @@ pub(crate) fn astar_leg(
                 came_from.insert(key, (cell, parity));
                 g_score.insert(key, tentative);
                 open.push(QNode {
-                    f: tentative + heuristic(grid.rule, next, goal),
+                    f: tentative + grid.shape.heuristic(next, goal),
                     g: tentative,
                     cell: next,
                     parity: next_parity,
@@ -499,7 +548,6 @@ pub fn find(
     waypoints: &[vision::P],
     footprint_radius: f64,
     cell: f64,
-    rule: DiagonalRule,
     walls: &[vision::Seg],
     mask: Option<&BTreeSet<Cell>>,
     regions: Option<&crate::scene::regions::RegionField>,
@@ -556,7 +604,6 @@ pub fn find(
 
     let grid = PathGrid {
         cell,
-        rule,
         footprint_radius_cells: footprint_radius,
         walls,
         mask,
@@ -672,7 +719,6 @@ mod find_tests {
             &[],
             0.1,
             100.0,
-            DiagonalRule::Chebyshev,
             &NO_WALLS,
             None,
             None,
@@ -690,7 +736,6 @@ mod find_tests {
                 &[(150.0, 50.0)],
                 0.1,
                 100.0,
-                DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
                 None,
@@ -705,7 +750,6 @@ mod find_tests {
                 &[(150.0, 50.0)],
                 -1.0,
                 100.0,
-                DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
                 None,
@@ -720,7 +764,6 @@ mod find_tests {
                 &[(150.0, 50.0)],
                 0.1,
                 0.0,
-                DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
                 None,
@@ -735,7 +778,6 @@ mod find_tests {
                 &[(150.0, 50.0)],
                 f64::NAN,
                 100.0,
-                DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
                 None,
@@ -750,7 +792,6 @@ mod find_tests {
                 &[(150.0, 50.0)],
                 f64::INFINITY,
                 100.0,
-                DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
                 None,
@@ -765,7 +806,6 @@ mod find_tests {
                 &[(150.0, 50.0)],
                 MAX_FOOTPRINT_CELLS + 1.0,
                 100.0,
-                DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
                 None,
@@ -783,7 +823,6 @@ mod find_tests {
             &[(250.0, 50.0)],
             0.1,
             100.0,
-            DiagonalRule::Chebyshev,
             &NO_WALLS,
             None,
             None,
@@ -818,7 +857,6 @@ mod find_tests {
             &[goal],
             0.1,
             100.0,
-            DiagonalRule::Chebyshev,
             &NO_WALLS,
             None, // GM / unconstrained: only the window (not a mask) can gate reachability here
             None,
@@ -843,7 +881,6 @@ mod find_tests {
             &[wp, goal],
             0.1,
             100.0,
-            DiagonalRule::Alternating,
             &NO_WALLS,
             None,
             None,
@@ -867,7 +904,6 @@ mod find_tests {
                 &wps,
                 0.1,
                 100.0,
-                DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 None,
                 None,
@@ -886,7 +922,6 @@ mod find_tests {
                 &[(250.0, 50.0)],
                 0.1,
                 100.0,
-                DiagonalRule::Chebyshev,
                 &NO_WALLS,
                 Some(&mask),
                 None,
@@ -915,7 +950,6 @@ mod find_tests {
             &[goal],
             10.0, // footprint_radius_cells (10 cells) > WINDOW_MARGIN (8 cells)
             c,
-            DiagonalRule::Chebyshev,
             &walls,
             None,
             None,
@@ -958,7 +992,6 @@ mod find_tests {
             &[(450.0, 50.0)],
             0.1,
             100.0,
-            DiagonalRule::Chebyshev,
             &NO_WALLS,
             None,
             Some(&field),
@@ -984,7 +1017,6 @@ mod find_tests {
             &[(250.0, 50.0)],
             0.1,
             100.0,
-            DiagonalRule::Chebyshev,
             &NO_WALLS,
             None,
             None,
@@ -1014,7 +1046,6 @@ mod tests {
             }));
         PathGrid {
             cell: 100.0,
-            rule: DiagonalRule::Chebyshev,
             footprint_radius_cells: footprint,
             walls,
             mask,

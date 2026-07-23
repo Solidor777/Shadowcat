@@ -88,7 +88,6 @@ fn route(rule: DiagonalRule, field: &RegionField) -> PathOutcome {
         &[(250.0, 250.0)],
         0.1,
         100.0,
-        rule,
         &[],
         None,
         Some(field),
