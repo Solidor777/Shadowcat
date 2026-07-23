@@ -1282,54 +1282,181 @@ No production code change — Tasks 1-12 already wired the full path."
 
 ---
 
-## Task 14: Client end-to-end test — hex-scene move genuinely gated server-side
+## Scope extension (Tasks 14a–14c): why this plan reaches into the client
+
+The approved design doc (`docs/superpowers/specs/2026-07-22-hex-grid-server-movement-design.md`) scoped this project as **server-only** ("no client changes"), on the premise that the client was already hex-capable and only the server lagged. Executing Task 14 (the original client e2e) surfaced that premise was **half true**: `render/src/grid.ts`'s hex math and `Stage.svelte`'s `onDocs` (which reads `engine.grid.kind`/`.size` and calls `e.setGrid(...)`) ARE already hex-aware, but there is **no GM-facing control anywhere to set a scene's `grid.kind` to `"hex"`** — grid kind is not authorable in the product at all. Without that control, every server-side task in this plan (1–13) is unreachable dead code: a GM cannot create a hex scene to exercise it, and the client e2e cannot author one to prove the round-trip.
+
+Per the project's Definition-of-Blocked rule (build a needed, unscoped, simple feature rather than deferring it), the fix is to build the missing authoring surface, not to descope the proof. This is a deliberate, logged extension of the design's server-only scope into a **minimal** client surface: one authoring control (14a), one observability signal the e2e needs (14b), and the e2e itself (14c). No render/wire/engine changes — the client already renders hex; these tasks only expose it and observe move outcomes.
+
+**Buddy-check:** Tasks 14a/14b/14c are client-side and **NOT `[sec]`** — none touches a secrecy boundary (14a is GM-only authoring over an existing wire field; 14b is a read-out of the mover's OWN outcome, already delivered to that client; 14c is a test). Standard task review. **Task 14d IS `[sec]`** — it fixes the `Room::publish` movement-restriction (secrecy) gate — mandatory two-reviewer opus-tier buddy-check.
+
+**Discovery during 14c execution (why 14d exists):** attempting the client e2e surfaced two facts. (1) A **shipped production bug** — `ToolRail.svelte` never forwarded `ctx.moveRequest` into its `ToolController`, so the measure-tool's route-commit (the only client path that calls `moveRequest`) was a silent permanent no-op in the real app; fixed independently on this branch (commit `73b44bd`, + regression test). (2) A **hex coverage gap the GridShape refactor missed** — `Room::publish`'s movement-restriction gate (the PRIMARY player path: a select-tool DRAG writes `/engine/x,y` directly, NOT via `moveRequest`) still calls `movement::supercover_cells` directly (square line-traversal) at `room.rs:264`, while the mask it tests against is hex-aware. Task 3's refactor grep was scoped to `scene/` and never audited `ws/room.rs`. `execute_move` (the `moveRequest` path) is already hex-correct; only this one `publish` call site is square-on-hex, violating move_exec.rs's documented "publish and execute_move agree on every cell" invariant on hex scenes. → **Task 14d** (below) closes it. Because GMs bypass this gate entirely (`room.rs:215`) and the client always consults the server's wall-aware router before a `moveRequest`, an honest client-level proof of server-side gating requires a NON-GM player account — hence Task 14c is rewritten as a two-session (GM + player) e2e asserting the server rolls back a player's illegal drag.
+
+---
+
+## Task 14a: GM authoring control for a scene's grid kind + size (client)
 
 **Files:**
-- Create or modify: `src/client/shell/e2e/hex-movement.spec.ts` (Playwright, matching this repo's established e2e conventions — reuse `loginAsGmAndEnterTestWorld`-style helpers per the existing e2e specs in `src/client/shell/e2e/`)
+- Modify: `src/modules/game-settings/src/GameSettingsPanel.svelte` (the per-scene `<fieldset>` — add a grid-kind `<select>` and grid-size `<input>` alongside the existing `/engine/grid/distance` controls at ~lines 484–504)
+- Modify: the game-settings i18n locale file(s) — add `gameSettings.scene.gridKind` + `gameSettings.scene.gridSize` keys (grep `"distancePerCell"` under `src/` to locate the exact locale JSON, and add the new keys beside it in EVERY locale file present, not just one)
+- Test: `src/modules/game-settings/` component/unit test (follow the package's existing test convention; if the panel has no spec yet, add a focused Vitest spec asserting the new controls dispatch the right intent)
 
-**Interfaces:** No production client code change — `grid.ts`'s hex math is already correct (per the design doc's context section). This test proves a hex scene's move request now genuinely round-trips through real server-side gating (Tasks 1-13) instead of the server silently treating it as square underneath.
+**Interfaces:** No new engine/wire type — `SceneEngine.grid` already is `{ kind: "square" | "hex", size: number, distance: {...} | null }` (`buildSceneDoc`'s default is `{ kind: "square", size: 100, distance: null }`). The client is ALREADY hex-aware end-to-end (`Stage.svelte`'s `onDocs` reads `engine.grid.kind`/`.size` → `e.setGrid(spec)`; `render/src/grid.ts` implements the hex math), so exposing this control is the ONLY missing piece for a GM to author and render a hex scene. This task adds no server, wire, or render code.
 
-- [ ] **Step 1: Read an existing e2e movement spec for conventions**
+Key correctness constraints (mirror the rest of this panel):
+- Grid kind/size are per-scene INTRINSIC values, NOT inherit-from-world tri-states (there is no world-level grid kind) — so they follow the panel's plain-value pattern (like the `bounds` width/height controls at ~lines 507–518), NOT the `"" = inherit` tri-state used by the vision/lighting overrides. No `<option value="">inherit</option>`.
+- OCC pre-image MUST be the field's real current value: `setScene("/engine/grid/kind", ssys.grid?.kind ?? "square", newKind)` and `setScene("/engine/grid/size", ssys.grid?.size ?? 100, newSize)`. Never a hardcoded pre-image (the panel-wide OCC rule — see the `set`/`setScene` doc comments).
+- Kind `<select>` options are exactly `["square", "hex"]` (declare `const GRID_KIND = ["square", "hex"] as const;` alongside the file's other option arrays). Size is a number `<input min="1" step="1">`.
+- Do NOT change `Stage.svelte`'s bootstrap `grid: { kind: "square", size: 100 }` or `buildSceneDoc`'s square default — square stays the sensible default; this control lets the GM switch a scene to hex.
 
-Read an existing scene/movement-related Playwright spec in `src/client/shell/e2e/` for setup/teardown/world-creation conventions (per this repo's established pattern, already used by prior e2e specs like `panels.spec.ts`).
+- [ ] **Step 1: Write the failing test** — a Vitest spec asserting that changing the kind select to `"hex"` dispatches an `update` intent with a `/engine/grid/kind` change whose `new` is `"hex"` and `old` is the scene's current kind; likewise the size input for `/engine/grid/size`.
+- [ ] **Step 2: Implement** the two controls + i18n keys, following the per-scene fieldset's exact `setScene` pattern.
+- [ ] **Step 3: Gate** `pnpm --filter @shadowcat/game-settings test && pnpm --filter @shadowcat/game-settings typecheck` (+ the repo lint).
+- [ ] **Step 4: Commit** `feat(client/game-settings): GM control to set a scene's grid kind (square/hex) + size`.
 
-- [ ] **Step 2: Write the failing e2e test**
+---
 
-```typescript
-test("a move request on a hex scene is gated by the real server, not just client math", async ({ page }) => {
-  await loginAsGmAndEnterTestWorld(page); // match the repo's existing e2e setup helper
-  await createHexSceneWithWall(page); // via the scene browser UI + scene-tools wall-drawing, per this repo's e2e conventions for scene setup
+## Task 14b: Surface the server's move-resolution outcome as a stage observability signal (client)
 
-  // Attempt a move that a correct hex-aware server gate must reject (crosses the wall).
-  const result = await attemptTokenMoveAcrossWall(page);
-  await expect(result).toBeRejectedOrTruncated(); // exact assertion mechanics depend on this
-  // repo's established move-request e2e pattern — match whatever existing square-scene move e2e
-  // spec (if any) already asserts a wall-blocked move, mirroring its structure for hex.
-});
+**Files:**
+- Modify: `src/modules/stage/src/Stage.svelte` (add `host.dataset.lastMoveOutcome`, fed by the move-resolution callback path, mirroring `onPing` → `host.dataset.lastPing` at ~lines 166–169 and its teardown at ~line 192)
+- Possibly modify: `src/client/ui-kit/src/appContext.ts` and/or `src/client/shell/src/lib/worldSession.svelte.ts` — ONLY if no existing ctx callback already surfaces the local player's move resolution; if one must be added, mirror the existing `onPing`/`onAssetChanged` subscription seam exactly (no new architecture)
+- Test: `src/modules/stage/src/Stage.test.ts` — assert the dataset signal updates on a simulated move resolution
+
+**Interfaces:** A new read-only observability attribute `data-last-move-outcome` on `.stage-host`, valued as a stable token string — `"executed"`, `"truncated"`, or `"rejected"` (optionally suffixed with the resolved end cell, e.g. `"truncated:3,2"`, only if trivially available). Mirrors the existing `data-last-ping`/`data-token-count`/`data-vision-mode` signals the stage already emits. No behavior change to movement — this only exposes an outcome the client already receives.
+
+- [ ] **Step 1: Map the move-resolution data flow FIRST (do not assume a callback exists).** Trace how a move resolution reaches the client for the LOCAL player's own token: `MoveError` (mover-only reject, `ws/conn.rs`'s `etx` path) and `MoveStream` (executed/truncated trajectory, the M2 egress with its `truncated` flag). Read `worldSession.svelte.ts`, `appContext.ts`, `render/src/engine.ts`, and `scene-tools/src/controller.svelte.ts` to find where each is received today and whether the reject reason / truncation flag is already surfaced to any client seam. Report the actual flow. **If Step 1 finds the client genuinely never learns a move was server-rejected/truncated, STOP and report** — that is itself a real product gap worth a design decision, not something to paper over with a hollow always-`"executed"` signal.
+- [ ] **Step 2: Write the failing test** — drive a fake move resolution through the seam Step 1 identified; assert `host.dataset.lastMoveOutcome` becomes the expected token.
+- [ ] **Step 3: Implement** — wire the callback in Stage's init `$effect` (alongside `offPing = onPing(...)`), set `host.dataset.lastMoveOutcome`, and add its teardown to the cleanup return (mirror `offPing?.()`).
+- [ ] **Step 4: Gate** `pnpm -r test && pnpm -r typecheck && pnpm -r lint`.
+- [ ] **Step 5: Commit** `feat(client/stage): expose server move-resolution outcome as data-last-move-outcome`.
+
+---
+
+## Task 14d: Route `Room::publish`'s movement gate through `GridShape` (hex-correct the drag path) `[sec]`
+
+**Files:**
+- Modify: `src/server/src/ws/room.rs` (the M10e-4 movement-restriction gate in `publish`, ~lines 256–287 — replace the direct `movement::supercover_cells(a0, a1, cell)` at ~line 263–264 with the scene's resolved `GridShape::line_traversal`)
+- Modify: `src/server/src/scene/move_exec.rs` (doc-comment lines ~20–23 and ~232–234 — update the stale "same `supercover_cells`" / "agree on every cell" wording to reflect that both paths now route through `GridShape::line_traversal`, on both grid kinds)
+- Test: `room.rs`'s test module — add a hex-scene publish-gate test
+
+**Interfaces:**
+- Consumes: `SceneEcs::resolve_grid_shape(&self, scene: Uuid, cell: f64) -> Box<dyn GridShape>` (Task 12) — the SAME resolution `execute_move` uses internally (`move_exec.rs:309`).
+
+`[sec]`: this is the movement-restriction secrecy gate (Visible/Revealed modes prevent moving into unseen cells — a fog-probing vector). Mandatory two-reviewer opus-tier buddy-check.
+
+- [ ] **Step 1: Write the failing/pinning hex test** — a hex scene (`grid.kind="hex"`) with `movementRestriction="visible"`, a non-GM player token, and a visible/unseen hex-cell split. Assert a drag whose HEX line-traversal enters an unseen hex cell is rejected (`Err(Forbidden)`) while an in-mask hex drag is accepted. At minimum, assert `publish`'s gate and `move_exec::execute_move` return the SAME accept/reject for the SAME hex move + visible set (the documented "agree on every cell" invariant, now on hex). Mirror the existing `movement_blocked_for_player_crossing_wall_but_gm_bypasses` fixture (~room.rs:935).
+
+- [ ] **Step 2: Apply the one-call-site fix**
+```rust
+let grid = scene.resolve_grid_shape(scene_id, cell);
+let Some(move_cells) = grid.line_traversal(a0, a1, cell) else {
+    return Err(DataError::Forbidden);
+};
 ```
+Reuse the `cell` already resolved just above. Do NOT touch the wall gate (`blocks_move` — pure geometry, grid-agnostic). Preserve the `None` → `Err(Forbidden)` fail-closed branch exactly.
 
-(Confirm the exact helper names/assertion mechanics against this repo's REAL existing e2e conventions before finalizing — the snippet above is illustrative of the required behavior, not literal existing helpers, per this codebase's established plan-writing convention for e2e specs whose exact scaffolding isn't yet confirmed.)
+- [ ] **Step 3: Confirm square parity** — every existing square publish-gate test passes UNCHANGED (`SquareGrid::line_traversal` delegates to `supercover_cells` verbatim). Do not modify those tests.
 
-- [ ] **Step 3: Run test to verify it fails or passes**
+- [ ] **Step 4: Update the move_exec.rs doc-comments** so they no longer claim the two gates share `supercover_cells` — they now share `GridShape::line_traversal`, agreeing on every cell on BOTH grid kinds.
 
-Run: `pnpm --filter @shadowcat/shell exec playwright test hex-movement`
-Expected: PASS if Tasks 1-13 are correctly wired (the server now genuinely gates hex movement); if it fails, that means some Task 1-13 wiring gap remains — do not adjust this test to pass trivially, fix the actual gap.
+- [ ] **Step 5: Full server gate** — `cargo test --manifest-path src/server/Cargo.toml --all-targets && cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -D warnings`.
 
-- [ ] **Step 4: Full client gate**
+- [ ] **Step 6: Commit** `fix(server/scene): route Room::publish's movement gate through GridShape (hex-correct drag path) [sec]`.
 
-Run: `pnpm -r test && pnpm -r typecheck && pnpm -r lint`
+- [ ] **Step 7: Mandatory security buddy-check** — two independent opus-tier reviewers confirm: (a) byte-identical for square scenes (every existing gate test unchanged); (b) the hex path gates on hex cells matching `execute_move` + the hex-aware `visible_cells_cached` mask; (c) no new path widens the mask (fail-closed preserved); (d) `publish` and `execute_move` genuinely agree on hex, closing the invariant violation.
+
+---
+
+## Task 14c: Client end-to-end test — a NON-GM player's illegal hex move is rolled back by the server
+
+**Files:**
+- Create: `src/client/shell/e2e/hex-movement.spec.ts`
+
+**Interfaces:** No production MOVEMENT change — depends on Task 14a (hex authoring UI) and Task 14d (hex-correct `publish` gate), plus the already-landed `ToolRail` fix (commit `73b44bd`). This is the FIRST multi-session (two-account) e2e in the suite: it proves a NON-GM player, on a hex scene authored through the real UI, has an illegal token move gated by the server. GMs bypass the movement gate entirely (`room.rs:215`), so a GM-only spec cannot prove server-side gating — hence the player account. The existing specs authenticate only as the world-owner GM; this task establishes the player-account pattern.
+
+Key facts to build on:
+- A non-GM player crossing a `blocksMove` WALL is rejected by `Room::publish` regardless of restriction mode (`blocks_move` is checked unconditionally for non-GM, before the `Unrestricted` short-circuit) — the simplest reliably-automatable gated scenario. The hex-SPECIFIC mask/line-traversal gate that Task 14d fixes is unit/integration-proven at the server level in Task 14d; 14c's job is the full-stack player round-trip, which the wall path exercises without needing a vision/lighting fixture.
+- The select/move DRAG writes `/engine/x,y` via an optimistic Update; on server rejection the client rolls back, reverting the token's committed position.
+
+- [ ] **Step 1: Establish the two-session + player-account pattern and the rollback observable — investigate FIRST; STOP-and-report if it needs infra beyond this task's reasonable scope.**
+  - Determine how a second (non-GM) player account authenticates and JOINS the GM's world in Playwright (read the auth/login flow + how a non-owner joins a world — invite/join path, or any logged-in user joins by world id/name?). Use a second `browser.newContext()`/page for the player session.
+  - Determine how to OBSERVE that the player's dragged token was rolled back (its committed `/engine/x,y` never crossed the wall). If no DOM-observable for a token's position exists, add a MINIMAL, test-only one, mirroring the existing stage `data-*` signal pattern (e.g. a tracked-token position attribute) — NOT a movement change.
+  - If the player-join flow or the rollback observable genuinely needs infrastructure beyond a focused addition (e.g. no non-owner can join a world yet), STOP and report — a real product gap for a design decision, not something to fake.
+
+- [ ] **Step 2: Write the e2e** — GM session: log in, create world, author a hex scene via Task 14a's grid-kind control, draw a wall, ensure a token the player owns exists on one side (confirm how token ownership is assigned — GM places a player-owned token, or the player places their own via the real ownership flow). Player session: join the same world, select that token, drag it so its path crosses the wall. Assert the server rejected it — the token's committed position never crossed the wall (via the Step-1 observable), i.e. the optimistic drag was rolled back.
+
+- [ ] **Step 3: Run** `pnpm --filter <shell package> exec playwright test hex-movement` (confirm the shell package's real filter name from its `package.json`). Iterate to a genuine pass; a failure revealing a real gap is a finding to report, never to paper over.
+
+- [ ] **Step 4: Full client gate** `pnpm -r test && pnpm -r typecheck && pnpm -r lint`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/client/shell/e2e/hex-movement.spec.ts
-git commit -m "test(client/e2e): hex-scene move request is gated by the real server
+git add -A
+git commit -m "test(client/e2e): a non-GM player's illegal hex-scene move is rolled back by the server
 
-Closes the coverage gap this whole plan exists to fix — a hex scene's
-move request now genuinely round-trips through server-side wall/mask
-gating instead of relying on the client's own (already-correct) math
-being the only thing standing between a player and an illegal move."
+First two-session (GM + player) e2e in the suite. A player, on a hex scene
+authored through the real game-settings grid-kind control, drags a token
+across a wall; the server's Room::publish gate rejects the optimistic
+Update and the client rolls the position back — proving server-side
+movement authority holds end-to-end for a real player on a hex scene."
 ```
+
+---
+
+## Task 14e: Systematic hex-correctness sweep of the movement/vision/explored/region secrecy family `[sec]`
+
+**Why:** the 14d buddy-check confirmed the original GridShape refactor (Tasks 1–13) was incomplete — its grep was scoped to `scene/` and the Task-6 parity gate only exercised strict-mode paths. A dispatcher audit of ALL of `src/server/src` found the "square index-range → `cell_center`" candidate-cell enumeration (and other square cell math) recurs, un-migrated, at several secrecy-relevant production sites. On a hex scene these compute cells in a square interpretation while the rest of the pipeline is hex — a fog-probe-widening / gameplay-correctness class of bug. This task closes the whole class in one coherent, parity-gated pass. `[sec]` throughout where it touches the movement/vision mask.
+
+**Confirmed sites (dispatcher-verified against source):**
+- `ExploredSet::mark_polygons` (`explored.rs:72–90`) — square index range + `(i+0.5)*cell` centers; feeds the `Revealed` movement gate + `pathfind`'s revealed union.
+- `accumulate_visible_cells` (`mod.rs:2048–2051` range; `2067–2072` lenient corners) — the move/vision mask (center already hex; range + corners still square). The corners are the item Task 5 explicitly deferred and never revisited.
+- `player_lit_mask` (`mod.rs:1589–1602`) — secrecy egress; Task 5b migrated the center but not the candidate range.
+- `regions::rasterize` (`regions.rs:79–108`) enumeration + `execute_move`'s region `to_cell` (`move_exec.rs:297–298`) — region (impassable/arrest) gating on hex.
+- `pathfinding.rs:547–550` A* search window — assess whether the square-derived window clips reachable hex cells.
+- `navmesh.rs` `clip_to_visible_mask` / `los_smooth::chord_ok` / `truncate_at_arrest` — **added by 14e-6's audit; see Task 14e-7.** This audit originally excused them as "the continuous-model router, orthogonal to grid kind." That reasoning was backwards: grid kind and movement model are INDEPENDENT axes, so they combine (`hex` + `continuous`) rather than exclude. Independence is a reason to check a site, never a reason to skip it — the same inference error that let `ws/room.rs` (14d) ship square-on-hex.
+- (Legitimate square, DO NOT touch: `SquareGrid`'s own impls behind the trait — `pathfinding.rs`'s free `cell_center`/`footprint_cells`/`cell_of`, `movement.rs`'s `supercover_cells` internals.)
+
+**Design (the unifying primitives):** add to the `GridShape` trait:
+- `fn cells_in_bounds(&self, min: vision::P, max: vision::P, cell: f64) -> Option<Vec<Cell>>` — candidate cells whose geometry could overlap the pixel-space AABB. `SquareGrid` returns EXACTLY today's `floor(min/cell)..=floor(max/cell)` index rectangle (byte-identical). `HexGrid` converts the 4 AABB corners via `cell_of`, takes the padded axial bounding box (safe superset — axial↔pixel is affine, so a pixel rectangle's axial preimage is a bounded parallelogram), and enumerates it. `None` on the same DoS-cap/degenerate conditions the existing per-site `MAX_CELLS_PER_POLYGON` checks enforce (preserve the cap).
+- `fn cell_vertices(&self, c: Cell, cell: f64) -> Vec<vision::P>` — the cell's polygon vertices for leniency corner-clip tests. `SquareGrid` → the existing 4 corners; `HexGrid` → the 6 pointy-top hex vertices.
+
+Every migrated site keeps its per-cell center/vertex membership test unchanged; only the candidate ENUMERATION and the corner geometry move behind the trait. Square behavior MUST stay byte-identical — extend the Task-6 frozen-fixture parity battery to cover each migrated site, and it must stay green.
+
+### Task 14e-1: Add `cells_in_bounds` + `cell_vertices` to `GridShape` (both impls, unit-tested, not yet wired)
+- Add both methods to the trait + `SquareGrid` (byte-identical to the current square math) + `HexGrid` (correct axial enumeration + 6 vertices). Unit tests: square `cells_in_bounds` equals the current `floor` rectangle for representative AABBs; hex `cells_in_bounds` is a superset that includes every cell whose center lies in the AABB and stays within a bounded pad; `cell_vertices` returns 4 (square) / 6 (hex) correct points. Full server gate + commit. Not yet `[sec]` (no wiring).
+
+### Task 14e-2: Migrate the vision/movement mask enumeration `[sec]`
+- Route `accumulate_visible_cells` (candidate range → `cells_in_bounds`; lenient corners → `cell_vertices`) AND `player_lit_mask`'s own bbox scan through the primitives. Preserve the `MAX_CELLS_PER_POLYGON` cap (now via `cells_in_bounds`' `None`). Square byte-identical (extend Task 6's parity battery + confirm green). Add hex tests: an out-of-mask hex move-cell is EXCLUDED (the reject direction 14d's test lacked), and a lenient-corner-clip hex cell qualifies. Mandatory opus buddy-check.
+
+### Task 14e-3: Migrate `ExploredSet` through `GridShape` (Revealed mode) `[sec]`
+- Thread a `&dyn GridShape` into `ExploredSet::mark_polygons` (candidate range → `cells_in_bounds`, centers → `cell_center`) so explored cells are hex-indexed on hex scenes; update every caller (the `Revealed` gate in `Room::publish` + `Room::execute_move`, and `SceneEcs::pathfind`'s revealed union). Persistence note: the `(i32,i32)` byte format is unchanged; a scene's grid kind is fixed, so its stored blob has one consistent interpretation (a GM switching a live scene square↔hex reinterpreting an existing blob is an accepted edge, logged). Square byte-identical. Add a hex `Revealed`-mode gate test (a move into an unexplored+unseen hex cell is rejected; an explored one is allowed). Mandatory opus buddy-check.
+
+### Task 14e-4: Migrate region rasterization + region-cell lookup `[sec]`
+- Route `regions::rasterize`'s candidate enumeration through `cells_in_bounds` (center test already via `GridShape` from Task 4) and `execute_move`'s region `to_cell` through `grid.cell_of`, so region (impassable/arrest) gating aligns to hex cells and the rasterize-side and lookup-side agree on hex. Square byte-identical (Task 6 rasterize fixtures stay green). Add a hex region-gate test (an impassable/arrest hex region stops a hex move at the right hex cell). Buddy-check ([sec] — arrest/impassable is a movement-authority gate).
+
+### Task 14e-5: Pathfinding A* search window on hex
+- Assess `pathfinding.rs:547–550`'s window: does the square-derived index range clip hex cells the router must reach? If so, derive the window via `cells_in_bounds`/axial bounds; if provably a safe superset for hex already, document why and add a test proving a hex route near the window edge still resolves. Full gate + commit.
+
+### Task 14e-5b: Hex-admissible A* heuristic (route optimality on hex)
+- Discovered during 14e-5: `astar_leg`'s `heuristic(grid.rule, next, goal)` uses a `DiagonalRule`-based square distance (manhattan/euclidean/chebyshev). On hex axial coords with opposite-sign deltas it OVERESTIMATES the true hex distance → non-admissible → A* returns VALID but SUBOPTIMAL (longer-than-shortest) hex routes. NOT a secrecy/authority bug (routes stay gate-allowed via `cell_enterable`); a route-optimality correctness gap.
+- Fix: add `fn heuristic(&self, from: Cell, to: Cell) -> f64` to `GridShape`. `SquareGrid` returns the existing rule-based `heuristic(self.rule, ...)` (byte-identical). `HexGrid` returns the admissible axial (cube) distance `(|dq| + |dr| + |dq+dr|)/2`. Route `astar_leg` through `grid.shape.heuristic(next, goal)` instead of the free `heuristic(grid.rule, ...)`.
+- INVARIANTS: the heuristic must stay admissible (≤ true cost) so A* stays optimal; it only guides search ORDER, never gates a cell, so the `route ⊆ gate-allowed` superset invariant is untouched. Square byte-identical (existing `astar_tests` green).
+- Test: a hex route where the square heuristic would yield a suboptimal path — assert the returned route is the true shortest hex path (correct cost + length). Not `[sec]`.
+
+### Task 14e-6: Final audit confirmation + comprehensive hex integration tests
+- Re-run the whole-`src/server` grep for square cell-index/center math (`+ 0.5) * cell`, `/ cell).floor()`, raw `(i*cell, j*cell)` corner arrays) and confirm every remaining hit is a legitimate `SquareGrid` internal or genuinely grid-kind-agnostic. Add end-to-end hex integration tests spanning mask + Revealed + region + lenient on one hex scene, on the **grid-stepped** movement model (`navmesh.rs` is 14e-7's). `log()`-equivalent: record any deliberately-out-of-scope residual in `docs/TODO.md`. Full gate + commit.
+- OUTCOME: the audit found one category-3 site family → Task 14e-7. This task's earlier framing of `navmesh.rs` as "explicitly out of scope" was the misclassification 14e-7 corrects.
+
+### Task 14e-7: Route the continuous engine's cell indexing through `GridShape` `[sec]`
+- Found by 14e-6's audit and verified against source. `navmesh.rs` indexes route samples with square `floor(p/cell)` at three sites on the CONTINUOUS routing path — `clip_to_visible_mask` (`navmesh.rs:356–363`), `los_smooth::chord_ok` (`452–457`), `truncate_at_arrest` (`533–534`) — each using the free `pathfinding::footprint_cells` / `movement::supercover_cells` rather than the trait methods, then testing membership in `mask` (hex-axial since 14e-2) and `RegionField` (hex-axial since 14e-3/14e-4).
+- REACHABLE ON HEX: grid kind and movement model are independent axes. `resolve_grid_shape` (`mod.rs:712–722`) keys only on `SceneEngine.grid.kind`; `pathfind` (`mod.rs:1161`) dispatches only on `settings.movement_model`. `grid.kind:"hex"` + `movementModel:"continuous"` is a live scene. In the weighted branch the mismatch is inside ONE call chain: `mod.rs:1195` builds the hex-aware `euclid_shape`, `find` returns a hex-axial route, and `mod.rs:1213` feeds that route to `los_smooth`, which re-gates it with square indices.
+- FAILURE DIRECTION — BOTH. Axial and square are different affine maps into the same `(i32,i32)` space, so membership tests are effectively arbitrary. Worked over-reveal case on `hex_open_scene` (size 50): a sample inside hex `(0,2)` (center ≈`(86.6,150)`) has square index `(1,3)`, and axial `(1,3)` is a different, VISIBLE hex — so an occluded `(0,2)` passes the mask check. Under-reveal (spurious `Unreachable`) is the commoner direction at distance. `clip_to_visible_mask` is the ONLY fog gate on the pure-polyanya branch (the polyanya search itself is mask-blind) ⇒ genuine preview-route information disclosure: route shape reveals unseen wall/obstacle layout.
+- BLAST RADIUS BOUNDED (not a movement-authority bug): `move_exec`/`gate_walk` and the `publish` gate are hex-correct (14d/14e-3), so no movement into fog. Preview `PathResult` only, plus dishonest arrest/terrain preview on hex.
+- Fix: thread `&dyn GridShape` into all three functions; `to_cell` → `grid.cell_of`, `footprint_cells` → `grid.footprint_cells`, `supercover_cells` → `grid.line_traversal`. Square must stay byte-identical (Task-6 parity battery unchanged, no fixture edits).
+- Tests: hex + continuous regression coverage for each of the three sites — a mask-occluded sample truncating the clip, a chord refused by `chord_ok`, and an arrest landing on the correct axial cell. Each must be shown to fail under square indexing (non-vacuity), matching 14e-2/14e-3's discrimination standard.
+- `[sec]` + mandatory opus buddy-check (two reviewers).
 
 ---
 
@@ -1342,7 +1469,7 @@ being the only thing standing between a player and an illegal move."
 
 - [ ] **Step 1: Update the scene-rendering skill**
 
-Document the `GridShape` abstraction (`grid_shape.rs`, `SquareGrid`/`HexGrid`, `resolve_grid_shape`), note that `movement.rs`/`pathfinding.rs`/`accumulate_visible_cells`/`regions.rs::rasterize` now all route through it instead of hardcoded square math, and note the frozen-fixture parity gate (Task 6) as the regression-safety mechanism for this refactor — mirroring how the skill already documents the M10f-2 `gate_walk`/`execute_move_kingstep_oracle` precedent this plan's own regression strategy is modeled on.
+Document the `GridShape` abstraction (`grid_shape.rs`, `SquareGrid`/`HexGrid`, `resolve_grid_shape`), note that `movement.rs`/`pathfinding.rs`/`accumulate_visible_cells`/`regions.rs::rasterize` now all route through it instead of hardcoded square math, and note the frozen-fixture parity gate (Task 6) as the regression-safety mechanism for this refactor — mirroring how the skill already documents the M10f-2 `gate_walk`/`execute_move_kingstep_oracle` precedent this plan's own regression strategy is modeled on. Also record: (1) the new client authoring seam — `GameSettingsPanel`'s per-scene grid-kind/size control (Task 14a) is the product path that makes a hex scene reachable; (2) `Stage.svelte`'s `data-last-move-outcome` observability signal (Task 14b), fed by the measure-tool route-commit `moveRequest` path (now reachable after the `ToolRail`→`moveRequest` production fix, commit `73b44bd`); (3) the **`MoveStream` wire-gap** — server `MoveOutcome.truncated` (move_exec.rs) is never copied into `ServerMsg::MoveStream`, so the client infers truncated-vs-executed by comparing the mover's resolved `stop` against the requested goal (an arrest exactly AT the goal reads "executed" by design); a future consumer needing the authoritative bit should add it to the mover's frame like `mover_vision`/`cost`; (4) **both movement gates now route through `GridShape::line_traversal`** — `Room::publish`'s M10e-4 gate (Task 14d) as well as `execute_move` — closing the prior square-on-hex gap on the drag path and restoring the "publish and execute_move agree on every cell" invariant on both grid kinds.
 
 - [ ] **Step 2: Dispatch `shadowcat-spec-reviewer` to confirm the skill diff is accurate**
 
@@ -1363,7 +1490,9 @@ Reviewed by shadowcat-spec-reviewer: PASS."
 
 ## Self-Review
 
-**Spec coverage:** H1 (GridShape abstraction, not parallel modules) → Tasks 1-5, 12. H2 (SquareGrid/HexGrid concrete impls) → Task 1 (Square), Tasks 8-11 (Hex). H3 (frozen-fixture parity before cutover) → Task 6 (proof) + Task 7 (cutover/cleanup), sequenced strictly before Tasks 8-14 per the design doc's explicit ordering. H4 (uniform hex cost) → Task 9. H5 (no hex corner-tie bug class) → implicitly satisfied by Task 9's uniform-neighbor design (no parity/rule branching exists to have a corner-tie bug in). H6 (clean-room hex line-traversal) → Task 10. H7 (footprint radius stays scene-space) → Task 11 (the `r_scene` parameter is unchanged from the square signature). H8 (resolve GridShape from `grid.kind`, fail-closed) → Task 12. Testing section → Tasks 6 (parity), 13 (hex integration), 14 (client e2e). Scope boundaries (no new grid kind beyond square/hex, no client changes) → respected throughout; Task 14 explicitly notes no production client code change.
+**Spec coverage:** H1 (GridShape abstraction, not parallel modules) → Tasks 1-5, 12. H2 (SquareGrid/HexGrid concrete impls) → Task 1 (Square), Tasks 8-11 (Hex). H3 (frozen-fixture parity before cutover) → Task 6 (proof) + Task 7 (cutover/cleanup), sequenced strictly before Tasks 8-14 per the design doc's explicit ordering. H4 (uniform hex cost) → Task 9. H5 (no hex corner-tie bug class) → implicitly satisfied by Task 9's uniform-neighbor design (no parity/rule branching exists to have a corner-tie bug in). H6 (clean-room hex line-traversal) → Task 10. H7 (footprint radius stays scene-space) → Task 11 (the `r_scene` parameter is unchanged from the square signature). H8 (resolve GridShape from `grid.kind`, fail-closed) → Task 12. Testing section → Tasks 6 (parity), 13 (hex integration), 14a-c (hex authoring UI + move-outcome signal + client e2e round-trip).
+
+**Scope boundary correction (Tasks 14a-d):** the design doc's "no client changes" boundary assumed the client was already fully hex-authorable; executing Task 14 disproved that (no GM control sets `grid.kind`) AND surfaced that the design's server work itself was incomplete. The boundary is deliberately extended: 14a (client authoring control over the existing wire field), 14b (client move-outcome observability signal), **14d (a SERVER fix the original plan missed — `Room::publish`'s movement-restriction gate still used square `supercover_cells` on the drag path; `[sec]`)**, 14c (a two-session GM+player e2e proving a real player's illegal hex move is server-gated). No new grid kind beyond square/hex; no new wire type. 14d is a genuine correction to the design's own "give the server hex movement authority" goal — the drag path (the primary player-movement path) was not covered because Task 3's grep was scoped to `scene/` and missed `ws/room.rs`. Also fixed in passing: a shipped production bug (`ToolRail` never wired `moveRequest`, commit `73b44bd`). All logged in the design-doc §6 addendum; client-scope + 14d execution user-consented.
 
 **Placeholder scan:** No TBD/TODO in any task. Tasks 8/9's `unimplemented!()` stubs are intentional, explicitly-justified mid-plan scaffolding (each is completed by name in the very next task), not unresolved placeholders — flagged explicitly in Task 8's own text as a "confirm this compiles clean" checkpoint. Task 13/14's illustrative test snippets are explicitly flagged as needing confirmation against real fixture-helper names before finalizing, per this codebase's own established plan-writing convention for not-yet-confirmed e2e/integration scaffolding (matching how the approved design doc's own Task 39 precedent in the phase1-cleanup-burndown plan handled the same situation).
 

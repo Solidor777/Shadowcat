@@ -102,3 +102,22 @@ These are genuinely deferred to `writing-plans`, not unresolved design gaps:
 - Whether `HexGrid`'s footprint-disc-vs-hex-cell overlap test needs a bespoke hex geometry routine
   or can reuse `point_segment_distance`-style primitives against a hex cell's 6 edges — a
   planning/implementation-time detail.
+
+## 6. Scope extension (post-execution, 2026-07-22): minimal client authoring surface
+
+This design was written server-only ("Client ... unchanged by this design", §1), on the premise
+that the client was already fully hex-*authorable*. Executing the plan's client-e2e task
+(original Task 14) disproved that premise: `render/src/grid.ts` and `Stage.svelte` render hex
+correctly, but **no GM-facing control anywhere sets a scene's `grid.kind` to `"hex"`** — grid kind
+is not authorable in the product at all (`SceneBrowserPanel` create + `Stage.svelte` auto-create
+both hardcode/default square; `GameSettingsPanel` had no grid-kind control). Without it, every
+server task in this plan is unreachable: a GM cannot create a hex scene, and the e2e cannot author
+one to prove the round-trip.
+
+Per the project's Definition-of-Blocked rule (build a needed, unscoped, simple feature rather than
+deferring the proof), the plan's Task 14 is restructured into a **minimal, deliberately-logged**
+client extension — Task 14a (grid-kind/size authoring control in `GameSettingsPanel`, over the
+already-wire-typed `SceneEngine.grid` field), Task 14b (a `data-last-move-outcome` stage
+observability signal the e2e needs, mirroring the existing `data-last-ping` seam), Task 14c (the
+e2e itself). No render/wire/engine change; no new grid kind beyond square/hex. See the plan's
+"Scope extension (Tasks 14a-c)" section for task detail.
