@@ -258,11 +258,13 @@ impl Room {
                                 .get(&scene_id)
                                 .copied()
                                 .unwrap_or(100.0);
-                            // Supercover of the move segment; None ⇒ over-cap or degenerate
-                            // grid → fail closed (DoS guard, spec §8).
-                            let Some(move_cells) =
-                                crate::scene::movement::supercover_cells(a0, a1, cell)
-                            else {
+                            // Every cell the move segment crosses, via the scene's own
+                            // resolved grid shape (square supercover or hex cube-interpolation)
+                            // — the same primitive `move_exec::execute_move` gates against, so
+                            // this agrees with the executor on hex scenes too, not just square.
+                            // None ⇒ over-cap or degenerate grid → fail closed (DoS guard, spec §8).
+                            let grid = scene.resolve_grid_shape(scene_id, cell);
+                            let Some(move_cells) = grid.line_traversal(a0, a1, cell) else {
                                 return Err(DataError::Forbidden);
                             };
                             let lenient = settings.partial_cell_leniency;
@@ -1792,6 +1794,130 @@ mod room_tests {
         }
     }
 
+    /// Hex-grid variant of `movement_scene`: identical world-settings/token/light layout,
+    /// but the scene's `/engine` declares `grid.kind = "hex"` (`resolve_grid_shape` selects
+    /// `HexGrid`, not `SquareGrid`) — exercises the gate's hex cell-index path rather than
+    /// square. `scene.engine` must be set explicitly (unlike `movement_scene`'s square
+    /// fixture, which relies on `resolve_grid_shape`'s fail-closed square default and never
+    /// sets it): `scene_grid_sizes`/`resolve_grid_shape` read `SceneEngine` off `doc.engine`,
+    /// never `doc.system`.
+    async fn movement_scene_hex(restriction: &str, with_light: bool) -> MovementHandle {
+        use crate::data::document::DocRole;
+        use serde_json::json;
+
+        let (repo, world_id, gm) = repo_with_world().await;
+        let p = repo
+            .create_user("player", None, crate::auth::role::ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world_id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let (scene_id, token_id, ws_id, light_id) = (
+            Uuid::from_u128(0x5CE4),
+            Uuid::from_u128(0x5CE5),
+            Uuid::from_u128(0x5CE6),
+            Uuid::from_u128(0x5CE7),
+        );
+
+        let mut ws = wdoc(world_id, ws_id, "world-settings");
+        ws.owner = Some(gm.user_id);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#000000", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": restriction,
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        ws.engine = Some(ws_engine(ws.system.clone()));
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut scene = wdoc(world_id, scene_id, "scene");
+        scene.owner = Some(gm.user_id);
+        scene.system = json!({ "grid": { "kind": "hex", "size": 100 } });
+        scene.engine =
+            Some(json!({ "grid": { "kind": "hex", "size": 100.0 }, "background": null }));
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut token = wdoc(world_id, token_id, "token");
+        token.parent_id = Some(scene_id);
+        token.owner = Some(p);
+        token.permissions.users.insert(p, DocRole::Owner);
+        token.engine = Some(token_engine(50.0, 50.0));
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: token }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        if with_light {
+            let mut light = wdoc(world_id, light_id, "light");
+            light.parent_id = Some(scene_id);
+            light.owner = Some(gm.user_id);
+            light.system = json!({
+                "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true
+            });
+            light.engine = Some(light.system.clone());
+            room.publish(
+                &repo,
+                &gm,
+                vec![Operation::Create { doc: light }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+        }
+
+        MovementHandle {
+            room,
+            repo,
+            gm,
+            player,
+            world_id,
+            scene_id,
+            token_id,
+            start: (50.0, 50.0),
+            lit_goal: (50.0, 150.0),
+            adj: (150.0, 50.0),
+            adj2: (250.0, 50.0),
+        }
+    }
+
     /// Two lit pockets (near (50,50) and far (950,950)) with a dark gap between
     /// cells 2–8. movementRestriction="visible", partialCellLeniency=false.
     async fn movement_scene_two_lit_pockets() -> MovementHandle {
@@ -2193,6 +2319,38 @@ mod room_tests {
             )
             .await;
         assert!(matches!(blocked, Err(crate::data::DataError::Forbidden)));
+    }
+
+    #[tokio::test]
+    async fn movement_restriction_hex_grid_discriminates_on_hex_cells_not_square() {
+        // Regression for the pre-fix gate: `Room::publish` called the SQUARE
+        // `movement::supercover_cells` free function even on a hex scene, testing
+        // square-indexed cells against a hex-indexed (`visible_cells_cached`) mask — two
+        // incompatible coordinate systems. The fix routes the gate through the scene's own
+        // `resolve_grid_shape(...).line_traversal(...)`, the same primitive
+        // `move_exec::execute_move` already uses, so the two now agree on hex scenes too.
+        //
+        // Move geometry (hex size=100, light at (50,50), brightRadius=150, dimRadius=300):
+        // the hex traversal of (50,50)->(250,50) is exactly {(0,0),(1,0)} — both within the
+        // light's bright radius, so the move must be ALLOWED. The pre-fix square supercover
+        // of the SAME segment is {(0,0),(1,0),(2,0)}: reinterpreting square cell (2,0) as a
+        // HEX axial coordinate lands its center ~300.6 world units from the light (just past
+        // dimRadius), so the pre-fix code rejects this exact move as Forbidden.
+        let h = movement_scene_hex("visible", /*with_light=*/ true).await;
+        let dest = (250.0, 50.0);
+
+        let op = h.mv_to(dest.0, dest.1).await;
+        h.room
+            .publish(&h.repo, &h.player, vec![op], 0, WriteOrigin::Client)
+            .await
+            .expect("gate must allow a move whose HEX traversal is fully within the light");
+
+        // GM bypasses the visibility gate (unchanged behavior, mirrors the square tests).
+        let op = h.mv_to(2000.0, 2000.0).await;
+        h.room
+            .publish(&h.repo, &h.gm, vec![op], 0, WriteOrigin::Client)
+            .await
+            .unwrap();
     }
 
     // -----------------------------------------------------------------------

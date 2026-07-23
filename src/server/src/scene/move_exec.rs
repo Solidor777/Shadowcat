@@ -18,10 +18,12 @@
 //! region-arrest), including a region-arrest on the final path step.
 //!
 //! INVARIANT (spec §13 / M10e-4 per-cell parity): step 2 calls the SAME
-//! `crate::scene::movement::supercover_cells(prev, next, cell)` and checks
-//! `all ∈ visible` that the M10e-4 gate in `Room::publish` does. The caller
-//! pre-computes `visible` off the ECS read lock (mirroring `publish`'s
-//! `visible_cache`), so this executor is pure and imposes no lock ordering.
+//! `GridShape::line_traversal(prev, next, cell)` (via `ecs.resolve_grid_shape`) and checks
+//! `all ∈ visible` that the M10e-4 gate in `Room::publish` does — square delegates to
+//! `movement::supercover_cells`, hex to cube-coordinate interpolation, so the two callers agree
+//! on every cell on BOTH grid kinds, not square alone. The caller pre-computes `visible` off the
+//! ECS read lock (mirroring `publish`'s `visible_cache`), so this executor is pure and imposes
+//! no lock ordering.
 //!
 //! Coupling: `token_position` is the ECS committed-position seam; any rename
 //! must update both this caller and `token_move` in `scene/mod.rs`.
@@ -230,10 +232,11 @@ pub(crate) enum MoveReject {
 /// # Parity with M10e-4 (`Room::publish`) — per-cell decision only
 ///
 /// The per-cell decision (step 1 + step 2) uses the SAME primitives as the M10e-4 gate in
-/// `Room::publish`: `blocks_move`, `supercover_cells`, and the pre-computed `visible` set.
-/// This executor and the legacy single-step `publish` gate agree on every cell for every
-/// restriction mode. For a grid input this executor is byte-identical in outcome to the
-/// pre-M10f-2 king-step executor (proved via a differential oracle during M10f-2 and now
+/// `Room::publish`: `blocks_move`, `GridShape::line_traversal` (square supercover or hex
+/// cube-interpolation, per `ecs.resolve_grid_shape`), and the pre-computed `visible` set.
+/// This executor and the `publish` gate agree on every cell for every restriction mode, on
+/// BOTH square and hex scenes. For a grid input this executor is byte-identical in outcome to
+/// the pre-M10f-2 king-step executor (proved via a differential oracle during M10f-2 and now
 /// frozen as literal fixtures — see
 /// `frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes`).
 ///
