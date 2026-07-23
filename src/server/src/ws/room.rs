@@ -246,7 +246,12 @@ impl Room {
                             // duplicated) so the two movement gates agree on which inputs are
                             // admissible, not merely on which cells are visible. Checked for every
                             // restriction mode — including `Unrestricted`, which `gate_walk` also
-                            // bounds — so the agreement holds in all modes. Beyond the bound the
+                            // bounds — so the agreement holds in all modes. SCOPE: this whole block
+                            // is non-GM only, while `gate_walk` bounds unconditionally, so a GM
+                            // drag (or the deliberately ungated `Create` placement path above) can
+                            // still commit an over-bound coordinate. That token's own later non-GM
+                            // moves are then permanently rejected by the `a0` test below —
+                            // fail-closed, and consistent with the GM-override design. Beyond the bound the
                             // downstream primitives lose their guarantees (`gate_walk`'s
                             // magnitude-scaled identity tolerance, `HexGrid::line_traversal`'s
                             // absolute `VERTEX_PROBE` offset), so an over-magnitude endpoint fails
@@ -2574,8 +2579,10 @@ mod room_tests {
     #[tokio::test]
     async fn publish_move_gate_admissibility_bound_equals_gate_walks() {
         // Anti-drift: the two gates share ONE constant and ONE comparison sense (strictly `>`).
-        // Exercised behaviorally at the exact boundary so a future edit to either side that
-        // changes the value or flips `>` to `>=` breaks this test.
+        // Exercised behaviorally at the exact boundary. Both gates read the one shared symbol, so
+        // changing its VALUE moves them together and correctly breaks nothing here; what this
+        // detects is an edit that stops sharing the constant (one side hardcoding a literal), or
+        // that flips `>` to `>=` on either side.
         use crate::scene::move_exec::{gate_walk, MAX_GATE_WALK_COORD};
         let cell = 100.0_f64;
         let at = MAX_GATE_WALK_COORD;
