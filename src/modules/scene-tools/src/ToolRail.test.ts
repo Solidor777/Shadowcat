@@ -4,7 +4,8 @@ import type { SceneTool } from "@shadowcat/render";
 import { SceneInteractionBridge } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildSceneDoc, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildSceneDoc, buildTokenDoc, type WireOperation } from "@shadowcat/core";
+import { TokenSelection } from "@shadowcat/ui-kit";
 import ToolRail from "./ToolRail.svelte";
 import toolRailSource from "./ToolRail.svelte?raw";
 
@@ -59,6 +60,61 @@ test("the measure and ping tools are available and activate", async () => {
   await fireEvent.click(screen.getByTestId("tool-ping"));
   expect(tools.at(-1)).not.toBeNull();
   expect(screen.getByTestId("tool-ping").getAttribute("aria-pressed")).toBe("true");
+});
+
+// Regression: AppContext.moveRequest exists (setAppContextForTest defaults it, and
+// commitRoute's own unit tests in measure-tool.test.ts prove the commit logic works when
+// wired) but ToolRail's `new ToolController({...})` call omitted the field, so the
+// double-click route-commit was permanently unreachable through the real UI — silently
+// falling back to `commitRoute`'s "moveRequest absent" no-op every time, regardless of
+// connection state. Drives the tool instance ToolRail itself hands to the scene bridge,
+// exactly as the render engine would via real pointer events.
+test("the measure tool's double-click route-commit reaches AppContext.moveRequest (ToolRail must wire it into the controller)", async () => {
+  const docs = sceneStore();
+  docs.applyCommand({
+    seq: 2, world_id: "w1", author: "a", ts: 0,
+    ops: [{
+      op: "create",
+      doc: buildTokenDoc("w1", "s1", {
+        x: 0, y: 0, w: 100, h: 100, rotation: 0,
+        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null,
+      }, "tok1"),
+    }],
+  });
+  const sel = new TokenSelection();
+  sel.set(["tok1"]);
+
+  const moves: Array<{ tokenId: string; path: [number, number][] }> = [];
+  const { scene, tools } = captureScene();
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm",
+      scene,
+      documents: docs,
+      tokenSelection: sel,
+      pathfind: async () => ({ path: [[0, 0], [100, 0]], cost: 1, arrested: false }),
+      moveRequest: async (_s, tokenId, path) => {
+        moves.push({ tokenId, path });
+        return {
+          requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0,
+          durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1,
+        };
+      },
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-measure"));
+  const tool = tools.at(-1)!;
+
+  // Double-click commit gesture (mirrors measure-tool.test.ts's own commit tests).
+  const ev = {} as PointerEvent;
+  tool.onPointerDown({ x: 100, y: 100 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  tool.onPointerDown({ x: 100, y: 100 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  await new Promise((r) => setTimeout(r, 0)); // drain the pathfind/moveRequest microtasks
+
+  expect(moves.length).toBe(1);
+  expect(moves[0].tokenId).toBe("tok1");
 });
 
 test("a non-GM sees no tool buttons", () => {

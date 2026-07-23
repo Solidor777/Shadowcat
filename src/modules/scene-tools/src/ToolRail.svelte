@@ -18,6 +18,7 @@
     world: ctx.world,
     sendPing: ctx.sendPing,
     pathfind: ctx.pathfind,
+    moveRequest: ctx.moveRequest,
     viewedSceneId: () => ctx.viewedSceneId,
   });
   const t = ctx.t;
