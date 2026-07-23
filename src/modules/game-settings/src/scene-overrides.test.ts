@@ -150,31 +150,37 @@ describe("per-scene overrides", () => {
     ]);
   });
 
-  it("setting grid kind writes to the scene grid", async () => {
+  it("setting grid kind writes to the scene grid, reading the pre-image from the doc", async () => {
+    // Pre-populates a NON-default grid (kind "hex", not the buildSceneDoc default "square") so a
+    // hardcoded pre-image (e.g. `old: "square"`) would fail this assertion, proving `old` is read
+    // from `ssys.grid?.kind`, not assumed — mirrors the movementModel-clear test's discriminating pattern.
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
-    const scene = buildSceneDoc("w1", {}, "scene1");
+    const scene = buildSceneDoc("w1", { grid: { kind: "hex", size: 50, distance: null } }, "scene1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
 
     const sel = screen.getByLabelText("gameSettings.scene.gridKind") as HTMLSelectElement;
-    await fireEvent.change(sel, { target: { value: "hex" } });
+    await fireEvent.change(sel, { target: { value: "square" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/grid/kind", old: "square", new: "hex" }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/grid/kind", old: "hex", new: "square" }] },
     ]);
   });
 
-  it("setting grid size writes to the scene grid", async () => {
+  it("setting grid size writes to the scene grid, reading the pre-image from the doc", async () => {
+    // Pre-populates a NON-default size (50, not the buildSceneDoc default 100) so a hardcoded
+    // pre-image (e.g. `old: 100`) would fail this assertion, proving `old` is read from
+    // `ssys.grid?.size`, not assumed.
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
-    const scene = buildSceneDoc("w1", {}, "scene1");
+    const scene = buildSceneDoc("w1", { grid: { kind: "hex", size: 50, distance: null } }, "scene1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
 
     const input = screen.getByLabelText("gameSettings.scene.gridSize") as HTMLInputElement;
-    await fireEvent.change(input, { target: { value: "70" } });
+    await fireEvent.change(input, { target: { value: "80" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/grid/size", old: 100, new: 70 }] },
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/grid/size", old: 50, new: 80 }] },
     ]);
   });
 
