@@ -386,3 +386,81 @@ fn rasterize_parity_polygon_pins_full_cell_vec() {
     let cells = rasterize(&shape, 100.0, &sq()).unwrap();
     assert_eq!(cells, vec![(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (2, 0)],);
 }
+
+// -------------------------------------------------------------------------------------------
+// Fixture 5: visible_cells under LENIENCY — byte-identity proof for the corner geometry.
+//
+// Fixture 3 pins the STRICT (center-only) set; leniency is the only mode where a cell's CORNERS
+// decide membership, so this fixture pins the set that `accumulate_visible_cells`'s
+// `GridShape::cell_vertices` corner geometry and pixel-space `pad_px` candidate expansion must
+// reproduce exactly for a square grid.
+//
+// One owned instanced token at (30,30) (unlimited "normal" vision), all-bright, LOS off, cell 100,
+// authored bounds 520x520. `source_los_poly` is therefore the rectangle [-70,520] x [-70,520]
+// (bound_for_scene: min(30-100,0)=-70 on each low edge, max(30+100,520)=520 on each high edge).
+// Every coordinate below is DERIVED, none run-copied:
+//   STRICT: a cell qualifies iff its CENTER ((i+0.5)*100) lies in [-70,520] -> i,j in [-1,4].
+//   LENIENT: also qualifies iff any CORNER (a multiple of 100) lies in the rectangle. A corner
+//   coordinate k*100 is inside iff -70 < k*100 < 520 -> k in {0,1,2,3,4,5}; a cell has an inside
+//   corner iff i in [-1,5] AND j in [-1,5]. The edges (-70, 520) are non-multiples of 100, so no
+//   corner ever lands on an edge -> every corner test is unambiguous. Union -> lenient = [-1,5]^2.
+// The 13 cells present ONLY under leniency (column i=5 + row j=5) are exactly what `cell_vertices`
+// must reproduce; a center-only regression collapses lenient onto strict, and mis-wired square
+// corner geometry diverges here.
+// -------------------------------------------------------------------------------------------
+
+fn lenient_corner_open_scene() -> (SceneEcs, Uuid, Uuid) {
+    let user = Uuid::from_u128(7);
+    let scene_id = Uuid::from_u128(10);
+    let mut source = entity_doc(
+        11,
+        10,
+        "token",
+        json!({ "x": 30.0, "y": 30.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    source.owner = Some(user);
+    let mut scene = doc(10, None, "scene");
+    scene.engine = Some(json!({
+        "grid": { "kind": "square", "size": 100 }, "background": null,
+        "bounds": { "width": 520.0, "height": 520.0 }
+    }));
+    let mut ecs = SceneEcs::from_documents(vec![scene, source], 0);
+    ecs.set_world_settings_for_test(json!({
+        "scene": {
+            "losRestriction": false, "fog": true,
+            "lightingEnabled": false, "lightMode": "environmentLight",
+            "environment": { "color": "#ffffff", "intensity": 1.0 },
+            "observerVision": false,
+            "movementRestriction": "visible",
+            "movementModel": "grid-stepped",
+            "partialCellLeniency": false
+        },
+        "pathfinding": { "diagonalRule": "chebyshev" },
+        "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+    }));
+    (ecs, user, scene_id)
+}
+
+#[test]
+fn visible_cells_lenient_parity_pins_full_cell_set_including_corner_ring() {
+    let (ecs, user, scene) = lenient_corner_open_scene();
+
+    // STRICT: center-only membership -> [-1,4]^2 (companion to Fixture 3's pin).
+    let strict = ecs.visible_cells(user, scene, false);
+    let expected_strict: BTreeSet<(i32, i32)> = (-1..=4)
+        .flat_map(|i| (-1..=4).map(move |j| (i, j)))
+        .collect();
+    assert_eq!(strict, expected_strict, "strict center-only set");
+
+    // LENIENT: corner-sampling adds column i=5 and row j=5 -> [-1,5]^2, a strict superset.
+    let lenient = ecs.visible_cells(user, scene, true);
+    let expected_lenient: BTreeSet<(i32, i32)> = (-1..=5)
+        .flat_map(|i| (-1..=5).map(move |j| (i, j)))
+        .collect();
+    assert_eq!(lenient, expected_lenient, "lenient corner-inclusive set");
+
+    // The corner ring is exactly the 13 cells strict lacks — proves `cell_vertices` is
+    // load-bearing here (a center-only regression would make lenient == strict).
+    assert!(expected_lenient.is_superset(&expected_strict));
+    assert_eq!(expected_lenient.len() - expected_strict.len(), 13);
+}

@@ -1586,93 +1586,87 @@ impl SceneEcs {
                     maxx = maxx.max(x);
                     maxy = maxy.max(y);
                 }
-                let i0 = (minx / cell).floor() as i32;
-                let i1 = (maxx / cell).floor() as i32;
-                let j0 = (miny / cell).floor() as i32;
-                let j1 = (maxy / cell).floor() as i32;
-                let w = i1 as i64 - i0 as i64 + 1;
-                let h = j1 as i64 - j0 as i64 + 1;
-                let span = w.saturating_mul(h);
-                if span > crate::scene::explored::MAX_CELLS_PER_POLYGON {
-                    tracing::warn!(span, "lit mask cell scan exceeds cap; skipping source");
-                    continue;
-                }
-                for i in i0..=i1 {
-                    for j in j0..=j1 {
-                        let (cx, cy) = cell_grid.cell_center((i, j));
-                        if !crate::scene::vision::point_in_poly(&poly, (cx, cy)) {
+                // Candidate cells via GridShape (square: byte-identical
+                // `floor(min/cell)..=floor(max/cell)` row-major rectangle; hex: axial-bounds
+                // superset). `cells_in_bounds` enforces the same MAX_CELLS_PER_POLYGON span cap —
+                // `None` maps to the pre-existing skip-with-warn (same message + `continue`).
+                let candidates = match cell_grid.cells_in_bounds((minx, miny), (maxx, maxy), cell) {
+                    Some(c) => c,
+                    None => {
+                        tracing::warn!("lit mask cell scan exceeds cap; skipping source");
+                        continue;
+                    }
+                };
+                for (i, j) in candidates {
+                    let (cx, cy) = cell_grid.cell_center((i, j));
+                    if !crate::scene::vision::point_in_poly(&poly, (cx, cy)) {
+                        continue;
+                    }
+                    // Spec §3/§6: lighting OFF ⇒ all-bright untinted; globalIllumination ⇒
+                    // all-bright tinted by the environment. level=1.0 so every vision floor
+                    // (incl. normal "dim") passes — every LOS cell is visible.
+                    let cl = if li.all_bright {
+                        crate::scene::lighting::CellLight {
+                            level: 1.0,
+                            tint: if settings.lighting_enabled {
+                                settings.env_color
+                            } else {
+                                0
+                            },
+                        }
+                    } else {
+                        crate::scene::lighting::cell_illumination(
+                            (cx, cy),
+                            settings.env_intensity,
+                            settings.env_color,
+                            &li.lights,
+                            &li.lit_polys,
+                            &li.env_polys,
+                            cell,
+                        )
+                    };
+                    let dist_cells =
+                        (((cx - src.vp.0).powi(2) + (cy - src.vp.1).powi(2)).sqrt()) / cell;
+                    // Lowest applicable floor decides visibility; highest applicable floor decides the hint.
+                    // `cell_visible` computes the same min-floor-over-in-range-modes decision
+                    // and is reused verbatim by the movement gate (spec §13 anti-drift).
+                    let mut admit_floor = f64::NEG_INFINITY; // max admitting floor → which mode's hint wins
+                    let mut admit_hint: Option<String> = None;
+                    for (fmin, range, hint) in &src.floors {
+                        let in_range = *range == 0.0 || dist_cells <= *range;
+                        if !in_range {
                             continue;
                         }
-                        // Spec §3/§6: lighting OFF ⇒ all-bright untinted; globalIllumination ⇒
-                        // all-bright tinted by the environment. level=1.0 so every vision floor
-                        // (incl. normal "dim") passes — every LOS cell is visible.
-                        let cl = if li.all_bright {
-                            crate::scene::lighting::CellLight {
-                                level: 1.0,
-                                tint: if settings.lighting_enabled {
-                                    settings.env_color
-                                } else {
-                                    0
-                                },
-                            }
-                        } else {
-                            crate::scene::lighting::cell_illumination(
-                                (cx, cy),
-                                settings.env_intensity,
-                                settings.env_color,
-                                &li.lights,
-                                &li.lit_polys,
-                                &li.env_polys,
-                                cell,
-                            )
-                        };
-                        let dist_cells =
-                            (((cx - src.vp.0).powi(2) + (cy - src.vp.1).powi(2)).sqrt()) / cell;
-                        // Lowest applicable floor decides visibility; highest applicable floor decides the hint.
-                        // `cell_visible` computes the same min-floor-over-in-range-modes decision
-                        // and is reused verbatim by the movement gate (spec §13 anti-drift).
-                        let mut admit_floor = f64::NEG_INFINITY; // max admitting floor → which mode's hint wins
-                        let mut admit_hint: Option<String> = None;
-                        for (fmin, range, hint) in &src.floors {
-                            let in_range = *range == 0.0 || dist_cells <= *range;
-                            if !in_range {
-                                continue;
-                            }
-                            if cl.level >= *fmin {
-                                // Highest admitting floor wins; on a tie, None (a normal-equivalent perception) wins.
-                                let take = *fmin > admit_floor
-                                    || (*fmin == admit_floor
-                                        && admit_hint.is_some()
-                                        && hint.is_none());
-                                if take {
-                                    admit_floor = *fmin;
-                                    admit_hint = hint.clone();
-                                }
+                        if cl.level >= *fmin {
+                            // Highest admitting floor wins; on a tie, None (a normal-equivalent perception) wins.
+                            let take = *fmin > admit_floor
+                                || (*fmin == admit_floor && admit_hint.is_some() && hint.is_none());
+                            if take {
+                                admit_floor = *fmin;
+                                admit_hint = hint.clone();
                             }
                         }
-                        if cell_visible(&src.floors, cl.level, dist_cells) {
-                            let band = crate::scene::lighting::band_index(&bands, cl.level);
-                            let slot = entry.1.entry((i, j)).or_insert((
-                                cl.level,
-                                band,
-                                cl.tint,
-                                admit_floor,
-                                admit_hint.clone(),
-                            ));
-                            if cl.level > slot.0 {
-                                slot.0 = cl.level;
-                                slot.1 = band;
-                                slot.2 = cl.tint; // brightest source wins band/tint
-                            }
-                            // Hint reduces across sources by the same highest-floor/None-wins rule.
-                            if admit_floor > slot.3
-                                || (admit_floor == slot.3
-                                    && slot.4.is_some()
-                                    && admit_hint.is_none())
-                            {
-                                slot.3 = admit_floor;
-                                slot.4 = admit_hint;
-                            }
+                    }
+                    if cell_visible(&src.floors, cl.level, dist_cells) {
+                        let band = crate::scene::lighting::band_index(&bands, cl.level);
+                        let slot = entry.1.entry((i, j)).or_insert((
+                            cl.level,
+                            band,
+                            cl.tint,
+                            admit_floor,
+                            admit_hint.clone(),
+                        ));
+                        if cl.level > slot.0 {
+                            slot.0 = cl.level;
+                            slot.1 = band;
+                            slot.2 = cl.tint; // brightest source wins band/tint
+                        }
+                        // Hint reduces across sources by the same highest-floor/None-wins rule.
+                        if admit_floor > slot.3
+                            || (admit_floor == slot.3 && slot.4.is_some() && admit_hint.is_none())
+                        {
+                            slot.3 = admit_floor;
+                            slot.4 = admit_hint;
                         }
                     }
                 }
@@ -2042,63 +2036,63 @@ fn accumulate_visible_cells(
             maxx = maxx.max(x);
             maxy = maxy.max(y);
         }
-        // Lenient samples corners, so a cell just outside the center-bbox can still qualify:
-        // expand the scan by one cell each side under leniency.
-        let pad = if lenient { 1 } else { 0 };
-        let i0 = (minx / cell).floor() as i32 - pad;
-        let i1 = (maxx / cell).floor() as i32 + pad;
-        let j0 = (miny / cell).floor() as i32 - pad;
-        let j1 = (maxy / cell).floor() as i32 + pad;
-        let w = i1 as i64 - i0 as i64 + 1;
-        let h = j1 as i64 - j0 as i64 + 1;
-        if w.saturating_mul(h) > crate::scene::explored::MAX_CELLS_PER_POLYGON {
-            tracing::warn!("visible_cells scan exceeds cap; skipping source");
-            continue;
-        }
-        for i in i0..=i1 {
-            for j in j0..=j1 {
-                if out.contains(&(i, j)) {
-                    continue;
+        // Candidate cells via GridShape. Lenient samples corners, so a cell just outside the
+        // center-bbox can still qualify: expand the scan by one cell each side under leniency.
+        // `cells_in_bounds` takes PIXEL bounds, so the pad is applied in pixel space
+        // (`pad_px = pad * cell`) BEFORE the call. For SQUARE this is byte-identical to the old
+        // integer-index pad: with integer `pad`, `floor((min - pad*cell)/cell) == floor(min/cell)
+        // - pad` (and likewise `+ pad` on max), so the enumerated row-major index rectangle is
+        // unchanged. For HEX the padded pixel AABB feeds the axial-bounds superset. `None`
+        // (over-cap / degenerate) maps to the pre-existing skip-with-warn (same message +
+        // `continue`), so `MAX_CELLS_PER_POLYGON` stays enforced.
+        let pad_px = if lenient { cell } else { 0.0 };
+        let min = (minx - pad_px, miny - pad_px);
+        let max = (maxx + pad_px, maxy + pad_px);
+        let candidates = match grid.cells_in_bounds(min, max, cell) {
+            Some(c) => c,
+            None => {
+                tracing::warn!("visible_cells scan exceeds cap; skipping source");
+                continue;
+            }
+        };
+        for (i, j) in candidates {
+            if out.contains(&(i, j)) {
+                continue;
+            }
+            // Strict: center only. Lenient: center first (so §13 strict cells are always
+            // included), then corners if center fails — a cell whose polygon merely clips
+            // a corner still qualifies under leniency. `cell_vertices` returns the 4 square
+            // corners (byte-identical order) or the 6 pointy-top hex vertices.
+            let center = grid.cell_center((i, j));
+            let corners = grid.cell_vertices((i, j), cell);
+            let mut found = false;
+            if lenient {
+                // Check center first, then corners.
+                if vision::point_in_poly(&poly, center)
+                    && point_qualifies(center, src.vp, &src.floors, settings, li, cell)
+                {
+                    found = true;
                 }
-                // Strict: center only. Lenient: center first (so §13 strict cells are always
-                // included), then corners if center fails — a cell whose polygon merely clips
-                // a corner still qualifies under leniency.
-                let center = grid.cell_center((i, j));
-                let corners = [
-                    (i as f64 * cell, j as f64 * cell),
-                    ((i + 1) as f64 * cell, j as f64 * cell),
-                    (i as f64 * cell, (j + 1) as f64 * cell),
-                    ((i + 1) as f64 * cell, (j + 1) as f64 * cell),
-                ];
-                let mut found = false;
-                if lenient {
-                    // Check center first, then corners.
-                    if vision::point_in_poly(&poly, center)
-                        && point_qualifies(center, src.vp, &src.floors, settings, li, cell)
-                    {
-                        found = true;
-                    }
-                    if !found {
-                        for &corner in &corners {
-                            if vision::point_in_poly(&poly, corner)
-                                && point_qualifies(corner, src.vp, &src.floors, settings, li, cell)
-                            {
-                                found = true;
-                                break;
-                            }
+                if !found {
+                    for &corner in &corners {
+                        if vision::point_in_poly(&poly, corner)
+                            && point_qualifies(corner, src.vp, &src.floors, settings, li, cell)
+                        {
+                            found = true;
+                            break;
                         }
                     }
-                } else {
-                    // Strict: center only (mirrors player_lit_mask exactly).
-                    if vision::point_in_poly(&poly, center)
-                        && point_qualifies(center, src.vp, &src.floors, settings, li, cell)
-                    {
-                        found = true;
-                    }
                 }
-                if found {
-                    out.insert((i, j));
+            } else {
+                // Strict: center only (mirrors player_lit_mask exactly).
+                if vision::point_in_poly(&poly, center)
+                    && point_qualifies(center, src.vp, &src.floors, settings, li, cell)
+                {
+                    found = true;
                 }
+            }
+            if found {
+                out.insert((i, j));
             }
         }
     }
@@ -5427,5 +5421,86 @@ mod tests {
         let expected: std::collections::BTreeSet<(i32, i32)> =
             (-1..=4).flat_map(|i| (-1..=4).map(move |j| (i, j))).collect();
         assert_eq!(got, expected);
+    }
+
+    /// A wall-less pointy-top hex scene (size 50), all-bright, LOS off, authored bounds 240x240,
+    /// one owned instanced token at hex (0,0) = pixel (0,0) with unlimited "normal" vision.
+    /// `source_los_poly` is the rectangle [-100,240] x [-100,240] (bound_for_scene:
+    /// min(0-100,0)=-100 on each low edge, max(0+100,240)=240 on each high edge).
+    fn hex_open_scene() -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "hex", "size": 50.0 }, "background": null,
+                    "bounds": { "width": 240.0, "height": 240.0 } }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "grid-stepped",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        (ecs, user, scene_id)
+    }
+
+    /// REJECT direction on a hex scene: a hex cell whose HEX CENTER falls outside the vision mask
+    /// is excluded from `visible_cells`. Hex (2,0) center (~173,0) is inside the [-100,240]^2 LOS
+    /// rectangle and visible; hex (4,0) center (~346,0) is well outside (x > 240) — and its nearest
+    /// vertex (~303,0) is also outside — so it is excluded under BOTH strict and lenient sampling.
+    /// Guards that the hex candidate enumeration cannot admit an out-of-mask hex cell.
+    #[test]
+    fn visible_cells_hex_excludes_cell_whose_center_is_outside_the_mask() {
+        let (ecs, user, scene) = hex_open_scene();
+        let strict = ecs.visible_cells(user, scene, false);
+        assert!(
+            strict.contains(&(2, 0)),
+            "hex (2,0) center is inside the LOS rectangle"
+        );
+        assert!(
+            !strict.contains(&(4, 0)),
+            "hex (4,0) center is outside the mask -> excluded"
+        );
+        // Even leniency (corner sampling) cannot pull (4,0) in: its nearest vertex is still outside.
+        let lenient = ecs.visible_cells(user, scene, true);
+        assert!(
+            !lenient.contains(&(4, 0)),
+            "hex (4,0) has no vertex inside the mask either"
+        );
+    }
+
+    /// Leniency on a hex scene samples the SIX hex vertices (`GridShape::cell_vertices`), not four
+    /// square corners. Hex (3,0) center (~259.8,0) is just outside the [-100,240]^2 LOS rectangle
+    /// (x > 240), so strict excludes it; its left vertex (~216.5, 25) is inside, so lenient
+    /// includes it. The strict->lenient flip proves the hex corner geometry is wired.
+    #[test]
+    fn visible_cells_hex_lenient_includes_cell_whose_vertex_clips_the_mask() {
+        let (ecs, user, scene) = hex_open_scene();
+        let strict = ecs.visible_cells(user, scene, false);
+        assert!(
+            !strict.contains(&(3, 0)),
+            "hex (3,0) center is outside -> strict excludes"
+        );
+        let lenient = ecs.visible_cells(user, scene, true);
+        assert!(
+            lenient.contains(&(3, 0)),
+            "hex (3,0) vertex clips the mask -> lenient includes"
+        );
     }
 }
