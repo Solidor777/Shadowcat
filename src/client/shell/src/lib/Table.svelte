@@ -87,6 +87,7 @@
     pathfind: (s, st, wp, fr) => session.pathfind(s, st, wp, fr),
     moveRequest: (s, tid, p) => session.moveRequest(s, tid, p),
     onPing: (cb) => session.onPing(cb),
+    onMoveOutcome: (cb) => session.onMoveOutcome(cb),
     chat: {
       send: (o) => session.sendChatMessage(o),
       edit: (id, c) => session.editChatMessage(id, c),

@@ -31,6 +31,7 @@
     pathfind: () => Promise.reject(new Error("not connected")),
     moveRequest: () => Promise.reject(new Error("not connected")),
     onPing: () => () => {},
+    onMoveOutcome: () => () => {},
     chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve() },
     leaveWorld: () => {},
     logout: async () => {},

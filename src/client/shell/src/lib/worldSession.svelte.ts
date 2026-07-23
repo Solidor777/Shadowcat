@@ -66,6 +66,9 @@ export class WorldSession {
   readonly tokenSelection = new TokenSelection();
   #assetListeners = new Set<(msg: { uuid: string; op: "replaced" | "deleted" }) => void>();
   #pingListeners = new Set<(msg: { scene: string; x: number; y: number; user: string }) => void>();
+  /** Listeners for THIS client's own `moveRequest` outcomes (M14b observability signal) —
+   * not a broadcast of every scene viewer's moves, unlike `#pingListeners`. */
+  #moveOutcomeListeners = new Set<(msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void>();
   #sceneSubs = new Map<
     string,
     { channel: string; onUpdate: (f: SceneFrame) => void; handle: SceneSubscription | null; gen: number }
@@ -249,7 +252,32 @@ export class WorldSession {
     path: [number, number][],
   ): Promise<MoveStream> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
-    return this.#ws.moveRequest(scene, tokenId, path);
+    const p = this.#ws.moveRequest(scene, tokenId, path);
+    // M14b observability signal, derived from THIS SAME promise without altering its
+    // resolution for the caller: `MoveOutcome.truncated` (move_exec.rs) never crosses the
+    // wire, so the client infers truncated-vs-executed from `stream.stop` — the mover's own
+    // exact, unclipped resting position — against the requested goal. The two are bit-for-bit
+    // equal unless the server's wall/mask/region gate cut the move short (the executor
+    // preserves an untruncated authored vertex exactly; see move_exec.rs's identity guarantee).
+    const goal = path.at(-1) ?? null;
+    p.then(
+      (stream) => {
+        const executed = goal !== null && stream.stop[0] === goal[0] && stream.stop[1] === goal[1];
+        for (const cb of this.#moveOutcomeListeners) cb({ tokenId, outcome: executed ? "executed" : "truncated" });
+      },
+      () => {
+        for (const cb of this.#moveOutcomeListeners) cb({ tokenId, outcome: "rejected" });
+      },
+    );
+    return p;
+  }
+
+  /** Subscribe to THIS client's own `moveRequest` outcomes (executed/truncated/rejected) —
+   * a read-only observability signal, not a broadcast of every scene viewer's moves (that's
+   * `onMoveStream`, consumed internally for animation). Returns an unsubscribe. */
+  onMoveOutcome(cb: (msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void): () => void {
+    this.#moveOutcomeListeners.add(cb);
+    return () => this.#moveOutcomeListeners.delete(cb);
   }
 
   /** Send a chat message. Resolves/rejects with the correlated outcome; rejects

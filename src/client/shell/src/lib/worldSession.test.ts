@@ -544,6 +544,65 @@ test("onMoveStream gates on the GM's LOCAL viewed scene, not activeScene", async
   await vi.waitFor(() => expect(host.calls).toHaveLength(1));
 });
 
+test("onMoveOutcome: a move_stream whose stop matches the requested goal fires 'executed'", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const got: Array<{ tokenId: string; outcome: string }> = [];
+  session.onMoveOutcome((m) => got.push(m));
+  const resolved = session.moveRequest("s1", "tok1", [[0, 0], [100, 0]]);
+  await vi.waitFor(() => expect(sent.some((m) => m.type === "move_request")).toBe(true));
+  const reqId = sent.find((m) => m.type === "move_request")!.request_id as string;
+  push({ ...moveStreamFrame("s1"), request_id: reqId, stop: [100, 0] });
+  await resolved;
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0]).toEqual({ tokenId: "tok1", outcome: "executed" });
+});
+
+test("onMoveOutcome: a move_stream whose stop falls short of the requested goal fires 'truncated'", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const got: Array<{ tokenId: string; outcome: string }> = [];
+  session.onMoveOutcome((m) => got.push(m));
+  const resolved = session.moveRequest("s1", "tok1", [[0, 0], [100, 0]]);
+  await vi.waitFor(() => expect(sent.some((m) => m.type === "move_request")).toBe(true));
+  const reqId = sent.find((m) => m.type === "move_request")!.request_id as string;
+  // The server stopped short of the requested goal (wall/mask/region gate) — no separate
+  // `truncated` flag rides the wire, so the client infers it from the stop mismatch.
+  push({ ...moveStreamFrame("s1"), request_id: reqId, stop: [50, 0] });
+  await resolved;
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0]).toEqual({ tokenId: "tok1", outcome: "truncated" });
+});
+
+test("onMoveOutcome: a move_error rejection fires 'rejected'", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const got: Array<{ tokenId: string; outcome: string }> = [];
+  session.onMoveOutcome((m) => got.push(m));
+  const resolved = session.moveRequest("s1", "tok1", [[0, 0], [100, 0]]);
+  resolved.catch(() => {}); // rejection is expected; assert via onMoveOutcome, not the promise
+  await vi.waitFor(() => expect(sent.some((m) => m.type === "move_request")).toBe(true));
+  const reqId = sent.find((m) => m.type === "move_request")!.request_id as string;
+  push({ type: "move_error", request_id: reqId, message: "token is moving" });
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0]).toEqual({ tokenId: "tok1", outcome: "rejected" });
+});
+
 test("sendPing targets the viewed scene", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);

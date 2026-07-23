@@ -135,6 +135,10 @@ export interface AppContext {
   ) => Promise<MoveStream>;
   /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe. */
   onPing: (cb: (msg: { scene: string; x: number; y: number; user: string }) => void) => () => void;
+  /** Subscribe to THIS client's own `moveRequest` outcomes (executed/truncated/rejected) — a
+   * read-only observability signal, not a broadcast of every scene viewer's moves. Returns an
+   * unsubscribe. */
+  onMoveOutcome: (cb: (msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void) => () => void;
   /** Chat transport seam: send/edit/delete a chat message. Fire-and-forget (no
    * correlation id) — the server applies/rejects out-of-band; the composer
    * pre-validates the cheap rejects client-side. */

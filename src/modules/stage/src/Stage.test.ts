@@ -173,6 +173,30 @@ test("drives the initial reconcile from ctx.viewedSceneId (M12d)", async () => {
   expect(host.dataset.tokenCount).toBe("0");
 });
 
+test("exposes the server's move-resolution outcome as data-last-move-outcome (M14b)", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  let capturedCb: ((msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void) | null = null;
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      subscribeScene: () => ({ unsubscribe() {} }),
+      onMoveOutcome: (cb) => {
+        capturedCb = cb;
+        return () => { capturedCb = null; };
+      },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(host.dataset.lastMoveOutcome).toBeUndefined();
+
+  capturedCb!({ tokenId: "tok1", outcome: "truncated" });
+  expect(host.dataset.lastMoveOutcome).toBe("truncated");
+
+  capturedCb!({ tokenId: "tok1", outcome: "executed" });
+  expect(host.dataset.lastMoveOutcome).toBe("executed");
+});
+
 test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per genuine change (M12d review)", async () => {
   const store = new DocumentStore();
   store.applyCommand({

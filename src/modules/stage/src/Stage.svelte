@@ -22,7 +22,7 @@
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, role, members } = ctx;
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onMoveOutcome, role, members } = ctx;
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -71,6 +71,7 @@
     let offAsset: (() => void) | null = null;
     let offGrid: (() => void) | null = null;
     let offPing: (() => void) | null = null;
+    let offMoveOutcome: (() => void) | null = null;
     let offViewed: (() => void) | null = null;
     let detachScene: (() => void) | null = null;
     // Aborts all pointer/wheel listeners on teardown (and on any $effect re-run),
@@ -167,6 +168,12 @@
         e.addPing(m.x, m.y);
         host.dataset.lastPing = `${m.x},${m.y}`;
       });
+      // Read-only observability signal for the local player's own move requests
+      // (M14b) — no behavior change to movement, just an outcome the client already
+      // receives via moveRequest's resolution (see worldSession.moveRequest).
+      offMoveOutcome = onMoveOutcome((m) => {
+        host.dataset.lastMoveOutcome = m.outcome;
+      });
       // AssetChanged mutates the AssetResolver (cache-bust / placeholder) without a
       // document mutation, so the store-subscription reconcile never fires for it.
       // Re-reconcile explicitly so a replaced/deleted background re-resolves.
@@ -190,6 +197,7 @@
       detachScene?.();
       offGrid?.();
       offPing?.();
+      offMoveOutcome?.();
       offAsset?.();
       offViewed?.();
       controller.abort();
