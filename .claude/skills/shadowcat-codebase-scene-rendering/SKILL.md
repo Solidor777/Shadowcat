@@ -654,18 +654,25 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   position, not just the pre-move one [[m9-progress]].
 - **Movement restriction is server-authoritative at the same gate (M10e-4).** In `Room::publish`'s
   non-GM block, AFTER the M9a `blocks_move` wall check, a move is rejected (`DataError::Forbidden`,
-  before `apply_intent` — no seq consumed; client rolls back) unless the **entire** move's supercover
+  before `apply_intent` — no seq consumed; client rolls back) unless the **entire** move's traversed
   cells lie in the user's mask: `Visible` ⇒ `visible_cells`; `Revealed` ⇒ `visible_cells ∪
   get_explored` (explored is center-sampled by construction — the union only ever ENLARGES, so the
   asymmetry is fail-safe); `Unrestricted` ⇒ walls only. GM exempt. **The gate mask is the SAME mask as
   egress** (`visible_cells` strict ≡ `player_lit_mask`) — never fork the per-cell decision (spec §13).
-  Fail-closed on empty mask / `supercover_cells`→None / `get_explored` Err. `get_explored` is on the
-  `Repository` trait; the per-`(user,scene)` mask + explored blob are memoized within one publish, and
-  the `get_explored().await` runs only AFTER the `scene.read()` guard drops (no lock across await).
-  **By design: a dark scene under `Visible` freezes non-GM movement** — an empty lit mask rejects
-  every move; a player who cannot see a cell must not move into it. The GM enables movement by
-  lighting the scene or choosing `Revealed`/`Unrestricted`. Do NOT "fix" the freeze by softening the
-  defaults — it is the correct fail-closed outcome.
+  **Hex-correct (Task 14d):** the traversed-cell set comes from `scene.resolve_grid_shape(scene_id,
+  cell).line_traversal(a0, a1, cell)` — square delegates to `movement::supercover_cells`, hex to
+  cube-coordinate interpolation — the SAME primitive `move_exec::execute_move` gates against, so a
+  select/move-tool drag (which writes `/engine/x,y` directly via this `publish` gate, not
+  `moveRequest`) and an executed move agree on every cell on BOTH grid kinds. A prior version called
+  the square-only `supercover_cells` free function directly here, testing square-indexed cells
+  against `visible_cells_cached`'s hex-aware mask — two incompatible coordinate systems on a hex
+  scene. Fail-closed on empty mask / `line_traversal`→None / `get_explored` Err. `get_explored` is on
+  the `Repository` trait; the per-`(user,scene)` mask + explored blob are memoized within one
+  publish, and the `get_explored().await` runs only AFTER the `scene.read()` guard drops (no lock
+  across await). **By design: a dark scene under `Visible` freezes non-GM movement** — an empty lit
+  mask rejects every move; a player who cannot see a cell must not move into it. The GM enables
+  movement by lighting the scene or choosing `Revealed`/`Unrestricted`. Do NOT "fix" the freeze by
+  softening the defaults — it is the correct fail-closed outcome.
 - **Bound recursive walks over self-FK (parent_id) tables with a visited-set** [[m8a-execution-state]].
 - **Scene-settings resolvers are fail-closed and inheritance-layered**: `resolveSceneSettings`
   resolves built-in default < `world-settings` doc < per-scene override, never throws (structural
@@ -723,14 +730,17 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   continuous-scene route preview is fog-safe by the same mechanism the grid router already proved.
   Any future third routing engine MUST reuse this same mask-passing shape, not recompute visibility.
 - **M1 executor per-cell parity (spec §13):** `execute_move` uses the SAME `blocks_move` +
-  `supercover_cells` + `visible` membership as the M10e-4 `publish` move gate — per-cell decision
-  parity, NO fork. A divergence between the executor and the gate equals a movement-into-fog leak.
+  `GridShape::line_traversal` (via `ecs.resolve_grid_shape`; square delegates to
+  `supercover_cells`, hex to cube-coordinate interpolation) + `visible` membership as the M10e-4
+  `publish` move gate — per-cell decision parity, NO fork, on BOTH grid kinds (Task 14d closed a
+  square-only gap in `publish`'s call — see the movement-restriction bullet above). A divergence
+  between the executor and the gate equals a movement-into-fog leak.
   **(M10f-2 revision)** The executor is no longer stricter on authored path shape — the pre-M10f-2
   king-step-adjacency requirement (reject any >1-cell authored jump) is REMOVED; `gate_walk`
   subdivides a >1-cell jump into dense ≤1-cell samples and gates each one, so a >1-cell authored
   jump is now admitted exactly when every crossed cell is wall-clear/visible (equivalent to the
   client having sent the explicit intermediate waypoints, which was always legal — no new
-  capability). The `blocks_move`/`supercover_cells`/`visible` per-cell decision parity itself is
+  capability). The `blocks_move`/`line_traversal`/`visible` per-cell decision parity itself is
   UNCHANGED and remains the load-bearing invariant. For `Revealed`, the
   caller MUST pass `visible_cells ∪ explored` as the `visible` argument (not raw `visible_cells`
   alone) — same union `publish` uses. Do NOT re-grant GM wall-bypass in `execute_move`: GMs are
