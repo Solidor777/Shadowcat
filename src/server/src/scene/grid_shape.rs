@@ -328,7 +328,11 @@ impl GridShape for HexGrid {
             }
             let steps = (k1 - k0) as i64;
             if steps > 4 * MAX_HEX_LINE_SAMPLES {
-                return None; // fail closed rather than allocate an unbounded crossing list
+                // Fail closed rather than allocate an unbounded crossing list. Unreachable as
+                // written: the `n <= MAX_HEX_LINE_SAMPLES` gate above already dominates it, since
+                // |dpsi_k| <= 2n bounds `steps` at 8193 < 16384. Kept as a standalone backstop so
+                // this loop stays bounded on its own terms if that gate is ever relaxed.
+                return None;
             }
             for s in 0..=steps {
                 let t = (k0 + s as f64 - u0) / du;
@@ -1159,8 +1163,11 @@ mod tests {
         }
         assert!(checked > 7900);
         assert!(
-            extra_total * 100 < checked,
-            "fewer than 1 in 100 generic segments may gain a spurious hex: {extra_total}/{checked}"
+            // Measured true value is 0 spurious cells on generic segments; 1-in-1000 leaves 10x
+            // slack without sleeping through a real regression (a 100x bound was shown to pass
+            // even with the vertex probe inflated 100-fold).
+            extra_total * 1000 < checked,
+            "fewer than 1 in 1000 generic segments may gain a spurious hex: {extra_total}/{checked}"
         );
     }
 

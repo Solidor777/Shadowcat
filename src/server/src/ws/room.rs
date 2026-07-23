@@ -259,7 +259,8 @@ impl Room {
                                 .copied()
                                 .unwrap_or(100.0);
                             // Every cell the move segment crosses, via the scene's own
-                            // resolved grid shape (square supercover or hex cube-interpolation)
+                            // resolved grid shape (a supercover on both kinds: square cell-walk,
+                            // hex psi-crossing)
                             // — the same primitive `move_exec::execute_move` gates against, so
                             // this agrees with the executor on hex scenes too, not just square.
                             // None ⇒ over-cap or degenerate grid → fail closed (DoS guard, spec §8).
