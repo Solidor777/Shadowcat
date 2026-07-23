@@ -1209,6 +1209,13 @@ impl SceneEcs {
                         cost: weighted.cost * cell,
                         ..weighted
                     };
+                    // `grid_shape`, not `euclid_shape`: the smoother's cell indexing must match the
+                    // shape `mask` (`visible_cells`) and `regions` (`region_field`) were built with,
+                    // both of which resolve through `resolve_grid_shape`. The two shapes are
+                    // cell-identical by construction — `DiagonalRule` feeds only
+                    // `neighbors_with_cost`/`heuristic` (step cost + search order), never
+                    // `cell_of`/`footprint_cells`/`line_traversal` — so this is an identity
+                    // statement, not a behavior change.
                     Ok(navmesh::los_smooth(
                         weighted,
                         &walls,
@@ -1216,6 +1223,7 @@ impl SceneEcs {
                         &regions,
                         cell,
                         footprint_radius,
+                        &*grid_shape,
                     ))
                 } else {
                     let nav = self
@@ -1240,11 +1248,17 @@ impl SceneEcs {
                         cell,
                         footprint_radius,
                         &walls,
+                        &*grid_shape,
                     );
                     if clipped.path.len() < 2 && !raw_was_trivial {
                         return Err(pathfinding::PathFail::Unreachable);
                     }
-                    Ok(navmesh::truncate_at_arrest(clipped, &regions, cell))
+                    Ok(navmesh::truncate_at_arrest(
+                        clipped,
+                        &regions,
+                        cell,
+                        &*grid_shape,
+                    ))
                 }
             }
         }
@@ -4706,6 +4720,66 @@ mod tests {
             out.path.iter().any(|p| p.1 > 90.0),
             "route bends off the y=50 line to avoid the terrain: {:?}",
             out.path
+        );
+    }
+
+    /// Hex + continuous: grid kind and movement model are INDEPENDENT axes, so this scene is
+    /// reachable through the ordinary authoring path (`resolve_grid_shape` keys only on
+    /// `grid.kind`; `pathfind` dispatches only on `movement_model`).
+    fn hex_continuous_scene_docs() -> Vec<crate::data::document::Document> {
+        vec![entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "hex", "size": 50 }, "background": null,
+                    "vision": { "movementModel": "continuous" } }),
+        )]
+    }
+
+    #[test]
+    fn pathfind_hex_continuous_arrest_truncates_at_the_axial_hex_not_the_square_cell() {
+        // Call-site wiring proof for `navmesh::truncate_at_arrest`: `pathfind` must hand the
+        // continuous engine the SAME `resolve_grid_shape`-derived shape `region_field` rasterized
+        // the arrest region with. Arrest-only ⇒ `has_terrain_or_impassable()` is false ⇒ the pure
+        // polyanya branch. Route runs along the r=1 hex row from hex (0,1) to hex (4,1); the arrest
+        // region covers ONLY hex (3,1) (center x ≈303.1), whose entry boundary from (2,1) is
+        // x ≈259.8. Reading the same axial key (3,1) as a SQUARE cell would place it at
+        // x∈[150,200) — a different location — cutting the preview roughly a full hex early.
+        let g = grid_shape::HexGrid { size: 50.0 };
+        let mut docs = hex_continuous_scene_docs();
+        docs.push(region_doc_top(12, 10, "arrest", 1.0, 285.0, 55.0, 320.0, 95.0));
+        let mut ecs = SceneEcs::from_documents(docs, 0);
+        ecs.set_world_settings_for_test(continuous_world_settings());
+        // Fixture guard: exactly one hex arrests, and it is the axial cell the assertions name.
+        let field = ecs.region_field(Uuid::from_u128(10), None);
+        assert!(field.is_arrest((3, 1)), "fixture: arrest is on axial (3,1)");
+        assert!(
+            !field.is_arrest((2, 1)) && !field.is_arrest((4, 1)),
+            "fixture: exactly one hex arrests"
+        );
+
+        let out = ecs
+            .pathfind(
+                Uuid::from_u128(1),
+                Uuid::from_u128(10),
+                g.cell_center((0, 1)),
+                &[g.cell_center((4, 1))],
+                0.1,
+                true,
+                None,
+            )
+            .expect("hex continuous route");
+        assert!(out.arrested, "the arrest hex truncates the preview");
+        let last = *out.path.last().unwrap();
+        assert_eq!(
+            g.cell_of(last),
+            (3, 1),
+            "truncation lands on the arrest hex itself, last = {last:?}"
+        );
+        assert!(
+            last.0 > 259.8,
+            "truncation is at the hex (2,1)/(3,1) boundary, not the square cell (3,1) at \
+             x∈[150,200), last x = {}",
+            last.0
         );
     }
 

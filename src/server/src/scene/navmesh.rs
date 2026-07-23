@@ -290,11 +290,18 @@ pub(crate) fn navmesh_find(
 
 /// Arc-length-samples `outcome.path` and truncates it at the first sample whose chord (from the
 /// previous retained sample) either (a) touches a cell outside `mask` (footprint disc ∪ the
-/// step's supercover) or (b) crosses a `blocksMove` wall. `mask: None` skips check (a) — this
-/// reuses the same `footprint_cells` ∪ `supercover_cells` union `pathfinding::cell_enterable`'s
+/// step's line traversal) or (b) crosses a `blocksMove` wall. `mask: None` skips check (a) — this
+/// reuses the same `footprint_cells` ∪ `line_traversal` union `pathfinding::cell_enterable`'s
 /// mask check applies (component #2), adapted to a continuous sample position rather than a grid
 /// cell center; no forked visibility decision, so a continuous preview is fog-safe and
-/// `route ⊆ gate-allowed` holds across both engines (parent spec §6.3). Check (b) always runs,
+/// `route ⊆ gate-allowed` holds across both engines (parent spec §6.3). Every cell index here is
+/// produced by `grid` (`cell_of`/`footprint_cells`/`line_traversal`), NEVER by square
+/// `floor(p/cell)` math: `mask` is built in the scene's own `GridShape` coordinate space, and
+/// grid kind and movement model are independent axes, so a hex + continuous scene tested with
+/// square indices compares two different affine maps into the same `(i32,i32)` space — an
+/// arbitrary membership answer in BOTH directions (an occluded hex admitted, a visible one
+/// refused). `grid` MUST be the same `resolve_grid_shape`-derived shape `mask` was built with.
+/// Check (b) always runs,
 /// independent of `mask` — this is a router-fidelity guarantee (walls are public geometry, not a
 /// secrecy concern): the navmesh's true polyline may detour around a wall corner, but once
 /// downsampled to at most `MAX_VISION_SAMPLES` arc-length samples, a chord between two samples
@@ -314,6 +321,7 @@ pub(crate) fn clip_to_visible_mask(
     cell: f64,
     footprint_radius_cells: f64,
     walls: &[crate::scene::vision::Seg],
+    grid: &dyn crate::scene::grid_shape::GridShape,
 ) -> crate::scene::pathfinding::PathOutcome {
     if outcome.path.len() < 2 {
         return outcome;
@@ -353,14 +361,10 @@ pub(crate) fn clip_to_visible_mask(
         let mask_ok = match mask {
             None => true,
             Some(mask) => {
-                let to_cell = (
-                    (s.pos.0 / cell).floor() as i32,
-                    (s.pos.1 / cell).floor() as i32,
-                );
-                let footprint =
-                    crate::scene::pathfinding::footprint_cells(to_cell, s.pos, r_scene, cell);
+                let to_cell = grid.cell_of(s.pos);
+                let footprint = grid.footprint_cells(to_cell, s.pos, r_scene, cell);
                 footprint.iter().all(|c| mask.contains(c))
-                    && match crate::scene::movement::supercover_cells(prev, s.pos, cell) {
+                    && match grid.line_traversal(prev, s.pos, cell) {
                         Some(cells) => cells.iter().all(|c| mask.contains(c)),
                         None => false, // fail-closed: a degenerate/over-cap span truncates here
                     }
@@ -413,8 +417,11 @@ pub(crate) fn clip_to_visible_mask(
 /// grid-stepped. `cost` and `arrested` are carried through unchanged (the grid weighted cost is a
 /// valid, slightly-conservative budget for the straighter geometry — same preview-vs-execution
 /// divergence class already logged for the grid engine in `docs/TODO.md`). "Entered cells" = the
-/// destination footprint disc ∪ the step supercover, the SAME union `pathfinding::cell_enterable`
-/// and `clip_to_visible_mask` apply. Fail-closed on two independent levels: (1) whole-input
+/// destination footprint disc ∪ the step line traversal, the SAME union
+/// `pathfinding::cell_enterable` and `clip_to_visible_mask` apply, indexed through `grid` — which
+/// MUST be the shape both `mask` and `field` were built with (`resolve_grid_shape`), since the
+/// weighted route this smooths is itself a route of `grid`-space cell centers. Fail-closed on two
+/// independent levels: (1) whole-input
 /// short-circuit — `< 3` vertices, or a degenerate `cell`/`footprint_radius_cells`, returns the
 /// input unchanged; (2) per-span fallback — an over-cap/degenerate `supercover_cells` for one
 /// candidate chord fails only that chord, leaving that span at its single unconditional grid step
@@ -426,8 +433,9 @@ pub(crate) fn los_smooth(
     field: &crate::scene::regions::RegionField,
     cell: f64,
     footprint_radius_cells: f64,
+    grid: &dyn crate::scene::grid_shape::GridShape,
 ) -> crate::scene::pathfinding::PathOutcome {
-    use crate::scene::pathfinding::{footprint_cells, Cell};
+    use crate::scene::pathfinding::Cell;
     if outcome.path.len() < 3
         || !cell.is_finite()
         || cell <= 0.0
@@ -449,12 +457,9 @@ pub(crate) fn los_smooth(
         }
         let mut prev = samples[0].pos;
         for s in samples.iter().skip(1) {
-            let to = (
-                (s.pos.0 / cell).floor() as i32,
-                (s.pos.1 / cell).floor() as i32,
-            );
-            let mut entered: Vec<Cell> = footprint_cells(to, s.pos, r_scene, cell);
-            match crate::scene::movement::supercover_cells(prev, s.pos, cell) {
+            let to = grid.cell_of(s.pos);
+            let mut entered: Vec<Cell> = grid.footprint_cells(to, s.pos, r_scene, cell);
+            match grid.line_traversal(prev, s.pos, cell) {
                 Some(sc) => entered.extend(sc),
                 None => return false, // degenerate/over-cap span: fail closed (do not straighten)
             }
@@ -519,20 +524,22 @@ pub(crate) fn los_smooth(
 /// never truncates a player's preview — it springs at `move_exec`). Cell-entry-transition dedup,
 /// not a raw per-sample check: the start cell is never a trigger even while several samples still
 /// sit inside it — a token already standing somewhere is not "entering" it, parity with `find`'s
-/// `.skip(1)` over CELLS. A route with no arrest transition is returned UNCHANGED (no resample).
+/// `.skip(1)` over CELLS. Cells come from `grid.cell_of`, which MUST be the shape `field` was
+/// rasterized with — a square index tested against a hex-axial field truncates the preview at a
+/// different place on the map entirely. A route with no arrest transition is returned UNCHANGED
+/// (no resample).
 /// On truncation, cost is recomputed as the Euclidean length of the surviving polyline.
 pub(crate) fn truncate_at_arrest(
     outcome: crate::scene::pathfinding::PathOutcome,
     field: &crate::scene::regions::RegionField,
     cell: f64,
+    grid: &dyn crate::scene::grid_shape::GridShape,
 ) -> crate::scene::pathfinding::PathOutcome {
     if outcome.path.len() < 2 || !cell.is_finite() || cell <= 0.0 {
         return outcome;
     }
     let samples = crate::scene::move_stream::sample_path(&outcome.path, cell, 1.0);
-    let to_cell = |p: (f64, f64)| -> (i32, i32) {
-        ((p.0 / cell).floor() as i32, (p.1 / cell).floor() as i32)
-    };
+    let to_cell = |p: (f64, f64)| -> (i32, i32) { grid.cell_of(p) };
     let mut prev_cell = to_cell(samples[0].pos);
     let mut hit = None;
     for (i, s) in samples.iter().enumerate().skip(1) {
@@ -615,7 +622,12 @@ mod tests {
             cost: 400.0,
             arrested: false,
         };
-        let out = truncate_at_arrest(route, &arrest_on(200.0, 0.0, 300.0, 100.0), 100.0);
+        let out = truncate_at_arrest(
+            route,
+            &arrest_on(200.0, 0.0, 300.0, 100.0),
+            100.0,
+            &test_grid(),
+        );
         assert!(out.arrested, "arrest flag set");
         assert!(
             out.path.last().unwrap().0 <= 300.0 + 1e-6,
@@ -634,7 +646,7 @@ mod tests {
             cost: 400.0,
             arrested: false,
         };
-        let out = truncate_at_arrest(route.clone(), &empty_field(), 100.0);
+        let out = truncate_at_arrest(route.clone(), &empty_field(), 100.0, &test_grid());
         assert_eq!(out.path, route.path, "no arrest region: route unchanged");
         assert!(!out.arrested);
     }
@@ -647,7 +659,12 @@ mod tests {
             cost: 400.0,
             arrested: false,
         };
-        let out = truncate_at_arrest(route, &arrest_on(0.0, 0.0, 100.0, 100.0), 100.0);
+        let out = truncate_at_arrest(
+            route,
+            &arrest_on(0.0, 0.0, 100.0, 100.0),
+            100.0,
+            &test_grid(),
+        );
         assert!(
             out.path.last().unwrap().0 > 100.0,
             "start-cell arrest does not immediately truncate"
@@ -661,7 +678,15 @@ mod tests {
 
     #[test]
     fn los_smooth_straightens_an_open_l_route() {
-        let out = los_smooth(oc(L_ROUTE.to_vec()), &[], None, &empty_field(), 100.0, 0.1);
+        let out = los_smooth(
+            oc(L_ROUTE.to_vec()),
+            &[],
+            None,
+            &empty_field(),
+            100.0,
+            0.1,
+            &test_grid(),
+        );
         assert_eq!(out.path.first().copied(), Some((50.0, 50.0)));
         assert_eq!(out.path.last().copied(), Some((250.0, 150.0)));
         assert_eq!(
@@ -677,7 +702,15 @@ mod tests {
     fn los_smooth_refuses_shortcut_through_terrain() {
         // Terrain (mult 2) on cell (1,1) = Rect [100,100]-[200,200]; the shortcut enters it.
         let field = terrain_on(100.0, 100.0, 200.0, 200.0, 2.0);
-        let out = los_smooth(oc(L_ROUTE.to_vec()), &[], None, &field, 100.0, 0.1);
+        let out = los_smooth(
+            oc(L_ROUTE.to_vec()),
+            &[],
+            None,
+            &field,
+            100.0,
+            0.1,
+            &test_grid(),
+        );
         assert_eq!(
             out.path,
             L_ROUTE.to_vec(),
@@ -700,7 +733,15 @@ mod tests {
             100.0,
             &test_grid(),
         );
-        let out = los_smooth(oc(L_ROUTE.to_vec()), &[], None, &b.build(), 100.0, 0.1);
+        let out = los_smooth(
+            oc(L_ROUTE.to_vec()),
+            &[],
+            None,
+            &b.build(),
+            100.0,
+            0.1,
+            &test_grid(),
+        );
         assert_eq!(
             out.path,
             L_ROUTE.to_vec(),
@@ -724,6 +765,7 @@ mod tests {
             &empty_field(),
             100.0,
             0.1,
+            &test_grid(),
         );
         assert_eq!(
             out.path,
@@ -747,6 +789,7 @@ mod tests {
             &empty_field(),
             100.0,
             0.1,
+            &test_grid(),
         );
         assert_eq!(
             out.path,
@@ -764,6 +807,7 @@ mod tests {
             &empty_field(),
             100.0,
             0.1,
+            &test_grid(),
         );
         assert_eq!(out.path.len(), 2, "nothing to straighten with < 3 vertices");
     }
@@ -792,7 +836,15 @@ mod tests {
         let a = (50.0, 50.0);
         let c = (50.0, 50.0);
         let mid = (250.0, 50.0);
-        let out = los_smooth(oc(vec![a, mid, c]), &[], None, &field, 100.0, 0.1);
+        let out = los_smooth(
+            oc(vec![a, mid, c]),
+            &[],
+            None,
+            &field,
+            100.0,
+            0.1,
+            &test_grid(),
+        );
         assert_eq!(
             out.path,
             vec![a, mid, c],
@@ -802,7 +854,15 @@ mod tests {
 
     #[test]
     fn los_smooth_degenerate_cell_fails_closed_to_input() {
-        let out = los_smooth(oc(L_ROUTE.to_vec()), &[], None, &empty_field(), 0.0, 0.1);
+        let out = los_smooth(
+            oc(L_ROUTE.to_vec()),
+            &[],
+            None,
+            &empty_field(),
+            0.0,
+            0.1,
+            &test_grid(),
+        );
         assert_eq!(
             out.path,
             L_ROUTE.to_vec(),
@@ -1093,7 +1153,7 @@ mod tests {
             cost: 900.0,
             arrested: false,
         };
-        let clipped = clip_to_visible_mask(outcome.clone(), None, 100.0, 0.1, &[]);
+        let clipped = clip_to_visible_mask(outcome.clone(), None, 100.0, 0.1, &[], &test_grid());
         assert_eq!(clipped.path, outcome.path);
         assert_eq!(clipped.cost, outcome.cost);
     }
@@ -1110,7 +1170,7 @@ mod tests {
             cost: 900.0,
             arrested: false,
         };
-        let clipped = clip_to_visible_mask(outcome, Some(&mask), 100.0, 0.1, &[]);
+        let clipped = clip_to_visible_mask(outcome, Some(&mask), 100.0, 0.1, &[], &test_grid());
         let last = *clipped.path.last().unwrap();
         assert!(
             last.0 <= 400.0 + 1e-6,
@@ -1134,7 +1194,8 @@ mod tests {
             cost: 900.0,
             arrested: false,
         };
-        let clipped = clip_to_visible_mask(outcome.clone(), Some(&mask), 100.0, 0.1, &[]);
+        let clipped =
+            clip_to_visible_mask(outcome.clone(), Some(&mask), 100.0, 0.1, &[], &test_grid());
         let last_orig = *outcome.path.last().unwrap();
         let last_clipped = *clipped.path.last().unwrap();
         assert!((last_orig.0 - last_clipped.0).abs() < 1e-6);
@@ -1160,7 +1221,7 @@ mod tests {
             cost: 900.0,
             arrested: false,
         };
-        let clipped = clip_to_visible_mask(outcome, Some(&mask), 100.0, 0.1, &[]);
+        let clipped = clip_to_visible_mask(outcome, Some(&mask), 100.0, 0.1, &[], &test_grid());
         let last = *clipped.path.last().unwrap();
         assert!(
             last.0 < 100.0,
@@ -1193,7 +1254,7 @@ mod tests {
             cost: 900.0,
             arrested: false,
         };
-        let clipped = clip_to_visible_mask(outcome, None, 100.0, 0.1, &walls);
+        let clipped = clip_to_visible_mask(outcome, None, 100.0, 0.1, &walls, &test_grid());
         let last = *clipped.path.last().unwrap();
         assert!(
             last.0 <= 500.0 + 1e-6,
@@ -1216,14 +1277,27 @@ mod tests {
             arrested: false,
         };
         let over_cap = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS + 1.0;
-        let clipped = clip_to_visible_mask(outcome.clone(), Some(&mask), 100.0, over_cap, &[]);
+        let clipped = clip_to_visible_mask(
+            outcome.clone(),
+            Some(&mask),
+            100.0,
+            over_cap,
+            &[],
+            &test_grid(),
+        );
         assert_eq!(clipped.path, vec![outcome.path[0]]);
         assert_eq!(clipped.cost, 0.0);
 
         // Also verify an infinite footprint radius (would saturate the `as i32` cast even more
         // directly) is rejected the same way.
-        let clipped_inf =
-            clip_to_visible_mask(outcome.clone(), Some(&mask), 100.0, f64::INFINITY, &[]);
+        let clipped_inf = clip_to_visible_mask(
+            outcome.clone(),
+            Some(&mask),
+            100.0,
+            f64::INFINITY,
+            &[],
+            &test_grid(),
+        );
         assert_eq!(clipped_inf.path, vec![outcome.path[0]]);
         assert_eq!(clipped_inf.cost, 0.0);
     }
@@ -1238,7 +1312,14 @@ mod tests {
             arrested: false,
         };
         for bad_cell in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let clipped = clip_to_visible_mask(outcome.clone(), Some(&mask), bad_cell, 0.4, &[]);
+            let clipped = clip_to_visible_mask(
+                outcome.clone(),
+                Some(&mask),
+                bad_cell,
+                0.4,
+                &[],
+                &test_grid(),
+            );
             assert_eq!(
                 clipped.path,
                 vec![outcome.path[0]],
@@ -1268,13 +1349,185 @@ mod tests {
             cost: 900.0,
             arrested: false,
         };
-        let clipped = clip_to_visible_mask(outcome, None, 100.0, 0.1, &walls);
+        let clipped = clip_to_visible_mask(outcome, None, 100.0, 0.1, &walls, &test_grid());
         let last = *clipped.path.last().unwrap();
         assert!(
             last.0 <= 500.0 + 1e-6,
             "the well-formed wall must still truncate the route even alongside a malformed one, \
              last x = {}",
             last.0
+        );
+    }
+
+    // --- Hex + continuous regression coverage (grid kind × movement model are INDEPENDENT axes,
+    // so `grid.kind:"hex"` + `movementModel:"continuous"` is a live scene). Each test pairs the
+    // hex assertion with the SAME call driven by a `SquareGrid` of the same cell size: `SquareGrid`
+    // delegates verbatim to the free `pathfinding::footprint_cells` / `movement::supercover_cells`
+    // / `floor(p/cell)` math these three sites used before, so the square arm IS the pre-fix
+    // behavior and pins each test's non-vacuity permanently rather than only at authoring time.
+
+    use crate::scene::grid_shape::{GridShape, HexGrid, SquareGrid};
+
+    const HEX_SIZE: f64 = 50.0;
+
+    fn hexg() -> HexGrid {
+        HexGrid { size: HEX_SIZE }
+    }
+    /// Same cell size as `hexg()`, so the two arms differ ONLY in cell geometry.
+    fn sq_same_size() -> SquareGrid {
+        SquareGrid {
+            cell: HEX_SIZE,
+            rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+        }
+    }
+    fn hex_region(behavior: RegionBehavior, x0: f64, y0: f64, x1: f64, y1: f64) -> RegionField {
+        let mut b = RegionField::builder();
+        b.add(
+            &RegionShape::Rect { x0, y0, x1, y1 },
+            behavior,
+            1.0,
+            HEX_SIZE,
+            &hexg(),
+        );
+        b.build()
+    }
+
+    #[test]
+    fn clip_on_hex_truncates_before_an_occluded_hex_that_square_indexing_admits() {
+        // OVER-REVEAL direction, the security-critical one: `clip_to_visible_mask` is the ONLY fog
+        // gate on the pure-polyanya branch. Route = hex (0,0) center -> hex (0,2) center, straight
+        // through hex (0,1). The mask is a 9x9 axial block minus hex (0,2) — that one hex is
+        // occluded. Square indexing maps the same samples onto square cells (0,0),(0,1),(1,1),
+        // (1,2),(1,3) — NONE of which is the excluded (0,2) key — so the occluded hex passes the
+        // membership test and the whole route is admitted.
+        let g = hexg();
+        let start = g.cell_center((0, 0));
+        let goal = g.cell_center((0, 2));
+        let mut mask = BTreeSet::new();
+        for q in -4..=4 {
+            for r in -4..=4 {
+                if (q, r) != (0, 2) {
+                    mask.insert((q, r));
+                }
+            }
+        }
+        let outcome = crate::scene::pathfinding::PathOutcome {
+            path: vec![start, goal],
+            cost: 173.2,
+            arrested: false,
+        };
+
+        let hexed = clip_to_visible_mask(outcome.clone(), Some(&mask), HEX_SIZE, 0.1, &[], &g);
+        let last = *hexed.path.last().unwrap();
+        assert_ne!(
+            g.cell_of(last),
+            (0, 2),
+            "the clipped route must never reach the occluded hex, last = {last:?}"
+        );
+        let gap = ((last.0 - goal.0).powi(2) + (last.1 - goal.1).powi(2)).sqrt();
+        assert!(
+            gap > 40.0,
+            "the route must stop clear of the occluded hex (footprint disc ∪ traversal), gap = {gap}"
+        );
+
+        let squared =
+            clip_to_visible_mask(outcome, Some(&mask), HEX_SIZE, 0.1, &[], &sq_same_size());
+        let sq_last = *squared.path.last().unwrap();
+        assert!(
+            (sq_last.0 - goal.0).abs() < 1e-6 && (sq_last.1 - goal.1).abs() < 1e-6,
+            "square indexing admits the whole route into the occluded hex (the pre-fix leak), \
+             last = {sq_last:?}"
+        );
+    }
+
+    #[test]
+    fn los_smooth_on_hex_refuses_a_chord_through_an_impassable_hex_square_indexing_misses() {
+        // `chord_ok`'s cell lookups must key the SAME axial space `RegionField` was rasterized in.
+        // Route vertices: hex (0,0) -> hex (2,0) -> hex (4,-2) centers. The straight chord
+        // (0,0)->(4,-2) runs through axial (1,0),(2,-1),(3,-1); its midpoint IS hex (2,-1)'s
+        // center. Square indexing of that same chord yields (0,0),(0,-1),(1,-1),(1,-2),(2,-2),
+        // (3,-2),(3,-3),(4,-3),(5,-3) — the axial key (2,-1) is never queried at all.
+        let g = hexg();
+        let field = hex_region(RegionBehavior::Impassable, 110.0, -95.0, 150.0, -55.0);
+        assert!(
+            field.is_impassable((2, -1)),
+            "fixture: the impassable cell is axial (2,-1)"
+        );
+        assert!(
+            !field.is_impassable((2, -2)) && !field.is_impassable((1, -1)),
+            "fixture: exactly one hex is impassable"
+        );
+
+        let path = vec![
+            g.cell_center((0, 0)),
+            g.cell_center((2, 0)),
+            g.cell_center((4, -2)),
+        ];
+        let hexed = los_smooth(oc(path.clone()), &[], None, &field, HEX_SIZE, 0.1, &g);
+        assert_eq!(
+            hexed.path, path,
+            "the chord enters impassable hex (2,-1): the route must stay unsmoothed"
+        );
+
+        let squared = los_smooth(
+            oc(path.clone()),
+            &[],
+            None,
+            &field,
+            HEX_SIZE,
+            0.1,
+            &sq_same_size(),
+        );
+        assert_eq!(
+            squared.path,
+            vec![path[0], path[2]],
+            "square indexing never queries axial (2,-1) and wrongly straightens straight through \
+             the impassable hex (the pre-fix behavior)"
+        );
+    }
+
+    #[test]
+    fn truncate_at_arrest_on_hex_cuts_at_the_axial_arrest_cell_not_the_square_one() {
+        // Straight route along the r=0 hex row: hex (0,0) center -> hex (4,0) center. Arrest on
+        // hex (3,0) (center x ~259.8); the (2,0)/(3,0) boundary is x ~216.5. Square indexing reads
+        // the same axial key (3,0) as the square cell x∈[150,200) — a DIFFERENT place on the map —
+        // so it cuts the preview roughly a full hex early.
+        let g = hexg();
+        let field = hex_region(RegionBehavior::Arrest, 240.0, -20.0, 280.0, 20.0);
+        assert!(field.is_arrest((3, 0)), "fixture: arrest is on axial (3,0)");
+        assert!(
+            !field.is_arrest((2, 0)) && !field.is_arrest((4, 0)),
+            "fixture: exactly one hex arrests"
+        );
+
+        let route = crate::scene::pathfinding::PathOutcome {
+            path: vec![g.cell_center((0, 0)), g.cell_center((4, 0))],
+            cost: 346.4,
+            arrested: false,
+        };
+
+        let hexed = truncate_at_arrest(route.clone(), &field, HEX_SIZE, &g);
+        assert!(hexed.arrested, "the arrest hex truncates the preview");
+        let last = *hexed.path.last().unwrap();
+        assert_eq!(
+            g.cell_of(last),
+            (3, 0),
+            "truncation lands ON the arrest hex's own cell, last = {last:?}"
+        );
+        assert!(
+            last.0 > 216.5,
+            "truncation is at the hex (2,0)/(3,0) boundary (x ~216.5), not the square one, \
+             last x = {}",
+            last.0
+        );
+
+        let squared = truncate_at_arrest(route, &field, HEX_SIZE, &sq_same_size());
+        let sq_last = *squared.path.last().unwrap();
+        assert!(
+            sq_last.0 < 200.0,
+            "square indexing cuts at square cell (3,0) = x∈[150,200), a different location on \
+             the map (the pre-fix behavior), last x = {}",
+            sq_last.0
         );
     }
 }
