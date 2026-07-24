@@ -285,9 +285,10 @@ pub fn validate_field_path(path: &str) -> Result<(), DataError> {
 /// `required_cap_for_path`, so any consumer that mirrors a change by unconditionally
 /// setting `new` — instead of branching on `remove` as `apply_intent` Phase 2 does —
 /// lands an attacker-chosen value while the store lands absence. The derived scene ECS
-/// had exactly that bug (`scene/mod.rs`'s `apply_field_change` is now the single
-/// store-equal rule). Denying the shape at ingress means no future mirror can be forked
-/// this way even if it re-introduces the same mistake.
+/// had exactly that bug; `command::apply_field_change` is now the single store-equal
+/// rule, called by every authoritative path and every mirror. Denying the shape at
+/// ingress means no future mirror can be forked this way even if it re-introduces the
+/// same mistake.
 pub fn validate_field_change(ch: &crate::data::command::FieldChange) -> Result<(), DataError> {
     validate_field_path(&ch.path)?;
     if ch.remove && !ch.new.is_null() {

@@ -300,25 +300,48 @@ pub struct SceneEcs {
     visible_cells_recompute_count: std::sync::atomic::AtomicU64,
 }
 
-/// Mirror one `FieldChange` — committed or client-proposed — into a serialized
-/// document value through `command::apply_field_change`, THE store-equal mutation
-/// rule (stated once, there; see its INVARIANT for why re-deriving the remove/set
-/// branch is the defect).
+/// Whether the changes being mirrored have cleared the authoritative write path.
+/// A failed pointer op means something categorically different on each side, so the
+/// two are never reported at the same level.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MirrorInput {
+    /// Already committed and broadcast (`apply_op`). `apply_intent` validated every
+    /// path (`validate_field_change`) and aborted the transaction on any pointer-op
+    /// error, so a failure HERE is a should-never-happen invariant breach: the store
+    /// applied a change the mirror could not. Logged at `error` — it means the derived
+    /// world has silently diverged from the store and needs re-hydration.
+    Committed,
+    /// Raw client-PROPOSED changes, not yet authorized or even path-validated
+    /// (`token_move`, reached from `Room::publish` strictly before `apply_intent`).
+    /// A malformed path here is ROUTINE untrusted input, not a defect: any
+    /// authenticated client can send `/engine/x/y/z` and it fails closed (the gate
+    /// derives no target, the write is rejected downstream). Logged at `debug` —
+    /// `error` would let a client flood the channel that exists to surface real
+    /// divergence, degrading exactly the signal it carries.
+    Proposed,
+}
+
+/// Mirror one `FieldChange` into a serialized document value through
+/// `command::apply_field_change`, THE store-equal mutation rule (stated once, there;
+/// see its INVARIANT for why re-deriving the remove/set branch is the defect).
 ///
 /// A pointer-op error is logged and skipped rather than propagated: this runs on
-/// derived state, where the caller cannot reject. The authoritative store already
-/// refused the same change with `?` — `apply_intent` validates every path
-/// (`validate_field_change`) and aborts the transaction on a pointer-op error — so a
-/// change reaching the committed mirrors cannot fail here, and `token_move`'s
-/// proposed changes have not yet been authorized at all. Either way the mirror must
-/// not silently fall behind the store: logging matches `reapply_changes`' round-trip
-/// branch, so both ways this can diverge are reported.
-fn mirror_field_change(v: &mut serde_json::Value, ch: &FieldChange) {
-    if let Err(e) = apply_field_change(v, ch) {
-        tracing::error!(
+/// derived state, where the caller cannot reject. `origin` decides the level and the
+/// meaning — see `MirrorInput`. Either way the mirror must not silently fall behind
+/// the store; `reapply_changes`' round-trip branch reports the other way it can.
+fn mirror_field_change(v: &mut serde_json::Value, ch: &FieldChange, origin: MirrorInput) {
+    let Err(e) = apply_field_change(v, ch) else {
+        return;
+    };
+    match origin {
+        MirrorInput::Committed => tracing::error!(
             path = %ch.path, error = %e,
-            "derived ECS: field change could not be applied; mirror may lag the store"
-        );
+            "derived ECS: committed field change could not be applied; mirror has diverged from the store"
+        ),
+        MirrorInput::Proposed => tracing::debug!(
+            path = %ch.path, error = %e,
+            "derived ECS: proposed field change is malformed; gate derives no target"
+        ),
     }
 }
 
@@ -341,8 +364,9 @@ fn reapply_changes(doc: &mut Document, changes: &[FieldChange]) {
             return;
         }
     };
+    // Only ever called from `apply_op`/`apply_config_update`, i.e. already-committed ops.
     for ch in changes {
-        mirror_field_change(&mut v, ch);
+        mirror_field_change(&mut v, ch, MirrorInput::Committed);
     }
     match serde_json::from_value::<Document>(v) {
         Ok(updated) => *doc = updated,
@@ -892,8 +916,13 @@ impl SceneEcs {
         // commits. Deriving the projected position by the same rule the store uses
         // keeps that true by construction instead of by coincidence — the gate can
         // never judge a position on a value the store computes differently.
+        //
+        // `Proposed`: `Room::publish` reaches here with RAW client changes, strictly
+        // before `apply_intent` runs `validate_field_change`, so a malformed path is
+        // untrusted input a client can send at will — not an invariant breach, and not
+        // an `error!` a client may emit on demand.
         for ch in changes {
-            mirror_field_change(&mut v, ch);
+            mirror_field_change(&mut v, ch, MirrorInput::Proposed);
         }
         let nx = v.pointer("/engine/x").and_then(|x| x.as_f64())?;
         let ny = v.pointer("/engine/y").and_then(|x| x.as_f64())?;
@@ -1434,20 +1463,19 @@ impl SceneEcs {
     ///
     /// Presence, not vision: ownership resolves through `token_effective_owner` (per-token
     /// override, else the linked actor's owner), so it is the same rule the write-authz and
-    /// vision paths enforce.
+    /// vision paths enforce; observer-vision tokens are excluded, since seeing a token in a
+    /// scene is not controlling one there. Equals the condition under which
+    /// `player_vision_inputs` returns a non-empty polygon set for the same `(user, scene)` —
+    /// both key on `parent_id` plus effective ownership, and neither requires the token to
+    /// carry a position: `has_owned` is set on the ownership predicate alone, BEFORE the
+    /// `engine_as_cached::<TokenEngine>` parse, which only decides whether that token also
+    /// contributes a static viewpoint; `polygons_at` is empty iff `!has_owned`.
     ///
-    /// Relation to the visibility mask — a SUPERSET of `gather_vision_sources_in_scene`'s
-    /// ownership branch, MINUS its observer-tier union. Not an equality; do not restate it as
-    /// one. The two sets differ in opposite directions:
-    /// - Wider here: a vision source additionally requires `engine_as::<TokenEngine>` to parse
-    ///   (`x`/`y` are non-`Option`), so a positionless or unparseable token is presence here
-    ///   while contributing no vision there. Ingress `validate_engine` demands `x`/`y`, so this
-    ///   is unreachable today — it is a consequence of asking a different question, not a
-    ///   licensed relaxation.
-    /// - Wider there: with `observerVision` on, the mask also unions observer-tier tokens, so a
-    ///   user whose only vision in a scene is observer-tier has a mask there and no presence
-    ///   here. Deliberate and fail-closed — the asymmetry note at `handle_pathfind`'s call site
-    ///   states why, and why matching the mask's wider source here would be wrong.
+    /// That equality is against `player_vision_inputs`/`VisionMoveInputs::polygons_at` ONLY —
+    /// NOT `gather_vision_sources_in_scene`, the visibility mask's source, which is a different
+    /// set in both directions: it additionally requires a parseable `TokenEngine`, and it unions
+    /// observer-tier tokens when `observerVision` is on. Conflating the two reads this comment
+    /// as a false claim about the mask.
     ///
     /// Coupling: `handle_pathfind` gates a non-GM route request on this. Weakening it to a raw
     /// `doc.owner` read would fork ownership away from `token_effective_owner` and let an
@@ -3229,6 +3257,110 @@ mod tests {
     /// no coverage: reverting it to an unconditional `set_pointer` survived the whole
     /// suite. A `remove` on a config field must leave the ECS singleton matching the
     /// store's ABSENCE, not holding `ch.new`.
+    /// Collects the `Level` of every event emitted on the current thread, so a test can
+    /// assert what a code path is allowed to log — not merely what it computes.
+    #[derive(Default, Clone)]
+    struct LevelCapture(std::sync::Arc<std::sync::Mutex<Vec<tracing::Level>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LevelCapture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            self.0.lock().unwrap().push(*event.metadata().level());
+        }
+    }
+
+    /// Run `f` with a thread-local capturing subscriber and return the levels emitted.
+    fn captured_levels(f: impl FnOnce()) -> Vec<tracing::Level> {
+        use tracing_subscriber::layer::SubscriberExt;
+        let cap = LevelCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        tracing::subscriber::with_default(subscriber, f);
+        let out = cap.0.lock().unwrap().clone();
+        out
+    }
+
+    /// `Room::publish` reaches `token_move` with RAW client changes, strictly before
+    /// `apply_intent` runs `validate_field_change`, so a malformed path is untrusted
+    /// input any authenticated client can send at will. It must (a) fail closed and
+    /// (b) NOT emit at `error` — otherwise a client can flood on demand the channel
+    /// that exists to surface real store/mirror divergence.
+    #[test]
+    fn a_malformed_proposed_path_fails_closed_without_an_error_level_log() {
+        use crate::data::command::FieldChange;
+        use serde_json::json;
+
+        let token = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 10.0, "y": 20.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), token.clone()], 0);
+
+        // Descends through a scalar (`/engine/x` is a number) -> BadPath.
+        let malformed = vec![FieldChange {
+            remove: false,
+            path: "/engine/x/y/z".into(),
+            old: json!(null),
+            new: json!(1.0),
+        }];
+
+        let mut out = None;
+        let levels = captured_levels(|| out = Some(ecs.token_move(token.id, &malformed)));
+
+        // Fails closed: the position is untouched, so the projected target equals the
+        // committed one — the gate derives nothing from a malformed change.
+        assert_eq!(
+            out.unwrap().map(|(_, from, to)| (from, to)),
+            Some(((10.0, 20.0), (10.0, 20.0))),
+            "a malformed proposed path must not move the projected target"
+        );
+        assert!(
+            !levels.contains(&tracing::Level::ERROR),
+            "client-proposed malformed input must not emit at error level, got {levels:?}"
+        );
+        assert!(
+            levels.contains(&tracing::Level::DEBUG),
+            "the divergence must still be reported, at debug: got {levels:?}"
+        );
+    }
+
+    /// The counterpart: at a COMMITTED mirror the same failure is a should-never-happen
+    /// invariant breach — the store applied a change the mirror could not — and must
+    /// stay at `error`. Same helper, two meanings; this pins that they do not collapse.
+    #[test]
+    fn a_failed_committed_mirror_change_logs_at_error_level() {
+        use crate::data::command::FieldChange;
+        use serde_json::json;
+
+        let token = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 10.0, "y": 20.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), token.clone()], 0);
+
+        let levels = captured_levels(|| {
+            ecs.apply_op(&Operation::Update {
+                doc_id: token.id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/x/y/z".into(),
+                    old: json!(null),
+                    new: json!(1.0),
+                }],
+            })
+        });
+        assert!(
+            levels.contains(&tracing::Level::ERROR),
+            "a committed change the mirror cannot apply is a real divergence: got {levels:?}"
+        );
+    }
+
     #[test]
     fn config_singleton_mirror_honors_a_remove_change() {
         use crate::data::command::{apply_field_change, FieldChange};
