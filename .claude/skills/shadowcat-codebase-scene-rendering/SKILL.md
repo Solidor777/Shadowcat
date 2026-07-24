@@ -36,6 +36,22 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   zero-overlap cell). `resolve_scene` also yields `movement_restriction`
   (`MovementRestriction::{Visible,Revealed,Unrestricted}`, scene-overridable, fail-closed to `Visible`)
   + `partial_cell_leniency` (world-only).
+  **INVARIANT — a movement/routing gate's SCENE is DERIVED FROM THE TOKEN, never taken from the
+  frame (Task 14j, `[sec]`, fixed a Critical).** `Room::execute_move` resolves the scene via
+  `SceneEcs::token_move(token, &[])`, the same accessor `Room::publish` has always used — which is
+  why the drag path was never vulnerable — and EVERY gate input (restriction, cell size,
+  `visible_cells_cached`, `get_explored`, and `move_exec`'s walls/regions/grid shape) keys on that
+  derived scene. `MoveExecution.scene` carries it out, and `MoveStream.scene` is stamped from it, so
+  the per-recipient egress clip and the client's viewed-scene filter cannot key on a client value
+  either. A request whose `scene_id` disagrees is additionally refused, but that is redundant
+  defense-in-depth: the derivation is the mechanism. **Why:** `MoveRequest` previously trusted the
+  client's `scene_id` while reading the token's position scene-agnostically, so a player owning a
+  token in scene A could have the gate evaluated against scene B — B's walls, their own mask in B,
+  B's regions — and teleport through fog in A. Authorization was intact (they owned the token); it
+  was a total bypass of the wall + visibility gate. **A routing request that names NO token**
+  (`Pathfind`) cannot derive, so a non-GM must instead prove PRESENCE: they must effectively own a
+  token in the named scene, routed through the same effective-ownership rule (never a forked
+  ownership check), failing with the generic `Unreachable` so it discloses nothing.
 - **`/engine` re-root (M13-0).** Every scene/vision/movement/pathfinding document read in this
   subsystem now goes through the typed `engine` band, not a `/system` pointer walk. `mod.rs`'s
   private `engine_as::<T: DeserializeOwned>(doc: &Document) -> Option<T>` (`doc.engine.as_ref()
