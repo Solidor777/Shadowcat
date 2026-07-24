@@ -57,9 +57,9 @@ export function setPointer(
 
 /** Remove the object key at JSON-pointer `pointer` in `root`, mirroring the server's
  * `remove_pointer`: object keys only; removing an already-absent key — or one beneath an
- * absent intermediate — is a silent no-op (no intermediate is created). Array-index removal
- * throws (an array shrinks via whole-array replacement, never a leaf remove). A non-empty
- * pointer must start with "/". */
+ * absent OR explicit-`null` intermediate — is a silent no-op (no intermediate is created).
+ * Array-index removal throws (an array shrinks via whole-array replacement, never a leaf
+ * remove). A non-empty pointer must start with "/". */
 export function removePointer(root: unknown, pointer: string): void {
   if (pointer === "") {
     throw new Error("empty JSON pointer cannot target a field");
@@ -80,7 +80,10 @@ export function removePointer(root: unknown, pointer: string): void {
       cur = cur[idx];
     } else if (cur !== null && typeof cur === "object") {
       const obj = cur as Record<string, unknown>;
-      if (!(tok in obj)) return; // absent intermediate → no-op
+      // Absent OR explicit-null intermediate: nothing lives beneath a null, so the target is
+      // already absent and removal is a no-op — uniform with getPointer/setPointer, which also
+      // treat a null intermediate as absent.
+      if (!(tok in obj) || obj[tok] === null) return;
       cur = obj[tok];
     } else {
       throw new Error(`cannot descend into non-container at ${pointer}`);

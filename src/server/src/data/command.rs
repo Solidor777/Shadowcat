@@ -229,9 +229,9 @@ pub fn set_pointer(root: &mut Value, pointer: &str, new: Value) -> Result<(), Da
 /// Remove the object key at JSON-pointer `pointer` from `root`, making it
 /// genuinely absent (`null` != absent). Object keys only.
 ///
-/// - Removing an already-absent key — or any key beneath an already-absent
-///   intermediate — is a no-op success (no intermediate is created, unlike
-///   `set_pointer`).
+/// - Removing an already-absent key — or any key beneath an already-absent OR
+///   explicit-`null` intermediate — is a no-op success (no intermediate is
+///   created, unlike `set_pointer`).
 /// - Array-index removal is rejected as `BadPath`: an array shrinks only via
 ///   whole-array replacement (a `set_pointer` of the parent), mirroring the merge
 ///   engine's band-level array handling; a leaf remove has no defined
@@ -258,10 +258,11 @@ pub fn remove_pointer(root: &mut Value, pointer: &str) -> Result<(), DataError> 
             };
         }
         cur = match cur {
-            // A missing intermediate means the target is already absent: no-op.
+            // A missing OR explicit-null intermediate means the target is already absent:
+            // no-op — uniform with get_pointer/set_pointer, which treat null == absent.
             Value::Object(m) => match m.get_mut(tok) {
-                Some(v) => v,
-                None => return Ok(()),
+                Some(v) if !v.is_null() => v,
+                _ => return Ok(()),
             },
             Value::Array(a) => {
                 let idx: usize = tok
@@ -491,6 +492,16 @@ mod tests {
         let mut v = serde_json::json!({ "system": {} });
         remove_pointer(&mut v, "/system/missing/leaf").unwrap();
         assert_eq!(v, serde_json::json!({ "system": {} }));
+    }
+
+    #[test]
+    fn remove_pointer_through_a_null_intermediate_is_a_no_op() {
+        // A `null` intermediate has nothing beneath it, so the target is already absent —
+        // uniform with set_pointer/get_pointer, which treat null == absent for descent.
+        // The `null` itself is preserved (only the absent descendant "removal" is a no-op).
+        let mut v = serde_json::json!({ "engine": { "vision": null } });
+        remove_pointer(&mut v, "/engine/vision/mode").unwrap();
+        assert_eq!(v, serde_json::json!({ "engine": { "vision": null } }));
     }
 
     #[test]

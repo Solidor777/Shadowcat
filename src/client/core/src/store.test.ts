@@ -217,6 +217,14 @@ describe("removePointer", () => {
     removePointer(root, "/missing/deep");
     expect(root).toEqual({ a: 1 });
   });
+  it("is a no-op when removing a key beneath an explicit null intermediate (null == absent)", () => {
+    // Mirrors the server remove_pointer test `remove_pointer_through_a_null_intermediate_is_a_no_op`
+    // (anti-drift: a `null` intermediate has nothing beneath it, so removal is a silent no-op on
+    // both sides; the `null` itself is preserved). A regression on either side fails one of the two.
+    const root = { engine: { vision: null } };
+    removePointer(root, "/engine/vision/mode");
+    expect(root).toEqual({ engine: { vision: null } });
+  });
   it("rejects array-index removal (arrays shrink via whole-array replacement)", () => {
     expect(() => removePointer({ a: [1, 2, 3] }, "/a/1")).toThrow();
   });
