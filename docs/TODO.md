@@ -7,9 +7,6 @@ unblocking condition, not a "someday maybe." A few headings are explicitly
 labeled "Actionable now": these are NOT blocked on anything — the underlying
 capability already exists — but are deferred as out-of-scope-for-now work.
 
-## Actionable now — make the server crate rustfmt-clean
-- TODO: `cargo fmt --check` fails on `src/server` against pre-existing formatting, so a bare `cargo fmt` reformats ~8 files unrelated to whatever is being worked on, plus stray hunks in `scene/mod.rs`. In a multi-agent session that risks clobbering another agent's in-flight edits, and it makes `fmt` unusable as a per-task gate (it is currently NOT one — `cargo test` + `cargo clippy -- -D warnings` are). Fix with a single formatting-only commit touching nothing else, then `cargo fmt --check` can join the gate set. Until then, do not run bare `cargo fmt` here. (Surfaced by Task 14e-7 of the hex-grid sweep, which hit and had to hand-revert exactly this.)
-
 ## Blocked on world/user deletion
 - TODO: Purge `explored_fog` rows on world/user deletion. Neither has a route at all — world and user are DB rows, not documents, and no deletion path exists yet. The M9c table denormalizes `world_id` for a world-scoped purge; wire a `DELETE FROM explored_fog WHERE world_id = ?` when world deletion lands, and index `world_id` then. (Surfaced by the M9c-1 buddy check.)
 
