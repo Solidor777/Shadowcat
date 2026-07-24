@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use uuid::Uuid;
 
-use crate::data::command::{set_pointer, Operation};
+use crate::data::command::{remove_pointer, set_pointer, FieldChange, Operation};
 use crate::data::document::Document;
 // The typed, ingress-validated engine band, imported under a namespace alias: this module
 // declares its own `LightMode`/`MovementRestriction`/`MovementModel` (the RESOLVED
@@ -300,6 +300,61 @@ pub struct SceneEcs {
     visible_cells_recompute_count: std::sync::atomic::AtomicU64,
 }
 
+/// Apply one already-committed `FieldChange` to a serialized document value using
+/// EXACTLY the authoritative store's mutation rule (`apply_intent` Phase 2,
+/// `data/sqlite.rs`): `remove: true` deletes the key at `path` and `new` is unused;
+/// anything else sets `new`.
+///
+/// INVARIANT: the derived ECS must reach the same document state the store reaches.
+/// Calling `set_pointer` unconditionally forks them on any `remove` change — and
+/// `new` is constrained by NEITHER the OCC pre-image check (which compares `old`)
+/// NOR `required_cap_for_path`, so on a path that authz then reads (`/owner`,
+/// `/engine/actor_id`) the forked value is attacker-chosen. Concretely: a token's
+/// effective owner removes `/engine/actor_id` with `new` naming another actor, and
+/// the store sees an unowned token while the vision/lit-mask family sees one owned
+/// by that actor's owner — vision widening exactly where write authority refuses.
+///
+/// The single mutation rule for every derived-state mirror in this file; do not
+/// re-state it at a call site.
+fn apply_field_change(v: &mut serde_json::Value, ch: &FieldChange) {
+    let _ = if ch.remove {
+        remove_pointer(v, &ch.path)
+    } else {
+        set_pointer(v, &ch.path, ch.new.clone())
+    };
+}
+
+/// Re-apply `changes` onto `doc` in place through `apply_field_change`, via a
+/// `Value` round-trip (the server stays structural-only here; no semantic
+/// interpretation).
+///
+/// A post-image that fails to deserialize leaves `doc` UNTOUCHED and is logged at
+/// `error`: the op is already committed and broadcast, so the derived ECS cannot
+/// reject it, and a stale entity silently dropping every other change in the batch
+/// is a defect to observe rather than to swallow (recovery is re-hydration, not a
+/// panic — this runs on the broadcast path, and event replay may legitimately carry
+/// an older document shape). Unreachable through `apply_intent`, which fails the
+/// identical round-trip inside its transaction and never commits.
+fn reapply_changes(doc: &mut Document, changes: &[FieldChange]) {
+    let mut v = match serde_json::to_value(&*doc) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(doc = %doc.id, error = %e, "derived ECS: document failed to serialize; entity left stale");
+            return;
+        }
+    };
+    for ch in changes {
+        apply_field_change(&mut v, ch);
+    }
+    match serde_json::from_value::<Document>(v) {
+        Ok(updated) => *doc = updated,
+        Err(e) => tracing::error!(
+            doc = %doc.id, error = %e,
+            "derived ECS: post-image failed to round-trip; entity left stale (re-hydration required)"
+        ),
+    }
+}
+
 impl SceneEcs {
     pub fn new() -> Self {
         Self {
@@ -412,7 +467,7 @@ impl SceneEcs {
         self.gradation.as_ref()
     }
 
-    /// Mirror a config/actor field Update into the side tables (Value round-trip, structural-only).
+    /// Mirror a config/actor field Update into the side tables (see `reapply_changes`).
     /// Takes `&mut Option<Document>` (not `&mut self`) so the three call sites can borrow the
     /// three distinct singleton fields independently without conflicting on `self`.
     fn apply_config_update(
@@ -422,14 +477,7 @@ impl SceneEcs {
     ) {
         if let Some(d) = slot {
             if d.id == doc_id {
-                if let Ok(mut v) = serde_json::to_value(&*d) {
-                    for ch in changes {
-                        let _ = set_pointer(&mut v, &ch.path, ch.new.clone());
-                    }
-                    if let Ok(updated) = serde_json::from_value::<Document>(v) {
-                        *d = updated;
-                    }
-                }
+                reapply_changes(d, changes);
             }
         }
     }
@@ -483,16 +531,8 @@ impl SceneEcs {
                 if let Some(&e) = self.index.get(doc_id) {
                     if let Ok(mut comp) = self.world.get::<&mut SceneEntity>(e) {
                         // Mirror the same field-path changes apply_intent applied
-                        // to SQLite, via Value round-trip (server stays
-                        // structural-only; no semantic interpretation).
-                        if let Ok(mut v) = serde_json::to_value(&comp.doc) {
-                            for ch in changes {
-                                let _ = set_pointer(&mut v, &ch.path, ch.new.clone());
-                            }
-                            if let Ok(updated) = serde_json::from_value::<Document>(v) {
-                                comp.doc = updated;
-                            }
-                        }
+                        // to SQLite — set AND remove (see `reapply_changes`).
+                        reapply_changes(&mut comp.doc, changes);
                     }
                 }
                 // Config singletons + actors (not in the hecs index).
@@ -500,14 +540,10 @@ impl SceneEcs {
                 Self::apply_config_update(&mut self.gradation, *doc_id, changes);
                 Self::apply_config_update(&mut self.vision_modes, *doc_id, changes);
                 if let Some(a) = self.actors.get_mut(doc_id) {
-                    if let Ok(mut v) = serde_json::to_value(&*a) {
-                        for ch in changes {
-                            let _ = set_pointer(&mut v, &ch.path, ch.new.clone());
-                        }
-                        if let Ok(updated) = serde_json::from_value::<Document>(v) {
-                            *a = updated;
-                        }
-                    }
+                    // Same store-equal mutation rule: an actor's `/owner` is an authz
+                    // input for every token linked to it, so a forked `remove` here
+                    // re-owns tokens the store considers unowned.
+                    reapply_changes(a, changes);
                 }
             }
             Operation::Delete { doc } => {
@@ -851,8 +887,11 @@ impl SceneEcs {
             (scene, t.x, t.y, v)
         };
         let mut v = doc_value;
+        // Store-equal mutation rule (see `apply_field_change`): a `remove` of
+        // `/engine/x` must clear the coordinate here exactly as it does in the
+        // store, so the move gate never evaluates a position the store won't hold.
         for ch in changes {
-            let _ = set_pointer(&mut v, &ch.path, ch.new.clone());
+            apply_field_change(&mut v, ch);
         }
         let nx = v.pointer("/engine/x").and_then(|x| x.as_f64())?;
         let ny = v.pointer("/engine/y").and_then(|x| x.as_f64())?;
@@ -1126,11 +1165,17 @@ impl SceneEcs {
         is_gm: bool,
         explored: Option<&crate::scene::explored::ExploredSet>,
     ) -> Result<pathfinding::PathOutcome, pathfinding::PathFail> {
-        let cell = self
-            .scene_grid_sizes()
-            .get(&scene)
-            .copied()
-            .unwrap_or(100.0);
+        // Scene-existence admissibility, ahead of any routing work and for every requester
+        // including a GM. Coupling: both movement gates (`Room::publish`, `Room::execute_move`)
+        // refuse a scene with no document, so the router agrees with them on which scenes are
+        // admissible at all — a router that silently substituted a 100-unit default would build
+        // its mask, region field, and grid shape in a grid no scene declared, while the gate that
+        // must later authorize the resulting route refuses the same input outright.
+        // `scene_grid_sizes` carries an entry — already defaulted to 100 — for every live scene,
+        // so an absent entry means the scene itself is gone.
+        let Some(cell) = self.scene_grid_sizes().get(&scene).copied() else {
+            return Err(pathfinding::PathFail::Invalid);
+        };
         let grid_shape = self.resolve_grid_shape(scene, cell);
         let walls = self.move_walls(scene);
         // Hoisted so `movement_model` is available to the dispatch below regardless of `is_gm`
@@ -1380,6 +1425,32 @@ impl SceneEcs {
         let linked = crate::data::permission::token_actor_link(token)
             .and_then(|id| self.actors.get(&id));
         crate::data::permission::effective_owner(token, linked)
+    }
+
+    /// Whether `user` effectively controls a token parented to `scene`. A pure document scan —
+    /// no raycast, no illumination — so it is cheap enough for an unrate-limited request path.
+    ///
+    /// Presence, not vision: ownership resolves through `token_effective_owner` (per-token
+    /// override, else the linked actor's owner), so it is the same rule the write-authz and
+    /// vision paths enforce; observer-vision tokens are excluded, since seeing a token in a
+    /// scene is not controlling one there. Equals the condition under which
+    /// `player_vision_inputs` returns a non-empty polygon set for the same `(user, scene)` —
+    /// both key on `parent_id` plus effective ownership, and neither requires the token to
+    /// carry a position.
+    ///
+    /// Coupling: `handle_pathfind` gates a non-GM route request on this. Weakening it to a raw
+    /// `doc.owner` read would fork ownership away from `token_effective_owner` and let an
+    /// actor-inherited owner lose access to a scene they legitimately hold a token in.
+    pub(crate) fn user_owns_token_in_scene(&self, user: Uuid, scene: Uuid) -> bool {
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type == "token"
+                && e.doc.parent_id == Some(scene)
+                && self.token_effective_owner(&e.doc) == Some(user)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// The token's effective vision modes as `(floor_min_illumination, range_cells, render_hint)`
@@ -2882,6 +2953,241 @@ mod tests {
         // No doc at all → built-in seed.
         let empty = SceneEcs::new();
         assert!(empty.resolved_vision_modes().contains_key("darkvision"));
+    }
+
+    #[test]
+    fn user_owns_token_in_scene_follows_the_actor_join_and_is_scene_scoped() {
+        use serde_json::json;
+        // The pathfind presence gate keys on this. It must agree with
+        // `token_effective_owner` (never a raw `doc.owner` read) and must be scoped to the
+        // named scene, or a player is either locked out of a scene they hold an
+        // actor-inherited token in, or admitted to one they hold nothing in.
+        let player = Uuid::from_u128(7);
+        let stranger = Uuid::from_u128(8);
+        let mut actor = entity_doc_top_eng(200, "actor", actor_body(json!([])));
+        actor.owner = Some(player);
+
+        // Scene 10 holds a token linked to the actor with NO per-token owner.
+        let inherited = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": Uuid::from_u128(200).to_string() }),
+        );
+        // Scene 20 holds only a token nobody in this test owns.
+        let unowned = entity_doc_eng(
+            21,
+            20,
+            "token",
+            json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+
+        let mut ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                doc(20, None, "scene"),
+                inherited,
+                unowned,
+            ],
+            0,
+        );
+        ecs.set_actors(vec![actor.clone()]);
+
+        assert!(
+            ecs.user_owns_token_in_scene(player, Uuid::from_u128(10)),
+            "an actor-inherited owner controls a token in scene 10"
+        );
+        assert!(
+            !ecs.user_owns_token_in_scene(player, Uuid::from_u128(20)),
+            "presence is scene-scoped: scene 20 holds no token of theirs"
+        );
+        assert!(
+            !ecs.user_owns_token_in_scene(stranger, Uuid::from_u128(10)),
+            "a stranger controls nothing"
+        );
+
+        // Re-assigning the ACTOR moves presence with it, with no write to any token.
+        let mut reassigned = actor;
+        reassigned.owner = Some(stranger);
+        ecs.set_actors(vec![reassigned]);
+        assert!(
+            !ecs.user_owns_token_in_scene(player, Uuid::from_u128(10)),
+            "presence follows the actor live — nothing is stamped on the token"
+        );
+        assert!(ecs.user_owns_token_in_scene(stranger, Uuid::from_u128(10)));
+    }
+
+    /// The derived ECS must reach the SAME document state the authoritative store
+    /// reaches for every `FieldChange`, `remove: true` included. `remove` deletes the
+    /// key and `new` is unused (conventionally Null) — an ECS that only ever calls
+    /// `set_pointer` writes `ch.new` where the DB wrote absence, and `new` is
+    /// unconstrained by the OCC/capability checks. Routed through ownership because
+    /// that is where the divergence is exploitable: `/engine/actor_id` is a
+    /// WRITE_FIELDS path, so a token's effective owner can submit this, leaving the
+    /// write path saying "unowned" while the vision/lit-mask family says "owned by
+    /// whoever `new` names" — vision widening exactly where write refuses.
+    #[test]
+    fn ecs_and_db_agree_on_ownership_after_a_remove_change_carrying_a_non_null_new() {
+        use crate::data::command::{remove_pointer, FieldChange};
+        use serde_json::json;
+
+        let p = Uuid::from_u128(7); // owns actor A
+        let q = Uuid::from_u128(8); // owns actor B — the injected target
+        let a_id = Uuid::from_u128(200);
+        let b_id = Uuid::from_u128(201);
+        let mut actor_a = entity_doc_top_eng(200, "actor", actor_body(json!([])));
+        actor_a.owner = Some(p);
+        let mut actor_b = entity_doc_top_eng(201, "actor", actor_body(json!([])));
+        actor_b.owner = Some(q);
+
+        let token = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": a_id.to_string() }),
+        );
+
+        // The change a token's effective owner can legitimately submit: `/engine/actor_id`
+        // maps to WRITE_FIELDS, the OCC pre-image matches, and an absent optional
+        // `actor_id` clears `validate_engine_tree`.
+        let changes = vec![FieldChange {
+            remove: true,
+            path: "/engine/actor_id".into(),
+            old: json!(a_id.to_string()),
+            new: json!(b_id.to_string()), // unconstrained; ignored by the authoritative path
+        }];
+
+        // What the AUTHORITATIVE store reaches (sqlite.rs's apply_intent Phase 2:
+        // `remove_pointer` for `ch.remove`, `set_pointer` otherwise).
+        let db_token: Document = {
+            let mut v = serde_json::to_value(&token).unwrap();
+            for ch in &changes {
+                if ch.remove {
+                    remove_pointer(&mut v, &ch.path).unwrap();
+                } else {
+                    set_pointer(&mut v, &ch.path, ch.new.clone()).unwrap();
+                }
+            }
+            serde_json::from_value(v).unwrap()
+        };
+        let mut actor_index = std::collections::HashMap::new();
+        actor_index.insert(a_id, actor_a.clone());
+        actor_index.insert(b_id, actor_b.clone());
+        let db_owner = crate::data::permission::effective_owner(
+            &db_token,
+            crate::data::permission::token_actor_link(&db_token).and_then(|id| actor_index.get(&id)),
+        );
+        assert_eq!(db_owner, None, "the link is gone in the authoritative store");
+
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), token.clone()], 0);
+        ecs.set_actors(vec![actor_a, actor_b]);
+        ecs.apply_op(&Operation::Update {
+            doc_id: token.id,
+            changes,
+        });
+
+        let e = ecs.index[&token.id];
+        let ecs_doc = ecs.world.get::<&SceneEntity>(e).unwrap().doc.clone();
+        assert_eq!(
+            ecs.token_effective_owner(&ecs_doc),
+            db_owner,
+            "derived ECS ownership must equal authoritative ownership after a remove change"
+        );
+
+        // The exploitable observable: the injected actor's owner must NOT gain the token
+        // as a vision source for a token the write path considers unowned.
+        assert!(
+            ecs.player_vision_polygons(q).is_empty(),
+            "a removed actor link must not hand the token's vision to the injected `new` owner"
+        );
+        assert!(ecs.player_vision_polygons(p).is_empty());
+    }
+
+    /// Control for the test above: with `remove: false` the ECS and the store agree
+    /// (both `set_pointer`), so the assertion pair there is about `remove`, not about
+    /// re-linking in general.
+    #[test]
+    fn ecs_and_db_agree_when_a_set_change_relinks_a_token() {
+        use crate::data::command::FieldChange;
+        use serde_json::json;
+
+        let p = Uuid::from_u128(7);
+        let q = Uuid::from_u128(8);
+        let a_id = Uuid::from_u128(200);
+        let b_id = Uuid::from_u128(201);
+        let mut actor_a = entity_doc_top_eng(200, "actor", actor_body(json!([])));
+        actor_a.owner = Some(p);
+        let mut actor_b = entity_doc_top_eng(201, "actor", actor_body(json!([])));
+        actor_b.owner = Some(q);
+
+        let token = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": a_id.to_string() }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), token.clone()], 0);
+        ecs.set_actors(vec![actor_a, actor_b]);
+        ecs.apply_op(&Operation::Update {
+            doc_id: token.id,
+            changes: vec![FieldChange {
+                remove: false,
+                path: "/engine/actor_id".into(),
+                old: json!(a_id.to_string()),
+                new: json!(b_id.to_string()),
+            }],
+        });
+
+        let e = ecs.index[&token.id];
+        let ecs_doc = ecs.world.get::<&SceneEntity>(e).unwrap().doc.clone();
+        assert_eq!(
+            ecs.token_effective_owner(&ecs_doc),
+            Some(q),
+            "a plain set DOES re-link, and both paths see it"
+        );
+        assert_eq!(ecs.player_vision_polygons(q).len(), 1);
+        assert!(ecs.player_vision_polygons(p).is_empty());
+    }
+
+    /// The same divergence on the `self.actors` index (`apply_op`'s second
+    /// `set_pointer` loop): removing an actor's `/owner` must leave the actor
+    /// UNOWNED in the ECS, matching the store — not owned by the injected `new`.
+    #[test]
+    fn ecs_actor_index_honors_a_remove_change_on_owner() {
+        use crate::data::command::FieldChange;
+        use serde_json::json;
+
+        let p = Uuid::from_u128(7);
+        let q = Uuid::from_u128(8);
+        let a_id = Uuid::from_u128(200);
+        let mut actor_a = entity_doc_top_eng(200, "actor", actor_body(json!([])));
+        actor_a.owner = Some(p);
+        let token = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": a_id.to_string() }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), token.clone()], 0);
+        ecs.set_actors(vec![actor_a]);
+        ecs.apply_op(&Operation::Update {
+            doc_id: a_id,
+            changes: vec![FieldChange {
+                remove: true,
+                path: "/owner".into(),
+                old: json!(p.to_string()),
+                new: json!(q.to_string()),
+            }],
+        });
+        assert_eq!(ecs.actor(&a_id).unwrap().owner, None);
+        let e = ecs.index[&token.id];
+        let ecs_doc = ecs.world.get::<&SceneEntity>(e).unwrap().doc.clone();
+        assert_eq!(ecs.token_effective_owner(&ecs_doc), None);
+        assert!(ecs.player_vision_polygons(q).is_empty());
     }
 
     #[test]

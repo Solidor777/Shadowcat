@@ -1042,6 +1042,15 @@ impl SqliteRepository {
         };
         // A dangling link loads `None` and `effective_owner` fails closed to no owner.
         let actor = Self::load_document(executor, actor_id).await?;
+        // `load_document` is keyed on id alone (no `world_id` filter), so a cross-world
+        // `actor_id` would otherwise resolve — every other `load_document` in
+        // `apply_intent` is paired with `check_command_scope` for the same reason (a GM
+        // of one world must not reach another world's document). Discarding a
+        // scope-mismatched actor also keeps this join's reachable set equal to
+        // `SceneEcs::self.actors` BY CONSTRUCTION: room hydration loads actors
+        // `WHERE world_id = ?`, so without this the write path could resolve an owner
+        // the derived vision path structurally cannot — a second ECS/DB ownership fork.
+        let actor = actor.filter(|a| a.scope == doc.scope);
         Ok(crate::data::permission::effective_owner(doc, actor.as_ref()))
     }
 
@@ -1676,7 +1685,7 @@ impl Repository for SqliteRepository {
                     // current value at its pointer (absent reads as Null).
                     let whole = serde_json::to_value(&cur)?;
                     for ch in changes {
-                        validation::validate_field_path(&ch.path)?;
+                        validation::validate_field_change(ch)?;
                         // Each field path requires its capability; an immutable
                         // envelope field (id, scope, owner, source, ...) maps to
                         // no capability and is rejected for everyone. /system ->
@@ -7132,5 +7141,112 @@ mod tests {
             matches!(denied, Err(DataError::Forbidden)),
             "the owner floor must not leak to non-token doc_types, got {denied:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_removal_carrying_a_new_value_is_rejected_at_ingress() {
+        // `remove: true` deletes the key; `new` is unused. The pairing has no
+        // legitimate meaning, and `new` is checked by neither the OCC comparison
+        // (which reads `old`) nor `required_cap_for_path` — so any consumer that
+        // mirrors a change by unconditionally setting `new` lands an attacker-chosen
+        // value where the store lands absence. Denied at ingress.
+        use crate::data::command::FieldChange;
+        let (r, gm, w, p1, p2) = ownership_fixture().await;
+        let actor = actor_doc_owned_by(w, Some(p1));
+        let token = owned_token_doc(w, Some(actor.id));
+        gm_create(&r, gm, w, vec![actor, token.clone()], 1).await;
+
+        let attempt = |remove: bool, new: serde_json::Value, ts: i64| {
+            let r = &r;
+            let path = "/engine/actor_id".to_string();
+            async move {
+                r.apply_intent(
+                    &crate::data::membership::PermissionContext {
+                        user_id: p1,
+                        world_role: WorldRole::Player,
+                    },
+                    w,
+                    vec![Operation::Update {
+                        doc_id: token.id,
+                        changes: vec![FieldChange {
+                            remove,
+                            path,
+                            old: serde_json::json!(null),
+                            new,
+                        }],
+                    }],
+                    ts,
+                    WriteOrigin::Client,
+                )
+                .await
+            }
+        };
+
+        // Rejected: a removal carrying a value.
+        let denied = attempt(true, serde_json::json!(p2.to_string()), 2).await;
+        assert!(
+            matches!(denied, Err(DataError::OpFailed(_))),
+            "a removal must not carry a `new` value, got {denied:?}"
+        );
+
+        // Non-vacuity: the SAME change with `new: null` clears ingress and is judged
+        // on its merits (it fails the OCC pre-image check, not the shape gate) — so
+        // the rejection above is the shape rule, not a blanket denial of removals.
+        let occ = attempt(true, serde_json::Value::Null, 3).await;
+        assert!(
+            matches!(occ, Err(DataError::Conflict(_))),
+            "a well-shaped removal reaches the OCC check, got {occ:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_actor_join_does_not_cross_world_scope() {
+        // `load_document` is keyed on id alone. An `actor_id` naming an actor in
+        // ANOTHER world must not resolve an owner: it breaks world isolation, and
+        // room hydration loads actors `WHERE world_id = ?`, so the derived vision
+        // path structurally cannot see such an actor — resolving one here would be a
+        // second ECS/DB ownership fork.
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let p1 = r
+            .create_user("player-one", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w1 = r.create_world_owned("W1", gm, 0).await.unwrap();
+        let w2 = r.create_world_owned("W2", gm, 0).await.unwrap();
+
+        // The actor lives in W2 and is owned by p1; the token lives in W1.
+        let foreign_actor = actor_doc_owned_by(w2.id, Some(p1));
+        gm_create(&r, gm, w2.id, vec![foreign_actor.clone()], 1).await;
+        let token = owned_token_doc(w1.id, Some(foreign_actor.id));
+        gm_create(&r, gm, w1.id, vec![token.clone()], 2).await;
+
+        // p1 is a member of W1 too, so only the scope check can deny this.
+        r.add_member(w1.id, p1, WorldRole::Player).await.unwrap();
+        let denied = try_move(&r, w1.id, p1, token.id, (0.0, 0.0), (3.0, 3.0), 3).await;
+        assert!(
+            matches!(denied, Err(DataError::Forbidden)),
+            "a cross-world actor link must not confer ownership, got {denied:?}"
+        );
+
+        // Non-vacuity: the identical setup with the actor in the TOKEN's own world
+        // succeeds — proving the denial is the scope check, not the membership or
+        // the link machinery.
+        let local_actor = actor_doc_owned_by(w1.id, Some(p1));
+        let local_token = owned_token_doc(w1.id, Some(local_actor.id));
+        gm_create(
+            &r,
+            gm,
+            w1.id,
+            vec![local_actor, local_token.clone()],
+            4,
+        )
+        .await;
+        try_move(&r, w1.id, p1, local_token.id, (0.0, 0.0), (3.0, 3.0), 5)
+            .await
+            .expect("a same-world actor link confers ownership");
     }
 }

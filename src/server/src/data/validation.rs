@@ -275,6 +275,30 @@ pub fn validate_field_path(path: &str) -> Result<(), DataError> {
     Ok(())
 }
 
+/// Structural gate for one `FieldChange`: a well-formed path, plus the rule that a
+/// REMOVAL carries no value.
+///
+/// `remove: true` deletes the key at `path` and `new` is unused (conventionally
+/// `Null`), so `remove: true` with a non-null `new` is a wire shape with no legitimate
+/// meaning. Rejecting it is defence in depth for a real divergence class: `new` is
+/// checked by NEITHER the OCC pre-image comparison (which reads `old`) NOR
+/// `required_cap_for_path`, so any consumer that mirrors a change by unconditionally
+/// setting `new` — instead of branching on `remove` as `apply_intent` Phase 2 does —
+/// lands an attacker-chosen value while the store lands absence. The derived scene ECS
+/// had exactly that bug (`scene/mod.rs`'s `apply_field_change` is now the single
+/// store-equal rule). Denying the shape at ingress means no future mirror can be forked
+/// this way even if it re-introduces the same mistake.
+pub fn validate_field_change(ch: &crate::data::command::FieldChange) -> Result<(), DataError> {
+    validate_field_path(&ch.path)?;
+    if ch.remove && !ch.new.is_null() {
+        return Err(DataError::OpFailed(format!(
+            "a removal at {} must not carry a `new` value",
+            ch.path
+        )));
+    }
+    Ok(())
+}
+
 /// Reject a `property_overrides` key that is not a well-formed non-empty JSON
 /// pointer: it must start with `/` and must NOT end with `/`. A trailing
 /// slash (e.g. `/engine/`) fails to exact-match its intended target AND fails

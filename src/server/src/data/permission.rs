@@ -300,6 +300,15 @@ fn effective_role(
     // yields, so inherited and stamped ownership cannot diverge. Nothing widens
     // out of the box (the shipped `by_role` maps are empty); a deployment that
     // populates `by_role[Owner]` is choosing to hand every Owner that capability.
+    //
+    // CONSEQUENCE a deployment must weigh before granting `by_role[Owner] ⊇
+    // EDIT_PERMISSIONS`: that reaches `/owner`, so an effective owner can write
+    // `/owner = self`, which PINS the token — the override now wins, and a GM
+    // re-assigning the actor no longer re-owns it, silently defeating the
+    // inheritance mechanism. The same grant reaches `/permissions`, so they can
+    // also lock the GM out of the document entirely. Parity with a stamped owner
+    // still holds exactly; what changed is the POPULATION — "Owner" here is
+    // "every player with an assigned actor", not a hand-enumerated set.
     let owner_floor = doc.doc_type == TOKEN_DOC_TYPE && effective_owner == Some(user);
     let floor = |r: DocRole| {
         if owner_floor {
