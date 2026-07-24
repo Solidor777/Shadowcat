@@ -1456,6 +1456,16 @@ Returning a uniform 204 does not fully close it: seating-on-hit is itself observ
 
 ---
 
+## Task 14j: Derive the movement gate's scene from the token `[sec]` — CRITICAL, closed
+
+Dispatched from the Task 14h security review, not planned. `MoveRequest` never checked that the moved token belonged to the client-supplied `scene_id`: the token's position was read scene-agnostically while every gate input (walls, visibility mask, regions, grid size) came from the scene the client named. A player owning a token in scene A could send `MoveRequest{scene: B, token: T}` and have the gate evaluated against B — a **total bypass of the wall and visibility gate** with authorization fully intact. Fixed by deriving the scene from the token via `SceneEcs::token_move` (the precedent `Room::publish` always used, which is why the drag path was never vulnerable), with a mismatch rejection as redundant defense-in-depth. `Pathfind` names no token, so a non-GM must instead prove presence via effective ownership. Commits: `8d609ac`, `0dbea21`, `8254d7e`, plus corrections carried in `671d271`/`1845e87`.
+
+**Record correction — `8254d7e`'s commit message is wrong, and cannot be amended.** It describes itself as *correcting* an inaccuracy in `user_owns_token_in_scene`'s doc comment. It in fact **introduced** one: it replaced a true equality claim ("equals the condition under which `player_vision_inputs` returns a non-empty polygon set") with a false superset claim. The true reading is that `has_owned` is set on the ownership predicate alone at `scene/mod.rs:958`, **before** the `engine_as_cached::<TokenEngine>` parse — that parse only decides whether the token *also* contributes a static viewpoint — so `polygons_at` is non-empty iff ownership holds, with no position or parse requirement. The accurate wording was restored (swept into `1845e87` by file contention, so that commit carries the restoration with no explanation in its own message).
+
+**How it happened, recorded because the process failure is more instructive than the defect.** Two reviewers of the same commit reached opposite conclusions; one had conflated `player_vision_inputs` with `gather_vision_sources_in_scene`, a different function on the mask path that *does* require the parse and *does* union observer-tier tokens. The dispatcher relayed that finding as an instruction **without verifying it**. The implementer then verified it at source, **disproved it**, and applied it anyway. Both parties treated a reviewer's conclusion as authority rather than as a claim. **The rule: a review finding is evidence, not an instruction, and verification at source outranks it.** A disagreement between two reviewers is the signal to adjudicate, never to pick.
+
+---
+
 ## Task 14c: Client end-to-end test — a NON-GM player's illegal hex move is rolled back by the server
 
 **Depends on Tasks 14f, 14g, 14h and 14i.** The Step-1 observable is already BUILT (commit `a98715b`: `data-token-positions` on the stage host, fed by `Stage.svelte`'s existing `onDocs` pass).
