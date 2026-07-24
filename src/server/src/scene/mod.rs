@@ -1166,11 +1166,10 @@ impl SceneEcs {
             return Some(cached.clone());
         }
         let bounds = self.resolve_scene(scene).bounds;
-        let cell = self
-            .scene_grid_sizes()
-            .get(&scene)
-            .copied()
-            .unwrap_or(100.0);
+        // An absent `scene_grid_sizes` entry means the scene has no live document — refuse
+        // rather than synthesize a grid (`scene_grid_sizes`'s own doc comment is the source
+        // of this invariant; every reader here keys off it).
+        let cell = self.scene_grid_sizes().get(&scene).copied()?;
         let walls = self.move_walls(scene);
         let built = navmesh::build_navmesh(bounds, cell, &walls, footprint_radius_cells)?;
         let arc = std::sync::Arc::new(built);
@@ -1245,7 +1244,10 @@ impl SceneEcs {
                 // field; a non-GM requester's field silently omits any region they cannot see, so
                 // a secret region never influences their route or budget (it "springs" only at
                 // execution, `move_exec`, which always reads the authoritative field).
-                let regions = self.region_field(scene, if is_gm { None } else { Some(user) });
+                let Some(regions) = self.region_field(scene, if is_gm { None } else { Some(user) })
+                else {
+                    return Err(pathfinding::PathFail::Invalid);
+                };
                 pathfinding::find(
                     start,
                     waypoints,
@@ -1265,7 +1267,10 @@ impl SceneEcs {
                 // the unchanged pure polyanya route + an arrest post-filter. Arrest applies on both
                 // paths. The per-requester field omits any region a non-GM cannot see (secret
                 // regions spring only at `move_exec`).
-                let regions = self.region_field(scene, if is_gm { None } else { Some(user) });
+                let Some(regions) = self.region_field(scene, if is_gm { None } else { Some(user) })
+                else {
+                    return Err(pathfinding::PathFail::Invalid);
+                };
                 if regions.has_terrain_or_impassable() {
                     // Euclidean base metric (M10f-4): the grid's step cost AND its admissible
                     // heuristic both come from this shape, so the weighted continuous route ignores
@@ -1359,12 +1364,16 @@ impl SceneEcs {
     /// property-override pointer, not `/system`. Callers MUST pass `None` for a GM requester (a
     /// GM always sees the authoritative field, mirroring `visible_cells`'s GM-skips-the-mask
     /// convention in `pathfind`).
-    pub(crate) fn region_field(&self, scene: Uuid, viewer: Option<Uuid>) -> regions::RegionField {
-        let cell = self
-            .scene_grid_sizes()
-            .get(&scene)
-            .copied()
-            .unwrap_or(100.0);
+    ///
+    /// Returns `None` when `scene` has no live document (an absent `scene_grid_sizes` entry) —
+    /// refuse rather than synthesize a grid. Callers must refuse the whole operation on `None`,
+    /// mirroring `pathfind`'s `PathFail::Invalid`.
+    pub(crate) fn region_field(
+        &self,
+        scene: Uuid,
+        viewer: Option<Uuid>,
+    ) -> Option<regions::RegionField> {
+        let cell = self.scene_grid_sizes().get(&scene).copied()?;
         let grid = self.resolve_grid_shape(scene, cell);
         let mut builder = regions::RegionField::builder();
         for e in self.world.query::<&SceneEntity>().iter() {
@@ -1405,7 +1414,7 @@ impl SceneEcs {
             let cost = region_eng.cost.max(1.0);
             builder.add(&shape, behavior, cost, cell, &*grid);
         }
-        builder.build()
+        Some(builder.build())
     }
 
     /// The enabled `light` docs parented to `scene`, parsed into `lighting::Light`. Disabled lights
@@ -1739,7 +1748,10 @@ impl SceneEcs {
                 Some(s) => s,
                 None => continue,
             };
-            let cell = grid.get(&scene).copied().unwrap_or(100.0);
+            // An absent entry means no scene document — skip rather than synthesize a grid.
+            let Some(cell) = grid.get(&scene).copied() else {
+                continue;
+            };
             if cell <= 0.0 {
                 continue;
             }
@@ -1891,11 +1903,10 @@ impl SceneEcs {
         use std::collections::BTreeSet;
         let mut out: BTreeSet<(i32, i32)> = BTreeSet::new();
         let settings = self.resolve_scene(scene);
-        let cell = self
-            .scene_grid_sizes()
-            .get(&scene)
-            .copied()
-            .unwrap_or(100.0);
+        // An absent entry means no scene document — refuse rather than synthesize a grid.
+        let Some(cell) = self.scene_grid_sizes().get(&scene).copied() else {
+            return out;
+        };
         if cell <= 0.0 {
             return out;
         }
@@ -1935,11 +1946,10 @@ impl SceneEcs {
     ) -> std::collections::BTreeSet<(i32, i32)> {
         use std::collections::BTreeSet;
         let settings = self.resolve_scene(scene);
-        let cell = self
-            .scene_grid_sizes()
-            .get(&scene)
-            .copied()
-            .unwrap_or(100.0);
+        // An absent entry means no scene document — refuse rather than synthesize a grid.
+        let Some(cell) = self.scene_grid_sizes().get(&scene).copied() else {
+            return BTreeSet::new();
+        };
         if cell <= 0.0 {
             return BTreeSet::new();
         }
@@ -5021,14 +5031,16 @@ mod tests {
             0,
         );
 
-        let authoritative = ecs.region_field(scene_id, None);
+        let authoritative = ecs.region_field(scene_id, None).expect("scene exists");
         assert!(
             authoritative.is_impassable((0, 0)),
             "authoritative field includes the secret region"
         );
         assert_eq!(authoritative.terrain_multiplier((2, 0)), 2.0);
 
-        let player_field = ecs.region_field(scene_id, Some(player));
+        let player_field = ecs
+            .region_field(scene_id, Some(player))
+            .expect("scene exists");
         assert!(
             !player_field.is_impassable((0, 0)),
             "secret region absent from a non-owner player's field"
@@ -5066,7 +5078,10 @@ mod tests {
             ],
             0,
         );
-        assert!(!ecs.region_field(scene_id, None).is_impassable((0, 0)));
+        assert!(!ecs
+            .region_field(scene_id, None)
+            .expect("scene exists")
+            .is_impassable((0, 0)));
     }
 
     #[test]
@@ -5077,6 +5092,29 @@ mod tests {
         assert_eq!(walls.len(), 1, "only the blocksMove wall is returned");
         let w = walls[0];
         assert_eq!((w.a, w.b), ((100.0, 0.0), (100.0, 200.0)));
+    }
+
+    #[test]
+    fn absent_scene_yields_empty_visible_cells_not_a_synthesized_grid() {
+        let (ecs, user, _scene) = scene_with_lit_player_token();
+        let ghost_scene = Uuid::from_u128(0xDEAD);
+        assert!(ecs.visible_cells(user, ghost_scene, false).is_empty());
+        assert!(ecs.visible_cells(user, ghost_scene, true).is_empty());
+        assert!(ecs
+            .visible_cells_cached(user, ghost_scene, false)
+            .is_empty());
+    }
+
+    #[test]
+    fn absent_scene_region_field_is_none() {
+        let (ecs, _user, _scene) = scene_with_lit_player_token();
+        assert!(ecs.region_field(Uuid::from_u128(0xDEAD), None).is_none());
+    }
+
+    #[test]
+    fn absent_scene_navmesh_for_is_none() {
+        let (ecs, _user, _scene) = scene_with_lit_player_token();
+        assert!(ecs.navmesh_for(Uuid::from_u128(0xDEAD), 0.5).is_none());
     }
 
     #[test]
@@ -5466,7 +5504,9 @@ mod tests {
         let mut ecs = SceneEcs::from_documents(docs, 0);
         ecs.set_world_settings_for_test(continuous_world_settings());
         // Fixture guard: exactly one hex arrests, and it is the axial cell the assertions name.
-        let field = ecs.region_field(Uuid::from_u128(10), None);
+        let field = ecs
+            .region_field(Uuid::from_u128(10), None)
+            .expect("scene exists");
         assert!(field.is_arrest((3, 1)), "fixture: arrest is on axial (3,1)");
         assert!(
             !field.is_arrest((2, 1)) && !field.is_arrest((4, 1)),
@@ -5701,6 +5741,7 @@ mod tests {
         assert!(!mask.is_empty(), "the lit token has a non-empty mask");
         assert!(
             ecs.region_field(scene_id, Some(user))
+                .expect("scene exists")
                 .has_terrain_or_impassable(),
             "the terrain region flips the Continuous dispatch to the weighted sub-path"
         );

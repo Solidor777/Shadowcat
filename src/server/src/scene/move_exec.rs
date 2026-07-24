@@ -215,6 +215,8 @@ pub(crate) enum MoveReject {
     /// king-step jump; that case is now subdivided-and-gated instead of rejected — see
     /// `gate_walk`, §4.2.)
     Degenerate,
+    /// The token's scene has no document — refuse rather than synthesize a grid.
+    SceneUnknown,
 }
 
 /// Walk `path` step by step, validating each step against the wall gate (step 1), the
@@ -301,7 +303,9 @@ pub(crate) fn execute_move(
     // Authoritative region field (M10g): always the full field, never filtered — this
     // executor springs secret regions regardless of what the mover's pathfind preview
     // could see (§6).
-    let regions = ecs.region_field(scene, None);
+    let Some(regions) = ecs.region_field(scene, None) else {
+        return Err(MoveReject::SceneUnknown);
+    };
 
     // The mask gate's segment-crossing set is engine-agnostic geometry (`GridShape::
     // line_traversal`), routed through the scene's own resolved grid shape (square or hex) rather
@@ -999,7 +1003,7 @@ mod tests {
         );
 
         // (a) The rect rasterizes onto hex cell (1,0) via GridShape, not a square index.
-        let field = ecs.region_field(scene_id, None);
+        let field = ecs.region_field(scene_id, None).expect("scene exists");
         assert!(
             field.is_impassable((1, 0)),
             "rect rasterizes onto hex cell (1,0)"
@@ -1065,7 +1069,7 @@ mod tests {
             0,
         );
 
-        let field = ecs.region_field(scene_id, None);
+        let field = ecs.region_field(scene_id, None).expect("scene exists");
         assert!(
             field.is_arrest((2, 0)),
             "rect rasterizes onto hex cell (2,0)"
