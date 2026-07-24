@@ -96,7 +96,8 @@ existing M6b `ModuleRegistry`.
   time and load time.
 - **Module `requirements` are advisory to the client only** — unioned into the world's broadcast
   `capability_requirements`, but NEVER server-enforced at `apply_intent` (server authority stays with
-  the GM's `world_cap_requirements`).
+  the GM's `world_cap_requirements`). A future explicit "GM adopts a module's requirements into the
+  world policy" mechanism could make them enforced; until then advisory-only is the contract.
 - **Path-traversal guard rejects equality, not just prefix** — a two-stage canonicalize must treat
   the modules root as a strict ancestor of both the `id` folder and the served file.
 
@@ -114,9 +115,21 @@ existing M6b `ModuleRegistry`.
   every package — gate with `pnpm -r test`, not a single filter [[shared-wire-schema-change-needs-full-repo-test]].
 - **`InstalledModuleInfo` is ts-rs generated** — edit the Rust struct, regenerate, never hand-edit
   the `.ts`.
-- **HTTP path-traversal tests via `axum_test`/`fetch` are vacuous for bare dot-segments** (client-side
-  WHATWG normalization collapses them before they reach the guard); test the containment predicate as
-  a unit, or embed the encoded segment inside a longer non-exact-match string (see `docs/TODO.md`).
+- **HTTP path-traversal tests via `axum_test`/`fetch` are vacuous for bare dot-segments.**
+  `axum_test::TestServer` builds URLs through the `url` crate's `Url::set_path`, which applies WHATWG
+  dot-segment normalization CLIENT-SIDE before the request is sent — a segment that EXACTLY matches
+  `.`/`..`/`%2e`/`%2e%2e` (and case variants) is collapsed/popped before it can reach the router or
+  `serve_module_file`'s guard. A dot-segment test therefore proves nothing: confirmed —
+  `serve_module_file_rejects_an_id_segment_that_escapes_the_modules_root` (`http/module_routes.rs`)
+  still PASSES against a deliberately-reverted, vulnerable guard. A NON-exact-match segment (e.g.
+  `%2e%2e%2fsecret.txt` as one combined segment) is NOT normalized and DOES reach the handler intact.
+  Write such tests as (a) a pure unit test of the containment predicate, (b) a symlink/alias HTTP
+  repro (`module_routes.rs`'s `self-link`-style test), or (c) an encoded segment embedded in a longer
+  non-exact-match string.
+- **Scope deliberately excluded from M13-1** (manual/admin-trusted tier): no module upload/install UI
+  (install stays manual-extract into `<data-dir>/modules/<id>/`); no sandboxing/permissions for
+  installed module JS (modules are admin-trusted, same tier as the server binary); no hot
+  enable/disable without a client reload; no marketplace/registry, signing, or update channels.
 
 ## Pointers
 
