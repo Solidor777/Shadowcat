@@ -211,3 +211,17 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   `observer` default, so not live today, but whoever closes this should fix the asymmetry, not
   only the property tiers. (Disclosed by Task 14i; see
   `.superpowers/sdd/task-14i-token-ownership-report.md`.)
+
+## Actionable now — `ScenePing` accepts any scene id from the client
+- TODO: `ClientMsg::ScenePing` (`ws/conn.rs`) relays the client-supplied `scene` verbatim, with no
+  check that the sender is in or can see that scene. A member can therefore ping into any scene id
+  in the world, including one they have never viewed, and every client viewing it renders the
+  marker. **This is NOT the cross-scene gate bypass Task 14j fixed** — ping selects no server state,
+  so there is no gate to substitute against; it is spoof/nuisance with no information flowing back
+  to the pinger (the relay has no reply) and it is rate-limited to 30/min per user. Left unfixed
+  deliberately: the obvious guard (require the sender to control a token in that scene, as 14j's
+  `handle_pathfind` gate does) would also block a legitimately token-less spectator from pinging
+  the scene they are watching. The better fix is probably to require the scene doc to exist in this
+  world AND the sender to hold `cap::READ` on it — which admits the spectator while refusing a
+  scene they cannot see. Needs a decision on the spectator case before implementing. (Surfaced by
+  the Task 14h `[sec]` review; scope-checked and escalated by Task 14j.)
