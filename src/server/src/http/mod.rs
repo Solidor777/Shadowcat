@@ -477,6 +477,52 @@ pub(crate) mod tests {
         );
     }
 
+    /// A `TestServer` served over a REAL loopback TCP connection (not the
+    /// default mock transport), so `throttle::ClientIp` resolves an actual
+    /// `SocketAddr` via `into_make_service_with_connect_info` — the mock
+    /// transport never populates `ConnectInfo`, which would leave the
+    /// per-IP throttle branches silently untested.
+    async fn real_transport_server(state: AppState) -> axum_test::TestServer {
+        let app = router(state)
+            .await
+            .into_make_service_with_connect_info::<std::net::SocketAddr>();
+        axum_test::TestServer::builder()
+            .http_transport()
+            .save_cookies()
+            .build(app)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn login_throttles_by_ip_over_real_transport() {
+        use crate::auth::password::verify_count;
+        use crate::http::throttle::LOGIN_PER_MIN_PER_IP;
+        let server = real_transport_server(initialized_state().await).await;
+
+        // Every request uses a distinct, never-reused unknown identity, so
+        // the per-identity budget (10/min) cannot possibly be what trips —
+        // only the per-IP budget (30/min) can, since all requests share one
+        // real loopback address.
+        for i in 0..LOGIN_PER_MIN_PER_IP {
+            server
+                .post("/api/login")
+                .json(&serde_json::json!({ "username": format!("ghost-{i}"), "password": "x" }))
+                .await
+                .assert_status(axum::http::StatusCode::UNAUTHORIZED);
+        }
+        let before = verify_count();
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": "ghost-final", "password": "x" }))
+            .await
+            .assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            verify_count() - before,
+            0,
+            "IP-throttled attempt must spend no Argon2"
+        );
+    }
+
     #[tokio::test]
     async fn login_rejects_user_without_password_hash() {
         let state = initialized_state().await;
@@ -1077,6 +1123,56 @@ pub(crate) mod tests {
             .await;
         throttled.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(verify_count() - before, 0);
+    }
+
+    /// Like `login_server`, but served over a REAL loopback TCP connection
+    /// (`real_transport_server`) so `throttle::ClientIp` resolves an actual
+    /// address instead of `None`.
+    async fn real_login_server(state: &AppState, username: &str) -> axum_test::TestServer {
+        let server = real_transport_server(state.clone()).await;
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": username, "password": "pw" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        server
+    }
+
+    #[tokio::test]
+    async fn accept_invite_throttles_by_ip_over_real_transport() {
+        use crate::auth::password::verify_count;
+        use crate::http::throttle::INVITE_PER_MIN_PER_ACCOUNT;
+        let state = initialized_state().await;
+        for name in ["acct-a", "acct-b", "acct-c", "acct-d"] {
+            seed_user(&state, name).await;
+        }
+        // Three accounts each spend their FULL per-account budget (10) over
+        // one shared loopback IP, totalling exactly the per-IP budget (30) —
+        // no single account's own check can explain a 429 here.
+        for name in ["acct-a", "acct-b", "acct-c"] {
+            let server = real_login_server(&state, name).await;
+            for _ in 0..INVITE_PER_MIN_PER_ACCOUNT {
+                server
+                    .post("/api/invites/accept")
+                    .json(&serde_json::json!({ "code": "not-a-real-code" }))
+                    .await
+                    .assert_status(axum::http::StatusCode::NOT_FOUND);
+            }
+        }
+        // A brand-new account (zero prior attempts), same loopback IP — only
+        // the shared per-IP key can explain the 429 below.
+        let server = real_login_server(&state, "acct-d").await;
+        let before = verify_count();
+        server
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": "not-a-real-code" }))
+            .await
+            .assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            verify_count() - before,
+            0,
+            "IP-throttled attempt must spend no Argon2"
+        );
     }
 
     #[tokio::test]
