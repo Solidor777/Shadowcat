@@ -190,3 +190,17 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   existing session sweep (`auth/session.rs` `spawn_session_sweep`) rather than a new timer.
   (Surfaced by the Task 14g `[sec]` review.)
 
+
+## Blocked on an egress-path actor lookup that isn't pool-contended — inherited owner is a stranger at egress
+- TODO: Task 14i made token ownership EFFECTIVE (`effective_owner(token) = the token's own owner,
+  else the linked actor's owner`) on the write-authz path and on the four scene vision/lit-mask
+  sites, but the EGRESS path was not migrated: `filter_properties`, `collect_hidden`,
+  `filter_command` and the document routes still resolve `is_owner` from the literal `doc.owner`.
+  So a player who inherits a token through its actor can MOVE it and SEE through it, while being
+  treated as a stranger for that token's `owner_or_gm` property tiers and its `/base` field. The
+  direction is under-permit (fail-closed), so nothing leaks — the inconsistency is that write says
+  "owner" and egress says "stranger" for the same user and document. Closing it needs a
+  per-recipient, per-event actor lookup on the egress hot path, which `filter_command`'s own
+  comment already flags as pool-contended; do it when that path gains a cheap resolved-actor
+  cache rather than by adding a query per recipient per frame. (Disclosed by Task 14i; see
+  `.superpowers/sdd/task-14i-token-ownership-report.md`.)
