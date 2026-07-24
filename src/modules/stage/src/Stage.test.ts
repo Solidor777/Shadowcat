@@ -173,6 +173,68 @@ test("drives the initial reconcile from ctx.viewedSceneId (M12d)", async () => {
   expect(host.dataset.tokenCount).toBe("0");
 });
 
+test("exposes the viewed scene's committed token positions as data-token-positions", async () => {
+  const store = new DocumentStore();
+  const token = (id: string, scene: string, x: number, y: number): unknown => ({
+    op: "create",
+    doc: buildTokenDoc(
+      "w1",
+      scene,
+      { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+      id,
+    ),
+  });
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "hex", size: 100, distance: null } }, "sA") },
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "hex", size: 100, distance: null } }, "sB") },
+      token("t-b", "sA", 250, -125),
+      token("t-a", "sA", 0, 0),
+      token("t-other", "sB", 900, 900),
+    ],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  // Id-sorted, viewed-scene-only: a token parented to another scene never appears.
+  expect(host.dataset.tokenPositions).toBe("t-a:0,0;t-b:250,-125");
+
+  // A committed position change is reflected on the next store pass — this is the
+  // signal a rollback is observed through (a rejected write reverts the string).
+  store.applyCommand({
+    seq: 2,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      {
+        op: "update",
+        doc_id: "t-a",
+        changes: [
+          { path: "/engine/x", old: 0, new: 100 },
+          { path: "/engine/y", old: 0, new: 50 },
+        ],
+      },
+    ],
+  } as never);
+  await vi.waitFor(() => expect(host.dataset.tokenPositions).toBe("t-a:100,50;t-b:250,-125"));
+});
+
 test("exposes the server's move-resolution outcome as data-last-move-outcome (M14b)", async () => {
   const createBackend = vi.fn(async () => fakeBackend());
   let capturedCb: ((msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void) | null = null;

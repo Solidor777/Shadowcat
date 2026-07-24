@@ -148,9 +148,21 @@
           lastAnimKey = animKey;
           e.setAnimation({ speedCellsPerSec: anim.speedCellsPerSec, easing: anim.easing });
         }
-        host.dataset.tokenCount = String(
-          documents.query("token").filter((t) => !vsid || t.parent_id === vsid).length,
-        );
+        const sceneTokens = documents.query("token").filter((t) => !vsid || t.parent_id === vsid);
+        host.dataset.tokenCount = String(sceneTokens.length);
+        // Read-only observability signal: each viewed-scene token's COMMITTED
+        // `/engine/x,y` as `id:x,y`, id-sorted so the string is order-independent of
+        // the store's iteration. Mirrors data-token-count/data-last-ping. Because the
+        // canvas renders the optimistic view, a server-rejected move reverts this
+        // string to its pre-drag value — the only DOM-visible signal of a rollback,
+        // which a position-less count cannot express.
+        host.dataset.tokenPositions = sceneTokens
+          .map((t) => {
+            const e = t.engine as { x?: number; y?: number } | undefined;
+            return `${t.id}:${e?.x ?? 0},${e?.y ?? 0}`;
+          })
+          .sort()
+          .join(";");
         host.dataset.shapeCount = String(documents.query("drawing").length + documents.query("template").length);
         host.dataset.wallCount = String(documents.query("wall").length);
         // See-as-player candidates: distinct token owners the GM sees (best-effort labels).
