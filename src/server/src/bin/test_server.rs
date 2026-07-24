@@ -177,6 +177,10 @@ async fn main() -> anyhow::Result<()> {
             "world": world.id, "doc": doc.id, "gm": gm, "player": player
         })
     );
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

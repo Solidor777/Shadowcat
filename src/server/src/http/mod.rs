@@ -432,6 +432,52 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn login_throttles_identity_after_budget_spending_no_argon2() {
+        use crate::auth::password::verify_count;
+        use crate::http::throttle::LOGIN_PER_MIN_PER_IDENTITY;
+        let server = server_with_user("gm-1", "pw-correct", ServerRole::User).await;
+
+        // Unknown identity: exhaust the budget, then assert 429 + zero verifies.
+        for _ in 0..LOGIN_PER_MIN_PER_IDENTITY {
+            server
+                .post("/api/login")
+                .json(&serde_json::json!({ "username": "ghost", "password": "x" }))
+                .await
+                .assert_status(axum::http::StatusCode::UNAUTHORIZED);
+        }
+        let before = verify_count();
+        let ghost_throttled = server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": "ghost", "password": "x" }))
+            .await;
+        ghost_throttled.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            verify_count() - before,
+            0,
+            "throttled attempt must spend no Argon2"
+        );
+
+        // Known identity: identical throttle shape (status AND body) — no oracle.
+        for _ in 0..LOGIN_PER_MIN_PER_IDENTITY {
+            server
+                .post("/api/login")
+                .json(&serde_json::json!({ "username": "gm-1", "password": "wrong" }))
+                .await
+                .assert_status(axum::http::StatusCode::UNAUTHORIZED);
+        }
+        let known_throttled = server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": "gm-1", "password": "wrong" }))
+            .await;
+        known_throttled.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            ghost_throttled.text(),
+            known_throttled.text(),
+            "uniform 429 body"
+        );
+    }
+
+    #[tokio::test]
     async fn login_rejects_user_without_password_hash() {
         let state = initialized_state().await;
         // A credential-less user (e.g. an M2-era row) must never authenticate.
@@ -1009,6 +1055,28 @@ pub(crate) mod tests {
             body["id"].as_str().unwrap().to_string(),
             body["code"].as_str().unwrap().to_string(),
         )
+    }
+
+    #[tokio::test]
+    async fn accept_invite_throttles_per_account_spending_no_argon2() {
+        use crate::auth::password::verify_count;
+        use crate::http::throttle::INVITE_PER_MIN_PER_ACCOUNT;
+        let f = invite_fixture().await;
+        for _ in 0..INVITE_PER_MIN_PER_ACCOUNT {
+            f.other_gm
+                .post("/api/invites/accept")
+                .json(&serde_json::json!({ "code": "not-a-real-code" }))
+                .await
+                .assert_status(axum::http::StatusCode::NOT_FOUND);
+        }
+        let before = verify_count();
+        let throttled = f
+            .other_gm
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": "not-a-real-code" }))
+            .await;
+        throttled.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(verify_count() - before, 0);
     }
 
     #[tokio::test]

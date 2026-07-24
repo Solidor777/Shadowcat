@@ -62,7 +62,14 @@ async fn main() -> anyhow::Result<()> {
     let app = http::router(state).await;
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
     tracing::info!(bind = %config.bind, "shadowcat listening");
-    axum::serve(listener, app).await?;
+    // connect-info service so `throttle::ClientIp` resolves a real address
+    // (production only — axum-test's mock transport has none, degrading the
+    // IP throttle to identity-only there without a 500).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 

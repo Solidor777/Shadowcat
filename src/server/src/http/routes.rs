@@ -141,8 +141,31 @@ fn anti_enumeration_phc() -> &'static str {
 pub async fn login(
     State(state): State<AppState>,
     session: Session,
+    ip: crate::http::throttle::ClientIp,
     Json(body): Json<LoginRequest>,
 ) -> Result<axum::http::StatusCode, AppError> {
+    use crate::http::throttle::{LOGIN_PER_MIN_PER_IDENTITY, LOGIN_PER_MIN_PER_IP};
+    let now = now_millis();
+    // Identity key counts unknown usernames identically to known ones — the
+    // throttle must not become the enumeration oracle the constant-verify
+    // design below exists to prevent. Uniform 429 for both key kinds.
+    let ident_key = format!("login:u:{}", body.username.to_lowercase());
+    let ip_ok = match ip.0 {
+        Some(addr) => {
+            state
+                .auth_throttle
+                .check(&format!("login:ip:{addr}"), now, LOGIN_PER_MIN_PER_IP)
+        }
+        None => true,
+    };
+    if !ip_ok
+        || !state
+            .auth_throttle
+            .check(&ident_key, now, LOGIN_PER_MIN_PER_IDENTITY)
+    {
+        return Err(AppError::TooManyRequests("try again later".into()));
+    }
+
     let record = state
         .repo
         .user_by_username(&body.username)
@@ -671,9 +694,29 @@ pub struct AcceptInviteRequest {
 pub async fn accept_invite(
     user: AuthUser,
     State(state): State<AppState>,
+    ip: crate::http::throttle::ClientIp,
     Json(body): Json<AcceptInviteRequest>,
 ) -> Result<Json<WorldEntry>, AppError> {
     use crate::auth::invite;
+    use crate::http::throttle::{INVITE_PER_MIN_PER_ACCOUNT, INVITE_PER_MIN_PER_IP};
+    let now = now_millis();
+    let ip_ok = match ip.0 {
+        Some(addr) => {
+            state
+                .auth_throttle
+                .check(&format!("invite:ip:{addr}"), now, INVITE_PER_MIN_PER_IP)
+        }
+        None => true,
+    };
+    if !ip_ok
+        || !state.auth_throttle.check(
+            &format!("invite:u:{}", user.id),
+            now,
+            INVITE_PER_MIN_PER_ACCOUNT,
+        )
+    {
+        return Err(AppError::TooManyRequests("try again later".into()));
+    }
 
     let code = body.code;
     let parsed = invite::parse(&code);

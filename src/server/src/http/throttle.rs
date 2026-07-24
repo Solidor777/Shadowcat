@@ -74,6 +74,30 @@ impl Default for AuthThrottle {
     }
 }
 
+/// Infallible client-IP extractor: `Some` when the server is served with
+/// connect-info (production `main.rs`), `None` under the axum-test mock
+/// transport — IP throttling degrades to identity-only there, never a 500.
+pub struct ClientIp(pub Option<std::net::IpAddr>);
+
+impl<S> axum::extract::FromRequestParts<S> for ClientIp
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(ClientIp(
+            parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|ci| ci.0.ip()),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
