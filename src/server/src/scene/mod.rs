@@ -1434,11 +1434,20 @@ impl SceneEcs {
     ///
     /// Presence, not vision: ownership resolves through `token_effective_owner` (per-token
     /// override, else the linked actor's owner), so it is the same rule the write-authz and
-    /// vision paths enforce; observer-vision tokens are excluded, since seeing a token in a
-    /// scene is not controlling one there. Equals the condition under which
-    /// `player_vision_inputs` returns a non-empty polygon set for the same `(user, scene)` —
-    /// both key on `parent_id` plus effective ownership, and neither requires the token to
-    /// carry a position.
+    /// vision paths enforce.
+    ///
+    /// Relation to the visibility mask — a SUPERSET of `gather_vision_sources_in_scene`'s
+    /// ownership branch, MINUS its observer-tier union. Not an equality; do not restate it as
+    /// one. The two sets differ in opposite directions:
+    /// - Wider here: a vision source additionally requires `engine_as::<TokenEngine>` to parse
+    ///   (`x`/`y` are non-`Option`), so a positionless or unparseable token is presence here
+    ///   while contributing no vision there. Ingress `validate_engine` demands `x`/`y`, so this
+    ///   is unreachable today — it is a consequence of asking a different question, not a
+    ///   licensed relaxation.
+    /// - Wider there: with `observerVision` on, the mask also unions observer-tier tokens, so a
+    ///   user whose only vision in a scene is observer-tier has a mask there and no presence
+    ///   here. Deliberate and fail-closed — the asymmetry note at `handle_pathfind`'s call site
+    ///   states why, and why matching the mask's wider source here would be wrong.
     ///
     /// Coupling: `handle_pathfind` gates a non-GM route request on this. Weakening it to a raw
     /// `doc.owner` read would fork ownership away from `token_effective_owner` and let an

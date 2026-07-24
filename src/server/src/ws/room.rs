@@ -295,6 +295,11 @@ impl Room {
                             // for every live scene, so an absent entry means the token's parent
                             // scene has no document: no authored cell size exists to index the
                             // visibility mask, the region field, or the traversal walk against.
+                            // SCOPE (the same caveat the coordinate bound above carries): this
+                            // whole block is non-GM only while `execute_move` refuses a GM too,
+                            // so the agreement between the two gates is over non-GM input. A GM
+                            // drag never reaches this check and never reads `cell` at all, so
+                            // nothing is silently defaulted on that path.
                             let Some(cell) = scene.scene_grid_sizes().get(&scene_id).copied()
                             else {
                                 return Err(DataError::Forbidden);
@@ -3216,7 +3221,7 @@ mod room_tests {
             .await;
         assert!(
             matches!(res, Err(DataError::Forbidden)),
-            "a MoveRequest naming a scene the token does not live in must be refused by the              gate — not incidentally by the moving lock or a downstream write"
+            "a MoveRequest naming a scene the token does not live in must be refused by the gate — not incidentally by the moving lock or a downstream write"
         );
         assert_eq!(
             h.committed_pos(h.token_id).await,
@@ -3246,7 +3251,7 @@ mod room_tests {
             .await;
         assert!(
             matches!(res, Err(DataError::Forbidden)),
-            "B's mask must never authorize movement of a token that lives in A, and the refusal              must come from the gate — not incidentally from the moving lock"
+            "B's mask must never authorize movement of a token that lives in A, and the refusal must come from the gate — not incidentally from the moving lock"
         );
         assert_eq!(
             h.committed_pos(h.token_id).await,
