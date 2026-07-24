@@ -205,9 +205,10 @@ pub fn set_pointer(root: &mut Value, pointer: &str, new: Value) -> Result<(), Da
                     .or_insert_with(|| Value::Object(Default::default()));
                 // An explicit `null` intermediate (e.g. an Option<T> field with no
                 // `skip_serializing_if`, serialized as `null` rather than omitted) descends
-                // the same as a missing key: getPointer/remove_pointer already treat null == absent
-                // for reads/removes, so set now agrees for the intermediate-descent case. Leaf
-                // null-vs-absent (the `last` branch above) is unchanged.
+                // the same as a missing key: `remove_pointer` and serde_json reads
+                // (`Value::pointer`) already treat a null intermediate as absent, so set now agrees
+                // for the intermediate-descent case. Leaf null-vs-absent (the `last` branch above)
+                // is unchanged.
                 if entry.is_null() {
                     *entry = Value::Object(Default::default());
                 }
@@ -259,7 +260,8 @@ pub fn remove_pointer(root: &mut Value, pointer: &str) -> Result<(), DataError> 
         }
         cur = match cur {
             // A missing OR explicit-null intermediate means the target is already absent:
-            // no-op — uniform with get_pointer/set_pointer, which treat null == absent.
+            // no-op — uniform with `set_pointer` (descends by creating a container) and serde_json
+            // reads, which treat a null intermediate as absent.
             Value::Object(m) => match m.get_mut(tok) {
                 Some(v) if !v.is_null() => v,
                 _ => return Ok(()),
@@ -497,7 +499,7 @@ mod tests {
     #[test]
     fn remove_pointer_through_a_null_intermediate_is_a_no_op() {
         // A `null` intermediate has nothing beneath it, so the target is already absent —
-        // uniform with set_pointer/get_pointer, which treat null == absent for descent.
+        // uniform with `set_pointer` and serde_json reads, which treat null == absent for descent.
         // The `null` itself is preserved (only the absent descendant "removal" is a no-op).
         let mut v = serde_json::json!({ "engine": { "vision": null } });
         remove_pointer(&mut v, "/engine/vision/mode").unwrap();

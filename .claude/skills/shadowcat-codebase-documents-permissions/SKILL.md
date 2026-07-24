@@ -106,8 +106,9 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   lockstep on both the server (`command.rs`) and the client mirror (`store.ts`):** `set_pointer`
   descends by replacing a `null` intermediate with a fresh object (`Option<T>` engine fields with no
   `skip_serializing_if` serialize as `null`, so this is the common case — e.g. a scene's
-  `/engine/vision` override on a default-built scene doc); `remove_pointer` no-ops through it;
-  `get_pointer` reads `undefined`/`Null`. The LEAF null-vs-absent distinction is preserved (`null !=
+  `/engine/vision` override on a default-built scene doc); `remove_pointer` no-ops through it; reads
+  yield absent (the client's `getPointer` → `undefined`; serde_json's `Value::pointer` server-side →
+  `None` — there is no bespoke server `get_pointer`). The LEAF null-vs-absent distinction is preserved (`null !=
   absent` for a leaf value). Forking this null-handling across the two languages is the never-fork
   defect class — parity is pinned by matching tests on each side.
 - `src/server/src/data/permission.rs` — the redaction core:
