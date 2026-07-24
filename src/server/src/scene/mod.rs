@@ -870,7 +870,7 @@ impl SceneEcs {
         // Collect owned-token viewpoints first (drops the query borrow before the wall queries).
         let mut viewpoints: Vec<(Uuid, vision::P)> = Vec::new();
         for e in self.world.query::<&SceneEntity>().iter() {
-            if e.doc.doc_type != "token" || e.doc.owner != Some(user_id) {
+            if e.doc.doc_type != "token" || self.token_effective_owner(&e.doc) != Some(user_id) {
                 continue;
             }
             if let (Some(t), Some(scene)) = (
@@ -910,7 +910,7 @@ impl SceneEcs {
         for e in self.world.query::<&SceneEntity>().iter() {
             if e.doc.doc_type != "token"
                 || e.doc.parent_id != Some(scene)
-                || e.doc.owner != Some(user)
+                || self.token_effective_owner(&e.doc) != Some(user)
             {
                 continue;
             }
@@ -1375,6 +1375,22 @@ impl SceneEcs {
     /// `embedded.actor[0].engine.vision` without overrides. An unknown mode id is dropped
     /// (fail-closed: it contributes no vision floor). Always returns ≥1 triple (normal fallback
     /// with `render_hint: None`).
+    /// The user this token effectively belongs to — the SAME rule the write-authz
+    /// path enforces (`permission::effective_owner`): the token's own `owner`
+    /// override, else its LINKED actor's owner, joined live through `self.actors`
+    /// exactly as `token_vision_floors` joins vision. Nothing is stamped, so a
+    /// re-assigned actor re-owns its linked tokens on the next resolution.
+    ///
+    /// Coupling: every "does this user control this token?" test in the vision /
+    /// lit-mask family calls this. Reading `doc.owner` directly at any of those
+    /// sites forks ownership — a player could then move a token that contributes
+    /// no vision, or see through one they cannot move.
+    pub fn token_effective_owner(&self, token: &Document) -> Option<Uuid> {
+        let linked = crate::data::permission::token_actor_link(token)
+            .and_then(|id| self.actors.get(&id));
+        crate::data::permission::effective_owner(token, linked)
+    }
+
     pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64, Option<String>)> {
         let modes = self.resolved_vision_modes();
         let bands = self.resolved_bands();
@@ -1548,7 +1564,7 @@ impl SceneEcs {
             let Some(scene) = e.doc.parent_id else {
                 continue;
             };
-            let owns = e.doc.owner == Some(user);
+            let owns = self.token_effective_owner(&e.doc) == Some(user);
             // Short-circuit: an owned token is a source regardless of observer_vision.
             let is_source = owns || {
                 let observer_vision = scene_settings
@@ -1903,7 +1919,7 @@ impl SceneEcs {
             if e.doc.doc_type != "token" || e.doc.parent_id != Some(scene) {
                 continue;
             }
-            let owns = e.doc.owner == Some(user);
+            let owns = self.token_effective_owner(&e.doc) == Some(user);
             let is_source = owns
                 || (settings.observer_vision && {
                     let role = e
@@ -2866,6 +2882,97 @@ mod tests {
         // No doc at all → built-in seed.
         let empty = SceneEcs::new();
         assert!(empty.resolved_vision_modes().contains_key("darkvision"));
+    }
+
+    #[test]
+    fn token_ownership_resolves_through_the_actor_join_for_vision() {
+        use serde_json::json;
+        // Vision/mask ownership MUST be the same rule the write-authz path uses
+        // (`permission::effective_owner`), or a player could move a token that
+        // contributes no vision — or see through one they cannot move.
+        let player = Uuid::from_u128(7);
+        let other = Uuid::from_u128(8);
+        let mut actor = entity_doc_top_eng(200, "actor", actor_body(json!([])));
+        actor.owner = Some(player);
+
+        // Linked, NO per-token owner: inherits the actor's owner.
+        let inherited = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": Uuid::from_u128(200).to_string() }),
+        );
+        // Linked to the SAME actor but overridden to `other`: the override wins.
+        let mut overridden = entity_doc_eng(
+            12,
+            10,
+            "token",
+            json!({ "x": 200.0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": Uuid::from_u128(200).to_string() }),
+        );
+        overridden.owner = Some(other);
+        // Linked to an actor that does not exist: fails closed to no owner.
+        let dangling = entity_doc_eng(
+            13,
+            10,
+            "token",
+            json!({ "x": 400.0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": Uuid::from_u128(999).to_string() }),
+        );
+
+        let mut ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                inherited.clone(),
+                overridden.clone(),
+                dangling.clone(),
+            ],
+            0,
+        );
+        ecs.set_actors(vec![actor.clone()]);
+
+        assert_eq!(
+            ecs.token_effective_owner(&inherited),
+            Some(player),
+            "a linked token with no override inherits the actor's owner"
+        );
+        assert_eq!(
+            ecs.token_effective_owner(&overridden),
+            Some(other),
+            "the per-token override supersedes the actor's owner"
+        );
+        assert_eq!(
+            ecs.token_effective_owner(&dangling),
+            None,
+            "a dangling link fails closed"
+        );
+
+        // The vision channel agrees: the inheriting player gets exactly the one
+        // token they effectively own, and the override holder gets exactly theirs.
+        let polys = ecs.player_vision_polygons(player);
+        assert_eq!(
+            polys.len(),
+            1,
+            "only the inherited token is a vision source for its inheriting owner"
+        );
+        assert_eq!(ecs.player_vision_polygons(other).len(), 1);
+        assert!(
+            ecs.player_vision_polygons(Uuid::from_u128(99)).is_empty(),
+            "a stranger owns nothing"
+        );
+
+        // Re-assigning the ACTOR moves vision ownership with no write to any token.
+        let mut reassigned = actor;
+        reassigned.owner = Some(other);
+        ecs.set_actors(vec![reassigned]);
+        assert_eq!(
+            ecs.token_effective_owner(&inherited),
+            Some(other),
+            "ownership follows the actor live — nothing is stamped on the token"
+        );
+        assert!(ecs.player_vision_polygons(player).is_empty());
+        assert_eq!(ecs.player_vision_polygons(other).len(), 2);
     }
 
     #[test]

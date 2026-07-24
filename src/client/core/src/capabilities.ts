@@ -38,8 +38,15 @@ export function resolveCaps(
   userId: string,
   _role: WorldRole,
   worldGrants: Grants,
+  isEffectiveOwner = false,
 ): Set<string> {
-  const docRole = perms.users[userId] ?? perms.default;
+  // Mirrors the server's `effective_role` owner floor: effective ownership of a
+  // TOKEN floors the user at `owner` (read + write_fields). Callers pass
+  // `isEffectiveOwner` only for a token (see `worldSession.canEdit`) — on every
+  // other doc_type `owner` grants no capability. `DocRole` is ordered
+  // owner < observer < none, so the floor only strengthens.
+  const stored = perms.users[userId] ?? perms.default;
+  const docRole = isEffectiveOwner ? "owner" : stored;
   const caps = new Set<string>(roleFloor(docRole));
   for (const c of perms.capabilities.by_role[docRole] ?? []) caps.add(c);
   for (const c of perms.capabilities.by_user[userId] ?? []) caps.add(c);
@@ -65,6 +72,10 @@ function baseCapForPath(path: string): string | null {
   }
   if (path === "/embedded" || path.startsWith("/embedded/")) return "core:manage_embedded";
   if (path === "/permissions" || path.startsWith("/permissions/")) return "core:edit_permissions";
+  // `/owner` is the ownership override the effective-owner rule reads: writing it
+  // re-targets who may write the document, so it is gated like a permission edit
+  // and NOT reachable from the owner floor. A leaf — `/owner/...` has no sub-path.
+  if (path === "/owner") return "core:edit_permissions";
   return null;
 }
 

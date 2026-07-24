@@ -22,6 +22,54 @@ pub mod cap {
     pub const CREATE: &str = "core:create";
 }
 
+/// The `doc_type` whose ownership resolves through a link to an actor document.
+pub const TOKEN_DOC_TYPE: &str = "token";
+
+/// The actor document a token LINKS to (`engine.actor_id`), or `None` for a raw
+/// or INSTANCED token. Mirrors `resolveTokenActor` (client `actor.ts`): only
+/// `engine.actor_id` is a link — an instanced token's `embedded.actor[0]` is a
+/// frozen placement-time copy and is deliberately NOT a link, so it can never
+/// re-derive ownership from stale embedded state.
+pub fn token_actor_link(doc: &Document) -> Option<Uuid> {
+    if doc.doc_type != TOKEN_DOC_TYPE {
+        return None;
+    }
+    doc.engine
+        .as_ref()?
+        .get("actor_id")?
+        .as_str()
+        .and_then(|s| Uuid::parse_str(s).ok())
+}
+
+/// The user a document effectively belongs to — the SINGLE ownership rule every
+/// consumer (write authz, scene vision/mask ownership, redaction) resolves
+/// through. A second, divergent notion of "owner" is a fork; there is one.
+///
+/// `doc.owner` is the explicit per-document override (`None` means unset, never
+/// a sentinel colliding with a real user id). A `token` with no override
+/// inherits its LINKED actor's owner, resolved LIVE on every call — nothing is
+/// stamped, so re-assigning an actor's owner re-owns every linked token at once.
+///
+/// Fail-closed: no link, a dangling link (`linked_actor: None`), a
+/// `linked_actor` that is not the document `token_actor_link` names, and an
+/// unowned actor all resolve to `None` — no owner, therefore no owner-derived
+/// capability. Degenerate input under-permits, never default-allows.
+///
+/// `linked_actor` MUST be the document `token_actor_link(doc)` names; the
+/// identity/type re-check below rejects any other document rather than trusting
+/// the caller's join.
+pub fn effective_owner(doc: &Document, linked_actor: Option<&Document>) -> Option<Uuid> {
+    if let Some(own) = doc.owner {
+        return Some(own);
+    }
+    let link = token_actor_link(doc)?;
+    let actor = linked_actor?;
+    if actor.id != link || actor.doc_type != "actor" {
+        return None;
+    }
+    actor.owner
+}
+
 /// The capability required to write a document field at `path`, or `None` when
 /// the path targets an immutable envelope field (not patchable via `Update`).
 pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
@@ -39,6 +87,14 @@ pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
     } else if path == "/embedded" || path.starts_with("/embedded/") {
         Some(cap::MANAGE_EMBEDDED)
     } else if path == "/permissions" || path.starts_with("/permissions/") {
+        Some(cap::EDIT_PERMISSIONS)
+    } else if path == "/owner" {
+        // `/owner` is the ownership override the effective-owner rule reads, so it
+        // is an access-control field: writing it re-targets who may write the
+        // document. Gated by EDIT_PERMISSIONS — which the `DocRole::Owner` floor
+        // does NOT include — so an owner (effective or explicit) can never
+        // re-assign, retain, or steal ownership; only a GM (or an explicit
+        // EDIT_PERMISSIONS grant) can. A leaf: `/owner/...` has no sub-path.
         Some(cap::EDIT_PERMISSIONS)
     } else {
         None
@@ -89,6 +145,15 @@ mod required_cap_tests {
     #[test]
     fn base_boundary_neighbor_does_not_match() {
         assert_eq!(required_cap_for_path("/based"), None);
+    }
+
+    #[test]
+    fn owner_requires_edit_permissions_and_is_a_leaf() {
+        // Re-assigning ownership is an access-control write: EDIT_PERMISSIONS,
+        // which the `DocRole::Owner` floor does not include.
+        assert_eq!(required_cap_for_path("/owner"), Some(cap::EDIT_PERMISSIONS));
+        assert_eq!(required_cap_for_path("/owner/id"), None);
+        assert_eq!(required_cap_for_path("/owners"), None);
     }
 
     #[test]
@@ -212,24 +277,44 @@ fn role_floor(role: DocRole) -> BTreeSet<String> {
 /// world-default grants consistently — recomputing it independently from
 /// `doc.permissions.default` would silently diverge for a GM whose access is
 /// capped via `gm_role`).
-fn effective_role(user: Uuid, world_role: WorldRole, doc: &Document) -> Option<DocRole> {
+fn effective_role(
+    user: Uuid,
+    world_role: WorldRole,
+    doc: &Document,
+    effective_owner: Option<Uuid>,
+) -> Option<DocRole> {
+    // Effective ownership of a TOKEN floors that user at `DocRole::Owner`
+    // (READ + WRITE_FIELDS), so a player can move a token assigned to them
+    // without the GM stamping a per-token `permissions.users` entry. Scoped to
+    // `token`: on every other doc_type `owner` keeps its existing
+    // provenance-only meaning and grants no capability. `DocRole` orders
+    // Owner < Observer < None, so `min` only ever strengthens — a document's
+    // own stronger grant is never downgraded by this floor.
+    let owner_floor = doc.doc_type == TOKEN_DOC_TYPE && effective_owner == Some(user);
+    let floor = |r: DocRole| {
+        if owner_floor {
+            r.min(DocRole::Owner)
+        } else {
+            r
+        }
+    };
     if world_role == WorldRole::Gm {
         let fallback = doc.permissions.gm_role?;
-        return Some(
+        return Some(floor(
             doc.permissions
                 .users
                 .get(&user)
                 .copied()
                 .unwrap_or(fallback),
-        );
+        ));
     }
-    Some(
+    Some(floor(
         doc.permissions
             .users
             .get(&user)
             .copied()
             .unwrap_or(doc.permissions.default),
-    )
+    ))
 }
 
 /// Resolve a user's effective capabilities on a document. A world GM (or
@@ -240,7 +325,24 @@ fn effective_role(user: Uuid, world_role: WorldRole, doc: &Document) -> Option<D
 /// built-in floor that the document's additive grants (`by_role`, `by_user`)
 /// widen.
 pub fn resolve_access(user: Uuid, world_role: WorldRole, doc: &Document) -> Access {
-    let Some(role) = effective_role(user, world_role, doc) else {
+    // No actor join available here, so the document's own `owner` is the whole
+    // rule: a linked token's INHERITED owner is invisible to this entry point.
+    // That direction under-permits (an inheriting owner is treated as a
+    // stranger), never over-permits. Call sites that can perform the join
+    // (`apply_intent`, `SceneEcs`) use `*_with_owner` and pass
+    // `effective_owner(doc, linked_actor)`.
+    resolve_access_with_owner(user, world_role, doc, doc.owner)
+}
+
+/// `resolve_access` with the effective owner resolved by the caller (see
+/// `effective_owner`). Pass `doc.owner` when no actor join is available.
+pub fn resolve_access_with_owner(
+    user: Uuid,
+    world_role: WorldRole,
+    doc: &Document,
+    effective_owner: Option<Uuid>,
+) -> Access {
+    let Some(role) = effective_role(user, world_role, doc, effective_owner) else {
         return Access {
             caps: BTreeSet::new(),
             all: true,
@@ -262,7 +364,10 @@ pub fn resolve_access(user: Uuid, world_role: WorldRole, doc: &Document) -> Acce
         // (`GmOnly`/`OwnerOrGm`) visibility purposes even though their
         // whole-document READ is now floor-gated like anyone else's.
         see_gm_only: world_role == WorldRole::Gm,
-        is_owner: doc.owner == Some(user),
+        // Same rule as the capability floor: the OwnerOrGm redaction tier admits
+        // the EFFECTIVE owner, so ownership means one thing across authz and
+        // redaction.
+        is_owner: effective_owner == Some(user),
     }
 }
 
@@ -279,11 +384,23 @@ pub fn resolve_access_world(
     doc: &Document,
     world_grants: &CapabilityGrants,
 ) -> Access {
-    let mut access = resolve_access(user, world_role, doc);
+    resolve_access_world_with_owner(user, world_role, doc, world_grants, doc.owner)
+}
+
+/// `resolve_access_world` with the effective owner resolved by the caller (see
+/// `effective_owner`). The write-authz chokepoint (`apply_intent`) uses this.
+pub fn resolve_access_world_with_owner(
+    user: Uuid,
+    world_role: WorldRole,
+    doc: &Document,
+    world_grants: &CapabilityGrants,
+    effective_owner: Option<Uuid>,
+) -> Access {
+    let mut access = resolve_access_with_owner(user, world_role, doc, effective_owner);
     if access.all {
         return access;
     }
-    let role = effective_role(user, world_role, doc)
+    let role = effective_role(user, world_role, doc, effective_owner)
         .expect("access.all was false, so effective_role returned Some (see resolve_access)");
     if let Some(extra) = world_grants.by_role.get(&role) {
         access.caps.extend(extra.iter().cloned());
@@ -1946,5 +2063,167 @@ mod tests {
             panic!("expected Update");
         };
         assert_eq!(changes.len(), 3);
+    }
+
+    // ---- effective_owner: the single token-ownership rule ----
+
+    fn token_linked_to(actor_id: Option<Uuid>) -> Document {
+        let mut d = doc(PermissionSet::default(), serde_json::json!({}));
+        d.id = Uuid::from_u128(100);
+        d.doc_type = "token".into();
+        d.engine = Some(match actor_id {
+            Some(a) => serde_json::json!({
+                "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0,
+                "actor_id": a.to_string()
+            }),
+            None => serde_json::json!({
+                "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0
+            }),
+        });
+        d
+    }
+
+    fn actor_owned_by(id: Uuid, owner: Option<Uuid>) -> Document {
+        let mut d = doc(PermissionSet::default(), serde_json::json!({}));
+        d.id = id;
+        d.owner = owner;
+        d
+    }
+
+    #[test]
+    fn token_actor_link_reads_only_a_tokens_engine_actor_id() {
+        let a = Uuid::from_u128(42);
+        assert_eq!(token_actor_link(&token_linked_to(Some(a))), Some(a));
+        // A raw/instanced token carries no link.
+        assert_eq!(token_actor_link(&token_linked_to(None)), None);
+        // A non-token doc_type never links, even with a stray `actor_id` key.
+        let mut impostor = token_linked_to(Some(a));
+        impostor.doc_type = "actor".into();
+        assert_eq!(token_actor_link(&impostor), None);
+    }
+
+    #[test]
+    fn effective_owner_prefers_the_per_token_override() {
+        let actor_id = Uuid::from_u128(42);
+        let inheritor = Uuid::from_u128(1);
+        let override_user = Uuid::from_u128(2);
+        let actor = actor_owned_by(actor_id, Some(inheritor));
+
+        // No override: inherits the linked actor's owner.
+        let plain = token_linked_to(Some(actor_id));
+        assert_eq!(effective_owner(&plain, Some(&actor)), Some(inheritor));
+
+        // Override set: it wins over the same actor, same link.
+        let mut overridden = token_linked_to(Some(actor_id));
+        overridden.owner = Some(override_user);
+        assert_eq!(
+            effective_owner(&overridden, Some(&actor)),
+            Some(override_user)
+        );
+    }
+
+    #[test]
+    fn effective_owner_fails_closed_on_degenerate_links() {
+        let actor_id = Uuid::from_u128(42);
+        let player = Uuid::from_u128(1);
+
+        // No link, no override.
+        assert_eq!(effective_owner(&token_linked_to(None), None), None);
+        // Dangling link: the actor row does not exist.
+        assert_eq!(effective_owner(&token_linked_to(Some(actor_id)), None), None);
+        // Linked to an actor that nobody owns.
+        assert_eq!(
+            effective_owner(
+                &token_linked_to(Some(actor_id)),
+                Some(&actor_owned_by(actor_id, None))
+            ),
+            None
+        );
+        // A `linked_actor` that is NOT the document the link names is rejected
+        // rather than trusted — a mis-joined caller under-permits, never leaks
+        // write authority to the wrong actor's owner.
+        assert_eq!(
+            effective_owner(
+                &token_linked_to(Some(actor_id)),
+                Some(&actor_owned_by(Uuid::from_u128(999), Some(player)))
+            ),
+            None
+        );
+        // Same, for a correctly-identified document of the wrong doc_type.
+        let mut wrong_type = actor_owned_by(actor_id, Some(player));
+        wrong_type.doc_type = "token".into();
+        assert_eq!(
+            effective_owner(&token_linked_to(Some(actor_id)), Some(&wrong_type)),
+            None
+        );
+        // Control: the same call with the correctly-joined owned actor resolves,
+        // so the rejections above are the guards, not a constant `None`.
+        assert_eq!(
+            effective_owner(
+                &token_linked_to(Some(actor_id)),
+                Some(&actor_owned_by(actor_id, Some(player)))
+            ),
+            Some(player)
+        );
+    }
+
+    #[test]
+    fn a_non_token_never_inherits_ownership() {
+        let actor_id = Uuid::from_u128(42);
+        let player = Uuid::from_u128(1);
+        let mut not_a_token = token_linked_to(Some(actor_id));
+        not_a_token.doc_type = "drawing".into();
+        assert_eq!(
+            effective_owner(&not_a_token, Some(&actor_owned_by(actor_id, Some(player)))),
+            None,
+            "inheritance is token-scoped: no other doc_type joins an actor"
+        );
+    }
+
+    #[test]
+    fn effective_ownership_grants_the_owner_floor_and_the_owner_or_gm_tier() {
+        let actor_id = Uuid::from_u128(42);
+        let player = Uuid::from_u128(1);
+        let stranger = Uuid::from_u128(2);
+        let mut token = token_linked_to(Some(actor_id));
+        // The shipping `buildTokenDoc` default: READ-only for everyone.
+        token.permissions.default = DocRole::Observer;
+        let actor = actor_owned_by(actor_id, Some(player));
+        let owner = effective_owner(&token, Some(&actor));
+
+        let a_player = resolve_access_with_owner(player, WorldRole::Player, &token, owner);
+        assert!(
+            a_player.has(cap::READ) && a_player.has(cap::WRITE_FIELDS),
+            "an effective owner holds the DocRole::Owner floor"
+        );
+        assert!(
+            !a_player.has(cap::EDIT_PERMISSIONS) && !a_player.has(cap::DELETE),
+            "the floor stops at WRITE_FIELDS — no re-assigning or deleting"
+        );
+        assert!(
+            a_player.is_owner && a_player.can_see(Visibility::OwnerOrGm),
+            "redaction's OwnerOrGm tier admits the same effective owner"
+        );
+        assert!(
+            !a_player.can_see(Visibility::GmOnly),
+            "an owner is not a GM"
+        );
+
+        // Non-vacuity: same token, same call, different user.
+        let a_stranger = resolve_access_with_owner(stranger, WorldRole::Player, &token, owner);
+        assert!(a_stranger.has(cap::READ) && !a_stranger.has(cap::WRITE_FIELDS));
+        assert!(!a_stranger.is_owner);
+    }
+
+    #[test]
+    fn the_owner_floor_never_downgrades_a_stronger_document_grant() {
+        // A doc that already grants a user Owner keeps it when they are NOT the
+        // effective owner: the floor only ever strengthens.
+        let player = Uuid::from_u128(1);
+        let mut token = token_linked_to(None);
+        token.permissions.users.insert(player, DocRole::Owner);
+        let a = resolve_access_with_owner(player, WorldRole::Player, &token, None);
+        assert!(a.has(cap::WRITE_FIELDS));
+        assert!(!a.is_owner, "no effective owner => not the OwnerOrGm subject");
     }
 }

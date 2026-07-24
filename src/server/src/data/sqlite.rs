@@ -16,7 +16,7 @@ use crate::data::engine::{
 };
 use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
-    resolve_access_world, Access,
+    resolve_access_world, resolve_access_world_with_owner, Access,
 };
 use crate::data::repository::Repository;
 use crate::data::validation;
@@ -1017,6 +1017,34 @@ impl SqliteRepository {
         }
     }
 
+    /// Resolve `doc`'s effective owner (`permission::effective_owner`) on an
+    /// arbitrary executor, joining the LINKED actor for a token so the rule is
+    /// evaluated against LIVE actor state on every write — nothing is stamped,
+    /// so re-assigning an actor's owner immediately re-owns its linked tokens.
+    /// Runs on the caller's transaction (never `&self.pool`, which would
+    /// deadlock mid-transaction on the single-writer pool).
+    ///
+    /// Costs ONE extra row read, and only for a token carrying an `actor_id`
+    /// link. This function performs the JOIN and nothing else: precedence
+    /// between the override and the inherited owner is decided EXCLUSIVELY by
+    /// `effective_owner`. Deliberately does NOT skip the read when `doc.owner`
+    /// is set — re-deriving "the override wins" here would duplicate the rule in
+    /// a second place that can silently drift from it.
+    async fn load_effective_owner<'e, E>(
+        executor: E,
+        doc: &Document,
+    ) -> Result<Option<Uuid>, DataError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        let Some(actor_id) = crate::data::permission::token_actor_link(doc) else {
+            return Ok(crate::data::permission::effective_owner(doc, None));
+        };
+        // A dangling link loads `None` and `effective_owner` fails closed to no owner.
+        let actor = Self::load_document(executor, actor_id).await?;
+        Ok(crate::data::permission::effective_owner(doc, actor.as_ref()))
+    }
+
     /// Whether a document of `doc_type` already exists in `world_id`, on an
     /// arbitrary executor (so it can run inside the `apply_intent`
     /// transaction — see `SINGLETON_DOC_TYPES`). Mirrors `load_document`'s
@@ -1449,11 +1477,13 @@ impl Repository for SqliteRepository {
                             check_command_scope(&parent, world_id)?;
                         }
                     }
-                    let access = resolve_access_world(
+                    let create_owner = Self::load_effective_owner(&mut *tx, doc).await?;
+                    let access = resolve_access_world_with_owner(
                         ctx.user_id,
                         ctx.world_role,
                         doc,
                         &world_defaults.grants_for(&doc.doc_type),
+                        create_owner,
                     );
                     if !access.has(cap::WRITE_FIELDS) {
                         return Err(DataError::Forbidden);
@@ -1543,11 +1573,13 @@ impl Repository for SqliteRepository {
                     // Authorize against the stored doc, scoped to this world, so
                     // a GM of one world cannot delete another world's document.
                     check_command_scope(&cur, world_id)?;
-                    if !resolve_access_world(
+                    let del_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
+                    if !resolve_access_world_with_owner(
                         ctx.user_id,
                         ctx.world_role,
                         &cur,
                         &world_defaults.grants_for(&cur.doc_type),
+                        del_owner,
                     )
                     .has(cap::DELETE)
                     {
@@ -1629,11 +1661,15 @@ impl Repository for SqliteRepository {
                             is_owner: true,
                         }
                     } else {
-                        resolve_access_world(
+                        // Effective owner joined from the LIVE linked actor inside this
+                        // transaction — a linked token's owner is never stored on the token.
+                        let upd_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
+                        resolve_access_world_with_owner(
                             ctx.user_id,
                             ctx.world_role,
                             &cur,
                             &world_defaults.grants_for(&cur.doc_type),
+                            upd_owner,
                         )
                     };
                     // Field-level OCC: every change's pre-image must equal the
@@ -1706,11 +1742,13 @@ impl Repository for SqliteRepository {
                             DataError::Conflict(format!("descendant {desc} missing"))
                         })?;
                         check_command_scope(&cur, world_id)?;
-                        if !resolve_access_world(
+                        let desc_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
+                        if !resolve_access_world_with_owner(
                             ctx.user_id,
                             ctx.world_role,
                             &cur,
                             &world_defaults.grants_for(&cur.doc_type),
+                            desc_owner,
                         )
                         .has(cap::DELETE)
                         {
@@ -6724,5 +6762,375 @@ mod tests {
             )
             .await
             .unwrap());
+    }
+
+    // ---- Token ownership: actor-inherited with a per-token override ----
+    //
+    // effective_owner(token) = the token's own `owner` override, else the LINKED
+    // actor's owner, resolved SERVER-SIDE at authz time against live actor state.
+    // Every reject leg below is paired with an accept leg that differs ONLY in the
+    // resolution input (which user, which override, which actor owner), so a rule
+    // inverted or defaulted-open flips the pair rather than passing both.
+
+    /// A world-scoped `token` doc, optionally linked to `actor_id`. `permissions`
+    /// deliberately stays at the `buildTokenDoc` shipping default (`default:
+    /// Observer`, no per-user entry) — the whole point is that write authority
+    /// comes from effective ownership, not from a stamped permission entry.
+    fn owned_token_doc(world: Uuid, actor_id: Option<Uuid>) -> Document {
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        let mut engine = serde_json::json!({
+            "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0
+        });
+        if let Some(a) = actor_id {
+            engine["actor_id"] = serde_json::json!(a.to_string());
+        }
+        let mut d = tests_engine_doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            "token",
+            engine,
+        );
+        d.scope = Scope::World { world_id: world };
+        d
+    }
+
+    /// A world-scoped `actor` doc owned by `owner`.
+    fn actor_doc_owned_by(world: Uuid, owner: Option<Uuid>) -> Document {
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        let mut d = tests_doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({}),
+        );
+        d.scope = Scope::World { world_id: world };
+        d.owner = owner;
+        d
+    }
+
+    /// Attempt `/engine/x` + `/engine/y` as `user` (a Player) on `token`.
+    async fn try_move(
+        r: &SqliteRepository,
+        world: Uuid,
+        user: Uuid,
+        token: Uuid,
+        from: (f64, f64),
+        to: (f64, f64),
+        ts: i64,
+    ) -> Result<Command, DataError> {
+        use crate::data::command::FieldChange;
+        use crate::data::membership::PermissionContext;
+        r.apply_intent(
+            &PermissionContext {
+                user_id: user,
+                world_role: WorldRole::Player,
+            },
+            world,
+            vec![Operation::Update {
+                doc_id: token,
+                changes: vec![
+                    FieldChange {
+                        remove: false,
+                        path: "/engine/x".into(),
+                        old: serde_json::json!(from.0),
+                        new: serde_json::json!(to.0),
+                    },
+                    FieldChange {
+                        remove: false,
+                        path: "/engine/y".into(),
+                        old: serde_json::json!(from.1),
+                        new: serde_json::json!(to.1),
+                    },
+                ],
+            }],
+            ts,
+            WriteOrigin::Client,
+        )
+        .await
+    }
+
+    /// GM, world, and two ordinary player accounts (`owner_id` is a FK, so every
+    /// owner must be a real user row).
+    async fn ownership_fixture() -> (SqliteRepository, Uuid, Uuid, Uuid, Uuid) {
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let p1 = r
+            .create_user("player-one", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let p2 = r
+            .create_user("player-two", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        (r, gm, w.id, p1, p2)
+    }
+
+    async fn gm_create(r: &SqliteRepository, gm: Uuid, world: Uuid, docs: Vec<Document>, ts: i64) {
+        use crate::data::membership::PermissionContext;
+        r.apply_intent(
+            &PermissionContext {
+                user_id: gm,
+                world_role: WorldRole::Gm,
+            },
+            world,
+            docs.into_iter()
+                .map(|doc| Operation::Create { doc })
+                .collect(),
+            ts,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn linked_token_inherits_actor_owner_for_writes() {
+        let (r, gm, w, p1, p2) = ownership_fixture().await;
+        let actor = actor_doc_owned_by(w, Some(p1));
+        let token = owned_token_doc(w, Some(actor.id));
+        gm_create(&r, gm, w, vec![actor, token.clone()], 1).await;
+
+        // The actor's owner may move the linked token — with NO per-token `owner`
+        // and NO per-token permissions entry: authority is inherited, live.
+        try_move(&r, w, p1, token.id, (0.0, 0.0), (5.0, 7.0), 2)
+            .await
+            .expect("the linked actor's owner may move the token");
+
+        // Non-vacuity: the SAME token, the SAME path, the SAME pre-image — only the
+        // user differs. A rule defaulted open (or inverted) would let this pass too.
+        let denied = try_move(&r, w, p2, token.id, (5.0, 7.0), (9.0, 9.0), 3).await;
+        assert!(
+            matches!(denied, Err(DataError::Forbidden)),
+            "a player who owns neither the token nor its actor must not move it, got {denied:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn per_token_owner_override_beats_the_linked_actors_owner() {
+        let (r, gm, w, p1, p2) = ownership_fixture().await;
+        let actor = actor_doc_owned_by(w, Some(p1));
+        let mut token = owned_token_doc(w, Some(actor.id));
+        token.owner = Some(p2); // GM override on the individual token
+        gm_create(&r, gm, w, vec![actor, token.clone()], 1).await;
+
+        // The override holder writes...
+        try_move(&r, w, p2, token.id, (0.0, 0.0), (2.0, 3.0), 2)
+            .await
+            .expect("the per-token owner override may move the token");
+
+        // ...and the actor's owner, who WOULD inherit but for the override, cannot.
+        // Paired with the accept leg above, this pins precedence in both directions:
+        // inverting it (actor owner beats override) flips both assertions.
+        let denied = try_move(&r, w, p1, token.id, (2.0, 3.0), (4.0, 4.0), 3).await;
+        assert!(
+            matches!(denied, Err(DataError::Forbidden)),
+            "the token's own override must supersede the actor's owner, got {denied:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reassigning_the_actors_owner_moves_token_authority_with_no_restamp() {
+        use crate::data::command::FieldChange;
+        use crate::data::membership::PermissionContext;
+        let (r, gm, w, p1, p2) = ownership_fixture().await;
+        let actor = actor_doc_owned_by(w, Some(p1));
+        let token = owned_token_doc(w, Some(actor.id));
+        gm_create(&r, gm, w, vec![actor.clone(), token.clone()], 1).await;
+
+        try_move(&r, w, p1, token.id, (0.0, 0.0), (1.0, 1.0), 2)
+            .await
+            .expect("the original actor owner may move the token");
+
+        // The GM re-assigns the ACTOR's owner. The token document is never touched.
+        r.apply_intent(
+            &PermissionContext {
+                user_id: gm,
+                world_role: WorldRole::Gm,
+            },
+            w,
+            vec![Operation::Update {
+                doc_id: actor.id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/owner".into(),
+                    old: serde_json::json!(p1.to_string()),
+                    new: serde_json::json!(p2.to_string()),
+                }],
+            }],
+            3,
+            WriteOrigin::Client,
+        )
+        .await
+        .expect("a GM may re-assign an actor's owner");
+
+        // Authority followed the actor, with no write to the token: the token's own
+        // `owner` is STILL unset — proving resolution, not a stamped copy.
+        let stored = r.get_document(token.id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.owner, None,
+            "the token must carry no stamped owner — ownership is resolved, not copied"
+        );
+
+        try_move(&r, w, p2, token.id, (1.0, 1.0), (6.0, 6.0), 4)
+            .await
+            .expect("the actor's NEW owner may move the token");
+        let denied = try_move(&r, w, p1, token.id, (6.0, 6.0), (8.0, 8.0), 5).await;
+        assert!(
+            matches!(denied, Err(DataError::Forbidden)),
+            "the actor's FORMER owner must lose the token, got {denied:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ownership_fails_closed_on_every_degenerate_link() {
+        let (r, gm, w, p1, _p2) = ownership_fixture().await;
+
+        // (a) No link at all, no override: nobody inherits.
+        let unlinked = owned_token_doc(w, None);
+        // (b) Dangling link: `actor_id` names a document that does not exist.
+        let dangling = owned_token_doc(w, Some(Uuid::new_v4()));
+        // (c) Linked to an actor with NO owner.
+        let unowned_actor = actor_doc_owned_by(w, None);
+        let linked_unowned = owned_token_doc(w, Some(unowned_actor.id));
+        // (d) Control: identical shape, but the actor IS owned by p1.
+        let owned_actor = actor_doc_owned_by(w, Some(p1));
+        let linked_owned = owned_token_doc(w, Some(owned_actor.id));
+        gm_create(
+            &r,
+            gm,
+            w,
+            vec![
+                unlinked.clone(),
+                dangling.clone(),
+                unowned_actor,
+                linked_unowned.clone(),
+                owned_actor,
+                linked_owned.clone(),
+            ],
+            1,
+        )
+        .await;
+
+        for (label, id) in [
+            ("no link", unlinked.id),
+            ("dangling link", dangling.id),
+            ("actor with no owner", linked_unowned.id),
+        ] {
+            let denied = try_move(&r, w, p1, id, (0.0, 0.0), (3.0, 3.0), 2).await;
+            assert!(
+                matches!(denied, Err(DataError::Forbidden)),
+                "{label} must fail closed (no owner => no write), got {denied:?}"
+            );
+        }
+
+        // Non-vacuity for the whole loop: the same player, the same move, on a token
+        // whose only difference is a RESOLVABLE owned actor — this one succeeds, so
+        // the three rejections above are the ownership rule, not a blanket denial.
+        try_move(&r, w, p1, linked_owned.id, (0.0, 0.0), (3.0, 3.0), 3)
+            .await
+            .expect("the control leg (resolvable owned actor) must succeed");
+    }
+
+    #[tokio::test]
+    async fn an_effective_owner_cannot_reassign_or_widen_ownership() {
+        use crate::data::command::FieldChange;
+        use crate::data::membership::PermissionContext;
+        let (r, gm, w, p1, p2) = ownership_fixture().await;
+        let actor = actor_doc_owned_by(w, Some(p1));
+        let token = owned_token_doc(w, Some(actor.id));
+        gm_create(&r, gm, w, vec![actor, token.clone()], 1).await;
+
+        let as_p1 = PermissionContext {
+            user_id: p1,
+            world_role: WorldRole::Player,
+        };
+        // The effective owner holds the `DocRole::Owner` floor (READ + WRITE_FIELDS)
+        // and nothing more: `/owner` and `/permissions` need EDIT_PERMISSIONS, which
+        // that floor does not include. Without this, an inheriting owner could pin
+        // the token to themselves or hand it to anyone.
+        for change in [
+            FieldChange {
+                remove: false,
+                path: "/owner".into(),
+                old: serde_json::Value::Null,
+                new: serde_json::json!(p2.to_string()),
+            },
+            FieldChange {
+                remove: false,
+                path: "/permissions/default".into(),
+                old: serde_json::json!("observer"),
+                new: serde_json::json!("owner"),
+            },
+        ] {
+            let path = change.path.clone();
+            let denied = r
+                .apply_intent(
+                    &as_p1,
+                    w,
+                    vec![Operation::Update {
+                        doc_id: token.id,
+                        changes: vec![change],
+                    }],
+                    2,
+                    WriteOrigin::Client,
+                )
+                .await;
+            assert!(
+                matches!(denied, Err(DataError::Forbidden)),
+                "an effective owner must not write {path}, got {denied:?}"
+            );
+        }
+
+        // Non-vacuity: the same user, same doc, same call shape — a WRITE_FIELDS path
+        // succeeds, so the two rejections are the capability split, not a dead player.
+        try_move(&r, w, p1, token.id, (0.0, 0.0), (1.0, 2.0), 3)
+            .await
+            .expect("the effective owner still holds WRITE_FIELDS");
+    }
+
+    #[tokio::test]
+    async fn the_owner_capability_floor_is_scoped_to_tokens() {
+        use crate::data::command::FieldChange;
+        use crate::data::membership::PermissionContext;
+        let (r, gm, w, p1, _p2) = ownership_fixture().await;
+        // An `actor` the player owns. `owner` keeps its pre-existing
+        // provenance-only meaning on every non-`token` doc_type: it admits the
+        // OwnerOrGm redaction tier but grants NO capability, so the player cannot
+        // write the actor's body. Widening this is a separate design decision.
+        let mut actor = actor_doc_owned_by(w, Some(p1));
+        actor.system = serde_json::json!({ "hp": 10 });
+        gm_create(&r, gm, w, vec![actor.clone()], 1).await;
+
+        let denied = r
+            .apply_intent(
+                &PermissionContext {
+                    user_id: p1,
+                    world_role: WorldRole::Player,
+                },
+                w,
+                vec![Operation::Update {
+                    doc_id: actor.id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/system/hp".into(),
+                        old: serde_json::json!(10),
+                        new: serde_json::json!(1),
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await;
+        assert!(
+            matches!(denied, Err(DataError::Forbidden)),
+            "the owner floor must not leak to non-token doc_types, got {denied:?}"
+        );
     }
 }

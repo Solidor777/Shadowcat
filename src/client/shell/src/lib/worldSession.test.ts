@@ -357,6 +357,64 @@ test("canEdit: a non-GM owner may write /system/conditions; a non-owner may not;
   expect(session.canEdit(other, "/system/conditions")).toBe(false);
 });
 
+test("canEdit: effective token ownership (inherited from the linked actor) unlocks /engine writes", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // user_role: "player", empty grants/requirements
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  // The actor this player owns, and a linked token carrying NO per-token override
+  // and the shipping `buildTokenDoc` permissions default (observer = read-only).
+  const actor = actorWith({});
+  actor.owner = "u-self";
+  const linked = buildTokenDoc(
+    "w1",
+    "s1",
+    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: "act1", overrides: null, face: null },
+    "tok-linked",
+  );
+  session.dispatchIntent([
+    { op: "create", doc: actor },
+    { op: "create", doc: linked },
+  ]);
+
+  expect(session.canEdit(session.documents.get("tok-linked")!, "/engine/x")).toBe(true);
+
+  // Non-vacuity: the SAME token, same path — re-owning the ACTOR to someone else
+  // (with no write to the token) revokes it. A mirror that ignored inheritance,
+  // or defaulted open, would not flip here.
+  session.dispatchIntent([
+    { op: "update", doc_id: "act1", changes: [{ path: "/owner", old: "u-self", new: "u-other" }] },
+  ]);
+  expect(session.canEdit(session.documents.get("tok-linked")!, "/engine/x")).toBe(false);
+
+  // A per-token override hands it back, beating the actor's owner.
+  session.dispatchIntent([
+    { op: "update", doc_id: "tok-linked", changes: [{ path: "/owner", old: null, new: "u-self" }] },
+  ]);
+  expect(session.canEdit(session.documents.get("tok-linked")!, "/engine/x")).toBe(true);
+
+  // The owner floor stops at write_fields: an effective owner may not re-assign
+  // ownership or edit permissions (both need core:edit_permissions).
+  expect(session.canEdit(session.documents.get("tok-linked")!, "/owner")).toBe(false);
+  expect(session.canEdit(session.documents.get("tok-linked")!, "/permissions/default")).toBe(false);
+});
+
+test("canEdit: effective ownership does not leak to non-token doc_types", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  // An ACTOR owned by this player, permissions read-only: `owner` keeps its
+  // provenance-only meaning off tokens, so no write. Mirrors the server.
+  const actor = actorWith({ default: "observer" });
+  actor.owner = "u-self";
+  expect(session.canEdit(actor, "/system/hp")).toBe(false);
+});
+
 test("canEdit: a GM bypasses the capability check", async () => {
   const { connect, push } = pushConnect([]);
   const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });

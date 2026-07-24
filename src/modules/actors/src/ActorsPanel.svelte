@@ -4,6 +4,7 @@
   import { buildActorDoc, setNameHidden, actorDisplayName, type ActorEngine, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
   import VisualKindEditor from "./VisualKindEditor.svelte";
   import FaceSwapPalette from "./FaceSwapPalette.svelte";
+  import TokenOwnerControl from "./TokenOwnerControl.svelte";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -121,6 +122,7 @@
 
 <section class="actors">
   <h3>{t("actors.title")}</h3>
+  <TokenOwnerControl tokenId={selectedTokenId} />
   <FaceSwapPalette tokenId={selectedTokenId} />
   <input
     class="actor-search"
@@ -144,6 +146,20 @@
           <button type="button" class="hide-toggle" onclick={() => toggleHidden(a)}>
             {isHidden(a) ? t("actors.nameShown") : t("actors.hideName")}
           </button>
+          <!-- Ownership is assigned ONCE here, on the character: every LINKED token
+               resolves through it server-side (`effective_owner`), so re-assigning
+               re-owns all of them with no per-token write. `old` is the raw stored
+               `owner` — the server's field-level OCC check compares against it. -->
+          <select
+            aria-label={t("actors.actorOwner")}
+            value={a.owner ?? ""}
+            onchange={(e) => ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/owner", old: a.owner ?? null, new: e.currentTarget.value || null }] }])}
+          >
+            <option value="">{t("actors.ownerNobody")}</option>
+            {#each [...ctx.members.entries()] as [uid, uname] (uid)}
+              <option value={uid}>{uname}</option>
+            {/each}
+          </select>
           <select
             aria-label={t("actors.faction")}
             value={(a.engine as { faction?: string | null } | undefined)?.faction ?? ""}

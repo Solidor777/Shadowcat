@@ -2,7 +2,7 @@ import { describe, it, expect, test } from "vitest";
 import { DocumentStore, type ReadableDocuments } from "./store";
 import type { WireDocument } from "./wire";
 import { buildActorDoc, buildSceneDoc, buildTokenDoc, buildTokenFromActor, buildConditionRegistryDoc, type ActorEngine, type TokenEngine } from "./scene-docs";
-import { resolveTokenActor, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, footprintRadius, resolveTokenVisual, selectedFaceNamesFor } from "./actor";
+import { resolveTokenActor, effectiveOwner, ownerFloorApplies, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, footprintRadius, resolveTokenVisual, selectedFaceNamesFor } from "./actor";
 import type { TokenVisual } from "./scene-docs";
 
 const NAME = "Goblin";
@@ -335,5 +335,70 @@ describe("resolveTokenVisual", () => {
     // second independent resolution.
     const selected = selectedFaceNamesFor(token, store);
     expect(selected).toContain("frown");
+  });
+});
+
+describe("effectiveOwner", () => {
+  // Obviously-synthetic ids: no real user data.
+  const P1 = "usr_test_a";
+  const P2 = "usr_test_b";
+
+  const ownedActor = (owner: string | null): WireDocument => {
+    const a = buildActorDoc("w1", NAME, eng, "act1");
+    a.owner = owner;
+    return a;
+  };
+
+  it("inherits the LINKED actor's owner when the token carries no override", () => {
+    const actor = ownedActor(P1);
+    const token = buildTokenFromActor("w1", "s1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    expect(effectiveOwner(token, storeWith(actor))).toBe(P1);
+    expect(ownerFloorApplies(token, P1, storeWith(actor))).toBe(true);
+    // Non-vacuity: same call, different user.
+    expect(ownerFloorApplies(token, P2, storeWith(actor))).toBe(false);
+  });
+
+  it("prefers the per-token override over the linked actor's owner", () => {
+    const actor = ownedActor(P1);
+    const token = buildTokenFromActor("w1", "s1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    token.owner = P2;
+    expect(effectiveOwner(token, storeWith(actor))).toBe(P2);
+  });
+
+  it("fails closed on every degenerate link", () => {
+    const actor = ownedActor(P1);
+    // Dangling: the linked actor is not in the store.
+    const dangling = buildTokenFromActor("w1", "s1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    expect(effectiveOwner(dangling, new DocumentStore())).toBeNull();
+    // Linked to an actor nobody owns.
+    const unowned = ownedActor(null);
+    const linkedUnowned = buildTokenFromActor("w1", "s1", unowned, "link", { x: 0, y: 0 }, 100, "tok2");
+    expect(effectiveOwner(linkedUnowned, storeWith(unowned))).toBeNull();
+    // Raw token: no link, no override.
+    const raw = buildTokenDoc("w1", "s1", rawTokenEngine(), "tok3");
+    expect(effectiveOwner(raw, new DocumentStore())).toBeNull();
+    // Control: the same shape with a resolvable owned actor DOES resolve, so the
+    // rejections above are the guards, not a constant null.
+    expect(effectiveOwner(dangling, storeWith(actor))).toBe(P1);
+  });
+
+  it("does NOT inherit from an INSTANCED token's frozen embedded copy", () => {
+    // An instanced copy is a placement-time snapshot; inheriting from it would be
+    // the stamped semantics this rule exists to avoid. Its own `owner` override is
+    // the only source, so an un-overridden instanced token has no owner.
+    const actor = ownedActor(P1);
+    const instanced = buildTokenFromActor("w1", "s1", actor, "instance", { x: 0, y: 0 }, 100, "tok1");
+    expect(instanced.embedded?.actor?.[0]).toBeTruthy();
+    expect(effectiveOwner(instanced, storeWith(actor))).toBeNull();
+    instanced.owner = P2;
+    expect(effectiveOwner(instanced, storeWith(actor))).toBe(P2);
+  });
+
+  it("the owner capability floor is token-scoped", () => {
+    const actor = ownedActor(P1);
+    // `owner` still resolves on a non-token (it is the document's own field)...
+    expect(effectiveOwner(actor, storeWith(actor))).toBe(P1);
+    // ...but confers no capability floor there, mirroring the server.
+    expect(ownerFloorApplies(actor, P1, storeWith(actor))).toBe(false);
   });
 });

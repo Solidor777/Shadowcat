@@ -13,6 +13,7 @@ import {
   resolveViewedScene,
   consoleLogger,
   resolveCaps,
+  ownerFloorApplies,
   canWritePath,
   type Connect,
   type Logger,
@@ -148,7 +149,12 @@ export class WorldSession {
   canEdit(doc: WireDocument, path: string): boolean {
     if (this.role === "gm") return true;
     if (!this.role) return false;
-    const caps = resolveCaps(doc.permissions, this.opts.selfId, this.role, this.#worldGrants);
+    // Effective ownership (a linked token inherits its actor's owner) floors the
+    // caller at DocRole.Owner, mirroring the server's `effective_role` — token-scoped
+    // there, so token-scoped here (`ownerFloorApplies`). Resolved from the OPTIMISTIC
+    // view so a just-reassigned owner gates controls without waiting for the echo.
+    const owned = ownerFloorApplies(doc, this.opts.selfId, this.#optimistic);
+    const caps = resolveCaps(doc.permissions, this.opts.selfId, this.role, this.#worldGrants, owned);
     return canWritePath(path, caps, false, this.#requirements);
   }
   #modules: ModuleRegistry;

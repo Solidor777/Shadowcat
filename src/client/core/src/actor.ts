@@ -58,6 +58,45 @@ export function resolveTokenActor(token: WireDocument, store: ReadableDocuments)
   return null;
 }
 
+/**
+ * The user a document effectively belongs to — the client mirror of the server's
+ * `effective_owner` (`data/permission.rs`), which is the authority. `doc.owner` is the
+ * explicit per-document override; a `token` with no override inherits its LINKED actor's
+ * owner, resolved live from the store so re-assigning an actor re-owns its tokens with no
+ * re-stamp.
+ *
+ * Fail-closed: no link, a dangling link, a resolved document that is not an actor, and an
+ * unowned actor all yield `null`. INSTANCED tokens deliberately do NOT inherit from their
+ * embedded `actor[0]` copy (unlike `resolveTokenActor`, which reads it for display): that copy
+ * is a frozen placement-time snapshot, so inheriting from it would be the stamped semantics
+ * this rule exists to avoid. An instanced/raw token uses its own `owner` override.
+ *
+ * Advisory ONLY, like every other client capability mirror — the server re-resolves this
+ * against its own transaction and rejects a bypass.
+ */
+export function effectiveOwner(doc: WireDocument, store: ReadableDocuments): string | null {
+  if (doc.owner) return doc.owner;
+  if (doc.doc_type !== "token") return null;
+  const actorId = (doc.engine as TokenEngine | undefined)?.actor_id;
+  if (!actorId) return null;
+  const actor = store.get(actorId);
+  if (!actor || actor.doc_type !== "actor") return null;
+  return actor.owner ?? null;
+}
+
+/**
+ * Whether `userId` holds the `DocRole.Owner` capability floor on `doc` by virtue of
+ * effective ownership. Mirrors the server's `effective_role` (`data/permission.rs`),
+ * INCLUDING its token scoping: the floor applies to `token` documents only — on every
+ * other doc_type `owner` stays provenance-only and grants no capability. Keeping the
+ * scoping here (not at the call site) is what stops the client gate from drifting open
+ * relative to the server.
+ */
+export function ownerFloorApplies(doc: WireDocument, userId: string, store: ReadableDocuments): boolean {
+  if (doc.doc_type !== "token") return false;
+  return effectiveOwner(doc, store) === userId;
+}
+
 /** Resolve a token's effective conditions to display entries (id preserved for keying), via the
  * world registry. Ids absent from the registry are dropped — a stale/garbled id yields no badge,
  * never a render error (fail-closed). The single read-through every condition consumer uses. */
