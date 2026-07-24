@@ -23,6 +23,8 @@
   });
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).
+  // Gating is PER TOOL, not per component: the controller is constructed for every user so
+  // a player has an active tool at all — without one, a canvas drag falls through to camera pan.
   const isGm = ctx.role === "gm";
 
   // Compact: the rail renders as a horizontal bottom strip (core-ui repositions
@@ -59,51 +61,62 @@
     ]);
   }
 
-  const tools: { id: ToolId; label: string }[] = [
-    { id: "select", label: t("tools.select") },
-    { id: "place", label: t("tools.place") },
-    { id: "draw", label: t("tools.draw") },
-    { id: "template", label: t("tools.template") },
-    { id: "measure", label: t("tools.measure") },
-    { id: "ping", label: t("tools.ping") },
-    { id: "wall", label: t("tools.wall") },
-    { id: "region", label: t("tools.region") },
+  /** `gmOnly` marks a tool that AUTHORS scene content (creates or edits a document other
+   * than a token's own position). The three ungated tools each write only through a path the
+   * server already polices for a non-GM: select/move emits an optimistic `/engine/x,y` token
+   * Update (`Room::publish`'s wall + visibility-mask gate, then the permission check in
+   * `apply_intent`); measure previews via the per-requester-masked `Pathfind` and commits a
+   * route via `MoveRequest`/`execute_move`; ping is the rate-limited per-user relay. */
+  const tools: { id: ToolId; label: string; gmOnly: boolean }[] = [
+    { id: "select", label: t("tools.select"), gmOnly: false },
+    { id: "place", label: t("tools.place"), gmOnly: true },
+    { id: "draw", label: t("tools.draw"), gmOnly: true },
+    { id: "template", label: t("tools.template"), gmOnly: true },
+    { id: "measure", label: t("tools.measure"), gmOnly: false },
+    { id: "ping", label: t("tools.ping"), gmOnly: false },
+    { id: "wall", label: t("tools.wall"), gmOnly: true },
+    { id: "region", label: t("tools.region"), gmOnly: true },
   ];
+  const visibleTools = tools.filter((tool) => isGm || !tool.gmOnly);
   const drawModes: DrawMode[] = ["freehand", "rect", "ellipse", "line"];
   const templateModes: TemplateMode[] = ["circle", "cone", "rect", "line"];
   const regionShapeModes: RegionShapeMode[] = ["rect", "circle", "polygon"];
   const regionBehaviors: RegionBehaviorMode[] = ["terrain", "impassable", "arrest"];
 </script>
 
-{#if isGm}
-  <div class="tool-rail" class:compact role="toolbar" aria-label={t("tools.title")}>
-    {#each tools as tool (tool.id)}
-      <button
-        type="button"
-        class="tool"
-        class:active={controller.active === tool.id}
-        aria-pressed={controller.active === tool.id}
-        data-testid="tool-{tool.id}"
-        title={tool.label}
-        onclick={() => controller.toggle(tool.id)}
-      >
-        {tool.label}
-      </button>
-    {/each}
+<div class="tool-rail" class:compact role="toolbar" aria-label={t("tools.title")}>
+  {#each visibleTools as tool (tool.id)}
+    <button
+      type="button"
+      class="tool"
+      class:active={controller.active === tool.id}
+      aria-pressed={controller.active === tool.id}
+      data-testid="tool-{tool.id}"
+      title={tool.label}
+      onclick={() => controller.toggle(tool.id)}
+    >
+      {tool.label}
+    </button>
+  {/each}
 
-    {#if activeScene}
-      <button
-        type="button"
-        class="tool"
-        aria-pressed={snapToGrid}
-        data-testid="snap-toggle"
-        title={t("tools.snap")}
-        onclick={toggleSnap}
-      >
-        {t("tools.snap")}
-      </button>
-    {/if}
+  <!-- Snap is a scene-document write (`/engine/snapToGrid`), i.e. authoring: GM-only. -->
+  {#if isGm && activeScene}
+    <button
+      type="button"
+      class="tool"
+      aria-pressed={snapToGrid}
+      data-testid="snap-toggle"
+      title={t("tools.snap")}
+      onclick={toggleSnap}
+    >
+      {t("tools.snap")}
+    </button>
+  {/if}
 
+  <!-- Every mode control below belongs to a gmOnly tool. Gated on `isGm` as well as the
+       active tool so the branch cannot render even if an authoring tool somehow became
+       active for a non-GM. -->
+  {#if isGm}
     {#if controller.active === "place"}
       <AssetPicker {controller} />
     {:else if controller.active === "draw"}
@@ -135,8 +148,8 @@
         </label>
       </div>
     {/if}
-  </div>
-{/if}
+  {/if}
+</div>
 
 <style lang="scss">
   .tool-rail {

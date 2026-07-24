@@ -117,11 +117,81 @@ test("the measure tool's double-click route-commit reaches AppContext.moveReques
   expect(moves[0].tokenId).toBe("tok1");
 });
 
-test("a non-GM sees no tool buttons", () => {
+/** Every authoring tool: creates or edits scene content, GM-only. */
+const AUTHORING_TOOLS = ["place", "draw", "template", "wall", "region"] as const;
+
+test("a non-GM sees exactly the player tools (select/measure/ping) and NO authoring tool", () => {
   render(ToolRail, { context: setAppContextForTest({ role: "player" }) });
-  expect(screen.queryByTestId("tool-select")).toBeNull();
-  expect(screen.queryByTestId("tool-place")).toBeNull();
-  expect(screen.queryByTestId("tool-draw")).toBeNull();
+  expect(screen.getByTestId("tool-select")).toBeTruthy();
+  expect(screen.getByTestId("tool-measure")).toBeTruthy();
+  expect(screen.getByTestId("tool-ping")).toBeTruthy();
+  // Negative assertion per authoring tool: a length/count check passes even when the
+  // WRONG set of three is rendered, so each absent tool is named individually.
+  for (const id of AUTHORING_TOOLS) {
+    expect(screen.queryByTestId(`tool-${id}`)).toBeNull();
+  }
+});
+
+test("a GM still sees the full rail (every player tool AND every authoring tool)", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "gm" }) });
+  for (const id of ["select", "measure", "ping", ...AUTHORING_TOOLS]) {
+    expect(screen.getByTestId(`tool-${id}`)).toBeTruthy();
+  }
+});
+
+// Regression: the whole rail — ToolController construction included — used to sit inside a
+// single `{#if isGm}`, so a non-GM had no active tool at all and every canvas drag fell
+// through to camera pan. The controller must be built for EVERY user; only the authoring
+// entries are role-conditional.
+test("a non-GM's ToolController is constructed and activates the select tool on the scene bridge", async () => {
+  const { scene, tools } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "player", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  expect(tools.at(-1)).not.toBeNull();
+  expect(screen.getByTestId("tool-select").getAttribute("aria-pressed")).toBe("true");
+});
+
+// Pins the write path an ungated tool reaches: the select/move drag emits an optimistic
+// `/engine/x,y` Update, which `Room::publish` polices for a non-GM (wall + visibility-mask
+// gate, then the document permission check in `apply_intent`). It must not emit anything else.
+test("a non-GM's select drag writes only /engine/x,y token updates", async () => {
+  const docs = sceneStore();
+  docs.applyCommand({
+    seq: 2, world_id: "w1", author: "a", ts: 0,
+    ops: [{
+      op: "create",
+      doc: buildTokenDoc("w1", "s1", {
+        x: 0, y: 0, w: 100, h: 100, rotation: 0,
+        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null,
+      }, "tok1"),
+    }],
+  });
+  const dispatched: WireOperation[][] = [];
+  const { scene, tools } = captureScene();
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "player",
+      scene,
+      documents: docs,
+      tokenSelection: new TokenSelection(),
+      dispatchIntent: (ops) => dispatched.push(ops),
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  const tool = tools.at(-1)!;
+  const ev = { shiftKey: false } as PointerEvent;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerMove({ x: 100, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 0 }, ev);
+
+  expect(dispatched.length).toBeGreaterThan(0);
+  for (const ops of dispatched) {
+    for (const op of ops) {
+      expect(op.op).toBe("update");
+      const changes = (op as { changes: { path: string }[] }).changes;
+      expect(changes.map((c) => c.path)).toEqual(["/engine/x", "/engine/y"]);
+    }
+  }
 });
 
 /** A DocumentStore seeded with one scene doc carrying `system`. */
