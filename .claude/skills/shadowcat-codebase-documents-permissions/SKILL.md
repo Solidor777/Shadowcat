@@ -63,8 +63,15 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   `new` made the DB read "unowned" (nobody may write) while the ECS resolved ownership to another
   actor's owner — who then gained the token as a vision source. **Vision widened exactly where
   write authz refused.** Note the two call-site trust levels through one helper: `apply_op` sees
-  committed changes, `token_move` sees CLIENT-PROPOSED, not-yet-authorized ones — so error volume
-  there is attacker-influenced and must not be logged at `error!`.
+  committed changes, `token_move` sees CLIENT-PROPOSED, not-yet-authorized ones. That distinction is
+  carried explicitly by `MirrorInput::{Committed, Proposed}`, and it decides the LOG LEVEL, not the
+  mutation: `Committed` failing is an invariant breach (the store applied a change the mirror could
+  not — re-hydration is the recovery) and logs at `error!`; `Proposed` failing is routine malformed
+  input and logs at `debug!`. Getting this backwards is a real defect in both directions — an
+  `error!` on the proposed path is an attacker-controllable log channel (a client can emit one per
+  malformed path per publish, uncapped, since `validate_field_change` runs strictly later in
+  `apply_intent`), and a `debug!` on the committed path hides genuine divergence. Both directions
+  are pinned by tests over a `tracing` layer, mutation-checked each way.
 - `src/server/src/data/validation.rs`'s `validate_field_change` — ingress shape rule: `remove: true`
   must carry a null `new`. Defense-in-depth only; the mirror is correct independently, which
   matters because replay and broadcast can carry shapes ingress never validated.
