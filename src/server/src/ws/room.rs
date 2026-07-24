@@ -1709,6 +1709,22 @@ mod room_tests {
     /// with brightRadius=1.5, dimRadius=3.0. Env intensity=0 so only the placed
     /// light illuminates (cells beyond ~1.5 cell-radii are dark).
     async fn movement_scene(restriction: &str, with_light: bool) -> MovementHandle {
+        movement_scene_with_speed(restriction, with_light, 6.0).await
+    }
+
+    /// `movement_scene`, with the world's animation speed (cells/sec) under test control.
+    ///
+    /// The per-token moving lock's end epoch is derived as `distance / speed`, and
+    /// `Room::execute_move` checks it against its OWN internal `ws::time::now_millis()` — not the
+    /// `now` argument — so a test cannot hold the lock open by pinning the clock. At the default 6
+    /// cells/sec a one-cell move locks for only ~167 ms, which a loaded machine can outrun between
+    /// two awaits. A test asserting lock-held behavior must therefore choose a speed slow enough
+    /// that the window cannot close under any plausible scheduling delay.
+    async fn movement_scene_with_speed(
+        restriction: &str,
+        with_light: bool,
+        speed_cells_per_sec: f64,
+    ) -> MovementHandle {
         use crate::data::document::DocRole;
         use serde_json::json;
 
@@ -1747,7 +1763,7 @@ mod room_tests {
                 "partialCellLeniency": true
             },
             "pathfinding": { "diagonalRule": "chebyshev" },
-            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+            "animation": { "speedCellsPerSec": speed_cells_per_sec, "easing": "easeInOut" }
         });
         ws.engine = Some(ws_engine(ws.system.clone()));
         room.publish(
@@ -3111,7 +3127,13 @@ mod room_tests {
     async fn execute_move_rejects_a_moving_token() {
         // First execute_move succeeds and stamps the moving lock (end epoch in the future).
         // An immediate second call on the same token must be Forbidden while the lock is held.
-        let h = movement_scene("unrestricted", false).await;
+        //
+        // Speed 0.001 cells/sec (the floor `resolved_animation_speed` clamps to) makes the lock
+        // window ~1.4e6 seconds for this one-cell move. The lock is checked against
+        // `execute_move`'s own internal clock, not a test-supplied `now`, so the window must be
+        // wide enough that no scheduling delay between the two awaits can close it — at the
+        // default 6 cells/sec it is only ~167 ms, which a loaded machine outruns intermittently.
+        let h = movement_scene_with_speed("unrestricted", false, 0.001).await;
         let _ = h
             .room
             .execute_move(
