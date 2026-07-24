@@ -144,7 +144,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   to avoid. The frozen fixture test,
   `frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes`, is now the permanent
   regression proof. The per-step gate — (1) wall gate (`blocks_move`, all modes incl. GM), (2)
-  vision-mask gate (`supercover_cells` + `visible` membership, skipped for `Unrestricted`), (3)
+  vision-mask gate (`GridShape::line_traversal` + `visible` membership, skipped for `Unrestricted`), (3)
   region gate (M10g — see below) — runs over this DENSE walk, not the raw authored path; the
   coarse `render_path` returned to the caller is reconstructed as either the authored-vertex
   prefix (when the stop lands exactly on an authored vertex — always true for grid input) or the
@@ -273,10 +273,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   segment lookup built from `move_walls`); `cell_enterable(grid, from, to)` — four checks, ALL must
   pass: (1) footprint-disc-vs-wall clearance (the token's bounding disc must clear ALL `blocksMove`
   segments, via `point_segment_distance`); (2) **mask** — every cell in `footprint_cells(to,...) ∪
-  movement::supercover_cells(cell_center(from), cell_center(to), cell)` must be in the non-GM mask
+  grid.shape.line_traversal(cell_center(from), cell_center(to), cell)` must be in the non-GM mask
   (M3: the union closes buddy-check P1 — footprint-disc-at-destination alone missed a diagonal
   step's corner-flanker cells for sub-0.5-cell footprints, letting the router approve a step the
-  M1 executor then rejected; `None` from `supercover_cells` fails closed); (3) center-to-center
+  M1 executor then rejected; `None` from `line_traversal` fails closed); (3) center-to-center
   step crosses no wall (`segments_cross`); (4) `region_arrests`/impassable check via `PathGrid.regions:
   Option<&RegionField>` (M10g — see below; a `None` grid field means "no region enforcement",
   distinct from an empty `RegionField`). `astar_leg` — king-move A*, 4 diagonal
@@ -749,12 +749,16 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   authoritative gate's center-based wall check (parent spec §14) — a wide token can be dragged
   (gate allows the center path) along a corridor the router refuses (footprint doesn't fit); this
   wall asymmetry is intentional and safe (over-restrictive, never under). The MASK check requires
-  `footprint_cells(to,...) ∪ supercover_cells(from,to,cell)` — the same `supercover_cells` primitive
-  `move_exec.rs`/`publish` use per step — so the router's mask predicate is provably `≥` the gate's;
-  **route ⊆ gate-allowed holds for every footprint size**, including the sub-0.5-cell diagonal case
-  where the pre-M3 footprint-disc-only check let the router approve a step the gate rejected
-  (buddy-check P1). Never make the pathfinder mask test weaker than `footprint_cells ∪
-  supercover_cells` — that union IS the invariant, not merely a suggestion.
+  `grid.shape.footprint_cells(to,...) ∪ grid.shape.line_traversal(from,to,cell)` — the same RESOLVED
+  `GridShape` primitives `move_exec.rs`/`publish` use per step — so the router's mask predicate is
+  provably `≥` the gate's; **route ⊆ gate-allowed holds for every footprint size**, including the
+  sub-0.5-cell diagonal case where the pre-M3 footprint-disc-only check let the router approve a step
+  the gate rejected (buddy-check P1). Never make the pathfinder mask test weaker than
+  `grid.shape.footprint_cells ∪ grid.shape.line_traversal` — that union IS the invariant, not merely
+  a suggestion. **Both halves must come from the SHAPE, never the free square functions**
+  (`pathfinding::footprint_cells`, `movement::supercover_cells`): those are `SquareGrid`'s own
+  internals, and calling them here reintroduces the square-on-hex defect Task 14e-7 fixed. See
+  checklist axis (2) above and the shape-identity invariant below.
 - **The `route ⊆ gate-allowed` invariant is engine-agnostic, not grid-specific (M10f-1).**
   `SceneEcs::pathfind` builds the per-`(user,scene)` visibility mask exactly once and passes the
   SAME reference into both the grid (`pathfinding::find`) and continuous (`navmesh::
@@ -881,7 +885,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   override in the pathfinder; the same rule applies across all scenes in a world. Matches the client
   `resolveSceneSettings` precedence (the setting lives in `world-settings`, not per-scene).
 - **`region_arrests`/impassable checking is footprint-gated in the router (`cell_enterable`'s mask
-  check, via `footprint_cells ∪ supercover_cells`) but CENTER-CELL-ONLY in `move_exec` — a
+  check, via `grid.shape.footprint_cells ∪ grid.shape.line_traversal`) but CENTER-CELL-ONLY in `move_exec` — a
   deliberate asymmetry (route stricter, execution looser), not a bug (M10g).** `route ⊆
   gate-allowed` still holds because the router's predicate is already a documented superset of the
   executor's. Do not "fix" `move_exec` to match the router's footprint check without re-deriving

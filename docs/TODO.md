@@ -243,9 +243,11 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 ## Actionable now — four surviving `unwrap_or(100.0)` cell-size defaults, safe only by call ordering
 - TODO: Tasks 14j/`0dbea21` removed the fail-open `scene_grid_sizes().get(&scene).unwrap_or(100.0)`
   from all three movement/routing gates (`execute_move`, `Room::publish`, `SceneEcs::pathfind`), so
-  a scene with no document is refused rather than indexed against an invented 100-unit grid. Four
-  siblings survive: `navmesh_for` (`scene/mod.rs:1133-1137`), `region_field` (`:1324`),
-  `visible_cells` (`:1847`), `visible_cells_cached` (`:1891`). **None is reachable with a missing
+  a scene with no document is refused rather than indexed against an invented 100-unit grid. Six
+  siblings survive: `navmesh_for` (`scene/mod.rs:1173`), `region_field` (`:1364`),
+  `player_lit_mask` (`:1739`), `visible_cells` (`:1895`), `visible_cells_cached` (`:1939`), and
+  `enrich_vision_explored` (`ws/conn.rs:739`). (`scene_grid_sizes` at `:1056` is the intentional
+  defaulting SOURCE, not a survivor.) **None is reachable with a missing
   scene today** — the three gates now refuse above them — but that is defence by CALL ORDERING, and
   call ordering is exactly the shape the campaign's own defect class warns about ("removed from one
   gate, left in two"; see the never-fork entry in `shadowcat-codebase-core`). A future router, mask

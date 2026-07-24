@@ -173,8 +173,9 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   rather than copying. **State the precedence rule exactly ONCE**: an earlier version short-circuited
   on `doc.owner.is_some()` in the DB join, duplicating it, and an inverted-precedence mutation
   survived until the short-circuit was removed.
-  - **Fail-closed** on a missing, dangling, cyclic or wrong-`doc_type` link — no owner means no
-    write, never a fallback to "world member". The actor join is **scope-checked**: an actor whose
+  - **Fail-closed** on a missing link, a dangling link, an `actor.id` that does not match the link, a
+    non-`actor` `doc_type`, or an unowned actor — no owner means no write, never a fallback to
+    "world member". (Cycles are unrepresentable: only tokens carry the link.) The actor join is **scope-checked**: an actor whose
     `scope` differs from the token's is discarded, so the DB join's reachable set matches the ECS's
     (room hydration loads actors `WHERE world_id = ?`).
   - **Instanced tokens are deliberately NOT links.** `embedded.actor[0]` is a frozen copy;

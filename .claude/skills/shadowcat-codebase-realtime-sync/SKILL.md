@@ -42,7 +42,8 @@ optimistically and roll back on divergence.
     `get_explored().await` (no lock across await); `publish_guard` (tokio `Mutex`) is intentionally
     held across awaits. Calls `move_exec::execute_move` (pure, lock-free), then `commit_ops_locked`
     (single acquisition, no re-entry). Atomic single position write (`/system/x` + `/system/y`
-    OCC pre-image ops). Returns `MoveExecution { scene, stop, render_path, duration_ms, samples }` —
+    OCC pre-image ops). Returns `MoveExecution { scene, stop, render_path, duration_ms, samples,
+    mover_vision, cost }` —
     `scene` is the DERIVED scene, and it is what `MoveStream.scene` is stamped from, so the
     per-recipient egress clip and the client's viewed-scene filter cannot key on a client value.
   - `moving: Mutex<HashMap<Uuid, i64>>` — per-token moving lock: token → move-end epoch-ms. Lazy
@@ -77,6 +78,8 @@ optimistically and roll back on divergence.
   so anyone can become a GM) — contradicting the constant-time verify `/api/login` already pays to
   hide exactly that. A uniform 204 would NOT have closed it, because seating-on-hit stays
   observable via `list_members`. Naming a target is the disclosure; the invite removes the naming.
+  NOTE this is about the by-NAME path only: `add_member` survives (GM-gated, by user ID, 404 on an
+  unknown id) — it is naming a user by a guessable identifier that was removed, not membership writes.
 - `src/client/core/src/ws-client.ts` — client WS connection + resync.
 - `src/client/core/src/store.ts` — `DocumentStore implements ReadableDocuments` (authoritative,
   rollback base).

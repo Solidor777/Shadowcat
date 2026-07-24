@@ -58,8 +58,11 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   **The EGRESS half is this skill's own territory and is a KNOWN under-permit:**
   `filter_properties` / `collect_hidden` / `filter_command` and the document routes still resolve
   `is_owner` from the LITERAL `doc.owner`, so an inheriting owner can move a token and see through
-  it while counting as a stranger for its `owner_or_gm` tiers and `/base`. Under-permit only
-  (every such site gates on `cap::READ` first, so it cannot over-permit); logged in `docs/TODO.md`.
+  it while counting as a stranger for its `owner_or_gm` tiers and `/base`. Under-permit BY
+  CONSTRUCTION, and the reason is subset-ness, not call ordering: literal `is_owner` is
+  `doc.owner == user`, while the effective rule adds the linked-actor case ONLY when `doc.owner` is
+  `None` — so the literal set is a strict SUBSET of the effective set and can never be the more
+  permissive of the two. Logged in `docs/TODO.md`.
 - **`command::apply_field_change(v, ch)` is THE store-equal mutation rule — every store of document
   state, authoritative or derived, applies a `FieldChange` through it. Never hand-write a
   `remove`/`set` branch.** One function, one statement of the rule, repo-wide (client mirror:
