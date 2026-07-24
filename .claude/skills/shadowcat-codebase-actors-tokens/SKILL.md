@@ -164,6 +164,34 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 
 ## Hard invariants
 
+- **Token ownership is EFFECTIVE, resolved server-side at authz time — never stamped at create
+  (Task 14i, `[sec]`).** `effective_owner(token) = the token's own `/owner`, else the LINKED
+  actor's owner` (`data/permission.rs`; server join in `sqlite.rs`'s `load_effective_owner`, ECS
+  side in `SceneEcs::token_effective_owner`, client mirror `actor.ts`'s `effectiveOwner`). A GM sets
+  the per-token override; actor ownership is assigned on the actor, so re-assigning an actor moves
+  authority over **every** linked token with no re-stamp — which is the whole point of resolving
+  rather than copying. **State the precedence rule exactly ONCE**: an earlier version short-circuited
+  on `doc.owner.is_some()` in the DB join, duplicating it, and an inverted-precedence mutation
+  survived until the short-circuit was removed.
+  - **Fail-closed** on a missing, dangling, cyclic or wrong-`doc_type` link — no owner means no
+    write, never a fallback to "world member". The actor join is **scope-checked**: an actor whose
+    `scope` differs from the token's is discarded, so the DB join's reachable set matches the ECS's
+    (room hydration loads actors `WHERE world_id = ?`).
+  - **Instanced tokens are deliberately NOT links.** `embedded.actor[0]` is a frozen copy;
+    inheriting from it would be the stamped semantics this design rejects.
+  - **The floor is token-scoped**, so `owner` keeps its provenance-only meaning on every other
+    doc_type — an actor's owner cannot edit their own sheet. Deliberate.
+  - **`/owner` is Update-writable under `cap::EDIT_PERMISSIONS`** (it was previously immutable for
+    everyone, which made a GM owner control unbuildable). `DocRole::Owner`'s BUILT-IN floor is
+    `{READ, WRITE_FIELDS}` and excludes `EDIT_PERMISSIONS`, so an effective owner cannot steal or
+    hand off ownership — but the floored role also selects additive `by_role[Owner]` grants, so a
+    deployment that puts `EDIT_PERMISSIONS` there lets an owner pin `/owner = self` (defeating
+    GM re-assignment) and rewrite `/permissions` to lock the GM out. Parity with a *stamped* owner
+    holds exactly; what changed is the POPULATION — "Owner" is now every player with an assigned
+    actor rather than a hand-enumerated set.
+  - **Known under-permit, logged in `docs/TODO.md`:** egress redaction still resolves `is_owner`
+    from the literal `doc.owner`, so an inheriting owner can move a token and see through it while
+    counting as a stranger for its `owner_or_gm` tiers and `/base`. Under-permit only.
 - **Rendered token size, hit-test, and the selection ring all resolve through `resolveTokenBox`** —
   never read `token.system.w/h` directly for an actor-backed token; doing so bypasses the
   `EffectiveActor.size × grid-cell` scaling, breaks multi-cell tokens, and ignores the shape
