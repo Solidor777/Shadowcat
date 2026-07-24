@@ -524,18 +524,25 @@ async fn handle_pathfind(
     repo: &dyn crate::data::repository::Repository,
 ) -> ServerMsg {
     let is_gm = ctx.world_role == crate::data::document::WorldRole::Gm;
-    // Step 0: non-GM presence gate. Resolved through `player_vision_inputs`, which applies the
-    // same effective-ownership and `parent_id` scoping as every other "does this user control a
-    // token here" test in the vision family: its polygon set is empty exactly when the user owns
-    // no token in `scene`, so re-deriving ownership here would fork that rule. The reply is the
-    // same generic `PathError` an out-of-mask route gets — it discloses nothing about whether the
-    // scene exists, is walled, or is merely unreachable.
+    // Step 0: non-GM presence gate, ahead of any routing work. `user_owns_token_in_scene` is a
+    // document scan routed through `token_effective_owner`, so ownership is the same rule the
+    // write-authz and vision paths enforce (per-token override, else the linked actor's owner) —
+    // and it costs no raycast, which matters because `Pathfind` is unrate-limited and fires
+    // repeatedly during a drag preview. The reply is the same generic `PathError` an out-of-mask
+    // route gets: it discloses nothing about whether the scene exists, is walled, or is merely
+    // unreachable.
+    //
+    // Deliberate asymmetry — do NOT "fix" it by forking a looser ownership test: this gate keys
+    // on effective OWNERSHIP, while the visibility mask additionally unions observer-tier tokens
+    // when `observerVision` is on. A user whose only vision in a scene is observer-tier therefore
+    // has a mask there but is refused a route preview. That is the fail-closed direction (a route
+    // preview is a precursor to moving a token, which observer tier does not grant), and matching
+    // the mask's wider source here would hand route previews — and the wall geometry they
+    // disclose — to a user who controls nothing in the scene.
     if !is_gm {
         let present = {
             let s = room.scene().read().await;
-            !s.player_vision_inputs(ctx.user_id, scene, Uuid::nil())
-                .polygons_at(start)
-                .is_empty()
+            s.user_owns_token_in_scene(ctx.user_id, scene)
         };
         if !present {
             return ServerMsg::PathError {

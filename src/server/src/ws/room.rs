@@ -285,6 +285,20 @@ impl Room {
                             if scene.blocks_move(scene_id, a0, a1) {
                                 return Err(DataError::Forbidden);
                             }
+                            // Scene-existence admissibility, checked before the restriction
+                            // dispatch so it holds in EVERY mode — including `Unrestricted`,
+                            // which `continue`s below. Coupling: `Room::execute_move` refuses
+                            // the same input, so the two movement gates agree on which scenes
+                            // are admissible at all, not merely on which cells are visible
+                            // (the same never-fork parity axis as the coordinate bound above).
+                            // `scene_grid_sizes` carries an entry — already defaulted to 100 —
+                            // for every live scene, so an absent entry means the token's parent
+                            // scene has no document: no authored cell size exists to index the
+                            // visibility mask, the region field, or the traversal walk against.
+                            let Some(cell) = scene.scene_grid_sizes().get(&scene_id).copied()
+                            else {
+                                return Err(DataError::Forbidden);
+                            };
                             // M10e-4 movement-restriction gate.
                             let settings = scene.resolve_scene(scene_id);
                             if matches!(
@@ -293,11 +307,6 @@ impl Room {
                             ) {
                                 continue;
                             }
-                            let cell = scene
-                                .scene_grid_sizes()
-                                .get(&scene_id)
-                                .copied()
-                                .unwrap_or(100.0);
                             // Every cell the move segment crosses, via the scene's own
                             // resolved grid shape (a supercover on both kinds: square cell-walk,
                             // hex psi-crossing)
@@ -3206,8 +3215,8 @@ mod room_tests {
             )
             .await;
         assert!(
-            res.is_err(),
-            "a MoveRequest naming a scene the token does not live in must be refused"
+            matches!(res, Err(DataError::Forbidden)),
+            "a MoveRequest naming a scene the token does not live in must be refused by the              gate — not incidentally by the moving lock or a downstream write"
         );
         assert_eq!(
             h.committed_pos(h.token_id).await,
@@ -3236,8 +3245,8 @@ mod room_tests {
             )
             .await;
         assert!(
-            res.is_err(),
-            "B's mask must never authorize movement of a token that lives in A"
+            matches!(res, Err(DataError::Forbidden)),
+            "B's mask must never authorize movement of a token that lives in A, and the refusal              must come from the gate — not incidentally from the moving lock"
         );
         assert_eq!(
             h.committed_pos(h.token_id).await,
@@ -3267,6 +3276,136 @@ mod room_tests {
     }
 
     #[tokio::test]
+    async fn both_movement_gates_refuse_a_token_whose_parent_scene_has_no_document() {
+        // Anti-drift: `Room::publish` (drag) and `Room::execute_move` (MoveRequest) must agree on
+        // which scenes are ADMISSIBLE AT ALL, not merely on which cells are visible — the same
+        // parity axis as the shared `MAX_GATE_WALK_COORD` bound. A silent 100-unit cell-size
+        // default in either gate would index the mask, the region field, and the traversal walk
+        // in a grid no scene declared, and would do so in only one of the two gates.
+        //
+        // The world here is `unrestricted`, so neither gate can refuse for an unrelated
+        // mask reason: with the default restored, `publish` reaches its `Unrestricted` continue
+        // and `execute_move` walks the path unmasked, and both then fail — if at all — with
+        // something other than `Forbidden`.
+        use crate::data::command::FieldChange;
+        use crate::data::document::DocRole;
+        let h = movement_scene_with_wall().await;
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let dangling_id = Uuid::from_u128(0xDA46_3000);
+        let ghost_scene = Uuid::from_u128(0xDA46_4000);
+        let mut dangling = wdoc(h.world_id, dangling_id, "token");
+        dangling.parent_id = Some(ghost_scene);
+        dangling.owner = Some(h.player.user_id);
+        dangling
+            .permissions
+            .users
+            .insert(h.player.user_id, DocRole::Owner);
+        dangling.engine = Some(token_engine(50.0, 50.0));
+        // Injected straight into the derived read-model: storage's foreign key (and its
+        // descendant-expanding delete) makes this state unreachable through `publish`, and
+        // neither gate may depend on that storage guarantee.
+        h.room
+            .scene()
+            .write()
+            .await
+            .apply_op(&Operation::Create { doc: dangling });
+
+        let moved = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                ghost_scene,
+                dangling_id,
+                vec![(50.0, 50.0), (150.0, 50.0)],
+                now_millis(),
+            )
+            .await;
+        assert!(
+            matches!(moved, Err(DataError::Forbidden)),
+            "execute_move must refuse a token whose parent scene has no document"
+        );
+
+        let dragged = h
+            .room
+            .publish(
+                &h.repo,
+                &h.player,
+                vec![Operation::Update {
+                    doc_id: dangling_id,
+                    changes: vec![
+                        FieldChange {
+                            remove: false,
+                            path: "/engine/x".into(),
+                            old: serde_json::json!(50.0),
+                            new: serde_json::json!(150.0),
+                        },
+                        FieldChange {
+                            remove: false,
+                            path: "/engine/y".into(),
+                            old: serde_json::json!(50.0),
+                            new: serde_json::json!(50.0),
+                        },
+                    ],
+                }],
+                now_millis(),
+                WriteOrigin::Client,
+            )
+            .await;
+        assert!(
+            matches!(dragged, Err(DataError::Forbidden)),
+            "publish's drag gate must refuse the same input execute_move refuses"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_move_gate_inputs_come_from_the_tokens_own_scene() {
+        // Pins the DERIVATION, independently of the rejection. Whatever the outcome shape, a
+        // request naming an `unrestricted` scene the token does not live in must not move the
+        // token, because the restriction, mask, walls, and regions the walk is gated against
+        // come from the token's own scene. This holds both when the mismatch is refused outright
+        // and when it is merely executed against the derived scene (a zero-progress stop), so
+        // dropping the equality check leaves it green while dropping the derivation breaks it —
+        // unlike the two tests above, which assert `is_err()` and therefore pin only the
+        // redundant rejection.
+        let (h, scene_b) = movement_scene_with_second_scene(true, false).await;
+        let far_dark = (2050.0, 2050.0);
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                scene_b,
+                h.token_id,
+                vec![h.start, far_dark],
+                now_millis(),
+            )
+            .await;
+        if let Ok(exec) = &res {
+            assert_eq!(
+                exec.scene, h.scene_id,
+                "the executed scene is the token's own, never the one the request named"
+            );
+        }
+        // Wherever the token ended up, that cell must be one A's OWN mask authorizes — the
+        // property that fails the instant any gate input is keyed on the requested scene, and
+        // that holds equally whether the request was refused (stop == start) or walked under
+        // A's gate. `far_dark` is outside A's mask, so a mask-skipped walk lands outside it.
+        let (cx, cy) = h.committed_pos(h.token_id).await;
+        let committed_cell = ((cx / 100.0).floor() as i32, (cy / 100.0).floor() as i32);
+        let mask = h
+            .room
+            .scene()
+            .read()
+            .await
+            .visible_cells(h.player.user_id, h.scene_id, true);
+        assert!(
+            mask.contains(&committed_cell),
+            "committed cell {committed_cell:?} is not in scene A's visibility mask"
+        );
+    }
+
+    #[tokio::test]
     async fn execute_move_still_executes_a_request_naming_the_tokens_own_scene() {
         // Guard cannot silently break play: the legitimate same-scene move still commits.
         let (h, _scene_b) = movement_scene_with_second_scene(true, true).await;
@@ -3283,6 +3422,10 @@ mod room_tests {
             .await
             .expect("same-scene move must still succeed");
         assert_eq!(res.stop, h.lit_goal);
+        assert_eq!(
+            res.scene, h.scene_id,
+            "the executed scene is the token's own parent scene"
+        );
         assert_eq!(h.committed_pos(h.token_id).await, h.lit_goal);
     }
 

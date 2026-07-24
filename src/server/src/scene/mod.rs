@@ -2956,6 +2956,29 @@ mod tests {
     }
 
     #[test]
+    fn pathfind_refuses_a_scene_with_no_document() {
+        // Anti-drift with the two movement gates (`Room::publish`, `Room::execute_move`), which
+        // both refuse this input: a router that substituted a 100-unit default would happily
+        // return a route through a scene whose grid it invented, for a scene the gate that must
+        // later authorize the move rejects outright. GM requester, so no mask or presence check
+        // can account for the refusal — with the default restored this routes successfully.
+        let ecs = SceneEcs::new();
+        let out = ecs.pathfind(
+            Uuid::from_u128(7),
+            Uuid::from_u128(404),
+            (50.0, 50.0),
+            &[(450.0, 50.0)],
+            0.1,
+            true,
+            None,
+        );
+        assert!(
+            matches!(out, Err(pathfinding::PathFail::Invalid)),
+            "a scene with no document is not routable"
+        );
+    }
+
+    #[test]
     fn user_owns_token_in_scene_follows_the_actor_join_and_is_scene_scoped() {
         use serde_json::json;
         // The pathfind presence gate keys on this. It must agree with
