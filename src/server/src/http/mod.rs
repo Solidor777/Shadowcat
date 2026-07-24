@@ -839,18 +839,16 @@ pub(crate) mod tests {
         // list_members), and any authenticated user can create a world to
         // become a GM. A username body is now simply an unparseable request,
         // and it seats nobody.
-        let by_name = f
-            .gm
-            .post(&format!("/api/worlds/{world_id}/members"))
-            .json(&serde_json::json!({ "username": "plain-player", "role": "player" }))
-            .await;
+        let by_name =
+            f.gm.post(&format!("/api/worlds/{world_id}/members"))
+                .json(&serde_json::json!({ "username": "plain-player", "role": "player" }))
+                .await;
         assert_eq!(by_name.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
         // An unknown name is rejected identically to a known one — no oracle.
-        let unknown_name = f
-            .gm
-            .post(&format!("/api/worlds/{world_id}/members"))
-            .json(&serde_json::json!({ "username": "no-such-user", "role": "player" }))
-            .await;
+        let unknown_name =
+            f.gm.post(&format!("/api/worlds/{world_id}/members"))
+                .json(&serde_json::json!({ "username": "no-such-user", "role": "player" }))
+                .await;
         assert_eq!(unknown_name.status_code(), by_name.status_code());
 
         // A non-GM member cannot seat anyone; nor can an anonymous caller.
@@ -997,11 +995,7 @@ pub(crate) mod tests {
     }
 
     /// Mint an invite for `world` as `gm`, returning `(code_id, code)`.
-    async fn mint_invite(
-        gm: &axum_test::TestServer,
-        world: &str,
-        role: &str,
-    ) -> (String, String) {
+    async fn mint_invite(gm: &axum_test::TestServer, world: &str, role: &str) -> (String, String) {
         let res = gm
             .post(&format!("/api/worlds/{world}/invites"))
             .json(&serde_json::json!({ "role": role }))
@@ -1493,11 +1487,10 @@ pub(crate) mod tests {
                 .await
                 .unwrap());
         }
-        let over = f
-            .gm
-            .post(&format!("/api/worlds/{w}/invites"))
-            .json(&serde_json::json!({ "role": "player" }))
-            .await;
+        let over =
+            f.gm.post(&format!("/api/worlds/{w}/invites"))
+                .json(&serde_json::json!({ "role": "player" }))
+                .await;
         over.assert_status(StatusCode::CONFLICT);
 
         // Revoking one frees a slot; the cap counts LIVE invites only.

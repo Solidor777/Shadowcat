@@ -1271,8 +1271,11 @@ impl SceneEcs {
                     // heuristic both come from this shape, so the weighted continuous route ignores
                     // the world's configured diagonal rule — only cell topology + terrain multiplier
                     // come from the grid. A hex scene's shape is rule-agnostic (uniform 1-cost).
-                    let euclid_shape =
-                        self.resolve_grid_shape_with_rule(scene, cell, pathfinding::DiagonalRule::Euclidean);
+                    let euclid_shape = self.resolve_grid_shape_with_rule(
+                        scene,
+                        cell,
+                        pathfinding::DiagonalRule::Euclidean,
+                    );
                     let weighted = pathfinding::find(
                         start,
                         waypoints,
@@ -1458,8 +1461,8 @@ impl SceneEcs {
     /// sites forks ownership — a player could then move a token that contributes
     /// no vision, or see through one they cannot move.
     pub fn token_effective_owner(&self, token: &Document) -> Option<Uuid> {
-        let linked = crate::data::permission::token_actor_link(token)
-            .and_then(|id| self.actors.get(&id));
+        let linked =
+            crate::data::permission::token_actor_link(token).and_then(|id| self.actors.get(&id));
         crate::data::permission::effective_owner(token, linked)
     }
 
@@ -3144,9 +3147,13 @@ mod tests {
         actor_index.insert(b_id, actor_b.clone());
         let db_owner = crate::data::permission::effective_owner(
             &db_token,
-            crate::data::permission::token_actor_link(&db_token).and_then(|id| actor_index.get(&id)),
+            crate::data::permission::token_actor_link(&db_token)
+                .and_then(|id| actor_index.get(&id)),
         );
-        assert_eq!(db_owner, None, "the link is gone in the authoritative store");
+        assert_eq!(
+            db_owner, None,
+            "the link is gone in the authoritative store"
+        );
 
         let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), token.clone()], 0);
         ecs.set_actors(vec![actor_a, actor_b]);
@@ -3395,7 +3402,10 @@ mod tests {
         let store_engine = {
             let mut v = serde_json::to_value(&vm).unwrap();
             apply_field_change(&mut v, &change).unwrap();
-            serde_json::from_value::<Document>(v).unwrap().engine.unwrap()
+            serde_json::from_value::<Document>(v)
+                .unwrap()
+                .engine
+                .unwrap()
         };
 
         let mut ecs = SceneEcs::new();
@@ -3417,7 +3427,10 @@ mod tests {
         // The derived read-through agrees: the removed mode is gone, the other remains.
         let modes = ecs.resolved_vision_modes();
         assert!(!modes.contains_key("blindsight"));
-        assert!(!modes.contains_key("smuggled"), "`new` must never be stored");
+        assert!(
+            !modes.contains_key("smuggled"),
+            "`new` must never be stored"
+        );
         assert!(modes.contains_key("darkvision"));
     }
 
@@ -5447,7 +5460,9 @@ mod tests {
         // x∈[150,200) — a different location — cutting the preview roughly a full hex early.
         let g = grid_shape::HexGrid { size: 50.0 };
         let mut docs = hex_continuous_scene_docs();
-        docs.push(region_doc_top(12, 10, "arrest", 1.0, 285.0, 55.0, 320.0, 95.0));
+        docs.push(region_doc_top(
+            12, 10, "arrest", 1.0, 285.0, 55.0, 320.0, 95.0,
+        ));
         let mut ecs = SceneEcs::from_documents(docs, 0);
         ecs.set_world_settings_for_test(continuous_world_settings());
         // Fixture guard: exactly one hex arrests, and it is the axial cell the assertions name.
@@ -6225,8 +6240,9 @@ mod tests {
     fn accumulate_visible_cells_routes_through_grid_shape_cell_center_not_hardcoded() {
         let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
         let got = ecs.visible_cells(user, scene_id, false);
-        let expected: std::collections::BTreeSet<(i32, i32)> =
-            (-1..=4).flat_map(|i| (-1..=4).map(move |j| (i, j))).collect();
+        let expected: std::collections::BTreeSet<(i32, i32)> = (-1..=4)
+            .flat_map(|i| (-1..=4).map(move |j| (i, j)))
+            .collect();
         assert_eq!(got, expected);
     }
 
@@ -6247,8 +6263,9 @@ mod tests {
             .filter(|s| s.scene == scene_id)
             .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
             .collect();
-        let expected: std::collections::BTreeSet<(i32, i32)> =
-            (-1..=4).flat_map(|i| (-1..=4).map(move |j| (i, j))).collect();
+        let expected: std::collections::BTreeSet<(i32, i32)> = (-1..=4)
+            .flat_map(|i| (-1..=4).map(move |j| (i, j)))
+            .collect();
         assert_eq!(got, expected);
     }
 
@@ -6358,7 +6375,10 @@ mod tests {
             cell,
         )
         .expect("a token move on a hex scene executes");
-        assert!(!out.truncated, "the lenient mask admits every traversed hex cell");
+        assert!(
+            !out.truncated,
+            "the lenient mask admits every traversed hex cell"
+        );
         assert_eq!(grid.cell_of(out.stop), (3, 0), "the move reaches hex (3,0)");
 
         let strict_mask = ecs.visible_cells(user, scene, false);

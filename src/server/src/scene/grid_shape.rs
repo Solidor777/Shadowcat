@@ -96,12 +96,23 @@ impl GridShape for SquareGrid {
     }
 
     fn cell_of(&self, p: vision::P) -> Cell {
-        ((p.0 / self.cell).floor() as i32, (p.1 / self.cell).floor() as i32)
+        (
+            (p.0 / self.cell).floor() as i32,
+            (p.1 / self.cell).floor() as i32,
+        )
     }
 
     fn neighbors_with_cost(&self, c: Cell, parity: u8) -> Vec<(Cell, f64, u8)> {
-        const DIRS: [(i32, i32); 8] =
-            [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)];
+        const DIRS: [(i32, i32); 8] = [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (1, -1),
+            (-1, 1),
+            (-1, -1),
+        ];
         DIRS.iter()
             .map(|&(di, dj)| {
                 let next = (c.0 + di, c.1 + dj);
@@ -252,8 +263,7 @@ impl GridShape for HexGrid {
     /// Uniform 1-per-step cost, 6 axial neighbors — hex has no diagonal-rule analog, so `parity`
     /// is passed through unchanged (per the design doc's H4/H5 decisions).
     fn neighbors_with_cost(&self, c: Cell, parity: u8) -> Vec<(Cell, f64, u8)> {
-        const AXIAL_DIRS: [(i32, i32); 6] =
-            [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)];
+        const AXIAL_DIRS: [(i32, i32); 6] = [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)];
         AXIAL_DIRS
             .iter()
             .map(|&(dq, dr)| ((c.0 + dq, c.1 + dr), 1.0, parity))
@@ -449,7 +459,12 @@ impl GridShape for HexGrid {
     /// of the pixel min/max a WRONG (clipping) box on hex. `cell` is unused (hex cell size is baked
     /// into `self.size`); kept for `GridShape` signature parity with `SquareGrid`.
     fn cell_bounds(&self, min: vision::P, max: vision::P, _cell: f64) -> (i32, i32, i32, i32) {
-        let corners = [(min.0, min.1), (max.0, min.1), (min.0, max.1), (max.0, max.1)];
+        let corners = [
+            (min.0, min.1),
+            (max.0, min.1),
+            (min.0, max.1),
+            (max.0, max.1),
+        ];
         let (mut min_q, mut min_r, mut max_q, mut max_r) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
         for &corner in &corners {
             let (q, r) = self.cell_of(corner);
@@ -474,7 +489,10 @@ impl GridShape for HexGrid {
         (0..6)
             .map(|k| {
                 let ang = std::f64::consts::PI / 180.0 * (60.0 * k as f64 - 30.0);
-                (center.0 + self.size * ang.cos(), center.1 + self.size * ang.sin())
+                (
+                    center.0 + self.size * ang.cos(),
+                    center.1 + self.size * ang.sin(),
+                )
             })
             .collect()
     }
@@ -517,36 +535,60 @@ mod tests {
 
     #[test]
     fn square_grid_cell_center_matches_pathfinding_cell_center() {
-        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
-        assert_eq!(g.cell_center((2, 3)), crate::scene::pathfinding::cell_center((2, 3), 100.0));
+        let g = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+        };
+        assert_eq!(
+            g.cell_center((2, 3)),
+            crate::scene::pathfinding::cell_center((2, 3), 100.0)
+        );
     }
 
     #[test]
     fn square_grid_cell_of_floors_to_cell_index() {
-        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
+        let g = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+        };
         assert_eq!(g.cell_of((250.0, 149.0)), (2, 1));
         assert_eq!(g.cell_of((-10.0, -1.0)), (-1, -1));
     }
 
     #[test]
     fn square_grid_neighbors_with_cost_matches_chebyshev_dirs_and_step_cost() {
-        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
+        let g = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+        };
         let ns = g.neighbors_with_cost((0, 0), 0);
         assert_eq!(ns.len(), 8, "8-directional king-move expansion");
         // A diagonal neighbor costs 1.0 under Chebyshev.
-        let diag = ns.iter().find(|(c, _, _)| *c == (1, 1)).expect("diagonal neighbor present");
+        let diag = ns
+            .iter()
+            .find(|(c, _, _)| *c == (1, 1))
+            .expect("diagonal neighbor present");
         assert!((diag.1 - 1.0).abs() < 1e-9);
         // An orthogonal neighbor costs 1.0 too.
-        let ortho = ns.iter().find(|(c, _, _)| *c == (1, 0)).expect("orthogonal neighbor present");
+        let ortho = ns
+            .iter()
+            .find(|(c, _, _)| *c == (1, 0))
+            .expect("orthogonal neighbor present");
         assert!((ortho.1 - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn square_grid_neighbors_with_cost_alternating_threads_parity() {
-        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Alternating };
+        let g = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Alternating,
+        };
         let ns = g.neighbors_with_cost((0, 0), 0);
         let diag = ns.iter().find(|(c, _, _)| *c == (1, 1)).unwrap();
-        assert!((diag.1 - 1.0).abs() < 1e-9, "first diagonal from parity 0 costs 1");
+        assert!(
+            (diag.1 - 1.0).abs() < 1e-9,
+            "first diagonal from parity 0 costs 1"
+        );
         assert_eq!(diag.2, 1, "parity flips after a diagonal step");
         let ortho = ns.iter().find(|(c, _, _)| *c == (1, 0)).unwrap();
         assert_eq!(ortho.2, 0, "parity unchanged after an orthogonal step");
@@ -554,7 +596,10 @@ mod tests {
 
     #[test]
     fn square_grid_line_traversal_matches_supercover_cells() {
-        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
+        let g = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+        };
         let a = (50.0, 50.0);
         let b = (250.0, 250.0);
         assert_eq!(
@@ -565,7 +610,10 @@ mod tests {
 
     #[test]
     fn square_grid_footprint_cells_matches_pathfinding_footprint_cells() {
-        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
+        let g = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+        };
         let anchor = (2, 2);
         let ctr = (250.0, 250.0);
         let mut got = g.footprint_cells(anchor, ctr, 60.0, 100.0);
@@ -590,8 +638,14 @@ mod tests {
         let ns = g.neighbors_with_cost((0, 0), 3);
         assert_eq!(ns.len(), 6, "hex has 6 neighbors, not 8");
         for (_, cost, parity) in &ns {
-            assert!((cost - 1.0).abs() < 1e-9, "every hex step costs 1.0 uniformly");
-            assert_eq!(*parity, 3, "hex never touches parity — passed through unchanged");
+            assert!(
+                (cost - 1.0).abs() < 1e-9,
+                "every hex step costs 1.0 uniformly"
+            );
+            assert_eq!(
+                *parity, 3,
+                "hex never touches parity — passed through unchanged"
+            );
         }
         // The 6 axial neighbor offsets (Red Blob Games pointy-top convention).
         let mut got: Vec<Cell> = ns.iter().map(|(c, _, _)| *c).collect();
@@ -639,7 +693,10 @@ mod tests {
         let ctr = g.cell_center(anchor);
         // A footprint radius comparable to the hex's own size should pull in at least one neighbor.
         let cells = g.footprint_cells(anchor, ctr, 60.0, 50.0);
-        assert!(cells.len() > 1, "a large-enough footprint overlaps more than just the anchor");
+        assert!(
+            cells.len() > 1,
+            "a large-enough footprint overlaps more than just the anchor"
+        );
         assert!(cells.contains(&anchor));
     }
 
@@ -677,22 +734,39 @@ mod tests {
 
     #[test]
     fn square_cells_in_bounds_equals_hand_written_floor_rectangle() {
-        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
+        let g = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+        };
         // Origin-anchored 3×3.
         let (min, max) = ((0.0, 0.0), (250.0, 250.0));
-        assert_eq!(g.cells_in_bounds(min, max, 100.0, CAP), Some(hand_floor_rect(min, max, 100.0)));
+        assert_eq!(
+            g.cells_in_bounds(min, max, 100.0, CAP),
+            Some(hand_floor_rect(min, max, 100.0))
+        );
         // Straddling the origin (negative coords).
         let (min, max) = ((-150.0, -50.0), (50.0, 50.0));
-        assert_eq!(g.cells_in_bounds(min, max, 100.0, CAP), Some(hand_floor_rect(min, max, 100.0)));
+        assert_eq!(
+            g.cells_in_bounds(min, max, 100.0, CAP),
+            Some(hand_floor_rect(min, max, 100.0))
+        );
         // Wholly negative.
         let (min, max) = ((-330.0, -220.0), (-110.0, -140.0));
-        assert_eq!(g.cells_in_bounds(min, max, 100.0, CAP), Some(hand_floor_rect(min, max, 100.0)));
+        assert_eq!(
+            g.cells_in_bounds(min, max, 100.0, CAP),
+            Some(hand_floor_rect(min, max, 100.0))
+        );
     }
 
     #[test]
     fn square_cells_in_bounds_is_row_major() {
-        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
-        let got = g.cells_in_bounds((0.0, 0.0), (150.0, 150.0), 100.0, CAP).unwrap();
+        let g = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+        };
+        let got = g
+            .cells_in_bounds((0.0, 0.0), (150.0, 150.0), 100.0, CAP)
+            .unwrap();
         // for i { for j } → (0,0),(0,1),(1,0),(1,1).
         assert_eq!(got, vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
     }
@@ -700,11 +774,20 @@ mod tests {
     #[test]
     fn cells_in_bounds_span_cap_returns_none() {
         // 3001×3001 ≈ 9.0M candidate cells > the 4M MAX_CELLS_PER_POLYGON cap → None.
-        let g = SquareGrid { cell: 1.0, rule: DiagonalRule::Chebyshev };
-        assert_eq!(g.cells_in_bounds((0.0, 0.0), (3000.0, 3000.0), 1.0, CAP), None);
+        let g = SquareGrid {
+            cell: 1.0,
+            rule: DiagonalRule::Chebyshev,
+        };
+        assert_eq!(
+            g.cells_in_bounds((0.0, 0.0), (3000.0, 3000.0), 1.0, CAP),
+            None
+        );
         // A hex scene with an equally-huge AABB is capped by the same span check.
         let hx = HexGrid { size: 1.0 };
-        assert_eq!(hx.cells_in_bounds((0.0, 0.0), (5000.0, 5000.0), 1.0, CAP), None);
+        assert_eq!(
+            hx.cells_in_bounds((0.0, 0.0), (5000.0, 5000.0), 1.0, CAP),
+            None
+        );
     }
 
     #[test]
@@ -713,24 +796,46 @@ mod tests {
         // per-caller bound — the cap is the passed `max_cells`, never a hardcoded constant, so
         // routing a tighter-capped caller (region rasterization) through this primitive can't
         // loosen its bound.
-        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
+        let g = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+        };
         let (min, max) = ((0.0, 0.0), (250.0, 250.0));
         assert!(g.cells_in_bounds(min, max, 100.0, CAP).is_some());
-        assert_eq!(g.cells_in_bounds(min, max, 100.0, 8), None, "9 cells > cap of 8");
+        assert_eq!(
+            g.cells_in_bounds(min, max, 100.0, 8),
+            None,
+            "9 cells > cap of 8"
+        );
         // Same for hex — the span cap is honored on both grid kinds.
         let hx = HexGrid { size: 50.0 };
-        assert_eq!(hx.cells_in_bounds((0.0, 0.0), (200.0, 200.0), 50.0, 1), None);
+        assert_eq!(
+            hx.cells_in_bounds((0.0, 0.0), (200.0, 200.0), 50.0, 1),
+            None
+        );
     }
 
     #[test]
     fn cells_in_bounds_fails_closed_on_degenerate_input() {
-        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
-        assert_eq!(g.cells_in_bounds((f64::NAN, 0.0), (10.0, 10.0), 100.0, CAP), None);
-        assert_eq!(g.cells_in_bounds((0.0, 0.0), (f64::INFINITY, 10.0), 100.0, CAP), None);
+        let g = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+        };
+        assert_eq!(
+            g.cells_in_bounds((f64::NAN, 0.0), (10.0, 10.0), 100.0, CAP),
+            None
+        );
+        assert_eq!(
+            g.cells_in_bounds((0.0, 0.0), (f64::INFINITY, 10.0), 100.0, CAP),
+            None
+        );
         assert_eq!(g.cells_in_bounds((0.0, 0.0), (10.0, 10.0), 0.0, CAP), None);
         assert_eq!(g.cells_in_bounds((0.0, 0.0), (10.0, 10.0), -5.0, CAP), None);
         let hx = HexGrid { size: 50.0 };
-        assert_eq!(hx.cells_in_bounds((0.0, 0.0), (10.0, f64::NAN), 50.0, CAP), None);
+        assert_eq!(
+            hx.cells_in_bounds((0.0, 0.0), (10.0, f64::NAN), 50.0, CAP),
+            None
+        );
         assert_eq!(hx.cells_in_bounds((0.0, 0.0), (10.0, 10.0), 0.0, CAP), None);
     }
 
@@ -738,7 +843,9 @@ mod tests {
     fn hex_cells_in_bounds_includes_every_cell_whose_center_is_in_the_aabb() {
         let g = HexGrid { size: 50.0 };
         let (min, max) = ((0.0, 0.0), (200.0, 200.0));
-        let got = g.cells_in_bounds(min, max, 50.0, CAP).expect("bounded, not over-cap");
+        let got = g
+            .cells_in_bounds(min, max, 50.0, CAP)
+            .expect("bounded, not over-cap");
         let got_set: BTreeSet<Cell> = got.iter().copied().collect();
         // The candidate set must be a SUPERSET of every hex whose center lies in the AABB.
         let mut center_in_count = 0;
@@ -754,18 +861,33 @@ mod tests {
                 }
             }
         }
-        assert!(center_in_count > 0, "fixture must exercise at least one in-bounds hex");
+        assert!(
+            center_in_count > 0,
+            "fixture must exercise at least one in-bounds hex"
+        );
         // Stays bounded — a tight superset of a ~4×4-hex region, not a runaway scan.
-        assert!(got.len() < 100, "hex candidate set should stay small for a small AABB");
+        assert!(
+            got.len() < 100,
+            "hex candidate set should stay small for a small AABB"
+        );
     }
 
     #[test]
     fn square_cell_bounds_is_the_corner_floor_box() {
         // Byte-identical to the pre-hex A* window's `floor(min/cell)`/`floor(max/cell)` computation,
         // so square routes are unchanged.
-        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
-        assert_eq!(g.cell_bounds((0.0, -250.0), (250.0, 50.0), 100.0), (0, -3, 2, 0));
-        assert_eq!(g.cell_bounds((-330.0, -220.0), (-110.0, -140.0), 100.0), (-4, -3, -2, -2));
+        let g = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+        };
+        assert_eq!(
+            g.cell_bounds((0.0, -250.0), (250.0, 50.0), 100.0),
+            (0, -3, 2, 0)
+        );
+        assert_eq!(
+            g.cell_bounds((-330.0, -220.0), (-110.0, -140.0), 100.0),
+            (-4, -3, -2, -2)
+        );
     }
 
     #[test]
@@ -779,8 +901,16 @@ mod tests {
                                       // AABB of start (0,0) and the goal center.
         let (min, max) = ((0.0, gc.1), (gc.0, 0.0));
         let (i0, j0, i1, j1) = g.cell_bounds(min, max, 100.0);
-        assert!(i0 <= goal.0 && goal.0 <= i1, "axial q {} must lie in [{i0},{i1}]", goal.0);
-        assert!(j0 <= goal.1 && goal.1 <= j1, "axial r {} must lie in [{j0},{j1}]", goal.1);
+        assert!(
+            i0 <= goal.0 && goal.0 <= i1,
+            "axial q {} must lie in [{i0},{i1}]",
+            goal.0
+        );
+        assert!(
+            j0 <= goal.1 && goal.1 <= j1,
+            "axial r {} must lie in [{j0},{j1}]",
+            goal.1
+        );
         // The square floor of the pixel-x max caps the q-bound strictly below the goal's axial q:
         // this is exactly the clipping the hex-correct bounds avoid.
         assert!(
@@ -792,10 +922,18 @@ mod tests {
 
     #[test]
     fn square_cell_vertices_returns_four_corners_in_order() {
-        let g = SquareGrid { cell: 100.0, rule: DiagonalRule::Chebyshev };
+        let g = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+        };
         assert_eq!(
             g.cell_vertices((2, 3), 100.0),
-            vec![(200.0, 300.0), (300.0, 300.0), (200.0, 400.0), (300.0, 400.0)]
+            vec![
+                (200.0, 300.0),
+                (300.0, 300.0),
+                (200.0, 400.0),
+                (300.0, 400.0)
+            ]
         );
     }
 
@@ -815,11 +953,20 @@ mod tests {
         assert_eq!(g.heuristic((0, 0), (3, 3)), 6.0);
         // Opposite-sign axial delta (the (1,-1) direction): distance = max(|dq|, |dr|) — this is
         // the case the square Manhattan/Euclidean estimate OVERESTIMATES.
-        assert_eq!(g.heuristic((0, 0), (4, -4)), axial_distance((0, 0), (4, -4)));
+        assert_eq!(
+            g.heuristic((0, 0), (4, -4)),
+            axial_distance((0, 0), (4, -4))
+        );
         assert_eq!(g.heuristic((0, 0), (4, -4)), 4.0);
         // Mixed / off-axis deltas, both delta orderings.
-        assert_eq!(g.heuristic((2, -1), (5, -6)), axial_distance((2, -1), (5, -6)));
-        assert_eq!(g.heuristic((5, -6), (2, -1)), axial_distance((5, -6), (2, -1)));
+        assert_eq!(
+            g.heuristic((2, -1), (5, -6)),
+            axial_distance((2, -1), (5, -6))
+        );
+        assert_eq!(
+            g.heuristic((5, -6), (2, -1)),
+            axial_distance((5, -6), (2, -1))
+        );
         // Symmetric.
         assert_eq!(g.heuristic((-3, 2), (1, -4)), g.heuristic((1, -4), (-3, 2)));
         // Zero delta.
@@ -842,7 +989,9 @@ mod tests {
         from: Cell,
         r: i32,
     ) -> std::collections::BTreeMap<Cell, f64> {
-        let cells: Vec<Cell> = (-r..=r).flat_map(|i| (-r..=r).map(move |j| (i, j))).collect();
+        let cells: Vec<Cell> = (-r..=r)
+            .flat_map(|i| (-r..=r).map(move |j| (i, j)))
+            .collect();
         let mut dist: std::collections::BTreeMap<Cell, f64> =
             cells.iter().map(|&c| (c, f64::INFINITY)).collect();
         dist.insert(from, 0.0);
@@ -879,7 +1028,9 @@ mod tests {
         // return suboptimal hex routes.
         const R: i32 = 4;
         let g = HexGrid { size: 50.0 };
-        let cells: Vec<Cell> = (-R..=R).flat_map(|q| (-R..=R).map(move |r| (q, r))).collect();
+        let cells: Vec<Cell> = (-R..=R)
+            .flat_map(|q| (-R..=R).map(move |r| (q, r)))
+            .collect();
         let mut checked = 0usize;
         let mut tight = 0usize;
         for &from in &cells {
@@ -899,10 +1050,17 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, cells.len() * cells.len(), "every ordered pair is covered");
+        assert_eq!(
+            checked,
+            cells.len() * cells.len(),
+            "every ordered pair is covered"
+        );
         // Non-vacuity: the bound is not passing merely because every true cost is huge — the
         // heuristic is EXACT (tight) on non-trivial pairs, which is what keeps A* efficient.
-        assert!(tight > 0, "the heuristic must be tight on at least one non-trivial pair");
+        assert!(
+            tight > 0,
+            "the heuristic must be tight on at least one non-trivial pair"
+        );
     }
 
     #[test]
@@ -913,8 +1071,14 @@ mod tests {
         // search is not its true cost function (its admissibility is pinned by the square parity
         // tests in `pathfinding.rs`).
         const R: i32 = 4;
-        let cells: Vec<Cell> = (-R..=R).flat_map(|i| (-R..=R).map(move |j| (i, j))).collect();
-        for rule in [DiagonalRule::Chebyshev, DiagonalRule::Manhattan, DiagonalRule::Euclidean] {
+        let cells: Vec<Cell> = (-R..=R)
+            .flat_map(|i| (-R..=R).map(move |j| (i, j)))
+            .collect();
+        for rule in [
+            DiagonalRule::Chebyshev,
+            DiagonalRule::Manhattan,
+            DiagonalRule::Euclidean,
+        ] {
             let g = SquareGrid { cell: 100.0, rule };
             for &from in &cells {
                 let costs = true_costs_from(&g, from, R);
@@ -936,10 +1100,17 @@ mod tests {
         // line the true hex distance is `max(|dq|,|dr|)` but the square Manhattan distance is
         // `|dq|+|dr|` — a 2× overestimate. The hex heuristic returns the admissible value instead.
         let hex = HexGrid { size: 50.0 };
-        let sq_manhattan = SquareGrid { cell: 50.0, rule: DiagonalRule::Manhattan };
+        let sq_manhattan = SquareGrid {
+            cell: 50.0,
+            rule: DiagonalRule::Manhattan,
+        };
         let (from, to) = ((0, 0), (4, -4));
         assert_eq!(hex.heuristic(from, to), 4.0, "true hex distance");
-        assert_eq!(sq_manhattan.heuristic(from, to), 8.0, "square Manhattan overestimates 2x");
+        assert_eq!(
+            sq_manhattan.heuristic(from, to),
+            8.0,
+            "square Manhattan overestimates 2x"
+        );
         assert!(sq_manhattan.heuristic(from, to) > hex.heuristic(from, to));
     }
 
@@ -1024,7 +1195,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next_f64(&mut self) -> f64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
         }
         fn range(&mut self, lo: f64, hi: f64) -> f64 {
@@ -1131,9 +1305,17 @@ mod tests {
             }
         }
         if let Some(f) = first.borrow().clone() {
-            panic!("omitted a crossed hex in {}/{}: {f}", misses.get(), checked.get());
+            panic!(
+                "omitted a crossed hex in {}/{}: {f}",
+                misses.get(),
+                checked.get()
+            );
         }
-        assert!(checked.get() > 100_000, "the search must actually run: {}", checked.get());
+        assert!(
+            checked.get() > 100_000,
+            "the search must actually run: {}",
+            checked.get()
+        );
         // Over-inclusion is the SAFE direction (it can only over-restrict a move, never over-permit),
         // but it must stay bounded or legitimate moves get rejected. The boundary probe adds at most
         // a small constant per segment, and only for segments that genuinely run along or through a
@@ -1155,7 +1337,9 @@ mod tests {
         for _ in 0..8000 {
             let a = (rng.range(-300.0, 300.0), rng.range(-300.0, 300.0));
             let b = (rng.range(-300.0, 300.0), rng.range(-300.0, 300.0));
-            let Some(got) = g.line_traversal(a, b, 50.0) else { continue };
+            let Some(got) = g.line_traversal(a, b, 50.0) else {
+                continue;
+            };
             let want = true_hexes_crossed(&g, a, b, 1e-9 * g.size);
             assert!(want.is_subset(&got), "a={a:?} b={b:?}");
             extra_total += got.len() - want.intersection(&got).count();
@@ -1183,7 +1367,10 @@ mod tests {
         assert_eq!(g.cell_of(b), (-1, 0));
         let cells = g.line_traversal(a, b, 50.0).expect("finite, in-bounds");
         assert!(cells.contains(&(0, 0)), "start hex: {cells:?}");
-        assert!(cells.contains(&(-1, 0)), "far ENDPOINT hex must be present: {cells:?}");
+        assert!(
+            cells.contains(&(-1, 0)),
+            "far ENDPOINT hex must be present: {cells:?}"
+        );
     }
 
     #[test]
@@ -1196,7 +1383,10 @@ mod tests {
         let b = (-32.076_474_134_396_726, -54.002_821_619_560_066);
         let cells = g.line_traversal(a, b, 50.0).expect("finite, in-bounds");
         let want = true_hexes_crossed(&g, a, b, 1e-6);
-        assert!(want.contains(&(-1, 0)), "fixture must actually clip (-1,0): {want:?}");
+        assert!(
+            want.contains(&(-1, 0)),
+            "fixture must actually clip (-1,0): {want:?}"
+        );
         assert!(want.is_subset(&cells), "want={want:?} got={cells:?}");
     }
 
@@ -1209,7 +1399,9 @@ mod tests {
         // Hexes (0,0) (center (0,0)) and (-1,0) (center (-86.6,0)) share the vertical edge x = -43.3
         // spanning y in [-25, 25].
         let x = -50.0 * 3.0_f64.sqrt() / 2.0;
-        let cells = g.line_traversal((x, -20.0), (x, 20.0), 50.0).expect("finite, in-bounds");
+        let cells = g
+            .line_traversal((x, -20.0), (x, 20.0), 50.0)
+            .expect("finite, in-bounds");
         assert!(cells.contains(&(0, 0)), "{cells:?}");
         assert!(cells.contains(&(-1, 0)), "{cells:?}");
     }
@@ -1218,8 +1410,14 @@ mod tests {
     fn hex_line_traversal_still_fails_closed_on_non_finite_and_over_cap() {
         let g = HexGrid { size: 50.0 };
         assert_eq!(g.line_traversal((f64::NAN, 0.0), (10.0, 10.0), 50.0), None);
-        assert_eq!(g.line_traversal((0.0, 0.0), (f64::INFINITY, 0.0), 50.0), None);
-        assert_eq!(g.line_traversal((0.0, f64::NEG_INFINITY), (0.0, 0.0), 50.0), None);
+        assert_eq!(
+            g.line_traversal((0.0, 0.0), (f64::INFINITY, 0.0), 50.0),
+            None
+        );
+        assert_eq!(
+            g.line_traversal((0.0, f64::NEG_INFINITY), (0.0, 0.0), 50.0),
+            None
+        );
         // Past the 4096-hex span cap.
         assert_eq!(g.line_traversal((0.0, 0.0), (1.0e9, 0.0), 50.0), None);
     }
@@ -1232,7 +1430,10 @@ mod tests {
         assert_eq!(verts.len(), 6, "a hex has 6 vertices");
         for &(x, y) in &verts {
             let d = ((x - center.0).powi(2) + (y - center.1).powi(2)).sqrt();
-            assert!((d - 50.0).abs() < 1e-9, "each hex vertex sits at radius = size from center");
+            assert!(
+                (d - 50.0).abs() < 1e-9,
+                "each hex vertex sits at radius = size from center"
+            );
         }
     }
 }

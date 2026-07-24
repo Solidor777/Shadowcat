@@ -2149,7 +2149,10 @@ mod tests {
         // No link, no override.
         assert_eq!(effective_owner(&token_linked_to(None), None), None);
         // Dangling link: the actor row does not exist.
-        assert_eq!(effective_owner(&token_linked_to(Some(actor_id)), None), None);
+        assert_eq!(
+            effective_owner(&token_linked_to(Some(actor_id)), None),
+            None
+        );
         // Linked to an actor that nobody owns.
         assert_eq!(
             effective_owner(
@@ -2245,7 +2248,10 @@ mod tests {
         token.permissions.users.insert(player, DocRole::Owner);
         let a = resolve_access_with_owner(player, WorldRole::Player, &token, None);
         assert!(a.has(cap::WRITE_FIELDS));
-        assert!(!a.is_owner, "no effective owner => not the OwnerOrGm subject");
+        assert!(
+            !a.is_owner,
+            "no effective owner => not the OwnerOrGm subject"
+        );
     }
 
     #[test]
@@ -2273,8 +2279,13 @@ mod tests {
             .or_default()
             .insert(cap::EDIT_PERMISSIONS.to_string());
 
-        let inheriting =
-            resolve_access_world_with_owner(player, WorldRole::Player, &token, &world_grants, owner);
+        let inheriting = resolve_access_world_with_owner(
+            player,
+            WorldRole::Player,
+            &token,
+            &world_grants,
+            owner,
+        );
         assert!(
             inheriting.has(cap::EDIT_PERMISSIONS),
             "a world by_role[Owner] grant reaches an owner who inherits through the actor link"
@@ -2292,15 +2303,13 @@ mod tests {
 
         // Non-vacuity: the grant is role-selected, not unconditional — a
         // non-owner on the same document with the same world grants gets nothing.
-        assert!(
-            !resolve_access_world_with_owner(
-                stranger,
-                WorldRole::Player,
-                &token,
-                &world_grants,
-                owner
-            )
-            .has(cap::EDIT_PERMISSIONS)
-        );
+        assert!(!resolve_access_world_with_owner(
+            stranger,
+            WorldRole::Player,
+            &token,
+            &world_grants,
+            owner
+        )
+        .has(cap::EDIT_PERMISSIONS));
     }
 }

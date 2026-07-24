@@ -640,7 +640,11 @@ pub async fn revoke_invite(
     Path((world, code_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, AppError> {
     require_gm(&state, &user, world).await?;
-    if !state.repo.revoke_invite(world, code_id, now_millis()).await? {
+    if !state
+        .repo
+        .revoke_invite(world, code_id, now_millis())
+        .await?
+    {
         return Err(AppError::NotFound);
     }
     Ok(StatusCode::NO_CONTENT)

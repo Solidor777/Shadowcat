@@ -1359,7 +1359,10 @@ mod tests {
         // can carry SQL / constraint / path text).
         let secret = "unique_constraint_secret_column";
         let data = E::Data(DataError::Conflict(secret.to_string())).to_string();
-        assert_eq!(data, "The message could not be delivered. Please try again.");
+        assert_eq!(
+            data,
+            "The message could not be delivered. Please try again."
+        );
         assert!(
             !data.contains(secret),
             "Data(_) Display must not leak the inner DataError detail"
@@ -1367,7 +1370,9 @@ mod tests {
 
         // Roll: never reaches the wire error channel (caught upstream and authored
         // as a System notice), but Display must be total and player-safe.
-        assert!(!E::Roll(rolls::RollError::Unterminated).to_string().is_empty());
+        assert!(!E::Roll(rolls::RollError::Unterminated)
+            .to_string()
+            .is_empty());
     }
 
     #[tokio::test]

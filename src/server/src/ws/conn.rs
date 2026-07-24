@@ -702,7 +702,10 @@ async fn handle_move_request(
 async fn enrich_vision_explored(
     payload: &mut serde_json::Value,
     grid: &std::collections::HashMap<Uuid, f64>,
-    grid_shapes: &std::collections::HashMap<Uuid, Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>>,
+    grid_shapes: &std::collections::HashMap<
+        Uuid,
+        Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>,
+    >,
     repo: &SqliteRepository,
     world: Uuid,
     user: Uuid,
@@ -894,8 +897,7 @@ async fn clip_move_stream(
         if ctx.world_role == crate::data::document::WorldRole::Gm {
             match see_as {
                 Some(target) => {
-                    let polys =
-                        observer_vision_polys_for_scene(target.user_id, *scene, room).await;
+                    let polys = observer_vision_polys_for_scene(target.user_id, *scene, room).await;
                     if polys.is_empty() {
                         // See-as target has no vision source in this scene → not applicable.
                         return Some(full_gm_stream());
@@ -1818,7 +1820,8 @@ mod tests {
     /// square-grid test indexes explored fog byte-identically to the pre-migration hardcoded math.
     fn square_grid_shapes(
         grid: &std::collections::HashMap<Uuid, f64>,
-    ) -> std::collections::HashMap<Uuid, Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>> {
+    ) -> std::collections::HashMap<Uuid, Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>>
+    {
         grid.iter()
             .map(|(&scene, &cell)| {
                 (
@@ -1826,7 +1829,8 @@ mod tests {
                     Box::new(crate::scene::grid_shape::SquareGrid {
                         cell,
                         rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
-                    }) as Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>,
+                    })
+                        as Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>,
                 )
             })
             .collect()
@@ -1920,7 +1924,16 @@ mod tests {
             "mode": "masked",
             "polygons": [{ "scene": scene, "points": [0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0] }]
         });
-        enrich_vision_explored(&mut payload, &grid, &grid_shapes, &repo, world, target, false).await;
+        enrich_vision_explored(
+            &mut payload,
+            &grid,
+            &grid_shapes,
+            &repo,
+            world,
+            target,
+            false,
+        )
+        .await;
         assert_eq!(
             payload["explored"][0]["cells"].as_array().unwrap().len(),
             2, // one stored cell × 2 coords
@@ -3145,7 +3158,10 @@ mod tests {
 
         let result = clip_move_stream(&frame, &gm_ctx, Some(target_ctx), &room).await;
 
-        assert!(result.is_some(), "different-scene see-as must not suppress the GM's frame");
+        assert!(
+            result.is_some(),
+            "different-scene see-as must not suppress the GM's frame"
+        );
         match result.unwrap() {
             ServerMsg::MoveStream {
                 samples: s, cost, ..

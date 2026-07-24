@@ -112,10 +112,7 @@ pub enum ClientMsg {
     /// Soft-delete a message the requester owns (or any, if GM): the doc stays
     /// in the sequenced log as a tombstone (content cleared, deleted_at set).
     /// `request_id` correlates a rejection back to the sender via `ChatError`.
-    DeleteMessage {
-        request_id: Uuid,
-        message_id: Uuid,
-    },
+    DeleteMessage { request_id: Uuid, message_id: Uuid },
 }
 
 /// Which tier served a resync.
@@ -704,7 +701,9 @@ mod protocol_tests {
         )
         .unwrap();
         match edit {
-            ClientMsg::EditMessage { request_id, .. } => assert_eq!(request_id, Uuid::from_u128(0xab)),
+            ClientMsg::EditMessage { request_id, .. } => {
+                assert_eq!(request_id, Uuid::from_u128(0xab))
+            }
             _ => panic!("wrong variant"),
         }
         let del: ClientMsg = serde_json::from_str(
@@ -712,7 +711,9 @@ mod protocol_tests {
         )
         .unwrap();
         match del {
-            ClientMsg::DeleteMessage { request_id, .. } => assert_eq!(request_id, Uuid::from_u128(0xac)),
+            ClientMsg::DeleteMessage { request_id, .. } => {
+                assert_eq!(request_id, Uuid::from_u128(0xac))
+            }
             _ => panic!("wrong variant"),
         }
     }

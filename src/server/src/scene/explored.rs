@@ -150,7 +150,10 @@ mod tests {
     /// A square grid at `cell` size — the shape every square-parity test indexes through. The
     /// diagonal rule is irrelevant to `cells_in_bounds`/`cell_center`, so any rule serves.
     fn sq(cell: f64) -> SquareGrid {
-        SquareGrid { cell, rule: DiagonalRule::Chebyshev }
+        SquareGrid {
+            cell,
+            rule: DiagonalRule::Chebyshev,
+        }
     }
 
     /// A square covering one cell's center marks exactly that cell (resolution = cell).
@@ -231,11 +234,21 @@ mod tests {
         // Cover a small AABB tightly around hex (1,0)'s center; only that hex's center falls in it.
         let (cx, cy) = g.cell_center((1, 0));
         let poly = vec![
-            cx - 10.0, cy - 10.0, cx + 10.0, cy - 10.0, cx + 10.0, cy + 10.0, cx - 10.0, cy + 10.0,
+            cx - 10.0,
+            cy - 10.0,
+            cx + 10.0,
+            cy - 10.0,
+            cx + 10.0,
+            cy + 10.0,
+            cx - 10.0,
+            cy + 10.0,
         ];
         let mut set = ExploredSet::new();
         let grew = set.mark_polygons(&[poly], &g, 100.0);
         assert_eq!(grew, 1, "exactly the one hex whose center the AABB covers");
-        assert!(set.contains((1, 0)), "hex axial (1,0) is marked, not a square index");
+        assert!(
+            set.contains((1, 0)),
+            "hex axial (1,0) is marked, not a square index"
+        );
     }
 }

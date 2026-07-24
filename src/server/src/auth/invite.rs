@@ -101,7 +101,10 @@ mod tests {
         let (id, secret) = parse(&m.code).expect("parse");
         assert_eq!(id, m.id);
         assert!(verify_password(&secret, &m.secret_hash));
-        assert!(!verify_password("00000000000000000000000000000000", &m.secret_hash));
+        assert!(!verify_password(
+            "00000000000000000000000000000000",
+            &m.secret_hash
+        ));
     }
 
     #[test]
@@ -141,7 +144,11 @@ mod tests {
             // Right shape, short/long/non-hex verifier.
             &format!("{}.{}", Uuid::new_v4().simple(), "abc"),
             &format!("{}.{}", Uuid::new_v4().simple(), "z".repeat(SECRET_HEX_LEN)),
-            &format!("{}.{}", Uuid::new_v4().simple(), "a".repeat(SECRET_HEX_LEN + 1)),
+            &format!(
+                "{}.{}",
+                Uuid::new_v4().simple(),
+                "a".repeat(SECRET_HEX_LEN + 1)
+            ),
             &format!("{}", Uuid::new_v4().simple()),
         ] {
             assert!(parse(bad).is_none(), "parsed a malformed code: {bad:?}");
@@ -157,4 +164,3 @@ mod tests {
         assert!(!verify_password(&secret, dummy_phc()));
     }
 }
-

@@ -2033,10 +2033,17 @@ mod room_tests {
 
         let (repo, world_id, gm) = repo_with_world().await;
         let p = repo
-            .create_user("player_hex_open", None, crate::auth::role::ServerRole::User, 0)
+            .create_user(
+                "player_hex_open",
+                None,
+                crate::auth::role::ServerRole::User,
+                0,
+            )
             .await
             .unwrap();
-        repo.add_member(world_id, p, WorldRole::Player).await.unwrap();
+        repo.add_member(world_id, p, WorldRole::Player)
+            .await
+            .unwrap();
         let player = PermissionContext {
             user_id: p,
             world_role: WorldRole::Player,
@@ -2079,8 +2086,10 @@ mod room_tests {
         let mut scene = wdoc(world_id, scene_id, "scene");
         scene.owner = Some(gm.user_id);
         scene.system = json!({ "grid": { "kind": "hex", "size": 100 } });
-        scene.engine = Some(json!({ "grid": { "kind": "hex", "size": 100.0 }, "background": null,
-                                    "bounds": { "width": 1500.0, "height": 1500.0 } }));
+        scene.engine = Some(
+            json!({ "grid": { "kind": "hex", "size": 100.0 }, "background": null,
+                                    "bounds": { "width": 1500.0, "height": 1500.0 } }),
+        );
         room.publish(
             &repo,
             &gm,
@@ -2732,7 +2741,13 @@ mod room_tests {
             .map(|&c| {
                 let (cx, cy) = grid.cell_center(c);
                 vec![
-                    cx - 10.0, cy - 10.0, cx + 10.0, cy - 10.0, cx + 10.0, cy + 10.0, cx - 10.0,
+                    cx - 10.0,
+                    cy - 10.0,
+                    cx + 10.0,
+                    cy - 10.0,
+                    cx + 10.0,
+                    cy + 10.0,
+                    cx - 10.0,
                     cy + 10.0,
                 ]
             })
@@ -2745,7 +2760,10 @@ mod room_tests {
             "each tight box marks exactly one hex axial cell under hex indexing"
         );
         for &c in &path_cells {
-            assert!(seed.contains(c), "hex axial {c:?} must be in the seeded explored set");
+            assert!(
+                seed.contains(c),
+                "hex axial {c:?} must be in the seeded explored set"
+            );
         }
         h.repo
             .set_explored(h.world_id, h.scene_id, h.player.user_id, &seed.to_bytes())
@@ -2863,7 +2881,13 @@ mod room_tests {
                 .map(|&c| {
                     let (cx, cy) = grid.cell_center(c);
                     vec![
-                        cx - 10.0, cy - 10.0, cx + 10.0, cy - 10.0, cx + 10.0, cy + 10.0, cx - 10.0,
+                        cx - 10.0,
+                        cy - 10.0,
+                        cx + 10.0,
+                        cy - 10.0,
+                        cx + 10.0,
+                        cy + 10.0,
+                        cx - 10.0,
                         cy + 10.0,
                     ]
                 })

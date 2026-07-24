@@ -898,12 +898,7 @@ impl SqliteRepository {
     /// Revoke an invite, scoped to `world`. Returns whether a row changed —
     /// `false` covers both "no such invite" and "belongs to another world", so
     /// a GM cannot use this route to probe another world's invite ids.
-    pub async fn revoke_invite(
-        &self,
-        world: Uuid,
-        id: Uuid,
-        now: i64,
-    ) -> Result<bool, DataError> {
+    pub async fn revoke_invite(&self, world: Uuid, id: Uuid, now: i64) -> Result<bool, DataError> {
         let res = sqlx::query(
             "UPDATE world_invites SET revoked_at = ? \
              WHERE id = ? AND world_id = ? AND revoked_at IS NULL AND consumed_at IS NULL",
@@ -960,7 +955,12 @@ impl SqliteRepository {
         )
         .bind(world.to_string())
         .bind(user.to_string())
-        .bind(serde_json::to_value(invited_role)?.as_str().unwrap().to_string())
+        .bind(
+            serde_json::to_value(invited_role)?
+                .as_str()
+                .unwrap()
+                .to_string(),
+        )
         .execute(&mut *tx)
         .await?;
         let seated: String =
@@ -1051,7 +1051,10 @@ impl SqliteRepository {
         // `WHERE world_id = ?`, so without this the write path could resolve an owner
         // the derived vision path structurally cannot — a second ECS/DB ownership fork.
         let actor = actor.filter(|a| a.scope == doc.scope);
-        Ok(crate::data::permission::effective_owner(doc, actor.as_ref()))
+        Ok(crate::data::permission::effective_owner(
+            doc,
+            actor.as_ref(),
+        ))
     }
 
     /// Whether a document of `doc_type` already exists in `world_id`, on an
@@ -7235,14 +7238,7 @@ mod tests {
         // the link machinery.
         let local_actor = actor_doc_owned_by(w1.id, Some(p1));
         let local_token = owned_token_doc(w1.id, Some(local_actor.id));
-        gm_create(
-            &r,
-            gm,
-            w1.id,
-            vec![local_actor, local_token.clone()],
-            4,
-        )
-        .await;
+        gm_create(&r, gm, w1.id, vec![local_actor, local_token.clone()], 4).await;
         try_move(&r, w1.id, p1, local_token.id, (0.0, 0.0), (3.0, 3.0), 5)
             .await
             .expect("a same-world actor link confers ownership");

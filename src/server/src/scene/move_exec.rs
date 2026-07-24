@@ -1066,7 +1066,10 @@ mod tests {
         );
 
         let field = ecs.region_field(scene_id, None);
-        assert!(field.is_arrest((2, 0)), "rect rasterizes onto hex cell (2,0)");
+        assert!(
+            field.is_arrest((2, 0)),
+            "rect rasterizes onto hex cell (2,0)"
+        );
         assert!(
             !field.is_arrest((3, 0)),
             "the SQUARE index of the arrest rect's location carries no arrest — a square-indexed \
@@ -1098,7 +1101,11 @@ mod tests {
             "arrest stops AT entry into hex (2,0), never before it and never past it"
         );
         // Two cell entries accrue (hex (1,0) then the arrest cell (2,0)); no terrain weighting.
-        assert!((out.cost - 2.0).abs() < 1e-9, "cost {} accrues per hex cell entry", out.cost);
+        assert!(
+            (out.cost - 2.0).abs() < 1e-9,
+            "cost {} accrues per hex cell entry",
+            out.cost
+        );
     }
 
     #[test]

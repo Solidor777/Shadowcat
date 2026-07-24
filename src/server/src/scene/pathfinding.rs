@@ -153,7 +153,10 @@ mod astar_tests {
     fn open(rule: DiagonalRule, footprint: f64) -> PathGrid<'static> {
         const NO_WALLS: [Seg; 0] = [];
         let shape: &'static crate::scene::grid_shape::SquareGrid =
-            Box::leak(Box::new(crate::scene::grid_shape::SquareGrid { cell: 100.0, rule }));
+            Box::leak(Box::new(crate::scene::grid_shape::SquareGrid {
+                cell: 100.0,
+                rule,
+            }));
         PathGrid {
             cell: 100.0,
             footprint_radius_cells: footprint,
@@ -375,7 +378,11 @@ mod astar_tests {
             (cost - 3.0).abs() < 1e-9,
             "true hex distance is 3, not the square heuristic's 4-cost detour; got {cost}"
         );
-        assert_eq!(cells.len(), 4, "shortest route is 4 cells (3 uniform-cost hex steps)");
+        assert_eq!(
+            cells.len(),
+            4,
+            "shortest route is 4 cells (3 uniform-cost hex steps)"
+        );
     }
 }
 
@@ -694,7 +701,10 @@ pub fn find(
         }
     }
 
-    let path: Vec<vision::P> = cells.into_iter().map(|c| grid.shape.cell_center(c)).collect();
+    let path: Vec<vision::P> = cells
+        .into_iter()
+        .map(|c| grid.shape.cell_center(c))
+        .collect();
     Ok(PathOutcome {
         path,
         cost: total,
@@ -865,9 +875,17 @@ mod find_tests {
         )
         .expect("a reachable hex route must resolve, not read Unreachable");
         assert_eq!(outcome.path.first(), Some(&start));
-        assert_eq!(outcome.path.last(), Some(&goal), "route reaches the correct hex goal cell");
+        assert_eq!(
+            outcome.path.last(),
+            Some(&goal),
+            "route reaches the correct hex goal cell"
+        );
         // 70 uniform-cost axial steps along the (1,-1) direction.
-        assert!((outcome.cost - 70.0).abs() < 1e-9, "cost = {}", outcome.cost);
+        assert!(
+            (outcome.cost - 70.0).abs() < 1e-9,
+            "cost = {}",
+            outcome.cost
+        );
     }
 
     #[test]
