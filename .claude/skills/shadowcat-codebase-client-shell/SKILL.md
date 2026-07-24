@@ -35,6 +35,14 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 - `src/client/ui-kit/src/i18n.svelte.ts` — `t(key, params)`, `locale()`, the `i18n` adapter over
   core `i18n.ts` `I18n`; catalogs in `ui-kit/src/locales/`.
 - `src/client/ui-kit/src/{sceneInteraction,actorSelection,tokenSelection}.*` — AppContext seams.
+- **`AppContext.serverRole`** (`appContext.ts`) — the caller's SERVER tier (`"admin" | "user"`),
+  distinct from the per-world `role`. Gates admin-only UI (the settings module's user manager).
+  Derived in `App.svelte` from `/api/me` as `me?.server_role === "admin" ? "admin" : "user"`, so an
+  absent or unrecognized value yields `"user"` — fail-closed. **It is COSMETIC**: the server
+  re-checks every admin route through the `AdminUser` extractor, so a forged client gains nothing.
+  Never gate an admin surface on the per-world `role` instead: `permission_context` maps
+  `ServerRole::Admin → WorldRole::Gm`, so a world-role check is satisfied by any GM. All three
+  `setAppContext` fixture sites default it to `"user"` so no existing test silently gains admin UI.
 - `AppContext.pathfind` (`src/client/ui-kit/src/appContext.ts`) — correlated-request seam: issues a
   `Pathfind` frame via `WsClient.pathfind` and resolves with `PathResult` or rejects with
   `PathError`; wired through `WorldSession` and consumed by `scene-tools` measure-tool route mode.

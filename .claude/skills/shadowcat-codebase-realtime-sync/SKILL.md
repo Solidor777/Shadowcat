@@ -46,6 +46,28 @@ optimistically and roll back on divergence.
 - `src/server/src/http/{routes.rs,mod.rs}` — HTTP routes (login, assets, embed).
 - `src/server/src/auth/session.rs` — `SqlxSqliteStore` (DB-backed sessions), `spawn_session_sweep`,
   `SessionUser`/`AuthUser`/`AdminUser`; `auth/{password,role}.rs`.
+- **Accounts + world seating.** `POST`/`GET /api/users` are admin-only, gated by the **`AdminUser`
+  extractor** — the chokepoint for every server-tier gate. **INVARIANT: never build a server-tier
+  gate on world role.** `permission_context` maps `ServerRole::Admin → WorldRole::Gm`, so any
+  world-role check is satisfied by an ordinary GM; `AdminUser` reads the session's `ServerRole`
+  directly and, being an extractor, rejects BEFORE body deserialization. `create_user_unique` is a
+  single guarded `NOCASE` INSERT (clean 409, never a 500 or a check-then-act pair), and the ASCII
+  username policy is applied at every insertion path including `/api/setup`/`bootstrap_admin`.
+- **`src/server/src/auth/invite.rs` + the world-invite repository methods** — a GM mints an invite
+  for their own world; the invitee redeems it from their OWN session (`POST /api/invites/accept`
+  with the code in the BODY, never the URL — a path-borne credential reaches the tower-http trace
+  span, browser history, `Referer`, and proxy logs). Two invariants: **(1) redemption failures are
+  UNIFORM** — invalid, expired, revoked and already-consumed are indistinguishable in status, body
+  AND verify count (exactly one Argon2 verify per path, using a dummy PHC when no row matches,
+  mirroring `anti_enumeration_phc`); a distinguishable path relocates the username oracle rather
+  than closing it, and the property is pinned by a `#[cfg(test)]` verify counter, not by timing.
+  **(2) Consume is a SINGLE guarded `UPDATE … RETURNING`** with every lifecycle predicate in the
+  WHERE, seating sharing its transaction, so concurrent redemption cannot double-seat.
+  **Why seating is by invite and not by name:** `add_member`-by-username returned 404-vs-204 and so
+  leaked username existence to any authenticated account (`create_world` requires only `AuthUser`,
+  so anyone can become a GM) — contradicting the constant-time verify `/api/login` already pays to
+  hide exactly that. A uniform 204 would NOT have closed it, because seating-on-hit stays
+  observable via `list_members`. Naming a target is the disclosure; the invite removes the naming.
 - `src/client/core/src/ws-client.ts` — client WS connection + resync.
 - `src/client/core/src/store.ts` — `DocumentStore implements ReadableDocuments` (authoritative,
   rollback base).
