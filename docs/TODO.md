@@ -191,7 +191,7 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   (Surfaced by the Task 14g `[sec]` review.)
 
 
-## Blocked on an egress-path actor lookup that isn't pool-contended — inherited owner is a stranger at egress
+## Actionable now (deferred on cost, NOT blocked) — inherited owner is a stranger at egress
 - TODO: Task 14i made token ownership EFFECTIVE (`effective_owner(token) = the token's own owner,
   else the linked actor's owner`) on the write-authz path and on the four scene vision/lit-mask
   sites, but the EGRESS path was not migrated: `filter_properties`, `collect_hidden`,
@@ -201,6 +201,13 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   direction is under-permit (fail-closed), so nothing leaks — the inconsistency is that write says
   "owner" and egress says "stranger" for the same user and document. Closing it needs a
   per-recipient, per-event actor lookup on the egress hot path, which `filter_command`'s own
-  comment already flags as pool-contended; do it when that path gains a cheap resolved-actor
-  cache rather than by adding a query per recipient per frame. (Disclosed by Task 14i; see
+  comment already flags as pool-contended. Nothing prevents doing it today — the deferral is a
+  cost judgement (a query per recipient per frame), not a missing prerequisite; a resolved-actor
+  cache would make it cheap but is not scoped work and must not be treated as a blocker.
+  **Second, sharper consequence, not just the `owner_or_gm` tiers:** on a token whose
+  `permissions.default` is `"none"` with no per-user entry, an inheriting owner gets
+  `WRITE_FIELDS` at `apply_intent` (via the owner floor) but is denied `cap::READ` at egress — a
+  document its owner can write but never receives. Unreachable on `buildTokenDoc`'s shipping
+  `observer` default, so not live today, but whoever closes this should fix the asymmetry, not
+  only the property tiers. (Disclosed by Task 14i; see
   `.superpowers/sdd/task-14i-token-ownership-report.md`.)
