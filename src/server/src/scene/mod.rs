@@ -1366,15 +1366,6 @@ impl SceneEcs {
         out
     }
 
-    /// The token's effective vision modes as `(floor_min_illumination, range_cells, render_hint)`
-    /// triples. `range_cells == 0.0` ⇒ unlimited. `render_hint` mirrors `VisionMode.render_hint`
-    /// (e.g. `Some("desaturate")` for darkvision). Precedence (mirrors `resolveTokenActor` in
-    /// actor.ts): a LINKED token (`actor_id` present) resolves the shared actor and applies
-    /// `overrides.vision` as a wholesale replacement when present; a dangling link (actor absent)
-    /// yields normal, ignoring overrides. An INSTANCED token (no `actor_id`) uses its
-    /// `embedded.actor[0].engine.vision` without overrides. An unknown mode id is dropped
-    /// (fail-closed: it contributes no vision floor). Always returns ≥1 triple (normal fallback
-    /// with `render_hint: None`).
     /// The user this token effectively belongs to — the SAME rule the write-authz
     /// path enforces (`permission::effective_owner`): the token's own `owner`
     /// override, else its LINKED actor's owner, joined live through `self.actors`
@@ -1391,6 +1382,15 @@ impl SceneEcs {
         crate::data::permission::effective_owner(token, linked)
     }
 
+    /// The token's effective vision modes as `(floor_min_illumination, range_cells, render_hint)`
+    /// triples. `range_cells == 0.0` ⇒ unlimited. `render_hint` mirrors `VisionMode.render_hint`
+    /// (e.g. `Some("desaturate")` for darkvision). Precedence (mirrors `resolveTokenActor` in
+    /// actor.ts): a LINKED token (`actor_id` present) resolves the shared actor and applies
+    /// `overrides.vision` as a wholesale replacement when present; a dangling link (actor absent)
+    /// yields normal, ignoring overrides. An INSTANCED token (no `actor_id`) uses its
+    /// `embedded.actor[0].engine.vision` without overrides. An unknown mode id is dropped
+    /// (fail-closed: it contributes no vision floor). Always returns ≥1 triple (normal fallback
+    /// with `render_hint: None`).
     pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64, Option<String>)> {
         let modes = self.resolved_vision_modes();
         let bands = self.resolved_bands();

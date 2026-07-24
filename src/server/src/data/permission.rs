@@ -290,6 +290,16 @@ fn effective_role(
     // provenance-only meaning and grants no capability. `DocRole` orders
     // Owner < Observer < None, so `min` only ever strengthens — a document's
     // own stronger grant is never downgraded by this floor.
+    //
+    // READ + WRITE_FIELDS is the BUILT-IN floor (`role_floor`) only. The floored
+    // role is the same role that then selects additive capability grants, so an
+    // effective owner also picks up `permissions.capabilities.by_role[Owner]` and
+    // the world's `by_role[Owner]` — up to and including DELETE /
+    // MANAGE_EMBEDDED / EDIT_PERMISSIONS if a deployment grants them there.
+    // Intended: it is exactly what a stamped `permissions.users[user] = Owner`
+    // yields, so inherited and stamped ownership cannot diverge. Nothing widens
+    // out of the box (the shipped `by_role` maps are empty); a deployment that
+    // populates `by_role[Owner]` is choosing to hand every Owner that capability.
     let owner_floor = doc.doc_type == TOKEN_DOC_TYPE && effective_owner == Some(user);
     let floor = |r: DocRole| {
         if owner_floor {
@@ -2198,7 +2208,9 @@ mod tests {
         );
         assert!(
             !a_player.has(cap::EDIT_PERMISSIONS) && !a_player.has(cap::DELETE),
-            "the floor stops at WRITE_FIELDS — no re-assigning or deleting"
+            "the BUILT-IN floor stops at WRITE_FIELDS — no re-assigning or deleting. \
+             Additive `by_role[Owner]` grants can widen past it; see \
+             `world_by_role_owner_grants_reach_an_inheriting_owner`"
         );
         assert!(
             a_player.is_owner && a_player.can_see(Visibility::OwnerOrGm),
@@ -2225,5 +2237,61 @@ mod tests {
         let a = resolve_access_with_owner(player, WorldRole::Player, &token, None);
         assert!(a.has(cap::WRITE_FIELDS));
         assert!(!a.is_owner, "no effective owner => not the OwnerOrGm subject");
+    }
+
+    #[test]
+    fn world_by_role_owner_grants_reach_an_inheriting_owner() {
+        use crate::data::document::CapabilityGrants;
+        // The owner floor sets the ROLE, and that role also selects additive
+        // capability grants — so an INHERITING owner receives `by_role[Owner]`
+        // exactly as a stamped `permissions.users[user] = Owner` would. That
+        // equivalence is the point: inherited and stamped ownership must not
+        // diverge. A deployment that puts EDIT_PERMISSIONS in `by_role[Owner]`
+        // is choosing to hand it to every Owner, inheriting ones included; this
+        // test documents that as intended, not as an accident of the floor.
+        let actor_id = Uuid::from_u128(42);
+        let player = Uuid::from_u128(1);
+        let stranger = Uuid::from_u128(2);
+        let mut token = token_linked_to(Some(actor_id));
+        token.permissions.default = DocRole::Observer;
+        let actor = actor_owned_by(actor_id, Some(player));
+        let owner = effective_owner(&token, Some(&actor));
+
+        let mut world_grants = CapabilityGrants::default();
+        world_grants
+            .by_role
+            .entry(DocRole::Owner)
+            .or_default()
+            .insert(cap::EDIT_PERMISSIONS.to_string());
+
+        let inheriting =
+            resolve_access_world_with_owner(player, WorldRole::Player, &token, &world_grants, owner);
+        assert!(
+            inheriting.has(cap::EDIT_PERMISSIONS),
+            "a world by_role[Owner] grant reaches an owner who inherits through the actor link"
+        );
+
+        // Equivalence leg: a STAMPED owner on the same doc, with no effective
+        // owner at all, resolves the identical grant — the two paths agree.
+        let mut stamped = token_linked_to(None);
+        stamped.permissions.default = DocRole::Observer;
+        stamped.permissions.users.insert(player, DocRole::Owner);
+        assert!(
+            resolve_access_world(player, WorldRole::Player, &stamped, &world_grants)
+                .has(cap::EDIT_PERMISSIONS)
+        );
+
+        // Non-vacuity: the grant is role-selected, not unconditional — a
+        // non-owner on the same document with the same world grants gets nothing.
+        assert!(
+            !resolve_access_world_with_owner(
+                stranger,
+                WorldRole::Player,
+                &token,
+                &world_grants,
+                owner
+            )
+            .has(cap::EDIT_PERMISSIONS)
+        );
     }
 }
