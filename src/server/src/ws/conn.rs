@@ -507,6 +507,11 @@ async fn handle_socket(
 /// so `get_explored` can be awaited between them without holding the lock.
 /// INVARIANT (one-shot-to-requester): the reply is placed directly on `etx`; it is never
 /// broadcast to the room.
+/// INVARIANT (scene presence): a `Pathfind` frame names no token, so the derive-the-scene-from-
+/// the-token rule `Room::execute_move` applies has no counterpart here; instead a non-GM
+/// requester must control a token in the named scene. Without it a player can route-preview
+/// inside a scene they have never entered — an `unrestricted` scene has no visibility mask to
+/// fail closed on, and the returned polyline discloses that scene's `blocksMove` wall layout.
 #[allow(clippy::too_many_arguments)]
 async fn handle_pathfind(
     request_id: Uuid,
@@ -519,6 +524,26 @@ async fn handle_pathfind(
     repo: &dyn crate::data::repository::Repository,
 ) -> ServerMsg {
     let is_gm = ctx.world_role == crate::data::document::WorldRole::Gm;
+    // Step 0: non-GM presence gate. Resolved through `player_vision_inputs`, which applies the
+    // same effective-ownership and `parent_id` scoping as every other "does this user control a
+    // token here" test in the vision family: its polygon set is empty exactly when the user owns
+    // no token in `scene`, so re-deriving ownership here would fork that rule. The reply is the
+    // same generic `PathError` an out-of-mask route gets — it discloses nothing about whether the
+    // scene exists, is walled, or is merely unreachable.
+    if !is_gm {
+        let present = {
+            let s = room.scene().read().await;
+            !s.player_vision_inputs(ctx.user_id, scene, Uuid::nil())
+                .polygons_at(start)
+                .is_empty()
+        };
+        if !present {
+            return ServerMsg::PathError {
+                request_id,
+                message: "unreachable".to_string(),
+            };
+        }
+    }
     // Step 1: check movement_restriction under a short read guard, then drop it.
     let need_explored = !is_gm && {
         let s = room.scene().read().await;
@@ -627,7 +652,10 @@ async fn handle_move_request(
                 request_id,
                 token_id,
                 mover: ctx.user_id,
-                scene: scene_id,
+                // The scene the token actually lives in (`execute_move` derives it from the
+                // token, never from the request), so the per-recipient egress clip and the
+                // client's viewed-scene filter both key on the committed scene.
+                scene: exec.scene,
                 start_server_ms: now as f64,
                 duration_ms: exec.duration_ms,
                 stop: [exec.stop.0, exec.stop.1],
@@ -2040,6 +2068,181 @@ mod tests {
         assert!(
             matches!(player_result, ServerMsg::PathError { ref message, .. } if message == "unreachable"),
             "non-GM in dark scene should be unreachable; got {player_result:?}"
+        );
+    }
+
+    /// A `Pathfind` naming a scene the requester controls no token in is refused, even when that
+    /// scene is `unrestricted` (no visibility mask to fail closed on). Otherwise a player could
+    /// route-preview inside a scene they have never entered and read its `blocksMove` wall layout
+    /// off the returned polyline. The GM is unaffected, and the requester's own scene still routes.
+    #[tokio::test]
+    async fn pathfind_refuses_a_scene_the_requester_controls_no_token_in() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::{DocRole, WorldRole};
+        use crate::data::membership::PermissionContext;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let author = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", author, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: author,
+            world_role: WorldRole::Gm,
+        };
+        let p = repo
+            .create_user("player", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world.id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg
+            .get_or_create(repo.as_ref(), world.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let (scene_a, scene_b, token_id, wall_id, ws_id) = (
+            Uuid::from_u128(0xB001),
+            Uuid::from_u128(0xB002),
+            Uuid::from_u128(0xB003),
+            Uuid::from_u128(0xB004),
+            Uuid::from_u128(0xB005),
+        );
+
+        // Unrestricted world-wide: no visibility mask anywhere, so nothing else fails closed.
+        let mut ws = wdoc(world.id, ws_id, "world-settings");
+        ws.owner = Some(author);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": false, "fog": false,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        ws.engine = Some(ws_engine(ws.system.clone()));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        for id in [scene_a, scene_b] {
+            let mut scene = wdoc(world.id, id, "scene");
+            scene.owner = Some(author);
+            scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+            room.publish(
+                repo.as_ref(),
+                &gm_ctx,
+                vec![crate::data::command::Operation::Create { doc: scene }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+        }
+
+        // The player's only token lives in A.
+        let mut token = wdoc(world.id, token_id, "token");
+        token.parent_id = Some(scene_a);
+        token.owner = Some(p);
+        token.permissions.users.insert(p, DocRole::Owner);
+        token.engine = Some(token_engine(50.0, 50.0));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: token }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // B holds wall geometry the player must not be able to probe.
+        let mut wall = wdoc(world.id, wall_id, "wall");
+        wall.parent_id = Some(scene_b);
+        wall.owner = Some(author);
+        wall.engine = Some(
+            json!({ "seg": { "x1": 200, "y1": -100, "x2": 200, "y2": 100 }, "blocksMove": true }),
+        );
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: wall }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let rid = Uuid::from_u128(0xF002);
+
+        let leaked = handle_pathfind(
+            rid,
+            scene_b,
+            (50.0, 50.0),
+            vec![(450.0, 50.0)],
+            0.1,
+            &player,
+            &room,
+            repo.as_ref(),
+        )
+        .await;
+        assert!(
+            matches!(leaked, ServerMsg::PathError { .. }),
+            "a player with no token in B must not route inside B; got {leaked:?}"
+        );
+
+        // Control: the player's own scene still routes (the guard cannot break play).
+        let own = handle_pathfind(
+            rid,
+            scene_a,
+            (50.0, 50.0),
+            vec![(450.0, 50.0)],
+            0.1,
+            &player,
+            &room,
+            repo.as_ref(),
+        )
+        .await;
+        assert!(
+            matches!(own, ServerMsg::PathResult { .. }),
+            "the requester's own scene must still route; got {own:?}"
+        );
+
+        // The GM routes in any scene — presence is a non-GM gate only.
+        let gm = handle_pathfind(
+            rid,
+            scene_b,
+            (50.0, 50.0),
+            vec![(450.0, 50.0)],
+            0.1,
+            &gm_ctx,
+            &room,
+            repo.as_ref(),
+        )
+        .await;
+        assert!(
+            matches!(gm, ServerMsg::PathResult { .. }),
+            "GM routing is unaffected; got {gm:?}"
         );
     }
 

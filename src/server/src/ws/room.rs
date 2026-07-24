@@ -22,6 +22,11 @@ use crate::ws::protocol::{ResyncSource, ServerMsg};
 /// prefix of the path that was walked (render animation input), the animation duration,
 /// the time-tagged position samples, and the per-sample vision trajectory for the mover.
 pub(crate) struct MoveExecution {
+    /// The scene the moved token actually lives in, derived from the ECS — NOT the scene the
+    /// request named. The `MoveStream` frame is stamped with this so its `scene` (which the
+    /// per-recipient egress clip and the client's viewed-scene filter both key on) can never
+    /// describe a scene other than the one the position was committed to.
+    pub scene: Uuid,
     /// The last successfully reached path coordinate (the committed position after the move).
     pub stop: (f64, f64),
     /// The legal prefix of the requested path including `start` through `stop`.
@@ -411,6 +416,16 @@ impl Room {
     /// pure path executor, atomically commits the token to its stop location, and enforces a
     /// per-token `moving` lock so a client cannot re-dispatch while the animation is in flight.
     ///
+    /// # Scene derivation (load-bearing)
+    ///
+    /// The scene every gate input is keyed on — restriction, cell size, visibility mask,
+    /// explored blob, walls, and regions — is DERIVED from the token's own `parent_id`
+    /// (`SceneEcs::token_move`), never taken from the caller's `scene_id`. Gating a token that
+    /// lives in scene A against scene B's walls, mask, and regions is a full bypass of the
+    /// movement gate for a token the requester legitimately owns. `Room::publish`'s drag path
+    /// has always derived the scene this way; this mirrors it. `scene_id` is additionally
+    /// required to agree with the derived scene (defense in depth — it selects nothing).
+    ///
     /// # Critical-section invariant (load-bearing)
     ///
     /// `publish_guard` is held across the ENTIRE validate→commit body: gate-input resolution,
@@ -485,21 +500,39 @@ impl Room {
         let restriction;
         let cell;
         let start;
+        let token_scene;
         let visible_cells;
         let is_revealed;
         {
             let scene = self.scene.read().await;
 
-            // Verify the token exists and get its committed position (the `/engine/x,y` band —
-            // the sole position source since this task; `/system` never carries position).
-            start = scene.token_position(token).ok_or(DataError::Forbidden)?;
+            // Resolve the token's OWN scene and its committed position (the `/engine/x,y` band —
+            // the sole position source; `/system` never carries position) from one authoritative
+            // ECS read. `token_move(token, &[])` is the committed pre-image with no changes
+            // applied, which is exactly how `Room::publish` derives the scene of a dragged token —
+            // the precedent this mirrors, and why the drag path never had to trust a client scene.
+            // Fail-closed `None`: not a token entity, no `parent_id` (a parentless doc is never
+            // hydrated as a scene entity at all), or no `/engine/x,y`.
+            let (owner_scene, committed, _) =
+                scene.token_move(token, &[]).ok_or(DataError::Forbidden)?;
+            token_scene = owner_scene;
+            start = committed;
+            // Every gate input below is keyed on `token_scene`, so the request's own `scene_id`
+            // selects nothing. Defense in depth: a request that disagrees is refused rather than
+            // silently executed against a scene the client did not name.
+            if scene_id != token_scene {
+                return Err(DataError::Forbidden);
+            }
 
-            let settings = scene.resolve_scene(scene_id);
-            cell = scene
+            let settings = scene.resolve_scene(token_scene);
+            // Fail-closed on a `parent_id` with no scene document: `scene_grid_sizes` carries an
+            // entry (defaulting to 100) for every live scene, so an absent entry means the scene
+            // itself is gone — no authored cell size exists to index the visibility mask, the
+            // region field, or the traversal walk against.
+            cell = *scene
                 .scene_grid_sizes()
-                .get(&scene_id)
-                .copied()
-                .unwrap_or(100.0);
+                .get(&token_scene)
+                .ok_or(DataError::Forbidden)?;
 
             // GMs use Unrestricted (mask-skipped), but `execute_move` still honors walls for
             // GMs (step-1 `blocks_move` is unconditional). This intentionally diverges from
@@ -522,7 +555,7 @@ impl Room {
             visible_cells = if matches!(restriction, MovementRestriction::Unrestricted) {
                 std::collections::BTreeSet::new()
             } else {
-                scene.visible_cells_cached(ctx.user_id, scene_id, lenient)
+                scene.visible_cells_cached(ctx.user_id, token_scene, lenient)
             };
         } // scene read guard dropped here — safe to await (publish_guard still held)
 
@@ -532,7 +565,7 @@ impl Room {
         // (falls back to visible-only, which is stricter but safe).
         let visible = if is_revealed {
             let mut union = visible_cells;
-            let explored = match repo.get_explored(scene_id, ctx.user_id).await {
+            let explored = match repo.get_explored(token_scene, ctx.user_id).await {
                 Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob),
                 _ => crate::scene::explored::ExploredSet::new(),
             };
@@ -560,7 +593,7 @@ impl Room {
             let scene = self.scene.read().await;
             outcome = move_exec::execute_move(
                 &scene,
-                scene_id,
+                token_scene,
                 token,
                 &path,
                 restriction,
@@ -599,7 +632,7 @@ impl Room {
             mover_vision = if ctx.world_role == crate::data::document::WorldRole::Gm {
                 None
             } else {
-                let vision_inputs = scene.player_vision_inputs(ctx.user_id, scene_id, token);
+                let vision_inputs = scene.player_vision_inputs(ctx.user_id, token_scene, token);
                 Some(
                     samples
                         .iter()
@@ -617,6 +650,7 @@ impl Room {
         // validated by execute_move), so this only fires when the very first step was blocked.
         if (outcome.stop.0 - start.0).abs() < 1e-9 && (outcome.stop.1 - start.1).abs() < 1e-9 {
             return Ok(MoveExecution {
+                scene: token_scene,
                 stop: start,
                 render_path: vec![start],
                 duration_ms: 0.0,
@@ -678,6 +712,7 @@ impl Room {
         }
 
         Ok(MoveExecution {
+            scene: token_scene,
             stop: outcome.stop,
             render_path: outcome.render_path,
             duration_ms,
@@ -3058,6 +3093,288 @@ mod room_tests {
         assert_eq!(res.render_path.last().copied(), Some(res.stop));
         // Committed ECS position must equal stop (atomic write invariant).
         assert_eq!(h.committed_pos(h.token_id).await, res.stop);
+    }
+
+    /// `movement_scene("visible", true)` — one player token in scene A, lit only near the
+    /// origin — plus a SECOND scene B in the same world, for exercising a `MoveRequest` that
+    /// names a scene the moved token does not live in.
+    ///
+    /// `b_unrestricted`: B carries a per-scene `movementRestriction: "unrestricted"` override,
+    /// so gating against B skips the visibility mask entirely.
+    /// `b_lit_token`: the player also owns a token in B under a wide light, so B's mask
+    /// authorizes scene-local coordinates that are dark (and therefore unauthorized) in A.
+    ///
+    /// Returns the handle for scene A and B's id.
+    async fn movement_scene_with_second_scene(
+        b_unrestricted: bool,
+        b_lit_token: bool,
+    ) -> (MovementHandle, Uuid) {
+        use crate::data::document::DocRole;
+        use serde_json::json;
+
+        let h = movement_scene("visible", true).await;
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let (scene_b, token_b, light_b) = (
+            Uuid::from_u128(0x5CEB_0001),
+            Uuid::from_u128(0x5CEB_0002),
+            Uuid::from_u128(0x5CEB_0003),
+        );
+
+        let mut scene = wdoc(h.world_id, scene_b, "scene");
+        scene.owner = Some(h.gm.user_id);
+        scene.engine = Some(if b_unrestricted {
+            json!({
+                "grid": { "kind": "square", "size": 100 },
+                "vision": { "movementRestriction": "unrestricted" }
+            })
+        } else {
+            json!({ "grid": { "kind": "square", "size": 100 } })
+        });
+        h.room
+            .publish(
+                &h.repo,
+                &h.gm,
+                vec![Operation::Create { doc: scene }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+        if b_lit_token {
+            // Vision source in B so the player has an LOS polygon there at all.
+            let mut token = wdoc(h.world_id, token_b, "token");
+            token.parent_id = Some(scene_b);
+            token.owner = Some(h.player.user_id);
+            token
+                .permissions
+                .users
+                .insert(h.player.user_id, DocRole::Owner);
+            token.engine = Some(token_engine(250.0, 50.0));
+            h.room
+                .publish(
+                    &h.repo,
+                    &h.gm,
+                    vec![Operation::Create { doc: token }],
+                    0,
+                    WriteOrigin::Client,
+                )
+                .await
+                .unwrap();
+
+            // Dim boundary = 6 cells = 600 units from (250,50): cells (0,0)..(8,0) are lit in B,
+            // whereas A's light (bright 1.5 / dim 3.0 from (50,50)) leaves cell (4,0) dark.
+            let mut light = wdoc(h.world_id, light_b, "light");
+            light.parent_id = Some(scene_b);
+            light.owner = Some(h.gm.user_id);
+            light.system = json!({
+                "x": 250.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            });
+            light.engine = Some(light.system.clone());
+            h.room
+                .publish(
+                    &h.repo,
+                    &h.gm,
+                    vec![Operation::Create { doc: light }],
+                    0,
+                    WriteOrigin::Client,
+                )
+                .await
+                .unwrap();
+        }
+
+        (h, scene_b)
+    }
+
+    #[tokio::test]
+    async fn execute_move_refuses_a_scene_id_the_token_does_not_live_in_unrestricted() {
+        // Cross-scene gate substitution: the token lives in A (movementRestriction "visible",
+        // lit only near the origin) but the request names B, which is "unrestricted". Gating
+        // against B would skip the mask entirely and teleport the token 20 cells across A's fog.
+        let (h, scene_b) = movement_scene_with_second_scene(true, false).await;
+        let far_dark = (2050.0, 2050.0);
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                scene_b,
+                h.token_id,
+                vec![h.start, far_dark],
+                now_millis(),
+            )
+            .await;
+        assert!(
+            res.is_err(),
+            "a MoveRequest naming a scene the token does not live in must be refused"
+        );
+        assert_eq!(
+            h.committed_pos(h.token_id).await,
+            h.start,
+            "the refused move must not have committed a position"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_move_refuses_a_scene_id_the_token_does_not_live_in_visible() {
+        // Same substitution with every scene "visible": B's mask (a wide light around the
+        // player's own token in B) would authorize scene-local coordinates that are dark in A.
+        let (h, scene_b) = movement_scene_with_second_scene(false, true).await;
+        // Cell (4,0): inside B's dim radius, outside A's.
+        let dark_in_a = (450.0, 50.0);
+
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                scene_b,
+                h.token_id,
+                vec![h.start, dark_in_a],
+                now_millis(),
+            )
+            .await;
+        assert!(
+            res.is_err(),
+            "B's mask must never authorize movement of a token that lives in A"
+        );
+        assert_eq!(
+            h.committed_pos(h.token_id).await,
+            h.start,
+            "the refused move must not have committed a position"
+        );
+
+        // Control (runs second: the refused request above committed nothing and took no moving
+        // lock): the same request named against A truncates short of the destination, proving
+        // A's own mask genuinely does not authorize it.
+        let control = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                vec![h.start, dark_in_a],
+                now_millis(),
+            )
+            .await
+            .expect("same-scene request is executed, then gated per cell");
+        assert_ne!(
+            control.stop, dark_in_a,
+            "control: A's own mask must not authorize this destination"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_move_still_executes_a_request_naming_the_tokens_own_scene() {
+        // Guard cannot silently break play: the legitimate same-scene move still commits.
+        let (h, _scene_b) = movement_scene_with_second_scene(true, true).await;
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                vec![h.start, h.lit_goal],
+                now_millis(),
+            )
+            .await
+            .expect("same-scene move must still succeed");
+        assert_eq!(res.stop, h.lit_goal);
+        assert_eq!(h.committed_pos(h.token_id).await, h.lit_goal);
+    }
+
+    #[tokio::test]
+    async fn execute_move_refuses_a_token_with_no_parent_scene() {
+        // Fail closed: a token with no resolvable scene has no gate inputs of its own, so the
+        // client's `scene_id` must never be used as a fallback.
+        use crate::data::document::DocRole;
+        let h = movement_scene("visible", true).await;
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let orphan_id = Uuid::from_u128(0x0FFA_1000);
+        let mut orphan = wdoc(h.world_id, orphan_id, "token");
+        orphan.parent_id = None;
+        orphan.owner = Some(h.player.user_id);
+        orphan
+            .permissions
+            .users
+            .insert(h.player.user_id, DocRole::Owner);
+        orphan.engine = Some(token_engine(50.0, 50.0));
+        h.room
+            .publish(
+                &h.repo,
+                &h.gm,
+                vec![Operation::Create { doc: orphan }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                orphan_id,
+                vec![(50.0, 50.0), (50.0, 150.0)],
+                now_millis(),
+            )
+            .await;
+        assert!(
+            matches!(res, Err(DataError::Forbidden)),
+            "a parentless token must be refused by the gate, not by a downstream write"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_move_refuses_a_token_whose_parent_scene_does_not_exist() {
+        // Fail closed: a dangling `parent_id` resolves to no scene document, so no cell size,
+        // restriction, mask, or wall set can be derived — the move is refused, never gated
+        // against the client's `scene_id` or a default cell size.
+        //
+        // The state is injected straight into the derived read-model: storage enforces the
+        // `parent_id` foreign key (and cascades on scene delete), so a dangling parent cannot be
+        // reached through `publish`. The gate must not depend on that storage guarantee.
+        // `DataError::Forbidden` (not a storage error) is asserted so the test cannot pass on the
+        // downstream write failing instead of the gate refusing.
+        use crate::data::document::DocRole;
+        let h = movement_scene("visible", true).await;
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let dangling_id = Uuid::from_u128(0xDA46_1000);
+        let ghost_scene = Uuid::from_u128(0xDA46_2000);
+        let mut dangling = wdoc(h.world_id, dangling_id, "token");
+        dangling.parent_id = Some(ghost_scene);
+        dangling.owner = Some(h.player.user_id);
+        dangling
+            .permissions
+            .users
+            .insert(h.player.user_id, DocRole::Owner);
+        dangling.engine = Some(token_engine(50.0, 50.0));
+        h.room
+            .scene()
+            .write()
+            .await
+            .apply_op(&Operation::Create { doc: dangling });
+
+        let res = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                ghost_scene,
+                dangling_id,
+                vec![(50.0, 50.0), (50.0, 150.0)],
+                now_millis(),
+            )
+            .await;
+        assert!(
+            matches!(res, Err(DataError::Forbidden)),
+            "a token whose parent scene does not exist must be refused by the gate"
+        );
     }
 
     #[tokio::test]
