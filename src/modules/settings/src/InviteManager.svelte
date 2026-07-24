@@ -4,7 +4,9 @@
     createWorldInvite,
     listWorldInvites,
     revokeWorldInvite,
+    listWorldMembers,
     type InviteEntry,
+    type WorldMember,
   } from "@shadowcat/core";
 
   /** The world tier's closed role set, mirroring the server's `WorldRole`.
@@ -23,13 +25,21 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let invites = $state<InviteEntry[]>([]);
+  let members = $state<WorldMember[]>([]);
   // The code is shown exactly once: the server stores only a hash of it, so it
   // is unrecoverable after this render.
   let minted = $state<string | null>(null);
 
+  // Both lists are re-read from the server on every state change this surface
+  // causes. The roster in particular must NOT come from AppContext's `members`
+  // map: that is a session-start snapshot, so a seat added during the session
+  // would never appear.
   async function refresh(): Promise<void> {
     try {
-      invites = await listWorldInvites(world);
+      [invites, members] = await Promise.all([
+        listWorldInvites(world),
+        listWorldMembers(world),
+      ]);
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     }
@@ -104,6 +114,15 @@
         </li>
       {/each}
       {#if invites.length === 0}<li class="empty">{t("settings.invites.empty")}</li>{/if}
+    </ul>
+    <h3>{t("settings.invites.members")}</h3>
+    <!-- A redemption happens in the invitee's session, so nothing here can
+         observe it: the GM re-reads on demand. -->
+    <button type="button" onclick={() => refresh()}>{t("settings.invites.refresh")}</button>
+    <ul>
+      {#each members as member (member.user)}
+        <li><span>{member.username} — {member.role}</span></li>
+      {/each}
     </ul>
   </section>
 {/if}

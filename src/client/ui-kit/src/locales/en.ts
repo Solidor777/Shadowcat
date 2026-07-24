@@ -45,6 +45,8 @@ export const en: Messages = {
   "settings.invites.consumed": "used",
   "settings.invites.revoked": "revoked",
   "settings.invites.expired": "expired",
+  "settings.invites.members": "Current members",
+  "settings.invites.refresh": "Refresh",
   "settings.invites.error": "Invite operation failed: {message}",
   "settings.users.title": "Accounts",
   "settings.users.username": "Account name",

@@ -2,6 +2,7 @@ import { expect, test, vi, afterEach } from "vitest";
 import {
   listUsers,
   createUser,
+  listWorldMembers,
   createWorldInvite,
   listWorldInvites,
   revokeWorldInvite,
@@ -22,9 +23,35 @@ test("listUsers GETs /api/users and returns the parsed accounts", async () => {
   expect(got).toEqual([{ id: "u-1", username: "root-admin", server_role: "admin" }]);
 });
 
-test("listUsers throws on the non-admin 403", async () => {
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 403 }));
+test("listUsers surfaces the server's reason on the non-admin 403", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({ ok: false, status: 403, json: async () => ({ error: "forbidden" }) }),
+  );
+  await expect(listUsers()).rejects.toThrow(/forbidden/);
+});
+
+test("listUsers falls back to the status when the body is not JSON", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => {
+        throw new Error("not json");
+      },
+    }),
+  );
   await expect(listUsers()).rejects.toThrow(/403/);
+});
+
+test("listWorldMembers GETs the world roster", async () => {
+  const member = { user: "u-1", username: "player-one", role: "player" };
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => [member] });
+  vi.stubGlobal("fetch", fetchMock);
+  const got = await listWorldMembers("w1");
+  expect(fetchMock).toHaveBeenCalledWith("/api/worlds/w1/members", expect.any(Object));
+  expect(got).toEqual([member]);
 });
 
 test("createUser POSTs the credential once and omits server_role when unset", async () => {

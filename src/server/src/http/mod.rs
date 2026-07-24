@@ -1235,6 +1235,18 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_re_typed_code_redeems_regardless_of_hex_case() {
+        let f = invite_fixture().await;
+        let (_, code) = mint_invite(&f.gm, &f.world_id, "player").await;
+        // Hex case carries no information, so an auto-capitalized or re-typed
+        // code must not fall into the (undiagnosable) uniform-failure bucket.
+        f.outsider
+            .post(&format!("/api/invites/{}/accept", code.to_uppercase()))
+            .await
+            .assert_status_ok();
+    }
+
+    #[tokio::test]
     async fn an_invite_is_single_use_even_for_a_different_caller() {
         let f = invite_fixture().await;
         let (_, code) = mint_invite(&f.gm, &f.world_id, "player").await;

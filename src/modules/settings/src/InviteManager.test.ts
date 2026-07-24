@@ -17,6 +17,7 @@ vi.mock("@shadowcat/core", async (importOriginal) => {
     }),
     listWorldInvites: vi.fn().mockResolvedValue([]),
     revokeWorldInvite: vi.fn().mockResolvedValue(undefined),
+    listWorldMembers: vi.fn().mockResolvedValue([]),
   };
 });
 
@@ -101,6 +102,34 @@ describe("InviteManager", () => {
 
     expect(await screen.findByText(/settings.invites.consumed/)).toBeTruthy();
     expect(screen.queryByText("settings.invites.revoke")).toBeNull();
+  });
+
+  it("re-reads the roster from the server after every change it causes", async () => {
+    const core = await import("@shadowcat/core");
+    // AppContext's `members` map is a session-start snapshot; a seat added
+    // during the session would never appear in it.
+    vi.mocked(core.listWorldMembers).mockResolvedValue([
+      { user: "u-1", username: "redeemer", role: "player" },
+    ]);
+    render(InviteManager, { context: setAppContextForTest({ role: "gm", world: "w1" }) });
+
+    await vi.waitFor(() => expect(vi.mocked(core.listWorldMembers)).toHaveBeenCalledWith("w1"));
+    expect(await screen.findByText(/redeemer/)).toBeTruthy();
+
+    // Minting re-reads both lists...
+    const before = vi.mocked(core.listWorldMembers).mock.calls.length;
+    await fireEvent.click(screen.getByText("settings.invites.mint"));
+    await vi.waitFor(() =>
+      expect(vi.mocked(core.listWorldMembers).mock.calls.length).toBeGreaterThan(before),
+    );
+
+    // ...and so does the explicit refresh, which is how a GM observes a
+    // redemption that happened in someone else's session.
+    const afterMint = vi.mocked(core.listWorldMembers).mock.calls.length;
+    await fireEvent.click(screen.getByText("settings.invites.refresh"));
+    await vi.waitFor(() =>
+      expect(vi.mocked(core.listWorldMembers).mock.calls.length).toBeGreaterThan(afterMint),
+    );
   });
 
   it("surfaces the server's rejection", async () => {

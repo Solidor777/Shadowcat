@@ -20,8 +20,26 @@ export interface ServerUser {
 /** Every account on the server. Admin-only; a non-admin caller gets a 403. */
 export async function listUsers(): Promise<ServerUser[]> {
   const res = await fetch("/api/users", { headers: { accept: "application/json" } });
-  if (!res.ok) throw new Error(`list users failed: ${res.status}`);
+  if (!res.ok) throw new Error(await restError(res, "list users failed"));
   return (await res.json()) as ServerUser[];
+}
+
+/** A world member. Visible to every member of that world. */
+export interface WorldMember {
+  user: string;
+  username: string;
+  role: WorldRole;
+}
+
+/** A world's roster, straight from the server. Distinct from `AppContext`'s
+ * `members` map, which is a session-start snapshot: a surface that must reflect
+ * a membership change it just caused re-reads through this. */
+export async function listWorldMembers(world: string): Promise<WorldMember[]> {
+  const res = await fetch(`/api/worlds/${world}/members`, {
+    headers: { accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(await restError(res, "list members failed"));
+  return (await res.json()) as WorldMember[];
 }
 
 /** Create an account. Admin-only. `serverRole` defaults to a plain user

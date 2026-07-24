@@ -50,12 +50,20 @@ pub fn mint() -> Result<MintedCode, argon2::password_hash::Error> {
 
 /// Split a code into its selector and verifier. `None` for any malformed
 /// input; callers must treat that identically to an unknown or unusable code.
+///
+/// Both halves are matched case-INSENSITIVELY: `Uuid::parse_str` accepts either
+/// hex case, and the verifier is folded to the lowercase form `mint` emits
+/// before it reaches the hash. Hex case carries no information, so folding it
+/// widens the accepted spelling of one code without widening the value space —
+/// the 2^-128 guess bound is unchanged. A case-SENSITIVE verifier would instead
+/// turn a re-typed or auto-capitalized code into an indistinguishable
+/// "unusable code" that the holder cannot diagnose.
 pub fn parse(code: &str) -> Option<(Uuid, String)> {
     let (id, secret) = code.split_once('.')?;
     if secret.len() != SECRET_HEX_LEN || !secret.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    Some((Uuid::parse_str(id).ok()?, secret.to_owned()))
+    Some((Uuid::parse_str(id).ok()?, secret.to_ascii_lowercase()))
 }
 
 /// A real Argon2id hash of a fixed throwaway secret, computed once. Redemption
@@ -113,6 +121,15 @@ mod tests {
             assert_eq!(secret.len(), SECRET_HEX_LEN);
             assert!(seen.insert(secret), "CSPRNG repeated a 128-bit secret");
         }
+    }
+
+    #[test]
+    fn a_code_is_matched_case_insensitively_in_both_halves() {
+        let m = mint().expect("mint");
+        let (id, secret) = parse(&m.code.to_uppercase()).expect("parse uppercased");
+        assert_eq!(id, m.id);
+        // Folded back to the minted spelling, so it still verifies.
+        assert!(verify_password(&secret, &m.secret_hash));
     }
 
     #[test]
