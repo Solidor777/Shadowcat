@@ -1395,7 +1395,32 @@ Decomposed **M11a–d**:
 > security-buddy-checked). A fourth finding — hex-grid movement — turned out to need real new
 > server-side engine architecture (zero hex-aware movement infrastructure exists despite hex being
 > original scope and the client already rendering it correctly); design approved and committed
-> (`superpowers/specs/2026-07-22-hex-grid-server-movement-design.md`), implementation plan pending.
+> (`superpowers/specs/2026-07-22-hex-grid-server-movement-design.md`), and the implementation plan
+> (`superpowers/plans/2026-07-22-hex-grid-server-movement.md`) executed on the same branch.
+>
+> **Hex-grid server movement DONE** (same branch). A `GridShape` trait unifies square/hex cell
+> geometry behind one seam, with a frozen-fixture parity battery proving square behavior stayed
+> byte-identical at every step. The execution found that the first refactor pass was incomplete —
+> its grep was scoped to `scene/` and its parity gate only exercised strict-mode paths — so a
+> systematic `[sec]` sweep (14e-1…14e-9) migrated every remaining site: the vision/movement mask
+> enumeration, `ExploredSet`, region rasterization, the A* window and heuristic, `Room::publish`'s
+> gate, and the continuous engine's three navmesh sites. Three genuine security defects surfaced,
+> each buddy-checked by an opus reviewer pair: `Room::publish` and `navmesh.rs` indexed square
+> cells against hex-axial masks; and `HexGrid::line_traversal` was a fixed-count cube lerp — a thin
+> line, not a supercover — which omitted a geometrically crossed hex on ~55% of segments, every one
+> of them a cell a non-GM could move through unchecked against the visibility mask. All three were
+> instances of one rule breaking: two paths documented to agree, diverging on a property nobody had
+> checked (cell indexing, then traversal completeness, then input admissibility).
+>
+> **Admin-provisioned accounts DONE** (same branch, unplanned — surfaced by the client e2e). The
+> cross-cutting "admin-provisioned accounts (no self-registration)" item below was not actually
+> implemented: no second user could exist in a shipped instance at all, so a hosted server could
+> never have a player. `POST`/`GET /api/users` (admin-gated) plus a world invite/accept flow now
+> close it. The first attempt seated players by username and leaked a username-existence oracle to
+> any authenticated account — `create_world` requires only `AuthUser`, so anyone can become a GM —
+> which contradicted the constant-time Argon2 verify `/api/login` already pays to hide exactly that.
+> Replaced with mint-an-invite / redeem-it-yourself, so nothing is named and nobody is seated
+> without consent.
 - Purpose: (1) a playable generic system (stats, derived formulas, rolls to chat, items/effects
   modifying stats, template documents); (2) the reference implementation for system builders —
   built only against public seams, every friction point logged as an API bug report; second
@@ -1425,3 +1450,6 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
 - Rate limiting on WS / upload: introduced with the surfaces it protects, not only at hardening.
 - Error UX (disconnect, rejected optimistic op, failed upload): owned by M5 / M6 client work.
 - Account model: self-host, admin-provisioned accounts (no self-registration / email in v1).
+  **Shipped on `phase1-cleanup-burndown`** — admin-only `POST`/`GET /api/users`, and a GM-minted
+  world invite the invitee redeems from their own session. Deliberately no self-registration; the
+  invite exists so a GM never has to name a user, which is what keeps username existence secret.
