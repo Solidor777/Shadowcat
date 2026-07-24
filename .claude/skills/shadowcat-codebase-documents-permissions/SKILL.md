@@ -47,6 +47,27 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   chokepoint — called on every Create/Update POST-IMAGE (after all `FieldChange`s apply),
   including embedded children, so a wholesale `/engine` replacement, a leaf `/engine/x` write, and
   an embedded child's engine write are all covered by one call site.
+- **`command::apply_field_change(v, ch)` is THE store-equal mutation rule — every store of document
+  state, authoritative or derived, applies a `FieldChange` through it. Never hand-write a
+  `remove`/`set` branch.** One function, one statement of the rule, repo-wide (client mirror:
+  `store.ts`'s `applyOperation`, shared by `DocumentStore` and `OptimisticClient`). Callers split
+  only on error handling, and the split is meaningful: the two AUTHORITATIVE loops
+  (`sqlite.rs`'s `apply_command` and `apply_intent` Phase 2) propagate with `?` so a bad change
+  aborts before commit; the DERIVED mirrors in `scene/mod.rs` go through `mirror_field_change`
+  (logs) / `reapply_changes` (adds the `Document` round-trip), because `apply_op` runs on the
+  already-committed broadcast/replay path where the ECS has no authority to reject. **Why this is a
+  hard invariant (Task 14i, `[sec]`, fixed a Critical):** `SceneEcs::apply_op` once mirrored with an
+  unconditional `set_pointer`, ignoring `ch.remove`, while the store honoured it — so a `remove:
+  true` change left the DB with the key ABSENT and the ECS holding the caller's unconstrained
+  `new`. With `WRITE_FIELDS` alone, a player removing `/engine/actor_id` with a foreign actor id in
+  `new` made the DB read "unowned" (nobody may write) while the ECS resolved ownership to another
+  actor's owner — who then gained the token as a vision source. **Vision widened exactly where
+  write authz refused.** Note the two call-site trust levels through one helper: `apply_op` sees
+  committed changes, `token_move` sees CLIENT-PROPOSED, not-yet-authorized ones — so error volume
+  there is attacker-influenced and must not be logged at `error!`.
+- `src/server/src/data/validation.rs`'s `validate_field_change` — ingress shape rule: `remove: true`
+  must carry a null `new`. Defense-in-depth only; the mirror is correct independently, which
+  matters because replay and broadcast can carry shapes ingress never validated.
 - `src/server/src/data/command.rs`'s `FieldChange.remove: bool` — a leaf-level object-key-removal
   discriminator on the existing `Operation::Update`/`FieldChange` wire shape, not a new `Command`
   variant: it reuses the same OCC pre-image check (`old`) and capability check
