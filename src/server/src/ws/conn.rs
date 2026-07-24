@@ -739,22 +739,23 @@ async fn enrich_vision_explored(
     }
     let mut explored_out: Vec<serde_json::Value> = Vec::with_capacity(by_scene.len());
     for (scene, scene_polys) in by_scene {
-        let cell = grid.get(&scene).copied().unwrap_or(100.0);
         // Index this scene's explored fog through its own resolved grid shape (hex axial on a hex
         // scene, byte-identical square math otherwise) so the accumulated cells compose with the
-        // `Revealed` gate's hex `line_traversal` move-cells. A scene absent from `grid_shapes`
-        // (never expected — the recipient's vision polygons only reference live scenes) falls back
-        // to a square grid at `cell`, mirroring the `unwrap_or(100.0)` cell-size fallback above.
-        let fallback = crate::scene::grid_shape::SquareGrid {
-            cell,
-            rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+        // `Revealed` gate's hex `line_traversal` move-cells. A scene absent from either map has no
+        // live scene document — skip it (fail closed: the client masks everything outside
+        // `polygons`, so a skipped scene simply contributes no explored). Never synthesize a grid
+        // no scene declared.
+        let Some(cell) = grid.get(&scene).copied() else {
+            continue;
         };
         // `+ Send + Sync` so the borrow may live across the `get_explored` await below (the egress
         // task future must be `Send`); coerces to `&dyn GridShape` at the `mark_polygons` call.
-        let shape: &(dyn crate::scene::grid_shape::GridShape + Send + Sync) = grid_shapes
+        let Some(shape) = grid_shapes
             .get(&scene)
-            .map(|b| b.as_ref())
-            .unwrap_or(&fallback);
+            .map(|b| b.as_ref() as &(dyn crate::scene::grid_shape::GridShape + Send + Sync))
+        else {
+            continue;
+        };
         let mut set = match repo.get_explored(scene, user).await {
             Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob),
             _ => crate::scene::explored::ExploredSet::new(),
@@ -1891,6 +1892,39 @@ mod tests {
         let mut gm = json!({ "mode": "all" });
         enrich_vision_explored(&mut gm, &grid, &grid_shapes, &repo, world, user, true).await;
         assert_eq!(gm, json!({ "mode": "all" }));
+    }
+
+    /// A scene absent from BOTH grid maps has no live scene document — `enrich_vision_explored`
+    /// must skip it (fail closed), never synthesize a fallback square grid to index against.
+    #[tokio::test]
+    async fn enrich_skips_scene_absent_from_grid_maps() {
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let world = Uuid::from_u128(1);
+        let user = Uuid::from_u128(2);
+        let ghost = Uuid::from_u128(0xDEAD);
+        let grid: std::collections::HashMap<Uuid, f64> = std::collections::HashMap::new();
+        let shapes = square_grid_shapes(&grid);
+
+        let mut payload = json!({
+            "mode": "masked",
+            "polygons": [{ "scene": ghost, "points": [0.0, 0.0, 200.0, 0.0, 200.0, 200.0] }]
+        });
+        enrich_vision_explored(
+            &mut payload,
+            &grid,
+            &shapes,
+            repo.as_ref(),
+            world,
+            user,
+            true,
+        )
+        .await;
+
+        let explored = payload.get("explored").and_then(|e| e.as_array());
+        assert!(
+            explored.map(|a| a.is_empty()).unwrap_or(true),
+            "no explored entry for a scene with no grid entry"
+        );
     }
 
     /// A GM see-as-player view (`accumulate = false`) emits the target's stored explored but is a
