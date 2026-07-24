@@ -552,6 +552,19 @@ mod tests {
     }
 
     #[test]
+    fn validate_engine_tree_rejects_out_of_bound_token_position() {
+        let over = crate::scene::move_exec::MAX_GATE_WALK_COORD + 1.0;
+        let mut doc = doc_with_engine(serde_json::json!({
+            "x": over, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0
+        }));
+        doc.doc_type = "token".into();
+        assert!(matches!(
+            validate_engine_tree(&mut doc),
+            Err(DataError::BadEngine(_))
+        ));
+    }
+
+    #[test]
     fn validate_engine_tree_recurses_into_embedded_descendants() {
         let mut parent = doc_with_system(serde_json::json!({}));
         parent.doc_type = "item".into(); // non-engine parent; only the child carries engine

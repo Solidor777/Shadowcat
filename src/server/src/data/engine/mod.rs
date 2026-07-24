@@ -109,7 +109,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
         Ok(serde_json::to_value(typed)?)
     }
     match doc_type {
-        "token" => round_trip::<TokenEngine>(v, "token"),
+        "token" => {
+            let typed: TokenEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("token: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("token: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "scene" => round_trip::<SceneEngine>(v, "scene"),
         "wall" => round_trip::<WallEngine>(v, "wall"),
         "region" => round_trip::<RegionEngine>(v, "region"),
