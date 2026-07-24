@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { DocumentStore, setPointer, removePointer, getPointer } from "./store";
+import { DocumentStore, setPointer, removePointer, getPointer, applyOperation } from "./store";
 import type { WireCommand, WireDocument } from "./wire";
+import { buildSceneDoc } from "./scene-docs";
 
 function doc(id: string, system: unknown): WireDocument {
   return {
@@ -104,6 +105,60 @@ describe("DocumentStore", () => {
     expect(s.query("actor")).toHaveLength(1);
     expect(s.query("item")).toHaveLength(0);
   });
+
+  it("applies an update through an explicit null intermediate via applyOperation", () => {
+    // Mirrors setPointer's null-intermediate fix through the actual update-op path
+    // (applyOperation -> setPointer -> DocumentSchema.parse), not just the pointer helper.
+    const docs = new Map<string, WireDocument>([["d1", doc("d1", {})]]);
+    (docs.get("d1") as WireDocument & { engine: unknown }).engine = { vision: null };
+    applyOperation(docs, {
+      op: "update",
+      doc_id: "d1",
+      changes: [
+        {
+          path: "/engine/vision/movementRestriction",
+          old: null,
+          new: "revealed",
+        },
+      ],
+    });
+    expect((docs.get("d1") as WireDocument & { engine: unknown }).engine).toEqual({
+      vision: { movementRestriction: "revealed" },
+    });
+  });
+
+  it("commits a scene built via buildSceneDoc: set_pointer through its null vision/lighting", () => {
+    // Realistic path: buildSceneDoc legitimately writes vision:null/lighting:null
+    // (required-but-nullable engine keys); a GameSettingsPanel-style override write onto
+    // one must commit without throwing.
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    expect((scene.engine as { vision: unknown }).vision).toBeNull();
+    expect((scene.engine as { lighting: unknown }).lighting).toBeNull();
+
+    const s = new DocumentStore();
+    s.applyCommand(cmd(1, [{ op: "create", doc: scene }]));
+    expect(() =>
+      s.applyCommand(
+        cmd(2, [
+          {
+            op: "update",
+            doc_id: "scene1",
+            changes: [
+              {
+                path: "/engine/vision/movementRestriction",
+                old: null,
+                new: "revealed",
+              },
+            ],
+          },
+        ]),
+      ),
+    ).not.toThrow();
+    expect(
+      (s.get("scene1")!.engine as { vision: { movementRestriction: string } }).vision
+        .movementRestriction,
+    ).toBe("revealed");
+  });
 });
 
 describe("setPointer", () => {
@@ -123,6 +178,29 @@ describe("setPointer", () => {
   it("rejects an out-of-range array index (no silent sparse extend)", () => {
     expect(() => setPointer({ a: [1, 2] }, "/a/5", 9)).toThrow();
     expect(() => setPointer({ a: [1, 2] }, "/a/x", 9)).toThrow();
+  });
+
+  // Anti-drift pin (bug: null-intermediate blocked nested set_pointer): SceneEngine's
+  // vision/lighting/etc. are Option<T> with no skip_serializing_if, so they serialize as
+  // explicit `null` rather than an absent key. A single fixture asserted on both this
+  // client path and the server's `set_pointer` (see command.rs
+  // `set_pointer_descends_through_an_explicit_null_intermediate`) pins parity: a future
+  // change to one side that forgets the other must fail one of the two tests.
+  const NULL_INTERMEDIATE_FIXTURE = { engine: { vision: null } };
+  const NULL_INTERMEDIATE_EXPECTED = {
+    engine: { vision: { movementRestriction: "revealed" } },
+  };
+
+  it("descends through an explicit null intermediate the same as a missing key", () => {
+    const root = structuredClone(NULL_INTERMEDIATE_FIXTURE) as Record<string, unknown>;
+    setPointer(root, "/engine/vision/movementRestriction", "revealed");
+    expect(root).toEqual(NULL_INTERMEDIATE_EXPECTED);
+  });
+
+  it("descends through two nested explicit null intermediates", () => {
+    const root: Record<string, unknown> = { engine: null };
+    setPointer(root, "/engine/vision/mode", "dark");
+    expect(root).toEqual({ engine: { vision: { mode: "dark" } } });
   });
 });
 

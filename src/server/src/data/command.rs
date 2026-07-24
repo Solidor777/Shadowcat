@@ -199,9 +199,20 @@ pub fn set_pointer(root: &mut Value, pointer: &str, new: Value) -> Result<(), Da
             }
         }
         cur = match cur {
-            Value::Object(m) => m
-                .entry(tok.clone())
-                .or_insert_with(|| Value::Object(Default::default())),
+            Value::Object(m) => {
+                let entry = m
+                    .entry(tok.clone())
+                    .or_insert_with(|| Value::Object(Default::default()));
+                // An explicit `null` intermediate (e.g. an Option<T> field with no
+                // `skip_serializing_if`, serialized as `null` rather than omitted) descends
+                // the same as a missing key: getPointer/remove_pointer already treat null == absent
+                // for reads/removes, so set now agrees for the intermediate-descent case. Leaf
+                // null-vs-absent (the `last` branch above) is unchanged.
+                if entry.is_null() {
+                    *entry = Value::Object(Default::default());
+                }
+                entry
+            }
             Value::Array(a) => {
                 let idx: usize = tok
                     .parse()
@@ -418,6 +429,34 @@ mod tests {
         assert_eq!(
             v["embedded"]["actor"][0]["system"]["conditions"],
             serde_json::json!(["dead"])
+        );
+    }
+
+    #[test]
+    fn set_pointer_descends_through_an_explicit_null_intermediate() {
+        // `Option<T>` engine fields (e.g. SceneEngine.vision/lighting) serialize as
+        // explicit `null`, not an absent key, so descending through one must succeed
+        // exactly as it would through a missing key (never `BadPath`).
+        let mut v = serde_json::json!({ "engine": { "vision": null } });
+        set_pointer(
+            &mut v,
+            "/engine/vision/movementRestriction",
+            serde_json::json!("revealed"),
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "engine": { "vision": { "movementRestriction": "revealed" } } })
+        );
+    }
+
+    #[test]
+    fn set_pointer_descends_through_two_nested_explicit_null_intermediates() {
+        let mut v = serde_json::json!({ "engine": null });
+        set_pointer(&mut v, "/engine/vision/mode", serde_json::json!("dark")).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "engine": { "vision": { "mode": "dark" } } })
         );
     }
 

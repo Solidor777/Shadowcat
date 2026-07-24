@@ -165,7 +165,7 @@ export class WorldSession {
 
   constructor(private readonly opts: WorldSessionOpts) {
     this.#logger = opts.logger ?? consoleLogger();
-    this.#optimistic = new OptimisticClient(opts.selfId);
+    this.#optimistic = new OptimisticClient(opts.selfId, this.#logger);
     this.#modules = new ModuleRegistry({
       hooks: new HookBus(this.#logger),
       services: new ServiceRegistry(),

@@ -14,6 +14,7 @@
 // optimism is a prediction, replaced by `base` on confirm or discarded on reject.
 import { applyOperation, type Listener, type ReadableDocuments } from "./store";
 import type { WireCommand, WireDocument, WireOperation } from "./wire";
+import { silentLogger, type Logger } from "./logger";
 
 interface Pending {
   intentId: string;
@@ -28,7 +29,10 @@ export class OptimisticClient implements ReadableDocuments {
   appliedSeq = 0;
 
   /** `self` is the actor id used to recognize our own authored echoes. */
-  constructor(private readonly self: string) {}
+  constructor(
+    private readonly self: string,
+    private readonly logger: Logger = silentLogger,
+  ) {}
 
   /** Apply an authoritative command (wire `WsClient.onCommand` to this). */
   applyCommand(cmd: WireCommand): void {
@@ -82,11 +86,27 @@ export class OptimisticClient implements ReadableDocuments {
 
   private rebuildView(): void {
     // Shares unchanged doc refs with base; applyOperation clones on update, so
-    // pending updates never mutate base.
-    this.view = new Map(this.base);
+    // pending updates never mutate base. Each pending intent is applied to a scratch
+    // copy of the running view and adopted ONLY if every one of its ops succeeds — a
+    // throwing op (e.g. a stale/malformed path) is isolated to its own intent rather
+    // than aborting the whole rebuild, which would otherwise wedge every later
+    // applyIntent/applyCommand/reject call on this instance (they all route through
+    // rebuildView). The failed intent stays in `pending`; only the server's
+    // confirm/reject removes it — this method never mutates `pending`.
+    let view = new Map(this.base);
     for (const p of this.pending) {
-      for (const op of p.ops) applyOperation(this.view, op);
+      const scratch = new Map(view);
+      try {
+        for (const op of p.ops) applyOperation(scratch, op);
+        view = scratch;
+      } catch (err) {
+        this.logger.warn("dropping optimistic intent that failed to apply", {
+          intentId: p.intentId,
+          err,
+        });
+      }
     }
+    this.view = view;
     for (const fn of this.listeners) fn();
   }
 }

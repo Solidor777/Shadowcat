@@ -29,7 +29,11 @@ export function setPointer(
       cur = cur[Number(tok)];
     } else if (cur !== null && typeof cur === "object") {
       const obj = cur as Record<string, unknown>;
-      if (!(tok in obj)) obj[tok] = {};
+      // An explicit `null` intermediate (e.g. a scene `vision`/`lighting` field with no
+      // omit-when-absent behavior) descends the same as a missing key: getPointer/removePointer
+      // already treat null == absent for reads/removes, so set now agrees for the
+      // intermediate-descent case. Leaf null-vs-absent (the final-token branch below) is unchanged.
+      if (!(tok in obj) || obj[tok] === null) obj[tok] = {};
       cur = obj[tok];
     } else {
       throw new Error(`cannot descend into non-container at ${pointer}`);

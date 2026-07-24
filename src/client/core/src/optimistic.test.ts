@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { OptimisticClient } from "./optimistic";
 import { WsClient } from "./ws-client";
 import { MockServer } from "./mock-server";
@@ -191,5 +191,67 @@ describe("OptimisticClient", () => {
     expect(b.oc.query("faction-registry")).toHaveLength(1);
     expect(a.oc.get(id)).toBeDefined();
     expect(b.oc.get(id)).toEqual(a.oc.get(id));
+  });
+
+  // Bug: a throwing optimistic op wedged the write queue. setPointer throws when a change's
+  // path descends into a scalar leaf (here: "/system/hp/value" where hp is a number, not a
+  // container) — rebuildView must isolate that intent's failure rather than letting it abort
+  // the whole rebuild and re-throw on every subsequent applyIntent/applyCommand/reject.
+  it("isolates a throwing optimistic intent so a later good intent's effect still lands (queue not wedged)", () => {
+    const warn = vi.fn();
+    const oc = new OptimisticClient("u1", { debug() {}, warn, error() {} });
+    oc.applyIntent("i0", [createOp("d1", 10)]);
+    expect(oc.pendingIntents()).toEqual(["i0"]);
+
+    const badOp: WireOperation = {
+      op: "update",
+      doc_id: "d1",
+      changes: [{ path: "/system/hp/value", old: null, new: 1 }],
+    };
+    expect(() => oc.applyIntent("bad", [badOp])).not.toThrow();
+    // The failed intent stays pending — only a server confirm/reject removes it.
+    expect(oc.pendingIntents()).toEqual(["i0", "bad"]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("dropping optimistic intent"),
+      expect.objectContaining({ intentId: "bad" }),
+    );
+
+    const goodOp: WireOperation = {
+      op: "update",
+      doc_id: "d1",
+      changes: [{ path: "/system/mp", old: null, new: 5 }],
+    };
+    expect(() => oc.applyIntent("good", [goodOp])).not.toThrow();
+    // Good intent's effect IS present in the view, despite the bad intent queued before it.
+    expect((oc.get("d1")!.system as { mp: number }).mp).toBe(5);
+    expect(oc.pendingIntents()).toEqual(["i0", "bad", "good"]);
+  });
+
+  it("a later applyCommand/reject still works after a bad intent is queued", () => {
+    const oc = new OptimisticClient("u1");
+    oc.applyIntent("i0", [createOp("d1", 10)]);
+    oc.applyIntent("bad", [
+      {
+        op: "update",
+        doc_id: "d1",
+        changes: [{ path: "/system/hp/value", old: null, new: 1 }],
+      },
+    ]);
+
+    // A confirming command for i0 (FIFO) must not throw despite "bad" still pending.
+    expect(() =>
+      oc.applyCommand({
+        seq: 1,
+        world_id: "test-world",
+        author: "u1",
+        ts: 0,
+        ops: [createOp("d1", 10)],
+      }),
+    ).not.toThrow();
+    expect(oc.pendingIntents()).toEqual(["bad"]);
+
+    // Rejecting the bad intent must not throw either, and clears it.
+    expect(() => oc.reject("bad")).not.toThrow();
+    expect(oc.pendingIntents()).toEqual([]);
   });
 });
