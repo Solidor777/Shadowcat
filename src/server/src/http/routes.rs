@@ -646,6 +646,15 @@ pub async fn revoke_invite(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+pub struct AcceptInviteRequest {
+    /// The bearer code. Carried in the BODY, never the path: a request line is
+    /// recorded by `TraceLayer`'s span (`uri`, at DEBUG), browser history,
+    /// `Referer`, and proxy access logs, none of which this credential may
+    /// reach in plaintext — it is hashed at rest for the same reason.
+    pub code: String,
+}
+
 /// Redeem an invite: seat the CALLER into the invite's world at the invite's
 /// role. Any authenticated user; the code is the only authorization.
 ///
@@ -653,14 +662,16 @@ pub async fn revoke_invite(
 /// already consumed — returns exactly `AppError::NotFound` after exactly one
 /// Argon2 verify, so the failures are indistinguishable by status, body, or
 /// timing. Nothing about a world the caller holds no valid code for is
-/// disclosed: the world id and name are read only after a successful consume.
+/// disclosed: the world's identity is read inside the consume transaction and
+/// returned only on success.
 pub async fn accept_invite(
     user: AuthUser,
     State(state): State<AppState>,
-    Path(code): Path<String>,
+    Json(body): Json<AcceptInviteRequest>,
 ) -> Result<Json<WorldEntry>, AppError> {
     use crate::auth::invite;
 
+    let code = body.code;
     let parsed = invite::parse(&code);
     let record = match parsed {
         Some((id, _)) => state.repo.invite_by_id(id).await?,
@@ -683,23 +694,21 @@ pub async fn accept_invite(
     };
     // Expiry, revocation, and single-use are decided HERE, by one guarded
     // statement — never by a preceding read of `rec` (that would be both a
-    // TOCTOU double-seat and a second, distinguishable failure shape).
-    let Some((world, role)) = state
+    // TOCTOU double-seat and a second, distinguishable failure shape). The
+    // world's name comes back from inside the same transaction: reading it
+    // afterwards could 404 on an already-burned invite, reporting the uniform
+    // failure for a redemption that in fact succeeded.
+    let Some(seated) = state
         .repo
         .consume_invite(rec.id, user.id, now_millis())
         .await?
     else {
         return Err(AppError::NotFound);
     };
-    let w = state
-        .repo
-        .get_world(world)
-        .await?
-        .ok_or(AppError::NotFound)?;
     Ok(Json(WorldEntry {
-        id: w.id,
-        name: w.name,
-        role,
+        id: seated.world,
+        name: seated.world_name,
+        role: seated.role,
     }))
 }
 

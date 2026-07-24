@@ -60,7 +60,10 @@ export async function createWorld(name: string): Promise<WorldEntry> {
  * world they hold no valid code for. Callers must surface a single generic
  * failure rather than trying to explain which case it was. */
 export async function acceptInvite(code: string): Promise<WorldEntry | null> {
-  const res = await postJson(`/api/invites/${encodeURIComponent(code)}/accept`, {});
+  // The code goes in the BODY: a URL is recorded by browser history, `Referer`,
+  // proxy access logs, and the server's request-trace span, none of which a
+  // live bearer credential may reach.
+  const res = await postJson("/api/invites/accept", { code });
   if (!res.ok) return null;
   return (await res.json()) as WorldEntry;
 }

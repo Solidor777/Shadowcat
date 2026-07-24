@@ -45,13 +45,17 @@ pub async fn bootstrap_admin(repo: &SqliteRepository, config: &Config) -> anyhow
     if let (Some(u), Some(p)) = (&config.admin_user, &config.admin_password) {
         // A configured username that fails the account policy is a startup
         // failure, not a silently-skipped seed: the operator asked for an admin
-        // and must not be left believing one exists.
-        let created = create_admin(repo, u, p, now_millis()).await.map_err(|_| {
-            anyhow::anyhow!(
-                "bootstrap admin creation failed (username must be 3-32 characters of \
-                 [A-Za-z0-9._-])"
-            )
-        })?;
+        // and must not be left believing one exists. The policy hint is
+        // attached ONLY to the validation variant — a database fault must not
+        // be reported as a malformed username.
+        let created = create_admin(repo, u, p, now_millis())
+            .await
+            .map_err(|e| match e {
+                AppError::Unprocessable(m) => {
+                    anyhow::anyhow!("bootstrap admin creation failed: {m}")
+                }
+                other => anyhow::anyhow!("bootstrap admin creation failed ({other:?})"),
+            })?;
         if created.is_some() {
             tracing::info!(username = %u, "bootstrapped admin from config");
             return Ok(true);

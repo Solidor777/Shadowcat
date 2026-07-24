@@ -34,14 +34,22 @@
   // causes. The roster in particular must NOT come from AppContext's `members`
   // map: that is a session-start snapshot, so a seat added during the session
   // would never appear.
+  //
+  // Settled, not `Promise.all`: the two reads are independent, and letting a
+  // failed roster read reject the pair would blank the invite list and with it
+  // the revoke buttons — losing the ability to act on a live code because an
+  // unrelated request failed.
   async function refresh(): Promise<void> {
-    try {
-      [invites, members] = await Promise.all([
-        listWorldInvites(world),
-        listWorldMembers(world),
-      ]);
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
+    const [gotInvites, gotMembers] = await Promise.allSettled([
+      listWorldInvites(world),
+      listWorldMembers(world),
+    ]);
+    if (gotInvites.status === "fulfilled") invites = gotInvites.value;
+    if (gotMembers.status === "fulfilled") members = gotMembers.value;
+    const failed = [gotInvites, gotMembers].find((r) => r.status === "rejected");
+    if (failed) {
+      const reason = (failed as PromiseRejectedResult).reason;
+      error = reason instanceof Error ? reason.message : String(reason);
     }
   }
   if (role === "gm") void refresh();

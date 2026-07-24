@@ -35,7 +35,7 @@ export interface WorldMember {
  * `members` map, which is a session-start snapshot: a surface that must reflect
  * a membership change it just caused re-reads through this. */
 export async function listWorldMembers(world: string): Promise<WorldMember[]> {
-  const res = await fetch(`/api/worlds/${world}/members`, {
+  const res = await fetch(`/api/worlds/${encodeURIComponent(world)}/members`, {
     headers: { accept: "application/json" },
   });
   if (!res.ok) throw new Error(await restError(res, "list members failed"));
@@ -92,7 +92,7 @@ export async function createWorldInvite(
   world: string,
   role: WorldRole,
 ): Promise<MintedInvite> {
-  const res = await fetch(`/api/worlds/${world}/invites`, {
+  const res = await fetch(`/api/worlds/${encodeURIComponent(world)}/invites`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ role }),
@@ -103,7 +103,7 @@ export async function createWorldInvite(
 
 /** A world's invites. GM of that world only; codes are not recoverable here. */
 export async function listWorldInvites(world: string): Promise<InviteEntry[]> {
-  const res = await fetch(`/api/worlds/${world}/invites`, {
+  const res = await fetch(`/api/worlds/${encodeURIComponent(world)}/invites`, {
     headers: { accept: "application/json" },
   });
   if (!res.ok) throw new Error(await restError(res, "list invites failed"));
@@ -112,7 +112,10 @@ export async function listWorldInvites(world: string): Promise<InviteEntry[]> {
 
 /** Revoke an invite, effective immediately. GM of that world only. */
 export async function revokeWorldInvite(world: string, codeId: string): Promise<void> {
-  const res = await fetch(`/api/worlds/${world}/invites/${codeId}`, { method: "DELETE" });
+  const res = await fetch(
+    `/api/worlds/${encodeURIComponent(world)}/invites/${encodeURIComponent(codeId)}`,
+    { method: "DELETE" },
+  );
   if (!res.ok) throw new Error(await restError(res, "revoke invite failed"));
 }
 

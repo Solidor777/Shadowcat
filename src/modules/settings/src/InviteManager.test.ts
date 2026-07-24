@@ -66,7 +66,7 @@ describe("InviteManager", () => {
     expect(writable).toHaveLength(0);
   });
 
-  it("revokes a live invite and refreshes the listing", async () => {
+  it("revokes a live invite and re-reads the listing", async () => {
     const core = await import("@shadowcat/core");
     vi.mocked(core.listWorldInvites).mockResolvedValue([
       {
@@ -80,10 +80,36 @@ describe("InviteManager", () => {
     ]);
     render(InviteManager, { context: setAppContextForTest({ role: "gm", world: "w1" }) });
 
-    await fireEvent.click(await screen.findByText("settings.invites.revoke"));
+    await screen.findByText("settings.invites.revoke");
+    const before = vi.mocked(core.listWorldInvites).mock.calls.length;
+    await fireEvent.click(screen.getByText("settings.invites.revoke"));
     await vi.waitFor(() =>
       expect(vi.mocked(core.revokeWorldInvite)).toHaveBeenCalledWith("w1", "i-1"),
     );
+    await vi.waitFor(() =>
+      expect(vi.mocked(core.listWorldInvites).mock.calls.length).toBeGreaterThan(before),
+    );
+  });
+
+  it("keeps the invite list usable when only the roster read fails", async () => {
+    const core = await import("@shadowcat/core");
+    vi.mocked(core.listWorldInvites).mockResolvedValue([
+      {
+        id: "i-1",
+        role: "player",
+        created_at: 1,
+        expires_at: Date.now() + 10_000,
+        revoked_at: null,
+        consumed_at: null,
+      },
+    ]);
+    // The two reads are independent: a failed roster must not take the invite
+    // list — and with it the revoke button for a live code — down with it.
+    vi.mocked(core.listWorldMembers).mockRejectedValue(new Error("roster down"));
+    render(InviteManager, { context: setAppContextForTest({ role: "gm", world: "w1" }) });
+
+    expect(await screen.findByText("settings.invites.revoke")).toBeTruthy();
+    expect(await screen.findByText("settings.invites.error")).toBeTruthy();
   });
 
   it("offers no revoke for a spent invite", async () => {

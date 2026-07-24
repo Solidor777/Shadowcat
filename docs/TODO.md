@@ -170,3 +170,23 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   the saturating span guard, `regions::MAX_CELL_COORD`, `navmesh::MAX_NAVMESH_COORD`). The right
   home for the fix is ingress validation on the typed engine struct, NOT widening the movement
   gate. (Surfaced by the Task 14e-9 `[sec]` review.)
+
+## Actionable now — rate-limit `/api/invites/accept`
+- TODO: invite redemption (`http/routes.rs` `accept_invite`) has no throttle, and the endpoint
+  deliberately runs a full Argon2id verify on EVERY attempt — including codes with no matching row,
+  against a throwaway hash — because a constant verify count is what keeps invalid/expired/revoked/
+  consumed indistinguishable. That anti-enumeration property is load-bearing, so the fix is a
+  throttle, not a cheaper verify. Any authenticated account is otherwise a CPU amplifier (~10 ms of
+  Argon2 per request, on a `spawn_blocking` pool shared with login). Guessing the code itself stays
+  infeasible at 128 bits; this is availability, not confidentiality. Pairs with the `/api/login`
+  throttle logged above — one limiter should serve both. (Surfaced by the Task 14g `[sec]` review.)
+
+## Actionable now — garbage-collect spent `world_invites` rows
+- TODO: expired, consumed, and revoked invites are never deleted, while
+  `MAX_ACTIVE_INVITES_PER_WORLD` counts only LIVE rows, so a mint→revoke loop grows
+  `world_invites` without bound at one row per iteration. Harmless at real table scale and not a
+  confidentiality issue (rows hold only a hash), but it is unbounded storage reachable by any GM
+  of any world. Fix with a periodic sweep of rows whose `expires_at` is well past, alongside the
+  existing session sweep (`auth/session.rs` `spawn_session_sweep`) rather than a new timer.
+  (Surfaced by the Task 14g `[sec]` review.)
+

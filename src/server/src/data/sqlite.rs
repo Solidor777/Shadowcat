@@ -62,6 +62,17 @@ pub struct InviteRecord {
     pub consumed_at: Option<i64>,
 }
 
+/// The outcome of a successful redemption: the world the caller is now a member
+/// of and the role they actually hold there (which is their PRE-EXISTING role
+/// when they were already a member — redemption grants access, never changes
+/// standing). Every field is read inside `consume_invite`'s transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatedByInvite {
+    pub world: Uuid,
+    pub world_name: String,
+    pub role: WorldRole,
+}
+
 /// The fields of an invite row at mint time.
 pub struct NewInvite<'a> {
     /// Selector half of the minted code — the row id and the code must agree.
@@ -631,10 +642,19 @@ impl SqliteRepository {
         Ok(row.is_some())
     }
 
-    /// Insert an admin only if no admin exists yet, in a single guarded
-    /// statement. Returns the new id, or `None` when an admin already exists.
-    /// The single-writer pool serializes the insert, closing the first-run
-    /// check-then-create race (two concurrent setups cannot both succeed).
+    /// Insert an admin only if no admin exists yet AND the username is free
+    /// case-insensitively, in a single guarded statement. Returns the new id,
+    /// or `None` when either guard rejects. The single-writer pool serializes
+    /// the insert, closing the first-run check-then-create race (two concurrent
+    /// setups cannot both succeed).
+    ///
+    /// The `NOCASE` half mirrors `create_user_unique`: without it an admin
+    /// named `Alice` could coexist with a user named `alice` and be
+    /// indistinguishable from them in a roster — the impersonation the ASCII
+    /// username policy exists to prevent. Unreachable while no delete-user or
+    /// demote-admin route exists (accounts other than the first can only be
+    /// created BY an admin, so "no admin, but users exist" cannot arise), which
+    /// is exactly why it is guarded here rather than left to that future route.
     pub async fn create_admin_if_none(
         &self,
         username: &str,
@@ -645,12 +665,14 @@ impl SqliteRepository {
         let res = sqlx::query(
             "INSERT INTO users (id, username, password_hash, server_role, created_at) \
              SELECT ?, ?, ?, 'admin', ? \
-             WHERE NOT EXISTS (SELECT 1 FROM users WHERE server_role = 'admin')",
+             WHERE NOT EXISTS (SELECT 1 FROM users WHERE server_role = 'admin') \
+             AND NOT EXISTS (SELECT 1 FROM users WHERE username = ? COLLATE NOCASE)",
         )
         .bind(id.to_string())
         .bind(username)
         .bind(password_hash)
         .bind(now)
+        .bind(username)
         .execute(&self.pool)
         .await?;
         Ok((res.rows_affected() == 1).then_some(id))
@@ -913,7 +935,7 @@ impl SqliteRepository {
         id: Uuid,
         user: Uuid,
         now: i64,
-    ) -> Result<Option<(Uuid, WorldRole)>, DataError> {
+    ) -> Result<Option<SeatedByInvite>, DataError> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
             "UPDATE world_invites SET consumed_at = ?, consumed_by = ? \
@@ -947,11 +969,19 @@ impl SqliteRepository {
                 .bind(user.to_string())
                 .fetch_one(&mut *tx)
                 .await?;
+        // Read the world's name here, inside the transaction: a lookup after
+        // the commit could miss and make a redemption that already burned the
+        // invite report as a failure.
+        let world_name: String = sqlx::query_scalar("SELECT name FROM worlds WHERE id = ?")
+            .bind(world.to_string())
+            .fetch_one(&mut *tx)
+            .await?;
         tx.commit().await?;
-        Ok(Some((
+        Ok(Some(SeatedByInvite {
             world,
-            serde_json::from_value(serde_json::Value::String(seated))?,
-        )))
+            world_name,
+            role: serde_json::from_value(serde_json::Value::String(seated))?,
+        }))
     }
 
     fn invite_row(r: sqlx::sqlite::SqliteRow) -> Result<InviteRecord, DataError> {
@@ -4402,6 +4432,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_admin_if_none_refuses_a_case_insensitive_username_collision() {
+        use crate::auth::role::ServerRole;
+        let r = repo().await;
+        r.create_user("alice", Some("phc"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        // No admin exists, so the admin guard passes — the NOCASE guard is what
+        // must reject this. Without it `Alice` (admin) and `alice` (user) would
+        // coexist and be indistinguishable in a roster.
+        assert!(r
+            .create_admin_if_none("Alice", "phc", 0)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!r.admin_exists().await.unwrap());
+        // A free name still works.
+        assert!(r
+            .create_admin_if_none("root", "phc", 0)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
     async fn create_admin_if_none_guards_against_a_second_admin() {
         let r = repo().await;
         assert!(r
@@ -6556,8 +6610,15 @@ mod tests {
     async fn consume_invite_seats_exactly_one_redeemer() {
         let (r, world, invite, a, b) = invite_fixture(WorldRole::Player).await;
 
-        let first = r.consume_invite(invite, a, 20).await.unwrap();
-        assert_eq!(first, Some((world, WorldRole::Player)));
+        let first = r.consume_invite(invite, a, 20).await.unwrap().unwrap();
+        assert_eq!(
+            first,
+            SeatedByInvite {
+                world,
+                world_name: "W".into(),
+                role: WorldRole::Player,
+            }
+        );
         // The guarded UPDATE is the whole gate: a second redemption of the same
         // row cannot observe it as available, so b is never seated.
         assert_eq!(r.consume_invite(invite, b, 21).await.unwrap(), None);
@@ -6595,10 +6656,8 @@ mod tests {
 
         // Another world's id does not unlock this invite.
         assert!(!r.revoke_invite(other.id, invite, 30).await.unwrap());
-        assert_eq!(
-            r.consume_invite(invite, a, 40).await.unwrap(),
-            Some((world, WorldRole::Player))
-        );
+        let seated = r.consume_invite(invite, a, 40).await.unwrap().unwrap();
+        assert_eq!((seated.world, seated.role), (world, WorldRole::Player));
     }
 
     #[tokio::test]
@@ -6607,9 +6666,10 @@ mod tests {
         let gm = r.list_members(world).await.unwrap()[0].0;
         assert_eq!(r.member_role(world, gm).await.unwrap(), Some(WorldRole::Gm));
 
+        let seated = r.consume_invite(invite, gm, 20).await.unwrap().unwrap();
         assert_eq!(
-            r.consume_invite(invite, gm, 20).await.unwrap(),
-            Some((world, WorldRole::Gm)),
+            (seated.world, seated.role),
+            (world, WorldRole::Gm),
             "the returned role is the membership actually held"
         );
         assert_eq!(r.member_role(world, gm).await.unwrap(), Some(WorldRole::Gm));

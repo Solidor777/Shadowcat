@@ -96,7 +96,9 @@ pub async fn router(state: AppState) -> Router {
             "/api/worlds/{id}/invites/{code_id}",
             delete(routes::revoke_invite),
         )
-        .route("/api/invites/{code}/accept", post(routes::accept_invite))
+        // The code travels in the BODY: a path segment is recorded by the trace
+        // span's `uri`, browser history, `Referer`, and proxy logs.
+        .route("/api/invites/accept", post(routes::accept_invite))
         .route(
             "/api/worlds/{id}/capability-defaults",
             get(routes::get_world_capability_defaults).put(routes::set_world_capability_defaults),
@@ -1104,7 +1106,8 @@ pub(crate) mod tests {
 
         // ...and the invite still works.
         f.outsider
-            .post(&format!("/api/invites/{code}/accept"))
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": code }))
             .await
             .assert_status_ok();
     }
@@ -1124,7 +1127,8 @@ pub(crate) mod tests {
 
         let res = f
             .outsider
-            .post(&format!("/api/invites/{code}/accept"))
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": code }))
             .await;
         res.assert_status_ok();
         let entry: serde_json::Value = res.json();
@@ -1155,7 +1159,8 @@ pub(crate) mod tests {
         // Already consumed.
         let (_, consumed) = mint_invite(&f.gm, w, "player").await;
         f.outsider
-            .post(&format!("/api/invites/{consumed}/accept"))
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": consumed }))
             .await
             .assert_status_ok();
 
@@ -1201,8 +1206,16 @@ pub(crate) mod tests {
         let malformed = "not-a-code";
         let empty_secret = format!("{}.", Uuid::new_v4().simple());
 
+        // The response shape is only half the property. The other half is the
+        // WORK done: a plain uniform 404 that skipped the verify when no row
+        // matched would satisfy the (status, body) assertions below while
+        // reinstating the timing oracle this whole design exists to remove. So
+        // each request also asserts EXACTLY ONE Argon2 verify — a counter, not
+        // wall-clock timing, which is not portable across the CI matrix.
+        use crate::auth::password::verify_count;
+
         let mut seen: Vec<(StatusCode, String)> = Vec::new();
-        for code in [
+        for (i, code) in [
             unknown.as_str(),
             consumed.as_str(),
             revoked.as_str(),
@@ -1210,11 +1223,21 @@ pub(crate) mod tests {
             wrong_secret.as_str(),
             malformed,
             empty_secret.as_str(),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let before = verify_count();
             let res = f
                 .other_gm
-                .post(&format!("/api/invites/{code}/accept"))
+                .post("/api/invites/accept")
+                .json(&serde_json::json!({ "code": code }))
                 .await;
+            assert_eq!(
+                verify_count() - before,
+                1,
+                "failure shape {i} did not cost exactly one verify"
+            );
             seen.push((res.status_code(), res.text()));
         }
         let first = seen[0].clone();
@@ -1225,6 +1248,21 @@ pub(crate) mod tests {
             );
         }
         assert_eq!(first.0, StatusCode::NOT_FOUND);
+
+        // ...and the SUCCESS path costs the same one verify, so success and
+        // failure are not separable by work either.
+        let (_, good) = mint_invite(&f.gm, w, "player").await;
+        let before = verify_count();
+        f.outsider
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": good }))
+            .await
+            .assert_status_ok();
+        assert_eq!(
+            verify_count() - before,
+            1,
+            "the success path did not cost exactly one verify"
+        );
         // Nothing about the world behind an unusable code is disclosed, and the
         // caller is not seated anywhere by a failed redemption.
         assert!(!first.1.contains("Alpha"));
@@ -1241,7 +1279,8 @@ pub(crate) mod tests {
         // Hex case carries no information, so an auto-capitalized or re-typed
         // code must not fall into the (undiagnosable) uniform-failure bucket.
         f.outsider
-            .post(&format!("/api/invites/{}/accept", code.to_uppercase()))
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": code.to_uppercase() }))
             .await
             .assert_status_ok();
     }
@@ -1252,16 +1291,19 @@ pub(crate) mod tests {
         let (_, code) = mint_invite(&f.gm, &f.world_id, "player").await;
 
         f.outsider
-            .post(&format!("/api/invites/{code}/accept"))
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": code }))
             .await
             .assert_status_ok();
         // The same code, presented by anyone, is spent.
         f.outsider
-            .post(&format!("/api/invites/{code}/accept"))
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": code }))
             .await
             .assert_status(StatusCode::NOT_FOUND);
         f.other_gm
-            .post(&format!("/api/invites/{code}/accept"))
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": code }))
             .await
             .assert_status(StatusCode::NOT_FOUND);
 
@@ -1283,7 +1325,8 @@ pub(crate) mod tests {
             .await
             .assert_status(StatusCode::NO_CONTENT);
         f.outsider
-            .post(&format!("/api/invites/{code}/accept"))
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": code }))
             .await
             .assert_status(StatusCode::NOT_FOUND);
         assert!(f
@@ -1334,7 +1377,8 @@ pub(crate) mod tests {
 
         // Redeeming the maximal invite (world GM) leaves the server tier alone.
         f.outsider
-            .post(&format!("/api/invites/{code}/accept"))
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": code }))
             .await
             .assert_status_ok();
         assert_eq!(
@@ -1359,7 +1403,8 @@ pub(crate) mod tests {
         let w = &f.world_id;
         // The world's own GM redeems a spectator invite for their own world.
         let (_, code) = mint_invite(&f.gm, w, "spectator").await;
-        f.gm.post(&format!("/api/invites/{code}/accept"))
+        f.gm.post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": code }))
             .await
             .assert_status_ok();
 
@@ -1398,7 +1443,8 @@ pub(crate) mod tests {
 
         // After redemption the listing reports it consumed, still without a code.
         f.outsider
-            .post(&format!("/api/invites/{code}/accept"))
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": code }))
             .await
             .assert_status_ok();
         let entries: Vec<serde_json::Value> =
@@ -1416,11 +1462,36 @@ pub(crate) mod tests {
     async fn active_invites_per_world_are_capped() {
         let f = invite_fixture().await;
         let w = &f.world_id;
+        let world = Uuid::parse_str(w).unwrap();
+        let gm_id = f
+            .state
+            .repo
+            .user_by_username("gm-alpha")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        // Seed the cap through the repository with a fixed dummy hash: minting
+        // 64 codes over HTTP would run 64 real Argon2id hashes (~a minute of
+        // CPU) to set up a check that is about the COUNT, not the KDF.
         for _ in 0..64 {
-            f.gm.post(&format!("/api/worlds/{w}/invites"))
-                .json(&serde_json::json!({ "role": "player" }))
+            assert!(f
+                .state
+                .repo
+                .create_invite(
+                    crate::data::sqlite::NewInvite {
+                        id: Uuid::new_v4(),
+                        world,
+                        secret_hash: "phc",
+                        role: crate::data::document::WorldRole::Player,
+                        created_by: gm_id,
+                        now: 1,
+                        expires_at: i64::MAX,
+                    },
+                    64,
+                )
                 .await
-                .assert_status_ok();
+                .unwrap());
         }
         let over = f
             .gm
@@ -1447,7 +1518,8 @@ pub(crate) mod tests {
         let f = invite_fixture().await;
         let (_, code) = mint_invite(&f.gm, &f.world_id, "player").await;
         f.anon
-            .post(&format!("/api/invites/{code}/accept"))
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": code }))
             .await
             .assert_status(StatusCode::UNAUTHORIZED);
     }
