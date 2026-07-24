@@ -62,7 +62,8 @@ pub enum ClientMsg {
     SceneUnsubscribe { request_id: Uuid },
     /// A transient location ping at scene coords. Relayed out-of-band to the world
     /// room with the sender stamped; never sequenced, logged, or a document (#3).
-    /// Coordinates are not validated (#6); rate-limited per connection.
+    /// Coordinates are not validated; the scene must exist in this world and grant the sender
+    /// READ (silent drop otherwise); rate-limited per connection.
     ScenePing { scene: Uuid, x: f64, y: f64 },
     /// A one-shot grid pathfinding request, correlated by `request_id`. `start`/`waypoints` are
     /// scene coords; `waypoints`' LAST element is the goal. `footprint_radius` is in grid units

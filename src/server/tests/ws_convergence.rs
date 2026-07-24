@@ -667,8 +667,30 @@ async fn scene_ping_relays_out_of_band_to_world_members_with_sender_stamped() {
     recv_until(&mut a, "welcome").await;
     recv_until(&mut b, "welcome").await;
 
+    // ScenePing is only relayed for a scene that exists in this world (M-security-7's
+    // guard); the GM creates one first.
+    let scene_id = Uuid::from_u128(9001);
+    let scene_doc = serde_json::json!({
+        "id": scene_id,
+        "scope": { "kind": "world", "world_id": h.world },
+        "doc_type": "scene",
+        "schema_version": 1,
+        "engine": { "grid": { "kind": "square", "size": 100.0 }, "background": null },
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0,
+    });
+    a.send(intent_msg(
+        1,
+        serde_json::json!([{ "op": "create", "doc": scene_doc }]),
+    ))
+    .await
+    .unwrap();
+    recv_until(&mut a, "event").await;
+    recv_until(&mut b, "event").await;
+
     a.send(Message::Text(
-        serde_json::json!({ "type": "scene_ping", "scene": h.world, "x": 12.0, "y": 34.0 })
+        serde_json::json!({ "type": "scene_ping", "scene": scene_id, "x": 12.0, "y": 34.0 })
             .to_string(),
     ))
     .await
@@ -680,6 +702,7 @@ async fn scene_ping_relays_out_of_band_to_world_members_with_sender_stamped() {
     assert_eq!(p["y"], 34.0);
     assert!(p["user"].is_string());
 
-    // It is out-of-band: it must not have created an authoritative event.
-    assert!(h.authoritative_seqs().await.is_empty());
+    // It is out-of-band: the ping itself must not have created an authoritative
+    // event (only the scene-creation intent above did, at seq 1).
+    assert_eq!(h.authoritative_seqs().await, vec![1]);
 }
