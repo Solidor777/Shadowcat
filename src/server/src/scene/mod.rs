@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use uuid::Uuid;
 
-use crate::data::command::{remove_pointer, set_pointer, FieldChange, Operation};
+use crate::data::command::{apply_field_change, FieldChange, Operation};
 use crate::data::document::Document;
 // The typed, ingress-validated engine band, imported under a namespace alias: this module
 // declares its own `LightMode`/`MovementRestriction`/`MovementModel` (the RESOLVED
@@ -300,31 +300,29 @@ pub struct SceneEcs {
     visible_cells_recompute_count: std::sync::atomic::AtomicU64,
 }
 
-/// Apply one already-committed `FieldChange` to a serialized document value using
-/// EXACTLY the authoritative store's mutation rule (`apply_intent` Phase 2,
-/// `data/sqlite.rs`): `remove: true` deletes the key at `path` and `new` is unused;
-/// anything else sets `new`.
+/// Mirror one `FieldChange` — committed or client-proposed — into a serialized
+/// document value through `command::apply_field_change`, THE store-equal mutation
+/// rule (stated once, there; see its INVARIANT for why re-deriving the remove/set
+/// branch is the defect).
 ///
-/// INVARIANT: the derived ECS must reach the same document state the store reaches.
-/// Calling `set_pointer` unconditionally forks them on any `remove` change — and
-/// `new` is constrained by NEITHER the OCC pre-image check (which compares `old`)
-/// NOR `required_cap_for_path`, so on a path that authz then reads (`/owner`,
-/// `/engine/actor_id`) the forked value is attacker-chosen. Concretely: a token's
-/// effective owner removes `/engine/actor_id` with `new` naming another actor, and
-/// the store sees an unowned token while the vision/lit-mask family sees one owned
-/// by that actor's owner — vision widening exactly where write authority refuses.
-///
-/// The single mutation rule for every derived-state mirror in this file; do not
-/// re-state it at a call site.
-fn apply_field_change(v: &mut serde_json::Value, ch: &FieldChange) {
-    let _ = if ch.remove {
-        remove_pointer(v, &ch.path)
-    } else {
-        set_pointer(v, &ch.path, ch.new.clone())
-    };
+/// A pointer-op error is logged and skipped rather than propagated: this runs on
+/// derived state, where the caller cannot reject. The authoritative store already
+/// refused the same change with `?` — `apply_intent` validates every path
+/// (`validate_field_change`) and aborts the transaction on a pointer-op error — so a
+/// change reaching the committed mirrors cannot fail here, and `token_move`'s
+/// proposed changes have not yet been authorized at all. Either way the mirror must
+/// not silently fall behind the store: logging matches `reapply_changes`' round-trip
+/// branch, so both ways this can diverge are reported.
+fn mirror_field_change(v: &mut serde_json::Value, ch: &FieldChange) {
+    if let Err(e) = apply_field_change(v, ch) {
+        tracing::error!(
+            path = %ch.path, error = %e,
+            "derived ECS: field change could not be applied; mirror may lag the store"
+        );
+    }
 }
 
-/// Re-apply `changes` onto `doc` in place through `apply_field_change`, via a
+/// Re-apply `changes` onto `doc` in place through `mirror_field_change`, via a
 /// `Value` round-trip (the server stays structural-only here; no semantic
 /// interpretation).
 ///
@@ -344,7 +342,7 @@ fn reapply_changes(doc: &mut Document, changes: &[FieldChange]) {
         }
     };
     for ch in changes {
-        apply_field_change(&mut v, ch);
+        mirror_field_change(&mut v, ch);
     }
     match serde_json::from_value::<Document>(v) {
         Ok(updated) => *doc = updated,
@@ -887,11 +885,15 @@ impl SceneEcs {
             (scene, t.x, t.y, v)
         };
         let mut v = doc_value;
-        // Store-equal mutation rule (see `apply_field_change`): a `remove` of
-        // `/engine/x` must clear the coordinate here exactly as it does in the
-        // store, so the move gate never evaluates a position the store won't hold.
+        // Store-equal mutation rule (`command::apply_field_change`). These changes are
+        // client-PROPOSED, not yet committed, so this is hardening rather than a
+        // reachable divergence: `TokenEngine.x`/`y` are required `f64`, so a `remove`
+        // of `/engine/x` fails `validate_engine_tree` on the post-image and never
+        // commits. Deriving the projected position by the same rule the store uses
+        // keeps that true by construction instead of by coincidence — the gate can
+        // never judge a position on a value the store computes differently.
         for ch in changes {
-            apply_field_change(&mut v, ch);
+            mirror_field_change(&mut v, ch);
         }
         let nx = v.pointer("/engine/x").and_then(|x| x.as_f64())?;
         let ny = v.pointer("/engine/y").and_then(|x| x.as_f64())?;
@@ -3052,7 +3054,7 @@ mod tests {
     /// whoever `new` names" — vision widening exactly where write refuses.
     #[test]
     fn ecs_and_db_agree_on_ownership_after_a_remove_change_carrying_a_non_null_new() {
-        use crate::data::command::{remove_pointer, FieldChange};
+        use crate::data::command::FieldChange;
         use serde_json::json;
 
         let p = Uuid::from_u128(7); // owns actor A
@@ -3082,16 +3084,16 @@ mod tests {
             new: json!(b_id.to_string()), // unconstrained; ignored by the authoritative path
         }];
 
-        // What the AUTHORITATIVE store reaches (sqlite.rs's apply_intent Phase 2:
-        // `remove_pointer` for `ch.remove`, `set_pointer` otherwise).
+        // What the AUTHORITATIVE store reaches. Calls the hoisted rule
+        // (`command::apply_field_change`) that `apply_intent` Phase 2 itself calls, so
+        // this oracle cannot drift from the store — hand-copying the remove/set branch
+        // here would silently go stale the moment `sqlite.rs` changed. NOT tautological
+        // with respect to what this test pins: reverting the ECS mirror to an
+        // unconditional `set_pointer` still diverges from this oracle and still fails.
         let db_token: Document = {
             let mut v = serde_json::to_value(&token).unwrap();
             for ch in &changes {
-                if ch.remove {
-                    remove_pointer(&mut v, &ch.path).unwrap();
-                } else {
-                    set_pointer(&mut v, &ch.path, ch.new.clone()).unwrap();
-                }
+                apply_field_change(&mut v, ch).unwrap();
             }
             serde_json::from_value(v).unwrap()
         };
@@ -3211,6 +3213,122 @@ mod tests {
         let ecs_doc = ecs.world.get::<&SceneEntity>(e).unwrap().doc.clone();
         assert_eq!(ecs.token_effective_owner(&ecs_doc), None);
         assert!(ecs.player_vision_polygons(q).is_empty());
+    }
+
+    /// `apply_config_update` (the world-settings / gradation / vision-modes singleton
+    /// mirror) is the third site that must obey the store-equal mutation rule. It had
+    /// no coverage: reverting it to an unconditional `set_pointer` survived the whole
+    /// suite. A `remove` on a config field must leave the ECS singleton matching the
+    /// store's ABSENCE, not holding `ch.new`.
+    #[test]
+    fn config_singleton_mirror_honors_a_remove_change() {
+        use crate::data::command::{apply_field_change, FieldChange};
+        use serde_json::json;
+
+        // A vision-modes doc with two modes; the change removes one of them while
+        // naming a replacement in `new` (the value an unconditional set would land).
+        let vm_id = Uuid::from_u128(300);
+        let mut vm = doc(300, None, "vision-modes");
+        vm.engine = Some(json!({ "modes": {
+            "darkvision": { "id": "darkvision", "name": "Darkvision",
+                            "illuminationFloor": "dark", "defaultRange": 6 },
+            "blindsight": { "id": "blindsight", "name": "Blindsight",
+                            "illuminationFloor": "dark", "defaultRange": 4 }
+        }}));
+
+        let change = FieldChange {
+            remove: true,
+            path: "/engine/modes/blindsight".into(),
+            old: json!(null),
+            // Unconstrained by OCC/capability checks: what a forked mirror would store.
+            new: json!({ "id": "smuggled", "name": "Smuggled",
+                         "illuminationFloor": "bright", "defaultRange": 99 }),
+        };
+
+        // Oracle: the hoisted rule the authoritative store itself calls.
+        let store_engine = {
+            let mut v = serde_json::to_value(&vm).unwrap();
+            apply_field_change(&mut v, &change).unwrap();
+            serde_json::from_value::<Document>(v).unwrap().engine.unwrap()
+        };
+
+        let mut ecs = SceneEcs::new();
+        ecs.set_world_config(None, None, Some(vm));
+        ecs.apply_op(&Operation::Update {
+            doc_id: vm_id,
+            changes: vec![change],
+        });
+
+        let mirrored = ecs.vision_modes_doc().unwrap().engine.clone().unwrap();
+        assert_eq!(
+            mirrored, store_engine,
+            "the config singleton mirror must reach the store's value for a remove change"
+        );
+        assert!(
+            mirrored["modes"].get("blindsight").is_none(),
+            "the removed mode must be ABSENT, not replaced by `new`"
+        );
+        // The derived read-through agrees: the removed mode is gone, the other remains.
+        let modes = ecs.resolved_vision_modes();
+        assert!(!modes.contains_key("blindsight"));
+        assert!(!modes.contains_key("smuggled"), "`new` must never be stored");
+        assert!(modes.contains_key("darkvision"));
+    }
+
+    /// `token_move` (the pre-commit move projection) is the fourth site. It had no
+    /// coverage either: an unconditional `set_pointer` there survived the suite. The
+    /// projected target must be derived by the same rule the store uses — so a `remove`
+    /// clears the coordinate rather than yielding a target taken from `new`.
+    ///
+    /// Hardening, not a reachable committed divergence: `TokenEngine.x`/`y` are required
+    /// `f64`, so a `/engine/x` removal fails `validate_engine_tree` on the post-image and
+    /// never commits. This pins store-equality by construction at the site rather than
+    /// relying on that downstream rejection to stay true.
+    #[test]
+    fn token_move_projection_honors_a_remove_change() {
+        use crate::data::command::FieldChange;
+        use serde_json::json;
+
+        let token = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 10.0, "y": 20.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), token.clone()], 0);
+
+        // Control: a plain set projects the new position from `new`.
+        let moved = ecs.token_move(
+            token.id,
+            &[FieldChange {
+                remove: false,
+                path: "/engine/x".into(),
+                old: json!(10.0),
+                new: json!(70.0),
+            }],
+        );
+        assert_eq!(
+            moved.map(|(_, from, to)| (from, to)),
+            Some(((10.0, 20.0), (70.0, 20.0))),
+            "a set change projects `new` as the target"
+        );
+
+        // A REMOVE of the same path must clear `/engine/x`, so no target is derivable —
+        // never a target built from `new`. An unconditional `set_pointer` here yields
+        // (99.0, 20.0) instead.
+        let removed = ecs.token_move(
+            token.id,
+            &[FieldChange {
+                remove: true,
+                path: "/engine/x".into(),
+                old: json!(10.0),
+                new: json!(99.0),
+            }],
+        );
+        assert_eq!(
+            removed, None,
+            "a removed coordinate yields no projected move, never one derived from `new`"
+        );
     }
 
     #[test]
@@ -3817,6 +3935,7 @@ mod tests {
     /// built-in default via JSON-pointer `set_pointer` — lets each test express only the field(s)
     /// it cares about instead of re-typing the full 9-field `scene` object every time.
     fn ws_body(patches: &[(&str, serde_json::Value)]) -> serde_json::Value {
+        use crate::data::command::set_pointer;
         let mut v = serde_json::to_value(eng::WorldSettingsEngine::default()).unwrap();
         for (path, val) in patches {
             let _ = set_pointer(&mut v, path, val.clone());

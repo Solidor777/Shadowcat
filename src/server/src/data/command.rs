@@ -267,6 +267,31 @@ pub fn remove_pointer(root: &mut Value, pointer: &str) -> Result<(), DataError> 
     Ok(())
 }
 
+/// Apply one `FieldChange` to a serialized document value. THE mutation rule for a
+/// field-path change, stated once for the whole repository: `remove: true` deletes the
+/// key at `path` and `new` is unused; anything else sets `new`.
+///
+/// INVARIANT: every store of document state — the authoritative SQLite rows and every
+/// derived mirror of them (`SceneEcs`) — must reach the SAME value for the same change.
+/// Restating the `remove`/set branch at a call site is the defect: `new` is constrained
+/// by NEITHER the OCC pre-image comparison (which reads `old`) NOR
+/// `required_cap_for_path`, so a mirror that unconditionally calls `set_pointer` lands an
+/// attacker-chosen value where the store lands absence. On a path authz then reads
+/// (`/owner`, `/engine/actor_id`) that divergence hands write-refused documents to
+/// whoever `new` names. Call this; do not re-derive it.
+///
+/// Errors are the underlying pointer ops' (`BadPath` for a malformed path, an array-index
+/// removal, or descent through a scalar). The authoritative paths propagate with `?` so a
+/// rejected mutation aborts the transaction; a derived mirror running on already-committed
+/// state cannot reject and handles the error locally instead.
+pub fn apply_field_change(v: &mut Value, ch: &FieldChange) -> Result<(), DataError> {
+    if ch.remove {
+        remove_pointer(v, &ch.path)
+    } else {
+        set_pointer(v, &ch.path, ch.new.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

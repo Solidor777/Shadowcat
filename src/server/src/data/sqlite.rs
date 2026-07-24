@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::auth::role::ServerRole;
 use crate::data::command::{
-    remove_pointer, set_pointer, Command, FieldChange, Operation, UnsequencedCommand, WriteOrigin,
+    apply_field_change, Command, FieldChange, Operation, UnsequencedCommand, WriteOrigin,
 };
 use crate::data::document::{
     CapabilityRequirement, ContractDeclaration, Document, SchemaDeclaration, Scope, World,
@@ -1383,11 +1383,10 @@ impl Repository for SqliteRepository {
                     let mut value: serde_json::Value =
                         serde_json::from_str(row.get::<String, _>("json").as_str())?;
                     for ch in changes {
-                        if ch.remove {
-                            remove_pointer(&mut value, &ch.path)?;
-                        } else {
-                            set_pointer(&mut value, &ch.path, ch.new.clone())?;
-                        }
+                        // THE store-equal mutation rule (data/command.rs). Never
+                        // re-derive the remove/set branch here: the derived scene ECS
+                        // mirrors these same changes and must land the same value.
+                        apply_field_change(&mut value, ch)?;
                     }
                     let mut doc: Document = serde_json::from_value(value)?;
                     // Identity and world scope are immutable through an update:
@@ -1824,11 +1823,10 @@ impl Repository for SqliteRepository {
                     let mut value: serde_json::Value =
                         serde_json::from_str(row.get::<String, _>("json").as_str())?;
                     for ch in changes {
-                        if ch.remove {
-                            remove_pointer(&mut value, &ch.path)?;
-                        } else {
-                            set_pointer(&mut value, &ch.path, ch.new.clone())?;
-                        }
+                        // THE store-equal mutation rule (data/command.rs). Never
+                        // re-derive the remove/set branch here: the derived scene ECS
+                        // mirrors these same changes and must land the same value.
+                        apply_field_change(&mut value, ch)?;
                     }
                     let mut doc: Document = serde_json::from_value(value)?;
                     if doc.id != *doc_id {
