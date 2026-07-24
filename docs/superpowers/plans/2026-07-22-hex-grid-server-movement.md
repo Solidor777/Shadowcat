@@ -1428,10 +1428,42 @@ Returning a uniform 204 does not fully close it: seating-on-hit is itself observ
 
 ---
 
+## Task 14h: Ungate the player-facing scene tools `[sec]` — unblocks 14c
+
+**Why (found by 14c's second attempt, dispatcher-verified at source):** a non-GM has NO scene tools at all. `ToolRail.svelte:78` wraps the entire rail — select/move included — in `{#if isGm}`, and `new ToolController` exists in exactly one non-test place (`ToolRail.svelte:11`) inside that gated component. With no active tool a player's canvas drag falls through to camera pan. Consequence: the whole server-authoritative movement stack (M9a walls, M10e-4 vision gating, the M1 executor, and this campaign's hex work) has **no client path a player can reach**.
+
+**Decision (user):** a non-GM gets **select/move, measure, and ping**. Every authoring tool — wall, region, draw, template, place — stays GM-only.
+
+- [ ] **Step 1:** split the rail's gating per-tool rather than wrapping the whole component. The `ToolController` must be constructed for every user; only the authoring entries are GM-conditional.
+- [ ] **Step 2:** verify each ungated tool's write path is one the server already polices for a non-GM — select/move → `Room::publish`'s gate; measure route-commit → `moveRequest`/`execute_move`; ping → the existing per-user broadcast. **If any ungated tool can write something the server does NOT gate for a non-GM, STOP and report** — that is a privilege hole, not a UI change.
+- [ ] **Step 3:** tests — a non-GM sees exactly {select/move, measure, ping} and NO authoring tool; a GM still sees the full rail. Assert the absent ones by negative assertion, not by counting.
+- [ ] **Step 4:** gates + commit (stage by explicit path) + mandatory two-reviewer opus buddy-check (this is an authz surface).
+
+---
+
+## Task 14i: Token ownership — actor-inherited with a per-token override `[sec]` — unblocks 14c
+
+**Why:** no UI can give a player a token they can write to. `buildTokenDoc` sets `owner: null` and `permissions.default = "observer"` (READ only, `permission.rs`), `Update` needs WRITE_FIELDS, and the server never stamps `owner` on Create. The only `permissions` write anywhere in `src/modules` is the actor name-privacy toggle. So the server's owner checks currently have nothing to check.
+
+**Decision (user):** a token linked to an actor **inherits that actor's ownership**; a GM may **override on the individual token**. Ownership lives with the character, assigned once rather than per placed token, and unlinked or one-off tokens stay assignable.
+
+**Resolution rule:** `effective_owner(token) = token's own override, else the linked actor's owner`. **Resolve this SERVER-SIDE at authz time**, not by stamping a copy at create time — a stamped copy drifts the moment actor ownership changes, and a client-side rule can be bypassed. Mirror the existing actor-join precedent (`token_vision_floors` already resolves through the token→actor link, and `resolveTokenActor` is the client semantics the server must equal — verify against that SOURCE, not a paraphrase).
+
+- [ ] **Step 1:** server — effective-owner resolution on the authz path, fail-closed on a degenerate/missing link (no owner ⇒ no write, never a default-allow).
+- [ ] **Step 2:** client — a GM-facing owner control (per-token override; actor ownership assigned on the actor).
+- [ ] **Step 3:** tests — a player can write `/engine/x,y` on a token they effectively own and CANNOT on one they don't; inheritance and override each pinned; changing the actor's owner changes the token's effective owner with no re-stamp.
+- [ ] **Step 4:** gates + commit + mandatory two-reviewer opus buddy-check.
+
+---
+
 ## Task 14c: Client end-to-end test — a NON-GM player's illegal hex move is rolled back by the server
 
-**Depends on Task 14f** (a real player account must be creatable). Step 1's investigation is already DONE — do not redo it:
-- The player-join mechanism is `POST /api/worlds/{id}/members`; account creation comes from 14f.
+**Depends on Tasks 14f, 14g, 14h and 14i.** The Step-1 observable is already BUILT (commit `a98715b`: `data-token-positions` on the stage host, fed by `Stage.svelte`'s existing `onDocs` pass).
+
+**TRAP — the test can pass for the wrong reason.** `publish`'s movement gate runs BEFORE `apply_intent`, so a PERMISSION denial and a WALL denial are both `Forbidden` and are indistinguishable client-side. A spec that only asserts "the move was rolled back" therefore proves nothing about the wall. **Include a control leg:** on a `movementRestriction: "unrestricted"` scene where only `blocks_move` can reject, a legal drag must SUCCEED — with the same token, the same player, the same session. Without that, an ownership regression reads as a passing wall test.
+
+Step 1's investigation is already DONE — do not redo it:
+- Account creation is 14f's admin-gated `POST /api/users`. Seating is 14g's invite flow: the GM mints via `POST /api/worlds/{id}/invites` `{role}`, and the invitee redeems from their OWN session via `POST /api/invites/accept` `{code}` (the code is in the BODY, not the URL). `add_member`-by-username no longer exists — a GM cannot seat a player by naming them, which is the point of the flow.
 - **The rollback observable does NOT exist and `data-last-move-outcome` cannot serve this test.** `WorldSession` emits `onMoveOutcome` only off the `moveRequest` promise (`worldSession.svelte.ts:255-282`) — i.e. the measure-tool route-commit. The select-tool DRAG writes `/engine/x,y` as a plain optimistic Update and emits nothing; `data-token-count` is a count, not a position. A minimal test-only `data-*` position signal added to `Stage.svelte`'s existing `onDocs` pass (`:151`) closes this, mirroring the `data-last-ping` / `data-last-move-outcome` pattern.
 
 **Files:**
