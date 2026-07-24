@@ -50,11 +50,11 @@ source of truth. The ones agents break most:
   | Forked on | Where | Consequence |
   |---|---|---|
   | Cell indexing | `ws/room.rs`, `navmesh.rs` | square indices tested against a hex-axial mask |
-  | Traversal completeness | `HexGrid::line_traversal` | a thin line, not a supercover — ~55% of segments omitted a crossed hex the gate then never checked |
+  | Contract completeness in a SHARED primitive (not a fork — included because it is the same *consequence* from the opposite cause) | `HexGrid::line_traversal` | a thin line, not a supercover — ~55% of segments omitted a crossed hex the gate then never checked; see `scene-rendering`'s "a fixed-count cube lerp is a THIN LINE" gotcha |
   | Input admissibility | `Room::publish` vs `gate_walk` | one bounded coordinate magnitude, the other did not |
   | **Scene identity** | `MoveRequest` vs `Room::publish` | one took the scene from the client, the other derived it from the token ⇒ total movement-gate bypass |
   | **`remove` semantics** | `SceneEcs::apply_op` vs `apply_intent` | ECS ignored `FieldChange.remove` while the DB honoured it ⇒ vision widened where write authz refused |
-  | Fail-open defaults | `execute_move` vs `publish` vs `pathfind` | a `unwrap_or(100.0)` cell size removed from one gate, left in two |
+  | Fail-open defaults | `execute_move` vs `publish` vs `pathfind` | a `unwrap_or(100.0)` cell size removed from ONE gate, left in the other two — created by the commit that fixed the row above. **Now removed from all three gates**; four NON-gate siblings survive (`navmesh_for`, `region_field`, `visible_cells`, `visible_cells_cached`), safe only by call ordering — see `docs/TODO.md` |
   **How to apply.** (1) When you find two paths that must agree, do not verify they agree today —
   make one *derive* from the other, or have both read one shared symbol, so agreement is structural.
   (2) When you fix one instance, grep for the other copies **in the same commit**; the last row

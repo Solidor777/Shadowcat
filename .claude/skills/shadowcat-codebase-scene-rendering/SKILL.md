@@ -36,6 +36,22 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   zero-overlap cell). `resolve_scene` also yields `movement_restriction`
   (`MovementRestriction::{Visible,Revealed,Unrestricted}`, scene-overridable, fail-closed to `Visible`)
   + `partial_cell_leniency` (world-only).
+  **THE PARITY CHECKLIST — `Room::publish` (drag) and `move_exec`/`execute_move` (moveRequest) are
+  two gates that MUST agree, and they have diverged on SIX independent axes. Adding a new gate
+  input means adding a row here and pinning it.** Each row cost a defect, two of them Critical:
+  (1) **per-cell decision** — same `blocks_move` + `GridShape::line_traversal` + `visible` mask;
+  (2) **cell indexing** — the same resolved `GridShape`, never the free square functions;
+  (3) **traversal completeness** — a supercover on both grid kinds, never a thin line;
+  (4) **input admissibility** — both share `MAX_GATE_WALK_COORD`, checked before any traversal, in
+  EVERY restriction mode (`Unrestricted` short-circuits later, so a check placed after it agrees in
+  two modes of three and forks in the third);
+  (5) **scene identity** — DERIVED from the token, never the frame (below);
+  (6) **fail-open defaults** — an absent `scene_grid_sizes` entry means no scene document and must
+  REFUSE, never synthesize a 100-unit grid.
+  SCOPE caveat that applies to the whole comparison: `publish`'s gate block is non-GM-only, while
+  `execute_move` and `gate_walk` bound unconditionally including GMs. Pin each axis with an
+  anti-drift test exercising BOTH gates through the shared symbol — see `MAX_GATE_WALK_COORD`'s and
+  the dangling-parent-scene one.
   **INVARIANT — a movement/routing gate's SCENE is DERIVED FROM THE TOKEN, never taken from the
   frame (Task 14j, `[sec]`, fixed a Critical).** `Room::execute_move` resolves the scene via
   `SceneEcs::token_move(token, &[])`, the same accessor `Room::publish` has always used — which is

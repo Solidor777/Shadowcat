@@ -189,9 +189,9 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
     GM re-assignment) and rewrite `/permissions` to lock the GM out. Parity with a *stamped* owner
     holds exactly; what changed is the POPULATION — "Owner" is now every player with an assigned
     actor rather than a hand-enumerated set.
-  - **Known under-permit, logged in `docs/TODO.md`:** egress redaction still resolves `is_owner`
-    from the literal `doc.owner`, so an inheriting owner can move a token and see through it while
-    counting as a stranger for its `owner_or_gm` tiers and `/base`. Under-permit only.
+  - **Known under-permit:** egress redaction still resolves `is_owner` from the literal
+    `doc.owner`. Details and status: `shadowcat-codebase-documents-permissions` (whose territory
+    egress is) and `docs/TODO.md`.
 - **Rendered token size, hit-test, and the selection ring all resolve through `resolveTokenBox`** —
   never read `token.system.w/h` directly for an actor-backed token; doing so bypasses the
   `EffectiveActor.size × grid-cell` scaling, breaks multi-cell tokens, and ignores the shape

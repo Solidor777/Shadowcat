@@ -47,6 +47,19 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   chokepoint — called on every Create/Update POST-IMAGE (after all `FieldChange`s apply),
   including embedded children, so a wholesale `/engine` replacement, a leaf `/engine/x` write, and
   an embedded child's engine write are all covered by one call site.
+- **Token ownership is EFFECTIVE, and it lives in THIS subsystem's files.** `effective_owner`
+  (`data/permission.rs`) and `load_effective_owner` (`data/sqlite.rs`) resolve
+  `token's own /owner, else the LINKED actor's owner` at authz time — never stamped. `/owner` is
+  Update-writable under `cap::EDIT_PERMISSIONS`; `DocRole::Owner`'s BUILT-IN floor is
+  `{READ, WRITE_FIELDS}` and excludes it, but the floored role also selects additive
+  `by_role[Owner]` grants. **State the precedence rule exactly ONCE** — duplicating it via a
+  short-circuit in the DB join let an inverted-precedence mutation survive. Full rule, the
+  fail-closed list, and the instanced-token exclusion: `shadowcat-codebase-actors-tokens`.
+  **The EGRESS half is this skill's own territory and is a KNOWN under-permit:**
+  `filter_properties` / `collect_hidden` / `filter_command` and the document routes still resolve
+  `is_owner` from the LITERAL `doc.owner`, so an inheriting owner can move a token and see through
+  it while counting as a stranger for its `owner_or_gm` tiers and `/base`. Under-permit only
+  (every such site gates on `cap::READ` first, so it cannot over-permit); logged in `docs/TODO.md`.
 - **`command::apply_field_change(v, ch)` is THE store-equal mutation rule — every store of document
   state, authoritative or derived, applies a `FieldChange` through it. Never hand-write a
   `remove`/`set` branch.** One function, one statement of the rule, repo-wide (client mirror:
@@ -63,15 +76,12 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   `new` made the DB read "unowned" (nobody may write) while the ECS resolved ownership to another
   actor's owner — who then gained the token as a vision source. **Vision widened exactly where
   write authz refused.** Note the two call-site trust levels through one helper: `apply_op` sees
-  committed changes, `token_move` sees CLIENT-PROPOSED, not-yet-authorized ones. That distinction is
-  carried explicitly by `MirrorInput::{Committed, Proposed}`, and it decides the LOG LEVEL, not the
-  mutation: `Committed` failing is an invariant breach (the store applied a change the mirror could
-  not — re-hydration is the recovery) and logs at `error!`; `Proposed` failing is routine malformed
-  input and logs at `debug!`. Getting this backwards is a real defect in both directions — an
-  `error!` on the proposed path is an attacker-controllable log channel (a client can emit one per
-  malformed path per publish, uncapped, since `validate_field_change` runs strictly later in
-  `apply_intent`), and a `debug!` on the committed path hides genuine divergence. Both directions
-  are pinned by tests over a `tracing` layer, mutation-checked each way.
+  committed changes, `token_move` sees CLIENT-PROPOSED, not-yet-authorized ones. `MirrorInput::
+  {Committed, Proposed}` carries that and decides the LOG LEVEL, not the mutation: `error!` on a
+  committed failure (an invariant breach), `debug!` on a proposed one (routine malformed input).
+  Backwards in either direction is a real defect — `error!` on the proposed path is an
+  attacker-controllable log channel. Both pinned by mutation-checked tests; rationale in full at
+  `scene/mod.rs`'s `MirrorInput`.
 - `src/server/src/data/validation.rs`'s `validate_field_change` — ingress shape rule: `remove: true`
   must carry a null `new`. Defense-in-depth only; the mirror is correct independently, which
   matters because replay and broadcast can carry shapes ingress never validated.
