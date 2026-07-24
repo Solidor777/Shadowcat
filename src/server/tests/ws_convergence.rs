@@ -56,6 +56,7 @@ async fn spawn_with_ws(ws: shadowcat::ws::WsState) -> Harness {
         initialized: Arc::new(AtomicBool::new(true)),
         ws,
         upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+        auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
     };
     let app = http::router(state).await;
 

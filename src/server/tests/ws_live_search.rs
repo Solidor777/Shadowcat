@@ -43,6 +43,7 @@ async fn spawn() -> Harness {
         initialized: Arc::new(AtomicBool::new(true)),
         ws: shadowcat::ws::WsState::new(),
         upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+        auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
     };
     let app = http::router(state).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

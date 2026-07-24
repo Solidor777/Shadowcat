@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
         initialized: Arc::new(AtomicBool::new(initialized)),
         ws: shadowcat::ws::WsState::new(),
         upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+        auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
     };
 
     shadowcat::auth::session::spawn_session_sweep(&state.repo);
