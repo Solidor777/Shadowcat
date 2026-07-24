@@ -174,7 +174,8 @@ const WALL_COLOR = 0xd06060;
 
 /** Drag to draw a wall segment (snapped endpoints); release persists a `wall` doc
  * (`blocksSight`+`blocksMove`). The server's collision check reads the same `seg`. GM-gated
- * (all rail tools are). No active scene → unhandled. */
+ * (all AUTHORING rail tools are; select/move, measure and ping are player-reachable).
+ * No active scene → unhandled. */
 export function makeWallTool(ctx: ToolContext): SceneTool {
   let anchor: Point | null = null;
   return {
@@ -220,7 +221,8 @@ const REGION_PREVIEW_COLOR = 0xd0a030;
  * Release persists a `region` doc with the controller's configured behavior/cost/secrecy.
  * Create-only (no edit UI) — mirrors `makeWallTool`'s precedent: editing behavior/cost/visibility
  * on an already-placed region has no dedicated UI; a GM re-authors by delete+recreate, or toggles
- * `enabled` server-side. GM-gated (all rail tools are). */
+ * `enabled` server-side. GM-gated (all AUTHORING rail tools are; select/move, measure and ping
+ * are player-reachable). */
 export function makeRegionTool(ctx: ToolContext, controller: ToolController): SceneTool {
   let anchor: Point | null = null;
   let freehand: number[] = [];

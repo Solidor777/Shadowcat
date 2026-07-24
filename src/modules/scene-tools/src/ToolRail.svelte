@@ -66,7 +66,16 @@
    * server already polices for a non-GM: select/move emits an optimistic `/engine/x,y` token
    * Update (`Room::publish`'s wall + visibility-mask gate, then the permission check in
    * `apply_intent`); measure previews via the per-requester-masked `Pathfind` and commits a
-   * route via `MoveRequest`/`execute_move`; ping is the rate-limited per-user relay. */
+   * route via `MoveRequest`/`execute_move`; ping is the rate-limited per-user relay.
+   *
+   * `place` in particular MUST stay `gmOnly`, for a reason that is not visible from this file:
+   * `Room::publish`'s movement gate inspects `Operation::Update` ONLY, so a `Create` carries an
+   * arbitrary initial position with no wall or visibility-mask check at all (deliberate — see the
+   * comment at `ws/room.rs`'s gate, and ARCHITECTURE invariant 6). The only server-side check left
+   * on a player `Create` is `apply_intent`'s `core:create` world-capability grant, which is
+   * world-CONFIGURABLE — fail-closed by default, but a world that granted it would have a real
+   * placement hole if this tool were ungated. Ungating an authoring tool therefore requires
+   * checking what gates its op KIND, not just that some gate exists on the path. */
   const tools: { id: ToolId; label: string; gmOnly: boolean }[] = [
     { id: "select", label: t("tools.select"), gmOnly: false },
     { id: "place", label: t("tools.place"), gmOnly: true },
