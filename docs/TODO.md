@@ -225,3 +225,17 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   world AND the sender to hold `cap::READ` on it — which admits the spectator while refusing a
   scene they cannot see. Needs a decision on the spectator case before implementing. (Surfaced by
   the Task 14h `[sec]` review; scope-checked and escalated by Task 14j.)
+
+## Actionable now — `setGmViewedScene` leaves a stale cross-scene token selection
+- TODO: `setGmViewedScene` (`src/client/shell/src/lib/worldSession.svelte.ts`) does not scene-scope
+  or clear `tokenSelection`, while `commitRoute` (`src/modules/scene-tools/src/controller.svelte.ts`)
+  sends `activeScene(ctx).id`. So a GM who selects a token in scene A, roams to scene B, then
+  commits a measured route sends `scene: B` with a token that lives in A and gets a silent
+  `MoveError`. **The rejection is CORRECT and must not be relaxed** — before Task 14j that exact
+  request shape was the cross-scene movement-gate bypass, and the server now derives the gate's
+  scene from the token and refuses the mismatch. This is purely a client UX gap: the failure is
+  silent. **Prefer scene-scoping `tokenSelection` over clearing it** — a GM roaming B and back to A
+  would otherwise lose their selection for no reason. Client-package change, so gate it with
+  `pnpm -r test` rather than a filtered run (a client change can break sibling packages' fixtures).
+  (Surfaced by the Task 14j `[sec]` review; deliberately kept out of the server security commit to
+  avoid batching unrelated concerns.)
