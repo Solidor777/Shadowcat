@@ -423,7 +423,7 @@ mod tests {
         repo.create_invite(mk(1, now - 31 * 24 * 60 * 60 * 1000), 64)
             .await
             .unwrap();
-        repo.create_invite(mk(2, now - 1 * 24 * 60 * 60 * 1000), 64)
+        repo.create_invite(mk(2, now - 24 * 60 * 60 * 1000), 64)
             .await
             .unwrap();
         let deleted = super::sweep_spent_invites(repo.pool(), now).await.unwrap();
