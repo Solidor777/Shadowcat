@@ -252,11 +252,13 @@ impl Room {
                             // admissible, not merely on which cells are visible. Checked for every
                             // restriction mode — including `Unrestricted`, which `gate_walk` also
                             // bounds — so the agreement holds in all modes. SCOPE: this whole block
-                            // is non-GM only, while `gate_walk` bounds unconditionally, so a GM
-                            // drag (or the deliberately ungated `Create` placement path above) can
-                            // still commit an over-bound coordinate. That token's own later non-GM
-                            // moves are then permanently rejected by the `a0` test below —
-                            // fail-closed, and consistent with the GM-override design. Beyond the bound the
+                            // is non-GM only (mirroring `execute_move`'s own scoping), but
+                            // `TokenEngine::validate` bounds every document write unconditionally —
+                            // GM included — at ingress, so no live write (drag or `Create`) can
+                            // commit an over-bound coordinate any more. The `a0` test below is
+                            // defense-in-depth against a position that predates that ingress gate
+                            // (e.g. legacy data); it fails closed regardless of how such a position
+                            // came to exist. Beyond the bound the
                             // downstream primitives lose their guarantees (`gate_walk`'s
                             // magnitude-scaled identity tolerance, `HexGrid::line_traversal`'s
                             // `VERTEX_PROBE` offset, which scales with `self.size`), so an over-magnitude endpoint fails
