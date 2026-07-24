@@ -98,10 +98,18 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   The mutation itself is `remove_pointer(root, pointer)`: **object keys only — a leaf array-index
   removal (e.g. `/tags/1`) is rejected with `DataError::BadPath`, unmutated** (array shrink is
   whole-array replacement only, per the merge-engine invariant; a leaf remove of an index has no
-  defined shift semantics), while a missing intermediate ancestor is treated as an already-absent
-  no-op rather than an error. Sibling mechanism to `set_pointer` (leaf-SET-only: it can create or
-  overwrite a key/index but can never delete a key or resize an array) — the pair covers set vs.
-  remove, with array resize handled exclusively by whole-array replacement, not by either pointer op.
+  defined shift semantics), while a missing OR explicit-`null` intermediate ancestor is treated as an
+  already-absent no-op rather than an error. Sibling mechanism to `set_pointer` (leaf-SET-only: it
+  can create or overwrite a key/index but can never delete a key or resize an array) — the pair
+  covers set vs. remove, with array resize handled exclusively by whole-array replacement, not by
+  either pointer op. **INVARIANT — all three pointer ops treat a `null` INTERMEDIATE as absent, in
+  lockstep on both the server (`command.rs`) and the client mirror (`store.ts`):** `set_pointer`
+  descends by replacing a `null` intermediate with a fresh object (`Option<T>` engine fields with no
+  `skip_serializing_if` serialize as `null`, so this is the common case — e.g. a scene's
+  `/engine/vision` override on a default-built scene doc); `remove_pointer` no-ops through it;
+  `get_pointer` reads `undefined`/`Null`. The LEAF null-vs-absent distinction is preserved (`null !=
+  absent` for a leaf value). Forking this null-handling across the two languages is the never-fork
+  defect class — parity is pinned by matching tests on each side.
 - `src/server/src/data/permission.rs` — the redaction core:
   - `resolve_access(user, world_role, doc) -> Access` (and `resolve_access_world`) builds the
     per-connection `Access { caps, all, see_gm_only, is_owner }`.

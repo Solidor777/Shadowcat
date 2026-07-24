@@ -119,3 +119,34 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   mixed integer/`Float` case. Regression coverage: 4 additional unit tests (large same-variant
   PosInt pair that aliases under `f64`, large same-variant NegInt pair, opposite-sign
   same-magnitude rejection, trivially-equal small-integer pair).
+
+## Client / document store & optimistic
+
+- [Client] Every per-scene vision/lighting override threw `cannot set field on non-container` on a
+  default-created scene. `buildSceneDoc` correctly emits `SceneEngine`'s required-but-nullable
+  `vision`/`lighting` keys as explicit `null` (their `Option<T>` fields have no `skip_serializing_if`,
+  so the server round-trips them back as `null` regardless), but both the client `setPointer`
+  (`store.ts`) and the server `set_pointer` (`command.rs`) auto-created only a MISSING intermediate
+  and rejected descent through an explicit `null` — so dispatching `/engine/vision/movementRestriction`
+  (or any of the ten scene-tier overrides in `GameSettingsPanel`) failed. Root cause was the
+  pointer-descent primitive, not the doc builder (omitting the keys would only defer the failure to
+  the first server echo). Fixed in lockstep on both sides — the never-fork-a-decision invariant — by
+  treating a `null` intermediate as replaceable (auto-create the container), matching how
+  `getPointer`/`removePointer` already treat a null intermediate as absent. A follow-up extended
+  `remove_pointer`/`removePointer` to also no-op through a null intermediate, so all three pointer
+  ops now agree. Anti-drift parity tests on each side (`set_pointer_descends_through_an_explicit_null_intermediate`
+  + its two-nested-null and remove-no-op siblings in `command.rs`; the mirrored fixtures in
+  `store.test.ts`) plus a realistic `buildSceneDoc`-path regression test. Commits `4c1c46f`,
+  `585265c`. (Found by the Task 14c player e2e.)
+
+- [Client, more serious] A single failed optimistic op wedged the write queue: after the override
+  failure above, the next unrelated intent threw the same error and never committed, so one bad
+  dispatch blocked all later writes on that client until reload. Root cause: `OptimisticClient.rebuildView`
+  applied every pending intent's ops directly onto the live view with no isolation, so a throwing op
+  aborted the whole rebuild and re-threw on every subsequent `applyIntent`/`applyCommand`/`reject`.
+  Fixed by applying each pending intent onto a scratch view adopted only if all its ops succeed; a
+  throwing intent is skipped, logged via an injected `Logger`, and left in `pending` for the server's
+  confirm/reject to remove. Authoritative `base` application stays strict. Regression tests in
+  `optimistic.test.ts` (bad intent between two good ones — good lands, bad stays pending, warn fired;
+  `applyCommand`/`reject` still function with a bad intent queued). Commit `4c1c46f`. (Found by the
+  Task 14c player e2e.)
