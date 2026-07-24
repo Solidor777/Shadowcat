@@ -259,7 +259,7 @@ impl Room {
                             // fail-closed, and consistent with the GM-override design. Beyond the bound the
                             // downstream primitives lose their guarantees (`gate_walk`'s
                             // magnitude-scaled identity tolerance, `HexGrid::line_traversal`'s
-                            // absolute `VERTEX_PROBE` offset), so an over-magnitude endpoint fails
+                            // `VERTEX_PROBE` offset, which scales with `self.size`), so an over-magnitude endpoint fails
                             // closed exactly as a `line_traversal` `None` does.
                             // Non-finite is rejected first, mirroring `gate_walk`'s own ordering:
                             // `NaN.abs() > bound` is false, so a magnitude-only test admits NaN,
@@ -1268,9 +1268,9 @@ mod room_tests {
     /// Defense-in-depth: a single `Update`'s FieldChange list combining a wholesale `/engine`
     /// replace AND a leaf `/engine/x` change must produce the SAME post-image whether the
     /// gate's replay (`SceneEcs::token_move`, consulted by `Room::publish`'s movement gate) or
-    /// the commit path's replay (`apply_intent`'s sequential `set_pointer` application) computes
+    /// the commit path's replay (`apply_intent`'s sequential `command::apply_field_change` application) computes
     /// it — in BOTH possible orderings of the two changes. Both replay implementations apply
-    /// `changes` via `set_pointer` in array order independently; this pins them against silently
+    /// `changes` via `command::apply_field_change` in array order independently; this pins them against silently
     /// diverging (which would let the gate validate one post-image while a different one
     /// actually lands).
     #[tokio::test]

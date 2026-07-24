@@ -98,9 +98,10 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     // (2) Mask: every footprint-overlapped cell, AND every cell the center-to-center step's
     // supercover crosses, must be visible/revealed (non-GM).
     //
-    // INVARIANT (spec §13 / M3 design §3): `movement::supercover_cells` is the SAME primitive
+    // INVARIANT (spec §13 / M3 design §3): `GridShape::line_traversal` is the SAME primitive
     // the M1 move executor (`move_exec.rs`) and the M10e-4 `ws/room.rs::publish` gate check per
-    // step. The router's mask predicate must be a superset of the gate's, or a route this A*
+    // step — resolved from the scene's shape, never the free square `movement::supercover_cells`
+    // (that is `SquareGrid`'s own internal; calling it here is square-on-hex). The router's mask predicate must be a superset of the gate's, or a route this A*
     // search approves can be rejected at execution time (buddy-check P1: for a sub-0.5-cell
     // footprint, the destination footprint disc alone never reaches a diagonal step's corner
     // flanker cells). `None` (degenerate/over-cap span) fails closed: not enterable, mirroring

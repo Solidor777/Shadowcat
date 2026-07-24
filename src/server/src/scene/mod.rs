@@ -3257,11 +3257,6 @@ mod tests {
         assert!(ecs.player_vision_polygons(q).is_empty());
     }
 
-    /// `apply_config_update` (the world-settings / gradation / vision-modes singleton
-    /// mirror) is the third site that must obey the store-equal mutation rule. It had
-    /// no coverage: reverting it to an unconditional `set_pointer` survived the whole
-    /// suite. A `remove` on a config field must leave the ECS singleton matching the
-    /// store's ABSENCE, not holding `ch.new`.
     /// Collects the `Level` of every event emitted on the current thread, so a test can
     /// assert what a code path is allowed to log — not merely what it computes.
     #[derive(Default, Clone)]
@@ -3366,6 +3361,11 @@ mod tests {
         );
     }
 
+    /// `apply_config_update` (the world-settings / gradation / vision-modes singleton
+    /// mirror) is the third site that must obey the store-equal mutation rule. It had
+    /// no coverage: reverting it to an unconditional `set_pointer` survived the whole
+    /// suite. A `remove` on a config field must leave the ECS singleton matching the
+    /// store's ABSENCE, not holding `ch.new`.
     #[test]
     fn config_singleton_mirror_honors_a_remove_change() {
         use crate::data::command::{apply_field_change, FieldChange};
