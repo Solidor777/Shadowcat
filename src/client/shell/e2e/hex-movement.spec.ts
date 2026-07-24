@@ -47,17 +47,23 @@ async function login(page: Page, username: string, password: string): Promise<vo
 async function canvasOrigin(page: Page): Promise<Point> {
   const box = await page.getByTestId("stage-canvas").boundingBox();
   expect(box, "the stage canvas must be laid out before a pointer gesture").not.toBeNull();
-  // Every gesture below addresses scene coordinates up to (WALL_X, WALL_Y1); a canvas
-  // smaller than that would silently clamp the pointer and make the failure unreadable.
-  expect(box!.width).toBeGreaterThan(WALL_X + 20);
+  // Gestures below address scene coordinates out to (ILLEGAL_X, WALL_Y1). A canvas
+  // that small keeps the pointer inside the element for every gesture, so no gesture
+  // depends on Stage's pointer capture retargeting an out-of-canvas move.
+  expect(box!.width).toBeGreaterThan(ILLEGAL_X + 20);
   expect(box!.height).toBeGreaterThan(WALL_Y1 + 20);
   return { x: box!.x, y: box!.y };
 }
 
-/** One pointermove for the whole displacement, so the drag dispatches a SINGLE
- * start→end move intent. Stepping it would emit intermediate intents, each gated
- * on its own short segment, and the token would walk up to the wall instead of
- * being rejected outright. */
+/** One pointermove for the whole displacement.
+ *
+ * `makeSelectMoveTool` captures the grab origins at `onPointerDown`, so every intent it
+ * emits is start→CURRENT — a stepped drag therefore emits progressively longer full-span
+ * segments, not incremental hops, and each of the early (short) ones commits. The rollback
+ * assertion would then revert to the last committed intermediate rather than to the pre-drag
+ * position. A single pointermove still emits two intents (the leading-edge send in
+ * `onPointerMove`, then the `onPointerUp` flush), but both carry the identical full
+ * displacement, so nothing partial can commit. */
 async function dragScene(page: Page, from: Point, to: Point): Promise<void> {
   const o = await canvasOrigin(page);
   await page.mouse.move(o.x + from.x, o.y + from.y);
@@ -119,6 +125,13 @@ async function expectTokenX(page: Page, x: number, why: string): Promise<void> {
 // `movementRestriction: "unrestricted"`, where `blocks_move` is the ONLY thing that can
 // reject a non-GM move, and the same player drags the same token in the same session to a
 // LEGAL destination first: that leg must succeed. Only then does a rejection isolate the wall.
+//
+// SCOPE — this does NOT cover the hex traversal gate. `Unrestricted` makes `Room::publish`
+// `continue` before it ever resolves a `GridShape` or walks `line_traversal`, so the server-side
+// gate exercised here is the grid-kind-AGNOSTIC `blocks_move` segment check. The scene being hex
+// drives the client (render, snapping) and proves the hex authoring path round-trips; the
+// hex-specific mask/traversal gate is proven by the server's own unit and integration tests, not
+// by this spec. Do not read a change here as changing that coverage.
 test("a non-GM player's wall-crossing drag on a hex scene is rejected by the server and rolled back", async ({
   page,
   browser,
@@ -186,6 +199,10 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     // cannot be used: a scene document's `engine.vision` is `null` until something
     // writes it, and `/engine/vision/movementRestriction` cannot descend through null.
     await gm.getByLabel("gameSettings.movementRestriction").selectOption("unrestricted");
+    // Pin that it persisted. Silently falling back to `Visible` would move the rejection
+    // below onto the visibility mask, re-entering the very ambiguity the control leg closes —
+    // and on a lit scene the control leg would still pass, so nothing else would catch it.
+    await expect(gm.getByLabel("gameSettings.movementRestriction")).toHaveValue("unrestricted");
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-game-settings:panel").click();
 
@@ -287,6 +304,13 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
         WALL_X,
       );
     }
+
+    // Re-read the restriction now that many server round trips have completed. The check at
+    // authoring time can be satisfied by the optimistic value alone; a write the server had
+    // rejected would have rolled back well before this point.
+    await gm.getByTestId("launcher-trigger").click();
+    await gm.getByTestId("launcher-item-game-settings:panel").click();
+    await expect(gm.getByLabel("gameSettings.movementRestriction")).toHaveValue("unrestricted");
   } finally {
     await playerCtx.close();
   }
