@@ -310,3 +310,44 @@ are observations awaiting triage, not committed work.
   oversight, but a fidelity gap against `labeled_consts`'s own provenance-transparency intent
   since `total` itself is unaffected and correct. Status: Needs Review (code-review Minor,
   disclosed by the implementer, non-blocking).
+
+- Title: `ResolvedScene.bounds` has two contradictory unit interpretations, and the grid-unit one is
+  wrong on hex. Summary: surfaced by the 14e-7 `[sec]` review (reviewer flagged the hex half as
+  inferred; the dispatcher traced the rest and found the inconsistency underneath). TWO consumers of
+  the same `.bounds` value disagree on its units. (1) `navmesh::build_navmesh` (`navmesh.rs:131`)
+  treats it as GRID UNITS: `(w_px, h_px) = (w * cell, h * cell)`. (2) `vision::bound_for_scene`
+  (`vision.rs:96-107`) treats it as PIXELS, feeding `width`/`height` straight into `maxx`/`maxy`
+  alongside raw wall coordinates. Both read `resolve_scene(scene).bounds`. On a square scene with
+  `cell != 1` these two cannot both be right. Separately, even granting the grid-unit reading, the
+  conversion is wrong for hex: `HexGrid.size` is the pointy-top OUTER RADIUS, so `w` hexes span
+  `w * sqrt(3) * size` horizontally and `h * 1.5 * size + 0.5 * size` vertically — not `w * size` /
+  `h * size`. A hex + continuous scene would therefore get a navmesh rectangle roughly 58% of the
+  intended width, making legitimately reachable far cells report `Unreachable`. NOT a secrecy issue
+  (under-reveal / over-restriction direction) and NOT cell indexing, so it is outside 14e-7's three
+  named sites and was deliberately left unfixed there. Status: Needs review — resolve which unit
+  `bounds` actually carries FIRST (that decides whether (1) or (2) is the defect), then fix the hex
+  extent conversion. Note the hex + continuous combination has no test coverage for mesh extent.
+
+- Title: Hex continuous-weighted preview cost is ~1.73x too small (unit-parity defeated on hex).
+  Summary: found by the 14e-7 `[sec]` code review; pre-existing (M10f-4 era), not introduced by
+  `2e6800c`. The weighted continuous branch converts the grid router's cost to scene units with
+  `weighted.cost * cell` (`scene/mod.rs:1206-1209`). That conversion assumes one step spans `cell`
+  world units, which holds for `SquareGrid`. On hex, `resolve_grid_shape_with_rule` returns a
+  `HexGrid` whose `neighbors_with_cost` is a uniform 1.0 per step (`grid_shape.rs:250-259`), but
+  adjacent hex centers are `sqrt(3) * size ~= 1.732 * cell` apart (`axial_to_pixel((1,0)) =
+  (size*sqrt(3), 0)`). So a hex + continuous + terrain scene reports a preview cost about 1.73x too
+  small, while the sibling pure-polyanya branch on the same scene reports true Euclidean length —
+  defeating exactly the unit parity the `* cell` line exists to guarantee. Preview/budget only, not
+  a gate. Status: Needs review — likely wants the step-to-world-distance factor to come from the
+  `GridShape` rather than being assumed equal to `cell`. Note this compounds with the `bounds`
+  units question logged above; both are hex + continuous, which has thin test coverage.
+
+- Title: Hex + continuous `clip_to_visible_mask` has no end-to-end call-site coverage.
+  Summary: from the 14e-7 `[sec]` code review. The one integration test for the hex + continuous
+  chain (`scene/mod.rs:4726-4783`) runs with `is_gm: true`, so `mask` is `None` and
+  `clip_to_visible_mask` returns early at its `mask.is_none() && walls.is_empty()` branch
+  (`navmesh.rs:348`). Call-site wiring is therefore pinned end-to-end only for `truncate_at_arrest`;
+  the shape threaded into `clip_to_visible_mask` — the actual fog gate on the pure-polyanya branch —
+  is covered by its unit test but never exercised through `pathfind`. Not a defect (both call sites
+  pass the same `&*grid_shape` binding), but a non-GM hex + continuous `pathfind` test with a real
+  mask would close the class. Status: Actionable — add the test.

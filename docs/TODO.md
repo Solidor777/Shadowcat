@@ -7,6 +7,9 @@ unblocking condition, not a "someday maybe." A few headings are explicitly
 labeled "Actionable now": these are NOT blocked on anything — the underlying
 capability already exists — but are deferred as out-of-scope-for-now work.
 
+## Actionable now — make the server crate rustfmt-clean
+- TODO: `cargo fmt --check` fails on `src/server` against pre-existing formatting, so a bare `cargo fmt` reformats ~8 files unrelated to whatever is being worked on, plus stray hunks in `scene/mod.rs`. In a multi-agent session that risks clobbering another agent's in-flight edits, and it makes `fmt` unusable as a per-task gate (it is currently NOT one — `cargo test` + `cargo clippy -- -D warnings` are). Fix with a single formatting-only commit touching nothing else, then `cargo fmt --check` can join the gate set. Until then, do not run bare `cargo fmt` here. (Surfaced by Task 14e-7 of the hex-grid sweep, which hit and had to hand-revert exactly this.)
+
 ## Blocked on world/user deletion
 - TODO: Purge `explored_fog` rows on world/user deletion. Neither has a route at all — world and user are DB rows, not documents, and no deletion path exists yet. The M9c table denormalizes `world_id` for a world-scoped purge; wire a `DELETE FROM explored_fog WHERE world_id = ?` when world deletion lands, and index `world_id` then. (Surfaced by the M9c-1 buddy check.)
 
@@ -138,3 +141,32 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
    needs a server producer + authoring affordance.
 7. **Speak-as-token-instance** — `ActorOwnerRef::TokenInstance` is REJECTED at ingest (fail-closed,
    no first-party producer) — build the composer/token-context UX and lift the rejection together.
+
+## Actionable now — rate-limit `/api/login` (multi-account changes the threat model)
+- TODO: `/api/login` (`http/routes.rs:137-160`) has no per-IP or per-username throttle. This was
+  defensible when a hosted instance had exactly one account; Task 14f ships multi-account support,
+  so unauthenticated credential stuffing is now both worthwhile to an attacker and a CPU
+  amplification vector — the login path deliberately runs a full Argon2 verify on EVERY attempt,
+  including unknown users (`anti_enumeration_phc`), which is what keeps username existence secret.
+  That anti-enumeration property is worth keeping, so the fix is a throttle, not a cheaper verify.
+  (Surfaced by the Task 14f `[sec]` review; explicitly out of scope there.)
+
+## Blocked on user deletion existing — `add_member` resolve+write is two queries
+- TODO: `add_member` (`http/routes.rs:514`) checks `user_exists` and then inserts membership in two
+  separate pool round-trips. A user row deleted between them reintroduces the foreign-key 500 that
+  the 404 fix removed. Unreachable today — no user-deletion route exists anywhere in the server —
+  but it is the check-then-act shape this project has been bitten by before, and it goes live the
+  moment account deletion ships. Fix then by wrapping resolve+write in one transaction.
+
+## Actionable now — validate `TokenEngine.x/y` at ingress
+- TODO: `TokenEngine.x/y` (`src/server/src/data/engine/token.rs:17-22`) have no finiteness or
+  coordinate-magnitude validation at ingress, so an over-magnitude position can still be PERSISTED
+  by a GM write or by the deliberately-ungated `Operation::Create` placement path
+  (`ws/room.rs`), while `move_exec::gate_walk` refuses such coordinates on the `moveRequest` path
+  for GMs too — the two write paths disagree for a GM. Task 14e-9 closed the non-GM movement gate
+  (`publish` now shares `MAX_GATE_WALK_COORD`), and a token seated over the bound is thereafter
+  frozen for non-GM moves by that gate's `a0` check, which is fail-closed. No exploitable
+  consequence found: every downstream consumer carries its own bound (`MAX_CELLS_PER_POLYGON` plus
+  the saturating span guard, `regions::MAX_CELL_COORD`, `navmesh::MAX_NAVMESH_COORD`). The right
+  home for the fix is ingress validation on the typed engine struct, NOT widening the movement
+  gate. (Surfaced by the Task 14e-9 `[sec]` review.)

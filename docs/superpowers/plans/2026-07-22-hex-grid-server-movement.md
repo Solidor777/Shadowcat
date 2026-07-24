@@ -1368,10 +1368,75 @@ Reuse the `cell` already resolved just above. Do NOT touch the wall gate (`block
 
 ---
 
+## Task 14f: Admin user creation + GM member-add surface `[sec]` — unblocks Task 14c
+
+**Why (found by 14c's Step-1 investigation, dispatcher-verified against source):** no second user account can exist in the shipped binary, so Task 14c has no player to test with. This is a product gap, not a test gap — a hosted Shadowcat instance today can never have a second player.
+- No registration route exists anywhere in the table (`http/mod.rs:62-140`).
+- The only creation path, `create_admin_if_none` (`data/sqlite.rs:542-561`), is SQL-guarded `WHERE NOT EXISTS (… server_role='admin')` and yields `None` once an admin exists.
+- `Repository::create_user` (`sqlite.rs:416`) has no production caller — every `http/` hit is inside the `#[cfg(test)]` module that begins at `http/mod.rs:153`. No CLI subcommand, no client UI.
+- Even a second account would not be a player: `permission_context` (`sqlite.rs:394-414`) short-circuits `ServerRole::Admin → WorldRole::Gm` for every world, and GMs bypass the movement gate (`ws/room.rs:215`).
+- The JOIN half already works: `POST /api/worlds/{id}/members` (`routes.rs:371-388`, `require_gm`-gated) seats an existing user — it just has no user id to seat.
+
+**Design decisions (dispatcher-made; the buddy-check must scrutinize each):**
+1. `POST /api/users` — **admin-only**. Body `{username, password, server_role?}`, defaulting to `ServerRole::User`. Returns `{id, username, server_role}` and NEVER the password hash. Requires a new `require_admin` guard (only `require_gm` exists today, `routes.rs:267`) — it must gate on `ServerRole::Admin`, never on world role.
+2. `GET /api/users` — **admin-only** listing, for the admin panel. Deliberately NOT exposed to GMs.
+3. Extend `add_member` to accept a **username** as an alternative to a `user: Uuid`, keeping the existing UUID form working. Rationale: a GM needs to seat a player without a user-directory endpoint, so the GM surface takes the name the admin issued rather than being handed the whole user list. Tradeoff accepted and flagged: a GM can probe for username existence — strictly less exposure than a directory, and GMs are already trusted with world-wide authority. **A GM must never be able to set a SERVER role through this path** — `WorldRole` only.
+4. Client: an admin-only user-management section in the settings module (`src/modules/settings`), and a GM member-add affordance beside the existing `listMembers` (`src/client/shell/src/lib/api.ts:47`).
+
+**Security requirements (the `[sec]` bar):** password hashed through the existing `auth::password::hash_password`, never logged or returned; duplicate username rejected cleanly (unique constraint, not a 500); non-admin callers get 403 on both new routes; the username branch of `add_member` cannot escalate `ServerRole`; no PII in tests — synthetic names and RFC 2606 domains only.
+
+- [ ] **Step 1:** server routes + `require_admin` guard, with tests covering the authz matrix (admin allowed; GM, player, and anonymous each rejected on each new route).
+- [ ] **Step 2:** the `add_member` username branch + tests, including the escalation-refusal case.
+- [ ] **Step 3:** client UI for both surfaces + tests.
+- [ ] **Step 4:** gates — `cargo test --all-targets`, `cargo clippy --all-targets -- -D warnings`, `pnpm -r test && pnpm -r typecheck && pnpm -r lint`.
+- [ ] **Step 5:** commit (stage by explicit path, never `git add -A`).
+- [ ] **Step 6:** mandatory two-reviewer opus buddy-check on the authz surface.
+
+---
+
+## Task 14g: Replace username-seating with an invite/accept flow `[sec]`
+
+**Why:** Task 14f's `add_member`-by-username branch (design decision #3 — the dispatcher's, and wrong) returns 404 for an unknown username and 204 for a known one, making it a **username-existence oracle**. It is not GM-limited in any meaningful sense: `create_world` (`routes.rs:437`) requires only `AuthUser`, so any authenticated account can create a world, become its GM, and probe arbitrary usernames. On a hit the target is silently seated into the prober's world, which also hands over the victim's user UUID via `list_members`. This directly contradicts the codebase's explicit anti-enumeration stance — `anti_enumeration_phc` (`routes.rs:130-160`) spends a full constant-time Argon2 verify on unknown-user logins purely to keep username existence secret — and undercuts the stated intent at `routes.rs:319` that a world GM is "deliberately never handed a server-wide user directory."
+
+Returning a uniform 204 does not fully close it: seating-on-hit is itself observable via `list_members`. The disclosure is inherent to naming a target, so the fix removes naming.
+
+**Shape:** a GM mints an invite for their own world; the invited user redeems it from their own session. The GM never names a user, and nobody is seated without consent.
+- `POST /api/worlds/{id}/invites` — GM of that world only. Body `{role: WorldRole}`. Returns a single-use invite code. `WorldRole` only — an invite must never be able to confer a `ServerRole`.
+- `GET /api/worlds/{id}/invites` + `DELETE /api/worlds/{id}/invites/{code_id}` — GM of that world: list and revoke.
+- `POST /api/invites/{code}/accept` — any authenticated user; seats the caller into the invite's world at the invite's role.
+- **Remove the `add_member` username branch** added in 14f. Keep the existing `user: Uuid` form (unchanged, still GM-gated) and 14f's 404/422 fixes for it.
+
+**Security requirements:**
+- The code is a bearer credential: generate from a CSPRNG with ≥128 bits of entropy; store only a hash and compare in constant time, mirroring how passwords are handled.
+- Redemption failures must be **uniform** — invalid, expired, revoked, and already-used must be indistinguishable to the caller, or the oracle simply moves.
+- Accepting must disclose nothing about a world the caller has no invite for.
+- Single-use, with an expiry. Revocation takes effect immediately.
+- Only a GM **of that world** may mint, list, or revoke its invites; verify a GM of world A cannot touch world B's.
+- Brute-forcing a code should be infeasible at the stated entropy — state the arithmetic rather than asserting it.
+
+**Also fold in (sec-14f-a Minor, same area):** `create_user_unique`'s doc comment states as an invariant that usernames are ASCII-restricted at the HTTP boundary, but `/api/setup` (`routes.rs:200`) and `bootstrap_admin` (`setup.rs:37`) reach `create_admin_if_none` without validation. A non-ASCII first admin is not case-folded by SQLite's ASCII-only `NOCASE`, so a homoglyph (`аdmin` vs `admin`) cannot collide and is indistinguishable in a roster — the exact impersonation the policy exists to prevent. Apply `validate_username` on those paths so the documented invariant is true at every insertion point.
+
+- [ ] **Step 1:** migration + repository layer (invite mint/lookup/revoke/consume), single-statement consume so redemption cannot double-seat under concurrency.
+- [ ] **Step 2:** routes + the full authz matrix (GM-of-world allowed; GM-of-other-world, plain player, anonymous each rejected on each route), plus uniform-failure tests for redemption.
+- [ ] **Step 3:** remove the username branch; update 14f's tests accordingly.
+- [ ] **Step 4:** the ASCII-validation fix above.
+- [ ] **Step 5:** client surfaces — GM mints/copies/revokes an invite; invitee redeems one.
+- [ ] **Step 6:** gates — `cargo test --all-targets`, `cargo clippy --all-targets -- -D warnings`, `pnpm -r test && pnpm -r typecheck && pnpm -r lint`.
+- [ ] **Step 7:** commit (stage by explicit path) + mandatory two-reviewer opus buddy-check.
+
+**Task 14c depends on this** — the player account it needs is now seated via invite rather than by username.
+
+---
+
 ## Task 14c: Client end-to-end test — a NON-GM player's illegal hex move is rolled back by the server
+
+**Depends on Task 14f** (a real player account must be creatable). Step 1's investigation is already DONE — do not redo it:
+- The player-join mechanism is `POST /api/worlds/{id}/members`; account creation comes from 14f.
+- **The rollback observable does NOT exist and `data-last-move-outcome` cannot serve this test.** `WorldSession` emits `onMoveOutcome` only off the `moveRequest` promise (`worldSession.svelte.ts:255-282`) — i.e. the measure-tool route-commit. The select-tool DRAG writes `/engine/x,y` as a plain optimistic Update and emits nothing; `data-token-count` is a count, not a position. A minimal test-only `data-*` position signal added to `Stage.svelte`'s existing `onDocs` pass (`:151`) closes this, mirroring the `data-last-ping` / `data-last-move-outcome` pattern.
 
 **Files:**
 - Create: `src/client/shell/e2e/hex-movement.spec.ts`
+- Modify: `src/modules/stage/src/Stage.svelte` (the position observable above)
 
 **Interfaces:** No production MOVEMENT change — depends on Task 14a (hex authoring UI) and Task 14d (hex-correct `publish` gate), plus the already-landed `ToolRail` fix (commit `73b44bd`). This is the FIRST multi-session (two-account) e2e in the suite: it proves a NON-GM player, on a hex scene authored through the real UI, has an illegal token move gated by the server. GMs bypass the movement gate entirely (`room.rs:215`), so a GM-only spec cannot prove server-side gating — hence the player account. The existing specs authenticate only as the world-owner GM; this task establishes the player-account pattern.
 
@@ -1392,8 +1457,10 @@ Key facts to build on:
 
 - [ ] **Step 5: Commit**
 
+Stage only the files this task changed, by explicit path — never `git add -A`. Other agents' work and stray scratch files live in this tree.
+
 ```bash
-git add -A
+git add src/client/shell/e2e/hex-movement.spec.ts   # plus any other file THIS task changed
 git commit -m "test(client/e2e): a non-GM player's illegal hex-scene move is rolled back by the server
 
 First two-session (GM + player) e2e in the suite. A player, on a hex scene
