@@ -43,6 +43,25 @@ source of truth. The ones agents break most:
   applies, broadcasts. Hidden fields are stripped **before** transmission, never sent-then-hidden
   (ARCHITECTURE §2 invariant 4). See `shadowcat-codebase-documents-permissions`.
 - **Optimistic with rollback.** Documents are source of truth; ECS/runtime is derived & ephemeral.
+- **NEVER FORK A DECISION ACROSS TWO PATHS — the defect class this codebase produces most.**
+  Whenever two code paths are *documented* to agree on something, they eventually disagree on an
+  input nobody thought to check, and the disagreement is a security defect rather than a bug. Six
+  instances found in one branch (the 2026-07-22 hex-grid campaign), across four subsystems:
+  | Forked on | Where | Consequence |
+  |---|---|---|
+  | Cell indexing | `ws/room.rs`, `navmesh.rs` | square indices tested against a hex-axial mask |
+  | Traversal completeness | `HexGrid::line_traversal` | a thin line, not a supercover — ~55% of segments omitted a crossed hex the gate then never checked |
+  | Input admissibility | `Room::publish` vs `gate_walk` | one bounded coordinate magnitude, the other did not |
+  | **Scene identity** | `MoveRequest` vs `Room::publish` | one took the scene from the client, the other derived it from the token ⇒ total movement-gate bypass |
+  | **`remove` semantics** | `SceneEcs::apply_op` vs `apply_intent` | ECS ignored `FieldChange.remove` while the DB honoured it ⇒ vision widened where write authz refused |
+  | Fail-open defaults | `execute_move` vs `publish` vs `pathfind` | a `unwrap_or(100.0)` cell size removed from one gate, left in two |
+  **How to apply.** (1) When you find two paths that must agree, do not verify they agree today —
+  make one *derive* from the other, or have both read one shared symbol, so agreement is structural.
+  (2) When you fix one instance, grep for the other copies **in the same commit**; the last row
+  above was created by the commit fixing the row above it. (3) Pin parity with an anti-drift test
+  that exercises BOTH paths through the shared symbol (see `MAX_GATE_WALK_COORD`'s, which catches a
+  value change or a `>`/`>=` flip on either side). (4) A test that passes because both paths are
+  wrong the same way proves nothing — mutate one side and confirm the test fails.
 - **Cross-platform from day one (CI-verified).** `std::path` only (no hardcoded separators),
   `#[cfg]`-gate OS-specific code for every target, three-OS CI matrix, responsive/touch UI.
   [CLAUDE.md Cross-Platform; ARCHITECTURE §2 invariant 10]
