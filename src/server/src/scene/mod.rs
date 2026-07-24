@@ -305,11 +305,16 @@ pub struct SceneEcs {
 /// two are never reported at the same level.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MirrorInput {
-    /// Already committed and broadcast (`apply_op`). `apply_intent` validated every
-    /// path (`validate_field_change`) and aborted the transaction on any pointer-op
-    /// error, so a failure HERE is a should-never-happen invariant breach: the store
-    /// applied a change the mirror could not. Logged at `error` — it means the derived
-    /// world has silently diverged from the store and needs re-hydration.
+    /// Already committed and broadcast (`apply_op`). BOTH authoritative loops —
+    /// `apply_intent` AND `apply_command` (the trusted chat/settings seeding path,
+    /// which does NOT run `validate_field_change`) — apply the same change through
+    /// `apply_field_change` with `?`, so any pointer-op error aborts the transaction
+    /// before commit. The guarantee is that `?`, not the ingress gate: attributing it
+    /// to `validate_field_change` would cover only one of the two paths and would stop
+    /// being true if that gate moved. A failure HERE is therefore a
+    /// should-never-happen invariant breach — the store applied a change the mirror
+    /// could not. Logged at `error`: the derived world has silently diverged from the
+    /// store and needs re-hydration.
     Committed,
     /// Raw client-PROPOSED changes, not yet authorized or even path-validated
     /// (`token_move`, reached from `Room::publish` strictly before `apply_intent`).

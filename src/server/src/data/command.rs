@@ -282,8 +282,10 @@ pub fn remove_pointer(root: &mut Value, pointer: &str) -> Result<(), DataError> 
 ///
 /// Errors are the underlying pointer ops' (`BadPath` for a malformed path, an array-index
 /// removal, or descent through a scalar). The authoritative paths propagate with `?` so a
-/// rejected mutation aborts the transaction; a derived mirror running on already-committed
-/// state cannot reject and handles the error locally instead.
+/// rejected mutation aborts the transaction before commit; a derived mirror — whose input
+/// may be already-committed OR client-proposed (`SceneEcs::token_move` mirrors changes
+/// that have not yet been authorized) — cannot reject and handles the error locally,
+/// at a level chosen by which of the two it is holding.
 pub fn apply_field_change(v: &mut Value, ch: &FieldChange) -> Result<(), DataError> {
     if ch.remove {
         remove_pointer(v, &ch.path)
