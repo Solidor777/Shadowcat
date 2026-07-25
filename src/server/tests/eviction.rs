@@ -8,6 +8,116 @@ use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 #[tokio::test]
+async fn world_delete_removes_asset_dir_and_room() {
+    let h = common::spawn().await;
+    let res = h
+        .upload("a.png", "image/png", common::PNG_1X1.to_vec())
+        .await;
+    assert!(res.status().is_success(), "seed upload: {}", res.status());
+    let mut ws = h.connect().await;
+    drain_until_type(&mut ws, "welcome").await;
+
+    let world_dir = h.assets_dir.join(h.world.to_string());
+    assert!(
+        std::fs::metadata(&world_dir).is_ok(),
+        "world asset dir exists after upload"
+    );
+
+    // The seeded user is the world's GM; require_gm admits them.
+    let res = h
+        .client
+        .delete(format!("http://{}/api/worlds/{}", h.addr, h.world))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::NO_CONTENT);
+
+    // Rows first, files second: the world's asset directory is gone.
+    assert!(std::fs::metadata(&world_dir).is_err());
+    // Room dropped from the registry, and re-creation is refused because the
+    // world ROW is gone while the tombstone has been lifted (finish_delete ran).
+    assert!(h.ws.rooms.get(h.world).is_none());
+    assert!(h
+        .ws
+        .rooms
+        .get_or_create(h.repo.as_ref(), h.world)
+        .await
+        .unwrap()
+        .is_none());
+
+    // The live socket received the world-wide eviction, then closed.
+    let evicted = drain_until_type(&mut ws, "evicted").await;
+    assert!(evicted["user"].is_null());
+    let next = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+        .await
+        .expect("socket should close promptly after the evicted frame");
+    match next {
+        None | Some(Ok(Message::Close(_))) | Some(Err(_)) => {}
+        Some(Ok(other)) => panic!("expected close after evicted frame, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn world_delete_failure_lifts_tombstone() {
+    let h = common::spawn().await;
+    let hash = shadowcat::auth::password::hash_password("pw").unwrap();
+    h.repo
+        .create_user(
+            "root",
+            Some(&hash),
+            shadowcat::auth::role::ServerRole::Admin,
+            0,
+        )
+        .await
+        .unwrap();
+    let admin = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .unwrap();
+    let res = admin
+        .post(format!("http://{}/api/login", h.addr))
+        .json(&serde_json::json!({ "username": "root", "password": "pw" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+
+    let ghost = Uuid::new_v4();
+    let res = admin
+        .delete(format!("http://{}/api/worlds/{ghost}", h.addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // The failed delete tombstoned `ghost` on entry; the failure path must
+    // lift it. Materialize a world under that SAME id — a leaked tombstone
+    // would refuse room creation here.
+    sqlx::query(
+        "INSERT INTO worlds (id, name, seq, created_at, updated_at) VALUES (?, 'G', 0, 0, 0)",
+    )
+    .bind(ghost.to_string())
+    .execute(h.repo.pool())
+    .await
+    .unwrap();
+    assert!(h
+        .ws
+        .rooms
+        .get_or_create(h.repo.as_ref(), ghost)
+        .await
+        .unwrap()
+        .is_some());
+    // Live worlds were never affected.
+    assert!(h
+        .ws
+        .rooms
+        .get_or_create(h.repo.as_ref(), h.world)
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
 async fn evicted_frame_targets_and_closes() {
     let h = common::spawn().await;
     let mut ws = h.connect().await;

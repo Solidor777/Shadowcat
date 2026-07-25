@@ -24,6 +24,7 @@ pub struct Harness {
     pub world: Uuid,
     pub repo: Arc<SqliteRepository>,
     pub ws: shadowcat::ws::WsState, // registry handle for room-level test drives
+    pub assets_dir: std::path::PathBuf, // per-run asset root (world dirs live under it)
 }
 
 pub async fn spawn() -> Harness {
@@ -97,6 +98,7 @@ pub async fn spawn_with(mutate: impl FnOnce(&mut Config)) -> Harness {
         world: world.id,
         repo,
         ws: ws_state,
+        assets_dir,
     }
 }
 

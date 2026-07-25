@@ -88,6 +88,7 @@ pub async fn router(state: AppState) -> Router {
             "/api/worlds",
             post(routes::create_world).get(routes::list_worlds),
         )
+        .route("/api/worlds/{id}", delete(routes::delete_world))
         .route(
             "/api/worlds/{id}/members",
             get(routes::list_members).post(routes::add_member),
@@ -688,6 +689,57 @@ pub(crate) mod tests {
             .save_cookies()
             .build(router(state.clone()).await)
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn world_delete_authz_matrix() {
+        use crate::data::document::WorldRole;
+        use crate::data::repository::Repository;
+        let state = initialized_state().await;
+        let gm = seed_user(&state, "gm").await;
+        let player = seed_user(&state, "player").await;
+        let _stranger = seed_user(&state, "stranger").await;
+        let _admin = seed_admin(&state, "root").await;
+        let w1 = state.repo.create_world_owned("w1", gm, 0).await.unwrap().id;
+        let w2 = state.repo.create_world_owned("w2", gm, 0).await.unwrap().id;
+        state
+            .repo
+            .add_member(w1, player, WorldRole::Player)
+            .await
+            .unwrap();
+
+        // Player member → 403; row survives.
+        let ps = login_server(&state, "player").await;
+        ps.delete(&format!("/api/worlds/{w1}"))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+        // Non-member non-admin → 403; row survives.
+        let ss = login_server(&state, "stranger").await;
+        ss.delete(&format!("/api/worlds/{w1}"))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+        assert!(state.repo.get_world(w1).await.unwrap().is_some());
+
+        // GM of the world → 204; row gone.
+        let gs = login_server(&state, "gm").await;
+        gs.delete(&format!("/api/worlds/{w1}"))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        assert!(state.repo.get_world(w1).await.unwrap().is_none());
+
+        // Server admin who is NOT a member → 204 on another world.
+        let admin_srv = login_server(&state, "root").await;
+        admin_srv
+            .delete(&format!("/api/worlds/{w2}"))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        assert!(state.repo.get_world(w2).await.unwrap().is_none());
+
+        // Admin, unknown world id → 404.
+        admin_srv
+            .delete(&format!("/api/worlds/{}", Uuid::new_v4()))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
     }
 
     // --- Account administration (`/api/users`) ---

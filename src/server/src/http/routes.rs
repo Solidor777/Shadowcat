@@ -499,6 +499,43 @@ pub async fn create_world(
     Ok(Json(world))
 }
 
+/// DELETE /api/worlds/{id} — server admin or that world's GM (`require_gm`
+/// resolves admins to GM; one symbol, no authz fork). Ordering: tombstone +
+/// evict the live room FIRST (no new joins, existing connections get a
+/// terminal frame), then one DB transaction, then the asset directory —
+/// delete convention: rows first, files second, so a crash orphans files on
+/// disk rather than leaving a live world missing them. The barrier read side
+/// spans the commit + dir removal so a backup never snapshots half a delete.
+pub async fn delete_world(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    require_gm(&state, &user, world).await?;
+    let room = state.ws.rooms.begin_delete(world);
+    if let Some(room) = &room {
+        room.broadcast_aux(crate::ws::protocol::ServerMsg::Evicted { user: None });
+    }
+    // Everything below must lift the tombstone on the way out.
+    let result = async {
+        let _read_permit = state.write_barrier.read().await;
+        state.repo.delete_world(world).await?;
+        let dir = state.config.assets_path().join(world.to_string());
+        match tokio::fs::remove_dir_all(&dir).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(?e, %world, "world asset dir removal failed after row delete")
+            }
+        }
+        Ok::<(), AppError>(())
+    }
+    .await;
+    state.ws.rooms.finish_delete(world);
+    result?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(Serialize)]
 pub struct MemberEntry {
     pub user: Uuid,
