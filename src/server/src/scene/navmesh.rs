@@ -301,12 +301,16 @@ pub(crate) fn navmesh_find(
 /// square indices compares two different affine maps into the same `(i32,i32)` space — an
 /// arbitrary membership answer in BOTH directions (an occluded hex admitted, a visible one
 /// refused). `grid` MUST be the same `resolve_grid_shape`-derived shape `mask` was built with.
-/// Check (b) always runs,
-/// independent of `mask` — this is a router-fidelity guarantee (walls are public geometry, not a
-/// secrecy concern): the navmesh's true polyline may detour around a wall corner, but once
-/// downsampled to at most `MAX_VISION_SAMPLES` arc-length samples, a chord between two samples
-/// straddling that corner could otherwise cross the wall the true route avoided. `mask: None` and
-/// `walls: &[]` together ⇒ returned unchanged.
+/// Check (b) always runs, independent of `mask`. **Two checks, both secrecy-relevant — do not
+/// reuse the pre-D10 framing.** The mask check is a secrecy gate (route ⊆ gate-allowed). The wall
+/// check is a router-FIDELITY guarantee for PUBLIC walls (the navmesh's true polyline may detour
+/// around a wall corner, but once downsampled to at most `MAX_VISION_SAMPLES` arc-length samples,
+/// a chord between two samples straddling that corner could otherwise cross the wall the true
+/// route avoided) AND a secrecy gate whenever the `walls` slice carries geometry the requester
+/// cannot see. The caller closes the secrecy half by construction: `SceneEcs::pathfind` passes the
+/// PER-REQUESTER `move_walls(scene, Some(user))` set for a non-GM, so a `gm_only` wall never
+/// reaches this function on a non-GM's behalf and cannot truncate their route into a shape that
+/// discloses it. `mask: None` and `walls: &[]` together ⇒ returned unchanged.
 ///
 /// A zero/one-sample truncation (the very first sample already fails a check) yields a
 /// single-point path at `outcome.path[0]` with `cost: 0.0` — the caller is responsible for
@@ -478,9 +482,11 @@ pub(crate) fn los_smooth(
                     }
                 }
             }
-            // Wall crossing (public geometry, checked independent of mask). Skip a malformed
-            // (non-finite-endpoint) wall so one NaN wall cannot fail-open the check — mirrors
-            // `clip_to_visible_mask`.
+            // Wall crossing, checked independent of mask. A secrecy gate whenever `walls` carries
+            // geometry the requester cannot see (the caller passes the per-requester set — see
+            // `clip_to_visible_mask`'s doc comment), a fidelity guarantee for public walls
+            // otherwise. Skip a malformed (non-finite-endpoint) wall so one NaN wall cannot
+            // fail-open the check — mirrors `clip_to_visible_mask`.
             if walls
                 .iter()
                 .filter(|w| {
@@ -1240,10 +1246,11 @@ mod tests {
 
     // The mask check alone does not guarantee the returned preview never crosses a WALL — a
     // chord between two arc-length samples can cut across geometry the true navmesh polyline
-    // routed around. This is a router-fidelity issue (walls are public geometry, not a secrecy
-    // leak), but still means a returned preview could visually cross a wall. Verified independent
-    // of sample-cap spacing: any chord that geometrically crosses a `blocksMove` wall must
-    // truncate there.
+    // routed around. For a PUBLIC wall this is a router-fidelity issue; for a `gm_only` wall the
+    // caller closes the secrecy half by construction (a non-GM's `walls` slice never carries one —
+    // see `clip_to_visible_mask`'s doc comment), so this test only exercises the fidelity half.
+    // Verified independent of sample-cap spacing: any chord that geometrically crosses a
+    // `blocksMove` wall must truncate there.
     #[test]
     fn clip_truncates_a_chord_that_crosses_a_wall() {
         // A wall directly bisecting the straight line from (50,50) to (950,50) at x=500.

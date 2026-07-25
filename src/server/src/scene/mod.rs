@@ -1288,7 +1288,12 @@ impl SceneEcs {
             return Err(pathfinding::PathFail::Invalid);
         };
         let grid_shape = self.resolve_grid_shape(scene, cell);
-        let walls = self.move_walls(scene, None);
+        // Per-requester routing wall set (D10): a non-GM's route omits `gm_only` walls, so their
+        // geometry cannot be inferred from route shape. The executor always reads the authoritative
+        // set (`None`) and springs a secret wall at execution, exactly as a secret region springs.
+        // Hoisted above the engine dispatch so BOTH engines receive the SAME slice — never a forked
+        // wall computation (the same discipline `mask` follows below).
+        let walls = self.move_walls(scene, if is_gm { None } else { Some(user) });
         // Hoisted so `movement_model` is available to the dispatch below regardless of `is_gm`
         // (a GM can also route on a continuous scene) — the grid branch's OWN behavior is
         // unchanged, it just now reads `settings` from this shared binding instead of a local one.
@@ -6119,6 +6124,100 @@ mod tests {
             "execution stops before the full player-preview route length, got {:?}",
             exec_out.stop
         );
+    }
+
+    /// A scene whose corridor from (50,50) to (250,50) is crossed by a FINITE `gm_only`
+    /// blocksMove wall at x=150 spanning y∈[0,100]. Continuous movement model (so the router
+    /// goes through `navmesh_for`'s per-requester obstacle set — the mechanism this fixture
+    /// exercises). `movement_restriction: unrestricted` so the visibility mask is not the
+    /// variable under test. Bounds are wide (400×400) so a detour around the wall's y=100
+    /// endpoint exists. Returns `(ecs, scene, user, token)`; `owner_is_gm` only selects which
+    /// fixed user id is returned (routing GM-ness is the separate `is_gm` argument callers pass
+    /// to `pathfind` directly — this fixture places no GM/player distinction on the token or
+    /// wall doc itself, mirroring `scene_with_public_and_secret_move_walls`).
+    fn scene_with_secret_wall_between_two_cells(owner_is_gm: bool) -> (SceneEcs, Uuid, Uuid, Uuid) {
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "bounds": { "width": 400.0, "height": 400.0 },
+                    "vision": { "movementModel": "continuous" } }),
+        );
+        let scene_id = Uuid::from_u128(10);
+        let user = Uuid::from_u128(if owner_is_gm { 1 } else { 2 });
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let token_id = Uuid::from_u128(11);
+        let mut wall = wall_doc_eng(scene_id, (150.0, 0.0), (150.0, 100.0));
+        wall.permissions
+            .property_overrides
+            .insert("/engine".into(), crate::data::document::Visibility::GmOnly);
+        let mut ecs = SceneEcs::from_documents(vec![scene, tok, wall], 0);
+        ecs.set_world_settings_for_test(continuous_world_settings());
+        (ecs, scene_id, user, token_id)
+    }
+
+    #[test]
+    fn non_gm_route_crosses_a_gm_only_wall_that_springs_at_execution() {
+        // The router cannot see the secret wall, so it routes straight through it; the executor reads
+        // the authoritative set and stops there. Same spring-at-execution shape as a secret region.
+        let (ecs, scene, player, token) = scene_with_secret_wall_between_two_cells(false);
+        let out = ecs
+            .pathfind(
+                player,
+                scene,
+                (50.0, 50.0),
+                &[(250.0, 50.0)],
+                0.4,
+                false,
+                None,
+            )
+            .expect("the player's route ignores a wall it cannot see");
+        assert!(
+            out.path.len() >= 2,
+            "a route is produced despite the secret wall across it"
+        );
+
+        let visible = ecs.visible_cells(player, scene, false);
+        let exec = crate::scene::move_exec::execute_move(
+            &ecs,
+            scene,
+            token,
+            &out.path,
+            MovementRestriction::Unrestricted,
+            &visible,
+            100.0,
+        )
+        .expect("execution is admissible");
+        assert!(
+            exec.truncated,
+            "the secret wall springs at execution and truncates the move"
+        );
+    }
+
+    #[test]
+    fn gm_route_does_not_cross_a_gm_only_wall() {
+        // A GM passes viewer=None, so the secret wall IS in their routing set and no route SEGMENT
+        // may cross the wall segment. Asserted structurally via segments_cross — NOT by testing
+        // distance from the wall's x-line, which a legitimate detour around a finite wall's endpoint
+        // necessarily crosses (and which, at cell size 100, every column-1 cell center sits exactly on).
+        let (ecs, scene, gm, _token) = scene_with_secret_wall_between_two_cells(true);
+        let out = ecs
+            .pathfind(gm, scene, (50.0, 50.0), &[(250.0, 50.0)], 0.4, true, None)
+            .expect("a GM route exists (bounds admit a detour around the wall's endpoint)");
+        let wall = ((150.0, 0.0), (150.0, 100.0));
+        for seg in out.path.windows(2) {
+            assert!(
+                !crate::scene::segments_cross(seg[0], seg[1], wall.0, wall.1),
+                "no GM route segment crosses the wall it can see: {:?}",
+                seg
+            );
+        }
     }
 
     #[test]
