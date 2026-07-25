@@ -1105,7 +1105,19 @@ impl SceneEcs {
     /// (doc_type "wall", parent = scene, `engine.blocksMove == true`, endpoints at
     /// `engine.seg.{x1,y1,x2,y2}`). INVARIANT: same filter as `blocks_move` — any divergence
     /// would allow the pathfinder to route through walls the movement gate would then reject.
-    pub(crate) fn move_walls(&self, scene: Uuid) -> Vec<vision::Seg> {
+    ///
+    /// Two-value secrecy contract, identical to `region_field`'s and never a third mode:
+    /// `viewer: None` is the AUTHORITATIVE set — used by `execute_move` and by a GM requester;
+    /// `viewer: Some(user)` is the PER-REQUESTER set used by the routers, where a wall is included
+    /// only when `user` can see the visibility tier declared on its `/engine`. A `gm_only` wall is
+    /// therefore absent from a non-GM's route (its geometry cannot be inferred from route shape)
+    /// but still blocks at execution, exactly as a secret region springs. Callers MUST pass `None`
+    /// for a GM requester.
+    ///
+    /// Scope: this is the ROUTING wall set only. `sight_walls`/`light_walls` deliberately carry the
+    /// full set including `gm_only` walls (M9b full-wall-set invariant) — a wall you cannot see
+    /// still blocks your sight, which under-reveals and is correct. Do not unify the two.
+    pub(crate) fn move_walls(&self, scene: Uuid, viewer: Option<Uuid>) -> Vec<vision::Seg> {
         let mut out = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
@@ -1116,6 +1128,26 @@ impl SceneEcs {
             };
             if wall.blocks_move != Some(true) {
                 continue;
+            }
+            if let Some(user) = viewer {
+                let tier = w
+                    .doc
+                    .permissions
+                    .property_overrides
+                    .get("/engine")
+                    .copied()
+                    .unwrap_or(crate::data::document::Visibility::All);
+                // A wall doc never carries an actor link, so the no-join effective-owner
+                // resolution is exact — identical to `region_field`'s own call.
+                let access = crate::data::permission::resolve_access(
+                    user,
+                    crate::data::document::WorldRole::Player,
+                    &w.doc,
+                    crate::data::permission::effective_owner(&w.doc, None),
+                );
+                if !access.can_see(tier) {
+                    continue;
+                }
             }
             out.push(vision::Seg {
                 a: (wall.seg.x1, wall.seg.y1),
@@ -1170,7 +1202,7 @@ impl SceneEcs {
         // rather than synthesize a grid (`scene_grid_sizes`'s own doc comment is the source
         // of this invariant; every reader here keys off it).
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
-        let walls = self.move_walls(scene);
+        let walls = self.move_walls(scene, None);
         let built = navmesh::build_navmesh(bounds, cell, &walls, footprint_radius_cells)?;
         let arc = std::sync::Arc::new(built);
         self.navmesh_cache.lock().unwrap().insert(key, arc.clone());
@@ -1212,7 +1244,7 @@ impl SceneEcs {
             return Err(pathfinding::PathFail::Invalid);
         };
         let grid_shape = self.resolve_grid_shape(scene, cell);
-        let walls = self.move_walls(scene);
+        let walls = self.move_walls(scene, None);
         // Hoisted so `movement_model` is available to the dispatch below regardless of `is_gm`
         // (a GM can also route on a continuous scene) — the grid branch's OWN behavior is
         // unchanged, it just now reads `settings` from this shared binding instead of a local one.
@@ -5090,10 +5122,127 @@ mod tests {
     fn move_walls_returns_only_blocks_move_segments_for_the_scene() {
         // A scene with one blocksMove wall and one non-blocksMove wall yields exactly the blocking segment.
         let (ecs, scene) = scene_with_two_walls_one_blocking();
-        let walls = ecs.move_walls(scene);
+        let walls = ecs.move_walls(scene, None);
         assert_eq!(walls.len(), 1, "only the blocksMove wall is returned");
         let w = walls[0];
         assert_eq!((w.a, w.b), ((100.0, 0.0), (100.0, 200.0)));
+    }
+
+    /// A scene with grid size `cell` and no walls.
+    fn scene_with_grid(cell: f64) -> (SceneEcs, Uuid) {
+        let scene_id = Uuid::from_u128(10);
+        let ecs = SceneEcs::from_documents(
+            vec![entity_doc_top_eng(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": cell }, "background": null }),
+            )],
+            0,
+        );
+        (ecs, scene_id)
+    }
+
+    /// A `wall` doc parented to `scene`, blocksMove+blocksSight+blocksLight all true.
+    fn wall_doc_eng(scene: Uuid, a: (f64, f64), b: (f64, f64)) -> Document {
+        let mut d = crate::data::document::tests::world_scoped_doc(
+            Uuid::from_u128(9),
+            Uuid::new_v4(),
+            "wall",
+        );
+        d.parent_id = Some(scene);
+        d.engine = Some(json!({
+            "seg": { "x1": a.0, "y1": a.1, "x2": b.0, "y2": b.1 },
+            "blocksMove": true,
+            "blocksSight": true,
+            "blocksLight": true,
+        }));
+        d
+    }
+
+    /// One public blocksMove wall at x=100 and one `gm_only` blocksMove wall at x=150.
+    /// Both also carry blocksSight+blocksLight so the I5 test can observe them in the vision sets.
+    fn scene_with_public_and_secret_move_walls() -> (SceneEcs, Uuid, Uuid) {
+        let (mut ecs, scene) = scene_with_grid(100.0);
+        let player = Uuid::new_v4();
+        let public = wall_doc_eng(scene, (100.0, 0.0), (100.0, 200.0));
+        let mut secret = wall_doc_eng(scene, (150.0, 0.0), (150.0, 200.0));
+        secret
+            .permissions
+            .property_overrides
+            .insert("/engine".into(), crate::data::document::Visibility::GmOnly);
+        ecs.apply_op(&Operation::Create { doc: public });
+        ecs.apply_op(&Operation::Create { doc: secret });
+        (ecs, scene, player)
+    }
+
+    /// One wall with blocksSight:false, blocksMove:true, default permissions.
+    fn scene_with_invisible_barrier_wall() -> (SceneEcs, Uuid, Uuid) {
+        let (mut ecs, scene) = scene_with_grid(100.0);
+        let player = Uuid::new_v4();
+        let mut barrier = wall_doc_eng(scene, (100.0, 0.0), (100.0, 200.0));
+        barrier.engine = Some(json!({
+            "seg": { "x1": 100.0, "y1": 0.0, "x2": 100.0, "y2": 200.0 },
+            "blocksMove": true,
+            "blocksSight": false,
+            "blocksLight": true,
+        }));
+        ecs.apply_op(&Operation::Create { doc: barrier });
+        (ecs, scene, player)
+    }
+
+    #[test]
+    fn move_walls_omits_a_gm_only_wall_for_a_player_viewer() {
+        let (ecs, scene, player) = scene_with_public_and_secret_move_walls();
+        assert_eq!(
+            ecs.move_walls(scene, None).len(),
+            2,
+            "authoritative view carries every blocksMove wall"
+        );
+        let visible = ecs.move_walls(scene, Some(player));
+        assert_eq!(
+            visible.len(),
+            1,
+            "a gm_only wall is omitted from a player's routing set"
+        );
+        assert_eq!(
+            (visible[0].a, visible[0].b),
+            ((100.0, 0.0), (100.0, 200.0)),
+            "the surviving wall is the public one"
+        );
+    }
+
+    #[test]
+    fn move_walls_keeps_a_blocks_sight_false_wall_for_a_player() {
+        // An invisible BARRIER (blocksSight:false, blocksMove:true) is a PUBLIC document: the router
+        // must honor it. Only document-level secrecy filters — the two kinds are not the same axis.
+        let (ecs, scene, player) = scene_with_invisible_barrier_wall();
+        assert_eq!(
+            ecs.move_walls(scene, Some(player)).len(),
+            1,
+            "a blocksSight:false wall is public geometry and stays in the player's routing set"
+        );
+    }
+
+    /// I5 anti-drift: vision and lighting keep the FULL wall set; only routing filters. This is a
+    /// must-NOT-converge constraint, so it gets a test rather than only a doc comment.
+    #[test]
+    fn vision_and_lighting_keep_a_gm_only_wall_that_routing_drops() {
+        let (ecs, scene, player) = scene_with_public_and_secret_move_walls();
+        assert_eq!(
+            ecs.sight_walls(scene).len(),
+            2,
+            "sight_walls keeps the gm_only wall (M9b)"
+        );
+        assert_eq!(
+            ecs.light_walls(scene).len(),
+            2,
+            "light_walls keeps the gm_only wall (M9b)"
+        );
+        assert_eq!(
+            ecs.move_walls(scene, Some(player)).len(),
+            1,
+            "only the ROUTING set filters per requester"
+        );
     }
 
     #[test]
