@@ -2651,4 +2651,281 @@ mod tests {
             "a stranger receives no READ on a default:none token, even via the actor join"
         );
     }
+
+    // ---- write-receive parity + adversarial egress ownership ----
+
+    #[tokio::test]
+    async fn a_document_you_can_write_is_a_document_you_receive() {
+        // A document a user can WRITE (the owner floor grants WRITE_FIELDS at
+        // `apply_intent`) must also be a document that user RECEIVES at egress
+        // (the same owner floor, joined through the same `effective_owner`
+        // rule at `filter_command`) — write authz and read authz resolve
+        // ownership through one shared join, never two. Reuses the persisted
+        // actor+linked-token arrangement from
+        // `filter_command_update_keeps_owner_or_gm_changes_for_the_inheriting_owner`.
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{FieldChange, Operation, WriteOrigin};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let p = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+
+        let mut actor = doc(PermissionSet::default(), serde_json::json!({}));
+        actor.id = Uuid::from_u128(42);
+        actor.scope = Scope::World { world_id: w.id };
+        actor.owner = Some(p);
+
+        let mut token = doc(
+            PermissionSet {
+                default: DocRole::None,
+                ..Default::default()
+            },
+            serde_json::json!({ "notes": "secret plan" }),
+        );
+        token.doc_type = "token".into();
+        token.id = Uuid::from_u128(100);
+        token.scope = Scope::World { world_id: w.id };
+        token.engine = Some(serde_json::json!({
+            "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0,
+            "actor_id": actor.id.to_string()
+        }));
+        token
+            .permissions
+            .property_overrides
+            .insert("/system/notes".into(), Visibility::OwnerOrGm);
+
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![
+                Operation::Create { doc: actor.clone() },
+                Operation::Create { doc: token.clone() },
+            ],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let p_ctx = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        // 1. apply_intent as P: patches /system/notes on a `default: None` token
+        //    it does not literally own. Must SUCCEED — the owner floor (via the
+        //    actor link) grants WRITE_FIELDS.
+        let cmd = r
+            .apply_intent(
+                &p_ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id: token.id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/system/notes".into(),
+                        old: serde_json::json!("secret plan"),
+                        new: serde_json::json!("new plan"),
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .expect("owner floor grants WRITE_FIELDS: the patch must succeed");
+
+        // 2. filter_command of the returned command for P, joined through the
+        //    same actor link, must RETAIN the op — the owner floor also grants
+        //    READ at egress through the same owner value.
+        let current = load_update_docs(&r, &cmd).await;
+        let lookup = |id: &Uuid| (id == &actor.id).then_some(&actor);
+        let out_p = filter_command(&cmd, &p_ctx, &WorldCapDefaults::default(), &current, lookup);
+        assert_eq!(
+            out_p.ops.len(),
+            1,
+            "the writer must also receive the write it just made"
+        );
+
+        // 3. A true stranger receives nothing.
+        let stranger_ctx = PermissionContext {
+            user_id: Uuid::from_u128(999),
+            world_role: WorldRole::Player,
+        };
+        let out_stranger = filter_command(
+            &cmd,
+            &stranger_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            lookup,
+        );
+        assert!(
+            out_stranger.ops.is_empty(),
+            "a stranger receives nothing (fail closed)"
+        );
+    }
+
+    #[test]
+    fn egress_ownership_ignores_a_cross_scope_actor() {
+        // The scope check in `effective_owner`, exercised through the egress
+        // join: a linked actor from a DIFFERENT scope must not be treated as
+        // the token's owner at `filter_command`, even though the linked id
+        // matches.
+        use crate::data::command::{Command, Operation};
+        use crate::data::membership::PermissionContext;
+
+        let p = Uuid::from_u128(1);
+        let actor_id = Uuid::from_u128(42);
+        let mut token = token_linked_to(Some(actor_id));
+        token.permissions.default = DocRole::None;
+        token.scope = Scope::World {
+            world_id: Uuid::from_u128(1000),
+        };
+
+        let mut foreign_actor = actor_owned_by(actor_id, Some(p));
+        foreign_actor.scope = Scope::World {
+            world_id: Uuid::from_u128(2000),
+        };
+
+        let cmd = Command {
+            seq: 1,
+            world_id: Uuid::from_u128(7),
+            author: Uuid::from_u128(9),
+            ts: 0,
+            ops: vec![Operation::Create { doc: token.clone() }],
+        };
+        let lookup = |id: &Uuid| (id == &foreign_actor.id).then_some(&foreign_actor);
+        let current = std::collections::HashMap::new();
+
+        let p_ctx = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+        let out = filter_command(&cmd, &p_ctx, &WorldCapDefaults::default(), &current, lookup);
+        assert!(
+            out.ops.is_empty(),
+            "a cross-scope actor join must not be treated as the owner at egress"
+        );
+    }
+
+    #[test]
+    fn egress_ownership_honors_the_per_token_override() {
+        // token.owner = A, linked actor owned by B: the per-token override wins
+        // over the actor join, the same precedence the write path
+        // (`effective_owner`) uses — A receives, B does not.
+        use crate::data::command::{Command, Operation};
+        use crate::data::membership::PermissionContext;
+
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+        let actor_id = Uuid::from_u128(42);
+        let actor = actor_owned_by(actor_id, Some(b));
+        let mut token = token_linked_to(Some(actor_id));
+        token.permissions.default = DocRole::None;
+        token.owner = Some(a);
+
+        let cmd = Command {
+            seq: 1,
+            world_id: Uuid::from_u128(7),
+            author: Uuid::from_u128(9),
+            ts: 0,
+            ops: vec![Operation::Create { doc: token.clone() }],
+        };
+        let lookup = |id: &Uuid| (id == &actor.id).then_some(&actor);
+        let current = std::collections::HashMap::new();
+
+        let a_ctx = PermissionContext {
+            user_id: a,
+            world_role: WorldRole::Player,
+        };
+        let out_a = filter_command(&cmd, &a_ctx, &WorldCapDefaults::default(), &current, lookup);
+        assert_eq!(
+            out_a.ops.len(),
+            1,
+            "the per-token override wins over the actor join: A receives"
+        );
+
+        let b_ctx = PermissionContext {
+            user_id: b,
+            world_role: WorldRole::Player,
+        };
+        let out_b = filter_command(&cmd, &b_ctx, &WorldCapDefaults::default(), &current, lookup);
+        assert!(
+            out_b.ops.is_empty(),
+            "the override wins over the actor: B (the linked actor's literal owner) does not receive"
+        );
+    }
+
+    #[test]
+    fn egress_gm_and_gm_role_cap_are_unchanged() {
+        // The owner-join plumbing through `filter_command` must not widen the
+        // pre-existing `gm_role` cap: a plain doc still delivers everything to
+        // the GM, but a `gm_role: Some(DocRole::None)` doc (message-style,
+        // e.g. a whisper) still drops the capped GM's op entirely.
+        use crate::data::command::{Command, Operation};
+        use crate::data::membership::PermissionContext;
+
+        let gm = Uuid::from_u128(1);
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let current = std::collections::HashMap::new();
+
+        // Plain doc: the GM still receives everything unconditionally.
+        let plain = doc(PermissionSet::default(), serde_json::json!({ "hp": 10 }));
+        let cmd_plain = Command {
+            seq: 1,
+            world_id: Uuid::from_u128(7),
+            author: Uuid::from_u128(9),
+            ts: 0,
+            ops: vec![Operation::Create { doc: plain.clone() }],
+        };
+        let out_plain = filter_command(
+            &cmd_plain,
+            &gm_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        assert_eq!(
+            out_plain.ops.len(),
+            1,
+            "an uncapped GM still receives everything"
+        );
+
+        // `gm_role: Some(DocRole::None)` doc: the capped GM's op is still
+        // dropped entirely — the owner plumb must not have widened this cap.
+        let mut capped = doc(PermissionSet::default(), serde_json::json!({}));
+        capped.permissions.gm_role = Some(DocRole::None);
+        let cmd_capped = Command {
+            seq: 2,
+            world_id: Uuid::from_u128(7),
+            author: Uuid::from_u128(9),
+            ts: 0,
+            ops: vec![Operation::Create {
+                doc: capped.clone(),
+            }],
+        };
+        let out_capped = filter_command(
+            &cmd_capped,
+            &gm_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        assert!(
+            out_capped.ops.is_empty(),
+            "a gm_role-capped GM must still be denied — the owner plumb must not widen the cap"
+        );
+    }
 }
