@@ -26,10 +26,12 @@ in `@shadowcat/ui-kit`.
 
 ## Model/Effort directives
 
-Fable 5 session; per the user's global CLAUDE.md Fable-class rules and the Phase-B precedent on
-this campaign, plan-writing and execution run MAINLINE in the session (`mainline-plan-execution`),
-no per-task subagent dispatch. The sdd-* ladder applies only if a non-Fable session picks this
-plan up.
+Execution mode (user-directed 2026-07-25): **subagent-driven-development**, with this Fable 5
+session as the mainline controller of the dispatch loop. Per the project CLAUDE.md agent-dispatch
+rules: implementer = `shadowcat-coder` (sonnet, effort medium; `-opus` twin on BLOCKED); per-task
+review = `shadowcat-code-reviewer` (effort high) running the SDD task-reviewer contract (spec
+compliance + quality verdicts); final whole-branch review = the two-reviewer pair below. The
+sdd-* ladder applies only if a non-Fable session picks this plan up.
 
 ## Buddy-check directives
 
