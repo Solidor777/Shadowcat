@@ -883,13 +883,26 @@ pub async fn list_documents(
     // Every result shares `q.type`, so resolve the type-scoped grants once.
     let world_grants = world_defaults.grants_for(&q.r#type);
     let docs = state.repo.query_documents(world, &q.r#type).await?;
+    // One batched actor fetch when listing tokens; the per-doc join is then
+    // in-memory (token_actor_link returns None for every other doc_type, so the
+    // map is simply unused there).
+    let actors: std::collections::HashMap<Uuid, Document> = if q.r#type == "token" {
+        state
+            .repo
+            .query_documents(world, "actor")
+            .await?
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
     let visible = docs
         .into_iter()
         .filter_map(|d| {
-            // TODO: join the effective owner (linked-actor inheritance) here
-            // instead of the literal `d.owner`, matching the write path.
+            let owner = crate::data::permission::effective_owner_via(&d, &|id| actors.get(id));
             let access =
-                resolve_access_world(ctx.user_id, ctx.world_role, &d, &world_grants, d.owner);
+                resolve_access_world(ctx.user_id, ctx.world_role, &d, &world_grants, owner);
             access
                 .has(cap::READ)
                 .then(|| filter_properties(&d, &access))
@@ -929,14 +942,13 @@ pub async fn get_document(
         .await
         .map_err(by_id_not_found)?;
     let world_defaults = state.repo.world_cap_defaults(world).await?;
-    // TODO: join the effective owner (linked-actor inheritance) here instead
-    // of the literal `doc.owner`, matching the write path.
+    let owner = state.repo.effective_owner_of(&doc).await?;
     let access = resolve_access_world(
         ctx.user_id,
         ctx.world_role,
         &doc,
         &world_defaults.grants_for(&doc.doc_type),
-        doc.owner,
+        owner,
     );
     if !access.has(cap::READ) {
         return Err(AppError::NotFound);

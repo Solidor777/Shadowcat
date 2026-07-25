@@ -2439,14 +2439,15 @@ impl Repository for SqliteRepository {
                 let Some(doc) = self.get_document(doc_id).await? else {
                     continue;
                 };
-                // TODO: join the effective owner (linked-actor inheritance) here
-                // instead of the literal `doc.owner`, matching the write path.
+                // One extra pool read per linked-token candidate, bounded by
+                // `MAX_SCAN`; the ws hot path never enters here.
+                let owner = Self::load_effective_owner(&self.pool, &doc).await?;
                 let access = resolve_access_world(
                     ctx.user_id,
                     ctx.world_role,
                     &doc,
                     &world_defaults.grants_for(&doc.doc_type),
-                    doc.owner,
+                    owner,
                 );
                 if !access.has(cap::READ) {
                     continue;
@@ -5263,6 +5264,93 @@ mod tests {
         let gm_probe = r.search(&gm_ctx, w.id, "weakness", 10, None).await.unwrap();
         assert_eq!(gm_probe.hits.len(), 1);
         assert_eq!(gm_probe.hits[0].document.id, sheet.id);
+    }
+
+    #[tokio::test]
+    async fn search_admits_the_inheriting_owner_of_a_default_none_linked_token() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::Operation;
+        use crate::data::document::{DocRole, PermissionSet};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let owner = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let stranger = r
+            .create_user("st", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let owner_ctx = PermissionContext {
+            user_id: owner,
+            world_role: WorldRole::Player,
+        };
+        let stranger_ctx = PermissionContext {
+            user_id: stranger,
+            world_role: WorldRole::Player,
+        };
+
+        // Actor owned by `owner`.
+        let actor = actor_doc_owned_by(w.id, Some(owner));
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: actor.clone() }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // Linked token, no literal owner, `default: None` — the literal-owner
+        // egress path would deny both the owner and the stranger; only the
+        // effective (linked-actor) owner may read it.
+        let mut token = owned_token_doc(w.id, Some(actor.id));
+        token.permissions = PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        };
+        token.system = serde_json::json!({ "label": "Wizard" });
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: token.clone() }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let owner_page = r
+            .search(&owner_ctx, w.id, "wizard", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            owner_page.hits.len(),
+            1,
+            "inheriting owner must see the default-none linked token in search"
+        );
+        assert_eq!(owner_page.hits[0].document.id, token.id);
+
+        let stranger_page = r
+            .search(&stranger_ctx, w.id, "wizard", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            stranger_page.hits.len(),
+            0,
+            "a non-owner must never see a default-none token in search"
+        );
     }
 
     #[tokio::test]
