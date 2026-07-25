@@ -30,6 +30,15 @@ export default defineConfig({
       SHADOWCAT_SETUP_TOKEN: "off",
       SHADOWCAT_DB: "sqlite::memory:",
       SHADOWCAT_LOG: "warn",
+      // The suite logs in as the same seeded admin identity many times across
+      // specs within the auth-throttle's 60s sliding window (Phase A added
+      // LOGIN_PER_MIN_PER_IDENTITY=10 to /api/login) — relax the budgets so
+      // the e2e login pattern itself can never trip them. Production defaults
+      // (config.rs) are untouched; this only overrides this webServer process.
+      SHADOWCAT_LOGIN_PER_MIN_PER_IDENTITY: "10000",
+      SHADOWCAT_LOGIN_PER_MIN_PER_IP: "10000",
+      SHADOWCAT_INVITE_PER_MIN_PER_ACCOUNT: "10000",
+      SHADOWCAT_INVITE_PER_MIN_PER_IP: "10000",
     },
   },
   use: { baseURL: "http://127.0.0.1:31999" },

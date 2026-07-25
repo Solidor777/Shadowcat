@@ -70,6 +70,21 @@ pub struct Config {
     pub upload_max_bytes_gm: Option<u64>,
     /// GM/owner uploads per minute; `None` → 2× `upload_rate_per_min`.
     pub upload_rate_per_min_gm: Option<u32>,
+    /// Per-identity `/api/login` budget (trailing 60s); `None` →
+    /// `throttle::LOGIN_PER_MIN_PER_IDENTITY`. Self-hosting operators behind a
+    /// NAT/shared-proxy IP, or an automated test harness that logs in as one
+    /// identity repeatedly, may need to raise this — never lower it below a
+    /// value that still bounds credential stuffing.
+    pub login_per_min_per_identity: Option<usize>,
+    /// Per-IP `/api/login` budget (trailing 60s); `None` →
+    /// `throttle::LOGIN_PER_MIN_PER_IP`.
+    pub login_per_min_per_ip: Option<usize>,
+    /// Per-account `/api/invites/accept` budget (trailing 60s); `None` →
+    /// `throttle::INVITE_PER_MIN_PER_ACCOUNT`.
+    pub invite_per_min_per_account: Option<usize>,
+    /// Per-IP `/api/invites/accept` budget (trailing 60s); `None` →
+    /// `throttle::INVITE_PER_MIN_PER_IP`.
+    pub invite_per_min_per_ip: Option<usize>,
 }
 
 impl Default for Config {
@@ -88,6 +103,10 @@ impl Default for Config {
             upload_rate_per_min: 20,
             upload_max_bytes_gm: None,
             upload_rate_per_min_gm: None,
+            login_per_min_per_identity: None,
+            login_per_min_per_ip: None,
+            invite_per_min_per_account: None,
+            invite_per_min_per_ip: None,
         }
     }
 }
@@ -302,6 +321,32 @@ mod tests {
             cfg.backups_path(),
             std::path::PathBuf::from("/custom/backups")
         );
+    }
+
+    #[test]
+    fn auth_throttle_budgets_default_to_none_and_env_overrides() {
+        let cfg = Config::default();
+        assert_eq!(cfg.login_per_min_per_identity, None);
+        assert_eq!(cfg.login_per_min_per_ip, None);
+        assert_eq!(cfg.invite_per_min_per_account, None);
+        assert_eq!(cfg.invite_per_min_per_ip, None);
+
+        // Layering: SHADOWCAT_* env overrides the built-in default, matching
+        // every other optional Config field's precedence.
+        // SAFETY: single-threaded test-only env mutation, restored below.
+        unsafe {
+            std::env::set_var("SHADOWCAT_LOGIN_PER_MIN_PER_IDENTITY", "10000");
+        }
+        let cli = Cli {
+            config: Some("/nonexistent/shadowcat.toml".into()),
+            ..Default::default()
+        };
+        let cfg = Config::load(cli).expect("load");
+        // SAFETY: matches the set_var above.
+        unsafe {
+            std::env::remove_var("SHADOWCAT_LOGIN_PER_MIN_PER_IDENTITY");
+        }
+        assert_eq!(cfg.login_per_min_per_identity, Some(10_000));
     }
 
     #[test]

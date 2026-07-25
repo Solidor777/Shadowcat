@@ -484,6 +484,42 @@ pub(crate) mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn login_throttle_budget_is_config_tunable() {
+        // A configured `login_per_min_per_identity` overrides the built-in
+        // constant default — the ops-facing knob this test pins.
+        let mut state = initialized_state().await;
+        state.config = std::sync::Arc::new(crate::config::Config {
+            login_per_min_per_identity: Some(2),
+            ..crate::config::Config::default()
+        });
+        let hash = hash_password("pw-correct").unwrap();
+        state
+            .repo
+            .create_user("gm-cfg", Some(&hash), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let server = axum_test::TestServer::builder()
+            .save_cookies()
+            .build(router(state).await)
+            .unwrap();
+
+        // Budget of 2 (well under the constant default of 10) trips on the
+        // 3rd attempt — proves the configured value, not the constant, gates.
+        for _ in 0..2 {
+            server
+                .post("/api/login")
+                .json(&serde_json::json!({ "username": "gm-cfg", "password": "wrong" }))
+                .await
+                .assert_status(axum::http::StatusCode::UNAUTHORIZED);
+        }
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": "gm-cfg", "password": "wrong" }))
+            .await
+            .assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+    }
+
     /// A `TestServer` served over a REAL loopback TCP connection (not the
     /// default mock transport), so `throttle::ClientIp` resolves an actual
     /// `SocketAddr` via `into_make_service_with_connect_info` — the mock

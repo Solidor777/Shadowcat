@@ -178,23 +178,25 @@ pub async fn login(
 ) -> Result<axum::http::StatusCode, AppError> {
     use crate::http::throttle::{LOGIN_PER_MIN_PER_IDENTITY, LOGIN_PER_MIN_PER_IP};
     let now = now_millis();
+    let per_identity = state
+        .config
+        .login_per_min_per_identity
+        .unwrap_or(LOGIN_PER_MIN_PER_IDENTITY);
+    let per_ip = state
+        .config
+        .login_per_min_per_ip
+        .unwrap_or(LOGIN_PER_MIN_PER_IP);
     // Identity key counts unknown usernames identically to known ones — the
     // throttle must not become the enumeration oracle the constant-verify
     // design below exists to prevent. Uniform 429 for both key kinds.
     let ident_key = format!("login:u:{}", body.username.to_lowercase());
     let ip_ok = match ip.0 {
-        Some(addr) => {
-            state
-                .auth_throttle
-                .check(&format!("login:ip:{addr}"), now, LOGIN_PER_MIN_PER_IP)
-        }
+        Some(addr) => state
+            .auth_throttle
+            .check(&format!("login:ip:{addr}"), now, per_ip),
         None => true,
     };
-    if !ip_ok
-        || !state
-            .auth_throttle
-            .check(&ident_key, now, LOGIN_PER_MIN_PER_IDENTITY)
-    {
+    if !ip_ok || !state.auth_throttle.check(&ident_key, now, per_identity) {
         return Err(AppError::TooManyRequests("try again later".into()));
     }
 
@@ -723,20 +725,24 @@ pub async fn accept_invite(
     use crate::auth::invite;
     use crate::http::throttle::{INVITE_PER_MIN_PER_ACCOUNT, INVITE_PER_MIN_PER_IP};
     let now = now_millis();
+    let per_account = state
+        .config
+        .invite_per_min_per_account
+        .unwrap_or(INVITE_PER_MIN_PER_ACCOUNT);
+    let per_ip = state
+        .config
+        .invite_per_min_per_ip
+        .unwrap_or(INVITE_PER_MIN_PER_IP);
     let ip_ok = match ip.0 {
-        Some(addr) => {
-            state
-                .auth_throttle
-                .check(&format!("invite:ip:{addr}"), now, INVITE_PER_MIN_PER_IP)
-        }
+        Some(addr) => state
+            .auth_throttle
+            .check(&format!("invite:ip:{addr}"), now, per_ip),
         None => true,
     };
     if !ip_ok
-        || !state.auth_throttle.check(
-            &format!("invite:u:{}", user.id),
-            now,
-            INVITE_PER_MIN_PER_ACCOUNT,
-        )
+        || !state
+            .auth_throttle
+            .check(&format!("invite:u:{}", user.id), now, per_account)
     {
         return Err(AppError::TooManyRequests("try again later".into()));
     }
