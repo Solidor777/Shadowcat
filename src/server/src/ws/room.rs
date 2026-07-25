@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use serde::Serialize;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use ts_rs::TS;
@@ -782,6 +782,11 @@ impl Room {
 /// callers or connections.
 pub struct RoomRegistry {
     rooms: DashMap<Uuid, Arc<Room>>,
+    /// Worlds mid-deletion. `get_or_create` refuses these so an evicted
+    /// client's reconnect (or a racing HTTP document write) cannot re-hydrate
+    /// a room between the eviction broadcast and the DB commit that removes
+    /// the world row. Lifted by `finish_delete` on success AND failure.
+    deleting: DashSet<Uuid>,
     /// Broadcast ring capacity for rooms created by this registry. Production uses
     /// `BROADCAST_CAPACITY`; test harnesses shrink it to force the lag path.
     broadcast_capacity: usize,
@@ -791,6 +796,7 @@ impl RoomRegistry {
     pub fn new() -> Self {
         Self {
             rooms: DashMap::new(),
+            deleting: DashSet::new(),
             broadcast_capacity: BROADCAST_CAPACITY,
         }
     }
@@ -801,17 +807,23 @@ impl RoomRegistry {
     pub fn with_capacity(broadcast_capacity: usize) -> Self {
         Self {
             rooms: DashMap::new(),
+            deleting: DashSet::new(),
             broadcast_capacity,
         }
     }
 
     /// Get the room for an existing world, creating it (seeded from the world's
-    /// current seq) on first join. `None` when the world does not exist.
+    /// current seq) on first join. `None` when the world does not exist or is
+    /// mid-deletion (tombstoned).
     pub async fn get_or_create(
         &self,
         repo: &dyn Repository,
         world_id: Uuid,
     ) -> Result<Option<Arc<Room>>, DataError> {
+        if self.deleting.contains(&world_id) {
+            // Mid-deletion: refuse exactly like an absent world row.
+            return Ok(None);
+        }
         if let Some(r) = self.rooms.get(&world_id) {
             return Ok(Some(r.clone()));
         }
@@ -864,6 +876,15 @@ impl RoomRegistry {
                 ))
             })
             .clone();
+        // TOCTOU closure: a `begin_delete` that ran between the tombstone check
+        // above and this insert has already removed-and-evicted whatever room it
+        // saw — which may not include the one just inserted. Re-check and undo,
+        // so no interleaving leaves a live room for a world mid-deletion (either
+        // this removal wins, or `begin_delete`'s own `rooms.remove` did).
+        if self.deleting.contains(&world_id) {
+            self.rooms.remove(&world_id);
+            return Ok(None);
+        }
         Ok(Some(room))
     }
 
@@ -882,6 +903,34 @@ impl RoomRegistry {
         self.rooms.remove_if(&world_id, |_, r| {
             r.stats.connections.load(Ordering::Acquire) <= 0
         });
+    }
+
+    /// Begin a world deletion: tombstone the world (blocking room re-creation)
+    /// and unconditionally remove its live room, returning it so the caller can
+    /// broadcast the eviction frame. Every cache the world holds (navmesh,
+    /// engine, visible-cells, hecs world, ring) is Room-owned, so dropping the
+    /// last Arc frees them all. Pair with `finish_delete` on ALL exit paths.
+    pub fn begin_delete(&self, world_id: Uuid) -> Option<Arc<Room>> {
+        self.deleting.insert(world_id);
+        self.rooms.remove(&world_id).map(|(_, room)| room)
+    }
+
+    /// End a world deletion (success or failure), lifting the tombstone. After
+    /// a committed delete, re-creation is refused by the missing world row;
+    /// after a failure the world is live again and re-creation is legitimate.
+    pub fn finish_delete(&self, world_id: Uuid) {
+        self.deleting.remove(&world_id);
+    }
+
+    /// Address every connection of `user` across all live rooms with a terminal
+    /// eviction frame (account deletion). Rooms without that user's connections
+    /// skip the frame in their egress loops.
+    pub fn evict_user(&self, user: Uuid) {
+        for entry in self.rooms.iter() {
+            entry
+                .value()
+                .broadcast_aux(ServerMsg::Evicted { user: Some(user) });
+        }
     }
 }
 
@@ -995,6 +1044,47 @@ mod room_tests {
             world_role: WorldRole::Gm,
         };
         (repo, world.id, ctx)
+    }
+
+    #[tokio::test]
+    async fn begin_delete_tombstones_and_removes() {
+        let (repo, world_id, _ctx) = repo_with_world().await;
+        let reg = RoomRegistry::new();
+        reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+
+        let room = reg.begin_delete(world_id);
+        assert!(room.is_some(), "live room returned for eviction broadcast");
+        // The world row still exists — the refusal below is the tombstone's.
+        assert!(reg.get_or_create(&repo, world_id).await.unwrap().is_none());
+
+        reg.finish_delete(world_id);
+        assert!(reg.get_or_create(&repo, world_id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn evict_user_reaches_every_room() {
+        let (repo, w1, _ctx) = repo_with_world().await;
+        let author2 = repo
+            .create_user("b", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w2 = repo.create_world_owned("W2", author2, 0).await.unwrap().id;
+
+        let reg = RoomRegistry::new();
+        let r1 = reg.get_or_create(&repo, w1).await.unwrap().unwrap();
+        let r2 = reg.get_or_create(&repo, w2).await.unwrap().unwrap();
+        let (mut rx1, _) = r1.subscribe();
+        let (mut rx2, _) = r2.subscribe();
+
+        let target = Uuid::new_v4();
+        reg.evict_user(target);
+
+        for rx in [&mut rx1, &mut rx2] {
+            match rx.recv().await.unwrap().as_ref() {
+                ServerMsg::Evicted { user } => assert_eq!(*user, Some(target)),
+                other => panic!("expected Evicted, got {other:?}"),
+            }
+        }
     }
 
     #[tokio::test]
