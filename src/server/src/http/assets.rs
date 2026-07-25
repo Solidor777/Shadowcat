@@ -183,6 +183,12 @@ pub async fn upload(
         .join(id.to_string());
     let max = state.config.effective_max_bytes(ctx.world_role);
 
+    // Read-side of the backup quiesce barrier: an in-server backup takes the
+    // write side across VACUUM + assets copy, so no row-commit/rename pair
+    // can straddle the snapshot. Concurrent asset writes share the read side
+    // freely — this serializes nothing between uploads.
+    let _write_permit = state.write_barrier.read().await;
+
     // Do the fallible work in one block so a failure at any step refunds the
     // rate-limit hit `check` recorded — a rejected upload must not burn quota.
     let outcome: Result<Asset, AppError> = async {
@@ -287,6 +293,12 @@ pub async fn replace(
     let final_path = state.config.assets_path().join(&existing.storage_key);
     let tmp_path = final_path.with_file_name(format!("{id}.{}.tmp", uuid::Uuid::new_v4()));
     let max = state.config.effective_max_bytes(ctx.world_role);
+
+    // Read-side of the backup quiesce barrier: an in-server backup takes the
+    // write side across VACUUM + assets copy, so no row-commit/rename pair
+    // can straddle the snapshot. Concurrent asset writes share the read side
+    // freely — this serializes nothing between uploads.
+    let _write_permit = state.write_barrier.read().await;
 
     // Fallible work in one block so any failure refunds the rate-limit hit `check`
     // recorded — a rejected replace must not burn quota.

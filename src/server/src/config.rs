@@ -28,6 +28,8 @@ pub struct Cli {
     pub assets_dir: Option<String>,
     #[arg(long)]
     pub modules_dir: Option<String>,
+    #[arg(long)]
+    pub backups_dir: Option<String>,
     /// One-shot: snapshot the resolved db + assets into this directory, print
     /// a summary, and exit before the server would otherwise start.
     #[arg(long)]
@@ -57,6 +59,9 @@ pub struct Config {
     pub assets_dir: Option<String>,
     /// Installed-module discovery root. `None` → sibling `modules/` dir beside the db file.
     pub modules_dir: Option<String>,
+    /// In-server backup output root (`POST /api/admin/backup`). `None` → sibling
+    /// `backups/` dir beside the db file.
+    pub backups_dir: Option<String>,
     /// Regular-uploader size cap (bytes). Default 25 MiB.
     pub upload_max_bytes: u64,
     /// Regular-uploader uploads per minute. Default 20.
@@ -78,6 +83,7 @@ impl Default for Config {
             session_key: None,
             assets_dir: None,
             modules_dir: None,
+            backups_dir: None,
             upload_max_bytes: 25 * 1024 * 1024,
             upload_rate_per_min: 20,
             upload_max_bytes_gm: None,
@@ -134,6 +140,9 @@ impl Config {
         if let Some(v) = cli.modules_dir {
             cfg.modules_dir = Some(v);
         }
+        if let Some(v) = cli.backups_dir {
+            cfg.backups_dir = Some(v);
+        }
         Ok(cfg)
     }
 
@@ -165,6 +174,19 @@ impl Config {
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("modules")
+    }
+
+    /// Resolve the in-server backup output root: explicit `backups_dir`, else a
+    /// sibling `backups/` directory beside the db file (built via std::path, #2).
+    pub fn backups_path(&self) -> std::path::PathBuf {
+        if let Some(dir) = &self.backups_dir {
+            return std::path::PathBuf::from(dir);
+        }
+        std::path::Path::new(&self.db)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("backups")
     }
 
     /// Role-tiered upload size cap (GM defaults to 2× the regular value).
@@ -266,6 +288,23 @@ mod tests {
     }
 
     #[test]
+    fn backups_path_defaults_to_db_sibling() {
+        let mut cfg = Config {
+            db: "/data/shadowcat.db".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            cfg.backups_path(),
+            std::path::PathBuf::from("/data").join("backups")
+        );
+        cfg.backups_dir = Some("/custom/backups".into());
+        assert_eq!(
+            cfg.backups_path(),
+            std::path::PathBuf::from("/custom/backups")
+        );
+    }
+
+    #[test]
     fn defaults_apply_when_nothing_set() {
         let cfg = Config::default();
         assert_eq!(cfg.bind, "127.0.0.1:30000");
@@ -286,6 +325,7 @@ mod tests {
             session_key: None,
             assets_dir: None,
             modules_dir: None,
+            backups_dir: None,
             backup_to: None,
             restore_from: None,
             force: false,

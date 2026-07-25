@@ -27,6 +27,11 @@ pub struct AppState {
     pub ws: crate::ws::WsState,
     pub upload_rate: Arc<assets::UploadRateLimiter>,
     pub auth_throttle: Arc<throttle::AuthThrottle>,
+    /// Write-quiesce barrier for the in-server backup route: held in write mode
+    /// across `create_backup`'s `VACUUM INTO` + assets copy so no asset
+    /// commit+rename interleaves with the snapshot. Asset writers hold the read
+    /// side (shared among themselves, blocked by the writer).
+    pub write_barrier: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl AppState {
@@ -66,6 +71,7 @@ pub async fn router(state: AppState) -> Router {
         .route("/api/config", get(routes::config))
         .route("/ws", get(crate::ws::conn::ws_handler))
         .route("/api/debug/rooms", get(routes::debug_rooms))
+        .route("/api/admin/backup", post(routes::admin_backup))
         .route("/api/me", get(routes::me))
         .route(
             "/api/me/ui-state",
@@ -182,6 +188,7 @@ pub(crate) mod tests {
             ws: crate::ws::WsState::new(),
             upload_rate: Arc::new(assets::UploadRateLimiter::new()),
             auth_throttle: Arc::new(throttle::AuthThrottle::new()),
+            write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         }
     }
 
@@ -2397,5 +2404,83 @@ pub(crate) mod tests {
             .json(&cross)
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // --- Write-quiesce barrier + admin in-server backup ---
+
+    /// A file-backed `AppState` (real db + assets dir under a tempdir), unlike
+    /// `test_state`'s `sqlite::memory:` — `create_backup`'s `VACUUM INTO` needs
+    /// an actual file on disk. The returned `TempDir` must outlive the state.
+    async fn file_backed_state() -> (AppState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("shadowcat.db");
+        let assets_dir = tmp.path().join("assets");
+        std::fs::create_dir_all(&assets_dir).unwrap();
+        let url = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
+        let repo = SqliteRepository::connect(&url).await.unwrap();
+        let cfg = crate::config::Config {
+            db: db_path.to_string_lossy().into_owned(),
+            assets_dir: Some(assets_dir.to_string_lossy().into_owned()),
+            backups_dir: Some(tmp.path().join("backups").to_string_lossy().into_owned()),
+            ..crate::config::Config::default()
+        };
+        let state = AppState {
+            repo: Arc::new(repo),
+            config: Arc::new(cfg),
+            setup_token: None,
+            initialized: Arc::new(AtomicBool::new(true)),
+            ws: crate::ws::WsState::new(),
+            upload_rate: Arc::new(assets::UploadRateLimiter::new()),
+            auth_throttle: Arc::new(throttle::AuthThrottle::new()),
+            write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+        };
+        (state, tmp)
+    }
+
+    #[tokio::test]
+    async fn admin_backup_is_admin_gated_and_writes_a_manifest() {
+        let (state, _tmp) = file_backed_state().await;
+        seed_admin(&state, "root").await;
+        seed_user(&state, "pleb").await;
+        let admin = login_server(&state, "root").await;
+        let user = login_server(&state, "pleb").await;
+
+        user.post("/api/admin/backup")
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        let res = admin.post("/api/admin/backup").await;
+        res.assert_status_ok();
+        let manifest: serde_json::Value = res.json();
+        assert!(
+            manifest
+                .get("db_bytes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                > 0
+        );
+    }
+
+    #[tokio::test]
+    async fn write_barrier_blocks_asset_writes_while_backup_holds_it() {
+        let barrier = std::sync::Arc::new(tokio::sync::RwLock::<()>::new(()));
+        let quiesce = barrier.write().await; // backup in progress
+        let b2 = barrier.clone();
+        let attempt = tokio::spawn(async move {
+            let _w = b2.read().await; // the asset write's guard
+            true
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !attempt.is_finished(),
+            "asset write must wait behind the quiesce"
+        );
+        drop(quiesce);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), attempt)
+                .await
+                .unwrap()
+                .unwrap()
+        );
     }
 }

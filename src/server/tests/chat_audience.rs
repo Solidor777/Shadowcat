@@ -45,6 +45,7 @@ async fn spawn() -> (Harness, Uuid) {
         ws: shadowcat::ws::WsState::new(),
         upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+        write_barrier: Arc::new(tokio::sync::RwLock::new(())),
     };
     let app = http::router(state).await;
 

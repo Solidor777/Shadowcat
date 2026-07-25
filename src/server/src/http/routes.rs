@@ -46,6 +46,38 @@ pub async fn debug_rooms(
     Json(state.ws.rooms.snapshot())
 }
 
+/// `POST /api/admin/backup` — in-server whole-server backup (admin only). Holds
+/// the write barrier in write mode across the snapshot, so no asset
+/// commit+rename interleaves with the `VACUUM INTO` + assets copy — the
+/// backup's DB metadata and file bytes are mutually consistent. DB writers
+/// need no gating: `VACUUM INTO` is transactionally consistent against a live
+/// writer by itself.
+pub async fn admin_backup(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+) -> Result<Json<crate::backup::BackupManifest>, AppError> {
+    let _quiesce = state.write_barrier.write().await;
+    let out = state
+        .config
+        .backups_path()
+        .join(format!("backup-{}", now_millis()));
+    // `create_backup` opens its own single-connection pool against the same
+    // SQLite file; a `VACUUM INTO` "database is locked" from racing the live
+    // pool surfaces as an ordinary Internal error for the admin to retry —
+    // no busy-loop.
+    let manifest = crate::backup::create_backup(
+        std::path::Path::new(&state.config.db),
+        &state.config.assets_path(),
+        &out,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "in-server backup failed");
+        AppError::Internal
+    })?;
+    Ok(Json(manifest))
+}
+
 #[derive(Deserialize)]
 pub struct LoginRequest {
     pub username: String,
