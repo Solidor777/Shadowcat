@@ -74,7 +74,11 @@ optimistically and roll back on divergence.
   are swept first, and if still full a NEW key FAILS CLOSED (throttled) rather than evicting live
   state. `ClientIp` (Phase A axum extractor) is infallible: `Some` under real `ConnectInfo`,
   `None` under the axum-test mock transport (IP throttling degrades to identity-only there, never
-  a 500) — `AppState.auth_throttle: Arc<AuthThrottle>`.
+  a 500) — `AppState.auth_throttle: Arc<AuthThrottle>`. All four budgets are config-tunable
+  (`Config.login_per_min_per_identity`/`login_per_min_per_ip`/`invite_per_min_per_account`/
+  `invite_per_min_per_ip`, `None` → the constants above, env/TOML-layered like every other optional
+  `Config` field) — the shell e2e suite relaxes them via `playwright.config.ts`'s `webServer.env`
+  so its many same-identity logins across specs can't trip the default budget.
 - **Accounts + world seating.** `POST`/`GET /api/users` are admin-only, gated by the **`AdminUser`
   extractor** — the chokepoint for every server-tier gate. **INVARIANT: never build a server-tier
   gate on world role.** `permission_context` maps `ServerRole::Admin → WorldRole::Gm`, so any
