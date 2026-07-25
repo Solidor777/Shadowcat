@@ -106,7 +106,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
 
 ## Blocked on stronger backup/restore atomicity becoming operationally necessary
 - TODO: The backup mechanism's assets-copy step is not transactionally coupled to the `VACUUM INTO` DB snapshot. An asset REPLACE (not create) in flight during backup commits its DB row before renaming its temp file into place (`http/assets.rs` — `replace`), so a backup racing an in-flight replace can capture updated asset metadata with the pre-replace file bytes for a few milliseconds' window. Inherent property of any online (no-downtime) backup of a live mutable system; add a brief write-quiesce mode during backup if stronger consistency is ever needed in practice.
-- TODO: `restore_backup`'s destination writes (`tokio::fs::copy` for `world.db`, `remove_dir_all` + `copy_dir_recursive` for the assets directory) are not atomic swaps. A failure partway through (disk full, permission error, process kill) can leave the destination db truncated or the assets directory in a state worse than either the pre- or post-restore content. Accepted tradeoff for the "basic" gate-precondition feature; a stronger-consistency restore (write to a temp path, atomic rename into place) is a candidate follow-up if this is ever exercised in an environment where a mid-restore crash is a real operational risk.
 
 ## Follow-on feature sub-projects (own brainstorm → spec → plan each)
 

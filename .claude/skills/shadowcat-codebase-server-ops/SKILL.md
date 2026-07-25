@@ -95,10 +95,17 @@ and restore as a deployment-operator tool, not an in-app feature.
   bit two different Task implementers in M12.5's own execution, leaving unrelated drift in
   `http/mod.rs` that had to be reverted before commit. Use `cargo fmt --check` first, or scope
   explicitly, and diff before committing.
-- Wipe-then-recopy under `--force` (assets directory) and the single-file `tokio::fs::copy` (db)
-  are NOT atomic swaps — a failure partway through leaves the destination in a state worse than
-  either the old or new content. Accepted, documented tradeoff for this "basic" gate-precondition
-  feature (`docs/TODO.md`), not a bug.
+- `restore_backup`'s destination writes are a stage-then-swap, not an in-place write: the db
+  copies to `<db_path>.restore-tmp` then a single `rename` swaps it in (rename atomically replaces
+  an existing FILE on all three target OSes); the assets tree copies to
+  `<assets_dir>.restore-tmp`, the live `assets_dir` renames out to `<assets_dir>.restore-old`
+  (directory rename does NOT replace a non-empty destination on any target OS, hence the two-step
+  swap), the staged tree renames into `assets_dir`, then `.restore-old` is removed. A failure at
+  any point leaves the destination either fully pre-restore or fully post-restore — worst case
+  (crash between the two directory renames) parks the old tree at `.restore-old`, which the next
+  restore attempt clears before staging. No `--force`-only special case: both paths use the
+  staging protocol regardless of `force`, since without `force` the pre-restore-destination-empty
+  gate has already run.
 - The backup's assets-copy is not transactionally coupled to the `VACUUM INTO` snapshot — an
   asset REPLACE (not create) in flight during backup commits its DB row before renaming its temp
   file into place ([[commit-db-row-before-swapping-file]]), so a backup racing an in-flight
