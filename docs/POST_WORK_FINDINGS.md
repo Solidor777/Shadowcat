@@ -233,6 +233,9 @@ are observations awaiting triage, not committed work.
   still has zero production callers (grep across `src/server/src`), so it was not accidentally wired
   into the chat re-root; its missing `/engine` normalization gate remains inert until a real
   undo/replay caller is added, at which point it needs the same gate as `apply_intent`.
+  Update — **Resolved.** `apply_command` now carries the identical `/engine` normalization gate
+  (`data/sqlite.rs::apply_command`), pinned by
+  `apply_command_update_normalizes_engine_broadcast_and_event_log_smuggled_key`.
 
 - Title: Movement gate: token_move gate-dispatch is opt-in on ECS hydration (fail-open shape,
   reachability unconfirmed). Summary: `Room::publish`'s per-operation movement gate only runs when
@@ -300,16 +303,20 @@ are observations awaiting triage, not committed work.
   (`stored_pre_m11d2_message_still_deserializes`) doesn't actually exercise a `RollOutcome`-
   shaped blob, so `#[serde(default)]` on `labeled_consts` is backed only by the mechanical,
   already-precedented pattern (`symbol_counts` uses it identically) plus a client-side
-  (`chat-docs.test.ts`) legacy-fixture test, not a Rust-side one. Low real risk. Status: Needs
-  Review (code-review Minor, non-blocking).
+  (`chat-docs.test.ts`) legacy-fixture test, not a Rust-side one. Low real risk. Status:
+  **Resolved.** `outcome.rs::roll_outcome_missing_defaulted_keys_deserializes` now deserializes a
+  `RollOutcome`-shaped JSON blob missing both `labeled_consts` and `symbol_counts`, pinning
+  `#[serde(default)]` on both directly.
 
 - Title: M13d dice-label fix (`bf494c1`) — a labeled constant's displayed value ignores an
   enclosing `Neg`/`Mul` operator (e.g. `-3[dex]` displays as `3[dex]`, not `-3`).
   `collect_labeled_consts` shows each `ConstTerm`'s raw literal value, mirroring how `DieRecord`
   raw faces are already shown regardless of an enclosing sign — a real precedent, not an
   oversight, but a fidelity gap against `labeled_consts`'s own provenance-transparency intent
-  since `total` itself is unaffected and correct. Status: Needs Review (code-review Minor,
-  disclosed by the implementer, non-blocking).
+  since `total` itself is unaffected and correct. Status: **Resolved.** `collect_labeled_consts`
+  (`eval/sum.rs`) now threads an effective sign through `Neg`/`Sub` (`Mul`/`Div` still keep the
+  literal, matching `DieRecord`'s own precedent), pinned by
+  `labeled_const_display_carries_effective_sign`.
 
 - Title: `ResolvedScene.bounds` has two contradictory unit interpretations, and the grid-unit one is
   wrong on hex. Summary: surfaced by the 14e-7 `[sec]` review (reviewer flagged the hex half as

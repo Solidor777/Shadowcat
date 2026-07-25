@@ -36,15 +36,18 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     no write path can ever re-target an existing document at a different template.
   - `world_of(doc: &Document) -> Option<Uuid>` (`pub(crate)`, Phase A) — the single chokepoint for
     "which world does this doc scope to" (`Scope::World { world_id } => Some(world_id)`,
-    `Scope::Compendium => None`). Callers that must PIN a doc reference to a caller-known world
-    (a scene ref, an actor attribution ref, an HTTP by-id route) compare this against their own
-    `world_id` instead of re-matching `Scope` inline — used by `ws/conn.rs`'s
-    `scene_ping_permitted`, `chat::handle_send_message`'s actor-attribution gate
-    (`shadowcat-codebase-chat`), and `http/routes.rs`'s `get_document`/`patch_document`/
-    `delete_document` (`.ok_or(AppError::NotFound)?`, matching the 404-for-compendium behavior
-    routes.rs's own now-deleted local copy used to return). No remaining `Scope::World`/
-    `Scope::Compendium` match duplicates this decision anywhere in the server — the ONE place to
-    extend it is here.
+    `Scope::Compendium => None`). Two call shapes: (1) a caller that already knows the world it
+    scopes to PINS a doc reference by comparing `world_of(&doc)` against that known `world_id` —
+    `ws/conn.rs`'s `scene_ping_permitted` (refuses a scene doc from another world even for a
+    member of both) and `chat::handle_send_message`'s actor-attribution gate
+    (`shadowcat-codebase-chat`). (2) an HTTP by-id route with no caller-known world instead
+    DERIVES `world` from the doc itself — `http/routes.rs`'s `get_document`/`patch_document`/
+    `delete_document` do `let world = world_of(&doc).ok_or(AppError::NotFound)?`, then use that
+    extracted world as the authority for the subsequent `permission_context` lookup; `None`
+    (a compendium doc) 404s uniformly with the missing-doc case, matching the behavior
+    routes.rs's own now-deleted local copy used to return (existence-hiding). No remaining
+    `Scope::World`/`Scope::Compendium` match duplicates this decision anywhere in the server —
+    the ONE place to extend it is here.
 - `src/server/src/data/engine/` (M13-0) — the typed `engine`-band structs + the ingress-validation
   registry, one module per doc-type family (`token.rs`, `scene.rs`, `geometry.rs`,
   `registries.rs`) plus `mod.rs`: `is_engine_doc_type(doc_type) -> bool` (the 17-entry registry:

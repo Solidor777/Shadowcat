@@ -56,9 +56,12 @@ on.
   Vec<Symbol>}` (`Symbol = String`, an opaque system-assigned tag, e.g. Genesys "triumph");
   `value: None` means the face has no numeric meaning, only symbols. `DieKind::validate() ->
   Result<(), DieKindError>` rejects `Faces{faces: []}` (`DieKindError::EmptyFaces`) — called in
-  production by `chat/rolls.rs::validate_pre_roll` on every parsed group (M11d-2); the
-  remaining `ReplaceDie`-onto-`Faces` recalc gap stays TODO'd until recalculate gains wire
-  exposure. `DieKind::is_ordered()`: `Numeric` always `true`; `Faces` is
+  production by `chat/rolls.rs::validate_pre_roll` on every parsed group (M11d-2).
+  `recalc::RecalcOp::ReplaceDie` onto a `Faces` die is bounds-checked at `recalc.rs` (Phase A): an
+  out-of-range `natural` (negative or `>= faces.len()`) is silently ignored rather than written,
+  matching an unknown `id`'s existing no-op semantics — closes the index-out-of-bounds panic
+  surface `face_value_and_symbols` would otherwise hit. `DieKind::is_ordered()`: `Numeric` always
+  `true`; `Faces` is
   `true` iff EVERY face has `value: Some` — a single unordered face makes the whole die unrankable
   against a valued sibling. `Comparator`+`test` (`#[derive(Default)] #[default] Gte`), `ExplodeKind`
   (Standard/Compound/Penetrate), `GroupModifier`, `DiceGroup{count, kind, modifiers, label:
@@ -416,8 +419,18 @@ on.
   `chat/rolls.rs::validate_pre_roll` calls it per parsed group before any rolling, so an
   empty-`faces` die can no longer arrive via chat (notation still can't construct `Faces`
   anyway). The crate itself remains unvalidated by design — any future non-chat caller that
-  hand-builds a `RollSpec` must run the same validation; the `ReplaceDie`-onto-`Faces`
-  out-of-range-natural recalc gap stays open until recalculate is wire-exposed (TODO.md).
+  hand-builds a `RollSpec` must run the same validation. `ReplaceDie`-onto-`Faces` is separately
+  bounds-checked inside `recalc.rs` itself (Phase A, see the `spec.rs` entry above), so it needed
+  no wire-boundary gate.
+- **`validate_tiers` (`chat/rolls.rs`, Phase A) guards `SuccessConfig`/`TotalConfig.tiers`
+  uniqueness at the wire boundary**, ahead of any untrusted construction path existing —
+  `classify::classify`'s `max_by_key`/`min_by_key` tie on a duplicate `margin_offset` is
+  caller-order-dependent (documented on `classify.rs`), so a malformed ladder with a repeated
+  offset would otherwise resolve nondeterministically. `validate_pre_roll` calls it on every
+  parsed spec's tiers; `RollError::DuplicateTierOffset(i32)` is the player-presentable rejection.
+  Notation still cannot author a non-empty ladder today (`parser.rs` emits `tiers: vec![]`), so
+  this guard arms the boundary before the construction path exists, mirroring the
+  `DieKind::validate()` precedent above.
 - **`compare_labels` returns `Some(0)`, not `None`, for an all-dropped-but-ordered label.** `None`
   means the label has ZERO matching records at all, OR at least one matching record is unordered
   (see the Hard invariants entry above); a label whose records all exist, are all ordered, but are
