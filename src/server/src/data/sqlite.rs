@@ -1332,6 +1332,29 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// Apply a document Delete inside `tx`: the row, its FTS entries, and its
+    /// explored-fog rows. SINGLE SOURCE for delete side-effects — BOTH
+    /// authoritative delete paths (`apply_intent`, `apply_command`) call this,
+    /// so they cannot drift (never-fork). The fog purge is unconditional by id:
+    /// only scene documents ever appear as `explored_fog.scene_id`, so it is a
+    /// no-op for every other doc_type and carries no doc_type predicate that
+    /// could drift from the fog writer's keying.
+    async fn delete_document_tx(
+        tx: &mut sqlx::SqliteConnection,
+        id: Uuid,
+    ) -> Result<(), DataError> {
+        sqlx::query("DELETE FROM documents WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        Self::delete_document_fts(&mut *tx, id).await?;
+        sqlx::query("DELETE FROM explored_fog WHERE scene_id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        Ok(())
+    }
+
     /// Test-only raw insert that bypasses every ingress gate, including
     /// `apply_command`/`apply_intent`'s `/engine` normalization — seeds a
     /// `Document` exactly as given, malformed `engine` body included, to
@@ -1518,11 +1541,7 @@ impl Repository for SqliteRepository {
                 }
                 Operation::Delete { doc } => {
                     check_command_scope(doc, sequenced.world_id)?;
-                    sqlx::query("DELETE FROM documents WHERE id = ?")
-                        .bind(doc.id.to_string())
-                        .execute(&mut *tx)
-                        .await?;
-                    Self::delete_document_fts(&mut tx, doc.id).await?;
+                    Self::delete_document_tx(&mut tx, doc.id).await?;
                     normalized_ops.push(op.clone());
                 }
                 Operation::Update { doc_id, changes } => {
@@ -1993,11 +2012,7 @@ impl Repository for SqliteRepository {
                     normalized_ops.push(op.clone());
                 }
                 Operation::Delete { doc } => {
-                    sqlx::query("DELETE FROM documents WHERE id = ?")
-                        .bind(doc.id.to_string())
-                        .execute(&mut *tx)
-                        .await?;
-                    Self::delete_document_fts(&mut tx, doc.id).await?;
+                    Self::delete_document_tx(&mut tx, doc.id).await?;
                     normalized_ops.push(op.clone());
                 }
                 Operation::Update { doc_id, changes } => {
@@ -3109,6 +3124,113 @@ mod tests {
             repo.delete_world(Uuid::new_v4()).await,
             Err(DataError::NotFound)
         ));
+    }
+
+    /// World + owner + a scene doc with one token child + fog rows for the
+    /// scene (owner and `other`) + a fog row for a second scene (survivor).
+    /// Returns `(world, scene_id, other_scene_id, other_user)`.
+    async fn fog_purge_fixture(repo: &SqliteRepository, owner: Uuid) -> (Uuid, Uuid, Uuid, Uuid) {
+        let other = repo
+            .create_user("watcher", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("w", owner, 0).await.unwrap().id;
+        let scene = Uuid::new_v4();
+        let token = Uuid::new_v4();
+        let other_scene = Uuid::new_v4();
+        let mk = |id, parent: Option<Uuid>, ty| {
+            let mut d = crate::data::document::tests::world_scoped_doc(w, id, ty);
+            d.parent_id = parent;
+            d.owner = Some(owner);
+            Operation::Create { doc: d }
+        };
+        repo.apply_command(UnsequencedCommand {
+            world_id: w,
+            author: owner,
+            ts: 0,
+            ops: vec![
+                mk(scene, None, "scene"),
+                mk(token, Some(scene), "token"),
+                mk(other_scene, None, "scene"),
+            ],
+        })
+        .await
+        .unwrap();
+        for user in [owner, other] {
+            repo.set_explored(w, scene, user, &[1, 0, 0, 0, 2, 0, 0, 0])
+                .await
+                .unwrap();
+        }
+        repo.set_explored(w, other_scene, owner, &[1, 0, 0, 0, 2, 0, 0, 0])
+            .await
+            .unwrap();
+        (w, scene, other_scene, other)
+    }
+
+    #[tokio::test]
+    async fn scene_delete_purges_fog_via_apply_intent() {
+        let repo = repo().await;
+        let owner = repo
+            .create_user("u", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let (w, scene, other_scene, _other) = fog_purge_fixture(&repo, owner).await;
+
+        let ctx = repo
+            .permission_context(w, owner, ServerRole::User)
+            .await
+            .unwrap();
+        let scene_doc = repo.get_document(scene).await.unwrap().unwrap();
+        repo.apply_intent(
+            &ctx,
+            w,
+            vec![Operation::Delete { doc: scene_doc }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            count_where(&repo, "explored_fog", "scene_id", scene.to_string()).await,
+            0,
+            "deleted scene's fog rows purged (all users)"
+        );
+        assert_eq!(
+            count_where(&repo, "explored_fog", "scene_id", other_scene.to_string()).await,
+            1,
+            "other scene's fog survives"
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_delete_purges_fog_via_apply_command() {
+        let repo = repo().await;
+        let owner = repo
+            .create_user("u", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let (w, scene, other_scene, _other) = fog_purge_fixture(&repo, owner).await;
+
+        let scene_doc = repo.get_document(scene).await.unwrap().unwrap();
+        repo.apply_command(UnsequencedCommand {
+            world_id: w,
+            author: owner,
+            ts: 1,
+            ops: vec![Operation::Delete { doc: scene_doc }],
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            count_where(&repo, "explored_fog", "scene_id", scene.to_string()).await,
+            0,
+            "apply_command parity: fog purged through the same shared helper"
+        );
+        assert_eq!(
+            count_where(&repo, "explored_fog", "scene_id", other_scene.to_string()).await,
+            1
+        );
     }
 
     #[tokio::test]
