@@ -1105,6 +1105,9 @@ mod room_tests {
         async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DataError> {
             self.inner.get_document(id).await
         }
+        async fn effective_owner_of(&self, doc: &Document) -> Result<Option<Uuid>, DataError> {
+            self.inner.effective_owner_of(doc).await
+        }
         async fn query_documents(
             &self,
             world_id: Uuid,

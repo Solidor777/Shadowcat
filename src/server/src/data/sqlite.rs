@@ -2155,6 +2155,10 @@ impl Repository for SqliteRepository {
         }
     }
 
+    async fn effective_owner_of(&self, doc: &Document) -> Result<Option<Uuid>, DataError> {
+        Self::load_effective_owner(&self.pool, doc).await
+    }
+
     async fn query_documents(
         &self,
         world_id: Uuid,
@@ -8114,6 +8118,31 @@ mod tests {
         try_move(&r, w, p1, token.id, (0.0, 0.0), (1.0, 2.0), 3)
             .await
             .expect("the effective owner still holds WRITE_FIELDS");
+    }
+
+    #[tokio::test]
+    async fn effective_owner_of_joins_the_linked_actor_on_the_pool() {
+        let (r, gm, w, p1, _p2) = ownership_fixture().await;
+        let actor = actor_doc_owned_by(w, Some(p1));
+        let actor_id = actor.id;
+        let token = owned_token_doc(w, Some(actor_id));
+        let token_id = token.id;
+        gm_create(&r, gm, w, vec![actor, token], 1).await;
+
+        let token = r.get_document(token_id).await.unwrap().unwrap();
+        assert_eq!(r.effective_owner_of(&token).await.unwrap(), Some(p1));
+
+        // Dangling link fails closed.
+        let mut dangling = token.clone();
+        dangling.engine = Some(serde_json::json!({
+            "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0,
+            "actor_id": Uuid::from_u128(999999).to_string()
+        }));
+        assert_eq!(r.effective_owner_of(&dangling).await.unwrap(), None);
+
+        // A non-token resolves to its literal owner without any join.
+        let actor = r.get_document(actor_id).await.unwrap().unwrap();
+        assert_eq!(r.effective_owner_of(&actor).await.unwrap(), Some(p1));
     }
 
     #[tokio::test]
