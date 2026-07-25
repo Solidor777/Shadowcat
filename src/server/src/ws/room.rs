@@ -252,11 +252,13 @@ impl Room {
                             // admissible, not merely on which cells are visible. Checked for every
                             // restriction mode — including `Unrestricted`, which `gate_walk` also
                             // bounds — so the agreement holds in all modes. SCOPE: this whole block
-                            // is non-GM only, while `gate_walk` bounds unconditionally, so a GM
-                            // drag (or the deliberately ungated `Create` placement path above) can
-                            // still commit an over-bound coordinate. That token's own later non-GM
-                            // moves are then permanently rejected by the `a0` test below —
-                            // fail-closed, and consistent with the GM-override design. Beyond the bound the
+                            // is non-GM only (mirroring `execute_move`'s own scoping), but
+                            // `TokenEngine::validate` bounds every document write unconditionally —
+                            // GM included — at ingress, so no live write (drag or `Create`) can
+                            // commit an over-bound coordinate any more. The `a0` test below is
+                            // defense-in-depth against a position that predates that ingress gate
+                            // (e.g. legacy data); it fails closed regardless of how such a position
+                            // came to exist. Beyond the bound the
                             // downstream primitives lose their guarantees (`gate_walk`'s
                             // magnitude-scaled identity tolerance, `HexGrid::line_traversal`'s
                             // `VERTEX_PROBE` offset, which scales with `self.size`), so an over-magnitude endpoint fails
@@ -2538,23 +2540,24 @@ mod room_tests {
     }
 
     /// The guard tests BOTH endpoints, not just the destination. A token whose COMMITTED position
-    /// is already over the bound (seatable only by a GM, who bypasses this gate entirely, or by an
-    /// ungated `Create`) must not be moveable by a player even to an in-bound target: `a0` still
-    /// feeds `blocks_move` and `line_traversal`, whose guarantees lapse beyond the bound. Without
-    /// this case the `a0` disjuncts could be deleted with the suite still green.
+    /// is already over the bound (a legacy/pre-existing state — `TokenEngine::validate` now
+    /// closes every document-write path, GM included, so this can no longer arise from a live
+    /// write) must not be moveable by a player even to an in-bound target: `a0` still feeds
+    /// `blocks_move` and `line_traversal`, whose guarantees lapse beyond the bound. Without this
+    /// case the `a0` disjuncts could be deleted with the suite still green.
     #[tokio::test]
     async fn publish_move_gate_rejects_an_over_magnitude_start_coordinate() {
         use crate::data::command::FieldChange;
         let h = movement_scene("unrestricted", /*with_light=*/ false).await;
         let over = crate::scene::move_exec::MAX_GATE_WALK_COORD + 1.0;
 
-        // A GM seats the token over the bound — GMs never reach this gate (`world_role != Gm`),
-        // so this is the reachable way such a position comes to exist.
+        // Seed the ECS's committed position directly (bypassing document-write ingress
+        // validation entirely) to simulate a pre-existing out-of-bound token — the only way
+        // such a position can exist now that `TokenEngine::validate` gates every write.
+        // `apply_op` is the documented seam for reflecting an already-committed op into the
+        // derived world (`scene::mod`'s doc comment), which is exactly what this simulates.
         let seed = h.mv_to(over, 50.0).await;
-        h.room
-            .publish(&h.repo, &h.gm, vec![seed], 0, WriteOrigin::Client)
-            .await
-            .expect("a GM bypasses the movement gate and may seat any position");
+        h.room.scene().write().await.apply_op(&seed);
 
         // The player now moves to a perfectly ordinary in-bound destination. Only `a0` is over.
         let seq0 = h.room.current_seq();

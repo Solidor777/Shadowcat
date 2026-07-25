@@ -1223,6 +1223,22 @@ impl SqliteRepository {
             .await?;
         Ok(())
     }
+
+    /// Test-only raw insert that bypasses every ingress gate, including
+    /// `apply_command`/`apply_intent`'s `/engine` normalization — seeds a
+    /// `Document` exactly as given, malformed `engine` body included, to
+    /// exercise a reader's fail-closed handling of already-persisted data
+    /// that predates or violates the current typed schema (schema
+    /// evolution, hand-edited rows). `apply_command` validates on write as
+    /// of this gate, so it can no longer seed such fixtures; this is not a
+    /// production code path and must stay `#[cfg(test)]`-only.
+    #[cfg(test)]
+    pub(crate) async fn seed_document_unvalidated(&self, doc: &Document) -> Result<(), DataError> {
+        let mut tx = self.pool.begin().await?;
+        Self::upsert_document(&mut tx, doc, 0).await?;
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 /// A world-sequenced command may only carry documents scoped to its own world.
@@ -1326,6 +1342,15 @@ impl Repository for SqliteRepository {
         let mut tx = self.pool.begin().await?;
 
         // Allocate the next per-world seq from the single durable source.
+        // Unlike `apply_intent` (seq allocated AFTER Phase-1 validation, so a
+        // rejected intent never consumes one), this bump happens BEFORE any
+        // op is validated -- safe only because the whole transaction rolls
+        // back on any early `?` return below, so a rejected write never
+        // commits the bumped seq either. A future error-handling refactor
+        // that starts returning `Ok` on a partially-applied/rejected op
+        // (instead of aborting via `?`) would silently start consuming seqs
+        // on rejected writes; keep this ordering paired with whole-tx
+        // rollback semantics.
         let seq: i64 = sqlx::query("UPDATE worlds SET seq = seq + 1 WHERE id = ? RETURNING seq")
             .bind(cmd.world_id.to_string())
             .fetch_optional(&mut *tx)
@@ -1354,7 +1379,7 @@ impl Repository for SqliteRepository {
             }
         }
 
-        let sequenced = Command {
+        let mut sequenced = Command {
             seq,
             world_id: cmd.world_id,
             author: cmd.author,
@@ -1362,12 +1387,26 @@ impl Repository for SqliteRepository {
             ops,
         };
 
-        // Apply each operation.
+        // Apply each operation. `normalized_ops` mirrors apply_intent's
+        // rebuild: identical to `sequenced.ops` except an Update's
+        // `FieldChange.new` under `/engine`(/*) is renormalized to the
+        // validated post-image, so the returned `Command`, the
+        // `world_events` log entry, and any future `events_since` replay
+        // all carry the identical normalized value the row was stored
+        // with. apply_command is the trusted substrate (undo/replay) and
+        // skips capability/schema/size checks by design (zero production
+        // callers), but the engine band's normalize-then-store invariant
+        // is data integrity, not authz -- it applies regardless of trust
+        // level.
+        let mut normalized_ops = Vec::with_capacity(sequenced.ops.len());
         for op in &sequenced.ops {
             match op {
                 Operation::Create { doc } => {
                     check_command_scope(doc, sequenced.world_id)?;
-                    Self::upsert_document(&mut tx, doc, seq).await?;
+                    let mut doc = doc.clone();
+                    crate::data::validation::validate_engine_tree(&mut doc)?;
+                    Self::upsert_document(&mut tx, &doc, seq).await?;
+                    normalized_ops.push(Operation::Create { doc });
                 }
                 Operation::Delete { doc } => {
                     check_command_scope(doc, sequenced.world_id)?;
@@ -1376,6 +1415,7 @@ impl Repository for SqliteRepository {
                         .execute(&mut *tx)
                         .await?;
                     Self::delete_document_fts(&mut tx, doc.id).await?;
+                    normalized_ops.push(op.clone());
                 }
                 Operation::Update { doc_id, changes } => {
                     let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
@@ -1401,12 +1441,47 @@ impl Repository for SqliteRepository {
                         ));
                     }
                     check_command_scope(&doc, sequenced.world_id)?;
+                    // Same /engine gate as apply_intent (the trusted
+                    // substrate skips capability/schema/size checks by
+                    // design, but the engine band's normalize-then-store
+                    // invariant is data integrity, not authz -- the row,
+                    // the log, and any future replay must carry the
+                    // identical normalized value).
+                    crate::data::validation::validate_engine_tree(&mut doc)?;
                     // updated_at tracks last mutation; the command ts is authoritative.
                     doc.updated_at = sequenced.ts;
                     Self::upsert_document(&mut tx, &doc, seq).await?;
+
+                    // Re-derive each `/engine`(/*) `FieldChange.new` from
+                    // the SAME validated post-image so the returned
+                    // Command and the world_events log entry carry the
+                    // identical normalized value the row was stored with
+                    // -- never the raw submitted JSON.
+                    let normalized_doc_json = serde_json::to_value(&doc)?;
+                    let normalized_changes: Vec<FieldChange> = changes
+                        .iter()
+                        .map(|ch| {
+                            if ch.path == "/engine" || ch.path.starts_with("/engine/") {
+                                if let Some(v) = normalized_doc_json.pointer(&ch.path) {
+                                    return FieldChange {
+                                        remove: false,
+                                        path: ch.path.clone(),
+                                        old: ch.old.clone(),
+                                        new: v.clone(),
+                                    };
+                                }
+                            }
+                            ch.clone()
+                        })
+                        .collect();
+                    normalized_ops.push(Operation::Update {
+                        doc_id: *doc_id,
+                        changes: normalized_changes,
+                    });
                 }
             }
         }
+        sequenced.ops = normalized_ops;
 
         // Append to the log.
         sqlx::query("INSERT INTO world_events (world_id, seq, author_id, ts, command_json) VALUES (?, ?, ?, ?, ?)")
@@ -3805,6 +3880,225 @@ mod tests {
             "5.0",
             "must be the float serialization, not the raw integer literal"
         );
+    }
+
+    #[tokio::test]
+    async fn apply_command_update_normalizes_engine_broadcast_and_event_log_smuggled_key() {
+        // apply_command mirrors apply_intent's /engine normalization gate
+        // (data integrity, not authz) even though it is the trusted
+        // undo/replay substrate with no capability/schema/size checks --
+        // normalize-then-store must hold for every write path that touches
+        // the engine band, or the stored row, the log, and a future replay
+        // can diverge.
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "actor",
+            serde_json::json!({
+                "displayName": "Goblin",
+                "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 },
+                "shape": "square",
+                "faction": null,
+                "conditions": [],
+                "prototype": true
+            }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author: gm,
+            ts: 1,
+            ops: vec![Operation::Create { doc: d }],
+        })
+        .await
+        .unwrap();
+        let old_engine = r
+            .get_document(doc_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .engine
+            .unwrap();
+
+        // Wholesale /engine replacement smuggling an unknown key into the
+        // `visual` tagged-enum sub-object.
+        let smuggled_engine = serde_json::json!({
+            "displayName": "Goblin",
+            "visual": { "kind": "image", "asset": "b.png", "smuggled": "evil" },
+            "size": { "w": 1.0, "h": 1.0 },
+            "shape": "square",
+            "faction": null,
+            "conditions": [],
+            "prototype": true
+        });
+        let cmd = r
+            .apply_command(UnsequencedCommand {
+                world_id: w.id,
+                author: gm,
+                ts: 2,
+                ops: vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/engine".into(),
+                        old: old_engine,
+                        new: smuggled_engine,
+                    }],
+                }],
+            })
+            .await
+            .unwrap();
+
+        // (a) stored row holds the normalized engine value.
+        let stored = r.get_document(doc_id).await.unwrap().unwrap();
+        assert!(
+            stored.engine.unwrap()["visual"].get("smuggled").is_none(),
+            "stored row must not carry the smuggled key"
+        );
+
+        // (b) returned Command's FieldChange.new is the normalized value.
+        let broadcast_new = cmd
+            .ops
+            .iter()
+            .find_map(|o| match o {
+                Operation::Update {
+                    doc_id: id,
+                    changes,
+                } if *id == doc_id => changes
+                    .iter()
+                    .find(|c| c.path == "/engine")
+                    .map(|c| c.new.clone()),
+                _ => None,
+            })
+            .expect("update op with /engine change present");
+        assert!(
+            broadcast_new["visual"].get("smuggled").is_none(),
+            "returned Command must not carry the smuggled key"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_command_update_normalizes_engine_integer_literal_to_stored_float() {
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "actor",
+            serde_json::json!({
+                "displayName": "Goblin",
+                "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 },
+                "shape": "square",
+                "faction": null,
+                "conditions": [],
+                "prototype": true
+            }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author: gm,
+            ts: 1,
+            ops: vec![Operation::Create { doc: d }],
+        })
+        .await
+        .unwrap();
+
+        // Submit a bare integer literal (`5`, not `5.0`) for /engine/size/w.
+        let cmd = r
+            .apply_command(UnsequencedCommand {
+                world_id: w.id,
+                author: gm,
+                ts: 2,
+                ops: vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/engine/size/w".into(),
+                        old: serde_json::json!(1.0),
+                        new: serde_json::json!(5),
+                    }],
+                }],
+            })
+            .await
+            .unwrap();
+
+        let broadcast_new = cmd
+            .ops
+            .iter()
+            .find_map(|o| match o {
+                Operation::Update {
+                    doc_id: id,
+                    changes,
+                } if *id == doc_id => changes
+                    .iter()
+                    .find(|c| c.path == "/engine/size/w")
+                    .map(|c| c.new.clone()),
+                _ => None,
+            })
+            .expect("update op with /engine/size/w change present");
+
+        let stored = r.get_document(doc_id).await.unwrap().unwrap();
+        let stored_w = stored.engine.unwrap()["size"]["w"].clone();
+
+        assert_eq!(broadcast_new, stored_w);
+        assert_eq!(
+            serde_json::to_string(&broadcast_new).unwrap(),
+            "5.0",
+            "must be the float serialization, not the raw integer literal"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_command_create_with_invalid_engine_body_is_rejected() {
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_engine_doc(
+            perms,
+            "wall",
+            serde_json::json!({ "seg": { "x1": "not-a-number", "y1": 0.0, "x2": 1.0, "y2": 1.0 } }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        let err = r
+            .apply_command(UnsequencedCommand {
+                world_id: w.id,
+                author: gm,
+                ts: 1,
+                ops: vec![Operation::Create { doc: d }],
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadEngine(_)));
     }
 
     #[tokio::test]

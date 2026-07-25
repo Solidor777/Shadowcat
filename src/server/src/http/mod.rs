@@ -27,6 +27,11 @@ pub struct AppState {
     pub ws: crate::ws::WsState,
     pub upload_rate: Arc<assets::UploadRateLimiter>,
     pub auth_throttle: Arc<throttle::AuthThrottle>,
+    /// Write-quiesce barrier for the in-server backup route: held in write mode
+    /// across `create_backup`'s `VACUUM INTO` + assets copy so no asset
+    /// commit+rename interleaves with the snapshot. Asset writers hold the read
+    /// side (shared among themselves, blocked by the writer).
+    pub write_barrier: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl AppState {
@@ -66,6 +71,7 @@ pub async fn router(state: AppState) -> Router {
         .route("/api/config", get(routes::config))
         .route("/ws", get(crate::ws::conn::ws_handler))
         .route("/api/debug/rooms", get(routes::debug_rooms))
+        .route("/api/admin/backup", post(routes::admin_backup))
         .route("/api/me", get(routes::me))
         .route(
             "/api/me/ui-state",
@@ -182,6 +188,7 @@ pub(crate) mod tests {
             ws: crate::ws::WsState::new(),
             upload_rate: Arc::new(assets::UploadRateLimiter::new()),
             auth_throttle: Arc::new(throttle::AuthThrottle::new()),
+            write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         }
     }
 
@@ -428,6 +435,98 @@ pub(crate) mod tests {
             bad_pw.text(),
             unknown.text(),
             "no user enumeration via body"
+        );
+    }
+
+    #[tokio::test]
+    async fn login_throttles_identity_after_budget_spending_no_argon2() {
+        use crate::auth::password::verify_count;
+        use crate::http::throttle::LOGIN_PER_MIN_PER_IDENTITY;
+        let server = server_with_user("gm-1", "pw-correct", ServerRole::User).await;
+
+        // Unknown identity: exhaust the budget, then assert 429 + zero verifies.
+        for _ in 0..LOGIN_PER_MIN_PER_IDENTITY {
+            server
+                .post("/api/login")
+                .json(&serde_json::json!({ "username": "ghost", "password": "x" }))
+                .await
+                .assert_status(axum::http::StatusCode::UNAUTHORIZED);
+        }
+        let before = verify_count();
+        let ghost_throttled = server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": "ghost", "password": "x" }))
+            .await;
+        ghost_throttled.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            verify_count() - before,
+            0,
+            "throttled attempt must spend no Argon2"
+        );
+
+        // Known identity: identical throttle shape (status AND body) — no oracle.
+        for _ in 0..LOGIN_PER_MIN_PER_IDENTITY {
+            server
+                .post("/api/login")
+                .json(&serde_json::json!({ "username": "gm-1", "password": "wrong" }))
+                .await
+                .assert_status(axum::http::StatusCode::UNAUTHORIZED);
+        }
+        let known_throttled = server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": "gm-1", "password": "wrong" }))
+            .await;
+        known_throttled.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            ghost_throttled.text(),
+            known_throttled.text(),
+            "uniform 429 body"
+        );
+    }
+
+    /// A `TestServer` served over a REAL loopback TCP connection (not the
+    /// default mock transport), so `throttle::ClientIp` resolves an actual
+    /// `SocketAddr` via `into_make_service_with_connect_info` — the mock
+    /// transport never populates `ConnectInfo`, which would leave the
+    /// per-IP throttle branches silently untested.
+    async fn real_transport_server(state: AppState) -> axum_test::TestServer {
+        let app = router(state)
+            .await
+            .into_make_service_with_connect_info::<std::net::SocketAddr>();
+        axum_test::TestServer::builder()
+            .http_transport()
+            .save_cookies()
+            .build(app)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn login_throttles_by_ip_over_real_transport() {
+        use crate::auth::password::verify_count;
+        use crate::http::throttle::LOGIN_PER_MIN_PER_IP;
+        let server = real_transport_server(initialized_state().await).await;
+
+        // Every request uses a distinct, never-reused unknown identity, so
+        // the per-identity budget (10/min) cannot possibly be what trips —
+        // only the per-IP budget (30/min) can, since all requests share one
+        // real loopback address.
+        for i in 0..LOGIN_PER_MIN_PER_IP {
+            server
+                .post("/api/login")
+                .json(&serde_json::json!({ "username": format!("ghost-{i}"), "password": "x" }))
+                .await
+                .assert_status(axum::http::StatusCode::UNAUTHORIZED);
+        }
+        let before = verify_count();
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": "ghost-final", "password": "x" }))
+            .await
+            .assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            verify_count() - before,
+            0,
+            "IP-throttled attempt must spend no Argon2"
         );
     }
 
@@ -1009,6 +1108,78 @@ pub(crate) mod tests {
             body["id"].as_str().unwrap().to_string(),
             body["code"].as_str().unwrap().to_string(),
         )
+    }
+
+    #[tokio::test]
+    async fn accept_invite_throttles_per_account_spending_no_argon2() {
+        use crate::auth::password::verify_count;
+        use crate::http::throttle::INVITE_PER_MIN_PER_ACCOUNT;
+        let f = invite_fixture().await;
+        for _ in 0..INVITE_PER_MIN_PER_ACCOUNT {
+            f.other_gm
+                .post("/api/invites/accept")
+                .json(&serde_json::json!({ "code": "not-a-real-code" }))
+                .await
+                .assert_status(axum::http::StatusCode::NOT_FOUND);
+        }
+        let before = verify_count();
+        let throttled = f
+            .other_gm
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": "not-a-real-code" }))
+            .await;
+        throttled.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(verify_count() - before, 0);
+    }
+
+    /// Like `login_server`, but served over a REAL loopback TCP connection
+    /// (`real_transport_server`) so `throttle::ClientIp` resolves an actual
+    /// address instead of `None`.
+    async fn real_login_server(state: &AppState, username: &str) -> axum_test::TestServer {
+        let server = real_transport_server(state.clone()).await;
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({ "username": username, "password": "pw" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        server
+    }
+
+    #[tokio::test]
+    async fn accept_invite_throttles_by_ip_over_real_transport() {
+        use crate::auth::password::verify_count;
+        use crate::http::throttle::INVITE_PER_MIN_PER_ACCOUNT;
+        let state = initialized_state().await;
+        for name in ["acct-a", "acct-b", "acct-c", "acct-d"] {
+            seed_user(&state, name).await;
+        }
+        // Three accounts each spend their FULL per-account budget (10) over
+        // one shared loopback IP, totalling exactly the per-IP budget (30) —
+        // no single account's own check can explain a 429 here.
+        for name in ["acct-a", "acct-b", "acct-c"] {
+            let server = real_login_server(&state, name).await;
+            for _ in 0..INVITE_PER_MIN_PER_ACCOUNT {
+                server
+                    .post("/api/invites/accept")
+                    .json(&serde_json::json!({ "code": "not-a-real-code" }))
+                    .await
+                    .assert_status(axum::http::StatusCode::NOT_FOUND);
+            }
+        }
+        // A brand-new account (zero prior attempts), same loopback IP — only
+        // the shared per-IP key can explain the 429 below.
+        let server = real_login_server(&state, "acct-d").await;
+        let before = verify_count();
+        server
+            .post("/api/invites/accept")
+            .json(&serde_json::json!({ "code": "not-a-real-code" }))
+            .await
+            .assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            verify_count() - before,
+            0,
+            "IP-throttled attempt must spend no Argon2"
+        );
     }
 
     #[tokio::test]
@@ -2233,5 +2404,83 @@ pub(crate) mod tests {
             .json(&cross)
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // --- Write-quiesce barrier + admin in-server backup ---
+
+    /// A file-backed `AppState` (real db + assets dir under a tempdir), unlike
+    /// `test_state`'s `sqlite::memory:` — `create_backup`'s `VACUUM INTO` needs
+    /// an actual file on disk. The returned `TempDir` must outlive the state.
+    async fn file_backed_state() -> (AppState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("shadowcat.db");
+        let assets_dir = tmp.path().join("assets");
+        std::fs::create_dir_all(&assets_dir).unwrap();
+        let url = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
+        let repo = SqliteRepository::connect(&url).await.unwrap();
+        let cfg = crate::config::Config {
+            db: db_path.to_string_lossy().into_owned(),
+            assets_dir: Some(assets_dir.to_string_lossy().into_owned()),
+            backups_dir: Some(tmp.path().join("backups").to_string_lossy().into_owned()),
+            ..crate::config::Config::default()
+        };
+        let state = AppState {
+            repo: Arc::new(repo),
+            config: Arc::new(cfg),
+            setup_token: None,
+            initialized: Arc::new(AtomicBool::new(true)),
+            ws: crate::ws::WsState::new(),
+            upload_rate: Arc::new(assets::UploadRateLimiter::new()),
+            auth_throttle: Arc::new(throttle::AuthThrottle::new()),
+            write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+        };
+        (state, tmp)
+    }
+
+    #[tokio::test]
+    async fn admin_backup_is_admin_gated_and_writes_a_manifest() {
+        let (state, _tmp) = file_backed_state().await;
+        seed_admin(&state, "root").await;
+        seed_user(&state, "pleb").await;
+        let admin = login_server(&state, "root").await;
+        let user = login_server(&state, "pleb").await;
+
+        user.post("/api/admin/backup")
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        let res = admin.post("/api/admin/backup").await;
+        res.assert_status_ok();
+        let manifest: serde_json::Value = res.json();
+        assert!(
+            manifest
+                .get("db_bytes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                > 0
+        );
+    }
+
+    #[tokio::test]
+    async fn write_barrier_blocks_asset_writes_while_backup_holds_it() {
+        let barrier = std::sync::Arc::new(tokio::sync::RwLock::<()>::new(()));
+        let quiesce = barrier.write().await; // backup in progress
+        let b2 = barrier.clone();
+        let attempt = tokio::spawn(async move {
+            let _w = b2.read().await; // the asset write's guard
+            true
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !attempt.is_finished(),
+            "asset write must wait behind the quiesce"
+        );
+        drop(quiesce);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), attempt)
+                .await
+                .unwrap()
+                .unwrap()
+        );
     }
 }

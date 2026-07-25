@@ -176,18 +176,24 @@ pub async fn upload(
     }
     let id = uuid::Uuid::new_v4();
     let storage_key = format!("{world}/{id}");
-    let dest = state
+    let final_path = state
         .config
         .assets_path()
         .join(world.to_string())
         .join(id.to_string());
+    // Unique temp sibling in the same directory: stream network bytes to disk
+    // BEFORE acquiring the backup quiesce barrier below. These routes disable
+    // `DefaultBodyLimit`, so a slow multipart upload has no timeout — holding
+    // a write-preferring `tokio::sync::RwLock`'s read side across that wait
+    // would queue an admin `write()` (i.e. `/api/admin/backup`) behind it.
+    let tmp_path = final_path.with_file_name(format!("{id}.{}.tmp", uuid::Uuid::new_v4()));
     let max = state.config.effective_max_bytes(ctx.world_role);
 
     // Do the fallible work in one block so a failure at any step refunds the
     // rate-limit hit `check` recorded — a rejected upload must not burn quota.
     let outcome: Result<Asset, AppError> = async {
         let (content_type, byte_size, original_name) =
-            store_streamed(multipart, &dest, max).await?;
+            store_streamed(multipart, &tmp_path, max).await?;
         let asset = Asset {
             id,
             world_id: world,
@@ -199,8 +205,25 @@ pub async fn upload(
             created_at: now,
             version: 1,
         };
+        // Read-side of the backup quiesce barrier, acquired only around the
+        // rename+DB-commit pair below — the one critical section the quiesce
+        // exists to keep non-interleaving with an in-server backup's VACUUM +
+        // assets copy. Concurrent asset writes share the read side freely;
+        // this serializes nothing between uploads.
+        let _read_permit = state.write_barrier.read().await;
+        // Create ordering is file-BEFORE-row (inverted from replace's
+        // row-before-swap): a create has no prior bytes and no stale ETag to
+        // protect, so the only failure that matters is an orphan DB row (a
+        // GET that 500s forever) — a rename failure here just leaves the temp
+        // file to clean up, and an insert failure after a successful rename
+        // leaves a harmless orphan FILE, best-effort removed below.
+        if let Err(e) = tokio::fs::rename(&tmp_path, &final_path).await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            tracing::error!(?e, %id, "asset upload rename failed");
+            return Err(AppError::Internal);
+        }
         if let Err(e) = state.repo.insert_asset(&asset).await {
-            let _ = tokio::fs::remove_file(&dest).await; // keep disk and DB consistent
+            let _ = tokio::fs::remove_file(&final_path).await; // keep disk and DB consistent
             return Err(e.into());
         }
         Ok(asset)
@@ -293,6 +316,15 @@ pub async fn replace(
     let outcome: Result<Asset, AppError> = async {
         let (content_type, byte_size, _name) = store_streamed(multipart, &tmp_path, max).await?;
 
+        // Read-side of the backup quiesce barrier, acquired only around the
+        // DB-commit + rename pair below — the one critical section the
+        // quiesce exists to keep non-interleaving with an in-server backup's
+        // VACUUM + assets copy. Not held across the network-bound stream
+        // above: these routes disable `DefaultBodyLimit`, so a slow uploader
+        // would otherwise hold a write-preferring `tokio::sync::RwLock`'s
+        // read side open, queuing an admin `write()` behind it indefinitely.
+        let _read_permit = state.write_barrier.read().await;
+
         // Commit to the DB BEFORE swapping the live file. If the DB write fails the
         // live bytes are untouched and the record stays consistent (tmp is removed).
         // If the rename later fails, the DB is one version ahead of unchanged bytes
@@ -349,6 +381,12 @@ pub async fn delete(
     let existing = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
     require_gm(&state, &user, existing.world_id).await?;
 
+    // Read-side of the backup quiesce barrier, held across the row-removal +
+    // unlink pair below — without it a backup could capture the row gone but
+    // the file still present (or vice versa), and in the row-gone/file-still-
+    // present ordering the backup's manifest would reference a file the DB no
+    // longer knows about, worse than replace's stale-bytes race.
+    let _read_permit = state.write_barrier.read().await;
     state.repo.delete_asset(id).await?;
     let path = state.config.assets_path().join(&existing.storage_key);
     if let Err(e) = tokio::fs::remove_file(&path).await {

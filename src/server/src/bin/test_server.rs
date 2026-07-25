@@ -161,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
         ws: shadowcat::ws::WsState::new(),
         upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+        write_barrier: Arc::new(tokio::sync::RwLock::new(())),
     };
     let app = http::router(state).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -177,6 +178,10 @@ async fn main() -> anyhow::Result<()> {
             "world": world.id, "doc": doc.id, "gm": gm, "player": player
         })
     );
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

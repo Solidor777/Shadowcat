@@ -354,8 +354,15 @@ async fn handle_socket(
                         Ok(ClientMsg::ScenePing { scene, x, y }) => {
                             // Out-of-band relay to the world room, stamped with the sender.
                             // Membership is already gated (a non-member never reaches here);
-                            // coordinates are not validated. Over-budget pings drop silently.
-                            if ping_rate.check(user_id, now_millis(), 30) {
+                            // coordinates are not validated. Guard order: cheap rate check
+                            // first, then the authz lookup (one doc read per admitted ping,
+                            // bounded at 30/min/user). Over-budget and unauthorized pings both
+                            // drop silently — no error frame, so a non-reader never learns
+                            // whether `scene` exists.
+                            if ping_rate.check(user_id, now_millis(), 30)
+                                && scene_ping_permitted(scene, &ctx, world_id, repo.as_ref())
+                                    .await
+                            {
                                 room.broadcast_aux(ServerMsg::ScenePing {
                                     scene,
                                     x,
@@ -498,6 +505,40 @@ async fn handle_socket(
     room.stats.connections.fetch_sub(1, Ordering::AcqRel);
     state.ws.rooms.reap_if_empty(world_id);
     tracing::info!(world = %world_id, user = %user_id, "ws disconnected");
+}
+
+/// Whether `ctx` may ping into `scene`: the doc must exist, be a `scene`, belong to THIS world,
+/// and grant the sender `cap::READ`. Admits a token-less spectator (READ on the scene is enough
+/// — deliberately weaker than `handle_pathfind`'s controls-a-token gate, which selects server
+/// state; ping selects none). Denial is a SILENT drop at the call site: any error frame or
+/// behavior split would leak scene existence to a non-reader.
+async fn scene_ping_permitted(
+    scene: Uuid,
+    ctx: &crate::data::membership::PermissionContext,
+    world_id: Uuid,
+    repo: &dyn crate::data::repository::Repository,
+) -> bool {
+    let Ok(Some(doc)) = repo.get_document(scene).await else {
+        return false;
+    };
+    if doc.doc_type != "scene" {
+        return false;
+    }
+    // World scope: a scene doc from another world is refused even for a member of both (the
+    // relay stamps THIS room).
+    if crate::data::document::world_of(&doc) != Some(world_id) {
+        return false;
+    }
+    let Ok(defaults) = repo.world_cap_defaults(world_id).await else {
+        return false;
+    };
+    let access = crate::data::permission::resolve_access_world(
+        ctx.user_id,
+        ctx.world_role,
+        &doc,
+        &defaults.grants_for(&doc.doc_type),
+    );
+    access.has(crate::data::permission::cap::READ)
 }
 
 /// Resolve and execute a one-shot grid pathfind request.
@@ -739,22 +780,23 @@ async fn enrich_vision_explored(
     }
     let mut explored_out: Vec<serde_json::Value> = Vec::with_capacity(by_scene.len());
     for (scene, scene_polys) in by_scene {
-        let cell = grid.get(&scene).copied().unwrap_or(100.0);
         // Index this scene's explored fog through its own resolved grid shape (hex axial on a hex
         // scene, byte-identical square math otherwise) so the accumulated cells compose with the
-        // `Revealed` gate's hex `line_traversal` move-cells. A scene absent from `grid_shapes`
-        // (never expected — the recipient's vision polygons only reference live scenes) falls back
-        // to a square grid at `cell`, mirroring the `unwrap_or(100.0)` cell-size fallback above.
-        let fallback = crate::scene::grid_shape::SquareGrid {
-            cell,
-            rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+        // `Revealed` gate's hex `line_traversal` move-cells. A scene absent from either map has no
+        // live scene document — skip it (fail closed: the client masks everything outside
+        // `polygons`, so a skipped scene simply contributes no explored). Never synthesize a grid
+        // no scene declared.
+        let Some(cell) = grid.get(&scene).copied() else {
+            continue;
         };
         // `+ Send + Sync` so the borrow may live across the `get_explored` await below (the egress
         // task future must be `Send`); coerces to `&dyn GridShape` at the `mark_polygons` call.
-        let shape: &(dyn crate::scene::grid_shape::GridShape + Send + Sync) = grid_shapes
+        let Some(shape) = grid_shapes
             .get(&scene)
-            .map(|b| b.as_ref())
-            .unwrap_or(&fallback);
+            .map(|b| b.as_ref() as &(dyn crate::scene::grid_shape::GridShape + Send + Sync))
+        else {
+            continue;
+        };
         let mut set = match repo.get_explored(scene, user).await {
             Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob),
             _ => crate::scene::explored::ExploredSet::new(),
@@ -1893,6 +1935,39 @@ mod tests {
         assert_eq!(gm, json!({ "mode": "all" }));
     }
 
+    /// A scene absent from BOTH grid maps has no live scene document — `enrich_vision_explored`
+    /// must skip it (fail closed), never synthesize a fallback square grid to index against.
+    #[tokio::test]
+    async fn enrich_skips_scene_absent_from_grid_maps() {
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let world = Uuid::from_u128(1);
+        let user = Uuid::from_u128(2);
+        let ghost = Uuid::from_u128(0xDEAD);
+        let grid: std::collections::HashMap<Uuid, f64> = std::collections::HashMap::new();
+        let shapes = square_grid_shapes(&grid);
+
+        let mut payload = json!({
+            "mode": "masked",
+            "polygons": [{ "scene": ghost, "points": [0.0, 0.0, 200.0, 0.0, 200.0, 200.0] }]
+        });
+        enrich_vision_explored(
+            &mut payload,
+            &grid,
+            &shapes,
+            repo.as_ref(),
+            world,
+            user,
+            true,
+        )
+        .await;
+
+        let explored = payload.get("explored").and_then(|e| e.as_array());
+        assert!(
+            explored.map(|a| a.is_empty()).unwrap_or(true),
+            "no explored entry for a scene with no grid entry"
+        );
+    }
+
     /// A GM see-as-player view (`accumulate = false`) emits the target's stored explored but is a
     /// read-only observer: it never grows the target's persisted memory from the GM's session.
     #[tokio::test]
@@ -2088,6 +2163,115 @@ mod tests {
         assert!(
             matches!(player_result, ServerMsg::PathError { ref message, .. } if message == "unreachable"),
             "non-GM in dark scene should be unreachable; got {player_result:?}"
+        );
+    }
+
+    /// `scene_ping_permitted` admits a token-less reader and refuses a foreign-world scene, a
+    /// scene whose `permissions.default` denies READ, and a ghost id.
+    #[tokio::test]
+    async fn scene_ping_guard_admits_reader_refuses_foreign_and_hidden() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::{DocRole, WorldRole};
+        use crate::data::membership::PermissionContext;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+        let other_world = repo.create_world_owned("X", gm, 0).await.unwrap();
+        let p = repo
+            .create_user("player", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world.id, p, WorldRole::Spectator)
+            .await
+            .unwrap();
+        let spectator = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Spectator,
+        };
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let gm_ctx_other = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg
+            .get_or_create(repo.as_ref(), world.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let room_other = reg
+            .get_or_create(repo.as_ref(), other_world.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+
+        let (vis_id, foreign_id, hidden_id) = (
+            Uuid::from_u128(0xB001),
+            Uuid::from_u128(0xB002),
+            Uuid::from_u128(0xB003),
+        );
+
+        // A readable scene in this world (default DocRole is `None`, so an explicit
+        // `Observer` default is required for the spectator to hold READ).
+        let mut vis = wdoc(world.id, vis_id, "scene");
+        vis.owner = Some(gm);
+        vis.permissions.default = DocRole::Observer;
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: vis }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // A scene in a DIFFERENT world (same GM authoring it).
+        let mut foreign = wdoc(other_world.id, foreign_id, "scene");
+        foreign.owner = Some(gm);
+        room_other
+            .publish(
+                repo.as_ref(),
+                &gm_ctx_other,
+                vec![crate::data::command::Operation::Create { doc: foreign }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+        // A scene in this world whose default grants nobody READ.
+        let mut hidden = wdoc(world.id, hidden_id, "scene");
+        hidden.owner = Some(gm);
+        hidden.permissions.default = DocRole::None;
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: hidden }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // Token-less spectator may ping the scene they can read...
+        assert!(scene_ping_permitted(vis_id, &spectator, world.id, repo.as_ref()).await);
+        // ...but not a scene in another world, a scene that denies READ, or a ghost id.
+        assert!(!scene_ping_permitted(foreign_id, &spectator, world.id, repo.as_ref()).await);
+        assert!(!scene_ping_permitted(hidden_id, &spectator, world.id, repo.as_ref()).await);
+        assert!(
+            !scene_ping_permitted(Uuid::from_u128(0xDEAD), &spectator, world.id, repo.as_ref())
+                .await
         );
     }
 

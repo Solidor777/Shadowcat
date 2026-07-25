@@ -56,9 +56,12 @@ on.
   Vec<Symbol>}` (`Symbol = String`, an opaque system-assigned tag, e.g. Genesys "triumph");
   `value: None` means the face has no numeric meaning, only symbols. `DieKind::validate() ->
   Result<(), DieKindError>` rejects `Faces{faces: []}` (`DieKindError::EmptyFaces`) — called in
-  production by `chat/rolls.rs::validate_pre_roll` on every parsed group (M11d-2); the
-  remaining `ReplaceDie`-onto-`Faces` recalc gap stays TODO'd until recalculate gains wire
-  exposure. `DieKind::is_ordered()`: `Numeric` always `true`; `Faces` is
+  production by `chat/rolls.rs::validate_pre_roll` on every parsed group (M11d-2).
+  `recalc::RecalcOp::ReplaceDie` onto a `Faces` die is bounds-checked at `recalc.rs` (Phase A): an
+  out-of-range `natural` (negative or `>= faces.len()`) is silently ignored rather than written,
+  matching an unknown `id`'s existing no-op semantics — closes the index-out-of-bounds panic
+  surface `face_value_and_symbols` would otherwise hit. `DieKind::is_ordered()`: `Numeric` always
+  `true`; `Faces` is
   `true` iff EVERY face has `value: Some` — a single unordered face makes the whole die unrankable
   against a valued sibling. `Comparator`+`test` (`#[derive(Default)] #[default] Gte`), `ExplodeKind`
   (Standard/Compound/Penetrate), `GroupModifier`, `DiceGroup{count, kind, modifiers, label:
@@ -114,10 +117,12 @@ on.
   still deserialize; `evaluate_success` always sets this to `Vec::new()` since SuccessCount
   ignores all AST arithmetic; display-only — NOT read by `by_label`/`compare_labels`; the
   chat wire mirror (`chat-docs.ts` Zod schema) and `MessageCard.svelte` render a labeled const's
-  raw `value` the same way a labeled `DiceGroup`'s die faces are shown, including under an
-  enclosing `Neg`/`Mul` where the displayed value does NOT reflect the operator — same
-  precedent as `DieRecord`'s raw face values ignoring an enclosing sign) (all 0/None/empty in
-  Total mode with no `difficulty`, or in SuccessCount with no crit config).
+  displayed `value` as collected by `collect_labeled_consts` (`dice/eval/sum.rs`), which threads
+  an effective additive sign through the AST: `Neg` flips it, and `Sub`'s RHS flips it (so
+  `-3[dex]` and `1d20 - 3[dex]` both display `-3`); `Mul`/`Div` do NOT scale or flip it — a
+  labeled const under multiplication/division still displays its literal value, since the sign
+  thread is additive-only, not a full evaluator) (all 0/None/empty in Total mode with no
+  `difficulty`, or in SuccessCount with no crit config).
   `RollOutcome::by_label(&self, label: &str) -> Vec<&DieRecord>` (M11b-3)
   returns all records — kept AND dropped — carrying that label, in roll order.
   `RollOutcome::compare_labels(&self, a, b) -> Option<Ordering>` (M11b-3) compares two labels by
@@ -416,8 +421,18 @@ on.
   `chat/rolls.rs::validate_pre_roll` calls it per parsed group before any rolling, so an
   empty-`faces` die can no longer arrive via chat (notation still can't construct `Faces`
   anyway). The crate itself remains unvalidated by design — any future non-chat caller that
-  hand-builds a `RollSpec` must run the same validation; the `ReplaceDie`-onto-`Faces`
-  out-of-range-natural recalc gap stays open until recalculate is wire-exposed (TODO.md).
+  hand-builds a `RollSpec` must run the same validation. `ReplaceDie`-onto-`Faces` is separately
+  bounds-checked inside `recalc.rs` itself (Phase A, see the `spec.rs` entry above), so it needed
+  no wire-boundary gate.
+- **`validate_tiers` (`chat/rolls.rs`, Phase A) guards `SuccessConfig`/`TotalConfig.tiers`
+  uniqueness at the wire boundary**, ahead of any untrusted construction path existing —
+  `classify::classify`'s `max_by_key`/`min_by_key` tie on a duplicate `margin_offset` is
+  caller-order-dependent (documented on `classify.rs`), so a malformed ladder with a repeated
+  offset would otherwise resolve nondeterministically. `validate_pre_roll` calls it on every
+  parsed spec's tiers; `RollError::DuplicateTierOffset(i32)` is the player-presentable rejection.
+  Notation still cannot author a non-empty ladder today (`parser.rs` emits `tiers: vec![]`), so
+  this guard arms the boundary before the construction path exists, mirroring the
+  `DieKind::validate()` precedent above.
 - **`compare_labels` returns `Some(0)`, not `None`, for an all-dropped-but-ordered label.** `None`
   means the label has ZERO matching records at all, OR at least one matching record is unordered
   (see the Hard invariants entry above); a label whose records all exist, are all ordered, but are

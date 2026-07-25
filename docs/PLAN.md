@@ -1421,6 +1421,25 @@ Decomposed **M11a–d**:
 > which contradicted the constant-time Argon2 verify `/api/login` already pays to hide exactly that.
 > Replaced with mint-an-invite / redeem-it-yourself, so nothing is named and nobody is seated
 > without consent.
+>
+> **Phase-1 close-out campaign** (design
+> `superpowers/specs/2026-07-24-phase1-closeout-campaign-design.md`): a zero-deferral burndown of
+> every `docs/TODO.md`/`docs/POST_WORK_FINDINGS.md` item still open after the cleanup burndown
+> above, split into a security/limits/hygiene sub-phase (Phase A) followed by whatever remains.
+>
+> **Phase A (security/limits/hygiene) DONE** (branch `phase-a-security`, 15 SDD tasks). Closed:
+> per-IP/per-identity throttling shared by `/api/login` and `POST /api/invites/accept`
+> (`http/throttle.rs::AuthThrottle`, anti-enumeration-preserving); a periodic GC sweep for spent
+> `world_invites` rows riding the existing session-sweep timer; `TokenEngine.x/y` finiteness +
+> coordinate-magnitude ingress validation; `ScenePing`'s any-scene-id spoof (gated by
+> `scene_ping_permitted` — doc exists + is a scene + belongs to this world + sender holds
+> `cap::READ`, admitting a token-less spectator); the six remaining `unwrap_or(100.0)` fail-open
+> cell-size defaults (now explicit-refuse at every site, not just the three movement gates fixed
+> earlier); `apply_command`'s missing `/engine` normalization gate; `RecalcOp::ReplaceDie`'s
+> out-of-range-`natural` panic surface onto a `Faces` die; a tier-ladder `margin_offset`
+> uniqueness guard (`validate_tiers`) ahead of any untrusted ladder-construction path; and an
+> in-server `POST /api/admin/backup` route (write-quiesce barrier around asset
+> upload/replace) closing the backup/asset-replace race the CLI-only backup mode could not reach.
 - Purpose: (1) a playable generic system (stats, derived formulas, rolls to chat, items/effects
   modifying stats, template documents); (2) the reference implementation for system builders —
   built only against public seams, every friction point logged as an API bug report; second

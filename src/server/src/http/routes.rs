@@ -17,7 +17,7 @@ use crate::auth::setup::{create_admin, now_millis};
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use crate::data::document::{
     AdditionalProperties, CapabilityRequirement, Cardinality, ContractDeclaration, Document,
-    Schema, SchemaDeclaration, SchemaType, Scope, World, WorldCapDefaults, WorldRole,
+    Schema, SchemaDeclaration, SchemaType, World, WorldCapDefaults, WorldRole,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
@@ -44,6 +44,38 @@ pub async fn debug_rooms(
     State(state): State<AppState>,
 ) -> Json<Vec<RoomStatsSnapshot>> {
     Json(state.ws.rooms.snapshot())
+}
+
+/// `POST /api/admin/backup` — in-server whole-server backup (admin only). Holds
+/// the write barrier in write mode across the snapshot, so no asset
+/// commit+rename interleaves with the `VACUUM INTO` + assets copy — the
+/// backup's DB metadata and file bytes are mutually consistent. DB writers
+/// need no gating: `VACUUM INTO` is transactionally consistent against a live
+/// writer by itself.
+pub async fn admin_backup(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+) -> Result<Json<crate::backup::BackupManifest>, AppError> {
+    let _quiesce = state.write_barrier.write().await;
+    let out = state
+        .config
+        .backups_path()
+        .join(format!("backup-{}", now_millis()));
+    // `create_backup` opens its own single-connection pool against the same
+    // SQLite file; a `VACUUM INTO` "database is locked" from racing the live
+    // pool surfaces as an ordinary Internal error for the admin to retry —
+    // no busy-loop.
+    let manifest = crate::backup::create_backup(
+        std::path::Path::new(&state.config.db),
+        &state.config.assets_path(),
+        &out,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "in-server backup failed");
+        AppError::Internal
+    })?;
+    Ok(Json(manifest))
 }
 
 #[derive(Deserialize)]
@@ -141,8 +173,31 @@ fn anti_enumeration_phc() -> &'static str {
 pub async fn login(
     State(state): State<AppState>,
     session: Session,
+    ip: crate::http::throttle::ClientIp,
     Json(body): Json<LoginRequest>,
 ) -> Result<axum::http::StatusCode, AppError> {
+    use crate::http::throttle::{LOGIN_PER_MIN_PER_IDENTITY, LOGIN_PER_MIN_PER_IP};
+    let now = now_millis();
+    // Identity key counts unknown usernames identically to known ones — the
+    // throttle must not become the enumeration oracle the constant-verify
+    // design below exists to prevent. Uniform 429 for both key kinds.
+    let ident_key = format!("login:u:{}", body.username.to_lowercase());
+    let ip_ok = match ip.0 {
+        Some(addr) => {
+            state
+                .auth_throttle
+                .check(&format!("login:ip:{addr}"), now, LOGIN_PER_MIN_PER_IP)
+        }
+        None => true,
+    };
+    if !ip_ok
+        || !state
+            .auth_throttle
+            .check(&ident_key, now, LOGIN_PER_MIN_PER_IDENTITY)
+    {
+        return Err(AppError::TooManyRequests("try again later".into()));
+    }
+
     let record = state
         .repo
         .user_by_username(&body.username)
@@ -394,15 +449,6 @@ pub(crate) async fn require_gm(
         return Err(AppError::Forbidden);
     }
     Ok(ctx)
-}
-
-/// The world_id of a world-scoped document, or 404 for a compendium document
-/// (compendium CRUD is out of M5 scope).
-fn world_of(doc: &Document) -> Result<Uuid, AppError> {
-    match doc.scope {
-        Scope::World { world_id } => Ok(world_id),
-        Scope::Compendium { .. } => Err(AppError::NotFound),
-    }
 }
 
 #[derive(Deserialize)]
@@ -671,9 +717,29 @@ pub struct AcceptInviteRequest {
 pub async fn accept_invite(
     user: AuthUser,
     State(state): State<AppState>,
+    ip: crate::http::throttle::ClientIp,
     Json(body): Json<AcceptInviteRequest>,
 ) -> Result<Json<WorldEntry>, AppError> {
     use crate::auth::invite;
+    use crate::http::throttle::{INVITE_PER_MIN_PER_ACCOUNT, INVITE_PER_MIN_PER_IP};
+    let now = now_millis();
+    let ip_ok = match ip.0 {
+        Some(addr) => {
+            state
+                .auth_throttle
+                .check(&format!("invite:ip:{addr}"), now, INVITE_PER_MIN_PER_IP)
+        }
+        None => true,
+    };
+    if !ip_ok
+        || !state.auth_throttle.check(
+            &format!("invite:u:{}", user.id),
+            now,
+            INVITE_PER_MIN_PER_ACCOUNT,
+        )
+    {
+        return Err(AppError::TooManyRequests("try again later".into()));
+    }
 
     let code = body.code;
     let parsed = invite::parse(&code);
@@ -787,7 +853,10 @@ pub async fn get_document(
         .get_document(id)
         .await?
         .ok_or(AppError::NotFound)?;
-    let world = world_of(&doc)?;
+    // 404 for a compendium document (compendium CRUD is out of M5 scope) —
+    // same NotFound this route already returns for a missing doc, existence
+    // hiding via a uniform not-found rather than a distinct error shape.
+    let world = crate::data::document::world_of(&doc).ok_or(AppError::NotFound)?;
     let ctx = state
         .repo
         .permission_context(world, user.id, user.role)
@@ -822,7 +891,10 @@ pub async fn patch_document(
         .get_document(id)
         .await?
         .ok_or(AppError::NotFound)?;
-    let world = world_of(&doc)?;
+    // 404 for a compendium document (compendium CRUD is out of M5 scope) —
+    // same NotFound this route already returns for a missing doc, existence
+    // hiding via a uniform not-found rather than a distinct error shape.
+    let world = crate::data::document::world_of(&doc).ok_or(AppError::NotFound)?;
     // by-id route: a non-member is 404, not 403 (existence hiding). Members fall
     // through to write_ops, which may still 403 on a capability denial.
     state
@@ -852,7 +924,10 @@ pub async fn delete_document(
         .get_document(id)
         .await?
         .ok_or(AppError::NotFound)?;
-    let world = world_of(&doc)?;
+    // 404 for a compendium document (compendium CRUD is out of M5 scope) —
+    // same NotFound this route already returns for a missing doc, existence
+    // hiding via a uniform not-found rather than a distinct error shape.
+    let world = crate::data::document::world_of(&doc).ok_or(AppError::NotFound)?;
     // by-id route: a non-member is 404, not 403 (existence hiding).
     state
         .repo

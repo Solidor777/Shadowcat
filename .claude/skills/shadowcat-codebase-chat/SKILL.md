@@ -103,12 +103,17 @@ as buddy-check-worthy by default (its own buddy-check found a Critical: a litera
   deliberately UNCONDITIONAL because `kind: Roll` + `audience: Whisper` IS reachable via the
   frame `audience` field (no `/w` token ⇒ `parse_command` still runs). Edits never call
   `scan_body` — `[[…]]` in an edit stays literal text.
-- **Attribution authz (M11d-2):** `handle_send_message` fail-closed-validates `actor_owner`
-  BEFORE `build_message_doc` — an `Actor` ref must resolve to an existing `doc_type=="actor"`
-  doc owned by the sender (GM: any actor); `TokenInstance` refs are REJECTED until
-  speak-as-token ships (`SendMessageError::ActorNotSpeakable`, nothing persisted). Edits copy
-  `actor_owner` verbatim from the stored doc, so this ingest gate is the only one needed.
-  (World-scope pinning of the actor doc is a logged, inert TODO.)
+- **Attribution authz (M11d-2, world-pinned since Phase A):** `handle_send_message`
+  fail-closed-validates `actor_owner` BEFORE `build_message_doc` — an `Actor` ref must resolve to
+  an existing `doc_type=="actor"` doc, IN THE SENDING ROOM'S WORLD
+  (`crate::data::document::world_of(d) == Some(room.world_id)`), owned by the sender (GM: any
+  actor in that world). An actor doc from another world is refused (`ActorNotSpeakable`) even for
+  its owner — ownership alone no longer crosses world scope. `TokenInstance` refs are REJECTED
+  until speak-as-token ships (same error, nothing persisted). Edits copy `actor_owner` verbatim
+  from the stored doc, so this ingest gate is the only one needed. `world_of` (`data/document.rs`,
+  `pub(crate)`) is the SAME helper `ws/conn.rs`'s `scene_ping_permitted` uses for its own
+  cross-world scene pin — one idiom for "does this doc belong to world X," not two independent
+  `Scope` matches.
 - Client: `chat-docs.ts` mirrors `roll_embed`/`roll_button` (`RollOutcomeSchema`/
   `DieRecordSchema`, records `.passthrough()` for server-only audit fields; the
   unknown-segment fallback REFUSES both new kinds — fail-closed; i64 `total`/`margin` can

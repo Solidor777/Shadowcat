@@ -18,7 +18,7 @@ pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> Rol
         }
     };
     let mut labeled_consts = Vec::new();
-    collect_labeled_consts(&spec.expr, &mut labeled_consts);
+    collect_labeled_consts(&spec.expr, 1, &mut labeled_consts);
     RollOutcome {
         total,
         records: raws.records.clone(),
@@ -36,26 +36,42 @@ pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> Rol
     }
 }
 
-/// Collects every labeled `Const` term in the expression, in AST left-to-right
-/// order, for chat-embed display (`RollOutcome::labeled_consts`). Mirrors how a
-/// `DieRecord`'s value is shown independent of the arithmetic operator around its
-/// group (e.g. a `1d6 - 1d8` shows both groups' raw positive rolled values, never
-/// negated) — a labeled constant's displayed `value` is likewise its own literal,
-/// unaffected by an enclosing `Neg`/`Bin` operator. Total mode only; SuccessCount
-/// ignores the arithmetic entirely (see `success::evaluate_success`), so this is
-/// never called for that mode.
-fn collect_labeled_consts(expr: &Expr, out: &mut Vec<ConstTerm>) {
+/// Collects every labeled `Const` term, in AST left-to-right order, for
+/// chat-embed display (`RollOutcome::labeled_consts`), carrying the term's
+/// EFFECTIVE additive sign: negation (`Neg`) and the right side of `Sub` flip
+/// it, so `-3[dex]` and `1d20 - 3[dex]` both display -3. Multiplicative
+/// context (`Mul`/`Div`) is NOT folded in — a `2 * 3[dex]` displays its
+/// literal 3, mirroring how a `DieRecord`'s raw face is shown regardless of
+/// the arithmetic around its group. Total mode only; SuccessCount ignores the
+/// arithmetic entirely.
+fn collect_labeled_consts(expr: &Expr, sign: i32, out: &mut Vec<ConstTerm>) {
     match expr {
         Expr::Const(c) => {
             if c.label.is_some() {
-                out.push(c.clone());
+                out.push(ConstTerm {
+                    // saturating_neg: i32::MIN has no i32 negation.
+                    value: if sign < 0 {
+                        c.value.saturating_neg()
+                    } else {
+                        c.value
+                    },
+                    label: c.label.clone(),
+                });
             }
         }
         Expr::Dice(_) => {}
-        Expr::Neg(inner) => collect_labeled_consts(inner, out),
+        Expr::Neg(inner) => collect_labeled_consts(inner, -sign, out),
+        Expr::Bin {
+            op: BinOp::Sub,
+            lhs,
+            rhs,
+        } => {
+            collect_labeled_consts(lhs, sign, out);
+            collect_labeled_consts(rhs, -sign, out);
+        }
         Expr::Bin { lhs, rhs, .. } => {
-            collect_labeled_consts(lhs, out);
-            collect_labeled_consts(rhs, out);
+            collect_labeled_consts(lhs, sign, out);
+            collect_labeled_consts(rhs, sign, out);
         }
     }
 }
@@ -341,6 +357,26 @@ mod tests {
         assert_eq!(out.labeled_consts.len(), 1);
         assert_eq!(out.labeled_consts[0].value, 3);
         assert_eq!(out.labeled_consts[0].label, Some("dex".to_string()));
+    }
+
+    #[test]
+    fn labeled_const_display_carries_effective_sign() {
+        // Negation: "-3[dex]" displays -3.
+        let spec = notation::parse("-3[dex]", total_ctx()).unwrap();
+        let out = evaluate(&spec, &roll(&spec, &mut NoiseRng::from_seed(1)));
+        assert_eq!(out.labeled_consts[0].value, -3);
+        // Subtraction (the common authoring shape): "1d20 - 3[dex]" → -3.
+        let spec = notation::parse("1d20 - 3[dex]", total_ctx()).unwrap();
+        let out = evaluate(&spec, &roll(&spec, &mut NoiseRng::from_seed(1)));
+        assert_eq!(out.labeled_consts[0].value, -3);
+        // Double negation cancels: "1d20 - -3[dex]" → 3.
+        let spec = notation::parse("1d20 - -3[dex]", total_ctx()).unwrap();
+        let out = evaluate(&spec, &roll(&spec, &mut NoiseRng::from_seed(1)));
+        assert_eq!(out.labeled_consts[0].value, 3);
+        // Multiplication keeps the literal (documented): "2 * 3[dex]" → 3.
+        let spec = notation::parse("2 * 3[dex]", total_ctx()).unwrap();
+        let out = evaluate(&spec, &roll(&spec, &mut NoiseRng::from_seed(1)));
+        assert_eq!(out.labeled_consts[0].value, 3);
     }
 
     #[test]

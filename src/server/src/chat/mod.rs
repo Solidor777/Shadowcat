@@ -506,9 +506,16 @@ pub async fn handle_send_message(
                     .map_err(SendMessageError::Data)?;
                 let is_gm = ctx.world_role == WorldRole::Gm;
                 let allowed = match &actor_doc {
-                    // GM may attribute as any existing actor doc; a Player
-                    // only as an actor doc they own.
-                    Some(d) if d.doc_type == "actor" => is_gm || d.owner == Some(ctx.user_id),
+                    // GM may attribute as any actor doc IN THIS WORLD; a
+                    // Player only as one they own. A cross-world actor ref is
+                    // refused at ingest, same as any other invalid ref — an
+                    // actor doc's ownership grant does not cross world scope.
+                    Some(d)
+                        if d.doc_type == "actor"
+                            && crate::data::document::world_of(d) == Some(room.world_id) =>
+                    {
+                        is_gm || d.owner == Some(ctx.user_id)
+                    }
                     _ => false,
                 };
                 if !allowed {
@@ -2535,7 +2542,11 @@ mod tests {
     /// A minimal actor doc for the attribution-ownership gate tests, seeded
     /// directly via `apply_command` (bypasses permission checks — these
     /// tests exercise `handle_send_message`'s attribution gate, not the
-    /// actor-create authorization path).
+    /// actor-create authorization path). `engine` must be a well-formed
+    /// `ActorEngine` body: `apply_command` runs the same `/engine`
+    /// normalization gate as `apply_intent` (data integrity, not authz),
+    /// so an absent/malformed body is rejected on Create regardless of
+    /// this seeding path's relaxed authz.
     fn seed_actor_doc(id: Uuid, world: Uuid, owner: Option<Uuid>) -> Document {
         Document {
             id,
@@ -2549,7 +2560,15 @@ mod tests {
             permissions: crate::data::document::PermissionSet::default(),
             embedded: Default::default(),
             parent_id: None,
-            engine: None,
+            engine: Some(serde_json::json!({
+                "displayName": "Goblin",
+                "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 },
+                "shape": "square",
+                "faction": null,
+                "conditions": [],
+                "prototype": true
+            })),
             system: serde_json::json!({ "name": "Goblin" }),
             created_at: 0,
             updated_at: 0,
@@ -2700,6 +2719,76 @@ mod tests {
             seq_before,
             "spoofed attribution must persist nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn actor_from_another_world_is_not_speakable_even_for_its_owner() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::UnsequencedCommand;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world_a = repo.create_world_owned("A", gm, 0).await.unwrap();
+        let world_b = repo.create_world_owned("B", gm, 0).await.unwrap();
+        repo.add_member(world_a.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        repo.add_member(world_b.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+
+        // The actor doc lives in world B and IS owned by `player` — ownership
+        // alone must not be enough to speak as it from world A's room.
+        let actor_id = Uuid::new_v4();
+        repo.apply_command(UnsequencedCommand {
+            world_id: world_b.id,
+            author: player,
+            ts: 0,
+            ops: vec![Operation::Create {
+                doc: seed_actor_doc(actor_id, world_b.id, Some(player)),
+            }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room_a = reg.get_or_create(&repo, world_a.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let err = handle_send_message(
+            &room_a,
+            &repo,
+            &ctx,
+            &rate,
+            LinkPreviewDeps {
+                client: &super::link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            "all".into(),
+            "hi".into(),
+            Some(ActorOwnerRef::Actor { actor_id }),
+            Audience::Public,
+            0,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SendMessageError::ActorNotSpeakable));
     }
 
     #[tokio::test]
@@ -2896,6 +2985,9 @@ mod tests {
             .unwrap();
         let mut wrong_type = seed_actor_doc(Uuid::new_v4(), w.id, Some(player));
         wrong_type.doc_type = "note".into();
+        // "note" is not engine-defined; a present engine body would now be
+        // rejected by apply_command's /engine normalization gate.
+        wrong_type.engine = None;
         let doc_id = wrong_type.id;
         repo.apply_command(UnsequencedCommand {
             world_id: w.id,

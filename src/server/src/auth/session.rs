@@ -130,19 +130,49 @@ impl ExpiredDeletion for SqlxSqliteStore {
 /// so a daily sweep bounds table growth with ample margin.
 const SESSION_SWEEP_PERIOD: std::time::Duration = std::time::Duration::from_secs(60 * 60 * 24);
 
-/// Spawn a background task that periodically deletes expired session rows.
-/// Housekeeping, not correctness: expired rows are already unloadable
-/// (`load` filters `expiry_date > now`); the sweep bounds unbounded table growth.
-/// Sweeps once at startup, then every [`SESSION_SWEEP_PERIOD`]. A failed sweep
-/// is logged and retried next tick — it never aborts the server.
+/// Retention past `expires_at` before a spent invite row is deleted. Consumed
+/// and revoked rows also age out through this: every row carries the 7-day
+/// mint TTL, so all spent rows are gone within TTL + grace. 30 days keeps
+/// recent redemption provenance (`consumed_by`) inspectable for a while
+/// without unbounded growth.
+const INVITE_GC_GRACE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+
+/// Delete invite rows whose `expires_at` is more than the grace period past.
+/// Correctness does not depend on this: expired rows are already unredeemable
+/// (`consume_invite`'s guarded UPDATE); this bounds table growth.
+pub(crate) async fn sweep_spent_invites(
+    pool: &sqlx::SqlitePool,
+    now_ms: i64,
+) -> Result<u64, sqlx::Error> {
+    let cutoff = now_ms - INVITE_GC_GRACE_MS;
+    let res = sqlx::query("DELETE FROM world_invites WHERE expires_at <= ?")
+        .bind(cutoff)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Spawn a background task that periodically deletes expired session rows
+/// and spent world-invite rows. Housekeeping, not correctness: expired rows
+/// are already unloadable/unredeemable; the sweep bounds unbounded table
+/// growth. Sweeps once at startup, then every [`SESSION_SWEEP_PERIOD`]. A
+/// failed sweep is logged and retried next tick — it never aborts the server.
 pub fn spawn_session_sweep(repo: &SqliteRepository) {
     let store = SqlxSqliteStore::new(repo.pool().clone());
+    let pool = repo.pool().clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(SESSION_SWEEP_PERIOD);
         loop {
             interval.tick().await; // first tick completes immediately
             if let Err(e) = store.delete_expired().await {
                 tracing::warn!(error = %e, "session sweep failed");
+            }
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            if let Err(e) = sweep_spent_invites(&pool, now).await {
+                tracing::warn!(error = %e, "invite sweep failed");
             }
         }
     });
@@ -368,5 +398,45 @@ mod tests {
         let k1 = load_or_create_key(&repo, &cfg).await.unwrap();
         let k2 = load_or_create_key(&repo, &cfg).await.unwrap();
         assert_eq!(k1.master(), k2.master(), "persisted key must be reused");
+    }
+
+    #[tokio::test]
+    async fn sweep_deletes_only_rows_expired_past_grace() {
+        use crate::data::sqlite::{NewInvite, SqliteRepository};
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, crate::auth::role::ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+        let now: i64 = 100 * 24 * 60 * 60 * 1000; // day 100
+        let mk = |id: u128, expires_at: i64| NewInvite {
+            id: Uuid::from_u128(id),
+            world: world.id,
+            secret_hash: "x",
+            role: crate::data::document::WorldRole::Player,
+            created_by: gm,
+            now: 0,
+            expires_at,
+        };
+        // Expired 31 days ago -> swept. Expired 1 day ago -> kept (inside grace).
+        repo.create_invite(mk(1, now - 31 * 24 * 60 * 60 * 1000), 64)
+            .await
+            .unwrap();
+        repo.create_invite(mk(2, now - 24 * 60 * 60 * 1000), 64)
+            .await
+            .unwrap();
+        let deleted = super::sweep_spent_invites(repo.pool(), now).await.unwrap();
+        assert_eq!(deleted, 1);
+        assert!(repo
+            .invite_by_id(Uuid::from_u128(1))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .invite_by_id(Uuid::from_u128(2))
+            .await
+            .unwrap()
+            .is_some());
     }
 }

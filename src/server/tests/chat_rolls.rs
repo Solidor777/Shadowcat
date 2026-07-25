@@ -353,9 +353,10 @@ async fn edit_content_with_inline_span_stays_literal_text() {
     );
 }
 
-/// (g) A stored pre-M11d-2 `MessageEngine` JSON (no roll-related content,
-/// `content: []`) still round-trips through `MessageEngine`'s deserializer —
-/// the new `Segment` variants are additive, not a breaking schema change.
+/// (g) A stored pre-M11d-2 `MessageEngine` JSON (no roll segments) still
+/// round-trips — the roll `Segment` variants are additive. RollOutcome
+/// missing-key back-compat is pinned separately in `dice::outcome`'s
+/// `roll_outcome_missing_defaulted_keys_deserializes`.
 #[test]
 fn stored_pre_m11d2_message_still_deserializes() {
     let j = serde_json::json!({

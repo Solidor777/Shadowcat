@@ -54,8 +54,27 @@ optimistically and roll back on divergence.
 - `src/server/src/ws/conn.rs` — per-connection loop + egress; `ws/time.rs` — server time source +
   client offset calibration (exists before its consumer, per ARCHITECTURE §2 invariant 2).
 - `src/server/src/http/{routes.rs,mod.rs}` — HTTP routes (login, assets, embed).
-- `src/server/src/auth/session.rs` — `SqlxSqliteStore` (DB-backed sessions), `spawn_session_sweep`,
+- `src/server/src/auth/session.rs` — `SqlxSqliteStore` (DB-backed sessions), `spawn_session_sweep`
+  (also GCs `world_invites` rows via `DELETE FROM world_invites WHERE expires_at <= ?`, bound to
+  `now_ms - INVITE_GC_GRACE_MS` (30-day grace, not the raw expiry) — an expired-but-recent invite
+  survives a while post-expiry for audit/support lookup before GC actually removes it; same timer
+  as session sweep, no dedicated invite timer),
   `SessionUser`/`AuthUser`/`AdminUser`; `auth/{password,role}.rs`.
+- `src/server/src/http/throttle.rs` (Phase A) — `AuthThrottle` (`check(key, now_ms, per_min) ->
+  bool`, sliding 60s window, `Mutex<HashMap<String, Vec<i64>>>`), shared by the two
+  Argon2-verifying endpoints (`/api/login`, `POST /api/invites/accept`). **INVARIANT (no
+  enumeration oracle):** identity keys (`login:u:<username>`, `invite:u:<uuid>`) count attempts
+  against unknown identities exactly like known ones — the throttle must never distinguish an
+  existing identity from a nonexistent one, mirroring the routes' own constant-verify
+  anti-enumeration property. Keys are opaque strings the CALLER composes
+  (`login:u:<>`/`login:ip:<>`/`invite:u:<>`/`invite:ip:<>`); budgets are per-identity AND per-IP
+  (`LOGIN_PER_MIN_PER_IDENTITY=10`/`LOGIN_PER_MIN_PER_IP=30`,
+  `INVITE_PER_MIN_PER_ACCOUNT=10`/`INVITE_PER_MIN_PER_IP=30`) so identity-rotating stuffing from
+  one address is bounded too. `MAX_TRACKED_KEYS=65_536` caps the map; at capacity, expired keys
+  are swept first, and if still full a NEW key FAILS CLOSED (throttled) rather than evicting live
+  state. `ClientIp` (Phase A axum extractor) is infallible: `Some` under real `ConnectInfo`,
+  `None` under the axum-test mock transport (IP throttling degrades to identity-only there, never
+  a 500) — `AppState.auth_throttle: Arc<AuthThrottle>`.
 - **Accounts + world seating.** `POST`/`GET /api/users` are admin-only, gated by the **`AdminUser`
   extractor** — the chokepoint for every server-tier gate. **INVARIANT: never build a server-tier
   gate on world role.** `permission_context` maps `ServerRole::Admin → WorldRole::Gm`, so any
@@ -116,6 +135,19 @@ optimistically and roll back on divergence.
   a REJECTION replies (`ServerMsg::ChatError`, sender-only), while success is confirmed by the
   broadcast `Event` echo. They use a separate `chatPending` map whose timer resolves
   (success-assumed) rather than rejects on timeout — see `shadowcat-codebase-chat`.
+- **`ScenePing` is gated by `scene_ping_permitted` (Phase A, `ws/conn.rs`), not by scene
+  selection.** Unlike `MoveRequest`/`handle_pathfind` (which SELECT server state and so must
+  derive-from-token, per the never-fork table in `shadowcat-codebase-core`), `ScenePing` relays
+  only the client-supplied `scene`/`x`/`y` to the room via `broadcast_aux` — there is no server
+  state to substitute against.
+  The guard instead answers "may this sender ping into this scene at all": the doc must exist, be
+  `doc_type == "scene"`, resolve to THIS room's `world_id` via `world_of`
+  (`shadowcat-codebase-documents-permissions`), and grant the sender `cap::READ`. Deliberately
+  ADMITS a token-less spectator (weaker than `handle_pathfind`'s controls-a-token gate) since a
+  READ-only viewer legitimately pings a scene they're watching. Denial is a SILENT drop at the
+  call site — no error frame, no behavior split — because any distinguishable response would leak
+  scene existence to a non-reader. Rate-limited independently (30/min/user via `ping_rate`,
+  checked BEFORE the authz lookup so an over-budget sender never pays a doc read).
 - **MoveRequest → MoveStream (M2, broadcast):** `MoveStream` is an **aux broadcast frame** — sent
   via `Room::broadcast_aux` like `ScenePing`, carrying NO seq number (it is cosmetic playback data,
   not an authoritative document event; it never touches the `RingBuffer`/gap-resync path).

@@ -164,9 +164,35 @@ pub async fn create_backup(
 /// then copies `backup_dir/world.db` to `db_path` and `backup_dir/assets/` to
 /// `assets_dir`. Without `force`, refuses when `db_path` already exists or
 /// `assets_dir` already exists and is non-empty. With `force`, the destination
-/// assets directory is fully replaced (removed then recopied) rather than
-/// merged, so restore is a true point-in-time reset, not an overlay. Never
-/// starts the server — callers own that separation.
+/// assets directory is fully replaced rather than merged, so restore is a true
+/// point-in-time reset, not an overlay. Never starts the server — callers own
+/// that separation.
+///
+/// Stage-then-swap: every fallible copy lands in a sibling staging path first
+/// — `<db_path>.restore-tmp` for the db, `<assets_dir>.restore-tmp` for the
+/// assets tree — and the real destination is only ever touched by `rename`,
+/// never by an in-place write. `std::fs::rename` atomically replaces an
+/// existing FILE on all three target OSes, so the db swap is a single rename.
+/// A directory rename is NOT a replace on any of the three OSes when the
+/// destination is non-empty, so the assets swap is two renames: the old
+/// `assets_dir` is first renamed out of the way to `<assets_dir>.restore-old`,
+/// then the staged tree is renamed into `assets_dir`, then the old tree is
+/// removed. Net effect: a failure at any point leaves `assets_dir` either
+/// fully pre-restore (old content, never touched) or fully post-restore
+/// (staged content already swapped in) — never a partial mix. Worst case on a
+/// crash between the two renames: the old tree is parked at
+/// `<assets_dir>.restore-old` rather than deleted; the next restore attempt
+/// clears it (see the pre-clear below), so no manual recovery step is
+/// required, though the parked directory is recoverable by hand if needed.
+///
+/// The db swap and the assets swap are two INDEPENDENT atomic operations, not
+/// one joint transaction across both artifacts: the db rename completes in
+/// full before the assets copy/swap begins. A crash in that window leaves a
+/// new db paired with the old (or, mid-assets-swap, momentarily absent)
+/// assets directory; recovery is re-running `restore_backup` with `force`
+/// (the db swap already completed, so `db_path` now exists and a
+/// force-less retry would refuse), which re-copies the db and completes the
+/// assets swap, leaving both artifacts consistent.
 pub async fn restore_backup(
     backup_dir: &Path,
     db_path: &Path,
@@ -211,13 +237,38 @@ pub async fn restore_backup(
     if let Some(parent) = db_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    tokio::fs::copy(&backup_db, db_path).await?;
+    let db_stage = db_path.with_extension("restore-tmp");
+    tokio::fs::copy(&backup_db, &db_stage).await?;
+    tokio::fs::rename(&db_stage, db_path).await?;
 
-    if tokio::fs::metadata(assets_dir).await.is_ok() {
-        tokio::fs::remove_dir_all(assets_dir).await?;
+    let assets_name = assets_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "assets".to_string());
+    let assets_parent = assets_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let assets_stage = assets_parent.join(format!("{assets_name}.restore-tmp"));
+    let assets_old = assets_parent.join(format!("{assets_name}.restore-old"));
+    // Both staging paths must be clear before copying in: a prior interrupted
+    // restore can leave either one behind, and `copy_dir_recursive` merges
+    // into an existing directory rather than replacing it.
+    if tokio::fs::metadata(&assets_stage).await.is_ok() {
+        tokio::fs::remove_dir_all(&assets_stage).await?;
+    }
+    if tokio::fs::metadata(&assets_old).await.is_ok() {
+        tokio::fs::remove_dir_all(&assets_old).await?;
     }
     let backup_assets = backup_dir.join("assets");
-    copy_dir_recursive(&backup_assets, assets_dir).await?;
+    copy_dir_recursive(&backup_assets, &assets_stage).await?;
+    if tokio::fs::metadata(assets_dir).await.is_ok() {
+        tokio::fs::rename(assets_dir, &assets_old).await?;
+    }
+    tokio::fs::rename(&assets_stage, assets_dir).await?;
+    if tokio::fs::metadata(&assets_old).await.is_ok() {
+        tokio::fs::remove_dir_all(&assets_old).await?;
+    }
 
     Ok(())
 }
@@ -450,6 +501,69 @@ mod tests {
                 .unwrap(),
             b"AAA"
         );
+    }
+
+    #[tokio::test]
+    async fn restore_leaves_no_partial_destination_and_no_staging_residue() {
+        // After a successful force-restore over existing content: destination
+        // matches the backup exactly and neither staging path
+        // (assets.restore-tmp / assets.restore-old, db restore-tmp) survives.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("shadowcat.db");
+        seed_db(&db_path).await;
+        let assets_dir = tmp.path().join("assets");
+        tokio::fs::create_dir_all(&assets_dir).await.unwrap();
+        tokio::fs::write(assets_dir.join("a.png"), b"AAA")
+            .await
+            .unwrap();
+        let out_dir = tmp.path().join("out");
+        create_backup(&db_path, &assets_dir, &out_dir)
+            .await
+            .unwrap();
+
+        // Seed DIFFERENT pre-existing destination content that force-restore
+        // must fully replace.
+        let restored_db = tmp.path().join("restored.db");
+        tokio::fs::write(&restored_db, b"stale pre-existing db bytes")
+            .await
+            .unwrap();
+        let restored_assets = tmp.path().join("restored_assets");
+        tokio::fs::create_dir_all(&restored_assets).await.unwrap();
+        tokio::fs::write(restored_assets.join("stale.png"), b"STALE")
+            .await
+            .unwrap();
+
+        restore_backup(&out_dir, &restored_db, &restored_assets, true)
+            .await
+            .unwrap();
+
+        // Destination content equals backup content.
+        assert_eq!(
+            tokio::fs::read(restored_assets.join("a.png"))
+                .await
+                .unwrap(),
+            b"AAA"
+        );
+        assert!(!restored_assets.join("stale.png").exists());
+        let restored_url = format!("sqlite://{}", restored_db.to_string_lossy());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&restored_url)
+            .await
+            .unwrap();
+        let row = sqlx::query("SELECT val FROM t WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let val: String = row.get("val");
+        assert_eq!(val, "hello");
+        pool.close().await;
+
+        // No staging residue.
+        let parent = restored_assets.parent().unwrap();
+        assert!(!parent.join("restored_assets.restore-tmp").exists());
+        assert!(!parent.join("restored_assets.restore-old").exists());
+        assert!(!restored_db.with_extension("restore-tmp").exists());
     }
 
     #[tokio::test]

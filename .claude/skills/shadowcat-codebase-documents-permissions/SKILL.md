@@ -34,6 +34,24 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     `/system` — no dedicated capability. `/source` (the sibling field naming what a document is
     an instance OF) stays unmapped/immutable — `required_cap_for_path` returns `None` for it, so
     no write path can ever re-target an existing document at a different template.
+  - `world_of(doc: &Document) -> Option<Uuid>` (`pub(crate)`, Phase A) — the single chokepoint for
+    "which world does this doc scope to" (`Scope::World { world_id } => Some(world_id)`,
+    `Scope::Compendium => None`). Two call shapes: (1) a caller that already knows the world it
+    scopes to PINS a doc reference by comparing `world_of(&doc)` against that known `world_id` —
+    `ws/conn.rs`'s `scene_ping_permitted` (refuses a scene doc from another world even for a
+    member of both) and `chat::handle_send_message`'s actor-attribution gate
+    (`shadowcat-codebase-chat`). (2) an HTTP by-id route with no caller-known world instead
+    DERIVES `world` from the doc itself — `http/routes.rs`'s `get_document`/`patch_document`/
+    `delete_document` do `let world = world_of(&doc).ok_or(AppError::NotFound)?`, then use that
+    extracted world as the authority for the subsequent `permission_context` lookup; `None`
+    (a compendium doc) 404s uniformly with the missing-doc case, matching the behavior
+    routes.rs's own now-deleted local copy used to return (existence-hiding). No remaining
+    by-id/relay call site duplicates this "derive the world from the doc" decision — the ONE
+    place to extend THAT specific pattern is here. A separate, narrower match exists at
+    `data/sqlite.rs`'s `check_command_scope`: given a caller-ALREADY-known `world_id` (the
+    world a command is being applied to), it asserts `doc.scope` is `Scope::World` for that
+    SAME id, rejecting any other scope — a guard inside `apply_intent`/`apply_command`, not a
+    `world_of`-style derivation, so it does not duplicate `world_of` itself.
 - `src/server/src/data/engine/` (M13-0) — the typed `engine`-band structs + the ingress-validation
   registry, one module per doc-type family (`token.rs`, `scene.rs`, `geometry.rs`,
   `registries.rs`) plus `mod.rs`: `is_engine_doc_type(doc_type) -> bool` (the 17-entry registry:
@@ -46,7 +64,13 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   in). `src/server/src/data/command.rs`'s `validate_engine_tree` is the recursive ingress
   chokepoint — called on every Create/Update POST-IMAGE (after all `FieldChange`s apply),
   including embedded children, so a wholesale `/engine` replacement, a leaf `/engine/x` write, and
-  an embedded child's engine write are all covered by one call site.
+  an embedded child's engine write are all covered by one call site. `normalize_engine` also
+  RE-SERIALIZES the typed struct back to `Value` (not pass-through), which both authoritative
+  loops (`apply_command` AND `apply_intent`) store — so the stored row, the `world_events` entry,
+  and the returned `Command` all carry the IDENTICAL normalized value, never the raw client
+  input. A per-doc_type struct can add real semantic validation beyond shape (not just
+  `deny_unknown_fields`) — see `TokenEngine::validate` in `shadowcat-codebase-actors-tokens`
+  (shares the movement gate's coordinate bound structurally, not by copied literal).
 - **Token ownership is EFFECTIVE, and it lives in THIS subsystem's files.** `effective_owner`
   (`data/permission.rs`) and `load_effective_owner` (`data/sqlite.rs`) resolve
   `token's own /owner, else the LINKED actor's owner` at authz time — never stamped. `/owner` is

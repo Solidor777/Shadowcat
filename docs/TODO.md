@@ -7,6 +7,17 @@ unblocking condition, not a "someday maybe." A few headings are explicitly
 labeled "Actionable now": these are NOT blocked on anything — the underlying
 capability already exists — but are deferred as out-of-scope-for-now work.
 
+## Blocked on a reverse-proxy deployment story
+- TODO: `ClientIp` (`http/throttle.rs`) resolves solely from `ConnectInfo<SocketAddr>` — the real
+  peer address of the accepted TCP connection — with no `X-Forwarded-For`/`Forwarded` handling.
+  Behind a reverse proxy that does not preserve the original client address, every request
+  resolves to the proxy's own address, so the per-IP throttle bucket (`login:ip:<>`/
+  `invite:ip:<>`) degrades to a single shared bucket across every real client — throttling still
+  functions per-identity, just not per-real-IP. No reverse-proxy deployment story exists or is
+  scoped today (verified: `docs/design/` and `config.rs` have no proxy/trusted-header handling);
+  resolve alongside whatever design adds one (a naive trust-any-`X-Forwarded-For` fix would be
+  its own spoofing vulnerability without a configured trusted-proxy list).
+
 ## Blocked on world/user deletion
 - TODO: Purge `explored_fog` rows on world/user deletion. Neither has a route at all — world and user are DB rows, not documents, and no deletion path exists yet. The M9c table denormalizes `world_id` for a world-scoped purge; wire a `DELETE FROM explored_fog WHERE world_id = ?` when world deletion lands, and index `world_id` then. (Surfaced by the M9c-1 buddy check.)
 
@@ -30,35 +41,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
 ## Blocked on a real 2nd provider / multiple contract versions
 - TODO: Resolve multi-provider conflict policy for `singleton` surface contracts in the UI contribution architecture — when two modules provide the same `singleton` contract (e.g. both claim "the sidebar"), decide the winner (load order, explicit priority, or user selection) instead of the current deterministic loud-fail. Design once a real second provider exists to validate the semantics; the contract model already carries the `singleton`/`multi` cardinality marker the policy slots into.
 - TODO: Add capability version negotiation to contract-based module dependencies (`requires`) — match a required contract against a provider by version range, not presence alone. Deferred until multiple providers of a contract exist at differing versions.
-
-## Blocked on a wire-facing Tier/recalc construction path
-- TODO: `eval::classify::classify`'s ladder lookup (`Vec<Tier>`) has no construction-time
-  validation that `margin_offset` values are unique — a malformed ladder with a duplicate
-  offset ties on `max_by_key`/`min_by_key`'s caller-order-dependent semantics (documented in
-  `classify.rs`'s doc comment), so which duplicate wins depends on vec order rather than being
-  deterministic. Not reachable today (M11b-1 authors `Tier` lists directly, no untrusted
-  construction path exists yet); add a uniqueness/sortedness guard when a wire-facing
-  `Tier` construction path appears. STILL OPEN after M11d-2: the wire boundary it wired is
-  notation-only, and notation has no tier-ladder syntax — `Tier` lists remain
-  struct-authored with no untrusted path. (Surfaced by the M11b-1 whole-branch review.)
-- TODO: `DieKind::Faces` (M11b-3) has two unguarded panic surfaces, mirroring the existing
-  `min > max` / dice-count-cap gaps above — `DieKind::validate()` (which rejects an empty
-  `faces` list) is never called from any production code path, only from `spec.rs`'s own unit
-  tests. (1) An empty-`faces` `Faces` die reaching `roll_uniform(rng, 0, faces.len() as i32 - 1)`
-  (`eval::mod::roll_expr`) computes a degenerate `span == 0`, causing an unconditional
-  divide-by-zero panic (`u32::MAX % span32`), not a silent underflow. (2) An out-of-range
-  `natural` reaching `face_value_and_symbols`'s `faces[natural as usize]` (`eval::groups`)
-  panics via index-out-of-bounds — concretely reachable via `recalc::RecalcOp::ReplaceDie`,
-  which (unlike `RerollDice`) has no `Faces`-vs-`Numeric` gate at all and will happily write an
-  arbitrary `natural` onto a `Faces` die's base record. Neither is reachable from untrusted input
-  today (no notation path constructs `Faces` yet — M11b-3 is struct-only for face-lists).
-  PARTIALLY RESOLVED (M11d-2): the wire boundary (`chat/rolls.rs::validate_pre_roll`) now
-  calls `DieKind::validate()` on every parsed group, closing (1) for any future
-  notation-constructed `Faces`; (2) — `RecalcOp::ReplaceDie` writing an out-of-range
-  `natural` onto a `Faces` record — remains open and resolves whenever recalculate gains a
-  wire exposure (recalc-from-chat is itself deferred, see the Follow-on feature sub-projects
-  section below).
-  (Surfaced by the M11b-3 Task 5 code review.)
 
 ## Blocked on multi-panel popout groups
 - TODO: an already-open popout window has no `onWillDrop` subscription wired
@@ -90,9 +72,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   through any UI affordance. Orthogonal to the width-containment fix (`docs/CLOSED_BUGS.md`):
   giving `FakeEngine` its own menu is future work if a bespoke-fallback caller needs it.
 
-## Actionable now — server-side hex-grid movement support (design approved, plan not yet written)
-- TODO: Hex grid was explicitly in original scope (`docs/PLAN.md`: "grid (square / hex)") and the client already renders/measures hex correctly, but the server has ZERO hex-aware movement infrastructure — `movement.rs`'s line-traversal primitive, `pathfinding.rs`'s A* router, and `scene/mod.rs`'s visibility-mask cell iteration (which feeds both fog-of-war secrecy and the movement gate) are all hardcoded square-grid. This was previously mis-filed as "blocked on hex-grid pathfinding support," which wrongly implied hex itself was unbuilt. Design approved: `docs/superpowers/specs/2026-07-22-hex-grid-server-movement-design.md` (a `GridShape` abstraction generalizing the existing square-grid modules, with a frozen-fixture parity proof before any hex cutover). Awaiting an implementation plan.
-
 ## Blocked on real-time per-recipient move-streaming
 - TODO: Live cross-animation concurrency for streamed move vision (`MoveStream`). M2 precomputes each move's per-recipient vision clip at *its* execute time, so two tokens moving simultaneously do NOT reveal each other mid-walk when a watcher's vision opens after the clip — it reconciles at the stop + next `vision` rebroadcast. Wanted eventually. Needs real-time per-recipient streaming (a per-move server loop recomputing each recipient's visibility of every concurrently-moving token as positions advance) instead of execute-time precompute. No correctness/secrecy impact today — only a missed transient reveal. (Design `2026-06-25-m2-streamed-continuous-vision-design.md` §8; user wants it as a follow-up.)
 
@@ -103,26 +82,20 @@ capability already exists — but are deferred as out-of-scope-for-now work.
 - Stored `explored_fog` blobs (`ExploredSet::to_bytes`, `(i32,i32)` per cell) carry no grid-kind tag. A blob is indexed in the scene's grid kind at write time (square `(i,j)` or hex axial `(q,r)`); reads (`ExploredSet::contains`/`iter`) are pure set membership, so a fixed-grid-kind scene has one consistent interpretation and needs no migration. A GM switching a LIVE scene square<->hex would reinterpret an existing blob under the new kind's coordinate system (stale explored cells until re-fogged) — an accepted edge, not corruption. Add a grid-kind tag to the blob header + a re-index-or-clear-on-switch step only if live grid-kind switching of populated scenes becomes a real workflow.
 - Server shortcodes: pre-parse replacement also fires inside markdown code spans; refine to
   skip code spans if it ever matters in practice.
-- TODO: `handle_send_message`'s ownership check (`ActorNotSpeakable`) verifies existence/doc_type/owner but not that the actor doc's world scope matches the sending world — inert today (foreign refs fail closed to no attribution on every reader's client); pin the scope when convenient.
-
-## Blocked on stronger backup/restore atomicity becoming operationally necessary
-- TODO: The backup mechanism's assets-copy step is not transactionally coupled to the `VACUUM INTO` DB snapshot. An asset REPLACE (not create) in flight during backup commits its DB row before renaming its temp file into place (`http/assets.rs` — `replace`), so a backup racing an in-flight replace can capture updated asset metadata with the pre-replace file bytes for a few milliseconds' window. Inherent property of any online (no-downtime) backup of a live mutable system; add a brief write-quiesce mode during backup if stronger consistency is ever needed in practice.
-- TODO: `restore_backup`'s destination writes (`tokio::fs::copy` for `world.db`, `remove_dir_all` + `copy_dir_recursive` for the assets directory) are not atomic swaps. A failure partway through (disk full, permission error, process kill) can leave the destination db truncated or the assets directory in a state worse than either the pre- or post-restore content. Accepted tradeoff for the "basic" gate-precondition feature; a stronger-consistency restore (write to a temp path, atomic rename into place) is a candidate follow-up if this is ever exercised in an environment where a mid-restore crash is a real operational risk.
 
 ## Follow-on feature sub-projects (own brainstorm → spec → plan each)
 
 Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one design pass each
 (user: build ALL of bucket C):
 
-1. **Recalc-from-chat** — persist `spec`/`raws` on `RollEmbed` (persistence + secrecy fork);
-   closes the `DieKind::Faces` `ReplaceDie` guard at the same boundary (see above).
+1. **Recalc-from-chat** — persist `spec`/`raws` on `RollEmbed` (persistence + secrecy fork).
 2. **Link-preview extensions** — server-fetch-cache-as-asset **image** pipeline + async
    post-publish enrichment (`WriteOrigin` path) + **shared preview cache** + **oEmbed** provider
    embeds (user opted both edge items in; oEmbed carries SSRF/privacy surface → threat-model it).
 3. **Per-world export/import** — world-scoped row subset preserving cross-FK referential
    integrity + shared asset references.
 4. **Dice-notation grammar growth** — math fns (floor/ceil/round/abs/min/max) + crit-event /
-   tier-ladder notation syntax (also opens the Tier-uniqueness guard above).
+   tier-ladder notation syntax.
 5. **Per-channel / per-message dice-settings overrides** — needs a channel model.
 6. **In-body doc-link chat segment** (`Segment::DocLink`) — actor-name → sheet navigation shipped
    in M12c, but a free-form doc-link segment has no server producer or client authoring path yet;
@@ -130,54 +103,12 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 7. **Speak-as-token-instance** — `ActorOwnerRef::TokenInstance` is REJECTED at ingest (fail-closed,
    no first-party producer) — build the composer/token-context UX and lift the rejection together.
 
-## Actionable now — rate-limit `/api/login` (multi-account changes the threat model)
-- TODO: `/api/login` (`http/routes.rs:137-160`) has no per-IP or per-username throttle. This was
-  defensible when a hosted instance had exactly one account; Task 14f ships multi-account support,
-  so unauthenticated credential stuffing is now both worthwhile to an attacker and a CPU
-  amplification vector — the login path deliberately runs a full Argon2 verify on EVERY attempt,
-  including unknown users (`anti_enumeration_phc`), which is what keeps username existence secret.
-  That anti-enumeration property is worth keeping, so the fix is a throttle, not a cheaper verify.
-  (Surfaced by the Task 14f `[sec]` review; explicitly out of scope there.)
-
 ## Blocked on user deletion existing — `add_member` resolve+write is two queries
 - TODO: `add_member` (`http/routes.rs:514`) checks `user_exists` and then inserts membership in two
   separate pool round-trips. A user row deleted between them reintroduces the foreign-key 500 that
   the 404 fix removed. Unreachable today — no user-deletion route exists anywhere in the server —
   but it is the check-then-act shape this project has been bitten by before, and it goes live the
   moment account deletion ships. Fix then by wrapping resolve+write in one transaction.
-
-## Actionable now — validate `TokenEngine.x/y` at ingress
-- TODO: `TokenEngine.x/y` (`src/server/src/data/engine/token.rs:17-22`) have no finiteness or
-  coordinate-magnitude validation at ingress, so an over-magnitude position can still be PERSISTED
-  by a GM write or by the deliberately-ungated `Operation::Create` placement path
-  (`ws/room.rs`), while `move_exec::gate_walk` refuses such coordinates on the `moveRequest` path
-  for GMs too — the two write paths disagree for a GM. Task 14e-9 closed the non-GM movement gate
-  (`publish` now shares `MAX_GATE_WALK_COORD`), and a token seated over the bound is thereafter
-  frozen for non-GM moves by that gate's `a0` check, which is fail-closed. No exploitable
-  consequence found: every downstream consumer carries its own bound (`MAX_CELLS_PER_POLYGON` plus
-  the saturating span guard, `regions::MAX_CELL_COORD`, `navmesh::MAX_NAVMESH_COORD`). The right
-  home for the fix is ingress validation on the typed engine struct, NOT widening the movement
-  gate. (Surfaced by the Task 14e-9 `[sec]` review.)
-
-## Actionable now — rate-limit `/api/invites/accept`
-- TODO: invite redemption (`http/routes.rs` `accept_invite`) has no throttle, and the endpoint
-  deliberately runs a full Argon2id verify on EVERY attempt — including codes with no matching row,
-  against a throwaway hash — because a constant verify count is what keeps invalid/expired/revoked/
-  consumed indistinguishable. That anti-enumeration property is load-bearing, so the fix is a
-  throttle, not a cheaper verify. Any authenticated account is otherwise a CPU amplifier (~10 ms of
-  Argon2 per request, on a `spawn_blocking` pool shared with login). Guessing the code itself stays
-  infeasible at 128 bits; this is availability, not confidentiality. Pairs with the `/api/login`
-  throttle logged above — one limiter should serve both. (Surfaced by the Task 14g `[sec]` review.)
-
-## Actionable now — garbage-collect spent `world_invites` rows
-- TODO: expired, consumed, and revoked invites are never deleted, while
-  `MAX_ACTIVE_INVITES_PER_WORLD` counts only LIVE rows, so a mint→revoke loop grows
-  `world_invites` without bound at one row per iteration. Harmless at real table scale and not a
-  confidentiality issue (rows hold only a hash), but it is unbounded storage reachable by any GM
-  of any world. Fix with a periodic sweep of rows whose `expires_at` is well past, alongside the
-  existing session sweep (`auth/session.rs` `spawn_session_sweep`) rather than a new timer.
-  (Surfaced by the Task 14g `[sec]` review.)
-
 
 ## Actionable now (deferred on cost, NOT blocked) — inherited owner is a stranger at egress
 - TODO: Task 14i made token ownership EFFECTIVE (`effective_owner(token) = the token's own owner,
@@ -200,20 +131,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   only the property tiers. (Disclosed by Task 14i; see
   `.superpowers/sdd/task-14i-token-ownership-report.md`.)
 
-## Actionable now — `ScenePing` accepts any scene id from the client
-- TODO: `ClientMsg::ScenePing` (`ws/conn.rs`) relays the client-supplied `scene` verbatim, with no
-  check that the sender is in or can see that scene. A member can therefore ping into any scene id
-  in the world, including one they have never viewed, and every client viewing it renders the
-  marker. **This is NOT the cross-scene gate bypass Task 14j fixed** — ping selects no server state,
-  so there is no gate to substitute against; it is spoof/nuisance with no information flowing back
-  to the pinger (the relay has no reply) and it is rate-limited to 30/min per user. Left unfixed
-  deliberately: the obvious guard (require the sender to control a token in that scene, as 14j's
-  `handle_pathfind` gate does) would also block a legitimately token-less spectator from pinging
-  the scene they are watching. The better fix is probably to require the scene doc to exist in this
-  world AND the sender to hold `cap::READ` on it — which admits the spectator while refusing a
-  scene they cannot see. Needs a decision on the spectator case before implementing. (Surfaced by
-  the Task 14h `[sec]` review; scope-checked and escalated by Task 14j.)
-
 ## Actionable now — `setGmViewedScene` leaves a stale cross-scene token selection
 - TODO: `setGmViewedScene` (`src/client/shell/src/lib/worldSession.svelte.ts`) does not scene-scope
   or clear `tokenSelection`, while `commitRoute` (`src/modules/scene-tools/src/controller.svelte.ts`)
@@ -228,18 +145,3 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   (Surfaced by the Task 14j `[sec]` review; deliberately kept out of the server security commit to
   avoid batching unrelated concerns.)
 
-## Actionable now — four surviving `unwrap_or(100.0)` cell-size defaults, safe only by call ordering
-- TODO: Tasks 14j/`0dbea21` removed the fail-open `scene_grid_sizes().get(&scene).unwrap_or(100.0)`
-  from all three movement/routing gates (`execute_move`, `Room::publish`, `SceneEcs::pathfind`), so
-  a scene with no document is refused rather than indexed against an invented 100-unit grid. Six
-  siblings survive: `navmesh_for` (`scene/mod.rs:1173`), `region_field` (`:1364`),
-  `player_lit_mask` (`:1739`), `visible_cells` (`:1895`), `visible_cells_cached` (`:1939`), and
-  `enrich_vision_explored` (`ws/conn.rs:739`). (`scene_grid_sizes` at `:1056` is the intentional
-  defaulting SOURCE, not a survivor.) **None is reachable with a missing
-  scene today** — the three gates now refuse above them — but that is defence by CALL ORDERING, and
-  call ordering is exactly the shape the campaign's own defect class warns about ("removed from one
-  gate, left in two"; see the never-fork entry in `shadowcat-codebase-core`). A future router, mask
-  consumer, or preview path that calls any of these four without a gate above it reintroduces
-  reachability silently. Fix by making the absent-key case explicit at each site (refuse, or return
-  an `Option`/`Result` the caller must handle) rather than synthesizing a grid no scene declared.
-  (Surfaced by the Task 14j fix-round `[sec]` review.)

@@ -13,6 +13,17 @@ pub enum Scope {
     World { world_id: Uuid },
 }
 
+/// The world a document belongs to, or `None` for a compendium document (no world).
+/// Single chokepoint for "which world does this doc scope to" — callers that need cross-world
+/// pinning (a doc referenced from one world's context must belong to THAT world) compare this
+/// against the caller's own `world_id` rather than re-matching `Scope` inline.
+pub(crate) fn world_of(doc: &Document) -> Option<Uuid> {
+    match doc.scope {
+        Scope::World { world_id } => Some(world_id),
+        Scope::Compendium { .. } => None,
+    }
+}
+
 /// Provenance link for the deferred pull/push merge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]

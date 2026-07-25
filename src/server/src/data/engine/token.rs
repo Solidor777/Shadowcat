@@ -35,6 +35,84 @@ pub struct TokenEngine {
     pub face: Option<String>,
 }
 
+impl TokenEngine {
+    /// Ingress validation beyond serde shape: every numeric field finite, and
+    /// the position inside the ONE shared movement-coordinate bound
+    /// (`scene::move_exec::MAX_GATE_WALK_COORD`) — the GM-write/Create path
+    /// and the move gate must agree on admissible coordinates structurally,
+    /// never by call ordering.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        for (name, v) in [
+            ("x", self.x),
+            ("y", self.y),
+            ("w", self.w),
+            ("h", self.h),
+            ("rotation", self.rotation),
+        ] {
+            if !v.is_finite() {
+                return Err(format!("{name} must be finite"));
+            }
+        }
+        let bound = crate::scene::move_exec::MAX_GATE_WALK_COORD;
+        if self.x.abs() > bound || self.y.abs() > bound {
+            return Err(format!("position exceeds coordinate bound {bound}"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base() -> TokenEngine {
+        TokenEngine {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+            rotation: 0.0,
+            visual: None,
+            actor_id: None,
+            overrides: None,
+            face: None,
+        }
+    }
+
+    #[test]
+    fn finite_in_bound_token_validates() {
+        assert!(base().validate().is_ok());
+    }
+
+    #[test]
+    fn non_finite_fields_are_rejected() {
+        for f in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut t = base();
+            t.x = f;
+            assert!(t.validate().is_err(), "x = {f} must be rejected");
+            let mut t = base();
+            t.rotation = f;
+            assert!(t.validate().is_err(), "rotation = {f} must be rejected");
+        }
+    }
+
+    #[test]
+    fn ingress_bound_equals_gate_walks_exactly() {
+        // Anti-drift: ingress and the movement gate read ONE symbol with the
+        // same strictly-`>` sense (template: room.rs's
+        // publish_move_gate_admissibility_bound_equals_gate_walks).
+        let bound = crate::scene::move_exec::MAX_GATE_WALK_COORD;
+        let mut t = base();
+        t.x = bound;
+        assert!(t.validate().is_ok(), "AT the bound is admissible");
+        t.x = bound + 1.0;
+        assert!(t.validate().is_err(), "over the bound is refused");
+        let mut t = base();
+        t.y = -(bound + 1.0);
+        assert!(t.validate().is_err());
+    }
+}
+
 /// The per-token override whitelist for a linked token.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
