@@ -1474,9 +1474,7 @@ impl SceneEcs {
     /// sites forks ownership — a player could then move a token that contributes
     /// no vision, or see through one they cannot move.
     pub fn token_effective_owner(&self, token: &Document) -> Option<Uuid> {
-        let linked =
-            crate::data::permission::token_actor_link(token).and_then(|id| self.actors.get(&id));
-        crate::data::permission::effective_owner(token, linked)
+        crate::data::permission::effective_owner_via(token, &|id| self.actors.get(id))
     }
 
     /// Whether `user` effectively controls a token parented to `scene`. A pure document scan —

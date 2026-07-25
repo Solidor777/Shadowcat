@@ -71,6 +71,41 @@ pub fn effective_owner(doc: &Document, linked_actor: Option<&Document>) -> Optio
     actor.owner
 }
 
+/// `effective_owner` joined through a caller-supplied in-memory actor source
+/// (the room's `SceneEcs` actor table on the WS/HTTP write-read hot paths, or
+/// `|_| None` where no such table exists). Never queries the pool — the C1
+/// no-pool-query-on-hot-path property egress relies on.
+pub fn effective_owner_via<'a>(
+    doc: &Document,
+    actor_lookup: &impl Fn(&Uuid) -> Option<&'a Document>,
+) -> Option<Uuid> {
+    let linked = token_actor_link(doc).and_then(|l| actor_lookup(&l));
+    effective_owner(doc, linked)
+}
+
+/// Current documents for every `Update` op in `cmd`, keyed by `doc_id` (a
+/// missing key means the document was deleted or never existed, and the op
+/// is dropped by `filter_command`). Hoisted out of the redaction core so it
+/// can be awaited ONCE, before any scene-guard scope is entered — still one
+/// pool read per distinct Update doc per recipient (count-neutral vs. the
+/// prior per-op `repo.get_document` inside the loop).
+pub async fn load_update_docs(
+    repo: &dyn Repository,
+    cmd: &Command,
+) -> std::collections::HashMap<Uuid, Document> {
+    let mut out = std::collections::HashMap::new();
+    for op in &cmd.ops {
+        if let Operation::Update { doc_id, .. } = op {
+            if !out.contains_key(doc_id) {
+                if let Ok(Some(d)) = repo.get_document(*doc_id).await {
+                    out.insert(*doc_id, d);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The capability required to write a document field at `path`, or `None` when
 /// the path targets an immutable envelope field (not patchable via `Update`).
 pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
@@ -540,13 +575,18 @@ fn touches_permissions(path: &str) -> bool {
 /// preserved so the recipient's sequence guard never sees a false gap — a fully
 /// redacted command keeps its seq with empty ops.
 ///
-/// Async because `Update` ops carry only deltas, not the document's
-/// `PermissionSet`; the current doc is loaded per op to resolve visibility.
-pub async fn filter_command(
-    repo: &dyn Repository,
+/// `effective_owner_via` joined through a caller-supplied in-memory actor
+/// source — the C1 no-pool-query-on-hot-path property. Sync core: the loads
+/// this needs (`current`, the Update pre-images) are hoisted to
+/// `load_update_docs` and awaited by the caller BEFORE calling in, and the
+/// actor join reads an in-memory table (the room's `SceneEcs`, or `|_| None`
+/// where no actor table exists), never the pool.
+pub fn filter_command<'a>(
     cmd: &Command,
     ctx: &PermissionContext,
     world_defaults: &WorldCapDefaults,
+    current: &std::collections::HashMap<Uuid, Document>,
+    actor_lookup: impl Fn(&Uuid) -> Option<&'a Document>,
 ) -> Command {
     // `world_defaults` is passed in (loaded once per connection / request) rather
     // than fetched here: this runs per event per recipient on the egress hot
@@ -556,15 +596,13 @@ pub async fn filter_command(
     for op in &cmd.ops {
         match op {
             Operation::Create { doc } => {
-                // TODO: join the effective owner (linked-actor inheritance)
-                // here instead of the literal `doc.owner`, matching the
-                // write path.
+                let owner = effective_owner_via(doc, &actor_lookup);
                 let access = resolve_access_world(
                     ctx.user_id,
                     ctx.world_role,
                     doc,
                     &world_defaults.grants_for(&doc.doc_type),
-                    doc.owner,
+                    owner,
                 );
                 if access.has(cap::READ) {
                     out_ops.push(Operation::Create {
@@ -574,15 +612,13 @@ pub async fn filter_command(
             }
             Operation::Delete { doc } => {
                 // A delete is visible to anyone who could read the document.
-                // TODO: join the effective owner (linked-actor inheritance)
-                // here instead of the literal `doc.owner`, matching the
-                // write path.
+                let owner = effective_owner_via(doc, &actor_lookup);
                 let access = resolve_access_world(
                     ctx.user_id,
                     ctx.world_role,
                     doc,
                     &world_defaults.grants_for(&doc.doc_type),
-                    doc.owner,
+                    owner,
                 );
                 if access.has(cap::READ) {
                     out_ops.push(Operation::Delete {
@@ -591,18 +627,18 @@ pub async fn filter_command(
                 }
             }
             Operation::Update { doc_id, changes } => {
-                let Ok(Some(cur)) = repo.get_document(*doc_id).await else {
+                // Absent = deleted (or never existed) between commit and this
+                // recipient's redaction pass → drop, preserving today's semantics.
+                let Some(cur) = current.get(doc_id) else {
                     continue;
                 };
-                // TODO: join the effective owner (linked-actor inheritance)
-                // here instead of the literal `cur.owner`, matching the
-                // write path.
+                let owner = effective_owner_via(cur, &actor_lookup);
                 let access = resolve_access_world(
                     ctx.user_id,
                     ctx.world_role,
-                    &cur,
+                    cur,
                     &world_defaults.grants_for(&cur.doc_type),
-                    cur.owner,
+                    owner,
                 );
                 if !access.has(cap::READ) {
                     continue;
@@ -615,7 +651,7 @@ pub async fn filter_command(
                     // `/embedded/<child>/...` is redacted against the child's own
                     // overrides — not just the parent's. Matches filter_properties.
                     let mut hidden = Vec::new();
-                    collect_hidden(&cur, &access, "", &mut hidden);
+                    collect_hidden(cur, &access, "", &mut hidden);
                     let mut kept: Vec<FieldChange> = changes
                         .iter()
                         .filter_map(|ch| redact_change(ch, &hidden))
@@ -1192,12 +1228,17 @@ mod tests {
             }],
         };
 
+        let current = load_update_docs(&r, &cmd).await;
+
         // Non-owner, non-GM: the change is dropped entirely.
         let other = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let out_other = filter_command(&r, &cmd, &other, &WorldCapDefaults::default()).await;
+        let out_other =
+            filter_command(&cmd, &other, &WorldCapDefaults::default(), &current, |_| {
+                None
+            });
         let Operation::Update { changes, .. } = &out_other.ops[0] else {
             panic!("expected Update");
         };
@@ -1211,7 +1252,13 @@ mod tests {
             user_id: owner,
             world_role: WorldRole::Player,
         };
-        let out_owner = filter_command(&r, &cmd, &owner_ctx, &WorldCapDefaults::default()).await;
+        let out_owner = filter_command(
+            &cmd,
+            &owner_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Update { changes, .. } = &out_owner.ops[0] else {
             panic!("expected Update");
         };
@@ -1223,7 +1270,13 @@ mod tests {
         );
 
         // GM: passed through unchanged.
-        let out_gm = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
+        let out_gm = filter_command(
+            &cmd,
+            &gm_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Update { changes, .. } = &out_gm.ops[0] else {
             panic!("expected Update");
         };
@@ -1362,7 +1415,14 @@ mod tests {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let filtered = filter_command(&r, &cmd, &player, &WorldCapDefaults::default()).await;
+        let current = load_update_docs(&r, &cmd).await;
+        let filtered = filter_command(
+            &cmd,
+            &player,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Create { doc } = &filtered.ops[0] else {
             panic!("expected Create");
         };
@@ -1416,12 +1476,18 @@ mod tests {
             }],
         };
 
+        let current = load_update_docs(&r, &cmd).await;
         let player = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let filtered_for_player =
-            filter_command(&r, &cmd, &player, &WorldCapDefaults::default()).await;
+        let filtered_for_player = filter_command(
+            &cmd,
+            &player,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         assert!(
             filtered_for_player.ops.is_empty(),
             "a default:none secret region's Create op must be dropped entirely for a non-GM \
@@ -1432,7 +1498,13 @@ mod tests {
             user_id: gm,
             world_role: WorldRole::Gm,
         };
-        let filtered_for_gm = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
+        let filtered_for_gm = filter_command(
+            &cmd,
+            &gm_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         assert_eq!(
             filtered_for_gm.ops.len(),
             1,
@@ -1508,12 +1580,20 @@ mod tests {
             }],
         };
 
+        let current = load_update_docs(&r, &cmd).await;
+
         // Player sees the public change only; seq is preserved.
         let player = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let filtered = filter_command(&r, &cmd, &player, &WorldCapDefaults::default()).await;
+        let filtered = filter_command(
+            &cmd,
+            &player,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         assert_eq!(filtered.seq, 2);
         if let Operation::Update { changes, .. } = &filtered.ops[0] {
             assert_eq!(changes.len(), 1);
@@ -1523,7 +1603,13 @@ mod tests {
         }
 
         // GM sees both changes.
-        let gm_view = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
+        let gm_view = filter_command(
+            &cmd,
+            &gm_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         if let Operation::Update { changes, .. } = &gm_view.ops[0] {
             assert_eq!(changes.len(), 2);
         } else {
@@ -1594,12 +1680,16 @@ mod tests {
             }],
         };
 
+        let current = load_update_docs(&r, &cmd).await;
+
         // Non-owner player: keeps the permission change PLUS a null retraction of /system/name.
         let other = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let out = filter_command(&r, &cmd, &other, &WorldCapDefaults::default()).await;
+        let out = filter_command(&cmd, &other, &WorldCapDefaults::default(), &current, |_| {
+            None
+        });
         let Operation::Update { changes, .. } = &out.ops[0] else {
             panic!("expected Update");
         };
@@ -1615,14 +1705,26 @@ mod tests {
             user_id: owner,
             world_role: WorldRole::Player,
         };
-        let out_owner = filter_command(&r, &cmd, &owner_ctx, &WorldCapDefaults::default()).await;
+        let out_owner = filter_command(
+            &cmd,
+            &owner_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Update { changes, .. } = &out_owner.ops[0] else {
             panic!("expected Update");
         };
         assert!(!changes.iter().any(|c| c.path == "/system/name"));
 
         // GM: sees everything; no synthesized retraction.
-        let out_gm = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
+        let out_gm = filter_command(
+            &cmd,
+            &gm_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Update { changes, .. } = &out_gm.ops[0] else {
             panic!("expected Update");
         };
@@ -1699,12 +1801,16 @@ mod tests {
             }],
         };
 
+        let current = load_update_docs(&r, &cmd).await;
+
         // Non-owner player: the embedded name is retracted with a null pre-image.
         let other = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let out = filter_command(&r, &cmd, &other, &WorldCapDefaults::default()).await;
+        let out = filter_command(&cmd, &other, &WorldCapDefaults::default(), &current, |_| {
+            None
+        });
         let Operation::Update { changes, .. } = &out.ops[0] else {
             panic!("expected Update");
         };
@@ -1720,7 +1826,13 @@ mod tests {
             user_id: owner,
             world_role: WorldRole::Player,
         };
-        let out_owner = filter_command(&r, &cmd, &owner_ctx, &WorldCapDefaults::default()).await;
+        let out_owner = filter_command(
+            &cmd,
+            &owner_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Update { changes, .. } = &out_owner.ops[0] else {
             panic!("expected Update");
         };
@@ -1729,7 +1841,13 @@ mod tests {
             .any(|c| c.path == "/embedded/actor/0/system/name"));
 
         // GM: sees everything — no retraction.
-        let out_gm = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
+        let out_gm = filter_command(
+            &cmd,
+            &gm_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Update { changes, .. } = &out_gm.ops[0] else {
             panic!("expected Update");
         };
@@ -1819,11 +1937,18 @@ mod tests {
             }],
         };
 
+        let current = load_update_docs(&r, &cmd).await;
         let player = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let filtered = filter_command(&r, &cmd, &player, &WorldCapDefaults::default()).await;
+        let filtered = filter_command(
+            &cmd,
+            &player,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Update { changes, .. } = &filtered.ops[0] else {
             panic!("expected Update");
         };
@@ -1842,7 +1967,13 @@ mod tests {
         assert!(changes.iter().any(|c| c.path == "/system/public"));
 
         // GM sees all three unredacted.
-        let gm_view = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
+        let gm_view = filter_command(
+            &cmd,
+            &gm_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Update { changes, .. } = &gm_view.ops[0] else {
             panic!("expected Update");
         };
@@ -2057,11 +2188,18 @@ mod tests {
             }],
         };
 
+        let current = load_update_docs(&r, &cmd).await;
         let player = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let filtered = filter_command(&r, &cmd, &player, &WorldCapDefaults::default()).await;
+        let filtered = filter_command(
+            &cmd,
+            &player,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Update { changes, .. } = &filtered.ops[0] else {
             panic!("expected Update");
         };
@@ -2080,7 +2218,13 @@ mod tests {
         assert_eq!(public.new, serde_json::json!(40));
 
         // The GM sees every change unredacted.
-        let gm_view = filter_command(&r, &cmd, &gm_ctx, &WorldCapDefaults::default()).await;
+        let gm_view = filter_command(
+            &cmd,
+            &gm_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Update { changes, .. } = &gm_view.ops[0] else {
             panic!("expected Update");
         };
@@ -2332,6 +2476,179 @@ mod tests {
         assert!(
             !resolve_access_world(stranger, WorldRole::Player, &token, &world_grants, owner)
                 .has(cap::EDIT_PERMISSIONS)
+        );
+    }
+
+    // ---- C1: filter_command joins the effective owner (egress hot path) ----
+
+    #[tokio::test]
+    async fn filter_command_admits_the_inheriting_owner_of_a_linked_token() {
+        // token: permissions.default = None, owner = None, linked to an actor owned
+        // by P. Literal-owner egress treated P as a stranger (op dropped); the
+        // effective join must now deliver Create/Update/Delete AND OwnerOrGm-tier
+        // content to P, while a true stranger still receives nothing. This is C2:
+        // a document P can write (owner floor at apply_intent) is one P receives.
+        let p = Uuid::from_u128(1);
+        let stranger = Uuid::from_u128(2);
+        let actor_id = Uuid::from_u128(42);
+        let actor = actor_owned_by(actor_id, Some(p));
+        let mut token = token_linked_to(Some(actor_id));
+        token.permissions.default = DocRole::None;
+        token
+            .permissions
+            .property_overrides
+            .insert("/system/notes".into(), Visibility::OwnerOrGm);
+
+        let cmd = Command {
+            seq: 1,
+            world_id: Uuid::from_u128(7),
+            author: Uuid::from_u128(9),
+            ts: 0,
+            ops: vec![Operation::Create { doc: token.clone() }],
+        };
+        let lookup = |id: &Uuid| (id == &actor.id).then_some(&actor);
+        let current = std::collections::HashMap::new();
+
+        let p_ctx = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+        let out = filter_command(&cmd, &p_ctx, &WorldCapDefaults::default(), &current, lookup);
+        assert_eq!(
+            out.ops.len(),
+            1,
+            "inheriting owner must RECEIVE the create (C2)"
+        );
+
+        let s_ctx = PermissionContext {
+            user_id: stranger,
+            world_role: WorldRole::Player,
+        };
+        let out = filter_command(&cmd, &s_ctx, &WorldCapDefaults::default(), &current, lookup);
+        assert!(
+            out.ops.is_empty(),
+            "a stranger still receives nothing (fail closed)"
+        );
+
+        // Without the actor join (dangling source) the op is withheld even from P:
+        // degenerate input under-permits, never over-permits.
+        let out = filter_command(&cmd, &p_ctx, &WorldCapDefaults::default(), &current, |_| {
+            None
+        });
+        assert!(out.ops.is_empty());
+    }
+
+    #[tokio::test]
+    async fn filter_command_update_keeps_owner_or_gm_changes_for_the_inheriting_owner() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let p = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+
+        let mut actor = doc(PermissionSet::default(), serde_json::json!({}));
+        actor.id = Uuid::from_u128(42);
+        actor.scope = Scope::World { world_id: w.id };
+        actor.owner = Some(p);
+
+        let mut token = doc(
+            PermissionSet {
+                default: DocRole::None,
+                ..Default::default()
+            },
+            serde_json::json!({ "notes": "secret plan" }),
+        );
+        token.doc_type = "token".into();
+        token.id = Uuid::from_u128(100);
+        token.scope = Scope::World { world_id: w.id };
+        token.engine = Some(serde_json::json!({
+            "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0,
+            "actor_id": actor.id.to_string()
+        }));
+        token
+            .permissions
+            .property_overrides
+            .insert("/system/notes".into(), Visibility::OwnerOrGm);
+
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![
+                Operation::Create { doc: actor.clone() },
+                Operation::Create { doc: token.clone() },
+            ],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let cmd = Command {
+            seq: 2,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id: token.id,
+                changes: vec![
+                    FieldChange {
+                        remove: false,
+                        path: "/system/notes".into(),
+                        old: serde_json::json!("secret plan"),
+                        new: serde_json::json!("new plan"),
+                    },
+                    FieldChange {
+                        remove: false,
+                        path: "/base".into(),
+                        old: serde_json::Value::Null,
+                        new: serde_json::json!({ "system": { "notes": "template" } }),
+                    },
+                ],
+            }],
+        };
+
+        let p_ctx = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+        let current = load_update_docs(&r, &cmd).await;
+        let out = filter_command(&cmd, &p_ctx, &WorldCapDefaults::default(), &current, |id| {
+            (id == &actor.id).then_some(&actor)
+        });
+        let Operation::Update { changes, .. } = &out.ops[0] else {
+            panic!("expected Update");
+        };
+        assert_eq!(
+            changes.len(),
+            2,
+            "the inheriting owner keeps both the OwnerOrGm /system/notes change and /base"
+        );
+
+        let stranger_ctx = PermissionContext {
+            user_id: Uuid::from_u128(999),
+            world_role: WorldRole::Player,
+        };
+        let out = filter_command(
+            &cmd,
+            &stranger_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |id| (id == &actor.id).then_some(&actor),
+        );
+        assert!(
+            out.ops.is_empty(),
+            "a stranger receives no READ on a default:none token, even via the actor join"
         );
     }
 }

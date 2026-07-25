@@ -452,7 +452,11 @@ async fn write_ops(
         )
         .await?;
     let world_defaults = state.repo.world_cap_defaults(world).await?;
-    let filtered = filter_command(state.repo.as_ref(), &cmd, &ctx, &world_defaults).await;
+    let current = crate::data::permission::load_update_docs(state.repo.as_ref(), &cmd).await;
+    let filtered = {
+        let ecs = room.scene().read().await;
+        filter_command(&cmd, &ctx, &world_defaults, &current, |id| ecs.actor(id))
+    };
     Ok(Json(filtered))
 }
 
