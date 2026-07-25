@@ -522,6 +522,35 @@ impl SqliteRepository {
     /// didn't observe. Self-healing: explored is a re-derivable dimmed-memory layer (a dropped cell
     /// re-marks the next time vision covers it) and the live `visible` mask is always exact, so a
     /// transient loss never reveals more than it should — only delays a memory cell.
+    /// Delete a world and every row keyed to it, in one transaction. FK cascades
+    /// cover world_members/documents/world_events/assets/world_invites, and the
+    /// FTS AFTER DELETE triggers fire under cascade (pinned by test).
+    /// `explored_fog` and the per-world `settings` blobs have no FK and are
+    /// purged explicitly. Files on disk are the caller's concern — delete
+    /// ordering is rows-first, files-second (http/assets.rs delete convention).
+    pub async fn delete_world(&self, world: Uuid) -> Result<(), DataError> {
+        let mut tx = self.pool.begin().await?;
+        let res = sqlx::query("DELETE FROM worlds WHERE id = ?")
+            .bind(world.to_string())
+            .execute(&mut *tx)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(DataError::NotFound);
+        }
+        sqlx::query("DELETE FROM explored_fog WHERE world_id = ?")
+            .bind(world.to_string())
+            .execute(&mut *tx)
+            .await?;
+        for key in world_settings_keys(world) {
+            sqlx::query("DELETE FROM settings WHERE key = ?")
+                .bind(key)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn set_explored(
         &self,
         world: Uuid,
@@ -2340,6 +2369,20 @@ fn world_modules_key(world: Uuid) -> String {
     format!("world_modules:{world}")
 }
 
+/// The per-world `settings` keys. SINGLE SOURCE for "what world-scoped
+/// settings blobs exist": `delete_world`'s purge iterates this array, so a
+/// new per-world blob added here is purged automatically (never-fork; adding
+/// a sixth key fn without extending this array is the drift this prevents).
+fn world_settings_keys(world: Uuid) -> [String; 5] {
+    [
+        world_caps_key(world),
+        world_caps_req_key(world),
+        world_contracts_key(world),
+        world_schemas_key(world),
+        world_modules_key(world),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2609,6 +2652,154 @@ mod tests {
         assert_eq!(children[0].parent_id, Some(scene));
         // The scene itself has no parent, so it is not its own child.
         assert!(repo.query_children(token).await.unwrap().is_empty());
+    }
+
+    /// Seed `world` with one of every world-keyed row family: a member, a
+    /// scene doc + child token (⇒ documents, FTS rows, a world_events row),
+    /// an asset, an invite, an explored_fog row, and all five settings blobs.
+    /// Returns the scene id.
+    async fn seed_world_rows(repo: &SqliteRepository, world: Uuid, owner: Uuid) -> Uuid {
+        let scene = Uuid::new_v4();
+        let token = Uuid::new_v4();
+        let mk = |id, parent: Option<Uuid>, ty| {
+            let mut d = crate::data::document::tests::world_scoped_doc(world, id, ty);
+            d.parent_id = parent;
+            d.owner = Some(owner);
+            d.name = Some("Searchable alpha text".into());
+            Operation::Create { doc: d }
+        };
+        repo.apply_command(UnsequencedCommand {
+            world_id: world,
+            author: owner,
+            ts: 0,
+            ops: vec![mk(scene, None, "scene"), mk(token, Some(scene), "token")],
+        })
+        .await
+        .unwrap();
+        repo.insert_asset(&crate::data::asset::Asset {
+            id: Uuid::new_v4(),
+            world_id: world,
+            storage_key: format!("{world}/asset"),
+            original_name: "a.png".into(),
+            content_type: "image/png".into(),
+            byte_size: 4,
+            created_by: owner,
+            created_at: 0,
+            version: 1,
+        })
+        .await
+        .unwrap();
+        assert!(repo
+            .create_invite(
+                NewInvite {
+                    id: Uuid::new_v4(),
+                    world,
+                    secret_hash: "phc",
+                    role: WorldRole::Player,
+                    created_by: owner,
+                    now: 0,
+                    expires_at: i64::MAX,
+                },
+                10,
+            )
+            .await
+            .unwrap());
+        repo.set_explored(world, scene, owner, &[1, 0, 0, 0, 2, 0, 0, 0])
+            .await
+            .unwrap();
+        repo.set_world_cap_defaults(world, &WorldCapDefaults::default())
+            .await
+            .unwrap();
+        repo.set_world_cap_requirements(world, &[]).await.unwrap();
+        repo.set_world_contract_declarations(world, &[])
+            .await
+            .unwrap();
+        repo.set_world_schema_declarations(world, &[])
+            .await
+            .unwrap();
+        repo.set_world_enabled_modules(world, &[]).await.unwrap();
+        scene
+    }
+
+    /// COUNT(*) of rows in `table` whose `col` equals `bind`. Test-only
+    /// dynamic identifiers (values stay parameterized), hence `AssertSqlSafe`.
+    async fn count_where(repo: &SqliteRepository, table: &str, col: &str, bind: String) -> i64 {
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT COUNT(*) FROM {table} WHERE {col} = ?"
+        )))
+        .bind(bind)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn delete_world_removes_every_keyed_row() {
+        let repo = repo().await;
+        let u1 = repo
+            .create_user("u1", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let u2 = repo
+            .create_user("u2", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w1 = repo.create_world_owned("w1", u1, 0).await.unwrap().id;
+        let w2 = repo.create_world_owned("w2", u2, 0).await.unwrap().id;
+        repo.add_member(w1, u2, WorldRole::Player).await.unwrap();
+        seed_world_rows(&repo, w1, u1).await;
+        seed_world_rows(&repo, w2, u2).await;
+
+        repo.delete_world(w1).await.expect("delete w1");
+
+        // Every world-keyed family: w1 rows gone, w2 rows intact.
+        for (table, col, gone, kept) in [
+            ("worlds", "id", 0, 1),
+            ("world_members", "world_id", 0, 1),
+            ("documents", "world_id", 0, 2),
+            ("world_events", "world_id", 0, 1),
+            ("assets", "world_id", 0, 1),
+            ("world_invites", "world_id", 0, 1),
+            ("explored_fog", "world_id", 0, 1),
+            // THE PIN: the FTS AFTER DELETE triggers fired under the FK
+            // cascade on the bundled SQLite — no explicit FTS delete exists
+            // in delete_world's transaction.
+            ("documents_fts_public", "world_id", 0, 2),
+            ("documents_fts_gm", "world_id", 0, 2),
+        ] {
+            assert_eq!(
+                count_where(&repo, table, col, w1.to_string()).await,
+                gone,
+                "{table} rows for deleted w1"
+            );
+            assert_eq!(
+                count_where(&repo, table, col, w2.to_string()).await,
+                kept,
+                "{table} rows for surviving w2"
+            );
+        }
+        // The five FK-less settings blobs are purged for w1, kept for w2.
+        for (k1, k2) in [
+            (world_caps_key(w1), world_caps_key(w2)),
+            (world_caps_req_key(w1), world_caps_req_key(w2)),
+            (world_contracts_key(w1), world_contracts_key(w2)),
+            (world_schemas_key(w1), world_schemas_key(w2)),
+            (world_modules_key(w1), world_modules_key(w2)),
+        ] {
+            assert_eq!(count_where(&repo, "settings", "key", k1).await, 0);
+            assert_eq!(count_where(&repo, "settings", "key", k2).await, 1);
+        }
+        // The deleted world's users survive (only membership rows cascade).
+        assert!(repo.user_exists(u1).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn delete_world_not_found() {
+        let repo = repo().await;
+        assert!(matches!(
+            repo.delete_world(Uuid::new_v4()).await,
+            Err(DataError::NotFound)
+        ));
     }
 
     #[tokio::test]
