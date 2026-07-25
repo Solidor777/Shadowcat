@@ -9,7 +9,8 @@ use crate::dice::spec::{DieId, DieKind, Expr, RollSpec};
 /// prior `recalculate`) — ids are stable across recalculation. An id naming an
 /// explosion/penetrate child (never part of a group's base span, see
 /// `RawRoll::group_spans`), or any id not present in the current base set, is
-/// silently ignored rather than treated as an error.
+/// silently ignored rather than treated as an error, as is a `ReplaceDie` face
+/// index outside a `Faces` die's face list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecalcOp {
     /// Draw a fresh natural (via `rng`) for each targeted die.
@@ -62,7 +63,23 @@ pub fn recalculate(
             RecalcOp::ReplaceDie { id, natural } => {
                 for g in groups.iter_mut() {
                     if let Some(d) = g.iter_mut().find(|d| d.id == *id) {
-                        d.natural = *natural;
+                        match &d.kind {
+                            // A Faces natural is a face INDEX consumed by
+                            // `faces[natural as usize]` (eval::groups) — an
+                            // out-of-range index is ignored like an unknown
+                            // id, never written (it would panic at the
+                            // reader). Numeric naturals are deliberately
+                            // unbounded: out-of-domain replacement is the
+                            // GM-override semantic the round-trip test pins.
+                            DieKind::Faces { faces } => {
+                                if *natural >= 0 && (*natural as usize) < faces.len() {
+                                    d.natural = *natural;
+                                }
+                            }
+                            DieKind::Numeric { .. } => {
+                                d.natural = *natural;
+                            }
+                        }
                     }
                 }
             }
@@ -248,6 +265,77 @@ mod tests {
             out2.total, 6,
             "re-derived value reflects the new face's numeric value"
         );
+    }
+
+    #[test]
+    fn replace_die_out_of_range_index_on_faces_die_is_skipped() {
+        use crate::dice::spec::Face;
+        let faces = vec![
+            Face {
+                value: Some(1),
+                symbols: vec![],
+            },
+            Face {
+                value: Some(6),
+                symbols: vec![],
+            },
+        ];
+        let group = DiceGroup {
+            count: 1,
+            kind: DieKind::Faces {
+                faces: faces.clone(),
+            },
+            modifiers: vec![],
+            label: None,
+        };
+        let spec = RollSpec {
+            expr: Expr::Dice(group.clone()),
+            direction: Direction::HighWins,
+            mode: Mode::Total(TotalConfig {
+                difficulty: None,
+                tiers: vec![],
+            }),
+        };
+        let naturals = vec![RawDie {
+            id: 0,
+            kind: DieKind::Faces {
+                faces: faces.clone(),
+            },
+            natural: 0,
+        }];
+        let raws = RawRoll {
+            dice: naturals.clone(),
+            records: vec![],
+            next_id: 1,
+            group_spans: vec![(0, 1)],
+        };
+        let mut rng = ScriptedRng::new(vec![]);
+        // Index 2 is out of range for a 2-face die → op skipped, identity.
+        let (r1, out1) = recalculate(
+            &spec,
+            &raws,
+            &[RecalcOp::ReplaceDie { id: 0, natural: 2 }],
+            &mut rng,
+        );
+        assert_eq!(r1.dice[0].natural, 0, "out-of-range replace is ignored");
+        assert_eq!(out1.total, 1, "outcome unchanged");
+        // Negative index likewise (would wrap to a huge usize at the reader).
+        let (r2, _) = recalculate(
+            &spec,
+            &raws,
+            &[RecalcOp::ReplaceDie { id: 0, natural: -1 }],
+            &mut rng,
+        );
+        assert_eq!(r2.dice[0].natural, 0);
+        // A VALID index applies.
+        let (r3, out3) = recalculate(
+            &spec,
+            &raws,
+            &[RecalcOp::ReplaceDie { id: 0, natural: 1 }],
+            &mut rng,
+        );
+        assert_eq!(r3.dice[0].natural, 1);
+        assert_eq!(out3.total, 6);
     }
 
     #[test]
