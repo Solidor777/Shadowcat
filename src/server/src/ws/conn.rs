@@ -1330,6 +1330,19 @@ async fn egress_loop<S>(
                                     None => false, // suppressed: do not send
                                 }
                             }
+                            ServerMsg::Evicted { user } => {
+                                // Targeted eviction. Delivery of the frame is
+                                // best-effort; the Close and the `break` are the
+                                // point — the ingress loop tears the connection
+                                // down when this egress task exits.
+                                if user.is_none() || *user == Some(ctx.user_id) {
+                                    let _ = sink.send(text(msg.as_ref())).await;
+                                    let _ = sink.send(Message::Close(None)).await;
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
                             other => send_filtered(
                                 &mut sink,
                                 repo.as_ref(),

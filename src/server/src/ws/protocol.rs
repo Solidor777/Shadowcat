@@ -239,6 +239,13 @@ pub enum ServerMsg {
     Ping,
     /// A non-fatal or fatal error, by code.
     Error { code: WsErrorCode, message: String },
+    /// Terminal eviction notice: the recipient's world or account is being
+    /// deleted. `user: None` addresses every connection in the room (world
+    /// deletion); `Some(id)` addresses only that user's connections (account
+    /// deletion — broadcast to every room, non-targets skip it silently). The
+    /// egress loop delivers this frame, sends a protocol Close, and terminates
+    /// the connection; the client must treat it as terminal (no reconnect).
+    Evicted { user: Option<Uuid> },
     /// Results for the `Search` with this `request_id`. Documents are already
     /// filtered for the recipient. `next_cursor` is `None` when exhausted.
     SearchResult {

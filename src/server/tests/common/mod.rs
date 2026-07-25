@@ -23,6 +23,7 @@ pub struct Harness {
     pub user: Uuid,              // the seeded user's id
     pub world: Uuid,
     pub repo: Arc<SqliteRepository>,
+    pub ws: shadowcat::ws::WsState, // registry handle for room-level test drives
 }
 
 pub async fn spawn() -> Harness {
@@ -58,6 +59,7 @@ pub async fn spawn_with(mutate: impl FnOnce(&mut Config)) -> Harness {
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
     };
+    let ws_state = state.ws.clone();
     let app = http::router(state).await;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -94,6 +96,7 @@ pub async fn spawn_with(mutate: impl FnOnce(&mut Config)) -> Harness {
         user: uid,
         world: world.id,
         repo,
+        ws: ws_state,
     }
 }
 
