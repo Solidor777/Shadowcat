@@ -3,6 +3,7 @@
 // Constructed by the shell alongside `SheetsController`; imports no module.
 import {
   computePull, computeRevert, planToUpdate, applyResolutions, findInstances, syncState, stampInstance,
+  effectiveOwner,
   type WireDocument, type WireOperation, type StampOpts, type SyncState, type Logger,
   type DocumentStore, type ReadableDocuments, type MergePlan,
 } from "@shadowcat/core";
@@ -42,7 +43,10 @@ export class TemplatesController {
   }
 
   #isOwnerOrGm(doc: WireDocument): boolean {
-    return this.#deps.role === "gm" || doc.owner === this.#deps.selfId;
+    // Ownership is EFFECTIVE (core effectiveOwner: per-doc override, else the
+    // linked actor's owner) — the same rule the server now enforces at egress;
+    // a literal doc.owner read here forks it.
+    return this.#deps.role === "gm" || effectiveOwner(doc, this.#deps.documents) === this.#deps.selfId;
   }
 
   stampInstance(source: WireDocument, opts: StampOpts): WireDocument {

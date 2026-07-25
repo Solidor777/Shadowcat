@@ -53,6 +53,18 @@ optimistically and roll back on divergence.
 - `src/server/src/ws/protocol.rs` — client/server message frames; `ServerMsg`, `event_seq()`.
 - `src/server/src/ws/conn.rs` — per-connection loop + egress; `ws/time.rs` — server time source +
   client offset calibration (exists before its consumer, per ARCHITECTURE §2 invariant 2).
+  `send_filtered` (Phase C: now takes `room: &Room`, not just `repo`/`ctx`) is where per-recipient
+  redaction actually happens: only the `Event` branch carries document data, so only it is
+  redacted — every other frame (including `MoveStream`, clipped separately by `clip_move_stream`;
+  see the invariant below) passes through unredacted via `send_filtered`. The `Event` branch's
+  shape: `load_update_docs` awaits the Update pre-images ONCE, before any lock is taken (no lock
+  across await); then a short `room.scene()` read guard wraps ONLY the synchronous
+  `permission::filter_command(command, ctx, world_defaults, &current, |id| ecs.actor(id))` call —
+  the room's in-memory `SceneEcs` actor table is the egress-side owner join, so this never touches
+  the pool (the same short-read-guard discipline `clip_move_stream` uses for vision). See
+  `shadowcat-codebase-documents-permissions` for `filter_command`'s own internals and the other two
+  owner-join sources (`list_documents`'s batched prefetch, `effective_owner_of` on single-doc
+  routes/search).
 - `src/server/src/http/{routes.rs,mod.rs}` — HTTP routes (login, assets, embed).
 - `src/server/src/auth/session.rs` — `SqlxSqliteStore` (DB-backed sessions), `spawn_session_sweep`
   (also GCs `world_invites` rows via `DELETE FROM world_invites WHERE expires_at <= ?`, bound to

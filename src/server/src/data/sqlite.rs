@@ -16,7 +16,7 @@ use crate::data::engine::{
 };
 use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
-    resolve_access_world, resolve_access_world_with_owner, Access,
+    resolve_access_world, Access,
 };
 use crate::data::repository::Repository;
 use crate::data::validation;
@@ -1190,16 +1190,13 @@ impl SqliteRepository {
             return Ok(crate::data::permission::effective_owner(doc, None));
         };
         // A dangling link loads `None` and `effective_owner` fails closed to no owner.
-        let actor = Self::load_document(executor, actor_id).await?;
+        //
         // `load_document` is keyed on id alone (no `world_id` filter), so a cross-world
-        // `actor_id` would otherwise resolve — every other `load_document` in
-        // `apply_intent` is paired with `check_command_scope` for the same reason (a GM
-        // of one world must not reach another world's document). Discarding a
-        // scope-mismatched actor also keeps this join's reachable set equal to
-        // `SceneEcs::self.actors` BY CONSTRUCTION: room hydration loads actors
-        // `WHERE world_id = ?`, so without this the write path could resolve an owner
-        // the derived vision path structurally cannot — a second ECS/DB ownership fork.
-        let actor = actor.filter(|a| a.scope == doc.scope);
+        // `actor_id` would otherwise resolve. The scope check that used to live here is
+        // now inside `permission::effective_owner` itself — see that function's doc
+        // comment for the rationale (keeps the reachable set equal to `SceneEcs.actors`
+        // by construction).
+        let actor = Self::load_document(executor, actor_id).await?;
         Ok(crate::data::permission::effective_owner(
             doc,
             actor.as_ref(),
@@ -1732,7 +1729,7 @@ impl Repository for SqliteRepository {
                         }
                     }
                     let create_owner = Self::load_effective_owner(&mut *tx, doc).await?;
-                    let access = resolve_access_world_with_owner(
+                    let access = resolve_access_world(
                         ctx.user_id,
                         ctx.world_role,
                         doc,
@@ -1828,7 +1825,7 @@ impl Repository for SqliteRepository {
                     // a GM of one world cannot delete another world's document.
                     check_command_scope(&cur, world_id)?;
                     let del_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
-                    if !resolve_access_world_with_owner(
+                    if !resolve_access_world(
                         ctx.user_id,
                         ctx.world_role,
                         &cur,
@@ -1918,7 +1915,7 @@ impl Repository for SqliteRepository {
                         // Effective owner joined from the LIVE linked actor inside this
                         // transaction — a linked token's owner is never stored on the token.
                         let upd_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
-                        resolve_access_world_with_owner(
+                        resolve_access_world(
                             ctx.user_id,
                             ctx.world_role,
                             &cur,
@@ -1997,7 +1994,7 @@ impl Repository for SqliteRepository {
                         })?;
                         check_command_scope(&cur, world_id)?;
                         let desc_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
-                        if !resolve_access_world_with_owner(
+                        if !resolve_access_world(
                             ctx.user_id,
                             ctx.world_role,
                             &cur,
@@ -2156,6 +2153,10 @@ impl Repository for SqliteRepository {
             )?)),
             None => Ok(None),
         }
+    }
+
+    async fn effective_owner_of(&self, doc: &Document) -> Result<Option<Uuid>, DataError> {
+        Self::load_effective_owner(&self.pool, doc).await
     }
 
     async fn query_documents(
@@ -2438,11 +2439,15 @@ impl Repository for SqliteRepository {
                 let Some(doc) = self.get_document(doc_id).await? else {
                     continue;
                 };
+                // One extra pool read per linked-token candidate, bounded by
+                // `MAX_SCAN`; the ws hot path never enters here.
+                let owner = Self::load_effective_owner(&self.pool, &doc).await?;
                 let access = resolve_access_world(
                     ctx.user_id,
                     ctx.world_role,
                     &doc,
                     &world_defaults.grants_for(&doc.doc_type),
+                    owner,
                 );
                 if !access.has(cap::READ) {
                     continue;
@@ -5259,6 +5264,93 @@ mod tests {
         let gm_probe = r.search(&gm_ctx, w.id, "weakness", 10, None).await.unwrap();
         assert_eq!(gm_probe.hits.len(), 1);
         assert_eq!(gm_probe.hits[0].document.id, sheet.id);
+    }
+
+    #[tokio::test]
+    async fn search_admits_the_inheriting_owner_of_a_default_none_linked_token() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::Operation;
+        use crate::data::document::{DocRole, PermissionSet};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let owner = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let stranger = r
+            .create_user("st", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let owner_ctx = PermissionContext {
+            user_id: owner,
+            world_role: WorldRole::Player,
+        };
+        let stranger_ctx = PermissionContext {
+            user_id: stranger,
+            world_role: WorldRole::Player,
+        };
+
+        // Actor owned by `owner`.
+        let actor = actor_doc_owned_by(w.id, Some(owner));
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: actor.clone() }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // Linked token, no literal owner, `default: None` — the literal-owner
+        // egress path would deny both the owner and the stranger; only the
+        // effective (linked-actor) owner may read it.
+        let mut token = owned_token_doc(w.id, Some(actor.id));
+        token.permissions = PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        };
+        token.system = serde_json::json!({ "label": "Wizard" });
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: token.clone() }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let owner_page = r
+            .search(&owner_ctx, w.id, "wizard", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            owner_page.hits.len(),
+            1,
+            "inheriting owner must see the default-none linked token in search"
+        );
+        assert_eq!(owner_page.hits[0].document.id, token.id);
+
+        let stranger_page = r
+            .search(&stranger_ctx, w.id, "wizard", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            stranger_page.hits.len(),
+            0,
+            "a non-owner must never see a default-none token in search"
+        );
     }
 
     #[tokio::test]
@@ -8114,6 +8206,31 @@ mod tests {
         try_move(&r, w, p1, token.id, (0.0, 0.0), (1.0, 2.0), 3)
             .await
             .expect("the effective owner still holds WRITE_FIELDS");
+    }
+
+    #[tokio::test]
+    async fn effective_owner_of_joins_the_linked_actor_on_the_pool() {
+        let (r, gm, w, p1, _p2) = ownership_fixture().await;
+        let actor = actor_doc_owned_by(w, Some(p1));
+        let actor_id = actor.id;
+        let token = owned_token_doc(w, Some(actor_id));
+        let token_id = token.id;
+        gm_create(&r, gm, w, vec![actor, token], 1).await;
+
+        let token = r.get_document(token_id).await.unwrap().unwrap();
+        assert_eq!(r.effective_owner_of(&token).await.unwrap(), Some(p1));
+
+        // Dangling link fails closed.
+        let mut dangling = token.clone();
+        dangling.engine = Some(serde_json::json!({
+            "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0,
+            "actor_id": Uuid::from_u128(999999).to_string()
+        }));
+        assert_eq!(r.effective_owner_of(&dangling).await.unwrap(), None);
+
+        // A non-token resolves to its literal owner without any join.
+        let actor = r.get_document(actor_id).await.unwrap().unwrap();
+        assert_eq!(r.effective_owner_of(&actor).await.unwrap(), Some(p1));
     }
 
     #[tokio::test]

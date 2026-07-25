@@ -144,4 +144,26 @@ describe("TemplatesController", () => {
     const { ctrl } = make([tmpl, a]);
     expect(ctrl.findInstances("T").map((d) => d.id)).toEqual(["A"]);
   });
+
+  it("treats the inheriting owner of a linked token as owner for template controls", () => {
+    // token instance: owner null, engine.actor_id -> actor owned by self.
+    // Literal doc.owner gate hid pull; the effectiveOwner mirror must show it.
+    const tmpl = doc({ id: "T", doc_type: "actor" });
+    const actor = doc({ id: "ACT", doc_type: "actor", owner: "u-self" });
+    const token = doc({
+      id: "TOK", doc_type: "token", owner: null,
+      engine: { actor_id: "ACT" }, source: { id: "T", pack: null, version: 1 },
+    });
+    const store = new DocumentStore();
+    store.applyCommand({
+      seq: 1, world_id: "w1", author: "a", ts: 0,
+      ops: [tmpl, actor, token].map((d) => ({ op: "create", doc: d } as WireOperation)),
+    });
+    const ctrl = new TemplatesController({
+      store, documents: store, dispatchIntent: () => {},
+      role: "player", selfId: "u-self",
+      canEdit: () => true, logger: silentLogger,
+    });
+    expect(ctrl.canPull("TOK")).toBe(true);
+  });
 });

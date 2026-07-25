@@ -2138,6 +2138,107 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn read_routes_admit_the_inheriting_owner_of_a_default_none_token() {
+        let state = initialized_state().await;
+        seed_user(&state, "gm").await;
+        let p_id = seed_user(&state, "pl").await;
+        let _st_id = seed_user(&state, "st").await;
+        let gm = login_server(&state, "gm").await;
+        let pl = login_server(&state, "pl").await;
+        let st = login_server(&state, "st").await;
+
+        let world: serde_json::Value = gm
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": "W" }))
+            .await
+            .json();
+        let world_id = world["id"].as_str().unwrap().to_string();
+        gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": p_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        gm.post(&format!("/api/worlds/{world_id}/members"))
+            .json(&serde_json::json!({ "user": _st_id, "role": "player" }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // Actor owned by the player.
+        let actor_id = Uuid::from_u128(501);
+        let actor = serde_json::json!({
+            "id": actor_id,
+            "scope": { "kind": "world", "world_id": world_id },
+            "doc_type": "actor",
+            "schema_version": 1,
+            "owner": p_id,
+            "permissions": { "default": "observer", "users": {}, "property_overrides": {} },
+            "engine": {
+                "displayName": "Test",
+                "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 },
+                "shape": "square",
+                "faction": null,
+                "conditions": [],
+                "prototype": true
+            },
+            "system": {},
+            "created_at": 0,
+            "updated_at": 0,
+        });
+        gm.post(&format!("/api/worlds/{world_id}/documents"))
+            .json(&actor)
+            .await
+            .assert_status_ok();
+
+        // Token linked to the actor: no literal owner, default `none`, an
+        // `owner_or_gm` property override on `/system/notes`.
+        let token_id = Uuid::from_u128(502);
+        let token = serde_json::json!({
+            "id": token_id,
+            "scope": { "kind": "world", "world_id": world_id },
+            "doc_type": "token",
+            "schema_version": 1,
+            "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": { "/system/notes": "owner_or_gm" }
+            },
+            "engine": {
+                "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0,
+                "actor_id": actor_id
+            },
+            "system": { "notes": "secret", "label": "pub" },
+            "created_at": 0,
+            "updated_at": 0,
+        });
+        gm.post(&format!("/api/worlds/{world_id}/documents"))
+            .json(&token)
+            .await
+            .assert_status_ok();
+
+        // The inheriting owner READS it via the linked actor's ownership...
+        let got: serde_json::Value = pl.get(&format!("/api/documents/{token_id}")).await.json();
+        assert_eq!(
+            got["system"]["notes"], "secret",
+            "OwnerOrGm tier visible to inheriting owner"
+        );
+        // ...the stranger gets a uniform 404 (existence hiding preserved)...
+        st.get(&format!("/api/documents/{token_id}"))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+        // ...and the list route agrees.
+        let listed: serde_json::Value = pl
+            .get(&format!("/api/worlds/{world_id}/documents?type=token"))
+            .await
+            .json();
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        let listed_s: serde_json::Value = st
+            .get(&format!("/api/worlds/{world_id}/documents?type=token"))
+            .await
+            .json();
+        assert!(listed_s.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn world_capability_defaults_enable_owner_embedded() {
         let state = initialized_state().await;
         seed_user(&state, "gm").await;

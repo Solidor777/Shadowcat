@@ -1394,10 +1394,14 @@ impl SceneEcs {
                     .get("/engine")
                     .copied()
                     .unwrap_or(crate::data::document::Visibility::All);
+                // A region doc never carries an actor link, so the no-join
+                // resolution is exact — and fails closed if a non-region doc
+                // ever reached here.
                 let access = crate::data::permission::resolve_access(
                     user,
                     crate::data::document::WorldRole::Player,
                     doc,
+                    crate::data::permission::effective_owner(doc, None),
                 );
                 if !access.can_see(tier) {
                     continue;
@@ -1470,9 +1474,7 @@ impl SceneEcs {
     /// sites forks ownership — a player could then move a token that contributes
     /// no vision, or see through one they cannot move.
     pub fn token_effective_owner(&self, token: &Document) -> Option<Uuid> {
-        let linked =
-            crate::data::permission::token_actor_link(token).and_then(|id| self.actors.get(&id));
-        crate::data::permission::effective_owner(token, linked)
+        crate::data::permission::effective_owner_via(token, &|id| self.actors.get(id))
     }
 
     /// Whether `user` effectively controls a token parented to `scene`. A pure document scan —

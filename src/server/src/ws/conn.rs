@@ -24,7 +24,6 @@ use crate::auth::session::AuthUser;
 use crate::data::command::WriteOrigin;
 use crate::data::document::WorldCapDefaults;
 use crate::data::membership::PermissionContext;
-use crate::data::permission::filter_command;
 use crate::data::repository::Repository;
 use crate::data::sqlite::SqliteRepository;
 use crate::http::AppState;
@@ -139,6 +138,7 @@ fn reject_reason(e: &crate::data::DataError) -> RejectReason {
 async fn send_filtered<S>(
     sink: &mut S,
     repo: &dyn Repository,
+    room: &Room,
     ctx: &PermissionContext,
     world_defaults: &WorldCapDefaults,
     msg: &ServerMsg,
@@ -147,10 +147,26 @@ where
     S: Sink<Message> + Unpin,
 {
     let out = match msg {
-        ServerMsg::Event { command, intent_id } => ServerMsg::Event {
-            command: filter_command(repo, command, ctx, world_defaults).await,
-            intent_id: *intent_id,
-        },
+        ServerMsg::Event { command, intent_id } => {
+            // Loads complete BEFORE the guard: no lock across await. The guard is
+            // held only around the synchronous core — the same short-read-guard
+            // discipline as clip_move_stream.
+            let current = crate::data::permission::load_update_docs(repo, command).await;
+            let filtered = {
+                let ecs = room.scene().read().await;
+                crate::data::permission::filter_command(
+                    command,
+                    ctx,
+                    world_defaults,
+                    &current,
+                    |id| ecs.actor(id),
+                )
+            };
+            ServerMsg::Event {
+                command: filtered,
+                intent_id: *intent_id,
+            }
+        }
         other => {
             // MoveStream carries per-recipient position geometry and MUST be clipped
             // through `clip_move_stream` in the egress loop, never passed through here
@@ -532,11 +548,14 @@ async fn scene_ping_permitted(
     let Ok(defaults) = repo.world_cap_defaults(world_id).await else {
         return false;
     };
+    // A scene doc never carries an actor link, so the no-join resolution is
+    // exact — and fails closed if a non-scene doc ever reached here.
     let access = crate::data::permission::resolve_access_world(
         ctx.user_id,
         ctx.world_role,
         &doc,
         &defaults.grants_for(&doc.doc_type),
+        crate::data::permission::effective_owner(&doc, None),
     );
     access.has(crate::data::permission::cap::READ)
 }
@@ -1163,7 +1182,7 @@ async fn egress_loop<S>(
         tokio::select! {
             cmd = erx.recv() => match cmd {
                 Some(Egress::Frame(f)) => {
-                    if send_filtered(&mut sink, repo.as_ref(), &ctx, &world_defaults, f.as_ref()).await.is_err() { break; }
+                    if send_filtered(&mut sink, repo.as_ref(), &room, &ctx, &world_defaults, f.as_ref()).await.is_err() { break; }
                 }
                 Some(Egress::TimePong { client_t0, server_t }) => {
                     if sink.send(text(&ServerMsg::TimePong { client_t0, server_t })).await.is_err() { break; }
@@ -1283,7 +1302,7 @@ async fn egress_loop<S>(
                             }
                             if seq < next_expected { continue; }
                         }
-                        if send_filtered(&mut sink, repo.as_ref(), &ctx, &world_defaults, msg.as_ref()).await.is_err() { break; }
+                        if send_filtered(&mut sink, repo.as_ref(), &room, &ctx, &world_defaults, msg.as_ref()).await.is_err() { break; }
                         next_expected = seq + 1;
                         // A world change may affect live subscriptions. Arm the
                         // coalescing window on the LEADING edge only: re-arming
@@ -1346,6 +1365,7 @@ async fn egress_loop<S>(
                             other => send_filtered(
                                 &mut sink,
                                 repo.as_ref(),
+                                &room,
                                 &ctx,
                                 &world_defaults,
                                 other,
@@ -1484,7 +1504,7 @@ where
     .map_err(|_| ())?;
     // Replayed events are redacted per recipient, identically to live delivery.
     for f in frames {
-        send_filtered(sink, repo, ctx, world_defaults, f.as_ref()).await?;
+        send_filtered(sink, repo, room, ctx, world_defaults, f.as_ref()).await?;
     }
     sink.send(text(&ServerMsg::ResyncEnd {
         current_seq: to_seq,

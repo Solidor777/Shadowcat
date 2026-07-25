@@ -79,14 +79,31 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   `by_role[Owner]` grants. **State the precedence rule exactly ONCE** — duplicating it via a
   short-circuit in the DB join let an inverted-precedence mutation survive. Full rule, the
   fail-closed list, and the instanced-token exclusion: `shadowcat-codebase-actors-tokens`.
-  **The EGRESS half is this skill's own territory and is a KNOWN under-permit:**
-  `filter_properties` / `collect_hidden` / `filter_command` and the document routes still resolve
-  `is_owner` from the LITERAL `doc.owner`, so an inheriting owner can move a token and see through
-  it while counting as a stranger for its `owner_or_gm` tiers and `/base`. Under-permit BY
-  CONSTRUCTION, and the reason is subset-ness, not call ordering: literal `is_owner` is
-  `doc.owner == user`, while the effective rule adds the linked-actor case ONLY when `doc.owner` is
-  `None` — so the literal set is a strict SUBSET of the effective set and can never be the more
-  permissive of the two. Logged in `docs/TODO.md`.
+  **Egress ownership is unified with write ownership (Phase C).** Every egress site resolves
+  `is_owner` through the same `effective_owner`/`effective_owner_via` rule the write path uses —
+  the owner is now an EXPLICIT parameter of `resolve_access`/`resolve_access_world`
+  (`effective_owner: Option<Uuid>`), not read internally from `doc.owner`; the old literal-owner
+  wrapper functions are gone, so a new egress call site must state where its owner comes from or
+  it fails to compile. Three join sources, one per hot-path shape:
+  - **WS hot path** (`send_filtered`'s `Event` branch, `ws/conn.rs`; `write_ops`'s HTTP-write
+    receive, `http/routes.rs`) — `filter_command` (`data/permission.rs`) is a SYNC core over
+    `load_update_docs` (Update pre-images, awaited ONCE per event before the sync core runs — no
+    lock held across that await) and an `actor_lookup` closure backed by the room's in-memory
+    `SceneEcs` actor table (`|id| ecs.actor(id)`). No pool read on this path at all — the join is
+    entirely in-memory, preserving the C1 no-pool-query-on-the-hot-path property. The scene read
+    guard around `filter_command` itself is short (sync core, no await inside it), the same
+    discipline `clip_move_stream` uses.
+  - **`list_documents`** (`http/routes.rs`) — one batched `query_documents(world, "actor")` fetch
+    up front when listing tokens, folded into a `HashMap<Uuid, Document>` and joined in-memory via
+    `effective_owner_via` per doc; every other `doc_type` never triggers the actor query
+    (`token_actor_link` returns `None`, so the map goes unused).
+  - **Single-doc routes and search** (`get_document`, `search`'s per-hit gate) —
+    `Repository::effective_owner_of` (`effective_owner_of` on the trait, `load_effective_owner` in
+    `sqlite.rs`), one pool-backed join per document, bounded by `MAX_SCAN` on the search path.
+  The scope check (rejecting an `actor_id` link that resolves to a document of the wrong type or a
+  different `Scope`) lives INSIDE `effective_owner` itself (`data/permission.rs`), not duplicated
+  at any join site — every join source above calls the one function, so the reachable owner set is
+  identical regardless of which source resolved it.
 - **`command::apply_field_change(v, ch)` is THE store-equal mutation rule — every store of document
   state, authoritative or derived, applies a `FieldChange` through it. Never hand-write a
   `remove`/`set` branch.** One function, one statement of the rule, repo-wide (client mirror:

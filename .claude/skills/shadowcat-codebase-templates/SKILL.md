@@ -102,10 +102,13 @@ interprets or merges anything itself.
   (`pending: PendingSession | null`, a `$state` the `TemplateModalHost` renders) when a plan has
   conflicts, and dispatches the resolved `WireOperation` via the injected `dispatchIntent`.
   Methods: `stampInstance`, `findInstances`, `syncState`, `canPull`, `canPush`, `pull`, `push`,
-  `revert`, `cancel`. `canPull(childId)` gates on `isOwnerOrGm(child)` (`role === "gm" ||
-  doc.owner === selfId`) AND the injected `canEdit(child, "/base")` AND `canEdit(child,
-  "/system")` (an advisory client-side mirror of the server's real authority). `canPush
-  (templateId)` gates only on `isOwnerOrGm(template)` AND `findInstances(templateId).length > 0`
+  `revert`, `cancel`. `canPull(childId)` gates on the private `#isOwnerOrGm(child)` (`role ===
+  "gm" || effectiveOwner(child, documents) === selfId` — `effectiveOwner` from
+  `@shadowcat/core`'s `actor.ts`, the SAME per-doc-override-else-linked-actor-owner rule the
+  server now resolves at egress (Phase C); a literal `doc.owner` read here would fork it) AND the
+  injected `canEdit(child, "/base")` AND `canEdit(child, "/system")` (an advisory client-side
+  mirror of the server's real authority). `canPush (templateId)` gates only on
+  `#isOwnerOrGm(template)` AND `findInstances(templateId).length > 0`
   — it does NOT call `canEdit` at the predicate level. `push` itself DOES per-instance-filter by
   `canEdit(inst, "/base")`/`canEdit(inst, "/system")` when actually pushing, additionally
   filtering `findInstances`' same-world result before splitting into dispatch-now (no conflicts)

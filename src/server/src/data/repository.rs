@@ -45,6 +45,13 @@ pub trait Repository: Send + Sync {
 
     async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DataError>;
 
+    /// Resolve `doc`'s effective owner against LIVE actor state — the same
+    /// `permission::effective_owner` rule the write path enforces, joining the
+    /// linked actor with one pool read when `doc` is a linked token. For egress
+    /// read routes and search; the ws broadcast hot path joins through the room's
+    /// in-memory actor table instead (zero pool reads per recipient).
+    async fn effective_owner_of(&self, doc: &Document) -> Result<Option<Uuid>, DataError>;
+
     async fn query_documents(
         &self,
         world_id: Uuid,
