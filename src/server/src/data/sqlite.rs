@@ -876,6 +876,47 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// Add a member or change an existing member's role — resolve, guard, and
+    /// write in ONE transaction (a standalone user_exists → member_role →
+    /// set_role/add_member sequence is a TOCTOU: a user deleted between the
+    /// check and the insert resurfaces the FK 500 the 404 contract exists to
+    /// prevent). The guarded INSERT..SELECT proves user AND world existence
+    /// atomically with the upsert: rows_affected == 0 ⇔ target user or world
+    /// missing → NotFound. The sole-GM demotion guard runs on the same tx.
+    pub async fn upsert_member(
+        &self,
+        world: Uuid,
+        user: Uuid,
+        role: WorldRole,
+    ) -> Result<(), DataError> {
+        let mut tx = self.pool.begin().await?;
+        if role != WorldRole::Gm && Self::is_last_gm(&mut tx, world, user).await? {
+            return Err(DataError::Conflict(
+                "cannot demote the world's only GM".into(),
+            ));
+        }
+        let role_s = serde_json::to_value(role)?.as_str().unwrap().to_string();
+        let res = sqlx::query(
+            "INSERT INTO world_members (world_id, user_id, role) \
+             SELECT ?, ?, ? \
+             WHERE EXISTS (SELECT 1 FROM users WHERE id = ?) \
+               AND EXISTS (SELECT 1 FROM worlds WHERE id = ?) \
+             ON CONFLICT(world_id, user_id) DO UPDATE SET role = excluded.role",
+        )
+        .bind(world.to_string())
+        .bind(user.to_string())
+        .bind(role_s)
+        .bind(user.to_string())
+        .bind(world.to_string())
+        .execute(&mut *tx)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Err(DataError::NotFound);
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn member_role(
         &self,
         world_id: Uuid,
@@ -3122,6 +3163,60 @@ mod tests {
         let repo = repo().await;
         assert!(matches!(
             repo.delete_world(Uuid::new_v4()).await,
+            Err(DataError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn upsert_member_inserts_updates_and_guards() {
+        let repo = repo().await;
+        let gm = repo
+            .create_user("gm", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let p = repo
+            .create_user("p", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("w", gm, 0).await.unwrap().id;
+
+        // New member insert.
+        repo.upsert_member(w, p, WorldRole::Player).await.unwrap();
+        assert_eq!(
+            repo.member_role(w, p).await.unwrap(),
+            Some(WorldRole::Player)
+        );
+        // Same call with a different role updates in place (upsert).
+        repo.upsert_member(w, p, WorldRole::Spectator)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.member_role(w, p).await.unwrap(),
+            Some(WorldRole::Spectator)
+        );
+        // Demoting the world's ONLY GM → Conflict.
+        match repo.upsert_member(w, gm, WorldRole::Player).await {
+            Err(DataError::Conflict(m)) => {
+                assert_eq!(m, "cannot demote the world's only GM")
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+        // With a second GM promoted, demoting the first succeeds.
+        repo.upsert_member(w, p, WorldRole::Gm).await.unwrap();
+        repo.upsert_member(w, gm, WorldRole::Player).await.unwrap();
+        assert_eq!(
+            repo.member_role(w, gm).await.unwrap(),
+            Some(WorldRole::Player)
+        );
+        // Unknown user or unknown world → NotFound, never an FK 500.
+        assert!(matches!(
+            repo.upsert_member(w, Uuid::new_v4(), WorldRole::Player)
+                .await,
+            Err(DataError::NotFound)
+        ));
+        assert!(matches!(
+            repo.upsert_member(Uuid::new_v4(), p, WorldRole::Player)
+                .await,
             Err(DataError::NotFound)
         ));
     }

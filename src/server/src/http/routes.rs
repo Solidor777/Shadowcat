@@ -610,6 +610,10 @@ pub struct AddMemberRequest {
 }
 
 /// Add a member or change an existing member's role (idempotent upsert).
+/// `world_members.user_id` is a foreign key, so an unknown target must reject
+/// as a 404 rather than surfacing as a constraint violation (a 500) —
+/// `upsert_member` proves existence atomically with the write, so a user
+/// deleted mid-request cannot resurface the FK path.
 pub async fn add_member(
     user: AuthUser,
     State(state): State<AppState>,
@@ -617,18 +621,10 @@ pub async fn add_member(
     Json(body): Json<AddMemberRequest>,
 ) -> Result<StatusCode, AppError> {
     require_gm(&state, &user, world).await?;
-    // `world_members.user_id` is a foreign key, so an unknown target must be
-    // rejected here as a 404 rather than surfacing as a constraint violation
-    // (a 500).
-    let target = body.user;
-    if !state.repo.user_exists(target).await? {
-        return Err(AppError::NotFound);
-    }
-    if state.repo.member_role(world, target).await?.is_some() {
-        state.repo.set_role(world, target, body.role).await?;
-    } else {
-        state.repo.add_member(world, target, body.role).await?;
-    }
+    state
+        .repo
+        .upsert_member(world, body.user, body.role)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
