@@ -317,6 +317,82 @@ impl SqliteRepository {
         Ok(n <= 1)
     }
 
+    /// Whether `user` is the server's sole administrator, evaluated on the
+    /// supplied tx connection for the same TOCTOU reason as `is_last_gm`: the
+    /// count check and the delete must be one atomic unit on the single-writer
+    /// pool, or two concurrent deletes could each pass the check.
+    async fn is_last_admin(tx: &mut sqlx::SqliteConnection, user: Uuid) -> Result<bool, DataError> {
+        let target: Option<String> =
+            sqlx::query_scalar("SELECT server_role FROM users WHERE id = ?")
+                .bind(user.to_string())
+                .fetch_optional(&mut *tx)
+                .await?;
+        if target.as_deref() != Some(crate::auth::role::ServerRole::Admin.as_str()) {
+            return Ok(false);
+        }
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE server_role = ?")
+            .bind(crate::auth::role::ServerRole::Admin.as_str())
+            .fetch_one(&mut *tx)
+            .await?;
+        Ok(n <= 1)
+    }
+
+    /// Delete a user account and everything keyed to it, in one transaction:
+    /// memberships CASCADE; documents.owner_id / world_events.author_id /
+    /// world_invites.{created_by,consumed_by} SET NULL; assets.created_by SET
+    /// NULL (0011); each owned document's JSON-body `owner` is nulled in
+    /// lockstep with its column; explored_fog rows (no FK; unindexed scan —
+    /// rare admin op) and live sessions are purged explicitly. Sessions MUST die in this same
+    /// transaction: `AuthUser` trusts the session record without re-reading
+    /// `users`, so a surviving row keeps a deleted account authenticated until
+    /// cookie expiry. Refuses to delete the last administrator.
+    /// Implicit coupling: `tower_sessions` is created by `SqlxSqliteStore::
+    /// migrate` at boot (main.rs), before any route can reach this; repo-level
+    /// tests must run that migrate themselves.
+    pub async fn delete_user(&self, target: Uuid) -> Result<(), DataError> {
+        let mut tx = self.pool.begin().await?;
+        if Self::is_last_admin(&mut tx, target).await? {
+            return Err(DataError::Conflict(
+                "cannot delete the server's only administrator".into(),
+            ));
+        }
+        let res = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(target.to_string())
+            .execute(&mut *tx)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(DataError::NotFound);
+        }
+        // A document's `owner` ALSO lives inside its JSON body — the
+        // `owner_id` column the FK just SET NULL'd is a denormalized copy.
+        // Null the JSON field in the same tx so the two representations cannot
+        // disagree (never-fork). A ghost owner would be fail-closed anyway (a
+        // deleted id matches no session, and ids are never reused), so this is
+        // structural agreement, not a behavioral gate. Embedded children keep
+        // any stale owner reference: they have no owner_id column (no
+        // split-brain to close) and the same fail-closed reasoning applies,
+        // uniform with historical event-log blobs.
+        sqlx::query(
+            "UPDATE documents SET json = json_set(json, '$.owner', null) \
+             WHERE json_extract(json, '$.owner') = ?",
+        )
+        .bind(target.to_string())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM explored_fog WHERE user_id = ?")
+            .bind(target.to_string())
+            .execute(&mut *tx)
+            .await?;
+        // Session identity lives at $.data.user.id inside the JSON blob (the
+        // store has no user_id column); JSON1 ships in the bundled SQLite.
+        sqlx::query("DELETE FROM tower_sessions WHERE json_extract(data, '$.data.user.id') = ?")
+            .bind(target.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Change an existing member's role; `NotFound` if they are not a member.
     pub async fn set_role(
         &self,
@@ -517,14 +593,6 @@ impl SqliteRepository {
         Ok(row.map(|r| r.get::<Vec<u8>, _>("cells")))
     }
 
-    /// Upsert the player's explored-cell blob for a scene. Keyed `(scene_id, user_id)`; `world_id`
-    /// is denormalized for a future world-scoped purge (not yet wired — worlds aren't deletable;
-    /// orphans are harmless as reads key on the exact never-reused UUIDs). Write is whole-blob
-    /// last-writer-wins: two of the
-    /// user's sockets accumulating concurrently can transiently drop a cell one added but the other
-    /// didn't observe. Self-healing: explored is a re-derivable dimmed-memory layer (a dropped cell
-    /// re-marks the next time vision covers it) and the live `visible` mask is always exact, so a
-    /// transient loss never reveals more than it should — only delays a memory cell.
     /// Delete a world and every row keyed to it, in one transaction. FK cascades
     /// cover world_members/documents/world_events/assets/world_invites, and the
     /// FTS AFTER DELETE triggers fire under cascade (pinned by test).
@@ -554,6 +622,14 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// Upsert the player's explored-cell blob for a scene. Keyed `(scene_id, user_id)`; `world_id`
+    /// is denormalized for the world-scoped purge (rows are purged by `delete_world` (world-scoped),
+    /// `delete_user` (user-scoped), and `delete_document_tx` (scene-scoped)). Write is whole-blob
+    /// last-writer-wins: two of the
+    /// user's sockets accumulating concurrently can transiently drop a cell one added but the other
+    /// didn't observe. Self-healing: explored is a re-derivable dimmed-memory layer (a dropped cell
+    /// re-marks the next time vision covers it) and the live `visible` mask is always exact, so a
+    /// transient loss never reveals more than it should — only delays a memory cell.
     pub async fn set_explored(
         &self,
         world: Uuid,
@@ -683,10 +759,10 @@ impl SqliteRepository {
     /// The `NOCASE` half mirrors `create_user_unique`: without it an admin
     /// named `Alice` could coexist with a user named `alice` and be
     /// indistinguishable from them in a roster — the impersonation the ASCII
-    /// username policy exists to prevent. Unreachable while no delete-user or
-    /// demote-admin route exists (accounts other than the first can only be
-    /// created BY an admin, so "no admin, but users exist" cannot arise), which
-    /// is exactly why it is guarded here rather than left to that future route.
+    /// username policy exists to prevent. Reachable since `DELETE
+    /// /api/users/{id}` exists: deletion is last-admin-guarded, so "users
+    /// exist but no admin" still cannot arise — the NOCASE guard below stays
+    /// as the structural backstop.
     pub async fn create_admin_if_none(
         &self,
         username: &str,
@@ -2794,6 +2870,195 @@ mod tests {
         }
         // The deleted world's users survive (only membership rows cascade).
         assert!(repo.user_exists(u1).await.unwrap());
+    }
+
+    /// Persist a REAL session record for `user` through the production store,
+    /// so assertions against `$.data.user.id` exercise the actual `save()`
+    /// serialization, not a hand-rolled imitation of it.
+    async fn seed_session(repo: &SqliteRepository, key: i128, user: Uuid, name: &str) {
+        use tower_sessions::session_store::SessionStore;
+        let store = crate::auth::session::SqlxSqliteStore::new(repo.pool().clone());
+        store.migrate().await.unwrap();
+        let mut data = std::collections::HashMap::new();
+        data.insert(
+            "user".to_string(),
+            serde_json::to_value(crate::auth::session::SessionUser {
+                id: user,
+                username: name.into(),
+                role: ServerRole::User,
+            })
+            .unwrap(),
+        );
+        let record = tower_sessions::session::Record {
+            id: tower_sessions::session::Id(key),
+            data,
+            expiry_date: tower_sessions::cookie::time::OffsetDateTime::now_utc()
+                + tower_sessions::cookie::time::Duration::days(1),
+        };
+        store.save(&record).await.unwrap();
+    }
+
+    /// COUNT(*) of live sessions whose embedded identity is `user`.
+    async fn session_count_for(repo: &SqliteRepository, user: Uuid) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tower_sessions \
+             WHERE json_extract(data, '$.data.user.id') = ?",
+        )
+        .bind(user.to_string())
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn delete_user_scrubs_everything() {
+        let repo = repo().await;
+        let admin = repo
+            .create_user("root", Some("h"), ServerRole::Admin, 0)
+            .await
+            .unwrap();
+        let u = repo
+            .create_user("u", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("w", admin, 0).await.unwrap().id;
+        repo.add_member(w, u, WorldRole::Player).await.unwrap();
+
+        // U owns a document and authors its creating event.
+        let scene = Uuid::new_v4();
+        let mut d = crate::data::document::tests::world_scoped_doc(w, scene, "scene");
+        d.owner = Some(u);
+        repo.apply_command(UnsequencedCommand {
+            world_id: w,
+            author: u,
+            ts: 0,
+            ops: vec![Operation::Create { doc: d }],
+        })
+        .await
+        .unwrap();
+        // U uploaded an asset and minted an invite.
+        let asset_id = Uuid::new_v4();
+        repo.insert_asset(&crate::data::asset::Asset {
+            id: asset_id,
+            world_id: w,
+            storage_key: format!("{w}/{asset_id}"),
+            original_name: "a.png".into(),
+            content_type: "image/png".into(),
+            byte_size: 4,
+            created_by: Some(u),
+            created_at: 0,
+            version: 1,
+        })
+        .await
+        .unwrap();
+        assert!(repo
+            .create_invite(
+                NewInvite {
+                    id: Uuid::new_v4(),
+                    world: w,
+                    secret_hash: "phc",
+                    role: WorldRole::Player,
+                    created_by: u,
+                    now: 0,
+                    expires_at: i64::MAX,
+                },
+                10,
+            )
+            .await
+            .unwrap());
+        // Fog memory for U (purged) and for the admin (survives).
+        repo.set_explored(w, scene, u, &[1, 0, 0, 0, 2, 0, 0, 0])
+            .await
+            .unwrap();
+        repo.set_explored(w, scene, admin, &[1, 0, 0, 0, 2, 0, 0, 0])
+            .await
+            .unwrap();
+        // Live sessions for both.
+        seed_session(&repo, 1, u, "u").await;
+        seed_session(&repo, 2, admin, "root").await;
+
+        repo.delete_user(u).await.expect("delete");
+
+        assert!(!repo.user_exists(u).await.unwrap());
+        assert_eq!(
+            count_where(&repo, "world_members", "user_id", u.to_string()).await,
+            0
+        );
+        // SET NULL families: the rows survive, attribution nulls.
+        assert_eq!(repo.get_document(scene).await.unwrap().unwrap().owner, None);
+        assert_eq!(
+            count_where(&repo, "world_events", "author_id", u.to_string()).await,
+            0
+        );
+        let null_authored: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM world_events WHERE author_id IS NULL")
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(null_authored, 1, "event row survives with author nulled");
+        let a = repo.get_asset(asset_id).await.unwrap().expect("row intact");
+        assert_eq!(a.created_by, None);
+        assert_eq!(
+            count_where(&repo, "world_invites", "created_by", u.to_string()).await,
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM world_invites WHERE created_by IS NULL"
+            )
+            .fetch_one(repo.pool())
+            .await
+            .unwrap(),
+            1,
+            "invite row survives with minter nulled"
+        );
+        // FK-less purges: U's fog and sessions die, the admin's survive.
+        assert_eq!(
+            count_where(&repo, "explored_fog", "user_id", u.to_string()).await,
+            0
+        );
+        assert_eq!(
+            count_where(&repo, "explored_fog", "user_id", admin.to_string()).await,
+            1
+        );
+        assert_eq!(session_count_for(&repo, u).await, 0);
+        assert_eq!(session_count_for(&repo, admin).await, 1);
+    }
+
+    #[tokio::test]
+    async fn delete_user_guards() {
+        let repo = repo().await;
+        // delete_user's documented boot coupling: the session table exists
+        // before any route can reach it; repo-level tests create it themselves.
+        crate::auth::session::SqlxSqliteStore::new(repo.pool().clone())
+            .migrate()
+            .await
+            .unwrap();
+        assert!(matches!(
+            repo.delete_user(Uuid::new_v4()).await,
+            Err(DataError::NotFound)
+        ));
+        let a1 = repo
+            .create_user("a1", Some("h"), ServerRole::Admin, 0)
+            .await
+            .unwrap();
+        match repo.delete_user(a1).await {
+            Err(DataError::Conflict(m)) => {
+                assert_eq!(m, "cannot delete the server's only administrator")
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+        let a2 = repo
+            .create_user("a2", Some("h"), ServerRole::Admin, 0)
+            .await
+            .unwrap();
+        repo.delete_user(a1)
+            .await
+            .expect("with two admins, deleting one succeeds");
+        assert!(
+            matches!(repo.delete_user(a2).await, Err(DataError::Conflict(_))),
+            "the survivor is now the last admin"
+        );
     }
 
     #[tokio::test]
