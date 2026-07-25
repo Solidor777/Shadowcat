@@ -160,10 +160,20 @@ A non-GM `Operation::Update` whose changes touch a token's `/engine/x` or `/engi
 which already computes the committed post-image over the whole `/engine` band and therefore cannot be
 evaded by a wholesale `/engine` write or duplicate change entries.
 
-Refusal is strictly stricter than gating, so the entire non-GM gate block at `ws/room.rs:220-…` is
-**deleted**: the coordinate-magnitude check, the M9a wall gate, the scene-existence check, the
-`MovementRestriction` dispatch, the per-`(scene, leniency)` `visible_cache` memo, and the deferred
-`revealed_pending` / `get_explored` async pass. `execute_move` becomes the sole movement gate (**I2**).
+Refusal is strictly stricter than gating, so the **traversal** half of the non-GM gate block at
+`ws/room.rs:220-…` is deleted: the M9a `blocks_move` wall gate, the `line_traversal`/supercover
+traversed-cell computation, the per-cell mask membership test over a path, and the
+coordinate-magnitude check (`TokenEngine::validate` covers ingress unconditionally; a point placement
+needs finiteness only). `execute_move` becomes the sole implementation of the per-cell traversal
+decision (**I2**), which is what collapses parity axes 1, 2 and 3 (per-cell decision, cell indexing,
+traversal completeness).
+
+The block's **point-placement** machinery is *retained and repointed*, not deleted — the Create gate
+below needs it: the scene-existence refusal (parity axis 6 — an absent `scene_grid_sizes` entry must
+still refuse rather than synthesize a 100-unit grid), the `MovementRestriction` dispatch, the
+per-`(scene, leniency)` `visible_cache` memo, and the deferred `revealed_pending` / `get_explored`
+async pass (the explored fetch still must not run under the `scene.read()` guard). What changes is
+what it authorizes: a created token's position instead of a moved token's path.
 
 GM drags are unchanged: no gate, direct write, token lands exactly where dropped (**user decision 1**).
 
