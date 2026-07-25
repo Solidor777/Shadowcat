@@ -327,4 +327,20 @@ mod tests {
         };
         assert_eq!(out.compare_labels("Mixed", "Mixed"), None);
     }
+
+    #[test]
+    fn roll_outcome_missing_defaulted_keys_deserializes() {
+        // Pins `#[serde(default)]` on labeled_consts + symbol_counts against a
+        // pre-M11d/pre-M13d stored RollOutcome shape (no such Rust-side test
+        // existed; the chat_rolls back-compat test carries no RollOutcome).
+        let j = serde_json::json!({
+            "total": 7, "records": [], "successes": null, "pass": null,
+            "margin": null, "tier_label": null, "tier_value": null,
+            "crit_successes": 0, "crit_fails": 0,
+            "positive_counter": 0, "negative_counter": 0
+        });
+        let out: super::RollOutcome = serde_json::from_value(j).unwrap();
+        assert!(out.labeled_consts.is_empty());
+        assert!(out.symbol_counts.is_empty());
+    }
 }
