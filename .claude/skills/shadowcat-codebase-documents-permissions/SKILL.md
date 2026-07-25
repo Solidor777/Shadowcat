@@ -37,10 +37,14 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   - `world_of(doc: &Document) -> Option<Uuid>` (`pub(crate)`, Phase A) — the single chokepoint for
     "which world does this doc scope to" (`Scope::World { world_id } => Some(world_id)`,
     `Scope::Compendium => None`). Callers that must PIN a doc reference to a caller-known world
-    (a scene ref, an actor attribution ref) compare this against their own `world_id` instead of
-    re-matching `Scope` inline — used by `ws/conn.rs`'s `scene_ping_permitted` and
-    `chat::handle_send_message`'s actor-attribution gate (`shadowcat-codebase-chat`). Adding a
-    THIRD cross-world-ref check should call this too, not re-fork the `Scope` match a third time.
+    (a scene ref, an actor attribution ref, an HTTP by-id route) compare this against their own
+    `world_id` instead of re-matching `Scope` inline — used by `ws/conn.rs`'s
+    `scene_ping_permitted`, `chat::handle_send_message`'s actor-attribution gate
+    (`shadowcat-codebase-chat`), and `http/routes.rs`'s `get_document`/`patch_document`/
+    `delete_document` (`.ok_or(AppError::NotFound)?`, matching the 404-for-compendium behavior
+    routes.rs's own now-deleted local copy used to return). No remaining `Scope::World`/
+    `Scope::Compendium` match duplicates this decision anywhere in the server — the ONE place to
+    extend it is here.
 - `src/server/src/data/engine/` (M13-0) — the typed `engine`-band structs + the ingress-validation
   registry, one module per doc-type family (`token.rs`, `scene.rs`, `geometry.rs`,
   `registries.rs`) plus `mod.rs`: `is_engine_doc_type(doc_type) -> bool` (the 17-entry registry:

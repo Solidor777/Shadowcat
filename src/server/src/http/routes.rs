@@ -17,7 +17,7 @@ use crate::auth::setup::{create_admin, now_millis};
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use crate::data::document::{
     AdditionalProperties, CapabilityRequirement, Cardinality, ContractDeclaration, Document,
-    Schema, SchemaDeclaration, SchemaType, Scope, World, WorldCapDefaults, WorldRole,
+    Schema, SchemaDeclaration, SchemaType, World, WorldCapDefaults, WorldRole,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
@@ -417,15 +417,6 @@ pub(crate) async fn require_gm(
         return Err(AppError::Forbidden);
     }
     Ok(ctx)
-}
-
-/// The world_id of a world-scoped document, or 404 for a compendium document
-/// (compendium CRUD is out of M5 scope).
-fn world_of(doc: &Document) -> Result<Uuid, AppError> {
-    match doc.scope {
-        Scope::World { world_id } => Ok(world_id),
-        Scope::Compendium { .. } => Err(AppError::NotFound),
-    }
 }
 
 #[derive(Deserialize)]
@@ -830,7 +821,10 @@ pub async fn get_document(
         .get_document(id)
         .await?
         .ok_or(AppError::NotFound)?;
-    let world = world_of(&doc)?;
+    // 404 for a compendium document (compendium CRUD is out of M5 scope) —
+    // same NotFound this route already returns for a missing doc, existence
+    // hiding via a uniform not-found rather than a distinct error shape.
+    let world = crate::data::document::world_of(&doc).ok_or(AppError::NotFound)?;
     let ctx = state
         .repo
         .permission_context(world, user.id, user.role)
@@ -865,7 +859,10 @@ pub async fn patch_document(
         .get_document(id)
         .await?
         .ok_or(AppError::NotFound)?;
-    let world = world_of(&doc)?;
+    // 404 for a compendium document (compendium CRUD is out of M5 scope) —
+    // same NotFound this route already returns for a missing doc, existence
+    // hiding via a uniform not-found rather than a distinct error shape.
+    let world = crate::data::document::world_of(&doc).ok_or(AppError::NotFound)?;
     // by-id route: a non-member is 404, not 403 (existence hiding). Members fall
     // through to write_ops, which may still 403 on a capability denial.
     state
@@ -895,7 +892,10 @@ pub async fn delete_document(
         .get_document(id)
         .await?
         .ok_or(AppError::NotFound)?;
-    let world = world_of(&doc)?;
+    // 404 for a compendium document (compendium CRUD is out of M5 scope) —
+    // same NotFound this route already returns for a missing doc, existence
+    // hiding via a uniform not-found rather than a distinct error shape.
+    let world = crate::data::document::world_of(&doc).ok_or(AppError::NotFound)?;
     // by-id route: a non-member is 404, not 403 (existence hiding).
     state
         .repo
