@@ -8,7 +8,11 @@ export type Asset = { id: string, world_id: string,
 /**
  * "<world_id>/<uuid>", relative to the configured assets_dir.
  */
-storage_key: string, original_name: string, content_type: string, byte_size: bigint, created_by: string, created_at: bigint, 
+storage_key: string, original_name: string, content_type: string, byte_size: bigint, 
+/**
+ * NULL when the uploading account has been deleted.
+ */
+created_by: string | null, created_at: bigint, 
 /**
  * Bumped on every replace; backs the ETag and the resync source of truth.
  */

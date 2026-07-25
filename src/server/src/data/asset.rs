@@ -14,7 +14,8 @@ pub struct Asset {
     pub original_name: String,
     pub content_type: String,
     pub byte_size: i64,
-    pub created_by: Uuid,
+    /// NULL when the uploading account has been deleted.
+    pub created_by: Option<Uuid>,
     pub created_at: i64,
     /// Bumped on every replace; backs the ETag and the resync source of truth.
     pub version: i64,

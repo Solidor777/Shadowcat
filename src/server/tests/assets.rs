@@ -82,7 +82,7 @@ async fn serve_denies_non_member() {
             original_name: "x.png".into(),
             content_type: "image/png".into(),
             byte_size: 1,
-            created_by: h.user,
+            created_by: Some(h.user),
             created_at: 0,
             version: 1,
         })

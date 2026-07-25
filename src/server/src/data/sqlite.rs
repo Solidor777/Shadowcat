@@ -134,7 +134,7 @@ impl SqliteRepository {
         .bind(&a.original_name)
         .bind(&a.content_type)
         .bind(a.byte_size)
-        .bind(a.created_by.to_string())
+        .bind(a.created_by.map(|u| u.to_string()))
         .bind(a.created_at)
         .bind(a.version)
         .execute(&self.pool)
@@ -153,7 +153,10 @@ impl SqliteRepository {
             original_name: row.get("original_name"),
             content_type: row.get("content_type"),
             byte_size: row.get("byte_size"),
-            created_by: parse(row.get::<String, _>("created_by"))?,
+            created_by: row
+                .get::<Option<String>, _>("created_by")
+                .map(parse)
+                .transpose()?,
             created_at: row.get("created_at"),
             version: row.get("version"),
         })
@@ -2683,7 +2686,7 @@ mod tests {
             original_name: "a.png".into(),
             content_type: "image/png".into(),
             byte_size: 4,
-            created_by: owner,
+            created_by: Some(owner),
             created_at: 0,
             version: 1,
         })
@@ -2791,6 +2794,47 @@ mod tests {
         }
         // The deleted world's users survive (only membership rows cascade).
         assert!(repo.user_exists(u1).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn user_delete_nulls_asset_created_by() {
+        let repo = repo().await;
+        let u = repo
+            .create_user("u", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let keeper = repo
+            .create_user("keeper", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("w", keeper, 0).await.unwrap().id;
+        let asset_id = Uuid::new_v4();
+        repo.insert_asset(&crate::data::asset::Asset {
+            id: asset_id,
+            world_id: w,
+            storage_key: format!("{w}/{asset_id}"),
+            original_name: "a.png".into(),
+            content_type: "image/png".into(),
+            byte_size: 4,
+            created_by: Some(u),
+            created_at: 0,
+            version: 1,
+        })
+        .await
+        .unwrap();
+
+        // Raw row delete: this pins the 0011 FK ACTION itself (repo-level
+        // delete_user arrives in the next task).
+        sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(u.to_string())
+            .execute(repo.pool())
+            .await
+            .expect("user delete must not FK-fail on authored assets");
+
+        let a = repo.get_asset(asset_id).await.unwrap().expect("row intact");
+        assert_eq!(a.created_by, None);
+        assert_eq!(a.byte_size, 4);
+        assert_eq!(a.version, 1);
     }
 
     #[tokio::test]
@@ -3058,7 +3102,7 @@ mod tests {
             original_name: "battlemap.png".into(),
             content_type: "image/png".into(),
             byte_size: 1234,
-            created_by: owner,
+            created_by: Some(owner),
             created_at: 0,
             version: 1,
         };
