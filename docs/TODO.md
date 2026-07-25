@@ -7,6 +7,17 @@ unblocking condition, not a "someday maybe." A few headings are explicitly
 labeled "Actionable now": these are NOT blocked on anything — the underlying
 capability already exists — but are deferred as out-of-scope-for-now work.
 
+## Blocked on a reverse-proxy deployment story
+- TODO: `ClientIp` (`http/throttle.rs`) resolves solely from `ConnectInfo<SocketAddr>` — the real
+  peer address of the accepted TCP connection — with no `X-Forwarded-For`/`Forwarded` handling.
+  Behind a reverse proxy that does not preserve the original client address, every request
+  resolves to the proxy's own address, so the per-IP throttle bucket (`login:ip:<>`/
+  `invite:ip:<>`) degrades to a single shared bucket across every real client — throttling still
+  functions per-identity, just not per-real-IP. No reverse-proxy deployment story exists or is
+  scoped today (verified: `docs/design/` and `config.rs` have no proxy/trusted-header handling);
+  resolve alongside whatever design adds one (a naive trust-any-`X-Forwarded-For` fix would be
+  its own spoofing vulnerability without a configured trusted-proxy list).
+
 ## Blocked on world/user deletion
 - TODO: Purge `explored_fog` rows on world/user deletion. Neither has a route at all — world and user are DB rows, not documents, and no deletion path exists yet. The M9c table denormalizes `world_id` for a world-scoped purge; wire a `DELETE FROM explored_fog WHERE world_id = ?` when world deletion lands, and index `world_id` then. (Surfaced by the M9c-1 buddy check.)
 

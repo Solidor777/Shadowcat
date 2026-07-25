@@ -55,8 +55,10 @@ optimistically and roll back on divergence.
   client offset calibration (exists before its consumer, per ARCHITECTURE §2 invariant 2).
 - `src/server/src/http/{routes.rs,mod.rs}` — HTTP routes (login, assets, embed).
 - `src/server/src/auth/session.rs` — `SqlxSqliteStore` (DB-backed sessions), `spawn_session_sweep`
-  (also GCs expired `world_invites` rows via `DELETE FROM world_invites WHERE expires_at <= ?`, on
-  the same timer as session sweep — no dedicated invite timer),
+  (also GCs `world_invites` rows via `DELETE FROM world_invites WHERE expires_at <= ?`, bound to
+  `now_ms - INVITE_GC_GRACE_MS` (30-day grace, not the raw expiry) — an expired-but-recent invite
+  survives a while post-expiry for audit/support lookup before GC actually removes it; same timer
+  as session sweep, no dedicated invite timer),
   `SessionUser`/`AuthUser`/`AdminUser`; `auth/{password,role}.rs`.
 - `src/server/src/http/throttle.rs` (Phase A) — `AuthThrottle` (`check(key, now_ms, per_min) ->
   bool`, sliding 60s window, `Mutex<HashMap<String, Vec<i64>>>`), shared by the two

@@ -117,10 +117,12 @@ on.
   still deserialize; `evaluate_success` always sets this to `Vec::new()` since SuccessCount
   ignores all AST arithmetic; display-only — NOT read by `by_label`/`compare_labels`; the
   chat wire mirror (`chat-docs.ts` Zod schema) and `MessageCard.svelte` render a labeled const's
-  raw `value` the same way a labeled `DiceGroup`'s die faces are shown, including under an
-  enclosing `Neg`/`Mul` where the displayed value does NOT reflect the operator — same
-  precedent as `DieRecord`'s raw face values ignoring an enclosing sign) (all 0/None/empty in
-  Total mode with no `difficulty`, or in SuccessCount with no crit config).
+  displayed `value` as collected by `collect_labeled_consts` (`dice/eval/sum.rs`), which threads
+  an effective additive sign through the AST: `Neg` flips it, and `Sub`'s RHS flips it (so
+  `-3[dex]` and `1d20 - 3[dex]` both display `-3`); `Mul`/`Div` do NOT scale or flip it — a
+  labeled const under multiplication/division still displays its literal value, since the sign
+  thread is additive-only, not a full evaluator) (all 0/None/empty in Total mode with no
+  `difficulty`, or in SuccessCount with no crit config).
   `RollOutcome::by_label(&self, label: &str) -> Vec<&DieRecord>` (M11b-3)
   returns all records — kept AND dropped — carrying that label, in roll order.
   `RollOutcome::compare_labels(&self, a, b) -> Option<Ordering>` (M11b-3) compares two labels by

@@ -206,19 +206,25 @@ pub async fn upload(
             version: 1,
         };
         // Read-side of the backup quiesce barrier, acquired only around the
-        // DB-commit + rename pair below — the one critical section the
-        // quiesce exists to keep non-interleaving with an in-server backup's
-        // VACUUM + assets copy. Concurrent asset writes share the read side
-        // freely; this serializes nothing between uploads.
+        // rename+DB-commit pair below — the one critical section the quiesce
+        // exists to keep non-interleaving with an in-server backup's VACUUM +
+        // assets copy. Concurrent asset writes share the read side freely;
+        // this serializes nothing between uploads.
         let _read_permit = state.write_barrier.read().await;
-        if let Err(e) = state.repo.insert_asset(&asset).await {
-            let _ = tokio::fs::remove_file(&tmp_path).await; // keep disk and DB consistent
-            return Err(e.into());
-        }
+        // Create ordering is file-BEFORE-row (inverted from replace's
+        // row-before-swap): a create has no prior bytes and no stale ETag to
+        // protect, so the only failure that matters is an orphan DB row (a
+        // GET that 500s forever) — a rename failure here just leaves the temp
+        // file to clean up, and an insert failure after a successful rename
+        // leaves a harmless orphan FILE, best-effort removed below.
         if let Err(e) = tokio::fs::rename(&tmp_path, &final_path).await {
             let _ = tokio::fs::remove_file(&tmp_path).await;
-            tracing::error!(?e, %id, "asset upload rename failed after DB commit");
+            tracing::error!(?e, %id, "asset upload rename failed");
             return Err(AppError::Internal);
+        }
+        if let Err(e) = state.repo.insert_asset(&asset).await {
+            let _ = tokio::fs::remove_file(&final_path).await; // keep disk and DB consistent
+            return Err(e.into());
         }
         Ok(asset)
     }
@@ -375,6 +381,12 @@ pub async fn delete(
     let existing = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
     require_gm(&state, &user, existing.world_id).await?;
 
+    // Read-side of the backup quiesce barrier, held across the row-removal +
+    // unlink pair below — without it a backup could capture the row gone but
+    // the file still present (or vice versa), and in the row-gone/file-still-
+    // present ordering the backup's manifest would reference a file the DB no
+    // longer knows about, worse than replace's stale-bytes race.
+    let _read_permit = state.write_barrier.read().await;
     state.repo.delete_asset(id).await?;
     let path = state.config.assets_path().join(&existing.storage_key);
     if let Err(e) = tokio::fs::remove_file(&path).await {

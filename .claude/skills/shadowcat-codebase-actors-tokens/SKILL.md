@@ -212,6 +212,14 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   envelope field — M13-0 re-root, was `/system/name`) to `OwnerOrGm`; the owner still sees it,
   others get the `actorDisplayName` fallback. Enforcement is server-side and fail-closed (see
   `shadowcat-codebase-documents-permissions`).
+- **`TokenEngine::validate` (`data/engine/token.rs`) shares ONE coordinate bound with the
+  movement gate, structurally.** Every numeric field must be finite, and `x`/`y` must fall
+  within `scene::move_exec::MAX_GATE_WALK_COORD` — the same symbol the server-authoritative
+  move gate reads (`shadowcat-codebase-scene-rendering`'s `Room::publish`/`gate_walk`), not a
+  copied literal. Runs on every GM-write/Create ingress of a `token` doc via
+  `normalize_engine`'s `"token"` arm (`data/engine/mod.rs`), so a token can never be CREATED
+  outside the range the move gate would later refuse to walk it into. An anti-drift test
+  (`ingress_bound_equals_gate_walks_exactly`) pins parity with the gate's own bound test.
 
 ## Gotchas
 
