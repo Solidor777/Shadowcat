@@ -34,6 +34,13 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     `/system` — no dedicated capability. `/source` (the sibling field naming what a document is
     an instance OF) stays unmapped/immutable — `required_cap_for_path` returns `None` for it, so
     no write path can ever re-target an existing document at a different template.
+  - `world_of(doc: &Document) -> Option<Uuid>` (`pub(crate)`, Phase A) — the single chokepoint for
+    "which world does this doc scope to" (`Scope::World { world_id } => Some(world_id)`,
+    `Scope::Compendium => None`). Callers that must PIN a doc reference to a caller-known world
+    (a scene ref, an actor attribution ref) compare this against their own `world_id` instead of
+    re-matching `Scope` inline — used by `ws/conn.rs`'s `scene_ping_permitted` and
+    `chat::handle_send_message`'s actor-attribution gate (`shadowcat-codebase-chat`). Adding a
+    THIRD cross-world-ref check should call this too, not re-fork the `Scope` match a third time.
 - `src/server/src/data/engine/` (M13-0) — the typed `engine`-band structs + the ingress-validation
   registry, one module per doc-type family (`token.rs`, `scene.rs`, `geometry.rs`,
   `registries.rs`) plus `mod.rs`: `is_engine_doc_type(doc_type) -> bool` (the 17-entry registry:
