@@ -30,10 +30,24 @@ and serves uploads unconverted (the conversion pipeline is deferred).
 
 ## Hard invariants
 
-- **Commit the source-of-truth/cache-key row BEFORE swapping the file.** The inverse strands new
-  bytes under a stale ETag/version — a silent 304 of changed content. Two-store writes (file +
-  metadata row) without a spanning txn must order the row (cache key) first
-  [[commit-db-row-before-swapping-file]].
+- **`replace` commits the source-of-truth/cache-key row BEFORE swapping the file** (row-first).
+  The inverse strands new bytes under a stale ETag/version — a silent 304 of changed content;
+  `replace` has prior bytes to preserve and an existing ETag to protect, so the failure that
+  matters most is a stale-but-served file, never an orphan row
+  [[commit-db-row-before-swapping-file]]. **`upload` (create) inverts this to file-first**: rename
+  the staged temp file into place, THEN insert the row. A create has no prior bytes and no
+  existing ETag to strand — the failure that matters is an orphan DB row (a `GET` that 500s
+  forever, since no bytes were ever written under that id), while an orphan FILE with no row is
+  harmless dead disk space. Two-store writes (file + metadata row) without a spanning txn always
+  order around whichever failure mode is unrecoverable for that operation — row-first for
+  replace, file-first for create.
+- **`upload`/`replace`/`delete` all take `AppState.write_barrier.read()` around their
+  commit+rename/commit+unlink critical section** (`http/assets.rs`) — never around the earlier
+  network-bound multipart stream, which has no timeout (`DefaultBodyLimit::disable()` on these
+  routes) and would otherwise let a slow uploader hold the write-preferring
+  `tokio::sync::RwLock`'s read side open indefinitely. `POST /api/admin/backup` holds the write
+  side across its `VACUUM INTO` + assets copy, so no asset write's row-commit+file-op pair can
+  interleave with an in-server backup snapshot (`shadowcat-codebase-server-ops`).
 - **ETag == `"{id}-{version}"`**; `version` is the single monotonic cache key. Stable UUID identity
   means a replace keeps the id and only bumps the version, so links survive (ARCHITECTURE §6).
 - **Upload limits are tiered + configurable** (GM ≈ 2× regular); uploads stream to disk, not buffered.
