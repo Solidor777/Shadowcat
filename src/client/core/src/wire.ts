@@ -342,6 +342,9 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     // reflect secret-region terrain the observer's clipped samples don't reveal.
     cost: z.number().nullable(),
   }),
+  // Terminal eviction (world or account deletion); the server closes the
+  // socket right after. Terminal: the client must stop, not reconnect.
+  z.object({ type: z.literal("evicted"), user: z.string().nullable() }),
 ]);
 
 export type WireScope = z.infer<typeof ScopeSchema>;

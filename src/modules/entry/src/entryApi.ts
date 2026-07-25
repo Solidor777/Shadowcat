@@ -46,6 +46,11 @@ export function listWorlds(): Promise<WorldEntry[]> {
   return getJson<WorldEntry[]>("/api/worlds");
 }
 
+export async function deleteWorld(id: string): Promise<void> {
+  const res = await fetch(`/api/worlds/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`/api/worlds/${id} → ${res.status}`);
+}
+
 export async function createWorld(name: string): Promise<WorldEntry> {
   const res = await postJson("/api/worlds", { name });
   if (!res.ok) throw new Error(`/api/worlds → ${res.status}`);

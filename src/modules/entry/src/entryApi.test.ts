@@ -47,3 +47,11 @@ test("createWorld returns the created world; throws on a non-ok status", async (
   mockFetch(500);
   await expect(api.createWorld("X")).rejects.toThrow();
 });
+
+test("deleteWorld issues DELETE and throws on failure", async () => {
+  const fetchMock = mockFetch(204);
+  await api.deleteWorld("w1");
+  expect(fetchMock).toHaveBeenCalledWith("/api/worlds/w1", { method: "DELETE" });
+  mockFetch(403);
+  await expect(api.deleteWorld("w1")).rejects.toThrow();
+});

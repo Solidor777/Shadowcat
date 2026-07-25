@@ -99,6 +99,9 @@ export interface WsClientHandlers {
   onAssetChanged?(msg: { uuid: string; op: "replaced" | "deleted" }): void;
   /** An out-of-band relayed location ping (carries no seq). */
   onScenePing?(msg: { scene: string; x: number; y: number; user: string }): void;
+  /** Terminal eviction (world/account deleted). The client has already
+   * stopped (no reconnect) when this fires; route the user out of the world. */
+  onEvicted?: () => void;
 }
 
 export interface WsClientOptions {
@@ -319,6 +322,13 @@ export class WsClient {
         this.send({ type: "pong" });
         break;
       case "error":
+        break;
+      case "evicted":
+        // Terminal: the server is deleting this world or account. Stop first
+        // (running=false → the onClose path will not schedule a reconnect),
+        // then let the shell route away.
+        this.stop();
+        this.safeEmit(() => this.opts.handlers.onEvicted?.());
         break;
       case "search_result": {
         const p = this.pending.get(msg.request_id);

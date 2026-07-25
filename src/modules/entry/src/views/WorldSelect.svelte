@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { WorldEntry } from "@shadowcat/types";
-  import { listWorlds, createWorld, acceptInvite } from "../entryApi";
+  import { listWorlds, createWorld, acceptInvite, deleteWorld } from "../entryApi";
   import { t } from "@shadowcat/ui-kit";
 
   let { onEnter }: { onEnter: (worldId: string) => void } = $props();
@@ -8,6 +8,31 @@
   let newName = $state("");
   let inviteCode = $state("");
   let error = $state("");
+  let confirmingDelete = $state<string | null>(null);
+  let deleteName = $state("");
+  let deleting = $state(false);
+
+  function armDelete(id: string) {
+    confirmingDelete = confirmingDelete === id ? null : id;
+    deleteName = "";
+    error = "";
+  }
+
+  async function confirmDelete(world: WorldEntry) {
+    if (deleteName !== world.name || deleting) return;
+    deleting = true;
+    error = "";
+    try {
+      await deleteWorld(world.id);
+      confirmingDelete = null;
+      deleteName = "";
+      await refresh();
+    } catch {
+      error = t("worlds.errorDelete");
+    } finally {
+      deleting = false;
+    }
+  }
 
   async function refresh() {
     try {
@@ -55,9 +80,33 @@
   <ul>
     {#each worlds as world (world.id)}
       <li>
-        <button onclick={() => onEnter(world.id)}>
-          {world.name} <small>({world.role})</small>
-        </button>
+        <div class="row">
+          <button class="enter" onclick={() => onEnter(world.id)}>
+            {world.name} <small>({world.role})</small>
+          </button>
+          {#if world.role === "gm"}
+            <button class="danger-outline" onclick={() => armDelete(world.id)}>
+              {t("worlds.delete")}
+            </button>
+          {/if}
+        </div>
+        {#if confirmingDelete === world.id}
+          <form
+            class="confirm-delete"
+            onsubmit={(e) => {
+              e.preventDefault();
+              confirmDelete(world);
+            }}
+          >
+            <label>
+              {t("worlds.deleteTypeName")}
+              <input bind:value={deleteName} placeholder={world.name} />
+            </label>
+            <button type="submit" class="danger" disabled={deleteName !== world.name || deleting}>
+              {t("worlds.deleteConfirm")}
+            </button>
+          </form>
+        {/if}
       </li>
     {/each}
     {#if worlds.length === 0}<li class="empty">{t("worlds.empty")}</li>{/if}
@@ -91,15 +140,45 @@
     display: grid;
     gap: var(--space-2);
   }
-  li button {
-    width: 100%;
+  li .row {
+    display: flex;
+    gap: var(--space-2);
+    align-items: stretch;
+  }
+  li .row .enter {
+    flex: 1;
     text-align: left;
     background: var(--surface-raised);
     border: 1px solid var(--border);
   }
-  li button:hover {
+  li .row .enter:hover {
     border-color: var(--accent);
     background: var(--surface-overlay);
+  }
+  .confirm-delete {
+    display: flex;
+    gap: var(--space-2);
+    align-items: end;
+    margin-top: var(--space-2);
+  }
+  button.danger-outline {
+    background: transparent;
+    border: 1px solid var(--danger);
+    color: var(--danger);
+  }
+  button.danger {
+    background: var(--danger);
+    border: 1px solid var(--danger);
+    color: var(--on-danger);
+  }
+  button.danger:disabled {
+    opacity: 0.5;
+  }
+  @media (pointer: coarse) {
+    button.danger,
+    button.danger-outline {
+      min-height: var(--input-height-coarse);
+    }
   }
   .empty {
     color: var(--text-muted);

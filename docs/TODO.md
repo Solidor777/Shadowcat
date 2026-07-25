@@ -18,12 +18,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   resolve alongside whatever design adds one (a naive trust-any-`X-Forwarded-For` fix would be
   its own spoofing vulnerability without a configured trusted-proxy list).
 
-## Blocked on world/user deletion
-- TODO: Purge `explored_fog` rows on world/user deletion. Neither has a route at all — world and user are DB rows, not documents, and no deletion path exists yet. The M9c table denormalizes `world_id` for a world-scoped purge; wire a `DELETE FROM explored_fog WHERE world_id = ?` when world deletion lands, and index `world_id` then. (Surfaced by the M9c-1 buddy check.)
-
-## Actionable now — `explored_fog` purge on scene deletion
-- TODO: Scene deletion is already reachable today via the generic `DELETE /api/documents/{id}` route (`http/routes.rs::delete_document`, which reaches `Operation::Delete` for ANY document, scenes included — no doc_type restriction) — but nothing purges the scene's `explored_fog` rows when that happens, and there's no GM-facing "delete this scene" button in the UI yet. Since scene deletion already works mechanically, closing the fog-purge gap is now simple: wire a `DELETE FROM explored_fog WHERE scene_id = ?` into the scene-delete path. Orphaned rows are harmless in the meantime (reads key on the exact never-reused `(scene_id, user_id)` UUIDs) but accumulate unboundedly over a server's lifetime.
-
 ## Blocked on a per-turn movement-budget system (Phase-2 combat)
 - TODO: `move_exec.rs`'s `MoveOutcome.cost` accumulates only the entered cell's terrain multiplier per step (`cost += regions.terrain_multiplier(region_cell)`); `pathfinding.rs`'s router cost also multiplies by the diagonal-rule `step_cost` (`sc * mult`, where `sc` is 1.0/2.0/√2/alternating depending on `world-settings.pathfinding.diagonalRule`). The two "cost" values are not numerically comparable once diagonal movement is involved under any non-Chebyshev rule — they coincide only because Chebyshev's diagonal step cost is 1.0. This is a deliberate M10g Task 7 scoping decision (move_exec's center-cell, terrain-only accounting model), not an oversight, and nothing currently consumes or compares the two values. Resolve before any per-turn movement-budget system consumes `MoveOutcome.cost`/`MoveStream.cost`: decide whether move_exec should thread the diagonal rule + per-step parity to match the router's preview cost, or whether route-preview cost and execution cost are intentionally distinct quantities. (Surfaced by the M10g Task 7 buddy check.)
 - TODO: `navmesh::los_smooth` (M10f-4) reports the smoothed continuous route's `cost` as the PRE-smoothing weighted grid cost, unchanged — it does not recompute an exact per-span cost for the straightened any-angle chords, only guarantees the reported value is a conservative (never cheaper) budget preview. Same preview-vs-execution divergence class as the `MoveOutcome.cost`/router-cost split logged above: a per-cell-exact smoothed continuous cost is deferred, not implemented. Resolve alongside the item above if a per-turn movement-budget system ever needs an exact continuous-engine cost.
@@ -102,13 +96,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
    needs a server producer + authoring affordance.
 7. **Speak-as-token-instance** — `ActorOwnerRef::TokenInstance` is REJECTED at ingest (fail-closed,
    no first-party producer) — build the composer/token-context UX and lift the rejection together.
-
-## Blocked on user deletion existing — `add_member` resolve+write is two queries
-- TODO: `add_member` (`http/routes.rs:514`) checks `user_exists` and then inserts membership in two
-  separate pool round-trips. A user row deleted between them reintroduces the foreign-key 500 that
-  the 404 fix removed. Unreachable today — no user-deletion route exists anywhere in the server —
-  but it is the check-then-act shape this project has been bitten by before, and it goes live the
-  moment account deletion ships. Fix then by wrapping resolve+write in one transaction.
 
 ## Actionable now (deferred on cost, NOT blocked) — inherited owner is a stranger at egress
 - TODO: Task 14i made token ownership EFFECTIVE (`effective_owner(token) = the token's own owner,

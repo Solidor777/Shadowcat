@@ -63,6 +63,14 @@ export async function createUser(opts: {
   return (await res.json()) as ServerUser;
 }
 
+/** Delete a user account (server-admin only). The server refuses self-
+ * deletion and deleting the last administrator with a 409 whose message is
+ * client-actionable — surface it verbatim. */
+export async function deleteUser(id: string): Promise<void> {
+  const res = await fetch(`/api/users/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await restError(res, "delete user failed"));
+}
+
 /** A minted invite. `code` is a bearer credential the server keeps only as a
  * hash — it is returned once, at mint, and is unrecoverable afterwards. */
 export interface MintedInvite {

@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use serde::Serialize;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use ts_rs::TS;
@@ -782,6 +782,11 @@ impl Room {
 /// callers or connections.
 pub struct RoomRegistry {
     rooms: DashMap<Uuid, Arc<Room>>,
+    /// Worlds mid-deletion. `get_or_create` refuses these so an evicted
+    /// client's reconnect (or a racing HTTP document write) cannot re-hydrate
+    /// a room between the eviction broadcast and the DB commit that removes
+    /// the world row. Lifted by `finish_delete` on success AND failure.
+    deleting: DashSet<Uuid>,
     /// Broadcast ring capacity for rooms created by this registry. Production uses
     /// `BROADCAST_CAPACITY`; test harnesses shrink it to force the lag path.
     broadcast_capacity: usize,
@@ -791,6 +796,7 @@ impl RoomRegistry {
     pub fn new() -> Self {
         Self {
             rooms: DashMap::new(),
+            deleting: DashSet::new(),
             broadcast_capacity: BROADCAST_CAPACITY,
         }
     }
@@ -801,17 +807,23 @@ impl RoomRegistry {
     pub fn with_capacity(broadcast_capacity: usize) -> Self {
         Self {
             rooms: DashMap::new(),
+            deleting: DashSet::new(),
             broadcast_capacity,
         }
     }
 
     /// Get the room for an existing world, creating it (seeded from the world's
-    /// current seq) on first join. `None` when the world does not exist.
+    /// current seq) on first join. `None` when the world does not exist or is
+    /// mid-deletion (tombstoned).
     pub async fn get_or_create(
         &self,
         repo: &dyn Repository,
         world_id: Uuid,
     ) -> Result<Option<Arc<Room>>, DataError> {
+        if self.deleting.contains(&world_id) {
+            // Mid-deletion: refuse exactly like an absent world row.
+            return Ok(None);
+        }
         if let Some(r) = self.rooms.get(&world_id) {
             return Ok(Some(r.clone()));
         }
@@ -864,6 +876,22 @@ impl RoomRegistry {
                 ))
             })
             .clone();
+        // TOCTOU closure, two layers. (1) A `begin_delete` still in flight
+        // between the tombstone check above and this insert has already
+        // removed-and-evicted whatever room it saw — which may not include the
+        // one just inserted; the tombstone re-check catches it. (2) A delete
+        // that COMPLETED entirely inside that window (begin → commit →
+        // finish_delete) has already lifted the tombstone, so the flag proves
+        // nothing — re-verify the world ROW. That read is serialized after any
+        // committed delete on the single-writer pool, so a vanished row is
+        // always observed here. Cold-create cost only; the fast path returned
+        // above. Residual: a delete that STARTS after this point removes the
+        // just-inserted room via `begin_delete`'s own `rooms.remove` and
+        // broadcasts the eviction on it.
+        if self.deleting.contains(&world_id) || repo.get_world(world_id).await?.is_none() {
+            self.rooms.remove(&world_id);
+            return Ok(None);
+        }
         Ok(Some(room))
     }
 
@@ -882,6 +910,34 @@ impl RoomRegistry {
         self.rooms.remove_if(&world_id, |_, r| {
             r.stats.connections.load(Ordering::Acquire) <= 0
         });
+    }
+
+    /// Begin a world deletion: tombstone the world (blocking room re-creation)
+    /// and unconditionally remove its live room, returning it so the caller can
+    /// broadcast the eviction frame. Every cache the world holds (navmesh,
+    /// engine, visible-cells, hecs world, ring) is Room-owned, so dropping the
+    /// last Arc frees them all. Pair with `finish_delete` on ALL exit paths.
+    pub fn begin_delete(&self, world_id: Uuid) -> Option<Arc<Room>> {
+        self.deleting.insert(world_id);
+        self.rooms.remove(&world_id).map(|(_, room)| room)
+    }
+
+    /// End a world deletion (success or failure), lifting the tombstone. After
+    /// a committed delete, re-creation is refused by the missing world row;
+    /// after a failure the world is live again and re-creation is legitimate.
+    pub fn finish_delete(&self, world_id: Uuid) {
+        self.deleting.remove(&world_id);
+    }
+
+    /// Address every connection of `user` across all live rooms with a terminal
+    /// eviction frame (account deletion). Rooms without that user's connections
+    /// skip the frame in their egress loops.
+    pub fn evict_user(&self, user: Uuid) {
+        for entry in self.rooms.iter() {
+            entry
+                .value()
+                .broadcast_aux(ServerMsg::Evicted { user: Some(user) });
+        }
     }
 }
 
@@ -995,6 +1051,205 @@ mod room_tests {
             world_role: WorldRole::Gm,
         };
         (repo, world.id, ctx)
+    }
+
+    #[tokio::test]
+    async fn begin_delete_tombstones_and_removes() {
+        let (repo, world_id, _ctx) = repo_with_world().await;
+        let reg = RoomRegistry::new();
+        reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+
+        let room = reg.begin_delete(world_id);
+        assert!(room.is_some(), "live room returned for eviction broadcast");
+        // The world row still exists — the refusal below is the tombstone's.
+        assert!(reg.get_or_create(&repo, world_id).await.unwrap().is_none());
+
+        reg.finish_delete(world_id);
+        assert!(reg.get_or_create(&repo, world_id).await.unwrap().is_some());
+    }
+
+    /// Delegating repo whose `query_documents_by_types` — the LAST hydration
+    /// read in `get_or_create` — performs a COMPLETE world deletion
+    /// (begin_delete → delete_world → finish_delete) on its first call: a
+    /// delete that starts and finishes entirely inside the hydration window,
+    /// after the caller's tombstone check and `get_world` read but before its
+    /// registry insert. At re-check time the tombstone is already lifted, so
+    /// only a world-existence re-verify can refuse the ghost room.
+    struct DeleteMidHydration<'a> {
+        inner: &'a SqliteRepository,
+        registry: &'a RoomRegistry,
+        world: Uuid,
+        fired: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl Repository for DeleteMidHydration<'_> {
+        async fn apply_command(
+            &self,
+            cmd: crate::data::command::UnsequencedCommand,
+        ) -> Result<Command, DataError> {
+            self.inner.apply_command(cmd).await
+        }
+        async fn apply_intent(
+            &self,
+            ctx: &crate::data::membership::PermissionContext,
+            world_id: Uuid,
+            ops: Vec<Operation>,
+            ts: i64,
+            origin: WriteOrigin,
+        ) -> Result<Command, DataError> {
+            self.inner
+                .apply_intent(ctx, world_id, ops, ts, origin)
+                .await
+        }
+        async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DataError> {
+            self.inner.get_document(id).await
+        }
+        async fn query_documents(
+            &self,
+            world_id: Uuid,
+            doc_type: &str,
+        ) -> Result<Vec<Document>, DataError> {
+            self.inner.query_documents(world_id, doc_type).await
+        }
+        async fn query_documents_by_types(
+            &self,
+            world_id: Uuid,
+            doc_types: &[&str],
+        ) -> Result<Vec<Document>, DataError> {
+            if !self.fired.swap(true, Ordering::SeqCst) {
+                self.registry.begin_delete(self.world);
+                self.inner.delete_world(self.world).await?;
+                self.registry.finish_delete(self.world);
+            }
+            self.inner
+                .query_documents_by_types(world_id, doc_types)
+                .await
+        }
+        async fn query_children(&self, parent: Uuid) -> Result<Vec<Document>, DataError> {
+            self.inner.query_children(parent).await
+        }
+        async fn query_scene_entities(&self, world: Uuid) -> Result<Vec<Document>, DataError> {
+            self.inner.query_scene_entities(world).await
+        }
+        async fn documents_by_source(
+            &self,
+            pack: Option<&str>,
+            source_id: Uuid,
+        ) -> Result<Vec<Document>, DataError> {
+            self.inner.documents_by_source(pack, source_id).await
+        }
+        async fn events_since(&self, world_id: Uuid, seq: i64) -> Result<Vec<Command>, DataError> {
+            self.inner.events_since(world_id, seq).await
+        }
+        async fn get_world(
+            &self,
+            id: Uuid,
+        ) -> Result<Option<crate::data::document::World>, DataError> {
+            self.inner.get_world(id).await
+        }
+        async fn member_role(
+            &self,
+            world: Uuid,
+            user: Uuid,
+        ) -> Result<Option<WorldRole>, DataError> {
+            self.inner.member_role(world, user).await
+        }
+        async fn member_id_by_username(
+            &self,
+            world: Uuid,
+            username: &str,
+        ) -> Result<Option<Uuid>, DataError> {
+            self.inner.member_id_by_username(world, username).await
+        }
+        async fn world_cap_defaults(
+            &self,
+            world: Uuid,
+        ) -> Result<crate::data::document::WorldCapDefaults, DataError> {
+            self.inner.world_cap_defaults(world).await
+        }
+        async fn world_cap_requirements(
+            &self,
+            world: Uuid,
+        ) -> Result<Vec<crate::data::document::CapabilityRequirement>, DataError> {
+            self.inner.world_cap_requirements(world).await
+        }
+        async fn world_contract_declarations(
+            &self,
+            world: Uuid,
+        ) -> Result<Vec<crate::data::document::ContractDeclaration>, DataError> {
+            self.inner.world_contract_declarations(world).await
+        }
+        async fn world_schema_declarations(
+            &self,
+            world: Uuid,
+        ) -> Result<Vec<crate::data::document::SchemaDeclaration>, DataError> {
+            self.inner.world_schema_declarations(world).await
+        }
+        async fn world_enabled_modules(&self, world: Uuid) -> Result<Vec<String>, DataError> {
+            self.inner.world_enabled_modules(world).await
+        }
+        async fn search(
+            &self,
+            ctx: &crate::data::membership::PermissionContext,
+            world_id: Uuid,
+            query: &str,
+            limit: u32,
+            cursor: Option<i64>,
+        ) -> Result<crate::data::search::SearchPage, DataError> {
+            self.inner.search(ctx, world_id, query, limit, cursor).await
+        }
+        async fn get_explored(
+            &self,
+            scene: Uuid,
+            user: Uuid,
+        ) -> Result<Option<Vec<u8>>, DataError> {
+            self.inner.get_explored(scene, user).await
+        }
+    }
+
+    #[tokio::test]
+    async fn get_or_create_refuses_when_delete_completes_mid_hydration() {
+        let (repo, world_id, _ctx) = repo_with_world().await;
+        let reg = RoomRegistry::new();
+        let wrapper = DeleteMidHydration {
+            inner: &repo,
+            registry: &reg,
+            world: world_id,
+            fired: std::sync::atomic::AtomicBool::new(false),
+        };
+        // The deletion completes (tombstone lifted, row gone) while hydration
+        // is still in flight; the lifted flag alone proves nothing at re-check
+        // time — only the world row's absence can.
+        let room = reg.get_or_create(&wrapper, world_id).await.unwrap();
+        assert!(room.is_none(), "ghost room registered for a deleted world");
+        assert!(reg.get(world_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn evict_user_reaches_every_room() {
+        let (repo, w1, _ctx) = repo_with_world().await;
+        let author2 = repo
+            .create_user("b", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w2 = repo.create_world_owned("W2", author2, 0).await.unwrap().id;
+
+        let reg = RoomRegistry::new();
+        let r1 = reg.get_or_create(&repo, w1).await.unwrap().unwrap();
+        let r2 = reg.get_or_create(&repo, w2).await.unwrap().unwrap();
+        let (mut rx1, _) = r1.subscribe();
+        let (mut rx2, _) = r2.subscribe();
+
+        let target = Uuid::new_v4();
+        reg.evict_user(target);
+
+        for rx in [&mut rx1, &mut rx2] {
+            match rx.recv().await.unwrap().as_ref() {
+                ServerMsg::Evicted { user } => assert_eq!(*user, Some(target)),
+                other => panic!("expected Evicted, got {other:?}"),
+            }
+        }
     }
 
     #[tokio::test]

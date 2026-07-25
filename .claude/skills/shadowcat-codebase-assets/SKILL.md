@@ -51,6 +51,12 @@ and serves uploads unconverted (the conversion pipeline is deferred).
 - **ETag == `"{id}-{version}"`**; `version` is the single monotonic cache key. Stable UUID identity
   means a replace keeps the id and only bumps the version, so links survive (ARCHITECTURE §6).
 - **Upload limits are tiered + configurable** (GM ≈ 2× regular); uploads stream to disk, not buffered.
+- **World deletion removes the whole `<assets_path>/<world_id>/` directory AFTER the row
+  transaction commits** (`routes::delete_world` — the delete convention: rows first, files second;
+  a crash orphans files on disk, never a live world missing its files), holding the write
+  barrier's read side across the commit + `remove_dir_all` pair like every other asset file-op.
+  Asset ROWS go with the `assets.world_id` FK cascade; the dir sweep also collects any orphaned
+  `*.tmp` staging residue.
 
 ## Gotchas
 

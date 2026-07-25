@@ -92,6 +92,28 @@ describe("WsClient", () => {
     expect(seen).toEqual([{ uuid: "a1", op: "replaced" }]);
   });
 
+  it("evicted frame stops the client (no reconnect) and fires onEvicted", async () => {
+    let push!: (frame: ServerMsg) => void;
+    let opens = 0;
+    const connect: Connect = (handlers) => {
+      opens += 1;
+      push = (frame) => handlers.onMessage(JSON.stringify(frame));
+      return Promise.resolve({ send: () => {}, close: () => {} });
+    };
+    let evictions = 0;
+    const client = new WsClient({
+      connect,
+      handlers: { onCommand: () => {}, onEvicted: () => evictions++ },
+    });
+    await client.start();
+    push({ type: "evicted", user: null });
+    await flush();
+    expect(evictions).toBe(1);
+    expect(client.running).toBe(false);
+    await flush();
+    expect(opens).toBe(1); // no reconnect attempt followed
+  });
+
   it("applies live events in order", async () => {
     const server = new MockServer();
     const store = new DocumentStore();

@@ -326,6 +326,18 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   closes that second gap; do not remove either mechanism assuming the other already covers it.
 - **Check-then-act across two queries needs one transaction** — TOCTOU-racy even at
   `max_connections(1)` [[two-query-guard-needs-tx]].
+- **`delete_document_tx` (`data/sqlite.rs`) is the SINGLE SOURCE for document-delete
+  side-effects** — the row, both FTS tables, and the document's `explored_fog` rows (scene fog
+  purge, unconditional by id: only scenes ever appear as `explored_fog.scene_id`, so there is no
+  doc_type predicate to drift). BOTH authoritative loops (`apply_intent`, `apply_command`) call
+  it; never re-inline a Delete's statements into one loop. World deletion (`delete_world`) relies
+  on FK cascades instead — the FTS AFTER DELETE triggers fire under cascade (test-pinned) — plus
+  explicit purges for the FK-less `explored_fog` and the five per-world `settings` blobs
+  (`world_settings_keys` is the single source for that key list). User deletion (`delete_user`)
+  also nulls each owned document's JSON-body `owner` in lockstep with the SET-NULL'd `owner_id`
+  column — the column is a denormalized copy, and the two representations must not fork.
+- **`Asset.created_by` is `Option<Uuid>`** (`ON DELETE SET NULL`, wire `string | null`): NULL
+  means the uploading account was deleted; never assume attribution is present.
 - **`INSERT … ON CONFLICT(id)` on a mutated id duplicates rather than moves** the row
   [[upsert-on-conflict-duplicates-not-moves]].
 

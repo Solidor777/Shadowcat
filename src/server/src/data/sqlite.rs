@@ -134,7 +134,7 @@ impl SqliteRepository {
         .bind(&a.original_name)
         .bind(&a.content_type)
         .bind(a.byte_size)
-        .bind(a.created_by.to_string())
+        .bind(a.created_by.map(|u| u.to_string()))
         .bind(a.created_at)
         .bind(a.version)
         .execute(&self.pool)
@@ -153,7 +153,10 @@ impl SqliteRepository {
             original_name: row.get("original_name"),
             content_type: row.get("content_type"),
             byte_size: row.get("byte_size"),
-            created_by: parse(row.get::<String, _>("created_by"))?,
+            created_by: row
+                .get::<Option<String>, _>("created_by")
+                .map(parse)
+                .transpose()?,
             created_at: row.get("created_at"),
             version: row.get("version"),
         })
@@ -312,6 +315,82 @@ impl SqliteRepository {
         .fetch_one(&mut *tx)
         .await?;
         Ok(n <= 1)
+    }
+
+    /// Whether `user` is the server's sole administrator, evaluated on the
+    /// supplied tx connection for the same TOCTOU reason as `is_last_gm`: the
+    /// count check and the delete must be one atomic unit on the single-writer
+    /// pool, or two concurrent deletes could each pass the check.
+    async fn is_last_admin(tx: &mut sqlx::SqliteConnection, user: Uuid) -> Result<bool, DataError> {
+        let target: Option<String> =
+            sqlx::query_scalar("SELECT server_role FROM users WHERE id = ?")
+                .bind(user.to_string())
+                .fetch_optional(&mut *tx)
+                .await?;
+        if target.as_deref() != Some(crate::auth::role::ServerRole::Admin.as_str()) {
+            return Ok(false);
+        }
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE server_role = ?")
+            .bind(crate::auth::role::ServerRole::Admin.as_str())
+            .fetch_one(&mut *tx)
+            .await?;
+        Ok(n <= 1)
+    }
+
+    /// Delete a user account and everything keyed to it, in one transaction:
+    /// memberships CASCADE; documents.owner_id / world_events.author_id /
+    /// world_invites.{created_by,consumed_by} SET NULL; assets.created_by SET
+    /// NULL (0011); each owned document's JSON-body `owner` is nulled in
+    /// lockstep with its column; explored_fog rows (no FK; unindexed scan —
+    /// rare admin op) and live sessions are purged explicitly. Sessions MUST die in this same
+    /// transaction: `AuthUser` trusts the session record without re-reading
+    /// `users`, so a surviving row keeps a deleted account authenticated until
+    /// cookie expiry. Refuses to delete the last administrator.
+    /// Implicit coupling: `tower_sessions` is created by `SqlxSqliteStore::
+    /// migrate` at boot (main.rs), before any route can reach this; repo-level
+    /// tests must run that migrate themselves.
+    pub async fn delete_user(&self, target: Uuid) -> Result<(), DataError> {
+        let mut tx = self.pool.begin().await?;
+        if Self::is_last_admin(&mut tx, target).await? {
+            return Err(DataError::Conflict(
+                "cannot delete the server's only administrator".into(),
+            ));
+        }
+        let res = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(target.to_string())
+            .execute(&mut *tx)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(DataError::NotFound);
+        }
+        // A document's `owner` ALSO lives inside its JSON body — the
+        // `owner_id` column the FK just SET NULL'd is a denormalized copy.
+        // Null the JSON field in the same tx so the two representations cannot
+        // disagree (never-fork). A ghost owner would be fail-closed anyway (a
+        // deleted id matches no session, and ids are never reused), so this is
+        // structural agreement, not a behavioral gate. Embedded children keep
+        // any stale owner reference: they have no owner_id column (no
+        // split-brain to close) and the same fail-closed reasoning applies,
+        // uniform with historical event-log blobs.
+        sqlx::query(
+            "UPDATE documents SET json = json_set(json, '$.owner', null) \
+             WHERE json_extract(json, '$.owner') = ?",
+        )
+        .bind(target.to_string())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM explored_fog WHERE user_id = ?")
+            .bind(target.to_string())
+            .execute(&mut *tx)
+            .await?;
+        // Session identity lives at $.data.user.id inside the JSON blob (the
+        // store has no user_id column); JSON1 ships in the bundled SQLite.
+        sqlx::query("DELETE FROM tower_sessions WHERE json_extract(data, '$.data.user.id') = ?")
+            .bind(target.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Change an existing member's role; `NotFound` if they are not a member.
@@ -514,9 +593,38 @@ impl SqliteRepository {
         Ok(row.map(|r| r.get::<Vec<u8>, _>("cells")))
     }
 
+    /// Delete a world and every row keyed to it, in one transaction. FK cascades
+    /// cover world_members/documents/world_events/assets/world_invites, and the
+    /// FTS AFTER DELETE triggers fire under cascade (pinned by test).
+    /// `explored_fog` and the per-world `settings` blobs have no FK and are
+    /// purged explicitly. Files on disk are the caller's concern — delete
+    /// ordering is rows-first, files-second (http/assets.rs delete convention).
+    pub async fn delete_world(&self, world: Uuid) -> Result<(), DataError> {
+        let mut tx = self.pool.begin().await?;
+        let res = sqlx::query("DELETE FROM worlds WHERE id = ?")
+            .bind(world.to_string())
+            .execute(&mut *tx)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(DataError::NotFound);
+        }
+        sqlx::query("DELETE FROM explored_fog WHERE world_id = ?")
+            .bind(world.to_string())
+            .execute(&mut *tx)
+            .await?;
+        for key in world_settings_keys(world) {
+            sqlx::query("DELETE FROM settings WHERE key = ?")
+                .bind(key)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Upsert the player's explored-cell blob for a scene. Keyed `(scene_id, user_id)`; `world_id`
-    /// is denormalized for a future world-scoped purge (not yet wired — worlds aren't deletable;
-    /// orphans are harmless as reads key on the exact never-reused UUIDs). Write is whole-blob
+    /// is denormalized for the world-scoped purge (rows are purged by `delete_world` (world-scoped),
+    /// `delete_user` (user-scoped), and `delete_document_tx` (scene-scoped)). Write is whole-blob
     /// last-writer-wins: two of the
     /// user's sockets accumulating concurrently can transiently drop a cell one added but the other
     /// didn't observe. Self-healing: explored is a re-derivable dimmed-memory layer (a dropped cell
@@ -651,10 +759,10 @@ impl SqliteRepository {
     /// The `NOCASE` half mirrors `create_user_unique`: without it an admin
     /// named `Alice` could coexist with a user named `alice` and be
     /// indistinguishable from them in a roster — the impersonation the ASCII
-    /// username policy exists to prevent. Unreachable while no delete-user or
-    /// demote-admin route exists (accounts other than the first can only be
-    /// created BY an admin, so "no admin, but users exist" cannot arise), which
-    /// is exactly why it is guarded here rather than left to that future route.
+    /// username policy exists to prevent. Reachable since `DELETE
+    /// /api/users/{id}` exists: deletion is last-admin-guarded, so "users
+    /// exist but no admin" still cannot arise — the NOCASE guard below stays
+    /// as the structural backstop.
     pub async fn create_admin_if_none(
         &self,
         username: &str,
@@ -765,6 +873,47 @@ impl SqliteRepository {
             .bind(serde_json::to_value(role)?.as_str().unwrap().to_string())
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    /// Add a member or change an existing member's role — resolve, guard, and
+    /// write in ONE transaction (a standalone user_exists → member_role →
+    /// set_role/add_member sequence is a TOCTOU: a user deleted between the
+    /// check and the insert resurfaces the FK 500 the 404 contract exists to
+    /// prevent). The guarded INSERT..SELECT proves user AND world existence
+    /// atomically with the upsert: rows_affected == 0 ⇔ target user or world
+    /// missing → NotFound. The sole-GM demotion guard runs on the same tx.
+    pub async fn upsert_member(
+        &self,
+        world: Uuid,
+        user: Uuid,
+        role: WorldRole,
+    ) -> Result<(), DataError> {
+        let mut tx = self.pool.begin().await?;
+        if role != WorldRole::Gm && Self::is_last_gm(&mut tx, world, user).await? {
+            return Err(DataError::Conflict(
+                "cannot demote the world's only GM".into(),
+            ));
+        }
+        let role_s = serde_json::to_value(role)?.as_str().unwrap().to_string();
+        let res = sqlx::query(
+            "INSERT INTO world_members (world_id, user_id, role) \
+             SELECT ?, ?, ? \
+             WHERE EXISTS (SELECT 1 FROM users WHERE id = ?) \
+               AND EXISTS (SELECT 1 FROM worlds WHERE id = ?) \
+             ON CONFLICT(world_id, user_id) DO UPDATE SET role = excluded.role",
+        )
+        .bind(world.to_string())
+        .bind(user.to_string())
+        .bind(role_s)
+        .bind(user.to_string())
+        .bind(world.to_string())
+        .execute(&mut *tx)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Err(DataError::NotFound);
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1224,6 +1373,29 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// Apply a document Delete inside `tx`: the row, its FTS entries, and its
+    /// explored-fog rows. SINGLE SOURCE for delete side-effects — BOTH
+    /// authoritative delete paths (`apply_intent`, `apply_command`) call this,
+    /// so they cannot drift (never-fork). The fog purge is unconditional by id:
+    /// only scene documents ever appear as `explored_fog.scene_id`, so it is a
+    /// no-op for every other doc_type and carries no doc_type predicate that
+    /// could drift from the fog writer's keying.
+    async fn delete_document_tx(
+        tx: &mut sqlx::SqliteConnection,
+        id: Uuid,
+    ) -> Result<(), DataError> {
+        sqlx::query("DELETE FROM documents WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        Self::delete_document_fts(&mut *tx, id).await?;
+        sqlx::query("DELETE FROM explored_fog WHERE scene_id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        Ok(())
+    }
+
     /// Test-only raw insert that bypasses every ingress gate, including
     /// `apply_command`/`apply_intent`'s `/engine` normalization — seeds a
     /// `Document` exactly as given, malformed `engine` body included, to
@@ -1410,11 +1582,7 @@ impl Repository for SqliteRepository {
                 }
                 Operation::Delete { doc } => {
                     check_command_scope(doc, sequenced.world_id)?;
-                    sqlx::query("DELETE FROM documents WHERE id = ?")
-                        .bind(doc.id.to_string())
-                        .execute(&mut *tx)
-                        .await?;
-                    Self::delete_document_fts(&mut tx, doc.id).await?;
+                    Self::delete_document_tx(&mut tx, doc.id).await?;
                     normalized_ops.push(op.clone());
                 }
                 Operation::Update { doc_id, changes } => {
@@ -1885,11 +2053,7 @@ impl Repository for SqliteRepository {
                     normalized_ops.push(op.clone());
                 }
                 Operation::Delete { doc } => {
-                    sqlx::query("DELETE FROM documents WHERE id = ?")
-                        .bind(doc.id.to_string())
-                        .execute(&mut *tx)
-                        .await?;
-                    Self::delete_document_fts(&mut tx, doc.id).await?;
+                    Self::delete_document_tx(&mut tx, doc.id).await?;
                     normalized_ops.push(op.clone());
                 }
                 Operation::Update { doc_id, changes } => {
@@ -2340,6 +2504,20 @@ fn world_modules_key(world: Uuid) -> String {
     format!("world_modules:{world}")
 }
 
+/// The per-world `settings` keys. SINGLE SOURCE for "what world-scoped
+/// settings blobs exist": `delete_world`'s purge iterates this array, so a
+/// new per-world blob added here is purged automatically (never-fork; adding
+/// a sixth key fn without extending this array is the drift this prevents).
+fn world_settings_keys(world: Uuid) -> [String; 5] {
+    [
+        world_caps_key(world),
+        world_caps_req_key(world),
+        world_contracts_key(world),
+        world_schemas_key(world),
+        world_modules_key(world),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2611,6 +2789,545 @@ mod tests {
         assert!(repo.query_children(token).await.unwrap().is_empty());
     }
 
+    /// Seed `world` with one of every world-keyed row family: a member, a
+    /// scene doc + child token (⇒ documents, FTS rows, a world_events row),
+    /// an asset, an invite, an explored_fog row, and all five settings blobs.
+    /// Returns the scene id.
+    async fn seed_world_rows(repo: &SqliteRepository, world: Uuid, owner: Uuid) -> Uuid {
+        let scene = Uuid::new_v4();
+        let token = Uuid::new_v4();
+        let mk = |id, parent: Option<Uuid>, ty| {
+            let mut d = crate::data::document::tests::world_scoped_doc(world, id, ty);
+            d.parent_id = parent;
+            d.owner = Some(owner);
+            d.name = Some("Searchable alpha text".into());
+            Operation::Create { doc: d }
+        };
+        repo.apply_command(UnsequencedCommand {
+            world_id: world,
+            author: owner,
+            ts: 0,
+            ops: vec![mk(scene, None, "scene"), mk(token, Some(scene), "token")],
+        })
+        .await
+        .unwrap();
+        repo.insert_asset(&crate::data::asset::Asset {
+            id: Uuid::new_v4(),
+            world_id: world,
+            storage_key: format!("{world}/asset"),
+            original_name: "a.png".into(),
+            content_type: "image/png".into(),
+            byte_size: 4,
+            created_by: Some(owner),
+            created_at: 0,
+            version: 1,
+        })
+        .await
+        .unwrap();
+        assert!(repo
+            .create_invite(
+                NewInvite {
+                    id: Uuid::new_v4(),
+                    world,
+                    secret_hash: "phc",
+                    role: WorldRole::Player,
+                    created_by: owner,
+                    now: 0,
+                    expires_at: i64::MAX,
+                },
+                10,
+            )
+            .await
+            .unwrap());
+        repo.set_explored(world, scene, owner, &[1, 0, 0, 0, 2, 0, 0, 0])
+            .await
+            .unwrap();
+        repo.set_world_cap_defaults(world, &WorldCapDefaults::default())
+            .await
+            .unwrap();
+        repo.set_world_cap_requirements(world, &[]).await.unwrap();
+        repo.set_world_contract_declarations(world, &[])
+            .await
+            .unwrap();
+        repo.set_world_schema_declarations(world, &[])
+            .await
+            .unwrap();
+        repo.set_world_enabled_modules(world, &[]).await.unwrap();
+        scene
+    }
+
+    /// COUNT(*) of rows in `table` whose `col` equals `bind`. Test-only
+    /// dynamic identifiers (values stay parameterized), hence `AssertSqlSafe`.
+    async fn count_where(repo: &SqliteRepository, table: &str, col: &str, bind: String) -> i64 {
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT COUNT(*) FROM {table} WHERE {col} = ?"
+        )))
+        .bind(bind)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn delete_world_removes_every_keyed_row() {
+        let repo = repo().await;
+        let u1 = repo
+            .create_user("u1", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let u2 = repo
+            .create_user("u2", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w1 = repo.create_world_owned("w1", u1, 0).await.unwrap().id;
+        let w2 = repo.create_world_owned("w2", u2, 0).await.unwrap().id;
+        repo.add_member(w1, u2, WorldRole::Player).await.unwrap();
+        seed_world_rows(&repo, w1, u1).await;
+        seed_world_rows(&repo, w2, u2).await;
+
+        repo.delete_world(w1).await.expect("delete w1");
+
+        // Every world-keyed family: w1 rows gone, w2 rows intact.
+        for (table, col, gone, kept) in [
+            ("worlds", "id", 0, 1),
+            ("world_members", "world_id", 0, 1),
+            ("documents", "world_id", 0, 2),
+            ("world_events", "world_id", 0, 1),
+            ("assets", "world_id", 0, 1),
+            ("world_invites", "world_id", 0, 1),
+            ("explored_fog", "world_id", 0, 1),
+            // THE PIN: the FTS AFTER DELETE triggers fired under the FK
+            // cascade on the bundled SQLite — no explicit FTS delete exists
+            // in delete_world's transaction.
+            ("documents_fts_public", "world_id", 0, 2),
+            ("documents_fts_gm", "world_id", 0, 2),
+        ] {
+            assert_eq!(
+                count_where(&repo, table, col, w1.to_string()).await,
+                gone,
+                "{table} rows for deleted w1"
+            );
+            assert_eq!(
+                count_where(&repo, table, col, w2.to_string()).await,
+                kept,
+                "{table} rows for surviving w2"
+            );
+        }
+        // The five FK-less settings blobs are purged for w1, kept for w2.
+        for (k1, k2) in [
+            (world_caps_key(w1), world_caps_key(w2)),
+            (world_caps_req_key(w1), world_caps_req_key(w2)),
+            (world_contracts_key(w1), world_contracts_key(w2)),
+            (world_schemas_key(w1), world_schemas_key(w2)),
+            (world_modules_key(w1), world_modules_key(w2)),
+        ] {
+            assert_eq!(count_where(&repo, "settings", "key", k1).await, 0);
+            assert_eq!(count_where(&repo, "settings", "key", k2).await, 1);
+        }
+        // The deleted world's users survive (only membership rows cascade).
+        assert!(repo.user_exists(u1).await.unwrap());
+    }
+
+    /// Persist a REAL session record for `user` through the production store,
+    /// so assertions against `$.data.user.id` exercise the actual `save()`
+    /// serialization, not a hand-rolled imitation of it.
+    async fn seed_session(repo: &SqliteRepository, key: i128, user: Uuid, name: &str) {
+        use tower_sessions::session_store::SessionStore;
+        let store = crate::auth::session::SqlxSqliteStore::new(repo.pool().clone());
+        store.migrate().await.unwrap();
+        let mut data = std::collections::HashMap::new();
+        data.insert(
+            "user".to_string(),
+            serde_json::to_value(crate::auth::session::SessionUser {
+                id: user,
+                username: name.into(),
+                role: ServerRole::User,
+            })
+            .unwrap(),
+        );
+        let record = tower_sessions::session::Record {
+            id: tower_sessions::session::Id(key),
+            data,
+            expiry_date: tower_sessions::cookie::time::OffsetDateTime::now_utc()
+                + tower_sessions::cookie::time::Duration::days(1),
+        };
+        store.save(&record).await.unwrap();
+    }
+
+    /// COUNT(*) of live sessions whose embedded identity is `user`.
+    async fn session_count_for(repo: &SqliteRepository, user: Uuid) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tower_sessions \
+             WHERE json_extract(data, '$.data.user.id') = ?",
+        )
+        .bind(user.to_string())
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn delete_user_scrubs_everything() {
+        let repo = repo().await;
+        let admin = repo
+            .create_user("root", Some("h"), ServerRole::Admin, 0)
+            .await
+            .unwrap();
+        let u = repo
+            .create_user("u", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("w", admin, 0).await.unwrap().id;
+        repo.add_member(w, u, WorldRole::Player).await.unwrap();
+
+        // U owns a document and authors its creating event.
+        let scene = Uuid::new_v4();
+        let mut d = crate::data::document::tests::world_scoped_doc(w, scene, "scene");
+        d.owner = Some(u);
+        repo.apply_command(UnsequencedCommand {
+            world_id: w,
+            author: u,
+            ts: 0,
+            ops: vec![Operation::Create { doc: d }],
+        })
+        .await
+        .unwrap();
+        // U uploaded an asset and minted an invite.
+        let asset_id = Uuid::new_v4();
+        repo.insert_asset(&crate::data::asset::Asset {
+            id: asset_id,
+            world_id: w,
+            storage_key: format!("{w}/{asset_id}"),
+            original_name: "a.png".into(),
+            content_type: "image/png".into(),
+            byte_size: 4,
+            created_by: Some(u),
+            created_at: 0,
+            version: 1,
+        })
+        .await
+        .unwrap();
+        assert!(repo
+            .create_invite(
+                NewInvite {
+                    id: Uuid::new_v4(),
+                    world: w,
+                    secret_hash: "phc",
+                    role: WorldRole::Player,
+                    created_by: u,
+                    now: 0,
+                    expires_at: i64::MAX,
+                },
+                10,
+            )
+            .await
+            .unwrap());
+        // Fog memory for U (purged) and for the admin (survives).
+        repo.set_explored(w, scene, u, &[1, 0, 0, 0, 2, 0, 0, 0])
+            .await
+            .unwrap();
+        repo.set_explored(w, scene, admin, &[1, 0, 0, 0, 2, 0, 0, 0])
+            .await
+            .unwrap();
+        // Live sessions for both.
+        seed_session(&repo, 1, u, "u").await;
+        seed_session(&repo, 2, admin, "root").await;
+
+        repo.delete_user(u).await.expect("delete");
+
+        assert!(!repo.user_exists(u).await.unwrap());
+        assert_eq!(
+            count_where(&repo, "world_members", "user_id", u.to_string()).await,
+            0
+        );
+        // SET NULL families: the rows survive, attribution nulls.
+        assert_eq!(repo.get_document(scene).await.unwrap().unwrap().owner, None);
+        assert_eq!(
+            count_where(&repo, "world_events", "author_id", u.to_string()).await,
+            0
+        );
+        let null_authored: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM world_events WHERE author_id IS NULL")
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(null_authored, 1, "event row survives with author nulled");
+        let a = repo.get_asset(asset_id).await.unwrap().expect("row intact");
+        assert_eq!(a.created_by, None);
+        assert_eq!(
+            count_where(&repo, "world_invites", "created_by", u.to_string()).await,
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM world_invites WHERE created_by IS NULL"
+            )
+            .fetch_one(repo.pool())
+            .await
+            .unwrap(),
+            1,
+            "invite row survives with minter nulled"
+        );
+        // FK-less purges: U's fog and sessions die, the admin's survive.
+        assert_eq!(
+            count_where(&repo, "explored_fog", "user_id", u.to_string()).await,
+            0
+        );
+        assert_eq!(
+            count_where(&repo, "explored_fog", "user_id", admin.to_string()).await,
+            1
+        );
+        assert_eq!(session_count_for(&repo, u).await, 0);
+        assert_eq!(session_count_for(&repo, admin).await, 1);
+    }
+
+    #[tokio::test]
+    async fn delete_user_guards() {
+        let repo = repo().await;
+        // delete_user's documented boot coupling: the session table exists
+        // before any route can reach it; repo-level tests create it themselves.
+        crate::auth::session::SqlxSqliteStore::new(repo.pool().clone())
+            .migrate()
+            .await
+            .unwrap();
+        assert!(matches!(
+            repo.delete_user(Uuid::new_v4()).await,
+            Err(DataError::NotFound)
+        ));
+        let a1 = repo
+            .create_user("a1", Some("h"), ServerRole::Admin, 0)
+            .await
+            .unwrap();
+        match repo.delete_user(a1).await {
+            Err(DataError::Conflict(m)) => {
+                assert_eq!(m, "cannot delete the server's only administrator")
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+        let a2 = repo
+            .create_user("a2", Some("h"), ServerRole::Admin, 0)
+            .await
+            .unwrap();
+        repo.delete_user(a1)
+            .await
+            .expect("with two admins, deleting one succeeds");
+        assert!(
+            matches!(repo.delete_user(a2).await, Err(DataError::Conflict(_))),
+            "the survivor is now the last admin"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_delete_nulls_asset_created_by() {
+        let repo = repo().await;
+        let u = repo
+            .create_user("u", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let keeper = repo
+            .create_user("keeper", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("w", keeper, 0).await.unwrap().id;
+        let asset_id = Uuid::new_v4();
+        repo.insert_asset(&crate::data::asset::Asset {
+            id: asset_id,
+            world_id: w,
+            storage_key: format!("{w}/{asset_id}"),
+            original_name: "a.png".into(),
+            content_type: "image/png".into(),
+            byte_size: 4,
+            created_by: Some(u),
+            created_at: 0,
+            version: 1,
+        })
+        .await
+        .unwrap();
+
+        // Raw row delete: this pins the 0011 FK ACTION itself (repo-level
+        // delete_user arrives in the next task).
+        sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(u.to_string())
+            .execute(repo.pool())
+            .await
+            .expect("user delete must not FK-fail on authored assets");
+
+        let a = repo.get_asset(asset_id).await.unwrap().expect("row intact");
+        assert_eq!(a.created_by, None);
+        assert_eq!(a.byte_size, 4);
+        assert_eq!(a.version, 1);
+    }
+
+    #[tokio::test]
+    async fn delete_world_not_found() {
+        let repo = repo().await;
+        assert!(matches!(
+            repo.delete_world(Uuid::new_v4()).await,
+            Err(DataError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn upsert_member_inserts_updates_and_guards() {
+        let repo = repo().await;
+        let gm = repo
+            .create_user("gm", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let p = repo
+            .create_user("p", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("w", gm, 0).await.unwrap().id;
+
+        // New member insert.
+        repo.upsert_member(w, p, WorldRole::Player).await.unwrap();
+        assert_eq!(
+            repo.member_role(w, p).await.unwrap(),
+            Some(WorldRole::Player)
+        );
+        // Same call with a different role updates in place (upsert).
+        repo.upsert_member(w, p, WorldRole::Spectator)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.member_role(w, p).await.unwrap(),
+            Some(WorldRole::Spectator)
+        );
+        // Demoting the world's ONLY GM → Conflict.
+        match repo.upsert_member(w, gm, WorldRole::Player).await {
+            Err(DataError::Conflict(m)) => {
+                assert_eq!(m, "cannot demote the world's only GM")
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+        // With a second GM promoted, demoting the first succeeds.
+        repo.upsert_member(w, p, WorldRole::Gm).await.unwrap();
+        repo.upsert_member(w, gm, WorldRole::Player).await.unwrap();
+        assert_eq!(
+            repo.member_role(w, gm).await.unwrap(),
+            Some(WorldRole::Player)
+        );
+        // Unknown user or unknown world → NotFound, never an FK 500.
+        assert!(matches!(
+            repo.upsert_member(w, Uuid::new_v4(), WorldRole::Player)
+                .await,
+            Err(DataError::NotFound)
+        ));
+        assert!(matches!(
+            repo.upsert_member(Uuid::new_v4(), p, WorldRole::Player)
+                .await,
+            Err(DataError::NotFound)
+        ));
+    }
+
+    /// World + owner + a scene doc with one token child + fog rows for the
+    /// scene (owner and `other`) + a fog row for a second scene (survivor).
+    /// Returns `(world, scene_id, other_scene_id, other_user)`.
+    async fn fog_purge_fixture(repo: &SqliteRepository, owner: Uuid) -> (Uuid, Uuid, Uuid, Uuid) {
+        let other = repo
+            .create_user("watcher", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("w", owner, 0).await.unwrap().id;
+        let scene = Uuid::new_v4();
+        let token = Uuid::new_v4();
+        let other_scene = Uuid::new_v4();
+        let mk = |id, parent: Option<Uuid>, ty| {
+            let mut d = crate::data::document::tests::world_scoped_doc(w, id, ty);
+            d.parent_id = parent;
+            d.owner = Some(owner);
+            Operation::Create { doc: d }
+        };
+        repo.apply_command(UnsequencedCommand {
+            world_id: w,
+            author: owner,
+            ts: 0,
+            ops: vec![
+                mk(scene, None, "scene"),
+                mk(token, Some(scene), "token"),
+                mk(other_scene, None, "scene"),
+            ],
+        })
+        .await
+        .unwrap();
+        for user in [owner, other] {
+            repo.set_explored(w, scene, user, &[1, 0, 0, 0, 2, 0, 0, 0])
+                .await
+                .unwrap();
+        }
+        repo.set_explored(w, other_scene, owner, &[1, 0, 0, 0, 2, 0, 0, 0])
+            .await
+            .unwrap();
+        (w, scene, other_scene, other)
+    }
+
+    #[tokio::test]
+    async fn scene_delete_purges_fog_via_apply_intent() {
+        let repo = repo().await;
+        let owner = repo
+            .create_user("u", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let (w, scene, other_scene, _other) = fog_purge_fixture(&repo, owner).await;
+
+        let ctx = repo
+            .permission_context(w, owner, ServerRole::User)
+            .await
+            .unwrap();
+        let scene_doc = repo.get_document(scene).await.unwrap().unwrap();
+        repo.apply_intent(
+            &ctx,
+            w,
+            vec![Operation::Delete { doc: scene_doc }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            count_where(&repo, "explored_fog", "scene_id", scene.to_string()).await,
+            0,
+            "deleted scene's fog rows purged (all users)"
+        );
+        assert_eq!(
+            count_where(&repo, "explored_fog", "scene_id", other_scene.to_string()).await,
+            1,
+            "other scene's fog survives"
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_delete_purges_fog_via_apply_command() {
+        let repo = repo().await;
+        let owner = repo
+            .create_user("u", Some("h"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let (w, scene, other_scene, _other) = fog_purge_fixture(&repo, owner).await;
+
+        let scene_doc = repo.get_document(scene).await.unwrap().unwrap();
+        repo.apply_command(UnsequencedCommand {
+            world_id: w,
+            author: owner,
+            ts: 1,
+            ops: vec![Operation::Delete { doc: scene_doc }],
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            count_where(&repo, "explored_fog", "scene_id", scene.to_string()).await,
+            0,
+            "apply_command parity: fog purged through the same shared helper"
+        );
+        assert_eq!(
+            count_where(&repo, "explored_fog", "scene_id", other_scene.to_string()).await,
+            1
+        );
+    }
+
     #[tokio::test]
     async fn deleting_a_scene_expands_to_descendant_delete_ops() {
         let repo = repo().await;
@@ -2867,7 +3584,7 @@ mod tests {
             original_name: "battlemap.png".into(),
             content_type: "image/png".into(),
             byte_size: 1234,
-            created_by: owner,
+            created_by: Some(owner),
             created_at: 0,
             version: 1,
         };

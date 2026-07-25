@@ -2,6 +2,7 @@ import { expect, test, vi, afterEach } from "vitest";
 import {
   listUsers,
   createUser,
+  deleteUser,
   listWorldMembers,
   createWorldInvite,
   listWorldInvites,
@@ -21,6 +22,26 @@ test("listUsers GETs /api/users and returns the parsed accounts", async () => {
   const got = await listUsers();
   expect(fetchMock).toHaveBeenCalledWith("/api/users", expect.any(Object));
   expect(got).toEqual([{ id: "u-1", username: "root-admin", server_role: "admin" }]);
+});
+
+test("deleteUser issues DELETE and surfaces the server error body", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+  vi.stubGlobal("fetch", fetchMock);
+  await deleteUser("u-2");
+  expect(fetchMock.mock.calls[0][0]).toBe("/api/users/u-2");
+  expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("DELETE");
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: "cannot delete the server's only administrator" }),
+    }),
+  );
+  await expect(deleteUser("u-2")).rejects.toThrow(
+    "cannot delete the server's only administrator",
+  );
 });
 
 test("listUsers surfaces the server's reason on the non-admin 403", async () => {

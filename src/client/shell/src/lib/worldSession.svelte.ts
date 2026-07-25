@@ -52,6 +52,9 @@ export interface WorldSessionOpts {
   modules: Module[];
   /** Diagnostics sink; defaults to the leveled console logger. */
   logger?: Logger;
+  /** Terminal eviction (this world or this account was deleted). The WsClient
+   *  has already stopped — the shell routes the user out of the world. */
+  onEvicted?: () => void;
 }
 
 export class WorldSession {
@@ -385,6 +388,7 @@ export class WorldSession {
         // rebased; replay any intents queued while offline so they converge.
         onResyncComplete: () => this.#flushOfflineQueue(),
         onError: (e) => this.#logger.error("world session ws error", e),
+        onEvicted: () => this.opts.onEvicted?.(),
         onAssetChanged: (msg) => {
           // Bump the resolver first so a notified panel re-resolves the new URL.
           this.assets.onAssetChanged(msg);

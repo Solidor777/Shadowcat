@@ -14,6 +14,7 @@ vi.mock("@shadowcat/core", async (importOriginal) => {
     createUser: vi
       .fn()
       .mockResolvedValue({ id: "u-3", username: "new-player", server_role: "user" }),
+    deleteUser: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -77,6 +78,36 @@ describe("UserManager", () => {
         expect.objectContaining({ serverRole: "admin" }),
       ),
     );
+  });
+
+  it("delete asks for confirmation, deletes, reloads; self row has no delete", async () => {
+    const { listUsers, deleteUser } = await import("@shadowcat/core");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    // selfId = the admin row's id → exactly ONE delete button (the other row).
+    render(UserManager, {
+      context: setAppContextForTest({ role: "player", serverRole: "admin", selfId: "u-1" }),
+    });
+    const buttons = await screen.findAllByRole("button", { name: "settings.users.delete" });
+    expect(buttons).toHaveLength(1);
+    await fireEvent.click(buttons[0]);
+    expect(window.confirm).toHaveBeenCalledWith("settings.users.deleteConfirm");
+    await vi.waitFor(() => expect(vi.mocked(deleteUser)).toHaveBeenCalledWith("u-2"));
+    await vi.waitFor(() => expect(vi.mocked(listUsers)).toHaveBeenCalledTimes(2)); // initial + reload
+  });
+
+  it("declined confirm does not delete; failure shows deleteError", async () => {
+    const { deleteUser } = await import("@shadowcat/core");
+    vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+    render(UserManager, { context: setAppContextForTest({ serverRole: "admin" }) });
+    let buttons = await screen.findAllByRole("button", { name: "settings.users.delete" });
+    await fireEvent.click(buttons[0]);
+    expect(vi.mocked(deleteUser)).not.toHaveBeenCalled();
+
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(deleteUser).mockRejectedValueOnce(new Error("nope"));
+    buttons = await screen.findAllByRole("button", { name: "settings.users.delete" });
+    await fireEvent.click(buttons[0]);
+    expect(await screen.findByText("settings.users.deleteError")).toBeTruthy();
   });
 
   it("surfaces the server's rejection instead of silently failing", async () => {

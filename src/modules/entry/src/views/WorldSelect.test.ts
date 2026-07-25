@@ -18,6 +18,49 @@ test("lists worlds and enters the chosen one", async () => {
   expect(onEnter).toHaveBeenCalledWith("w1");
 });
 
+test("delete affordance is gm-only and arms on exact name", async () => {
+  vi.spyOn(api, "listWorlds").mockResolvedValue([
+    { id: "w1", name: "Alpha", role: "gm" },
+    { id: "w2", name: "Beta", role: "player" },
+  ]);
+  const del = vi.spyOn(api, "deleteWorld").mockResolvedValue(undefined);
+  render(WorldSelect, { props: { onEnter: vi.fn() } });
+
+  expect(await screen.findAllByRole("button", { name: "Delete" })).toHaveLength(1);
+  await fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+  const confirm = screen.getByRole("button", { name: "Delete forever" }) as HTMLButtonElement;
+  expect(confirm.disabled).toBe(true);
+  await fireEvent.input(screen.getByLabelText(/Type the world name/), {
+    target: { value: "Alph" },
+  });
+  expect(confirm.disabled).toBe(true);
+  await fireEvent.input(screen.getByLabelText(/Type the world name/), {
+    target: { value: "Alpha" },
+  });
+  expect(confirm.disabled).toBe(false);
+  await fireEvent.click(confirm);
+  expect(del).toHaveBeenCalledWith("w1");
+});
+
+test("delete failure shows the delete error", async () => {
+  vi.spyOn(api, "listWorlds").mockResolvedValue([
+    { id: "w1", name: "Alpha", role: "gm" },
+  ]);
+  vi.spyOn(api, "deleteWorld").mockRejectedValue(new Error("403"));
+  render(WorldSelect, { props: { onEnter: vi.fn() } });
+
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Delete" }),
+  );
+  await fireEvent.input(screen.getByLabelText(/Type the world name/), {
+    target: { value: "Alpha" },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Delete forever" }));
+  await waitFor(() =>
+    expect(screen.getByRole("alert").textContent).toBe("Could not delete the world."),
+  );
+});
+
 test("redeeming an invite enters the world it seats the caller in", async () => {
   vi.spyOn(api, "listWorlds").mockResolvedValue([]);
   const accept = vi

@@ -397,6 +397,26 @@ pub async fn list_users(
     ))
 }
 
+/// DELETE /api/users/{id} — server-admin only (`AdminUser`: server tier,
+/// never a world-role check). Self-deletion is refused so the operation
+/// never has to answer "who revokes the caller's own live session
+/// mid-request" — another admin performs it; the in-tx last-admin guard
+/// (repo) remains the structural backstop. After commit, live connections
+/// are kicked across every room; the account's cookies died inside the same
+/// transaction, so a reconnect fails authentication.
+pub async fn delete_user(
+    admin: AdminUser,
+    State(state): State<AppState>,
+    Path(target): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    if admin.0.id == target {
+        return Err(AppError::Conflict("cannot delete your own account".into()));
+    }
+    state.repo.delete_user(target).await?;
+    state.ws.rooms.evict_user(target);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // --- Worlds, membership, and documents (M5) ---
 
 /// Run `ops` through the one authoritative write path for `world`, broadcasting
@@ -499,6 +519,43 @@ pub async fn create_world(
     Ok(Json(world))
 }
 
+/// DELETE /api/worlds/{id} — server admin or that world's GM (`require_gm`
+/// resolves admins to GM; one symbol, no authz fork). Ordering: tombstone +
+/// evict the live room FIRST (no new joins, existing connections get a
+/// terminal frame), then one DB transaction, then the asset directory —
+/// delete convention: rows first, files second, so a crash orphans files on
+/// disk rather than leaving a live world missing them. The barrier read side
+/// spans the commit + dir removal so a backup never snapshots half a delete.
+pub async fn delete_world(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    require_gm(&state, &user, world).await?;
+    let room = state.ws.rooms.begin_delete(world);
+    if let Some(room) = &room {
+        room.broadcast_aux(crate::ws::protocol::ServerMsg::Evicted { user: None });
+    }
+    // Everything below must lift the tombstone on the way out.
+    let result = async {
+        let _read_permit = state.write_barrier.read().await;
+        state.repo.delete_world(world).await?;
+        let dir = state.config.assets_path().join(world.to_string());
+        match tokio::fs::remove_dir_all(&dir).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(?e, %world, "world asset dir removal failed after row delete")
+            }
+        }
+        Ok::<(), AppError>(())
+    }
+    .await;
+    state.ws.rooms.finish_delete(world);
+    result?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(Serialize)]
 pub struct MemberEntry {
     pub user: Uuid,
@@ -553,6 +610,10 @@ pub struct AddMemberRequest {
 }
 
 /// Add a member or change an existing member's role (idempotent upsert).
+/// `world_members.user_id` is a foreign key, so an unknown target must reject
+/// as a 404 rather than surfacing as a constraint violation (a 500) —
+/// `upsert_member` proves existence atomically with the write, so a user
+/// deleted mid-request cannot resurface the FK path.
 pub async fn add_member(
     user: AuthUser,
     State(state): State<AppState>,
@@ -560,18 +621,10 @@ pub async fn add_member(
     Json(body): Json<AddMemberRequest>,
 ) -> Result<StatusCode, AppError> {
     require_gm(&state, &user, world).await?;
-    // `world_members.user_id` is a foreign key, so an unknown target must be
-    // rejected here as a 404 rather than surfacing as a constraint violation
-    // (a 500).
-    let target = body.user;
-    if !state.repo.user_exists(target).await? {
-        return Err(AppError::NotFound);
-    }
-    if state.repo.member_role(world, target).await?.is_some() {
-        state.repo.set_role(world, target, body.role).await?;
-    } else {
-        state.repo.add_member(world, target, body.role).await?;
-    }
+    state
+        .repo
+        .upsert_member(world, body.user, body.role)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

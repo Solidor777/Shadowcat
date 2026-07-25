@@ -103,6 +103,23 @@ optimistically and roll back on divergence.
   observable via `list_members`. Naming a target is the disclosure; the invite removes the naming.
   NOTE this is about the by-NAME path only: `add_member` survives (GM-gated, by user ID, 404 on an
   unknown id) — it is naming a user by a guessable identifier that was removed, not membership writes.
+- **Deletion & eviction (Phase B).** `ServerMsg::Evicted { user: Option<Uuid> }` is the terminal
+  out-of-band frame: `None` addresses every connection in a room (world deletion, broadcast on the
+  removed room), `Some(id)` addresses one user's connections across ALL rooms
+  (`RoomRegistry::evict_user`, account deletion). The egress loop delivers the frame, sends a
+  protocol Close, and terminates; targeting keys on the server-resolved `ctx.user_id`, mirroring
+  the `MoveStream` per-recipient precedent. `RoomRegistry` carries a deletion tombstone
+  (`begin_delete` removes the room + blocks `get_or_create` re-creation until `finish_delete`,
+  which must run on success AND failure paths; post-insert, `get_or_create` re-checks the
+  tombstone AND re-verifies the world row — a delete can complete entirely inside the hydration
+  window, lifting the tombstone before the re-check, so only row absence refuses that ghost). **INVARIANT: eviction is load-bearing, not cosmetic** —
+  `permission_context` resolves once per connection, so a revoked membership/account is never
+  re-checked on a live socket. **INVARIANT: user deletion revokes sessions INSIDE its delete
+  transaction** (`json_extract(data, '$.data.user.id')` on `tower_sessions` — no user_id column):
+  `AuthUser` trusts the session record without re-reading `users`, so a surviving row would keep a
+  deleted account fully authenticated until cookie expiry. Client side: `WsClient` treats
+  `evicted` as terminal (`stop()` — no reconnect) and surfaces `onEvicted`, which the shell routes
+  to `leaveWorld()`.
 - `src/client/core/src/ws-client.ts` — client WS connection + resync.
 - `src/client/core/src/store.ts` — `DocumentStore implements ReadableDocuments` (authoritative,
   rollback base).

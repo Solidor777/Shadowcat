@@ -237,7 +237,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   never the generic per-recipient filter path. `MoveError` stays mover-only via `etx`, generic (no
   path/vision geometry disclosed).
 - `src/server/src/scene/explored.rs` — `ExploredSet` fog memory: `mark_polygons(polys, cell_size)`,
-  `to_bytes`/`from_bytes` (persistence), cell-based.
+  `to_bytes`/`from_bytes` (persistence), cell-based. Lifecycle: `explored_fog` rows are purged on
+  scene delete (`delete_document_tx`, both authoritative delete paths), world delete
+  (`delete_world`, by the denormalized `world_id`), and user delete (`delete_user`) — the M9c
+  "rows orphan harmlessly" note describes a state that no longer arises.
 - `src/server/src/scene/regions.rs` (M10g) — pure region geometry, no ECS/I/O (mirrors
   `movement.rs`'s module invariant): `RegionShape` (`Rect`/`Circle`/`Polygon`), `RegionBehavior`
   (`Terrain`/`Impassable`/`Arrest`), `RegionEffect` (composed per-cell result), `rasterize(shape,

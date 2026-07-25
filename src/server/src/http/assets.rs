@@ -201,7 +201,7 @@ pub async fn upload(
             original_name,
             content_type: content_type.to_string(),
             byte_size,
-            created_by: user.id,
+            created_by: Some(user.id),
             created_at: now,
             version: 1,
         };
