@@ -532,11 +532,14 @@ async fn scene_ping_permitted(
     let Ok(defaults) = repo.world_cap_defaults(world_id).await else {
         return false;
     };
+    // A scene doc never carries an actor link, so the no-join resolution is
+    // exact — and fails closed if a non-scene doc ever reached here.
     let access = crate::data::permission::resolve_access_world(
         ctx.user_id,
         ctx.world_role,
         &doc,
         &defaults.grants_for(&doc.doc_type),
+        crate::data::permission::effective_owner(&doc, None),
     );
     access.has(crate::data::permission::cap::READ)
 }

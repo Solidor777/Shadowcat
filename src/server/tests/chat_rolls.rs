@@ -244,12 +244,12 @@ async fn inline_roll_executes_inside_whisper_body_and_stays_recipient_only() {
     );
 
     let doc = f.stored_message_doc(&cmd).await;
-    let bob_access = resolve_access(f.bob_id, WorldRole::Player, &doc);
+    let bob_access = resolve_access(f.bob_id, WorldRole::Player, &doc, doc.owner);
     assert!(
         bob_access.has(cap::READ),
         "the addressed recipient reads it"
     );
-    let carol_access = resolve_access(carol, WorldRole::Player, &doc);
+    let carol_access = resolve_access(carol, WorldRole::Player, &doc, doc.owner);
     assert!(
         !carol_access.has(cap::READ),
         "a non-recipient must not read the embedded roll"

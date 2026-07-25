@@ -344,19 +344,15 @@ fn effective_role(
 /// the user's `DocRole` (per-user, else the document default) seeds a
 /// built-in floor that the document's additive grants (`by_role`, `by_user`)
 /// widen.
-pub fn resolve_access(user: Uuid, world_role: WorldRole, doc: &Document) -> Access {
-    // No actor join available here, so the document's own `owner` is the whole
-    // rule: a linked token's INHERITED owner is invisible to this entry point.
-    // That direction under-permits (an inheriting owner is treated as a
-    // stranger), never over-permits. Call sites that can perform the join
-    // (`apply_intent`, `SceneEcs`) use `*_with_owner` and pass
-    // `effective_owner(doc, linked_actor)`.
-    resolve_access_with_owner(user, world_role, doc, doc.owner)
-}
-
-/// `resolve_access` with the effective owner resolved by the caller (see
-/// `effective_owner`). Pass `doc.owner` when no actor join is available.
-pub fn resolve_access_with_owner(
+///
+/// The caller MUST resolve `effective_owner` from its source before calling:
+/// the ECS actor table (ws egress), a batched prefetch (list route),
+/// `effective_owner_of` / `load_effective_owner` (single-doc routes, search,
+/// write path). Passing the literal `doc.owner` is correct ONLY for document
+/// types that can never carry an actor link (e.g. scene pings, region
+/// fields) — for any other type it under-permits, treating an inheriting
+/// owner as a stranger.
+pub fn resolve_access(
     user: Uuid,
     world_role: WorldRole,
     doc: &Document,
@@ -398,25 +394,18 @@ pub fn resolve_access_with_owner(
 /// `core:manage_embedded` without editing each document. Uses the SAME
 /// `effective_role` as `resolve_access` — including a `gm_role`-capped GM's
 /// fallback role — so a world-level grant for that role also applies to them.
+///
+/// Same `effective_owner` resolution contract as `resolve_access`: the
+/// caller must resolve it from its source, and a literal `doc.owner` is
+/// correct only for document types that can never carry an actor link.
 pub fn resolve_access_world(
-    user: Uuid,
-    world_role: WorldRole,
-    doc: &Document,
-    world_grants: &CapabilityGrants,
-) -> Access {
-    resolve_access_world_with_owner(user, world_role, doc, world_grants, doc.owner)
-}
-
-/// `resolve_access_world` with the effective owner resolved by the caller (see
-/// `effective_owner`). The write-authz chokepoint (`apply_intent`) uses this.
-pub fn resolve_access_world_with_owner(
     user: Uuid,
     world_role: WorldRole,
     doc: &Document,
     world_grants: &CapabilityGrants,
     effective_owner: Option<Uuid>,
 ) -> Access {
-    let mut access = resolve_access_with_owner(user, world_role, doc, effective_owner);
+    let mut access = resolve_access(user, world_role, doc, effective_owner);
     if access.all {
         return access;
     }
@@ -567,11 +556,15 @@ pub async fn filter_command(
     for op in &cmd.ops {
         match op {
             Operation::Create { doc } => {
+                // TODO: join the effective owner (linked-actor inheritance)
+                // here instead of the literal `doc.owner`, matching the
+                // write path.
                 let access = resolve_access_world(
                     ctx.user_id,
                     ctx.world_role,
                     doc,
                     &world_defaults.grants_for(&doc.doc_type),
+                    doc.owner,
                 );
                 if access.has(cap::READ) {
                     out_ops.push(Operation::Create {
@@ -581,11 +574,15 @@ pub async fn filter_command(
             }
             Operation::Delete { doc } => {
                 // A delete is visible to anyone who could read the document.
+                // TODO: join the effective owner (linked-actor inheritance)
+                // here instead of the literal `doc.owner`, matching the
+                // write path.
                 let access = resolve_access_world(
                     ctx.user_id,
                     ctx.world_role,
                     doc,
                     &world_defaults.grants_for(&doc.doc_type),
+                    doc.owner,
                 );
                 if access.has(cap::READ) {
                     out_ops.push(Operation::Delete {
@@ -597,11 +594,15 @@ pub async fn filter_command(
                 let Ok(Some(cur)) = repo.get_document(*doc_id).await else {
                     continue;
                 };
+                // TODO: join the effective owner (linked-actor inheritance)
+                // here instead of the literal `cur.owner`, matching the
+                // write path.
                 let access = resolve_access_world(
                     ctx.user_id,
                     ctx.world_role,
                     &cur,
                     &world_defaults.grants_for(&cur.doc_type),
+                    cur.owner,
                 );
                 if !access.has(cap::READ) {
                     continue;
@@ -763,20 +764,20 @@ mod tests {
         d.owner = Some(owner);
 
         // Owner (non-GM) sees the real name.
-        let a_owner = resolve_access(owner, WorldRole::Player, &d);
+        let a_owner = resolve_access(owner, WorldRole::Player, &d, d.owner);
         assert_eq!(
             filter_properties(&d, &a_owner).system["name"],
             "Goblin Skirmisher"
         );
 
         // Another player does NOT (falls back to the non-secret displayName).
-        let a_other = resolve_access(other, WorldRole::Player, &d);
+        let a_other = resolve_access(other, WorldRole::Player, &d, d.owner);
         let v_other = filter_properties(&d, &a_other);
         assert!(v_other.system.get("name").is_none());
         assert_eq!(v_other.system["displayName"], "Goblin");
 
         // GM sees it.
-        let a_gm = resolve_access(other, WorldRole::Gm, &d);
+        let a_gm = resolve_access(other, WorldRole::Gm, &d, d.owner);
         assert_eq!(
             filter_properties(&d, &a_gm).system["name"],
             "Goblin Skirmisher"
@@ -795,7 +796,7 @@ mod tests {
         );
         d.owner = Some(owner);
 
-        let a_owner = resolve_access(owner, WorldRole::Player, &d);
+        let a_owner = resolve_access(owner, WorldRole::Player, &d, d.owner);
         let v = filter_properties(&d, &a_owner);
         assert_eq!(v.system["name"], "PC"); // owner sees OwnerOrGm
         assert!(v.system.get("secret").is_none()); // owner still denied GmOnly
@@ -813,11 +814,11 @@ mod tests {
         parent.owner = Some(owner);
         parent.embedded.insert("actor".into(), vec![child]);
 
-        let a_other = resolve_access(other, WorldRole::Player, &parent);
+        let a_other = resolve_access(other, WorldRole::Player, &parent, parent.owner);
         let v = filter_properties(&parent, &a_other);
         assert!(v.embedded["actor"][0].system.get("name").is_none());
 
-        let a_owner = resolve_access(owner, WorldRole::Player, &parent);
+        let a_owner = resolve_access(owner, WorldRole::Player, &parent, parent.owner);
         let vo = filter_properties(&parent, &a_owner);
         assert_eq!(vo.embedded["actor"][0].system["name"], "Hidden");
     }
@@ -904,6 +905,7 @@ mod tests {
             Uuid::from_u128(5),
             WorldRole::Gm,
             &doc(Default::default(), serde_json::json!({})),
+            None,
         );
         assert!(a.all && a.see_gm_only);
         assert!(a.has(cap::WRITE_FIELDS) && a.has(cap::MANAGE_EMBEDDED) && a.has("dnd5e:anything"));
@@ -916,14 +918,14 @@ mod tests {
         perms.users.insert(Uuid::from_u128(2), DocRole::Observer);
         let d = doc(perms, serde_json::json!({}));
         // Owner: read + write fields, but NOT manage embedded by default.
-        let owner = resolve_access(Uuid::from_u128(1), WorldRole::Player, &d);
+        let owner = resolve_access(Uuid::from_u128(1), WorldRole::Player, &d, d.owner);
         assert!(owner.has(cap::READ) && owner.has(cap::WRITE_FIELDS));
         assert!(!owner.has(cap::MANAGE_EMBEDDED) && !owner.has(cap::DELETE));
         // Observer: read only.
-        let obs = resolve_access(Uuid::from_u128(2), WorldRole::Player, &d);
+        let obs = resolve_access(Uuid::from_u128(2), WorldRole::Player, &d, d.owner);
         assert!(obs.has(cap::READ) && !obs.has(cap::WRITE_FIELDS));
         // Stranger falls to default (None): nothing.
-        let other = resolve_access(Uuid::from_u128(3), WorldRole::Player, &d);
+        let other = resolve_access(Uuid::from_u128(3), WorldRole::Player, &d, d.owner);
         assert!(!other.has(cap::READ));
     }
 
@@ -947,7 +949,7 @@ mod tests {
             .insert("dnd5e:cast".to_string());
         perms.capabilities = grants;
         let d = doc(perms, serde_json::json!({}));
-        let a = resolve_access(Uuid::from_u128(1), WorldRole::Player, &d);
+        let a = resolve_access(Uuid::from_u128(1), WorldRole::Player, &d, d.owner);
         assert!(a.has(cap::WRITE_FIELDS)); // floor retained
         assert!(a.has(cap::MANAGE_EMBEDDED)); // role grant
         assert!(a.has("dnd5e:cast")); // user grant
@@ -965,12 +967,12 @@ mod tests {
             .insert("/system/secret".into(), Visibility::GmOnly);
         let d = doc(perms, serde_json::json!({ "secret": 42, "public": 1 }));
 
-        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d);
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
         let view = filter_properties(&d, &player);
         assert_eq!(view.system.get("secret"), None);
         assert_eq!(view.system["public"], serde_json::json!(1));
 
-        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d);
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
         assert_eq!(
             filter_properties(&d, &gm).system["secret"],
             serde_json::json!(42)
@@ -992,11 +994,11 @@ mod tests {
             .insert("/system".into(), Visibility::GmOnly);
         let d = doc(perms, serde_json::json!({ "secret": 42 }));
 
-        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d);
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
         let view = filter_properties(&d, &player);
         assert_eq!(view.system, serde_json::Value::Null);
 
-        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d);
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
         assert_eq!(
             filter_properties(&d, &gm).system["secret"],
             serde_json::json!(42)
@@ -1020,11 +1022,11 @@ mod tests {
         let mut d = doc(perms, serde_json::json!({}));
         d.engine = Some(serde_json::json!({ "x": 1.0, "y": 2.0 }));
 
-        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d);
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
         let view = filter_properties(&d, &player);
         assert_eq!(view.engine, None);
 
-        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d);
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
         assert_eq!(
             filter_properties(&d, &gm).engine,
             Some(serde_json::json!({ "x": 1.0, "y": 2.0 }))
@@ -1046,12 +1048,12 @@ mod tests {
         let mut d = doc(perms, serde_json::json!({}));
         d.engine = Some(serde_json::json!({ "vision": 30, "visionmode": "dark" }));
 
-        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d);
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
         let view = filter_properties(&d, &player);
         assert!(view.engine.as_ref().unwrap().get("vision").is_none());
         assert_eq!(view.engine.as_ref().unwrap()["visionmode"], "dark");
 
-        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d);
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
         assert_eq!(filter_properties(&d, &gm).engine.unwrap()["vision"], 30);
     }
 
@@ -1069,16 +1071,16 @@ mod tests {
         d.owner = Some(owner);
         d.name = Some("Goblin Skirmisher".into());
 
-        let a_owner = resolve_access(owner, WorldRole::Player, &d);
+        let a_owner = resolve_access(owner, WorldRole::Player, &d, d.owner);
         assert_eq!(
             filter_properties(&d, &a_owner).name.as_deref(),
             Some("Goblin Skirmisher")
         );
 
-        let a_other = resolve_access(other, WorldRole::Player, &d);
+        let a_other = resolve_access(other, WorldRole::Player, &d, d.owner);
         assert_eq!(filter_properties(&d, &a_other).name, None);
 
-        let a_gm = resolve_access(other, WorldRole::Gm, &d);
+        let a_gm = resolve_access(other, WorldRole::Gm, &d, d.owner);
         assert_eq!(
             filter_properties(&d, &a_gm).name.as_deref(),
             Some("Goblin Skirmisher")
@@ -1097,10 +1099,10 @@ mod tests {
         let mut d = doc(perms, serde_json::json!({}));
         d.name = Some("Strahd".into());
 
-        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d);
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
         assert_eq!(filter_properties(&d, &player).name, None);
 
-        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d);
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
         assert_eq!(filter_properties(&d, &gm).name.as_deref(), Some("Strahd"));
     }
 
@@ -1117,15 +1119,15 @@ mod tests {
         d.base = Some(serde_json::json!({ "name": "Goblin", "system": { "hp": 10 } }));
 
         // Non-owner, non-GM: base is nulled.
-        let a_other = resolve_access(other, WorldRole::Player, &d);
+        let a_other = resolve_access(other, WorldRole::Player, &d, d.owner);
         assert_eq!(filter_properties(&d, &a_other).base, None);
 
         // Owner (non-GM): sees the real base.
-        let a_owner = resolve_access(owner, WorldRole::Player, &d);
+        let a_owner = resolve_access(owner, WorldRole::Player, &d, d.owner);
         assert_eq!(filter_properties(&d, &a_owner).base, d.base);
 
         // GM: sees the real base.
-        let a_gm = resolve_access(other, WorldRole::Gm, &d);
+        let a_gm = resolve_access(other, WorldRole::Gm, &d, d.owner);
         assert_eq!(filter_properties(&d, &a_gm).base, d.base);
     }
 
@@ -1244,7 +1246,7 @@ mod tests {
         let mut parent = doc(PermissionSet::default(), serde_json::json!({}));
         parent.embedded.insert("actor".into(), vec![child]);
 
-        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &parent);
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &parent, parent.owner);
         let mut hidden = Vec::new();
         collect_hidden(&parent, &player, "", &mut hidden);
         assert!(hidden.contains(&"/embedded/actor/0/engine/x".to_string()));
@@ -1269,7 +1271,7 @@ mod tests {
         );
         parent.embedded.insert("items".into(), vec![child]);
 
-        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &parent);
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &parent, parent.owner);
         let view = filter_properties(&parent, &player);
         let child_view = &view.embedded.get("items").unwrap()[0];
         assert_eq!(
@@ -1280,7 +1282,7 @@ mod tests {
         assert_eq!(child_view.system["shown"], serde_json::json!(2));
 
         // The GM sees the embedded child's gm-only field.
-        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &parent);
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &parent, parent.owner);
         let gm_view = filter_properties(&parent, &gm);
         assert_eq!(
             gm_view.embedded.get("items").unwrap()[0].system["secret"],
@@ -1860,7 +1862,7 @@ mod tests {
         let d = doc(perms, serde_json::json!({}));
 
         // A GM not individually listed gets nothing — gm_role caps them like any other actor.
-        let a_gm = resolve_access(gm, WorldRole::Gm, &d);
+        let a_gm = resolve_access(gm, WorldRole::Gm, &d, d.owner);
         assert!(
             !a_gm.has(cap::READ),
             "unlisted GM must not read a gm_role:None document"
@@ -1871,7 +1873,7 @@ mod tests {
         );
 
         // The owner is unaffected.
-        let a_owner = resolve_access(owner, WorldRole::Player, &d);
+        let a_owner = resolve_access(owner, WorldRole::Player, &d, d.owner);
         assert!(a_owner.has(cap::READ));
     }
 
@@ -1888,7 +1890,7 @@ mod tests {
         perms.users.insert(gm, DocRole::Observer); // e.g. a whisper naming the GM
         let d = doc(perms, serde_json::json!({}));
 
-        let a_gm = resolve_access(gm, WorldRole::Gm, &d);
+        let a_gm = resolve_access(gm, WorldRole::Gm, &d, d.owner);
         assert!(
             a_gm.has(cap::READ),
             "a GM individually listed in `users` must read despite gm_role:None"
@@ -1911,7 +1913,7 @@ mod tests {
         perms.users.insert(owner, DocRole::Owner);
         let d = doc(perms, serde_json::json!({}));
 
-        let a_gm = resolve_access(gm, WorldRole::Gm, &d);
+        let a_gm = resolve_access(gm, WorldRole::Gm, &d, d.owner);
         assert!(
             a_gm.all,
             "gm_role: None (the default) must preserve the unconditional GM short-circuit \
@@ -1933,12 +1935,12 @@ mod tests {
         let d = doc(perms, serde_json::json!({}));
 
         // Any GM reads, even without being individually listed (dynamic resolution).
-        let a_gm = resolve_access(gm, WorldRole::Gm, &d);
+        let a_gm = resolve_access(gm, WorldRole::Gm, &d, d.owner);
         assert!(a_gm.has(cap::READ));
         assert!(a_gm.see_gm_only, "still a GM for property-tier purposes");
 
         // A non-owner, non-GM Player reads nothing.
-        let a_stranger = resolve_access(stranger, WorldRole::Player, &d);
+        let a_stranger = resolve_access(stranger, WorldRole::Player, &d, d.owner);
         assert!(!a_stranger.has(cap::READ));
     }
 
@@ -1967,7 +1969,7 @@ mod tests {
         // not just `doc.permissions.default` (None here, which carries no such
         // grant). Proves resolve_access_world uses the SAME effective role as
         // resolve_access rather than recomputing it independently.
-        let a_gm = resolve_access_world(gm, WorldRole::Gm, &d, &world_grants);
+        let a_gm = resolve_access_world(gm, WorldRole::Gm, &d, &world_grants, d.owner);
         assert!(
             a_gm.has("dnd5e:extra"),
             "world grant for the gm_role fallback role must apply"
@@ -2238,7 +2240,7 @@ mod tests {
         let actor = actor_owned_by(actor_id, Some(player));
         let owner = effective_owner(&token, Some(&actor));
 
-        let a_player = resolve_access_with_owner(player, WorldRole::Player, &token, owner);
+        let a_player = resolve_access(player, WorldRole::Player, &token, owner);
         assert!(
             a_player.has(cap::READ) && a_player.has(cap::WRITE_FIELDS),
             "an effective owner holds the DocRole::Owner floor"
@@ -2259,7 +2261,7 @@ mod tests {
         );
 
         // Non-vacuity: same token, same call, different user.
-        let a_stranger = resolve_access_with_owner(stranger, WorldRole::Player, &token, owner);
+        let a_stranger = resolve_access(stranger, WorldRole::Player, &token, owner);
         assert!(a_stranger.has(cap::READ) && !a_stranger.has(cap::WRITE_FIELDS));
         assert!(!a_stranger.is_owner);
     }
@@ -2271,7 +2273,7 @@ mod tests {
         let player = Uuid::from_u128(1);
         let mut token = token_linked_to(None);
         token.permissions.users.insert(player, DocRole::Owner);
-        let a = resolve_access_with_owner(player, WorldRole::Player, &token, None);
+        let a = resolve_access(player, WorldRole::Player, &token, None);
         assert!(a.has(cap::WRITE_FIELDS));
         assert!(
             !a.is_owner,
@@ -2304,13 +2306,8 @@ mod tests {
             .or_default()
             .insert(cap::EDIT_PERMISSIONS.to_string());
 
-        let inheriting = resolve_access_world_with_owner(
-            player,
-            WorldRole::Player,
-            &token,
-            &world_grants,
-            owner,
-        );
+        let inheriting =
+            resolve_access_world(player, WorldRole::Player, &token, &world_grants, owner);
         assert!(
             inheriting.has(cap::EDIT_PERMISSIONS),
             "a world by_role[Owner] grant reaches an owner who inherits through the actor link"
@@ -2321,20 +2318,20 @@ mod tests {
         let mut stamped = token_linked_to(None);
         stamped.permissions.default = DocRole::Observer;
         stamped.permissions.users.insert(player, DocRole::Owner);
-        assert!(
-            resolve_access_world(player, WorldRole::Player, &stamped, &world_grants)
-                .has(cap::EDIT_PERMISSIONS)
-        );
+        assert!(resolve_access_world(
+            player,
+            WorldRole::Player,
+            &stamped,
+            &world_grants,
+            stamped.owner
+        )
+        .has(cap::EDIT_PERMISSIONS));
 
         // Non-vacuity: the grant is role-selected, not unconditional — a
         // non-owner on the same document with the same world grants gets nothing.
-        assert!(!resolve_access_world_with_owner(
-            stranger,
-            WorldRole::Player,
-            &token,
-            &world_grants,
-            owner
-        )
-        .has(cap::EDIT_PERMISSIONS));
+        assert!(
+            !resolve_access_world(stranger, WorldRole::Player, &token, &world_grants, owner)
+                .has(cap::EDIT_PERMISSIONS)
+        );
     }
 }

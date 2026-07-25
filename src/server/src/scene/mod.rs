@@ -1394,10 +1394,14 @@ impl SceneEcs {
                     .get("/engine")
                     .copied()
                     .unwrap_or(crate::data::document::Visibility::All);
+                // A region doc never carries an actor link, so the no-join
+                // resolution is exact — and fails closed if a non-region doc
+                // ever reached here.
                 let access = crate::data::permission::resolve_access(
                     user,
                     crate::data::document::WorldRole::Player,
                     doc,
+                    crate::data::permission::effective_owner(doc, None),
                 );
                 if !access.can_see(tier) {
                     continue;

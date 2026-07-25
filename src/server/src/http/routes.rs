@@ -882,7 +882,10 @@ pub async fn list_documents(
     let visible = docs
         .into_iter()
         .filter_map(|d| {
-            let access = resolve_access_world(ctx.user_id, ctx.world_role, &d, &world_grants);
+            // TODO: join the effective owner (linked-actor inheritance) here
+            // instead of the literal `d.owner`, matching the write path.
+            let access =
+                resolve_access_world(ctx.user_id, ctx.world_role, &d, &world_grants, d.owner);
             access
                 .has(cap::READ)
                 .then(|| filter_properties(&d, &access))
@@ -922,11 +925,14 @@ pub async fn get_document(
         .await
         .map_err(by_id_not_found)?;
     let world_defaults = state.repo.world_cap_defaults(world).await?;
+    // TODO: join the effective owner (linked-actor inheritance) here instead
+    // of the literal `doc.owner`, matching the write path.
     let access = resolve_access_world(
         ctx.user_id,
         ctx.world_role,
         &doc,
         &world_defaults.grants_for(&doc.doc_type),
+        doc.owner,
     );
     if !access.has(cap::READ) {
         return Err(AppError::NotFound);

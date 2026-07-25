@@ -16,7 +16,7 @@ use crate::data::engine::{
 };
 use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
-    resolve_access_world, resolve_access_world_with_owner, Access,
+    resolve_access_world, Access,
 };
 use crate::data::repository::Repository;
 use crate::data::validation;
@@ -1729,7 +1729,7 @@ impl Repository for SqliteRepository {
                         }
                     }
                     let create_owner = Self::load_effective_owner(&mut *tx, doc).await?;
-                    let access = resolve_access_world_with_owner(
+                    let access = resolve_access_world(
                         ctx.user_id,
                         ctx.world_role,
                         doc,
@@ -1825,7 +1825,7 @@ impl Repository for SqliteRepository {
                     // a GM of one world cannot delete another world's document.
                     check_command_scope(&cur, world_id)?;
                     let del_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
-                    if !resolve_access_world_with_owner(
+                    if !resolve_access_world(
                         ctx.user_id,
                         ctx.world_role,
                         &cur,
@@ -1915,7 +1915,7 @@ impl Repository for SqliteRepository {
                         // Effective owner joined from the LIVE linked actor inside this
                         // transaction — a linked token's owner is never stored on the token.
                         let upd_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
-                        resolve_access_world_with_owner(
+                        resolve_access_world(
                             ctx.user_id,
                             ctx.world_role,
                             &cur,
@@ -1994,7 +1994,7 @@ impl Repository for SqliteRepository {
                         })?;
                         check_command_scope(&cur, world_id)?;
                         let desc_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
-                        if !resolve_access_world_with_owner(
+                        if !resolve_access_world(
                             ctx.user_id,
                             ctx.world_role,
                             &cur,
@@ -2435,11 +2435,14 @@ impl Repository for SqliteRepository {
                 let Some(doc) = self.get_document(doc_id).await? else {
                     continue;
                 };
+                // TODO: join the effective owner (linked-actor inheritance) here
+                // instead of the literal `doc.owner`, matching the write path.
                 let access = resolve_access_world(
                     ctx.user_id,
                     ctx.world_role,
                     &doc,
                     &world_defaults.grants_for(&doc.doc_type),
+                    doc.owner,
                 );
                 if !access.has(cap::READ) {
                     continue;

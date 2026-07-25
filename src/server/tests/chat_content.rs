@@ -961,7 +961,7 @@ async fn non_recipient_still_cannot_see_deleted_whisper() {
         .await
         .unwrap();
     let doc = f.repo.get_document(id).await.unwrap().unwrap();
-    let access = resolve_access(f.bob.user_id, WorldRole::Player, &doc);
+    let access = resolve_access(f.bob.user_id, WorldRole::Player, &doc, doc.owner);
     assert!(
         !access.has(cap::READ),
         "bob has no READ access on the tombstoned whisper doc"
