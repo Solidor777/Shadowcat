@@ -397,6 +397,26 @@ pub async fn list_users(
     ))
 }
 
+/// DELETE /api/users/{id} — server-admin only (`AdminUser`: server tier,
+/// never a world-role check). Self-deletion is refused so the operation
+/// never has to answer "who revokes the caller's own live session
+/// mid-request" — another admin performs it; the in-tx last-admin guard
+/// (repo) remains the structural backstop. After commit, live connections
+/// are kicked across every room; the account's cookies died inside the same
+/// transaction, so a reconnect fails authentication.
+pub async fn delete_user(
+    admin: AdminUser,
+    State(state): State<AppState>,
+    Path(target): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    if admin.0.id == target {
+        return Err(AppError::Conflict("cannot delete your own account".into()));
+    }
+    state.repo.delete_user(target).await?;
+    state.ws.rooms.evict_user(target);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // --- Worlds, membership, and documents (M5) ---
 
 /// Run `ops` through the one authoritative write path for `world`, broadcasting

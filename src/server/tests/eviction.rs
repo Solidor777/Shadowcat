@@ -118,6 +118,75 @@ async fn world_delete_failure_lifts_tombstone() {
 }
 
 #[tokio::test]
+async fn user_delete_revokes_sessions_and_kicks() {
+    let h = common::spawn().await;
+    let (player_id, player_cookie) = h.add_player("victim").await;
+    // The session is live before the deletion.
+    let victim = reqwest::Client::new();
+    let me = victim
+        .get(format!("http://{}/api/me", h.addr))
+        .header("cookie", &player_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert!(me.status().is_success());
+    let mut ws = h.connect_as(&player_cookie).await;
+    drain_until_type(&mut ws, "welcome").await;
+
+    // An admin performs the deletion.
+    let hash = shadowcat::auth::password::hash_password("pw").unwrap();
+    h.repo
+        .create_user(
+            "root",
+            Some(&hash),
+            shadowcat::auth::role::ServerRole::Admin,
+            0,
+        )
+        .await
+        .unwrap();
+    let admin = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .unwrap();
+    let res = admin
+        .post(format!("http://{}/api/login", h.addr))
+        .json(&serde_json::json!({ "username": "root", "password": "pw" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+    let res = admin
+        .delete(format!("http://{}/api/users/{player_id}", h.addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::NO_CONTENT);
+
+    // The cookie died inside the delete transaction.
+    let me = victim
+        .get(format!("http://{}/api/me", h.addr))
+        .header("cookie", &player_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    // The live socket received a TARGETED eviction, then closed.
+    let evicted = drain_until_type(&mut ws, "evicted").await;
+    assert_eq!(
+        evicted["user"].as_str(),
+        Some(player_id.to_string().as_str())
+    );
+    let next = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+        .await
+        .expect("socket should close promptly after the evicted frame");
+    match next {
+        None | Some(Ok(Message::Close(_))) | Some(Err(_)) => {}
+        Some(Ok(other)) => panic!("expected close after evicted frame, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn evicted_frame_targets_and_closes() {
     let h = common::spawn().await;
     let mut ws = h.connect().await;

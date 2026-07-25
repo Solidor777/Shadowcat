@@ -88,6 +88,7 @@ pub async fn router(state: AppState) -> Router {
             "/api/worlds",
             post(routes::create_world).get(routes::list_worlds),
         )
+        .route("/api/users/{id}", delete(routes::delete_user))
         .route("/api/worlds/{id}", delete(routes::delete_world))
         .route(
             "/api/worlds/{id}/members",
@@ -689,6 +690,35 @@ pub(crate) mod tests {
             .save_cookies()
             .build(router(state.clone()).await)
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn user_delete_authz_and_guards() {
+        let state = initialized_state().await;
+        let admin_id = seed_admin(&state, "root").await;
+        let u = seed_user(&state, "u").await;
+        let peon = seed_user(&state, "peon").await;
+
+        // Non-admin caller → 403 (server tier, not world role).
+        let us = login_server(&state, "u").await;
+        us.delete(&format!("/api/users/{peon}"))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+
+        let root = login_server(&state, "root").await;
+        // Admin deletes an ordinary user → 204; row gone.
+        root.delete(&format!("/api/users/{u}"))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        assert!(!state.repo.user_exists(u).await.unwrap());
+        // Admin deletes THEMSELVES → 409 with a client-actionable message.
+        let res = root.delete(&format!("/api/users/{admin_id}")).await;
+        res.assert_status(StatusCode::CONFLICT);
+        res.assert_json(&serde_json::json!({ "error": "cannot delete your own account" }));
+        // Admin, unknown id → 404.
+        root.delete(&format!("/api/users/{}", Uuid::new_v4()))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
