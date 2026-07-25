@@ -184,6 +184,15 @@ pub async fn create_backup(
 /// `<assets_dir>.restore-old` rather than deleted; the next restore attempt
 /// clears it (see the pre-clear below), so no manual recovery step is
 /// required, though the parked directory is recoverable by hand if needed.
+///
+/// The db swap and the assets swap are two INDEPENDENT atomic operations, not
+/// one joint transaction across both artifacts: the db rename completes in
+/// full before the assets copy/swap begins. A crash in that window leaves a
+/// new db paired with the old (or, mid-assets-swap, momentarily absent)
+/// assets directory; recovery is re-running `restore_backup` with `force`
+/// (the db swap already completed, so `db_path` now exists and a
+/// force-less retry would refuse), which re-copies the db and completes the
+/// assets swap, leaving both artifacts consistent.
 pub async fn restore_backup(
     backup_dir: &Path,
     db_path: &Path,

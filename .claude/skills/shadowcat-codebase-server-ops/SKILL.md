@@ -101,11 +101,16 @@ and restore as a deployment-operator tool, not an in-app feature.
   `<assets_dir>.restore-tmp`, the live `assets_dir` renames out to `<assets_dir>.restore-old`
   (directory rename does NOT replace a non-empty destination on any target OS, hence the two-step
   swap), the staged tree renames into `assets_dir`, then `.restore-old` is removed. A failure at
-  any point leaves the destination either fully pre-restore or fully post-restore — worst case
+  any point leaves `db_path` either fully pre-restore or fully post-restore, and independently
+  leaves `assets_dir` either fully pre-restore or fully post-restore — worst case
   (crash between the two directory renames) parks the old tree at `.restore-old`, which the next
   restore attempt clears before staging. No `--force`-only special case: both paths use the
   staging protocol regardless of `force`, since without `force` the pre-restore-destination-empty
-  gate has already run.
+  gate has already run. The db swap and the assets swap are two INDEPENDENT atomic operations,
+  not one joint transaction — the db rename completes in full before the assets copy/swap starts,
+  so a crash in that window pairs a new db with old (or momentarily absent) assets; recovery is
+  re-running `restore_backup` with `force` (the db swap already completed, so a force-less retry
+  would refuse on the now-existing `db_path`).
 - The backup's assets-copy is not transactionally coupled to the `VACUUM INTO` snapshot — an
   asset REPLACE (not create) in flight during backup commits its DB row before renaming its temp
   file into place ([[commit-db-row-before-swapping-file]]), so a backup racing an in-flight
