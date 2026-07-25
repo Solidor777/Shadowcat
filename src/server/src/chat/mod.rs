@@ -2542,7 +2542,11 @@ mod tests {
     /// A minimal actor doc for the attribution-ownership gate tests, seeded
     /// directly via `apply_command` (bypasses permission checks — these
     /// tests exercise `handle_send_message`'s attribution gate, not the
-    /// actor-create authorization path).
+    /// actor-create authorization path). `engine` must be a well-formed
+    /// `ActorEngine` body: `apply_command` runs the same `/engine`
+    /// normalization gate as `apply_intent` (data integrity, not authz),
+    /// so an absent/malformed body is rejected on Create regardless of
+    /// this seeding path's relaxed authz.
     fn seed_actor_doc(id: Uuid, world: Uuid, owner: Option<Uuid>) -> Document {
         Document {
             id,
@@ -2556,7 +2560,15 @@ mod tests {
             permissions: crate::data::document::PermissionSet::default(),
             embedded: Default::default(),
             parent_id: None,
-            engine: None,
+            engine: Some(serde_json::json!({
+                "displayName": "Goblin",
+                "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 },
+                "shape": "square",
+                "faction": null,
+                "conditions": [],
+                "prototype": true
+            })),
             system: serde_json::json!({ "name": "Goblin" }),
             created_at: 0,
             updated_at: 0,
@@ -2973,6 +2985,9 @@ mod tests {
             .unwrap();
         let mut wrong_type = seed_actor_doc(Uuid::new_v4(), w.id, Some(player));
         wrong_type.doc_type = "note".into();
+        // "note" is not engine-defined; a present engine body would now be
+        // rejected by apply_command's /engine normalization gate.
+        wrong_type.engine = None;
         let doc_id = wrong_type.id;
         repo.apply_command(UnsequencedCommand {
             world_id: w.id,

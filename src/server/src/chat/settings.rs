@@ -117,7 +117,6 @@ pub async fn resolve_dice_context(repo: &dyn Repository, world: Uuid) -> ParseCo
 mod tests {
     use super::*;
     use crate::auth::role::ServerRole;
-    use crate::data::command::{Operation, UnsequencedCommand};
     use crate::data::document::{Document, PermissionSet, Scope};
     use crate::data::sqlite::SqliteRepository;
     use std::collections::BTreeMap;
@@ -157,23 +156,17 @@ mod tests {
         }
     }
 
-    /// Seed a `chat-settings`/`dice-settings` doc via the trusted
-    /// `apply_command` substrate (mirrors `chat::mod::seed_actor_doc`) —
-    /// bypasses the `validate_engine_tree` ingress gate, so a deliberately
-    /// malformed `engine` body can still be persisted to exercise
+    /// Seed a `chat-settings`/`dice-settings` doc via the test-only raw
+    /// insert (`SqliteRepository::seed_document_unvalidated`) — bypasses
+    /// the `validate_engine_tree` ingress gate (which `apply_command` now
+    /// runs too, same as `apply_intent`), so a deliberately malformed
+    /// `engine` body can still be persisted to exercise
     /// `resolve_content_policy`/`resolve_dice_context`'s own runtime
     /// fail-closed fallback (a well-formed body would never reach a
-    /// malformed-engine test case if `apply_intent`'s ingress gate rejected
-    /// the Create outright before it was ever stored).
-    async fn seed_settings_doc(repo: &SqliteRepository, world_id: Uuid, gm: Uuid, doc: Document) {
-        repo.apply_command(UnsequencedCommand {
-            world_id,
-            author: gm,
-            ts: 0,
-            ops: vec![Operation::Create { doc }],
-        })
-        .await
-        .unwrap();
+    /// malformed-engine test case if the ingress gate rejected the Create
+    /// outright before it was ever stored).
+    async fn seed_settings_doc(repo: &SqliteRepository, _world_id: Uuid, _gm: Uuid, doc: Document) {
+        repo.seed_document_unvalidated(&doc).await.unwrap();
     }
 
     #[test]
