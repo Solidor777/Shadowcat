@@ -67,7 +67,9 @@ describe("shared-runtime import map (build output)", () => {
   // runtime — invisible to a test that only checks file existence / the
   // import map's string content. These assertions import the actual built
   // chunks and check the real public API names survive.
-  it("runtime chunks export their packages' real public API (not mangled aliases)", async () => {
+  // Imports six real built chunks from disk — I/O-bound, so the default 5s
+  // budget flakes under full-workspace parallel runs (`pnpm -r test`).
+  it("runtime chunks export their packages' real public API (not mangled aliases)", { timeout: 30_000 }, async () => {
     const svelte = await import(
       pathToFileURL(path.join(distDir, "runtime", "svelte.js")).href
     );
