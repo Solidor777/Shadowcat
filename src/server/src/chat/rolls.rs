@@ -164,6 +164,11 @@ pub enum RollError {
     SidesTooLarge(i64),
     TooManyInline(usize),
     Unterminated,
+    /// Two ladder rungs share one `margin_offset` -- `classify`'s
+    /// max_by_key/min_by_key tie is caller-order-dependent, so which rung wins
+    /// would be nondeterministic. Refused at construction so every downstream
+    /// ladder is unambiguous (classify.rs's doc comment documents the tie).
+    DuplicateTierOffset(i32),
 }
 
 /// Player-presentable. `Parse` reuses `ParseError`'s own `Display`; every
@@ -200,6 +205,9 @@ impl std::fmt::Display for RollError {
                     f,
                     "an inline roll (\"[[...]]\") is missing its closing ']]'"
                 )
+            }
+            RollError::DuplicateTierOffset(o) => {
+                write!(f, "duplicate tier margin offset {o}")
             }
         }
     }
@@ -259,12 +267,30 @@ fn validate_pre_roll(spec: &RollSpec) -> Result<(), RollError> {
         }
     }
 
-    if let Mode::SuccessCount(cfg) = &spec.mode {
-        if cfg.expertise > MAX_EXPERTISE {
-            return Err(RollError::ExpertiseTooLarge(cfg.expertise));
+    match &spec.mode {
+        Mode::Total(cfg) => validate_tiers(&cfg.tiers)?,
+        Mode::SuccessCount(cfg) => {
+            validate_tiers(&cfg.tiers)?;
+            if cfg.expertise > MAX_EXPERTISE {
+                return Err(RollError::ExpertiseTooLarge(cfg.expertise));
+            }
         }
     }
 
+    Ok(())
+}
+
+/// Uniqueness guard over a classification ladder's `margin_offset`s. Notation
+/// cannot author a non-empty ladder today (parser.rs emits `tiers: vec![]`),
+/// so this arms the boundary for the tier-ladder syntax before it exists --
+/// the guard predates the untrusted path by construction.
+fn validate_tiers(tiers: &[crate::dice::spec::Tier]) -> Result<(), RollError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for t in tiers {
+        if !seen.insert(t.margin_offset) {
+            return Err(RollError::DuplicateTierOffset(t.margin_offset));
+        }
+    }
     Ok(())
 }
 
@@ -587,11 +613,49 @@ mod tests {
             RollError::SidesTooLarge(20_000),
             RollError::TooManyInline(9),
             RollError::Unterminated,
+            RollError::DuplicateTierOffset(5),
         ];
         for v in variants {
             let rendered = v.to_string();
             assert!(!rendered.contains("Some("), "{rendered}");
             assert!(!rendered.is_empty());
         }
+    }
+
+    #[test]
+    fn duplicate_tier_offsets_are_rejected_pre_roll() {
+        use crate::dice::spec::{ConstTerm, Direction, Expr, Mode, RollSpec, Tier, TotalConfig};
+        let spec = RollSpec {
+            expr: Expr::Const(ConstTerm {
+                value: 1,
+                label: None,
+            }),
+            direction: Direction::HighWins,
+            mode: Mode::Total(TotalConfig {
+                difficulty: Some(0),
+                tiers: vec![
+                    Tier {
+                        margin_offset: 5,
+                        label: Some("a".into()),
+                        tier_value: Some(1),
+                    },
+                    Tier {
+                        margin_offset: 5,
+                        label: Some("b".into()),
+                        tier_value: Some(2),
+                    },
+                ],
+            }),
+        };
+        assert!(matches!(
+            validate_pre_roll(&spec),
+            Err(RollError::DuplicateTierOffset(5))
+        ));
+        // Unique offsets pass.
+        let mut ok = spec.clone();
+        if let Mode::Total(cfg) = &mut ok.mode {
+            cfg.tiers[1].margin_offset = 6;
+        }
+        assert!(validate_pre_roll(&ok).is_ok());
     }
 }
