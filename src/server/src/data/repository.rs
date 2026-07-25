@@ -14,6 +14,14 @@ use crate::data::DataError;
 pub trait Repository: Send + Sync {
     /// Allocate the next per-world seq, append the command to the log, and
     /// apply every operation to the document store — all in one transaction.
+    /// This is the trusted substrate (undo/replay): unlike `apply_intent`,
+    /// it runs no capability/schema/size checks. It DOES run the same
+    /// `/engine` ingress gate as `apply_intent` on Create and Update
+    /// (`validate_engine_tree`, re-deriving normalized `FieldChange` values
+    /// for `/engine`(/*)) — normalize-then-store is data integrity, not
+    /// authz, so it applies regardless of caller trust level. A malformed
+    /// or absent engine body on an engine-defined `doc_type` is rejected
+    /// with `DataError::BadEngine`.
     async fn apply_command(&self, cmd: UnsequencedCommand) -> Result<Command, DataError>;
 
     /// Authorize (per `ctx`), structurally validate, and check per-op

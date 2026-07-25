@@ -239,8 +239,9 @@ mod tests {
         // `markdown` is a type mismatch (string, not bool), so
         // `serde_json::from_value::<ChatContentPolicy>` errors even with
         // `#[serde(default)]` — a merely-missing field would NOT error.
-        // Seeded via `apply_command` (bypasses ingress validation) since
-        // `apply_intent` would now reject this Create outright.
+        // Seeded via `seed_document_unvalidated` (raw insert, bypasses
+        // ingress validation) since both `apply_intent` and `apply_command`
+        // would now reject this Create outright.
         let doc = settings_doc(
             world_id,
             gm,
@@ -353,7 +354,8 @@ mod tests {
         let (repo, world_id, gm) = world().await;
         // `mode` is a type mismatch (number, not a known string), so
         // deserialization into `DiceSettingsEngine` errors outright. Seeded
-        // via `apply_command` — `apply_intent` would reject this Create.
+        // via `seed_document_unvalidated` (raw insert) — both `apply_intent`
+        // and `apply_command` would reject this Create.
         let doc = dice_settings_doc(world_id, gm, serde_json::json!({ "mode": 5 }));
         seed_settings_doc(&repo, world_id, gm, doc).await;
         let ctx = resolve_dice_context(&repo, world_id).await;
@@ -367,7 +369,7 @@ mod tests {
         // An out-of-vocabulary variant string (not a type mismatch) also fails
         // the whole-body deserialization — no #[serde(other)] catch-all exists,
         // so fail-closed covers this distinct failure class too. Seeded via
-        // `apply_command` for the same ingress-bypass reason as above.
+        // `seed_document_unvalidated` for the same ingress-bypass reason as above.
         let doc = dice_settings_doc(
             world_id,
             gm,

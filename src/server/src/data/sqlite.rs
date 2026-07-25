@@ -1342,6 +1342,15 @@ impl Repository for SqliteRepository {
         let mut tx = self.pool.begin().await?;
 
         // Allocate the next per-world seq from the single durable source.
+        // Unlike `apply_intent` (seq allocated AFTER Phase-1 validation, so a
+        // rejected intent never consumes one), this bump happens BEFORE any
+        // op is validated -- safe only because the whole transaction rolls
+        // back on any early `?` return below, so a rejected write never
+        // commits the bumped seq either. A future error-handling refactor
+        // that starts returning `Ok` on a partially-applied/rejected op
+        // (instead of aborting via `?`) would silently start consuming seqs
+        // on rejected writes; keep this ordering paired with whole-tx
+        // rollback semantics.
         let seq: i64 = sqlx::query("UPDATE worlds SET seq = seq + 1 WHERE id = ? RETURNING seq")
             .bind(cmd.world_id.to_string())
             .fetch_optional(&mut *tx)
