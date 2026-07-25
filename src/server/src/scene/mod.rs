@@ -382,6 +382,34 @@ fn reapply_changes(doc: &mut Document, changes: &[FieldChange]) {
     }
 }
 
+/// The single authority for the `/engine`-tier per-requester visibility decision: can `viewer`
+/// see `doc`'s `/engine` property override? `viewer: None` is the AUTHORITATIVE caller (a GM, or
+/// the execution path) and always sees everything — `true` unconditionally. `viewer: Some(user)`
+/// resolves the tier declared at `permissions.property_overrides["/engine"]` (default `All` when
+/// absent) against `user`'s access, via `permission::resolve_access` + `effective_owner(doc,
+/// None)` — the no-actor-join form, exact for any doc type that never carries an actor link
+/// (wall, region). `move_walls` and `region_field` both call this rather than keep a private
+/// copy: the plan's anti-fork rule requires one shared symbol wherever two paths must agree on
+/// the same decision. Do not re-inline this at a new call site.
+fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
+    let Some(user) = viewer else {
+        return true;
+    };
+    let tier = doc
+        .permissions
+        .property_overrides
+        .get("/engine")
+        .copied()
+        .unwrap_or(crate::data::document::Visibility::All);
+    let access = crate::data::permission::resolve_access(
+        user,
+        crate::data::document::WorldRole::Player,
+        doc,
+        crate::data::permission::effective_owner(doc, None),
+    );
+    access.can_see(tier)
+}
+
 impl SceneEcs {
     pub fn new() -> Self {
         Self {
@@ -1129,25 +1157,8 @@ impl SceneEcs {
             if wall.blocks_move != Some(true) {
                 continue;
             }
-            if let Some(user) = viewer {
-                let tier = w
-                    .doc
-                    .permissions
-                    .property_overrides
-                    .get("/engine")
-                    .copied()
-                    .unwrap_or(crate::data::document::Visibility::All);
-                // A wall doc never carries an actor link, so the no-join effective-owner
-                // resolution is exact — identical to `region_field`'s own call.
-                let access = crate::data::permission::resolve_access(
-                    user,
-                    crate::data::document::WorldRole::Player,
-                    &w.doc,
-                    crate::data::permission::effective_owner(&w.doc, None),
-                );
-                if !access.can_see(tier) {
-                    continue;
-                }
+            if !engine_tier_visible(&w.doc, viewer) {
+                continue;
             }
             out.push(vision::Seg {
                 a: (wall.seg.x1, wall.seg.y1),
@@ -1419,25 +1430,8 @@ impl SceneEcs {
             if !region_eng.enabled {
                 continue;
             }
-            if let Some(user) = viewer {
-                let tier = doc
-                    .permissions
-                    .property_overrides
-                    .get("/engine")
-                    .copied()
-                    .unwrap_or(crate::data::document::Visibility::All);
-                // A region doc never carries an actor link, so the no-join
-                // resolution is exact — and fails closed if a non-region doc
-                // ever reached here.
-                let access = crate::data::permission::resolve_access(
-                    user,
-                    crate::data::document::WorldRole::Player,
-                    doc,
-                    crate::data::permission::effective_owner(doc, None),
-                );
-                if !access.can_see(tier) {
-                    continue;
-                }
+            if !engine_tier_visible(doc, viewer) {
+                continue;
             }
             let Some(shape) = regions::parse_region_shape(&region_eng.shape) else {
                 continue;
@@ -5242,6 +5236,30 @@ mod tests {
             ecs.move_walls(scene, Some(player)).len(),
             1,
             "only the ROUTING set filters per requester"
+        );
+    }
+
+    /// Anti-drift pin for `engine_tier_visible`, the single symbol `move_walls` and
+    /// `region_field` both call for the `/engine`-tier per-requester decision. A re-inline at
+    /// either call site, or a semantic change to the predicate itself, fails this test.
+    #[test]
+    fn engine_tier_visible_admits_authoritative_and_rejects_a_non_owner_player_on_gm_only() {
+        let mut doc = crate::data::document::tests::world_scoped_doc(
+            Uuid::from_u128(9),
+            Uuid::from_u128(50),
+            "wall",
+        );
+        doc.permissions
+            .property_overrides
+            .insert("/engine".into(), crate::data::document::Visibility::GmOnly);
+        let player = Uuid::from_u128(99);
+        assert!(
+            engine_tier_visible(&doc, None),
+            "the authoritative (None) viewer sees a gm_only doc"
+        );
+        assert!(
+            !engine_tier_visible(&doc, Some(player)),
+            "a non-owner player is rejected from a gm_only doc"
         );
     }
 
