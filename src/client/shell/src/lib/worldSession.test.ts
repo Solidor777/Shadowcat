@@ -139,6 +139,26 @@ test("applies asset_changed to the resolver and notifies subscribers", async () 
   expect(got).toEqual([{ uuid: "a1", op: "replaced" }]);
 });
 
+test("evicted frame surfaces through onEvicted", async () => {
+  let push!: (frame: unknown) => void;
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
+  };
+  const onEvicted = vi.fn();
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [coreUiStub],
+    logger: silentLogger,
+    onEvicted,
+  });
+  await session.enter("w1");
+  push({ type: "evicted", user: null });
+  await vi.waitFor(() => expect(onEvicted).toHaveBeenCalledOnce());
+});
+
 function sceneCreates(sent: Array<Record<string, unknown>>): unknown[] {
   return sent.filter(
     (m) =>

@@ -90,7 +90,7 @@
     const wsUrl =
       (location.protocol === "https:" ? "wss:" : "ws:") +
       "//" + location.host + "/ws?world=" + worldId;
-    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assets, actors, factions, conditions, sceneTools, chat, chatComposer, chatCard, sheetFallback, sheetActor, sheetItem] });
+    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assets, actors, factions, conditions, sceneTools, chat, chatComposer, chatCard, sheetFallback, sheetActor, sheetItem], onEvicted: () => leaveWorld() });
     session = s;
     void s.enter(worldId);
     setLastWorld(worldId);
