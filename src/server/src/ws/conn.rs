@@ -526,11 +526,8 @@ async fn scene_ping_permitted(
     }
     // World scope: a scene doc from another world is refused even for a member of both (the
     // relay stamps THIS room).
-    match doc.scope {
-        crate::data::document::Scope::World {
-            world_id: doc_world,
-        } if doc_world == world_id => {}
-        _ => return false,
+    if crate::data::document::world_of(&doc) != Some(world_id) {
+        return false;
     }
     let Ok(defaults) = repo.world_cap_defaults(world_id).await else {
         return false;

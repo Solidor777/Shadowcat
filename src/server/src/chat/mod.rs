@@ -506,9 +506,16 @@ pub async fn handle_send_message(
                     .map_err(SendMessageError::Data)?;
                 let is_gm = ctx.world_role == WorldRole::Gm;
                 let allowed = match &actor_doc {
-                    // GM may attribute as any existing actor doc; a Player
-                    // only as an actor doc they own.
-                    Some(d) if d.doc_type == "actor" => is_gm || d.owner == Some(ctx.user_id),
+                    // GM may attribute as any actor doc IN THIS WORLD; a
+                    // Player only as one they own. A cross-world actor ref is
+                    // refused at ingest, same as any other invalid ref — an
+                    // actor doc's ownership grant does not cross world scope.
+                    Some(d)
+                        if d.doc_type == "actor"
+                            && crate::data::document::world_of(d) == Some(room.world_id) =>
+                    {
+                        is_gm || d.owner == Some(ctx.user_id)
+                    }
                     _ => false,
                 };
                 if !allowed {
@@ -2700,6 +2707,76 @@ mod tests {
             seq_before,
             "spoofed attribution must persist nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn actor_from_another_world_is_not_speakable_even_for_its_owner() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::UnsequencedCommand;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world_a = repo.create_world_owned("A", gm, 0).await.unwrap();
+        let world_b = repo.create_world_owned("B", gm, 0).await.unwrap();
+        repo.add_member(world_a.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        repo.add_member(world_b.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+
+        // The actor doc lives in world B and IS owned by `player` — ownership
+        // alone must not be enough to speak as it from world A's room.
+        let actor_id = Uuid::new_v4();
+        repo.apply_command(UnsequencedCommand {
+            world_id: world_b.id,
+            author: player,
+            ts: 0,
+            ops: vec![Operation::Create {
+                doc: seed_actor_doc(actor_id, world_b.id, Some(player)),
+            }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room_a = reg.get_or_create(&repo, world_a.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let err = handle_send_message(
+            &room_a,
+            &repo,
+            &ctx,
+            &rate,
+            LinkPreviewDeps {
+                client: &super::link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            "all".into(),
+            "hi".into(),
+            Some(ActorOwnerRef::Actor { actor_id }),
+            Audience::Public,
+            0,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SendMessageError::ActorNotSpeakable));
     }
 
     #[tokio::test]
