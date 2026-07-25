@@ -3,6 +3,21 @@
 Living record of issues surfaced during review/audit. NOT a to-do list — entries
 are observations awaiting triage, not committed work.
 
+- Title: Phase-B world delete swallows asset-directory removal failures. Summary: `routes.rs::
+  delete_world` returns 204 even when `remove_dir_all` on `<assets_path>/<world_id>/` fails for a
+  reason other than NotFound (permission error, Windows open-handle lock); the failure is a
+  `tracing::warn!` only, so an admin deleting a world for data-removal reasons gets no signal that
+  bytes survived on disk. Status: Accepted (final-review Minor; matches the project-wide delete
+  convention — rows first, files best-effort, a crash orphans files rather than blocking or leaving
+  a live world missing them; revisit only if an admin-visible cleanup report surface is ever built).
+
+- Title: Phase-B world delete evicts live connections before its DB transaction commits. Summary:
+  a transient (non-NotFound) failure of `delete_world`'s transaction would leave users kicked from
+  a world that still exists — they can immediately rejoin (the tombstone lifts on the failure
+  path). Status: Accepted (final-review Minor; the plan explicitly chose evict-first ordering so no
+  join can re-hydrate a room mid-deletion — the reverse ordering reopens the ghost-room window the
+  tombstone exists to close).
+
 - Title: M10e-2 environment light is flat ambient, not edge-projected. Summary: the M10e spec
   (§6/§12.5) specifies environment light as edge-projected + `blocksLight`-occludable, but the scene
   model is dimensionless (dimensions deferred), so there is no boundary to project edge light from.
