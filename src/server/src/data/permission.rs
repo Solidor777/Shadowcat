@@ -51,9 +51,10 @@ pub fn token_actor_link(doc: &Document) -> Option<Uuid> {
 /// stamped, so re-assigning an actor's owner re-owns every linked token at once.
 ///
 /// Fail-closed: no link, a dangling link (`linked_actor: None`), a
-/// `linked_actor` that is not the document `token_actor_link` names, and an
-/// unowned actor all resolve to `None` — no owner, therefore no owner-derived
-/// capability. Degenerate input under-permits, never default-allows.
+/// `linked_actor` that is not the document `token_actor_link` names or lives
+/// in a different scope, and an unowned actor all resolve to `None` — no
+/// owner, therefore no owner-derived capability. Degenerate input
+/// under-permits, never default-allows.
 ///
 /// `linked_actor` MUST be the document `token_actor_link(doc)` names; the
 /// identity/type re-check below rejects any other document rather than trusting
@@ -64,7 +65,7 @@ pub fn effective_owner(doc: &Document, linked_actor: Option<&Document>) -> Optio
     }
     let link = token_actor_link(doc)?;
     let actor = linked_actor?;
-    if actor.id != link || actor.doc_type != "actor" {
+    if actor.id != link || actor.doc_type != "actor" || actor.scope != doc.scope {
         return None;
     }
     actor.owner
@@ -2186,6 +2187,30 @@ mod tests {
                 Some(&actor_owned_by(actor_id, Some(player)))
             ),
             Some(player)
+        );
+    }
+
+    #[test]
+    fn effective_owner_rejects_a_cross_scope_actor() {
+        // A candidate from another scope is an illegitimate join, same class as a
+        // wrong-id or wrong-type candidate: fail closed to no owner.
+        let actor_id = Uuid::from_u128(42);
+        let mut token = token_linked_to(Some(actor_id));
+        token.scope = Scope::World {
+            world_id: Uuid::from_u128(1000),
+        };
+        let mut foreign = actor_owned_by(actor_id, Some(Uuid::from_u128(1)));
+        foreign.scope = Scope::World {
+            world_id: Uuid::from_u128(2000),
+        };
+        assert_eq!(effective_owner(&token, Some(&foreign)), None);
+
+        // Same scope still resolves.
+        let mut same = actor_owned_by(actor_id, Some(Uuid::from_u128(1)));
+        same.scope = token.scope.clone();
+        assert_eq!(
+            effective_owner(&token, Some(&same)),
+            Some(Uuid::from_u128(1))
         );
     }
 

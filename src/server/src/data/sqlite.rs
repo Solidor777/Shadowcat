@@ -1190,16 +1190,13 @@ impl SqliteRepository {
             return Ok(crate::data::permission::effective_owner(doc, None));
         };
         // A dangling link loads `None` and `effective_owner` fails closed to no owner.
-        let actor = Self::load_document(executor, actor_id).await?;
+        //
         // `load_document` is keyed on id alone (no `world_id` filter), so a cross-world
-        // `actor_id` would otherwise resolve — every other `load_document` in
-        // `apply_intent` is paired with `check_command_scope` for the same reason (a GM
-        // of one world must not reach another world's document). Discarding a
-        // scope-mismatched actor also keeps this join's reachable set equal to
-        // `SceneEcs::self.actors` BY CONSTRUCTION: room hydration loads actors
-        // `WHERE world_id = ?`, so without this the write path could resolve an owner
-        // the derived vision path structurally cannot — a second ECS/DB ownership fork.
-        let actor = actor.filter(|a| a.scope == doc.scope);
+        // `actor_id` would otherwise resolve. The scope check that used to live here is
+        // now inside `permission::effective_owner` itself — see that function's doc
+        // comment for the rationale (keeps the reachable set equal to `SceneEcs.actors`
+        // by construction).
+        let actor = Self::load_document(executor, actor_id).await?;
         Ok(crate::data::permission::effective_owner(
             doc,
             actor.as_ref(),
