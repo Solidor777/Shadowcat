@@ -97,27 +97,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 7. **Speak-as-token-instance** — `ActorOwnerRef::TokenInstance` is REJECTED at ingest (fail-closed,
    no first-party producer) — build the composer/token-context UX and lift the rejection together.
 
-## Actionable now (deferred on cost, NOT blocked) — inherited owner is a stranger at egress
-- TODO: Task 14i made token ownership EFFECTIVE (`effective_owner(token) = the token's own owner,
-  else the linked actor's owner`) on the write-authz path and on the four scene vision/lit-mask
-  sites, but the EGRESS path was not migrated: `filter_properties`, `collect_hidden`,
-  `filter_command` and the document routes still resolve `is_owner` from the literal `doc.owner`.
-  So a player who inherits a token through its actor can MOVE it and SEE through it, while being
-  treated as a stranger for that token's `owner_or_gm` property tiers and its `/base` field. The
-  direction is under-permit (fail-closed), so nothing leaks — the inconsistency is that write says
-  "owner" and egress says "stranger" for the same user and document. Closing it needs a
-  per-recipient, per-event actor lookup on the egress hot path, which `filter_command`'s own
-  comment already flags as pool-contended. Nothing prevents doing it today — the deferral is a
-  cost judgement (a query per recipient per frame), not a missing prerequisite; a resolved-actor
-  cache would make it cheap but is not scoped work and must not be treated as a blocker.
-  **Second, sharper consequence, not just the `owner_or_gm` tiers:** on a token whose
-  `permissions.default` is `"none"` with no per-user entry, an inheriting owner gets
-  `WRITE_FIELDS` at `apply_intent` (via the owner floor) but is denied `cap::READ` at egress — a
-  document its owner can write but never receives. Unreachable on `buildTokenDoc`'s shipping
-  `observer` default, so not live today, but whoever closes this should fix the asymmetry, not
-  only the property tiers. (Disclosed by Task 14i; see
-  `.superpowers/sdd/task-14i-token-ownership-report.md`.)
-
 ## Actionable now — `setGmViewedScene` leaves a stale cross-scene token selection
 - TODO: `setGmViewedScene` (`src/client/shell/src/lib/worldSession.svelte.ts`) does not scene-scope
   or clear `tokenSelection`, while `commitRoute` (`src/modules/scene-tools/src/controller.svelte.ts`)
