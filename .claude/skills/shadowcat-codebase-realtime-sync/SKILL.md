@@ -110,8 +110,9 @@ optimistically and roll back on divergence.
   protocol Close, and terminates; targeting keys on the server-resolved `ctx.user_id`, mirroring
   the `MoveStream` per-recipient precedent. `RoomRegistry` carries a deletion tombstone
   (`begin_delete` removes the room + blocks `get_or_create` re-creation until `finish_delete`,
-  which must run on success AND failure paths; `get_or_create` also re-checks post-insert to close
-  the mid-hydration race). **INVARIANT: eviction is load-bearing, not cosmetic** —
+  which must run on success AND failure paths; post-insert, `get_or_create` re-checks the
+  tombstone AND re-verifies the world row — a delete can complete entirely inside the hydration
+  window, lifting the tombstone before the re-check, so only row absence refuses that ghost). **INVARIANT: eviction is load-bearing, not cosmetic** —
   `permission_context` resolves once per connection, so a revoked membership/account is never
   re-checked on a live socket. **INVARIANT: user deletion revokes sessions INSIDE its delete
   transaction** (`json_extract(data, '$.data.user.id')` on `tower_sessions` — no user_id column):
