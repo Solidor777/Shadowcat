@@ -943,8 +943,10 @@ impl SceneEcs {
         Some((t.x, t.y))
     }
 
-    /// `Room::publish`'s client-driven drag-move path still writes `/system` only pending Task
-    /// 8/9 — such writes are structurally inert against this `/engine`-only gate; see room.rs's
+    /// `Room::publish`'s sole caller: the D9 refusal predicate compares this call's pre- and
+    /// post-image to reject any non-GM `Update` that changes a token's position (players move
+    /// only via `MoveRequest` → `execute_move`). A `/system/x` write on a token is structurally
+    /// inert against this `/engine`-only read; see room.rs's
     /// `system_field_write_bypasses_the_move_gate_and_does_not_desync_the_engine_band` test.
     ///
     /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,

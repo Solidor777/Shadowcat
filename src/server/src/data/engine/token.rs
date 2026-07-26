@@ -98,9 +98,8 @@ mod tests {
 
     #[test]
     fn ingress_bound_equals_gate_walks_exactly() {
-        // Anti-drift: ingress and the movement gate read ONE symbol with the
-        // same strictly-`>` sense (template: room.rs's
-        // publish_move_gate_admissibility_bound_equals_gate_walks).
+        // Anti-drift: ingress and the movement gate read ONE symbol with the same
+        // strictly-`>` sense.
         let bound = crate::scene::move_exec::MAX_GATE_WALK_COORD;
         let mut t = base();
         t.x = bound;
@@ -110,6 +109,19 @@ mod tests {
         let mut t = base();
         t.y = -(bound + 1.0);
         assert!(t.validate().is_err());
+
+        // The walk side of the same bound, asserted here so one test pins the EQUALITY of the two
+        // senses rather than leaving it inferred across two files.
+        let at = crate::scene::move_exec::MAX_GATE_WALK_COORD;
+        assert!(
+            crate::scene::move_exec::gate_walk(&[(at - 100.0, 0.0), (at, 0.0)], 100.0).is_some(),
+            "gate_walk admits a coordinate exactly AT the bound"
+        );
+        assert!(
+            crate::scene::move_exec::gate_walk(&[(at - 100.0, 0.0), (at + 1.0, 0.0)], 100.0)
+                .is_none(),
+            "gate_walk refuses a coordinate over the bound"
+        );
     }
 }
 
