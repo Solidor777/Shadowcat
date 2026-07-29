@@ -787,7 +787,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (gate allows the center path) along a corridor the router refuses (footprint doesn't fit); this
   wall asymmetry is intentional and safe (over-restrictive, never under). The MASK check requires
   `grid.shape.footprint_cells(to,...) ∪ grid.shape.line_traversal(from,to,cell)` — the same RESOLVED
-  `GridShape` primitives `move_exec.rs`/`publish` use per step — so the router's mask predicate is
+  `GridShape` primitives `move_exec.rs` uses per step — so the router's mask predicate is
   provably `≥` the gate's; **route ⊆ gate-allowed holds for every footprint size**, including the
   sub-0.5-cell diagonal case where the pre-M3 footprint-disc-only check let the router approve a step
   the gate rejected (buddy-check P1). Never make the pathfinder mask test weaker than
