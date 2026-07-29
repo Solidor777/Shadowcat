@@ -330,7 +330,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   and passes the same slice into both engines; `navmesh_for`'s memo key incorporates the
   requester's exact wall-set bit-pattern (not merely "filtered vs unfiltered"), since two
   requesters can see two different wall subsets. **I5 — vision and lighting keep the FULL wall
-  set and must never be unified with routing:** `sight_walls`/`light_walls` (`mod.rs:199,939`, the
+  set and must never be unified with routing:** `sight_walls`/`light_walls` (`mod.rs:1133,1154`, the
   M9b full-wall-set invariant) deliberately include `gm_only` walls — a wall you cannot see still
   blocks your sight, which under-reveals and is correct — while `move_walls(scene, Some(user))`
   omits exactly those same walls from a non-GM's ROUTE so its geometry isn't leaked through route
@@ -723,28 +723,26 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - **Vision is server-authoritative, no client prediction** (ARCHITECTURE §2 invariant 3); movement that
   crosses a `blocksMove` wall is rejected server-side before the write — validate the **post-image**
   position, not just the pre-move one [[m9-progress]].
-- **Movement restriction is server-authoritative at the same gate (M10e-4).** In `Room::publish`'s
-  non-GM block, AFTER the M9a `blocks_move` wall check, a move is rejected (`DataError::Forbidden`,
-  before `apply_intent` — no seq consumed; client rolls back) unless the **entire** move's traversed
-  cells lie in the user's mask: `Visible` ⇒ `visible_cells`; `Revealed` ⇒ `visible_cells ∪
-  get_explored` (explored is center-sampled by construction — the union only ever ENLARGES, so the
-  asymmetry is fail-safe); `Unrestricted` ⇒ walls only. GM exempt. **The gate mask is the SAME mask as
-  egress** (`visible_cells` strict ≡ `player_lit_mask`) — never fork the per-cell decision (spec §13).
-  **Hex-correct (Task 14d):** the traversed-cell set comes from `scene.resolve_grid_shape(scene_id,
-  cell).line_traversal(a0, a1, cell)` — a SUPERCOVER on both grid kinds (square delegates to
-  `movement::supercover_cells`; hex uses a ψ-crossing supercover, see the gotcha below) — the SAME
-  primitive `move_exec::execute_move` gates against, so a
-  select/move-tool drag (which writes `/engine/x,y` directly via this `publish` gate, not
-  `moveRequest`) and an executed move agree on every cell on BOTH grid kinds. A prior version called
-  the square-only `supercover_cells` free function directly here, testing square-indexed cells
-  against `visible_cells_cached`'s hex-aware mask — two incompatible coordinate systems on a hex
-  scene. Fail-closed on empty mask / `line_traversal`→None / `get_explored` Err. `get_explored` is on
-  the `Repository` trait; the per-`(user,scene)` mask + explored blob are memoized within one
-  publish, and the `get_explored().await` runs only AFTER the `scene.read()` guard drops (no lock
-  across await). **By design: a dark scene under `Visible` freezes non-GM movement** — an empty lit
-  mask rejects every move; a player who cannot see a cell must not move into it. The GM enables
-  movement by lighting the scene or choosing `Revealed`/`Unrestricted`. Do NOT "fix" the freeze by
-  softening the defaults — it is the correct fail-closed outcome.
+- **`Room::publish`'s non-GM block retains only two gates, neither a traversal gate (Phase D-α/D9,
+  `ws/room.rs:230-336`).** (1) An `Update` touching a token's `/engine/x`/`/engine/y` is refused
+  outright on bitwise `a0 != a1` (position changed at all) — zero wall/mask/traversal-cell checks;
+  a select/move-tool drag no longer writes `/engine/x,y` directly at all (Task 5) — it goes through
+  `previewMoves`/`commitMoves`, request-only via `moveRequest` → `execute_move`, the SOLE remaining
+  implementation of the per-cell traversal decision (**I2**, see the parity-checklist bullet above).
+  (2) A `Create` of a `token` doc is still authorized: the target scene must exist
+  (`scene_grid_sizes`, fail-closed axis 6 above), the engine body must parse and be finite
+  (fail-closed), and the placement's CENTER cell (`resolve_grid_shape(...).cell_of((x,y))` — a
+  point, not a traversal, so no `line_traversal`/supercover call here) must lie in the user's mask
+  per `movement_restriction`: `Unrestricted` ⇒ no check; `Visible` ⇒
+  `visible_cells_cached(user, scene, lenient)`; `Revealed` ⇒ the same mask unioned with
+  `get_explored` (deferred past the scene-read-lock scope, exactly as the old traversal gate
+  deferred it, since `get_explored` is async and must not run under the guard). GMs are exempt from
+  both gates entirely (M9 §5). `visible_cache`/`explored_cache` memoize per `(scene, lenient)`/
+  `scene` within one `publish` call so a batch of Creates doesn't recompute the mask or refetch
+  explored per token. **By design: a dark scene under `Visible` still refuses non-GM token
+  placement into an unseen cell** — the same fail-closed reasoning the pre-D9 traversal gate used,
+  now scoped to Create only. Do NOT "fix" this by softening the defaults — it is the correct
+  fail-closed outcome.
 - **Bound recursive walks over self-FK (parent_id) tables with a visited-set** [[m8a-execution-state]].
 - **Scene-settings resolvers are fail-closed and inheritance-layered**: `resolveSceneSettings`
   resolves built-in default < `world-settings` doc < per-scene override, never throws (structural
@@ -969,8 +967,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   corner slivers fall between samples: it omitted a geometrically crossed hex on ~55% of random
   segments, and when `n` rounded to 0 it dropped the destination's own hex, breaking its own
   "both endpoint cells always included" contract. Because this is the hex movement gate's primitive
-  in BOTH `Room::publish` and `move_exec`, every omitted hex was one a non-GM could move through
-  unchecked against the visibility mask. It is now a **ψ-crossing supercover**: `cell_of` is
+  in BOTH `Room::publish` (pre-D9; `publish` ran the same traversal gate `execute_move` now runs
+  alone) and `move_exec`, every omitted hex was one a non-GM could move through unchecked against
+  the visibility mask. It is now a **ψ-crossing supercover**: `cell_of` is
   nearest-center, so a hex is its center's Voronoi cell and every hex boundary lies on an integer
   level set of ψ₁=x−y, ψ₂=z−y, ψ₃=x−z (fractional cube coords) — enumerate every integer ψ crossing,
   sample each interval's midpoint, plus a perpendicular epsilon probe either side of each crossing
