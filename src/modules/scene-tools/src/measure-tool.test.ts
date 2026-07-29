@@ -25,7 +25,7 @@ function setup() {
     clearMeasure: () => { cleared++; },
   }));
   const sent: WireOperation[][] = [];
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: new DocumentStore(), assets: new AssetResolver(), world: "w1", sendPing: () => {} };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: new DocumentStore(), assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {} };
   return { tool: makeMeasureTool(ctx), measures, sent, clears: () => cleared };
 }
 
@@ -90,6 +90,7 @@ function setupRoute(over: {
     documents: docs,
     assets: new AssetResolver(),
     world: "w1",
+    role: "gm",
     sendPing: () => {},
     tokenSelection: sel,
     pathfind: over.pathfind,
@@ -170,6 +171,7 @@ test("measure tool with no pathfind function falls back to plain measure", () =>
     documents: new DocumentStore(),
     assets: new AssetResolver(),
     world: "w1",
+    role: "gm",
     sendPing: () => {},
     tokenSelection: sel,
     // pathfind intentionally omitted — defensive fallback
@@ -225,6 +227,7 @@ test("ToolController.toggle fires onDeactivate on outgoing measure tool", () => 
     documents: docs,
     assets: new AssetResolver(),
     world: "w1",
+    role: "gm",
     sendPing: () => {},
   };
 
@@ -259,7 +262,7 @@ test("measure tool accumulates multiple waypoints and passes them to pathfind in
 
   const sel = new TokenSelection();
   sel.set(["tok-1"]);
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: () => {}, documents: docs, assets: new AssetResolver(), world: "w1", sendPing: () => {}, tokenSelection: sel, pathfind };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: () => {}, documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, tokenSelection: sel, pathfind };
 
   const tool = makeMeasureTool(ctx);
 
@@ -503,6 +506,7 @@ function seedRouteCtx(over: {
     documents: docs,
     assets: new AssetResolver(),
     world: "w1",
+    role: "gm",
     sendPing: () => {},
     tokenSelection: sel,
     pathfind: over.pathfind,

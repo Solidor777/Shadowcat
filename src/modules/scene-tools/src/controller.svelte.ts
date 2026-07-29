@@ -5,6 +5,7 @@
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
 import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
+import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt } from "./hit-test";
 
 export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping" | "wall" | "region";
@@ -25,6 +26,9 @@ export interface ToolContext {
   documents: ReadableDocuments;
   assets: AssetResolver;
   world: string;
+  /** The caller's per-world role. Movement authority is role-asymmetric: a GM writes a token
+   * position directly, a player's move is request-only and server-executed. */
+  role: WorldRole;
   /** Broadcast a transient ping at scene coords (the ping tool). */
   sendPing: (x: number, y: number) => void;
   /** Monotonic clock for drag-intent coalescing; defaults to Date.now (injected in tests). */
@@ -67,6 +71,17 @@ function activeScene(ctx: ToolContext): { id: string; size: number; perCell: num
   const size = grid?.size ?? 100;
   const { perCell, unit } = grid?.distance ?? { perCell: 5, unit: "ft" };
   return { id: scene.id, size, perCell, unit };
+}
+
+/** Per-token footprint radius in cells (pathfind clearance), resolved from the token's
+ * linked/embedded actor; falls back to 0.4 sub-cell units when unresolved. Module-level (not
+ * closed over a single tool) so the measure tool's single-selection `resolveFootprint` and the
+ * select/move tool's per-token drag commit share one source — preview and commit cannot derive
+ * different sizes. */
+function footprintFor(ctx: ToolContext, id: string): number {
+  const doc = ctx.documents.get(id);
+  const eff = doc ? resolveTokenActor(doc, ctx.documents) : null;
+  return eff ? footprintRadius(eff) : 0.4;
 }
 
 /** Route color for the A* preview polyline (blue-teal, distinct from walls and selection). */
@@ -387,10 +402,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     const sel = ctx.tokenSelection;
     if (!sel || sel.ids.size !== 1) return 0.4;
     const [id] = [...sel.ids];
-    const tokenDoc = ctx.documents.get(id);
-    if (!tokenDoc) return 0.4;
-    const eff = resolveTokenActor(tokenDoc, ctx.documents);
-    return eff ? footprintRadius(eff) : 0.4;
+    return footprintFor(ctx, id);
   }
 
   /** Issue a pathfind request for the current waypoints + provisional goal `p`.
@@ -807,17 +819,61 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
     else ctx.scene.previewOverlay(rings);
   };
 
-  const sendMoves = (delta: Point): void => {
-    const ops: WireOperation[] = [];
+  /** Drag feedback only — never a document write and never a move request. A player's token
+   * must not appear to move until the server executes it (no optimistic prediction for a gated
+   * move), so this is the sole per-move overlay for both roles: a route line per selected token
+   * from its grab origin to the snapped provisional target. */
+  const previewMoves = (delta: Point): void => {
+    const pts: number[] = [];
+    for (const [, o] of origins) {
+      const target = ctx.scene.snap({ x: o.x + delta.x, y: o.y + delta.y });
+      pts.push(o.x, o.y, target.x, target.y);
+    }
+    ctx.scene.previewOverlay(
+      pts.length > 0 ? [{ points: pts, closed: false, stroke: { color: ROUTE_COLOR, width: 2 }, fill: null }] : [],
+    );
+  };
+
+  /** Commit the gesture, exactly once, on release. A GM writes the position directly (a GM
+   * places a token where they choose, walls included). A player's move is request-only: each
+   * selected token gets its own pathfind + moveRequest, and its rendered position advances only
+   * when the resulting MoveStream arrives. Per-token rather than batched: moveRequest is
+   * per-token on the wire and the server gates each token independently, so one token arresting
+   * while another completes is correct. */
+  const commitMoves = (delta: Point): void => {
+    if (ctx.role === "gm") {
+      const ops: WireOperation[] = [];
+      for (const [id, o] of origins) {
+        const target = ctx.scene.snap({ x: o.x + delta.x, y: o.y + delta.y });
+        const eng = ctx.documents.get(id)?.engine as { x?: number; y?: number } | undefined;
+        ops.push({ op: "update", doc_id: id, changes: [
+          { path: "/engine/x", old: eng?.x ?? null, new: target.x },
+          { path: "/engine/y", old: eng?.y ?? null, new: target.y },
+        ] });
+      }
+      if (ops.length > 0) ctx.dispatchIntent(ops);
+      return;
+    }
+    const scene = activeScene(ctx);
+    if (!scene || !ctx.pathfind || !ctx.moveRequest) return;
+    const pathfind = ctx.pathfind;
+    const moveRequest = ctx.moveRequest;
     for (const [id, o] of origins) {
       const target = ctx.scene.snap({ x: o.x + delta.x, y: o.y + delta.y });
-      const eng = ctx.documents.get(id)?.engine as { x?: number; y?: number } | undefined;
-      ops.push({ op: "update", doc_id: id, changes: [
-        { path: "/engine/x", old: eng?.x ?? null, new: target.x },
-        { path: "/engine/y", old: eng?.y ?? null, new: target.y },
-      ] });
+      pathfind(scene.id, [o.x, o.y], [[target.x, target.y]], footprintFor(ctx, id))
+        .then((result) => {
+          if (result.path.length >= 2) return moveRequest(scene.id, id, result.path);
+        })
+        .catch(() => {
+          // A refusal (out-of-mask destination, a springing secret wall, an arrest region, the
+          // per-token in-flight lock) is the NORMAL outcome for a player. Swallowing it would
+          // leave the token silently not moving with no explanation, indistinguishable from a
+          // hung connection, so the preview line is dropped rather than left stale — the app-wide
+          // `onMoveOutcome` observability signal (wired at the Stage level) already surfaces the
+          // rejected/truncated/executed outcome for this same request.
+          ctx.scene.previewOverlay([]);
+        });
     }
-    if (ops.length > 0) ctx.dispatchIntent(ops);
   };
 
   return {
@@ -848,19 +904,18 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
       const delta = { x: p.x - grabOrigin.x, y: p.y - grabOrigin.y };
       const t = now();
       if (t - lastSentAt >= DRAG_THROTTLE_MS) {
-        sendMoves(delta); // leading-edge coalesced stream
+        previewMoves(delta); // leading-edge coalesced preview
         lastSentAt = t;
       }
-      drawSelection();
     },
     onPointerUp(p: Point): void {
       if (!draggingId) return;
-      // Flush the authoritative release delta (a pure click that never moved sends nothing).
-      if (moved) sendMoves({ x: p.x - grabOrigin.x, y: p.y - grabOrigin.y });
+      // Commit exactly once, on release (a pure click that never moved commits nothing).
+      if (moved) commitMoves({ x: p.x - grabOrigin.x, y: p.y - grabOrigin.y });
       ctx.scene.setDraggingToken(null);
       draggingId = null;
       moved = false;
-      drawSelection();
+      ctx.scene.clearOverlay();
     },
   };
 }

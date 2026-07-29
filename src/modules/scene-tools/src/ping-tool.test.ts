@@ -16,6 +16,7 @@ test("clicking with the ping tool broadcasts a ping at the scene point", () => {
     documents: new DocumentStore(),
     assets: new AssetResolver(),
     world: "w1",
+    role: "gm",
     sendPing: (x, y) => pings.push({ x, y }),
   };
   const tool = makePingTool(ctx);

@@ -16,6 +16,7 @@
     documents: ctx.documents,
     assets: ctx.assets,
     world: ctx.world,
+    role: ctx.role,
     sendPing: ctx.sendPing,
     pathfind: ctx.pathfind,
     moveRequest: ctx.moveRequest,

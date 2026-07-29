@@ -151,10 +151,11 @@ test("a non-GM's ToolController is constructed and activates the select tool on 
   expect(screen.getByTestId("tool-select").getAttribute("aria-pressed")).toBe("true");
 });
 
-// Pins the write path an ungated tool reaches: the select/move drag emits an optimistic
-// `/engine/x,y` Update, which `Room::publish` polices for a non-GM (wall + visibility-mask
-// gate, then the document permission check in `apply_intent`). It must not emit anything else.
-test("a non-GM's select drag writes only /engine/x,y token updates", async () => {
+// Pins the write path a non-GM's drag reaches: since a player's move is server-executed
+// (`execute_move`, gated by wall + visibility-mask + arrest regions), the client must never
+// write a token position directly — it requests one via pathfind + moveRequest instead, and
+// the rendered position only advances once the resulting MoveStream arrives.
+test("a non-GM's select drag issues a moveRequest and writes no document update", async () => {
   const docs = sceneStore();
   docs.applyCommand({
     seq: 2, world_id: "w1", author: "a", ts: 0,
@@ -167,6 +168,7 @@ test("a non-GM's select drag writes only /engine/x,y token updates", async () =>
     }],
   });
   const dispatched: WireOperation[][] = [];
+  const moves: Array<{ tokenId: string; path: [number, number][] }> = [];
   const { scene, tools } = captureScene();
   render(ToolRail, {
     context: setAppContextForTest({
@@ -175,6 +177,14 @@ test("a non-GM's select drag writes only /engine/x,y token updates", async () =>
       documents: docs,
       tokenSelection: new TokenSelection(),
       dispatchIntent: (ops) => dispatched.push(ops),
+      pathfind: async (_s, start, waypoints) => ({ path: [start, waypoints.at(-1)!], cost: 1, arrested: false }),
+      moveRequest: async (s, tokenId, path) => {
+        moves.push({ tokenId, path });
+        return {
+          requestId: "r1", tokenId, mover: "u1", scene: s, startServerMs: 0,
+          durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1,
+        };
+      },
     }),
   });
   await fireEvent.click(screen.getByTestId("tool-select"));
@@ -183,15 +193,10 @@ test("a non-GM's select drag writes only /engine/x,y token updates", async () =>
   tool.onPointerDown({ x: 0, y: 0 }, ev);
   tool.onPointerMove({ x: 100, y: 0 }, ev);
   tool.onPointerUp({ x: 100, y: 0 }, ev);
+  await new Promise((r) => setTimeout(r, 0)); // drain the pathfind/moveRequest microtasks
 
-  expect(dispatched.length).toBeGreaterThan(0);
-  for (const ops of dispatched) {
-    for (const op of ops) {
-      expect(op.op).toBe("update");
-      const changes = (op as { changes: { path: string }[] }).changes;
-      expect(changes.map((c) => c.path)).toEqual(["/engine/x", "/engine/y"]);
-    }
-  }
+  expect(dispatched).toEqual([]);
+  expect(moves).toEqual([{ tokenId: "tok1", path: [[0, 0], [100, 0]] }]);
 });
 
 /** A DocumentStore seeded with one scene doc carrying `system`. */
