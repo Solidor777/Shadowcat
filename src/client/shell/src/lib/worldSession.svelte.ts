@@ -246,9 +246,10 @@ export class WorldSession {
     start: [number, number],
     waypoints: [number, number][],
     footprintRadius: number,
+    token?: string,
   ): Promise<PathResult> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
-    return this.#ws.pathfind(scene, start, waypoints, footprintRadius);
+    return this.#ws.pathfind(scene, start, waypoints, footprintRadius, token);
   }
 
   /** Request server-authoritative move execution for `tokenId` along `path` on

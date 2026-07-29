@@ -573,12 +573,17 @@ export class WsClient {
    * the matching `path_result` reply arrives. Rejects on a `path_error` frame or
    * after `timeoutMs`. The wire field is `footprint_radius`; the method param is
    * `footprintRadius` (camelCase per project convention).
+   *
+   * `token`, when given, names the token the route is for: the server derives the footprint from
+   * it and IGNORES `footprintRadius` entirely — the client value is honored only when `token` is
+   * omitted (an explicitly hypothetical preview with no preview-equals-execution guarantee).
    */
   pathfind(
     scene: string,
     start: [number, number],
     waypoints: [number, number][],
     footprintRadius: number,
+    token?: string,
     opts: { timeoutMs?: number } = {},
   ): Promise<PathResult> {
     const request_id = crypto.randomUUID();
@@ -593,7 +598,15 @@ export class WsClient {
         reject(new Error("pathfind request timeout"));
       }, timeoutMs);
       this.pending.set(request_id, { resolve: resolve as (r: PendingResult) => void, reject, timer });
-      this.send({ type: "pathfind", request_id, scene, start, waypoints, footprint_radius: footprintRadius });
+      this.send({
+        type: "pathfind",
+        request_id,
+        scene,
+        start,
+        waypoints,
+        footprint_radius: footprintRadius,
+        ...(token ? { token } : {}),
+      });
     });
   }
 

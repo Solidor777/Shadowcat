@@ -1585,6 +1585,24 @@ impl SceneEcs {
         false
     }
 
+    /// A token's `(parent scene, effective owner)`, or `None` when `token` is not a known token
+    /// document. Ownership routes through the SAME `token_effective_owner` rule
+    /// `user_owns_token_in_scene` uses — never a forked, looser test — so a caller authorizing a
+    /// client-named token id (e.g. `Pathfind`'s `token`) gets the identical rule the presence gate
+    /// and write-authz enforce.
+    pub(crate) fn token_scene_and_effective_owner(
+        &self,
+        token: Uuid,
+    ) -> Option<(Uuid, Option<Uuid>)> {
+        let &e = self.index.get(&token)?;
+        let ent = self.world.get::<&SceneEntity>(e).ok()?;
+        if ent.doc.doc_type != "token" {
+            return None;
+        }
+        let scene = ent.doc.parent_id?;
+        Some((scene, self.token_effective_owner(&ent.doc)))
+    }
+
     /// The token's effective vision modes as `(floor_min_illumination, range_cells, render_hint)`
     /// triples. `range_cells == 0.0` ⇒ unlimited. `render_hint` mirrors `VisionMode.render_hint`
     /// (e.g. `Some("desaturate")` for darkvision). Precedence (mirrors `resolveTokenActor` in
@@ -1706,7 +1724,6 @@ impl SceneEcs {
     /// DELIBERATE DIVERGENCE from the client on degenerate input: the client's `footprintRadius`
     /// has no finite/sign guard and propagates `NaN` (rejected later by `find`'s range check),
     /// whereas this refuses. Both fail closed; only the mechanism differs.
-    #[allow(dead_code)] // consumed by the future footprint-aware gate; exercised by tests now
     pub(crate) fn resolve_token_footprint(&self, token: Uuid) -> Option<f64> {
         let Some((shape, size)) = self.token_shape_and_size(token) else {
             return Some(DEFAULT_FOOTPRINT_RADIUS_CELLS);

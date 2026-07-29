@@ -379,6 +379,7 @@ export type ClientMsg =
       start: [number, number];
       waypoints: [number, number][];
       footprint_radius: number;
+      token?: string;
     }
   | {
       type: "move_request";
@@ -411,6 +412,23 @@ export const SendMessageSchema = z.object({
   content: z.string(),
   actor_owner: ActorOwnerRefSchema.nullable(),
   audience: AudienceSchema.default({ kind: "public" }),
+});
+
+/**
+ * Standalone Zod mirror of the `pathfind` `ClientMsg` variant. `ClientMsg` itself is a plain TS
+ * type (outgoing frames are not runtime-validated); this schema exists for callers that
+ * construct/validate a `Pathfind` frame before it is JSON.stringify'd onto the wire. `token` is
+ * nullish (absent or `null`): when present the SERVER derives the footprint from it and ignores
+ * `footprint_radius` entirely — this schema does not encode that authorization, only the shape.
+ */
+export const PathfindSchema = z.object({
+  type: z.literal("pathfind"),
+  request_id: z.string(),
+  scene: z.string(),
+  start: z.tuple([z.number(), z.number()]),
+  waypoints: z.array(z.tuple([z.number(), z.number()])),
+  footprint_radius: z.number(),
+  token: z.string().uuid().nullish(),
 });
 
 /** Parse + validate an inbound text frame; `null` on malformed/unknown input. */

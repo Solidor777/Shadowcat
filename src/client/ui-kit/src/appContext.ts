@@ -122,12 +122,15 @@ export interface AppContext {
   sendPing: (x: number, y: number) => void;
   /** Request a grid A* path from `start` through `waypoints` on `scene`. Resolves
    * with the computed path + cost, rejects on unreachable or timeout. Thin
-   * transport mirror — no client-side path logic. */
+   * transport mirror — no client-side path logic. `token`, when given, names the
+   * token the route is for: the server derives the footprint from it and ignores
+   * `footprintRadius` entirely. */
   pathfind: (
     scene: string,
     start: [number, number],
     waypoints: [number, number][],
     footprintRadius: number,
+    token?: string,
   ) => Promise<PathResult>;
   /** Request server-authoritative move execution for `tokenId` along `path` on
    * `scene`. Resolves with the broadcast `MoveStream` on success; rejects on server

@@ -470,6 +470,23 @@ describe("WsClient", () => {
     await expect(p2).rejects.toThrow("unreachable");
   });
 
+  it("pathfind sends the token id when given, and omits it when absent", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+
+    client.pathfind("scene-1", [0, 0], [[100, 0]], 0.4, "t1");
+    const withToken = JSON.parse(sent.find((s) => JSON.parse(s).type === "pathfind")!);
+    expect(withToken).toMatchObject({ type: "pathfind", footprint_radius: 0.4, token: "t1" });
+
+    client.pathfind("scene-1", [0, 0], [[100, 0]], 0.4);
+    const withoutToken = JSON.parse(sent.filter((s) => JSON.parse(s).type === "pathfind").at(-1)!);
+    expect(withoutToken).not.toHaveProperty("token");
+  });
+
   it("move_stream resolves moveRequest AND fires onMoveStream for mover", async () => {
     const sent: string[] = [];
     let onMessage: (d: string) => void = () => {};

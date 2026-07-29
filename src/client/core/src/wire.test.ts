@@ -10,6 +10,7 @@ import {
   ResyncSourceSchema,
   WsErrorCodeSchema,
   SendMessageSchema,
+  PathfindSchema,
   DocumentSchema,
   SchemaTypeSchema,
   SchemaDeclarationSchema,
@@ -445,5 +446,47 @@ describe("SendMessageSchema", () => {
       audience: { kind: "gm_only" },
     });
     expect(parsed.audience).toEqual({ kind: "gm_only" });
+  });
+});
+
+describe("PathfindSchema", () => {
+  it("the Pathfind schema accepts an absent token", () => {
+    expect(() =>
+      PathfindSchema.parse({
+        type: "pathfind",
+        request_id: "r",
+        scene: "s",
+        start: [0, 0],
+        waypoints: [[1, 1]],
+        footprint_radius: 0.4,
+      }),
+    ).not.toThrow();
+  });
+
+  it("parses a named token", () => {
+    const parsed = PathfindSchema.parse({
+      type: "pathfind",
+      request_id: "r",
+      scene: "s",
+      start: [0, 0],
+      waypoints: [[1, 1]],
+      footprint_radius: 0.4,
+      token: "00000000-0000-0000-0000-000000000001",
+    });
+    expect(parsed.token).toBe("00000000-0000-0000-0000-000000000001");
+  });
+
+  it("rejects a non-uuid token", () => {
+    expect(
+      PathfindSchema.safeParse({
+        type: "pathfind",
+        request_id: "r",
+        scene: "s",
+        start: [0, 0],
+        waypoints: [[1, 1]],
+        footprint_radius: 0.4,
+        token: "not-a-uuid",
+      }).success,
+    ).toBe(false);
   });
 });

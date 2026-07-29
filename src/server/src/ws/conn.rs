@@ -489,12 +489,12 @@ async fn handle_socket(
                                 }
                             }
                         }
-                        Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius }) => {
+                        Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius, token }) => {
                             // One-shot pathfinding: resolve GM status, fetch explored off the lock for
                             // non-GM Revealed, call SceneEcs::pathfind, reply to this connection only.
                             // INVARIANT (one-shot-to-requester): reply goes to etx only, never broadcast.
                             let frame = handle_pathfind(
-                                request_id, scene, start, waypoints, footprint_radius,
+                                request_id, scene, start, waypoints, footprint_radius, token,
                                 &ctx, &room, repo.as_ref(),
                             ).await;
                             if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
@@ -567,11 +567,12 @@ async fn scene_ping_permitted(
 /// so `get_explored` can be awaited between them without holding the lock.
 /// INVARIANT (one-shot-to-requester): the reply is placed directly on `etx`; it is never
 /// broadcast to the room.
-/// INVARIANT (scene presence): a `Pathfind` frame names no token, so the derive-the-scene-from-
-/// the-token rule `Room::execute_move` applies has no counterpart here; instead a non-GM
-/// requester must control a token in the named scene. Without it a player can route-preview
-/// inside a scene they have never entered — an `unrestricted` scene has no visibility mask to
-/// fail closed on, and the returned polyline discloses that scene's `blocksMove` wall layout.
+/// INVARIANT (scene presence): a non-GM requester must control a token in the named scene. A
+/// `Pathfind` frame MAY name a token (`token`), but that is a footprint source, not a presence
+/// proof — it is separately authorized (owned + parented to this scene) and never substitutes for
+/// this scan. Without the scan a player can route-preview inside a scene they have never entered:
+/// an `unrestricted` scene has no visibility mask to fail closed on, and the returned polyline
+/// discloses that scene's `blocksMove` wall layout.
 #[allow(clippy::too_many_arguments)]
 async fn handle_pathfind(
     request_id: Uuid,
@@ -579,6 +580,7 @@ async fn handle_pathfind(
     start: (f64, f64),
     waypoints: Vec<(f64, f64)>,
     footprint_radius: f64,
+    token: Option<Uuid>,
     ctx: &crate::data::membership::PermissionContext,
     room: &crate::ws::room::Room,
     repo: &dyn crate::data::repository::Repository,
@@ -598,7 +600,9 @@ async fn handle_pathfind(
     // has a mask there but is refused a route preview. That is the fail-closed direction (a route
     // preview is a precursor to moving a token, which observer tier does not grant), and matching
     // the mask's wider source here would hand route previews — and the wall geometry they
-    // disclose — to a user who controls nothing in the scene.
+    // disclose — to a user who controls nothing in the scene. The below authorization of a named
+    // `token` keys on the SAME effective-ownership rule, for the same reason: it is a footprint
+    // source, not a wider presence grant.
     if !is_gm {
         let present = {
             let s = room.scene().read().await;
@@ -629,8 +633,37 @@ async fn handle_pathfind(
     } else {
         None
     };
-    // Step 3: take a fresh read guard to call pathfind.
+    // Step 3: take a fresh read guard to authorize/derive a named token's footprint (if any) and
+    // call pathfind — folded into the SAME guard so the read count is unchanged.
+    //
+    // The named token is authorized before it is used: effective ownership (the same
+    // `token_effective_owner` rule the presence gate and write-authz use — never a forked, looser
+    // test) AND membership in the named scene. A caller-supplied token id that skipped either check
+    // would be a size oracle, and a cross-scene id would source a footprint from a scene the
+    // requester has no presence in. Failure returns the SAME generic PathError an unreachable route
+    // gets, disclosing nothing about the token's existence. A GM is exempt from the ownership half
+    // (they control the scene) but not from the scene-membership half.
     let s = room.scene().read().await;
+    let footprint_radius = match token {
+        Some(t) => {
+            let derived = match s.token_scene_and_effective_owner(t) {
+                Some((t_scene, _)) if t_scene != scene => None,
+                Some((_, owner)) if !is_gm && owner != Some(ctx.user_id) => None,
+                Some(_) => s.resolve_token_footprint(t),
+                None => None,
+            };
+            match derived {
+                Some(r) => r,
+                None => {
+                    return ServerMsg::PathError {
+                        request_id,
+                        message: "unreachable".to_string(),
+                    };
+                }
+            }
+        }
+        None => footprint_radius,
+    };
     match s.pathfind(
         ctx.user_id,
         scene,
@@ -2170,6 +2203,7 @@ mod tests {
             (50.0, 50.0),
             vec![(250.0, 50.0)],
             0.1,
+            None,
             &gm_ctx,
             &room,
             repo.as_ref(),
@@ -2188,6 +2222,7 @@ mod tests {
             (50.0, 50.0),
             vec![(250.0, 50.0)],
             0.1,
+            None,
             &player,
             &room,
             repo.as_ref(),
@@ -2438,6 +2473,7 @@ mod tests {
             (50.0, 50.0),
             vec![(450.0, 50.0)],
             0.1,
+            None,
             &player,
             &room,
             repo.as_ref(),
@@ -2448,6 +2484,25 @@ mod tests {
             "a player with no token in B must not route inside B; got {leaked:?}"
         );
 
+        // The same cross-scene probe, now naming a token the requester DOES own in scene A. The
+        // presence gate must still refuse for scene B: naming a token is not presence in a scene.
+        let leaked_with_named_token = handle_pathfind(
+            rid,
+            scene_b,
+            (50.0, 50.0),
+            vec![(250.0, 50.0)],
+            0.4,
+            Some(token_id),
+            &player,
+            &room,
+            repo.as_ref(),
+        )
+        .await;
+        assert!(
+            matches!(leaked_with_named_token, ServerMsg::PathError { .. }),
+            "naming an owned token grants no presence in another scene; got {leaked_with_named_token:?}"
+        );
+
         // Control: the player's own scene still routes (the guard cannot break play).
         let own = handle_pathfind(
             rid,
@@ -2455,6 +2510,7 @@ mod tests {
             (50.0, 50.0),
             vec![(450.0, 50.0)],
             0.1,
+            None,
             &player,
             &room,
             repo.as_ref(),
@@ -2472,6 +2528,7 @@ mod tests {
             (50.0, 50.0),
             vec![(450.0, 50.0)],
             0.1,
+            None,
             &gm_ctx,
             &room,
             repo.as_ref(),
@@ -2481,6 +2538,634 @@ mod tests {
             matches!(gm, ServerMsg::PathResult { .. }),
             "GM routing is unaffected; got {gm:?}"
         );
+    }
+
+    /// `Pathfind` naming a token the requester does not effectively own is refused generically —
+    /// the named token is a footprint SOURCE, not a delegated presence grant, so an attacker
+    /// cannot read a stranger's token size (or probe gaps sized to it) by naming an id they do
+    /// not control. Both requesters have their OWN token in the scene, so the Step-0 presence
+    /// gate passes for both — isolating this test to the token-ownership check (Step 4).
+    #[tokio::test]
+    async fn pathfind_naming_an_unowned_token_is_refused() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::{DocRole, WorldRole};
+        use crate::data::membership::PermissionContext;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let author = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", author, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: author,
+            world_role: WorldRole::Gm,
+        };
+        let pa = repo
+            .create_user("player-a", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let pb = repo
+            .create_user("player-b", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world.id, pa, WorldRole::Player)
+            .await
+            .unwrap();
+        repo.add_member(world.id, pb, WorldRole::Player)
+            .await
+            .unwrap();
+        let player_a = PermissionContext {
+            user_id: pa,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg
+            .get_or_create(repo.as_ref(), world.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let (scene_id, ws_id, token_a, token_b) = (
+            Uuid::from_u128(0xC001),
+            Uuid::from_u128(0xC002),
+            Uuid::from_u128(0xC003),
+            Uuid::from_u128(0xC004),
+        );
+
+        let mut ws = wdoc(world.id, ws_id, "world-settings");
+        ws.owner = Some(author);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": false, "fog": false,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        ws.engine = Some(ws_engine(ws.system.clone()));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut scene = wdoc(world.id, scene_id, "scene");
+        scene.owner = Some(author);
+        scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut ta = wdoc(world.id, token_a, "token");
+        ta.parent_id = Some(scene_id);
+        ta.owner = Some(pa);
+        ta.permissions.users.insert(pa, DocRole::Owner);
+        ta.engine = Some(token_engine(50.0, 50.0));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: ta }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // Player B's own token — the one player A will name without owning it.
+        let mut tb = wdoc(world.id, token_b, "token");
+        tb.parent_id = Some(scene_id);
+        tb.owner = Some(pb);
+        tb.permissions.users.insert(pb, DocRole::Owner);
+        tb.engine = Some(token_engine(60.0, 60.0));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: tb }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let rid = Uuid::from_u128(0xF010);
+        let res = handle_pathfind(
+            rid,
+            scene_id,
+            (50.0, 50.0),
+            vec![(250.0, 50.0)],
+            0.4,
+            Some(token_b),
+            &player_a,
+            &room,
+            repo.as_ref(),
+        )
+        .await;
+        assert!(
+            matches!(res, ServerMsg::PathError { .. }),
+            "an unowned token is refused generically; got {res:?}"
+        );
+    }
+
+    /// Guards the cross-scene axis: the requester has their OWN token in the named scene (so
+    /// Step-0 presence passes), but names a token they own in a DIFFERENT scene — the footprint
+    /// derivation (Step 4) must still refuse, isolating this from the presence gate.
+    #[tokio::test]
+    async fn pathfind_naming_a_token_in_another_scene_is_refused() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::{DocRole, WorldRole};
+        use crate::data::membership::PermissionContext;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let author = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", author, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: author,
+            world_role: WorldRole::Gm,
+        };
+        let p = repo
+            .create_user("player", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world.id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg
+            .get_or_create(repo.as_ref(), world.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let (scene_a, scene_b, ws_id, token_in_a, token_in_b) = (
+            Uuid::from_u128(0xC101),
+            Uuid::from_u128(0xC102),
+            Uuid::from_u128(0xC103),
+            Uuid::from_u128(0xC104),
+            Uuid::from_u128(0xC105),
+        );
+
+        let mut ws = wdoc(world.id, ws_id, "world-settings");
+        ws.owner = Some(author);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": false, "fog": false,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        ws.engine = Some(ws_engine(ws.system.clone()));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        for id in [scene_a, scene_b] {
+            let mut scene = wdoc(world.id, id, "scene");
+            scene.owner = Some(author);
+            scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+            room.publish(
+                repo.as_ref(),
+                &gm_ctx,
+                vec![crate::data::command::Operation::Create { doc: scene }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+        }
+
+        // The token the attacker will name while requesting B — owned by the player, but
+        // parented to A.
+        let mut ta = wdoc(world.id, token_in_a, "token");
+        ta.parent_id = Some(scene_a);
+        ta.owner = Some(p);
+        ta.permissions.users.insert(p, DocRole::Owner);
+        ta.engine = Some(token_engine(50.0, 50.0));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: ta }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // The player's OWN token in B, so the Step-0 presence gate for B passes independently of
+        // the named token — isolating this test to Step 4's cross-scene check.
+        let mut tb = wdoc(world.id, token_in_b, "token");
+        tb.parent_id = Some(scene_b);
+        tb.owner = Some(p);
+        tb.permissions.users.insert(p, DocRole::Owner);
+        tb.engine = Some(token_engine(50.0, 50.0));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: tb }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let rid = Uuid::from_u128(0xF011);
+        let res = handle_pathfind(
+            rid,
+            scene_b,
+            (50.0, 50.0),
+            vec![(250.0, 50.0)],
+            0.4,
+            Some(token_in_a),
+            &player,
+            &room,
+            repo.as_ref(),
+        )
+        .await;
+        assert!(
+            matches!(res, ServerMsg::PathError { .. }),
+            "a token outside the named scene is refused; got {res:?}"
+        );
+    }
+
+    /// Builds a scene with a 1-cell-wide corridor (walls at x=100 and x=200, cell=100) and one
+    /// owned, actor-linked token whose real footprint (radius 1.0 cell, `circle` shape, size
+    /// 2.0x2.0) is far too wide for the 100-unit corridor (which admits at most radius 0.5 cell).
+    /// Shared by the "ignores a lying wire footprint" (Step 4 derives and refuses) and "no token
+    /// honors the wire value" (Step 4 is skipped entirely) tests below.
+    async fn harness_with_narrow_corridor_and_large_owned_token() -> (
+        Arc<SqliteRepository>,
+        Arc<crate::ws::room::Room>,
+        crate::data::membership::PermissionContext,
+        Uuid,
+        Uuid,
+    ) {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::{DocRole, WorldRole};
+        use crate::data::membership::PermissionContext;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let author = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", author, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: author,
+            world_role: WorldRole::Gm,
+        };
+        let p = repo
+            .create_user("player", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world.id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg
+            .get_or_create(repo.as_ref(), world.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let (scene_id, ws_id, wall_1, wall_2, actor_id, token_id) = (
+            Uuid::from_u128(0xC201),
+            Uuid::from_u128(0xC202),
+            Uuid::from_u128(0xC203),
+            Uuid::from_u128(0xC204),
+            Uuid::from_u128(0xC205),
+            Uuid::from_u128(0xC206),
+        );
+
+        let mut ws = wdoc(world.id, ws_id, "world-settings");
+        ws.owner = Some(author);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": false, "fog": false,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        ws.engine = Some(ws_engine(ws.system.clone()));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut scene = wdoc(world.id, scene_id, "scene");
+        scene.owner = Some(author);
+        scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // Two parallel walls one cell apart (x=100, x=200), forming a north-south corridor a
+        // vertical route can traverse (at x=150) without crossing either wall directly.
+        for (id, x) in [(wall_1, 100.0), (wall_2, 200.0)] {
+            let mut wall = wdoc(world.id, id, "wall");
+            wall.parent_id = Some(scene_id);
+            wall.owner = Some(author);
+            wall.engine = Some(
+                json!({ "seg": { "x1": x, "y1": -400.0, "x2": x, "y2": 400.0 }, "blocksMove": true }),
+            );
+            room.publish(
+                repo.as_ref(),
+                &gm_ctx,
+                vec![crate::data::command::Operation::Create { doc: wall }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+        }
+
+        // The linked actor supplies the token's REAL size: a 2.0x2.0 circle ⇒ radius 1.0 cell —
+        // far wider than the 100-unit (1-cell) corridor's 0.5-cell admissible radius.
+        let mut actor = wdoc(world.id, actor_id, "actor");
+        actor.owner = Some(author);
+        actor.engine = Some(json!({
+            "displayName": "Fixture Actor",
+            "visual": { "kind": "image", "asset": "a.png" },
+            "size": { "w": 2.0, "h": 2.0 },
+            "shape": "circle",
+            "conditions": [],
+            "prototype": true,
+        }));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: actor }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut token = wdoc(world.id, token_id, "token");
+        token.parent_id = Some(scene_id);
+        token.owner = Some(p);
+        token.permissions.users.insert(p, DocRole::Owner);
+        token.engine = Some(json!({
+            "x": 150.0, "y": 350.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+            "actor_id": actor_id.to_string(),
+        }));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: token }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        (repo, room, player, scene_id, token_id)
+    }
+
+    /// The wire value lies (0.01, tiny) but the named token's real, derived footprint (radius 1.0
+    /// cell) does not fit the 1-cell corridor: the derived value must win, refusing the route.
+    #[tokio::test]
+    async fn pathfind_naming_an_owned_token_ignores_a_lying_wire_footprint() {
+        let (repo, room, player, scene_id, token_id) =
+            harness_with_narrow_corridor_and_large_owned_token().await;
+        let rid = Uuid::from_u128(0xF012);
+        let res = handle_pathfind(
+            rid,
+            scene_id,
+            (150.0, 350.0),
+            vec![(150.0, -350.0)],
+            0.01,
+            Some(token_id),
+            &player,
+            &room,
+            repo.as_ref(),
+        )
+        .await;
+        assert!(
+            matches!(res, ServerMsg::PathError { .. }),
+            "the derived footprint does not fit the corridor, so no route is returned; got {res:?}"
+        );
+    }
+
+    /// The SAME corridor and token, but no token is named: the wire's tiny 0.01 radius is honored
+    /// verbatim and fits, so the token-less preview routes through.
+    #[tokio::test]
+    async fn pathfind_without_a_token_uses_the_wire_footprint() {
+        let (repo, room, player, scene_id, _token_id) =
+            harness_with_narrow_corridor_and_large_owned_token().await;
+        let rid = Uuid::from_u128(0xF013);
+        let res = handle_pathfind(
+            rid,
+            scene_id,
+            (150.0, 350.0),
+            vec![(150.0, -350.0)],
+            0.01,
+            None,
+            &player,
+            &room,
+            repo.as_ref(),
+        )
+        .await;
+        assert!(
+            matches!(res, ServerMsg::PathResult { .. }),
+            "a token-less preview honors the wire radius; got {res:?}"
+        );
+    }
+
+    /// `resolve_token_footprint` returns `None` for a derived radius over `MAX_FOOTPRINT_CELLS` —
+    /// the handler must refuse, never fall back to the wire value (which would reopen the
+    /// understated-footprint hole a derived footprint exists to close).
+    #[tokio::test]
+    async fn pathfind_refuses_an_oversized_derived_footprint() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::{DocRole, WorldRole};
+        use crate::data::membership::PermissionContext;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let author = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", author, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: author,
+            world_role: WorldRole::Gm,
+        };
+        let p = repo
+            .create_user("player", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world.id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg
+            .get_or_create(repo.as_ref(), world.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let (scene_id, ws_id, actor_id, token_id) = (
+            Uuid::from_u128(0xC301),
+            Uuid::from_u128(0xC302),
+            Uuid::from_u128(0xC303),
+            Uuid::from_u128(0xC304),
+        );
+
+        let mut ws = wdoc(world.id, ws_id, "world-settings");
+        ws.owner = Some(author);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": false, "fog": false,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        ws.engine = Some(ws_engine(ws.system.clone()));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut scene = wdoc(world.id, scene_id, "scene");
+        scene.owner = Some(author);
+        scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // w=h=1000 ⇒ ~707 cells, far over MAX_FOOTPRINT_CELLS (64.0).
+        let mut actor = wdoc(world.id, actor_id, "actor");
+        actor.owner = Some(author);
+        actor.engine = Some(json!({
+            "displayName": "Fixture Actor",
+            "visual": { "kind": "image", "asset": "a.png" },
+            "size": { "w": 1000.0, "h": 1000.0 },
+            "shape": "square",
+            "conditions": [],
+            "prototype": true,
+        }));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: actor }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut token = wdoc(world.id, token_id, "token");
+        token.parent_id = Some(scene_id);
+        token.owner = Some(p);
+        token.permissions.users.insert(p, DocRole::Owner);
+        token.engine = Some(json!({
+            "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+            "actor_id": actor_id.to_string(),
+        }));
+        room.publish(
+            repo.as_ref(),
+            &gm_ctx,
+            vec![crate::data::command::Operation::Create { doc: token }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let rid = Uuid::from_u128(0xF014);
+        let res = handle_pathfind(
+            rid,
+            scene_id,
+            (50.0, 50.0),
+            vec![(250.0, 50.0)],
+            0.4,
+            Some(token_id),
+            &player,
+            &room,
+            repo.as_ref(),
+        )
+        .await;
+        assert!(matches!(res, ServerMsg::PathError { .. }), "got {res:?}");
     }
 
     /// `handle_move_request` executes a move, broadcasts `MoveStream` to the room,

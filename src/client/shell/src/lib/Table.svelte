@@ -92,7 +92,7 @@
     searchDocuments: (query, opts, onUpdate) => session.searchDocuments(query, opts, onUpdate),
     sceneSelection,
     sendPing: (x, y) => session.sendPing(x, y),
-    pathfind: (s, st, wp, fr) => session.pathfind(s, st, wp, fr),
+    pathfind: (s, st, wp, fr, tk) => session.pathfind(s, st, wp, fr, tk),
     moveRequest: (s, tid, p) => session.moveRequest(s, tid, p),
     onPing: (cb) => session.onPing(cb),
     onMoveOutcome: (cb) => session.onMoveOutcome(cb),

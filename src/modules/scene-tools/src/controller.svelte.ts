@@ -42,12 +42,15 @@ export interface ToolContext {
   clearScheduledTimeout?: (handle: unknown) => void;
   /** Grid A* pathfind seam (from AppContext). When present and a single token is
    * selected, the measure tool routes through it instead of the plain gridDistance
-   * mode. When absent (older host or not connected), the tool falls back gracefully. */
+   * mode. When absent (older host or not connected), the tool falls back gracefully.
+   * `token`, when given, names the token the route is for: the server derives the
+   * footprint from it and ignores `footprintRadius` entirely. */
   pathfind?: (
     scene: string,
     start: [number, number],
     waypoints: [number, number][],
     footprintRadius: number,
+    token?: string,
   ) => Promise<PathResult>;
   /** Request server-authoritative move execution (from AppContext). When present,
    * double-click commit sends a MoveRequest; animation is broadcast-driven via MoveStream
@@ -405,6 +408,16 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     return footprintFor(ctx, id);
   }
 
+  /** The single selected token's id, or `undefined` when zero or multiple are selected. Passed
+   * as `pathfind`'s `token` so the server derives the AUTHORITATIVE footprint instead of trusting
+   * this file's own `resolveFootprint` estimate. */
+  function selectedTokenId(): string | undefined {
+    const sel = ctx.tokenSelection;
+    if (!sel || sel.ids.size !== 1) return undefined;
+    const [id] = [...sel.ids];
+    return id;
+  }
+
   /** Issue a pathfind request for the current waypoints + provisional goal `p`.
    * Ignores the response if a newer request has since been issued. The final element
    * of `allWaypoints` IS the goal (server contract: goal = waypoints.last(), spec §3.2). */
@@ -413,7 +426,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     const seq = ++pendingSeq;
     const fp = resolveFootprint();
     const allWaypoints: [number, number][] = [...waypoints, [goal.x, goal.y]];
-    ctx.pathfind(scene.id, start, allWaypoints, fp).then(
+    ctx.pathfind(scene.id, start, allWaypoints, fp, selectedTokenId()).then(
       (result) => {
         if (seq !== pendingSeq) return; // superseded by a newer move
         // Cache the resolved path for reuse by commitRoute (avoids a second pathfind).
@@ -542,7 +555,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     if (lastPreviewedPath && lastPreviewedPath.length >= 2) {
       sendRequest(lastPreviewedPath);
     } else {
-      ctx.pathfind(scene.id, start, [...waypoints, [goal.x, goal.y]], fp).then(
+      ctx.pathfind(scene.id, start, [...waypoints, [goal.x, goal.y]], fp, selectedTokenId()).then(
         (result) => {
           if (seq !== pendingSeq) return;
           if (result.path.length < 2) { finish(); return; }
@@ -860,7 +873,7 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
     const moveRequest = ctx.moveRequest;
     for (const [id, o] of origins) {
       const target = ctx.scene.snap({ x: o.x + delta.x, y: o.y + delta.y });
-      pathfind(scene.id, [o.x, o.y], [[target.x, target.y]], footprintFor(ctx, id))
+      pathfind(scene.id, [o.x, o.y], [[target.x, target.y]], footprintFor(ctx, id), id)
         .then((result) => {
           if (result.path.length >= 2) return moveRequest(scene.id, id, result.path);
         })

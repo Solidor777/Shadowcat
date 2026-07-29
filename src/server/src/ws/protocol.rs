@@ -66,14 +66,26 @@ pub enum ClientMsg {
     /// READ (silent drop otherwise); rate-limited per connection.
     ScenePing { scene: Uuid, x: f64, y: f64 },
     /// A one-shot grid pathfinding request, correlated by `request_id`. `start`/`waypoints` are
-    /// scene coords; `waypoints`' LAST element is the goal. `footprint_radius` is in grid units
-    /// (cells; the client's `footprintRadius`). The route is mask-bounded for non-GM requesters.
+    /// scene coords; `waypoints`' LAST element is the goal. The route is mask-bounded for non-GM
+    /// requesters.
+    ///
+    /// `token`, when present, is the token the route is for: the server AUTHORIZES it (effectively
+    /// owned by the requester AND parented to `scene`) and then DERIVES the footprint from its
+    /// document, IGNORING `footprint_radius` — so a route preview and the authoritative gate cannot
+    /// disagree about the mover's size. It is NOT a presence proof: scene presence remains the
+    /// separate ownership scan in `handle_pathfind`, which naming a token neither replaces nor
+    /// satisfies. When absent, `footprint_radius` (grid units, the client's `footprintRadius`) is
+    /// honored and the result is an explicitly hypothetical preview carrying no
+    /// preview-equals-execution guarantee.
     Pathfind {
         request_id: Uuid,
         scene: Uuid,
         start: (f64, f64),
         waypoints: Vec<(f64, f64)>,
         footprint_radius: f64,
+        #[serde(default)]
+        #[ts(optional)]
+        token: Option<Uuid>,
     },
     /// A server-authoritative move request: the client submits the previewed cell-center scene
     /// points (start … goal) for a token it controls. The server validates, executes the move,
@@ -514,6 +526,7 @@ mod protocol_tests {
             start: (50.0, 50.0),
             waypoints: vec![(150.0, 50.0), (250.0, 50.0)],
             footprint_radius: 0.5,
+            token: None,
         };
         let s = serde_json::to_string(&req).unwrap();
         assert!(s.contains("\"type\":\"pathfind\""), "got {s}");
