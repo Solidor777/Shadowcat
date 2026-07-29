@@ -264,6 +264,14 @@ pub(crate) enum MoveReject {
 ///   lock). Ignored when `Unrestricted`. For `Visible` this is `visible_cells(...)`; for
 ///   `Revealed` the caller MUST pass `visible_cells(...) ∪ explored`.
 /// - `cell` — Grid cell size in scene units (positive finite).
+/// - `is_gm` — When true, every gameplay gate (walls, mask, impassable, arrest) is bypassed
+///   (M9 §5's "ignore walls" override, matching `publish`'s own GM position write). Resource
+///   guards (`gate_walk`'s `MAX_GATE_WALK_COORD`/`MAX_GATE_WALK_SAMPLES`, the non-finite and
+///   scene-existence refusals) are never exempted. Terrain cost still accrues regardless.
+// A plain `is_gm` flag with early-outs, not a shared profile struct: after D9 there is exactly
+// one gate, and a shared symbol with a single consumer is indirection with no second party to
+// keep honest.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_move(
     ecs: &SceneEcs,
     scene: Uuid,
@@ -272,6 +280,7 @@ pub(crate) fn execute_move(
     restriction: MovementRestriction,
     visible: &BTreeSet<(i32, i32)>,
     cell: f64,
+    is_gm: bool,
 ) -> Result<MoveOutcome, MoveReject> {
     // --- Input validation (fail closed on every degenerate input) ---
     if path.len() < 2 {
@@ -297,8 +306,13 @@ pub(crate) fn execute_move(
     // walk.len() >= 2 always here: path.len() >= 2 is already guaranteed above, and the loop
     // inside gate_walk appends at least one sample per authored segment.
 
-    // Whether the vision-mask check (step 2) applies for this restriction mode.
-    let check_mask = !matches!(restriction, MovementRestriction::Unrestricted);
+    // Gameplay gates apply to non-GMs only. A GM may make an illegal move: they move with or
+    // without pathfinding, and a placement lands where asked (M9 §5), matching `publish`'s GM
+    // position write. Resource guards — `gate_walk`'s MAX_GATE_WALK_COORD / MAX_GATE_WALK_SAMPLES,
+    // non-finite refusal, and the scene-existence refusal — are NOT exempted for a GM (I1).
+    let check_walls = !is_gm;
+    let check_regions = !is_gm;
+    let check_mask = !is_gm && !matches!(restriction, MovementRestriction::Unrestricted);
 
     // Authoritative region field (M10g): always the full field, never filtered — this
     // executor springs secret regions regardless of what the mover's pathfind preview
@@ -332,8 +346,8 @@ pub(crate) fn execute_move(
         let prev = walk[i - 1].pos;
         let next = walk[i].pos;
 
-        // Step 1: wall gate — unconditional, every dense sub-segment.
-        if ecs.blocks_move(scene, prev, next) {
+        // Step 1: wall gate — every dense sub-segment, exempt for a GM (M9 §5).
+        if check_walls && ecs.blocks_move(scene, prev, next) {
             stopped_early = true;
             break;
         }
@@ -369,12 +383,13 @@ pub(crate) fn execute_move(
         // fall through this dedup rather than being caught by a separate check.
         let next_cell = to_cell(next);
         if next_cell != last_region_cell {
-            if regions.is_impassable(next_cell) {
+            if check_regions && regions.is_impassable(next_cell) {
                 stopped_early = true;
                 break;
             }
+            // Cost accrues regardless of the exemption: it is information, not a gate.
             cost += regions.terrain_multiplier(next_cell);
-            if regions.is_arrest(next_cell) {
+            if check_regions && regions.is_arrest(next_cell) {
                 stop_idx = i;
                 stopped_early = true;
                 break;
@@ -537,6 +552,7 @@ mod tests {
             MovementRestriction::Visible,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert_eq!(out.stop, (100.0, 100.0));
@@ -557,6 +573,7 @@ mod tests {
             MovementRestriction::Visible,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert_eq!(out.stop, (100.0, 0.0)); // stopped before the wall
@@ -579,6 +596,7 @@ mod tests {
             MovementRestriction::Visible,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert_eq!(out.stop, (100.0, 0.0));
@@ -608,6 +626,7 @@ mod tests {
             MovementRestriction::Visible,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert_eq!(out.stop, (0.0, 0.0));
@@ -636,6 +655,7 @@ mod tests {
             MovementRestriction::Revealed,
             &union_mask,
             100.0,
+            false,
         )
         .unwrap();
         assert_eq!(out.stop, (100.0, 100.0));
@@ -654,6 +674,7 @@ mod tests {
             MovementRestriction::Revealed,
             &raw_mask,
             100.0,
+            false,
         )
         .unwrap();
         assert_eq!(out2.stop, (100.0, 0.0));
@@ -673,6 +694,7 @@ mod tests {
             MovementRestriction::Unrestricted,
             &empty,
             100.0,
+            false,
         )
         .unwrap();
         assert_eq!(out.stop, (100.0, 0.0)); // mask ignored, wall still stops it
@@ -690,7 +712,8 @@ mod tests {
                 &[(500.0, 0.0), (600.0, 0.0)],
                 MovementRestriction::Unrestricted,
                 &v,
-                100.0
+                100.0,
+                false
             ),
             Err(MoveReject::Degenerate)
         ));
@@ -712,6 +735,7 @@ mod tests {
             MovementRestriction::Visible,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert_eq!(out.stop, (500.0, 0.0));
@@ -737,6 +761,7 @@ mod tests {
             MovementRestriction::Visible,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert!(out.truncated);
@@ -764,6 +789,7 @@ mod tests {
                 MovementRestriction::Unrestricted,
                 &v,
                 1.0,
+                false,
             ),
             Err(MoveReject::TooLong)
         ));
@@ -781,7 +807,8 @@ mod tests {
                 &[(0.0, 0.0)],
                 MovementRestriction::Unrestricted,
                 &v,
-                100.0
+                100.0,
+                false
             ),
             Err(MoveReject::EmptyPath)
         ));
@@ -800,7 +827,8 @@ mod tests {
                 &[(0.0, 0.0), (100.0, 0.0)],
                 MovementRestriction::Unrestricted,
                 &v,
-                100.0
+                100.0,
+                false
             ),
             Err(MoveReject::NotAToken)
         ));
@@ -819,6 +847,7 @@ mod tests {
             MovementRestriction::Unrestricted,
             &empty,
             100.0,
+            false,
         )
         .unwrap();
         assert_eq!(out.stop, (100.0, 100.0));
@@ -878,6 +907,7 @@ mod tests {
             MovementRestriction::Unrestricted,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -919,6 +949,7 @@ mod tests {
             MovementRestriction::Unrestricted,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -963,6 +994,7 @@ mod tests {
             MovementRestriction::Unrestricted,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert!((out.cost - 2.5).abs() < 1e-9);
@@ -1023,6 +1055,7 @@ mod tests {
             MovementRestriction::Unrestricted,
             &visible,
             50.0,
+            false,
         )
         .unwrap();
         assert!(out.truncated, "an impassable hex region truncates the move");
@@ -1096,6 +1129,7 @@ mod tests {
             MovementRestriction::Visible,
             &visible,
             50.0,
+            false,
         )
         .unwrap();
         assert!(out.truncated, "the arrest hex cell truncates the move");
@@ -1150,12 +1184,214 @@ mod tests {
             MovementRestriction::Visible,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert_eq!(
             out.stop,
             (0.0, 0.0),
             "authoritative field springs the secret impassable region"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // GM gate-exemption tests (D8): a GM bypasses every gameplay gate (walls, mask,
+    // impassable, arrest) but no resource guard, and terrain cost still accrues.
+    // -----------------------------------------------------------------------
+
+    /// Empty vision mask — irrelevant to every test below since `Unrestricted` skips it.
+    fn empty_mask() -> BTreeSet<(i32, i32)> {
+        BTreeSet::new()
+    }
+
+    /// Token committed at (50,50); a `blocksMove` wall crosses the path's first step
+    /// (50,50)->(150,50) at x=100, spanning y∈[0,100].
+    fn scene_with_wall_across_the_path() -> (SceneEcs, Uuid, Uuid) {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
+                entity_doc(
+                    12,
+                    10,
+                    "wall",
+                    json!({
+                        "seg": { "x1": 100, "y1": 0, "x2": 100, "y2": 100 },
+                        "blocksMove": true
+                    }),
+                ),
+            ],
+            0,
+        );
+        (ecs, scene_id, token_id)
+    }
+
+    /// Token committed at (50,50); an impassable region covers [100,200)x[0,100) and an
+    /// arrest region covers [200,300)x[0,100), so a straight path through both crosses the
+    /// impassable cell first, then the arrest cell.
+    fn scene_with_impassable_then_arrest_region() -> (SceneEcs, Uuid, Uuid) {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
+                region_doc(12, 10, "impassable", 1.0, (100.0, 0.0, 200.0, 100.0)),
+                region_doc(13, 10, "arrest", 1.0, (200.0, 0.0, 300.0, 100.0)),
+            ],
+            0,
+        );
+        (ecs, scene_id, token_id)
+    }
+
+    /// Token committed at (50,50); a terrain region with multiplier 3 covers the cell entered
+    /// by the step (50,50)->(150,50).
+    fn scene_with_terrain_multiplier_3() -> (SceneEcs, Uuid, Uuid) {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
+                region_doc(12, 10, "terrain", 3.0, (100.0, 0.0, 200.0, 100.0)),
+            ],
+            0,
+        );
+        (ecs, scene_id, token_id)
+    }
+
+    #[test]
+    fn gm_move_crosses_a_blocks_move_wall_untruncated() {
+        let (ecs, scene, token) = scene_with_wall_across_the_path();
+        let path = [(50.0, 50.0), (150.0, 50.0), (250.0, 50.0)];
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &path,
+            MovementRestriction::Unrestricted,
+            &empty_mask(),
+            100.0,
+            true,
+        )
+        .expect("a GM move is admissible");
+        assert!(
+            !out.truncated,
+            "a GM move is not truncated by a wall (M9 §5)"
+        );
+        assert_eq!(
+            out.render_path.last().copied(),
+            Some((250.0, 50.0)),
+            "the GM lands at the requested destination"
+        );
+    }
+
+    #[test]
+    fn gm_move_ignores_impassable_and_arrest_regions() {
+        let (ecs, scene, token) = scene_with_impassable_then_arrest_region();
+        let path = [(50.0, 50.0), (150.0, 50.0), (250.0, 50.0)];
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &path,
+            MovementRestriction::Unrestricted,
+            &empty_mask(),
+            100.0,
+            true,
+        )
+        .expect("admissible");
+        assert!(!out.truncated, "neither impassable nor arrest stops a GM");
+    }
+
+    #[test]
+    fn non_gm_move_is_still_blocked_by_the_same_wall() {
+        // The exemption must not widen: pin that non-GM behavior is unchanged.
+        let (ecs, scene, token) = scene_with_wall_across_the_path();
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(50.0, 50.0), (150.0, 50.0)],
+            MovementRestriction::Unrestricted,
+            &empty_mask(),
+            100.0,
+            false,
+        )
+        .expect("admissible");
+        assert!(out.truncated, "a non-GM is still stopped by the wall");
+    }
+
+    #[test]
+    fn gm_move_is_still_refused_beyond_the_coordinate_bound() {
+        // I1: a GM bypasses gameplay gates and NO resource guard.
+        let (ecs, scene, token) = scene_with_wall_across_the_path();
+        let over = MAX_GATE_WALK_COORD + 1.0;
+        let err = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(50.0, 50.0), (over, 50.0)],
+            MovementRestriction::Unrestricted,
+            &empty_mask(),
+            100.0,
+            true,
+        )
+        .expect_err("a resource guard is never exempted");
+        assert!(matches!(err, MoveReject::TooLong), "got {err:?}");
+    }
+
+    #[test]
+    fn gm_move_still_accrues_terrain_cost() {
+        // Cost is information, not a gate — accrual is independent of the exemption.
+        let (ecs, scene, token) = scene_with_terrain_multiplier_3();
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(50.0, 50.0), (150.0, 50.0)],
+            MovementRestriction::Unrestricted,
+            &empty_mask(),
+            100.0,
+            true,
+        )
+        .expect("admissible");
+        assert!(
+            out.cost >= 3.0,
+            "terrain still accrues for a GM, got {}",
+            out.cost
         );
     }
 
@@ -1179,6 +1415,7 @@ mod tests {
             MovementRestriction::Visible,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert_eq!(out.stop, (350.0, 120.0));
@@ -1228,6 +1465,7 @@ mod tests {
             MovementRestriction::Unrestricted,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert!(
@@ -1272,6 +1510,7 @@ mod tests {
             MovementRestriction::Unrestricted,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert!(out.truncated);
@@ -1313,6 +1552,7 @@ mod tests {
             MovementRestriction::Unrestricted,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert!(out.truncated);
@@ -1359,6 +1599,7 @@ mod tests {
             MovementRestriction::Unrestricted,
             &visible,
             100.0,
+            false,
         )
         .expect("executor handles the any-angle weighted polyline");
         assert!(out.truncated, "arrest cell (3,0) truncates the move");
@@ -1622,6 +1863,7 @@ mod tests {
                 case.restriction,
                 &case.visible,
                 100.0,
+                false,
             );
             let actual =
                 result.unwrap_or_else(|e| panic!("{}: expected Ok, got Err({e:?})", case.label));
@@ -1932,6 +2174,7 @@ mod tests {
             MovementRestriction::Unrestricted,
             &empty,
             100.0,
+            false,
         )
         .unwrap();
         assert!(out.truncated, "must stop before crossing the hex wall");
@@ -1961,6 +2204,7 @@ mod tests {
             MovementRestriction::Visible,
             &visible,
             100.0,
+            false,
         )
         .unwrap();
         assert!(

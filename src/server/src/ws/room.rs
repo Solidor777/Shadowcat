@@ -484,6 +484,7 @@ impl Room {
         let token_scene;
         let visible_cells;
         let is_revealed;
+        let is_gm;
         {
             let scene = self.scene.read().await;
 
@@ -515,12 +516,12 @@ impl Room {
                 .get(&token_scene)
                 .ok_or(DataError::Forbidden)?;
 
-            // GMs use Unrestricted (mask-skipped), but `execute_move` still honors walls for
-            // GMs (step-1 `blocks_move` is unconditional). This intentionally diverges from
-            // `publish`'s legacy GM wall-bypass, which is to be retired. Do NOT re-grant GM
-            // wall-bypass here: the M1 server-authoritative model requires wall enforcement
-            // for all movers including GMs when moves are executed through this path.
-            restriction = if ctx.world_role == crate::data::document::WorldRole::Gm {
+            // GMs are exempt from every gameplay gate here — walls, mask, impassable and arrest —
+            // per the M9 design spec's GM "ignore walls" override (M9 §5), matching `publish`'s own
+            // GM position write. Resource guards (`gate_walk`'s coordinate/sample bounds, the
+            // scene-existence refusal) stay unconditional for a GM.
+            is_gm = ctx.world_role == crate::data::document::WorldRole::Gm;
+            restriction = if is_gm {
                 MovementRestriction::Unrestricted
             } else {
                 settings.movement_restriction
@@ -580,6 +581,7 @@ impl Room {
                 restriction,
                 &visible,
                 cell,
+                is_gm,
             )
             .map_err(|_| DataError::Forbidden)?;
             let speed_cells_per_sec = scene.resolved_animation_speed();

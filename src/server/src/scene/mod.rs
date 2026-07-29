@@ -6115,6 +6115,7 @@ mod tests {
             MovementRestriction::Unrestricted,
             &visible,
             100.0,
+            false,
         )
         .expect("move_exec handles the player's committed route");
         assert!(
@@ -6194,6 +6195,7 @@ mod tests {
             MovementRestriction::Unrestricted,
             &visible,
             100.0,
+            false,
         )
         .expect("execution is admissible");
         assert!(
@@ -6768,6 +6770,7 @@ mod tests {
             MovementRestriction::Visible,
             &lenient_mask,
             cell,
+            false,
         )
         .expect("a token move on a hex scene executes");
         assert!(
@@ -6785,6 +6788,7 @@ mod tests {
             MovementRestriction::Visible,
             &strict_mask,
             cell,
+            false,
         )
         .expect("a token move on a hex scene executes");
         assert!(out.truncated, "strict center sampling excludes hex (3,0)");
