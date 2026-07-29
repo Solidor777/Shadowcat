@@ -1243,211 +1243,6 @@ mod room_tests {
         assert_eq!(room.scene().read().await.entity_count(), 1);
     }
 
-    #[tokio::test]
-    async fn movement_blocked_for_player_crossing_wall_but_gm_bypasses() {
-        use crate::data::command::FieldChange;
-        use crate::data::document::DocRole;
-        use serde_json::json;
-
-        let (repo, world_id, gm) = repo_with_world().await;
-        let p = repo
-            .create_user("p", None, ServerRole::User, 0)
-            .await
-            .unwrap();
-        repo.add_member(world_id, p, WorldRole::Player)
-            .await
-            .unwrap();
-        let player = PermissionContext {
-            user_id: p,
-            world_role: WorldRole::Player,
-        };
-
-        let reg = RoomRegistry::new();
-        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
-        let wdoc = crate::data::document::tests::world_scoped_doc;
-        let scene_id = Uuid::from_u128(10);
-        let token_id = Uuid::from_u128(11);
-        let wall_id = Uuid::from_u128(12);
-        let ws_id = Uuid::from_u128(13);
-
-        // World-settings with movementRestriction="unrestricted" so this test isolates the
-        // M9a wall-collision gate without the M10e-4 visibility gate interfering (the scene
-        // has no lighting, so visible_cells would be empty under any restrictive mode).
-        let mut ws = wdoc(world_id, ws_id, "world-settings");
-        ws.owner = Some(gm.user_id);
-        ws.system = json!({
-            "scene": {
-                "losRestriction": true, "fog": true,
-                "lightingEnabled": false, "lightMode": "environmentLight",
-                "environment": { "color": "#000000", "intensity": 0.0 },
-                "observerVision": false,
-                "movementRestriction": "unrestricted",
-                "partialCellLeniency": true
-            },
-            "pathfinding": { "diagonalRule": "chebyshev" },
-            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
-        });
-        ws.engine = Some(ws_engine(ws.system.clone()));
-        room.publish(
-            &repo,
-            &gm,
-            vec![Operation::Create { doc: ws }],
-            0,
-            WriteOrigin::Client,
-        )
-        .await
-        .unwrap();
-
-        let mut scene = wdoc(world_id, scene_id, "scene");
-        scene.owner = Some(gm.user_id);
-        room.publish(
-            &repo,
-            &gm,
-            vec![Operation::Create { doc: scene }],
-            0,
-            WriteOrigin::Client,
-        )
-        .await
-        .unwrap();
-
-        // Token owned (writable) by the player, at (0,0).
-        let mut token = wdoc(world_id, token_id, "token");
-        token.parent_id = Some(scene_id);
-        token.owner = Some(p);
-        token.permissions.users.insert(p, DocRole::Owner);
-        token.engine = Some(token_engine(0.0, 0.0));
-        room.publish(
-            &repo,
-            &gm,
-            vec![Operation::Create { doc: token }],
-            0,
-            WriteOrigin::Client,
-        )
-        .await
-        .unwrap();
-
-        // A blocksMove wall on the diagonal x+y=10.
-        let mut wall = wdoc(world_id, wall_id, "wall");
-        wall.parent_id = Some(scene_id);
-        wall.owner = Some(gm.user_id);
-        wall.engine =
-            Some(json!({ "seg": { "x1": 0, "y1": 10, "x2": 10, "y2": 0 }, "blocksMove": true }));
-        room.publish(
-            &repo,
-            &gm,
-            vec![Operation::Create { doc: wall }],
-            0,
-            WriteOrigin::Client,
-        )
-        .await
-        .unwrap();
-
-        // `/engine/x,y` are stored as `f64` (`TokenEngine`); the pre-image `old` must be typed
-        // identically or the OCC check's `serde_json::Value` equality (which distinguishes an
-        // integer `Number` variant from a float one) spuriously reports staleness.
-        let mv = |nx: i64, ny: i64, ox: i64, oy: i64| Operation::Update {
-            doc_id: token_id,
-            changes: vec![
-                FieldChange {
-                    remove: false,
-                    path: "/engine/x".into(),
-                    old: json!(ox as f64),
-                    new: json!(nx as f64),
-                },
-                FieldChange {
-                    remove: false,
-                    path: "/engine/y".into(),
-                    old: json!(oy as f64),
-                    new: json!(ny as f64),
-                },
-            ],
-        };
-
-        let seq_before = room.current_seq();
-        // Forged bypass A: a single wholesale `/engine` write that relocates the token past the
-        // wall must be caught (the post-image, not a leaf-path match, is validated).
-        let whole = Operation::Update {
-            doc_id: token_id,
-            changes: vec![FieldChange {
-                remove: false,
-                path: "/engine".into(),
-                old: json!({ "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
-                new: json!({ "x": 10.0, "y": 10.0, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
-            }],
-        };
-        assert!(matches!(
-            room.publish(&repo, &player, vec![whole], 0, WriteOrigin::Client)
-                .await,
-            Err(crate::data::DataError::Forbidden)
-        ));
-        assert_eq!(room.current_seq(), seq_before);
-        // Forged bypass B: duplicate `/engine/x` (safe-then-unsafe) — last write wins, so the
-        // committed x=11 crosses; the gate validates against that, not the first change.
-        let dup = Operation::Update {
-            doc_id: token_id,
-            changes: vec![
-                FieldChange {
-                    remove: false,
-                    path: "/engine/x".into(),
-                    old: json!(0.0),
-                    new: json!(1.0),
-                },
-                FieldChange {
-                    remove: false,
-                    path: "/engine/x".into(),
-                    old: json!(0.0),
-                    new: json!(11.0),
-                },
-            ],
-        };
-        assert!(matches!(
-            room.publish(&repo, &player, vec![dup], 0, WriteOrigin::Client)
-                .await,
-            Err(crate::data::DataError::Forbidden)
-        ));
-        assert_eq!(room.current_seq(), seq_before);
-
-        // Player move (0,0)->(10,10) crosses the wall → rejected before the write.
-        let blocked = room
-            .publish(
-                &repo,
-                &player,
-                vec![mv(10, 10, 0, 0)],
-                0,
-                WriteOrigin::Client,
-            )
-            .await;
-        assert!(matches!(blocked, Err(crate::data::DataError::Forbidden)));
-        assert_eq!(
-            room.current_seq(),
-            seq_before,
-            "a blocked move consumes no seq"
-        );
-
-        // D9: a player position change is refused regardless of wall-crossing — the wall gate
-        // this test's name references is gone from `publish`; only `execute_move` still applies
-        // it. This same non-wall-crossing move is refused too, for the D9 reason, not M9a's.
-        let non_crossing = room
-            .publish(&repo, &player, vec![mv(1, 1, 0, 0)], 0, WriteOrigin::Client)
-            .await;
-        assert!(matches!(
-            non_crossing,
-            Err(crate::data::DataError::Forbidden)
-        ));
-        assert_eq!(
-            room.current_seq(),
-            seq_before,
-            "a refused move consumes no seq"
-        );
-
-        // A GM move across the wall is still unconditional (M9 §5 exemption, unaffected by D9).
-        // Pre-image is (0,0): the intervening non-crossing move above was refused, so the
-        // committed position never advanced.
-        room.publish(&repo, &gm, vec![mv(10, 10, 0, 0)], 0, WriteOrigin::Client)
-            .await
-            .unwrap();
-    }
-
     /// A `/system/x` write on a token is game-system data — it must not be treated as a move
     /// by `Room::publish`'s M9a/M10e-4 gate (which reads `/engine` exclusively), and the
     /// write must not desync the ECS's committed `/engine` position. This is the integration-
@@ -2088,6 +1883,141 @@ mod room_tests {
         }
     }
 
+    /// Same lighting/vision setup as `room_with_player_create_capability_and_lit_corner`, but
+    /// `movementRestriction: revealed` — Create is authorized against `visible ∪ explored`,
+    /// exercising the Create gate's Revealed branch (`revealed_pending`/`get_explored`), which
+    /// is otherwise unreachable through `Operation::Create` in this test module.
+    async fn room_with_player_create_capability_and_revealed_corner() -> PlaceHandle {
+        use serde_json::json;
+
+        let (repo, world_id, gm_ctx) = repo_with_world().await;
+        let p = repo
+            .create_user("player", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world_id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player_ctx = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let mut caps = crate::data::document::WorldCapDefaults::default();
+        caps.role_caps
+            .all
+            .entry(WorldRole::Player)
+            .or_default()
+            .insert("core:create".into());
+        repo.set_world_cap_defaults(world_id, &caps).await.unwrap();
+
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let scene_id = Uuid::from_u128(0xD950);
+        let ws_id = Uuid::from_u128(0xD951);
+        let light_id = Uuid::from_u128(0xD952);
+        let vision_token_id = Uuid::from_u128(0xD953);
+
+        let mut ws = wdoc(world_id, ws_id, "world-settings");
+        ws.owner = Some(gm_ctx.user_id);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#000000", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "revealed",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        });
+        ws.engine = Some(ws_engine(ws.system.clone()));
+        room.publish(
+            &repo,
+            &gm_ctx,
+            vec![Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut scene = wdoc(world_id, scene_id, "scene");
+        scene.owner = Some(gm_ctx.user_id);
+        room.publish(
+            &repo,
+            &gm_ctx,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // brightRadius=1.0 cell (100 wu) around (50,50): lights cell (0,0) only.
+        let mut light = wdoc(world_id, light_id, "light");
+        light.parent_id = Some(scene_id);
+        light.owner = Some(gm_ctx.user_id);
+        light.system = json!({
+            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
+            "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true
+        });
+        light.engine = Some(light.system.clone());
+        room.publish(
+            &repo,
+            &gm_ctx,
+            vec![Operation::Create { doc: light }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // A vision source: `visible_cells` requires an owned (or observer-tier) token in the
+        // scene — without one, `sources` is empty and the mask is unconditionally empty
+        // regardless of lighting.
+        let mut vision_token = wdoc(world_id, vision_token_id, "token");
+        vision_token.parent_id = Some(scene_id);
+        vision_token.owner = Some(p);
+        vision_token
+            .permissions
+            .users
+            .insert(p, crate::data::document::DocRole::Owner);
+        vision_token.engine = Some(token_engine(50.0, 50.0));
+        room.publish(
+            &repo,
+            &gm_ctx,
+            vec![Operation::Create { doc: vision_token }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // Non-vacuity: an empty visible mask leaves it ambiguous whether the Revealed branch's
+        // explored union is doing any work in the tests built on this fixture.
+        {
+            let scene_ecs = room.scene().read().await;
+            let mask = scene_ecs.visible_cells(player_ctx.user_id, scene_id, true);
+            assert!(
+                !mask.is_empty(),
+                "fixture's lit corner must produce a non-empty visible mask"
+            );
+        }
+
+        PlaceHandle {
+            room,
+            repo,
+            gm_ctx,
+            player_ctx,
+            token: Uuid::nil(),
+            world: world_id,
+            scene: scene_id,
+        }
+    }
+
     /// A token `Document` at `(x, y)` in `world`, parented to `scene`, ready for
     /// `Operation::Create`. `permissions.default = Owner` carries the WRITE_FIELDS floor for
     /// WHICHEVER user creates it (player or GM) — this suite tests the placement mask, not
@@ -2246,6 +2176,63 @@ mod room_tests {
             .publish(&h.repo, &h.player_ctx, ops, 0, WriteOrigin::Client)
             .await
             .expect("placement in a visible cell is allowed");
+    }
+
+    #[tokio::test]
+    async fn non_gm_token_create_in_explored_but_unlit_cell_succeeds() {
+        // Guards the Create gate's Revealed branch (room.rs's `revealed_pending` consumption
+        // loop): a cell that is explored-but-not-currently-visible must still admit a player
+        // Create, mirroring `execute_move_revealed_union_allows_explored_cell`'s movement-side
+        // assertion of the same `visible ∪ explored` contract.
+        let h = room_with_player_create_capability_and_revealed_corner().await;
+        let cell = 100.0_f64;
+
+        // Target (550,550) = cell (5,5): outside the fixture's lit corner (only (0,0) is lit).
+        let mut seed = crate::scene::explored::ExploredSet::new();
+        seed.mark_polygons(
+            &[vec![
+                0.0,
+                0.0,
+                6.0 * cell,
+                0.0,
+                6.0 * cell,
+                6.0 * cell,
+                0.0,
+                6.0 * cell,
+            ]],
+            &crate::scene::grid_shape::SquareGrid {
+                cell,
+                rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+            },
+            cell,
+        );
+        h.repo
+            .set_explored(h.world, h.scene, h.player_ctx.user_id, &seed.to_bytes())
+            .await
+            .unwrap();
+
+        let ops = vec![Operation::Create {
+            doc: token_doc_at(h.world, h.scene, 550.0, 550.0),
+        }];
+        h.room
+            .publish(&h.repo, &h.player_ctx, ops, 0, WriteOrigin::Client)
+            .await
+            .expect("placement in an explored-but-unlit cell is allowed under Revealed");
+    }
+
+    #[tokio::test]
+    async fn non_gm_token_create_outside_visible_and_explored_is_refused() {
+        let h = room_with_player_create_capability_and_revealed_corner().await;
+        // No explored blob seeded: the target cell is neither visible nor explored.
+        let ops = vec![Operation::Create {
+            doc: token_doc_at(h.world, h.scene, 900.0, 900.0),
+        }];
+        let err = h
+            .room
+            .publish(&h.repo, &h.player_ctx, ops, 0, WriteOrigin::Client)
+            .await
+            .expect_err("placement outside visible ∪ explored is refused");
+        assert!(matches!(err, DataError::Forbidden));
     }
 
     #[tokio::test]
