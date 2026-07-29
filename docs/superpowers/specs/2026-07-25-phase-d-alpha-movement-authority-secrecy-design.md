@@ -325,18 +325,25 @@ This is a wire-protocol addition (ts-rs → Zod mirror + drift guard).
 `execute_move`'s per-step check adopts, for non-GM movers only:
 
 - **Wall clearance** — the token's bounding disc must clear every `blocksMove` segment
-  (`point_segment_distance`), replacing the center-based `blocks_move` test. After D9 `execute_move`
-  is the sole path for all non-GM movement, so its per-sample cost is the one that matters; the disc
-  test is the same O(walls) order as the segment-cross test it replaces, so the change is not a
-  complexity regression.
+  (`point_segment_distance`), **in addition to** the existing center-to-center `segments_cross`
+  test, mirroring `cell_enterable`'s own two wall checks exactly. The disc test alone is
+  insufficient: at a sub-cell footprint a wall midway between adjacent cell centers can sit outside
+  the disc's radius yet still cross the center-to-center step, so both checks are kept, not one
+  replacing the other. After D9 `execute_move` is the sole path for all non-GM movement, so its
+  per-sample cost is the one that matters; the added disc test is the same O(walls) order as the
+  segment-cross test it joins, so the change is not a complexity regression.
 - **Mask membership over the footprint** — `footprint_cells(to) ∪ line_traversal(from, to)` must lie
   in the mask, the exact union `cell_enterable` applies. Both halves come from the resolved
   `GridShape`, never the free square functions (`pathfinding::footprint_cells`,
   `movement::supercover_cells`) — calling those reintroduces the square-on-hex defect Task 14e-7 fixed.
-- **Regions over the footprint** — impassable and arrest become footprint-gated, matching the router.
-  The center-cell-only asymmetry documented in the skill's gotcha is retired **by making the executor
-  stricter**, which is the safe direction; the parity argument that gotcha protects is what **I4**
-  now guarantees directly.
+- **Regions over the footprint** — impassable becomes footprint-gated, matching the router
+  (`cell_enterable` check 4). **Arrest and terrain stay center-cell only** — `cell_enterable`
+  deliberately does not footprint-gate arrest either, since arrest/terrain represent an effect on
+  the mover's own position rather than solid geometry it must clear; footprint-gating arrest here
+  would make the executor STRICTER than the router and break **I4** (a route the router approves
+  could then be arrested on entry where the router's own center-cell arrest check saw no hazard).
+  The center-cell-only asymmetry documented in the skill's gotcha is therefore narrowed (walls,
+  mask, and impassable are now footprint-aware on both sides) but not retired for arrest/terrain.
 
 Accepted consequences (**user decision 4**): a wide token cannot move where any footprint cell is
 unseen, so wide tokens freeze in corridors lit only along the centre; a wide token is arrested when

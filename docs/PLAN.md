@@ -342,7 +342,9 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > new `token_position` + `resolved_animation_speed`); `commit_ops_locked` (gate-free `publish`
 > tail) + `Room::execute_move` (`publish_guard` held across the whole validate→commit = atomic;
 > Revealed = `visible_cells ∪ explored`; `moving` lazy-expiry lock; OCC pre-image defense-in-depth;
-> GM wall-honored, diverging from `publish`'s legacy GM wall-bypass); `conn.rs handle_move_request`
+> GM bypasses every gameplay gate (walls, mask, impassable, arrest, footprint) on `execute_move`
+> exactly as it always has on `publish`, per M9 §5 — no resource guard is exempted for a GM on
+> either path (Phase D-alpha `I1`)); `conn.rs handle_move_request`
 > (mover-only `etx` reply, generic `MoveError` — no geometry leak); client `WsClient.moveRequest` +
 > `AppContext.moveRequest` + request-only measure-tool route-commit (the M10e-5 animator drives the
 > returned render-path; `collinearRuns` + `path-runs.ts` removed). SDD-executed (8 tasks, per-task

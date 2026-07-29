@@ -181,14 +181,18 @@ are observations awaiting triage, not committed work.
   client-render-only (no server change). Status: Revisit.
 
 - Title: Route stricter than the authoritative gate (footprint vs center-based). Summary: M10e-6's
-  previewed route enforces full geometric footprint clearance (`cell_enterable` — the token's
+  previewed route enforced full geometric footprint clearance (`cell_enterable` — the token's
   bounding-disc must clear all `blocksMove` segments and ALL footprint cells must be in the
-  non-GM mask); the authoritative movement gate (M9/M10e-4) stays center-based (parent spec §14).
-  A wide token can therefore be dragged (gate allows the center path) along a path the router
-  refuses to preview through a narrow gap. This is the intended asymmetry: route ⊆ gate-allowed
-  keeps the preview from suggesting a move the router would reject, while never admitting a move the
-  gate would block. Not a bug. Status: Recorded; revisit when footprint-aware authoritative blocking
-  lands.
+  non-GM mask); the authoritative movement gate (M9/M10e-4) stayed center-based (parent spec §14).
+  Never a bug — the asymmetry was intended (route ⊆ gate-allowed). Status: **Resolved/narrowed
+  (Phase D-alpha, D4).** `execute_move` now adopts the router's footprint-aware predicate for
+  walls, mask, and impassable — the asymmetry this entry described for those three axes is gone
+  (route-admissible ⇔ gate-admissible, **I4**, on `GridStepped`; `route ⊆ gate-allowed` on
+  `Continuous`). Arrest and terrain deliberately remain center-cell-only on BOTH sides
+  (`cell_enterable` and `execute_move` alike — footprint-gating arrest would make the gate stricter
+  than the router and break **I4**), so a narrower version of the same asymmetry persists by design
+  for those two axes only. See `docs/superpowers/specs/2026-07-25-phase-d-alpha-movement-authority-secrecy-design.md`
+  (D4) and `.claude/skills/shadowcat-codebase-scene-rendering/SKILL.md`'s footprint-predicate bullet.
 
 - Title: Multi-leg alternating parity is per-leg-greedy (cost-display only). Summary: `find` threads
   each leg's min-cost end-parity into the next leg's start; for the `alternating` (5-10-5) rule this

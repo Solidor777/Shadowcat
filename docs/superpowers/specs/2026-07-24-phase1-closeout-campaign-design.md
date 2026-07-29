@@ -142,6 +142,29 @@ build it — work item E9); M10e-2 edge-projected environment light "logged to T
 
 ### Phase D — Movement & scene correctness
 
+**Amendment (Phase D-α close-out, 2026-07-29): Phase D split in two.** Exploration for D4 found
+three additional items and one already-shipped item, so Phase D executed as two spec cycles rather
+than one:
+
+- **Phase D-α — movement authority & secrecy** (`docs/superpowers/specs/2026-07-25-phase-d-alpha-movement-authority-secrecy-design.md`,
+  branch `phase-d-alpha-movement-authority`): **D10, D9, D8, D4**, in that order — one coherent,
+  security-sensitive restructure of server-side movement authority. Three items were added, none in
+  this spec's original table: **D10** (wall secrecy axis — `move_walls` gains a `viewer` parameter,
+  mirroring `region_field`'s two-value contract, closing a route-shape leak of `gm_only` walls);
+  **D9** (player moves become request-only — the standing server-authoritative-movement rule was
+  violated by the select-tool drag path; closing it deletes `Room::publish`'s non-GM traversal gate
+  entirely rather than reconciling it with `execute_move`); **D8** (GM gate-exemption unification —
+  `execute_move` had drifted into enforcing walls/impassable/arrest against GMs, a regression
+  against the original M9 design spec's GM-bypass grant; the spec wins, so the enforcement is
+  removed). **D5** (edge-projected environment light) was found already shipped (`513aef8`,
+  `e1156ae`, 2026-07-19) and moved out to D-β as verify-then-close rather than re-executed.
+  A plan-level buddy check on the resulting 11-task plan found 5 Critical / 14 Important / 14 Minor
+  findings, all folded in before execution began (`docs/superpowers/sdd/2026-07-25-phase-d-alpha-movement-authority-secrecy/progress.md`).
+  D-α executed via SDD (11 tasks, per-task two-reviewer gate, reviewed skill-update gate on
+  `shadowcat-codebase-scene-rendering`).
+- **Phase D-β — movement & scene correctness (later spec)**: the remaining **D3, D1+D2, D7, D6,
+  D5** (D5 as verify-then-close only). Not yet executed as of this amendment.
+
 - **D1. Cost unification.** `move_exec` threads the diagonal rule + per-step parity so
   `MoveOutcome.cost` equals the router's preview cost — one cost model, parity-tested
   (never-fork applied to cost semantics).

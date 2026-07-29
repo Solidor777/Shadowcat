@@ -36,22 +36,32 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   zero-overlap cell). `resolve_scene` also yields `movement_restriction`
   (`MovementRestriction::{Visible,Revealed,Unrestricted}`, scene-overridable, fail-closed to `Visible`)
   + `partial_cell_leniency` (world-only).
-  **THE PARITY CHECKLIST — `Room::publish` (drag) and `move_exec`/`execute_move` (moveRequest) are
-  two gates that MUST agree, and they have diverged on SIX independent axes. Adding a new gate
-  input means adding a row here and pinning it.** Each row cost a defect, two of them Critical:
-  (1) **per-cell decision** — same `blocks_move` + `GridShape::line_traversal` + `visible` mask;
+  **THE FORMER PARITY CHECKLIST, now a single-gate constraint list (Phase D-α/D9): `Room::publish`
+  no longer gates non-GM traversal at all** — a non-GM `Update` touching a token's `/engine/x`/`/engine/y`
+  is refused outright (`ws/room.rs`'s bitwise `a0 != a1` check), and the wall/mask/supercover
+  machinery that used to run there is deleted. `move_exec`/`execute_move` is now the SOLE
+  implementation of the per-cell traversal decision (**I2**). The six axes below are retained as
+  present-tense CONSTRAINTS on `execute_move` itself, and on any future second write path to a
+  token's position — such a path MUST route through `execute_move` rather than re-derive its own
+  gate (per **I2**); this list is what a reviewer checks a new gate input against, not a live
+  two-gate comparison anymore:
+  (1) **per-cell decision** — `blocks_move` (now `move_walls`-sourced) + `GridShape::line_traversal`
+  + `visible` mask, footprint-aware per D4 (see the Footprint predicate bullet below);
   (2) **cell indexing** — the same resolved `GridShape`, never the free square functions;
   (3) **traversal completeness** — a supercover on both grid kinds, never a thin line;
-  (4) **input admissibility** — both share `MAX_GATE_WALK_COORD`, checked before any traversal, in
-  EVERY restriction mode (`Unrestricted` short-circuits later, so a check placed after it agrees in
-  two modes of three and forks in the third);
+  (4) **input admissibility** — `MAX_GATE_WALK_COORD`, checked before any traversal, in EVERY
+  restriction mode (`Unrestricted` short-circuits later, so a check placed after it must still
+  apply in every mode, not just two of three);
   (5) **scene identity** — DERIVED from the token, never the frame (below);
   (6) **fail-open defaults** — an absent `scene_grid_sizes` entry means no scene document and must
-  REFUSE, never synthesize a 100-unit grid.
-  SCOPE caveat that applies to the whole comparison: `publish`'s gate block is non-GM-only, while
-  `execute_move` and `gate_walk` bound unconditionally including GMs. Pin each axis with an
-  anti-drift test exercising BOTH gates through the shared symbol — see `MAX_GATE_WALK_COORD`'s and
-  the dangling-parent-scene one.
+  REFUSE, never synthesize a 100-unit grid. **This axis still lives in `Room::publish` today**,
+  not `execute_move`: it guards the retained-and-repointed `Create` placement gate (D9), the one
+  piece of `publish`'s former gate block that survives, now authorizing a created token's position
+  rather than a moved token's path.
+  GM scope: `execute_move` and `gate_walk`'s resource guards (`MAX_GATE_WALK_COORD`/
+  `MAX_GATE_WALK_SAMPLES`, non-finite, scene-existence) bind unconditionally including GMs (**I1**);
+  GMs bypass every gameplay gate (walls, mask, impassable, arrest, footprint) on both `execute_move`
+  and the Create placement gate, per M9 §5 — see the GM exemption bullet below.
   **INVARIANT — a movement/routing gate's SCENE is DERIVED FROM THE TOKEN, never taken from the
   frame (Task 14j, `[sec]`, fixed a Critical).** `Room::execute_move` resolves the scene via
   `SceneEcs::token_move(token, &[])`, the same accessor `Room::publish` has always used — which is
@@ -309,11 +319,37 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `ecs.region_field(scene, if is_gm { None } else { Some(user) })` — the PER-REQUESTER field (a
   non-GM's route/budget silently omits a region they cannot see; the secret region only "springs"
   later, at `move_exec`, which always reads the authoritative field — see `region_field` above).
-  New `move_walls(scene)` accessor returns the `blocksMove` segment list (mirrors the M9
-  `blocks_move` filter). Wire frames `Pathfind`/`PathResult` (`{path, cost, arrested}` —
+  `SceneEcs::move_walls(scene, viewer: Option<Uuid>) -> Vec<vision::Seg>` (D10) is a **two-value
+  contract, never a third mode, mirroring `region_field` exactly**: `None` is AUTHORITATIVE (every
+  `blocksMove` segment, used by `execute_move` and by GM requesters); `Some(user)` is the
+  PER-REQUESTER view used by the router — a wall is included only when `user` can see the
+  visibility tier declared on its `/engine` (`property_overrides.get("/engine")`, defaults to
+  `Visibility::All`), through the SAME `resolve_access` mechanism `region_field` uses (no new
+  secrecy machinery). Callers MUST pass `None` for a GM requester, exactly as `region_field`
+  requires. `pathfind` computes it once (`move_walls(scene, if is_gm { None } else { Some(user) })`)
+  and passes the same slice into both engines; `navmesh_for`'s memo key incorporates the
+  requester's exact wall-set bit-pattern (not merely "filtered vs unfiltered"), since two
+  requesters can see two different wall subsets. **I5 — vision and lighting keep the FULL wall
+  set and must never be unified with routing:** `sight_walls`/`light_walls` (`mod.rs:199,939`, the
+  M9b full-wall-set invariant) deliberately include `gm_only` walls — a wall you cannot see still
+  blocks your sight, which under-reveals and is correct — while `move_walls(scene, Some(user))`
+  omits exactly those same walls from a non-GM's ROUTE so its geometry isn't leaked through route
+  shape. These are two independent wall-visibility axes serving opposite purposes on the same
+  underlying wall set; a `gm_only` wall always springs at `execute_move` regardless of what the
+  router's per-requester set showed. Wire frames `Pathfind`/`PathResult` (`{path, cost, arrested}` —
   `arrested` is always disclosed to the requester, no secrecy concern: it only tells them a route
   THEY could already see is truncating)/`PathError` — one-shot to the requesting connection only
   (never broadcast); `get_explored` fetched off the scene read lock (no lock across await).
+  `Pathfind` (D4) also carries an optional `token: Option<Uuid>` (`ws/protocol.rs`): when present
+  the server AUTHORIZES it (effectively owned by the requester AND parented to `scene` — the same
+  ownership rule used elsewhere, never a forked check) and DERIVES the footprint from that token's
+  document via `resolve_token_footprint`, IGNORING any wire `footprint_radius` — so a route preview
+  and the authoritative gate cannot disagree about the mover's size. The named token is NOT a
+  presence proof: non-GM scene presence remains the separate effective-ownership scan
+  `handle_pathfind` already performs, which naming a token neither replaces nor satisfies (it
+  strengthens that check by requiring the SAME token to be owned-and-parented, rather than adding a
+  second one). When `token` is absent, the wire `footprint_radius` is honored and the result is an
+  explicitly hypothetical preview with no preview-equals-execution guarantee.
   Client: `ToolContext.pathfind?` seam + `SceneTool.onDeactivate?()` hook in scene-tools (clears
   route overlay on tool swap); ruler `Grid.distance()` gains the `alternating` (5-10-5) rule wired
   from `resolveSceneSettings(...).diagonalRule` into the Stage `GridSpec`.
@@ -779,29 +815,43 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   rule feeds step cost and the heuristic, never cell identity: `rule` is a `SquareGrid`-only field
   read solely by `neighbors_with_cost`/`heuristic`). Shape identity IS the invariant; a shared mask
   indexed in two coordinate systems is not a shared mask.
-- **M1 executor per-cell parity (spec §13):** `execute_move` uses the SAME `blocks_move` +
-  `GridShape::line_traversal` (via `ecs.resolve_grid_shape`; a supercover on both kinds — square
-  cell-walk, hex ψ-crossing) + `visible` membership as the M10e-4
-  `publish` move gate — per-cell decision parity, NO fork, on BOTH grid kinds (Task 14d closed a
-  square-only gap in `publish`'s call — see the movement-restriction bullet above). A divergence
-  between the executor and the gate equals a movement-into-fog leak.
-  **Admissibility parity is a SECOND, DISTINCT axis of the same never-fork rule (Task 14e-9):** both
-  gates also share `move_exec::MAX_GATE_WALK_COORD` (1e9) as a coordinate-MAGNITUDE bound, checked
-  before any traversal call and in every restriction mode (including `Unrestricted`, which
-  short-circuits later). Per-cell agreement is not enough if the two gates disagree about which
-  inputs are admissible at all. An anti-drift test exercises BOTH gates at the exact bound and at
-  bound+1.0 through the shared symbol, so a value change or a `>`/`>=` flip on either side fails.
-  **(M10f-2 revision)** The executor is no longer stricter on authored path shape — the pre-M10f-2
-  king-step-adjacency requirement (reject any >1-cell authored jump) is REMOVED; `gate_walk`
-  subdivides a >1-cell jump into dense ≤1-cell samples and gates each one, so a >1-cell authored
-  jump is now admitted exactly when every crossed cell is wall-clear/visible (equivalent to the
-  client having sent the explicit intermediate waypoints, which was always legal — no new
-  capability). The `blocks_move`/`line_traversal`/`visible` per-cell decision parity itself is
-  UNCHANGED and remains the load-bearing invariant. For `Revealed`, the
-  caller MUST pass `visible_cells ∪ explored` as the `visible` argument (not raw `visible_cells`
-  alone) — same union `publish` uses. Do NOT re-grant GM wall-bypass in `execute_move`: GMs are
-  folded to `Unrestricted` (mask-skip) but `blocks_move` is still enforced for GMs. This
-  intentionally diverges from `publish`'s legacy GM wall-bypass (to be retired).
+- **`execute_move`'s per-cell gate is the sole movement gate (Phase D-α, `I2`), footprint-aware for
+  walls/mask/impassable, center-cell for arrest/terrain (D4/D9).** Post-D9 there is no second gate
+  to keep in parity with — `Room::publish` no longer runs any wall/mask/traversal geometry for a
+  non-GM (see the single-gate constraint list at the top of this section) — so this bullet
+  describes `execute_move`'s OWN per-step checks, mirroring `pathfinding::cell_enterable`'s four
+  checks exactly rather than a second implementation of them:
+  (1) **wall gate** — BOTH the footprint disc vs every `move_walls(scene, None)` segment
+  (`point_segment_distance`) AND the center-to-center `segments_cross` test, exempt for a GM (`I1`);
+  neither check replaces the other, matching `cell_enterable`'s own two wall checks;
+  (2) **mask gate** — `footprint_cells(next) ∪ GridShape::line_traversal(prev, next)` must lie
+  entirely in `visible` (for `Revealed`, the caller MUST pass `visible_cells ∪ explored`, same union
+  `publish`'s Create gate uses), skipped for GMs and for `Unrestricted`;
+  (3) **impassable** — footprint-gated (any footprint-overlapped cell counts, not just the
+  destination center), exempt for a GM;
+  (4) **arrest and terrain stay CENTER-CELL ONLY** — mirroring `cell_enterable`'s own documented
+  asymmetry (`pathfinding.rs:133-136`): footprint-gating arrest would make the executor STRICTER
+  than the router and break `I4`. Terrain cost accrual is independent of the GM exemption (cost is
+  information, not a gate).
+  Both directions of `I4` (`route-admissible ⇔ gate-admissible` for a non-GM mover) hold on
+  `GridStepped`; on `Continuous` only the weaker `route ⊆ gate-allowed` is claimed (the continuous
+  router's own mask/wall checks are a superset of the executor's, not a bidirectional mirror).
+  **GM exemption (`I1`, M9 §5 — supersedes any prior "GM wall-honored" framing):** a GM bypasses
+  EVERY gameplay gate — walls, mask, impassable, arrest, footprint clearance — on `execute_move`,
+  landing exactly at the requested destination (`truncated: false`), exactly as `publish` has always
+  let a GM place a token anywhere. Do NOT read this as "GMs get no checks at all": resource/
+  admissibility guards are NEVER exempted for a GM on either path — `gate_walk`'s
+  `MAX_GATE_WALK_COORD`/`MAX_GATE_WALK_SAMPLES`, non-finite refusal, `MoveReject::SceneUnknown`, the
+  footprint-radius range guard, and `Room::publish`'s Create-gate scene-existence refusal all still
+  apply unconditionally. **Admissibility is a SECOND, DISTINCT axis from the gameplay-gate exemption
+  (Task 14e-9, generalized by `I1`):** `MAX_GATE_WALK_COORD` binds in every restriction mode
+  including `Unrestricted` (which short-circuits the mask check later, not the admissibility check).
+  An anti-drift test exercises the exact bound and bound+1.0 through the shared symbol, so a value
+  change or a `>`/`>=` flip fails. **(M10f-2 legacy note, still true)** The executor is not stricter
+  on authored path shape than a hand-authored waypoint list: `gate_walk` subdivides any >1-cell
+  authored jump into dense ≤1-cell samples and gates each one, equivalent to the client having sent
+  the explicit intermediate waypoints (no new capability; security lives entirely in the per-cell
+  gate, never the shape check).
 - **M2 streamed vision is strictly leak-free — no fork of the secrecy decision, fail closed
   (`fog-is-the-secrecy-gate-fail-closed`).** The mover's swept vision trajectory raycasts the SAME
   `sight_walls` (full set, incl. `gm_only`) as `player_vision_polygons`; the observer egress clip
