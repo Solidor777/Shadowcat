@@ -279,6 +279,60 @@ test("measure tool accumulates multiple waypoints and passes them to pathfind in
   expect(calls[0].waypoints).toEqual([[100, 50], [150, 50], [200, 50]]);
 });
 
+test("route preview names the single selected token in the pathfind call", async () => {
+  const calls: (string | undefined)[] = [];
+  const pathfind: ToolContext["pathfind"] = async (_scene, _start, waypoints, _fp, token) => {
+    calls.push(token);
+    return { path: [[50, 50], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number, number][], cost: 1, arrested: false };
+  };
+  const { tool } = setupRoute({ pathfind });
+
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 150, y: 50 }, ev());
+  await flush();
+
+  expect(calls).toEqual(["tok-1"]);
+});
+
+test("commit's fallback pathfind also names the single selected token", async () => {
+  const calls: (string | undefined)[] = [];
+  const pathfind: ToolContext["pathfind"] = async (_scene, _start, waypoints, _fp, token) => {
+    calls.push(token);
+    return { path: [[0, 0], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number, number][], cost: 1, arrested: false };
+  };
+  const { ctx, now } = seedRouteCtx({
+    pathfind,
+    moveRequest: async (_s, tokenId, path) => ({ requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1 }),
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+  });
+  const tool = makeMeasureTool(ctx);
+
+  // No preceding pointer-move, so there is no cached preview path — the double-click
+  // forces commitRoute's own fallback pathfind call rather than reusing lastPreviewedPath.
+  tool.onPointerDown({ x: 100, y: 100 }, ev()); tool.onPointerUp({ x: 100, y: 100 }, ev());
+  now.advance(100);
+  tool.onPointerDown({ x: 100, y: 100 }, ev()); tool.onPointerUp({ x: 100, y: 100 }, ev());
+  await drain();
+
+  expect(calls).toEqual(["tok1"]);
+});
+
+test("route mode is never entered with zero or multiple tokens selected, so pathfind never sees a token id", () => {
+  const pathfinderCalled: unknown[] = [];
+  const pathfind: ToolContext["pathfind"] = async (_scene, _start, _waypoints, _fp, token) => {
+    pathfinderCalled.push(token);
+    return { path: [], cost: 0, arrested: false };
+  };
+  const { tool: multiTool, overlays: multiOverlays } = setupRoute({ pathfind, tokenIds: ["tok-1", "tok-2"] });
+
+  multiTool.onPointerDown({ x: 50, y: 50 }, ev());
+  multiTool.onPointerMove({ x: 150, y: 50 }, ev());
+  multiTool.onPointerUp({ x: 150, y: 50 }, ev());
+
+  expect(pathfinderCalled).toHaveLength(0); // multi-selection: falls back to plain measure
+  expect(multiOverlays).toHaveLength(0);
+});
+
 test("route mode: an arrested PathResult appends an arrest marker to the budget label", async () => {
   const pathfind: ToolContext["pathfind"] = async () => ({
     path: [[50, 50], [150, 50]] as [number, number][],
