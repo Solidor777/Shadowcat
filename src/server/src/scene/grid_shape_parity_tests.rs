@@ -186,6 +186,7 @@ fn gate_walk_mask_gate_parity_pins_diagonal_truncation_point() {
         &visible,
         100.0,
         false,
+        0.4,
     )
     .expect("clear token, in-bounds path");
 
@@ -249,6 +250,7 @@ fn gate_walk_flanker_gate_truncates_with_both_diagonal_endpoints_visible() {
         &visible,
         100.0,
         false,
+        0.4,
     )
     .expect("clear token, in-bounds path");
 

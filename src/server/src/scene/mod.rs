@@ -6368,6 +6368,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .expect("move_exec handles the player's committed route");
         assert!(
@@ -6448,6 +6449,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .expect("execution is admissible");
         assert!(
@@ -7023,6 +7025,7 @@ mod tests {
             &lenient_mask,
             cell,
             false,
+            0.4,
         )
         .expect("a token move on a hex scene executes");
         assert!(
@@ -7041,6 +7044,7 @@ mod tests {
             &strict_mask,
             cell,
             false,
+            0.4,
         )
         .expect("a token move on a hex scene executes");
         assert!(out.truncated, "strict center sampling excludes hex (3,0)");

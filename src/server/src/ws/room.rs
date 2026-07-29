@@ -476,8 +476,8 @@ impl Room {
         }
 
         // --- Resolve gate inputs under the ECS read lock ---
-        // All three inputs (restriction, cell, visible) are resolved while holding the read
-        // lock and DROPPED before any await (no lock-across-await; mirrors `publish`).
+        // restriction, cell, visible, and the derived footprint are all resolved while holding
+        // the read lock and DROPPED before any await (no lock-across-await; mirrors `publish`).
         let restriction;
         let cell;
         let start;
@@ -485,6 +485,7 @@ impl Room {
         let visible_cells;
         let is_revealed;
         let is_gm;
+        let footprint;
         {
             let scene = self.scene.read().await;
 
@@ -505,6 +506,13 @@ impl Room {
             if scene_id != token_scene {
                 return Err(DataError::Forbidden);
             }
+
+            // An out-of-range footprint refuses the move outright, never clamps — clamping
+            // would gate a wider token as a narrower disc, a geometric fail-open.
+            let Some(fp) = scene.resolve_token_footprint(token) else {
+                return Err(DataError::Forbidden);
+            };
+            footprint = fp;
 
             let settings = scene.resolve_scene(token_scene);
             // Fail-closed on a `parent_id` with no scene document: `scene_grid_sizes` carries an
@@ -582,6 +590,7 @@ impl Room {
                 &visible,
                 cell,
                 is_gm,
+                footprint,
             )
             .map_err(|_| DataError::Forbidden)?;
             let speed_cells_per_sec = scene.resolved_animation_speed();

@@ -5,11 +5,18 @@
 //! cell-center vertices ≤1 cell apart, or any-angle continuous vertices arbitrarily far apart —
 //! into a dense walk where every consecutive pair is at most one cell apart (Chebyshev),
 //! preserving already-≤1-cell segments as an identity. The per-step gate then runs over this
-//! dense walk, validating each dense sub-step against:
-//! - `blocks_move` wall geometry (M9a gate — always active),
-//! - the caller-supplied `visible` mask (M10e-4 gate — skipped for `Unrestricted`),
-//! - the region field (M10g): impassable stops before entry, arrest stops at entry, terrain
-//!   accumulates weighted cost. Always reads the AUTHORITATIVE field (`ecs.region_field(scene,
+//! dense walk, validating each dense sub-step against the SAME predicate set
+//! `pathfinding::cell_enterable` uses for routing (D4):
+//! - a footprint-disc clearance test AND a center-to-center segment-crossing test against every
+//!   `blocksMove` wall in the AUTHORITATIVE wall set (`ecs.move_walls(scene, None)`) — both are
+//!   required; the disc test alone lets a wall between two adjacent cell centers become
+//!   permeable at the default 0.4-cell footprint,
+//! - the caller-supplied `visible` mask (M10e-4 gate — skipped for `Unrestricted`) over
+//!   `footprint_cells ∪ line_traversal`, not the center point alone,
+//! - the region field (M10g): impassable is footprint-gated (a wide body cannot fit past
+//!   impassable terrain any more than a wall); arrest and terrain stay CENTER-CELL only, mirroring
+//!   `cell_enterable`'s documented asymmetry (they act on the mover's own position, not solid
+//!   geometry it must clear). Always reads the AUTHORITATIVE field (`ecs.region_field(scene,
 //!   None)`) — this executor springs every region regardless of what the mover's own pathfind
 //!   preview could see (spec §6).
 //!
@@ -234,9 +241,9 @@ pub(crate) enum MoveReject {
 /// # Parity with M10e-4 (`Room::publish`) — per-cell decision only
 ///
 /// The per-cell decision (step 1 + step 2) uses the SAME primitives as the M10e-4 gate in
-/// `Room::publish`: `blocks_move`, `GridShape::line_traversal` (a supercover on both grid kinds —
-/// square cell-walk, hex ψ-crossing, per `ecs.resolve_grid_shape`), and the pre-computed `visible`
-/// set.
+/// `Room::publish`: wall-segment crossing (`segments_cross`, the primitive `blocks_move` wraps),
+/// `GridShape::line_traversal` (a supercover on both grid kinds — square cell-walk, hex
+/// ψ-crossing, per `ecs.resolve_grid_shape`), and the pre-computed `visible` set.
 /// This executor and the `publish` gate agree on every cell for every restriction mode, on
 /// BOTH square and hex scenes. For a grid input this executor is byte-identical in outcome to
 /// the pre-M10f-2 king-step executor (proved via a differential oracle during M10f-2 and now
@@ -267,7 +274,12 @@ pub(crate) enum MoveReject {
 /// - `is_gm` — When true, every gameplay gate (walls, mask, impassable, arrest) is bypassed
 ///   (M9 §5's "ignore walls" override, matching `publish`'s own GM position write). Resource
 ///   guards (`gate_walk`'s `MAX_GATE_WALK_COORD`/`MAX_GATE_WALK_SAMPLES`, the non-finite and
-///   scene-existence refusals) are never exempted. Terrain cost still accrues regardless.
+///   scene-existence refusals, and the `footprint_radius_cells` range guard below) are never
+///   exempted. Terrain cost still accrues regardless.
+/// - `footprint_radius_cells` — The mover's bounding-disc radius in grid cells (see
+///   `SceneEcs::resolve_token_footprint`). Must be in `[0, pathfinding::MAX_FOOTPRINT_CELLS]`;
+///   out-of-range (including NaN) is `MoveReject::Degenerate`, unconditionally — a GM's wider
+///   gameplay exemption does not cover this input guard (I1).
 // A plain `is_gm` flag with early-outs, not a shared profile struct: after D9 there is exactly
 // one gate, and a shared symbol with a single consumer is indirection with no second party to
 // keep honest.
@@ -281,6 +293,7 @@ pub(crate) fn execute_move(
     visible: &BTreeSet<(i32, i32)>,
     cell: f64,
     is_gm: bool,
+    footprint_radius_cells: f64,
 ) -> Result<MoveOutcome, MoveReject> {
     // --- Input validation (fail closed on every degenerate input) ---
     if path.len() < 2 {
@@ -290,6 +303,11 @@ pub(crate) fn execute_move(
         return Err(MoveReject::Degenerate);
     }
     if path.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+        return Err(MoveReject::Degenerate);
+    }
+    // I1: a resource/admissibility guard, never exempted for a GM. `contains` rejects NaN and
+    // ±Inf (NaN comparisons are always false; Inf > MAX_FOOTPRINT_CELLS).
+    if !(0.0..=crate::scene::pathfinding::MAX_FOOTPRINT_CELLS).contains(&footprint_radius_cells) {
         return Err(MoveReject::Degenerate);
     }
 
@@ -326,6 +344,14 @@ pub(crate) fn execute_move(
     // than a hardcoded square-grid call.
     let grid = ecs.resolve_grid_shape(scene, cell);
 
+    // The executor always reads the AUTHORITATIVE wall set: a `gm_only` wall omitted from the
+    // requester's route springs here, exactly as a secret region does (D10, I3).
+    let gate_walls = ecs.move_walls(scene, None);
+
+    // Constant for the whole walk: the footprint disc radius in scene units, mirroring
+    // `cell_enterable`'s `r_scene` (`pathfinding.rs:88`).
+    let r_scene = footprint_radius_cells.max(0.0) * cell;
+
     // Region-cell lookup goes through the SAME resolved grid shape as rasterization
     // (`region_field`) and the mask's `line_traversal` — `grid.cell_of` is the hex-correct point→
     // cell mapping (square: `floor(p/cell)`; hex: pixel→axial round). A hardcoded square `floor`
@@ -345,21 +371,46 @@ pub(crate) fn execute_move(
     for i in 1..walk.len() {
         let prev = walk[i - 1].pos;
         let next = walk[i].pos;
+        let next_cell = to_cell(next);
+        // The footprint disc's anchor for every CELL-MEMBERSHIP test below (mask, impassable):
+        // the cell's own center, exactly mirroring `cell_enterable`'s `ctr = cell_center(to)`
+        // (`pathfinding.rs:89`). This is NOT optional polish — anchoring at the raw dense-walk
+        // point `next` instead is degenerate whenever `next` lands exactly on a cell boundary
+        // (common: any axis-aligned continuous step subdivides into boundary-exact samples),
+        // where `footprint_cells`'s zero-distance-to-AABB test spuriously admits every cell
+        // touching that corner, not just the cells the footprint actually occupies.
+        let fp_ctr = grid.cell_center(next_cell);
 
-        // Step 1: wall gate — every dense sub-segment, exempt for a GM (M9 §5).
-        if check_walls && ecs.blocks_move(scene, prev, next) {
-            stopped_early = true;
-            break;
+        // Step 1: wall gate — every dense sub-segment, exempt for a GM (M9 §5). TWO checks,
+        // both from `cell_enterable` (`pathfinding.rs:92-97,131-136`): the footprint disc at
+        // `next` must clear every wall, AND the center-to-center step segment must cross none.
+        // The disc alone is insufficient — at a 0.4-cell footprint a wall midway between
+        // adjacent cell centers sits 0.5 cell away and would pass, making walls permeable on
+        // the sole remaining check.
+        if check_walls {
+            let disc_blocked = gate_walls
+                .iter()
+                .any(|w| crate::scene::vision::point_segment_distance(next, w.a, w.b) < r_scene);
+            let crossed = gate_walls
+                .iter()
+                .any(|w| crate::scene::segments_cross(prev, next, w.a, w.b));
+            if disc_blocked || crossed {
+                stopped_early = true;
+                break;
+            }
         }
 
-        // Step 2: vision-mask gate — every dense sub-segment. This density is exactly why
-        // gate_walk exists: supercover_cells is well-defined and dense enough to cover the
-        // swept footprint for an any-angle segment, not just a king step.
+        // Step 2: vision-mask gate — every dense sub-segment, over the FOOTPRINT, not the
+        // center — the same `footprint_cells ∪ line_traversal` union `cell_enterable` requires
+        // (`pathfinding.rs:109-123`). This density is exactly why gate_walk exists: line_traversal
+        // is well-defined and dense enough to cover the swept footprint for an any-angle
+        // segment, not just a king step.
         if check_mask {
-            let Some(cells) = grid.line_traversal(prev, next, cell) else {
+            let Some(mut cells) = grid.line_traversal(prev, next, cell) else {
                 stopped_early = true;
                 break;
             };
+            cells.extend(grid.footprint_cells(next_cell, fp_ctr, r_scene, cell));
             if !cells.iter().all(|c| visible.contains(c)) {
                 stopped_early = true;
                 break;
@@ -381,14 +432,22 @@ pub(crate) fn execute_move(
         // that guard used to reject a non-adjacent jump outright; this executor now subdivides
         // instead of rejecting (see `gate_walk`), so a duplicate-cell transition would silently
         // fall through this dedup rather than being caught by a separate check.
-        let next_cell = to_cell(next);
         if next_cell != last_region_cell {
-            if check_regions && regions.is_impassable(next_cell) {
-                stopped_early = true;
-                break;
+            // Impassable IS footprint-gated (`cell_enterable`'s check 4, `pathfinding.rs:139-145`):
+            // a wide body cannot fit past impassable terrain any more than past a wall.
+            if check_regions {
+                let fp_cells = grid.footprint_cells(next_cell, fp_ctr, r_scene, cell);
+                if fp_cells.iter().any(|c| regions.is_impassable(*c)) {
+                    stopped_early = true;
+                    break;
+                }
             }
             // Cost accrues regardless of the exemption: it is information, not a gate.
             cost += regions.terrain_multiplier(next_cell);
+            // Arrest and terrain stay CENTER-CELL only, mirroring `cell_enterable`'s documented
+            // asymmetry (`pathfinding.rs:133-136`): they act on the mover's own position rather
+            // than solid geometry it must clear. Footprint-gating arrest here would make the gate
+            // stricter than the router and break I4.
             if check_regions && regions.is_arrest(next_cell) {
                 stop_idx = i;
                 stopped_early = true;
@@ -436,6 +495,7 @@ pub(crate) fn execute_move(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::MovementModel;
     use serde_json::json;
 
     // --- Fixture helpers (mirrors scene/mod.rs test helpers verbatim) ---
@@ -553,6 +613,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert_eq!(out.stop, (100.0, 100.0));
@@ -574,6 +635,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert_eq!(out.stop, (100.0, 0.0)); // stopped before the wall
@@ -597,6 +659,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert_eq!(out.stop, (100.0, 0.0));
@@ -627,6 +690,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert_eq!(out.stop, (0.0, 0.0));
@@ -656,6 +720,7 @@ mod tests {
             &union_mask,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert_eq!(out.stop, (100.0, 100.0));
@@ -675,6 +740,7 @@ mod tests {
             &raw_mask,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert_eq!(out2.stop, (100.0, 0.0));
@@ -695,6 +761,7 @@ mod tests {
             &empty,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert_eq!(out.stop, (100.0, 0.0)); // mask ignored, wall still stops it
@@ -713,7 +780,8 @@ mod tests {
                 MovementRestriction::Unrestricted,
                 &v,
                 100.0,
-                false
+                false,
+                0.4,
             ),
             Err(MoveReject::Degenerate)
         ));
@@ -736,6 +804,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert_eq!(out.stop, (500.0, 0.0));
@@ -762,6 +831,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert!(out.truncated);
@@ -790,6 +860,7 @@ mod tests {
                 &v,
                 1.0,
                 false,
+                0.4,
             ),
             Err(MoveReject::TooLong)
         ));
@@ -808,7 +879,8 @@ mod tests {
                 MovementRestriction::Unrestricted,
                 &v,
                 100.0,
-                false
+                false,
+                0.4,
             ),
             Err(MoveReject::EmptyPath)
         ));
@@ -828,7 +900,8 @@ mod tests {
                 MovementRestriction::Unrestricted,
                 &v,
                 100.0,
-                false
+                false,
+                0.4,
             ),
             Err(MoveReject::NotAToken)
         ));
@@ -848,6 +921,7 @@ mod tests {
             &empty,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert_eq!(out.stop, (100.0, 100.0));
@@ -908,6 +982,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert_eq!(
@@ -950,6 +1025,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert_eq!(
@@ -995,6 +1071,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert!((out.cost - 2.5).abs() < 1e-9);
@@ -1056,6 +1133,7 @@ mod tests {
             &visible,
             50.0,
             false,
+            0.4,
         )
         .unwrap();
         assert!(out.truncated, "an impassable hex region truncates the move");
@@ -1130,6 +1208,7 @@ mod tests {
             &visible,
             50.0,
             false,
+            0.4,
         )
         .unwrap();
         assert!(out.truncated, "the arrest hex cell truncates the move");
@@ -1185,6 +1264,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert_eq!(
@@ -1305,6 +1385,7 @@ mod tests {
             &empty_mask(),
             100.0,
             true,
+            0.4,
         )
         .expect("a GM move is admissible");
         assert!(
@@ -1331,6 +1412,7 @@ mod tests {
             &empty_mask(),
             100.0,
             true,
+            0.4,
         )
         .expect("admissible");
         assert!(!out.truncated, "neither impassable nor arrest stops a GM");
@@ -1349,6 +1431,7 @@ mod tests {
             &empty_mask(),
             100.0,
             false,
+            0.4,
         )
         .expect("admissible");
         assert!(out.truncated, "a non-GM is still stopped by the wall");
@@ -1368,6 +1451,7 @@ mod tests {
             &empty_mask(),
             100.0,
             true,
+            0.4,
         )
         .expect_err("a resource guard is never exempted");
         assert!(matches!(err, MoveReject::TooLong), "got {err:?}");
@@ -1386,6 +1470,7 @@ mod tests {
             &empty_mask(),
             100.0,
             true,
+            0.4,
         )
         .expect("admissible");
         assert!(
@@ -1416,6 +1501,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert_eq!(out.stop, (350.0, 120.0));
@@ -1466,6 +1552,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert!(
@@ -1511,6 +1598,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert!(out.truncated);
@@ -1553,6 +1641,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert!(out.truncated);
@@ -1600,6 +1689,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .expect("executor handles the any-angle weighted polyline");
         assert!(out.truncated, "arrest cell (3,0) truncates the move");
@@ -1864,6 +1954,7 @@ mod tests {
                 &case.visible,
                 100.0,
                 false,
+                0.4,
             );
             let actual =
                 result.unwrap_or_else(|e| panic!("{}: expected Ok, got Err({e:?})", case.label));
@@ -2175,6 +2266,7 @@ mod tests {
             &empty,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert!(out.truncated, "must stop before crossing the hex wall");
@@ -2205,6 +2297,7 @@ mod tests {
             &visible,
             100.0,
             false,
+            0.4,
         )
         .unwrap();
         assert!(
@@ -2216,5 +2309,517 @@ mod tests {
             "stop must land before the excluded cell's center, got {:?}",
             out.stop
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Footprint-aware gate tests (D4): `execute_move` adopts `cell_enterable`'s footprint
+    // predicate set instead of gating on the mover's center cell alone.
+    // -----------------------------------------------------------------------
+
+    /// Parentless config/actor doc builder (mirrors `entity_doc` for the parented case).
+    fn entity_doc_top(
+        id: u128,
+        ty: &str,
+        body: serde_json::Value,
+    ) -> crate::data::document::Document {
+        let mut d = doc(id, None, ty);
+        d.engine = Some(body);
+        d
+    }
+
+    /// A minimal, structurally-complete `ActorEngine` body with no vision override (falls back
+    /// to the unlimited-range default), mirroring `scene::mod`'s own `actor_body_shaped` fixture.
+    fn actor_body_shaped(shape: &str, w: f64, h: f64) -> serde_json::Value {
+        json!({
+            "displayName": "Fixture Actor",
+            "visual": { "kind": "image", "asset": "a.png" },
+            "size": { "w": w, "h": h },
+            "shape": shape,
+            "conditions": [],
+            "prototype": true,
+        })
+    }
+
+    /// Same as `actor_body_shaped`, plus an explicit vision assignment (range in grid cells).
+    fn actor_body_shaped_with_vision(
+        shape: &str,
+        w: f64,
+        h: f64,
+        vision: serde_json::Value,
+    ) -> serde_json::Value {
+        json!({
+            "displayName": "Fixture Actor",
+            "visual": { "kind": "image", "asset": "a.png" },
+            "size": { "w": w, "h": h },
+            "shape": shape,
+            "conditions": [],
+            "prototype": true,
+            "vision": vision,
+        })
+    }
+
+    /// World settings for the footprint fixtures below: `visible`/losRestriction off/lighting
+    /// all-bright (globalIllumination) — vision is driven entirely by each token's OWN vision
+    /// assignment (range) rather than by wall/light geometry, keeping every fixture's mask
+    /// derivable by hand from `resolve_token_footprint` + `visible_cells` alone.
+    fn footprint_world_settings(model: &str) -> serde_json::Value {
+        json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "globalIllumination",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": model,
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        })
+    }
+
+    /// A corridor split by a single vertical wall (with a 300-unit gap centered on the token's
+    /// row) between grid-aligned start/goal cells 4 columns apart, wide enough for a
+    /// footprint-1.6-cell token (r_scene=80) to clear with margin. `start`/`goal` are computed
+    /// from the ACTUAL grid shape's own `cell_center` (square: `(i+0.5)*cell`; hex: the axial
+    /// pointy-top formula `hex_cell_center` uses) rather than a single literal shared across both
+    /// kinds — hex cell centers do not fall on square-grid-aligned coordinates, and `execute_move`
+    /// requires `path[0]` to equal the token's committed position exactly. Returns `(ecs, scene,
+    /// token, user, start, goal)`. Vision is unlimited (no vision override) so the whole corridor
+    /// is visible to `user`, isolating the wall/footprint interaction under test.
+    fn scene_with_narrow_gap_and_wide_token(
+        kind: &str,
+        model: MovementModel,
+    ) -> (SceneEcs, Uuid, Uuid, Uuid, (f64, f64), (f64, f64)) {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let user = Uuid::from_u128(1);
+        let model_str = match model {
+            MovementModel::GridStepped => "grid-stepped",
+            MovementModel::Continuous => "continuous",
+        };
+        let (start, goal) = if kind == "hex" {
+            (hex_cell_center(0, 2), hex_cell_center(4, 2))
+        } else {
+            (((0.5) * 100.0, 2.5 * 100.0), (4.5 * 100.0, 2.5 * 100.0))
+        };
+        // Both grids place `start`/`goal` on the same row (`y` depends only on the row index, not
+        // the column), so a single wall gap centered on that shared `y` clears both kinds.
+        let row_y = start.1;
+        let wall_x = (start.0 + goal.0) / 2.0;
+        let mut tok = entity_doc(
+            11,
+            10,
+            "token",
+            json!({ "x": start.0, "y": start.1, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": Uuid::from_u128(200).to_string() }),
+        );
+        tok.owner = Some(user);
+        let wall = |id: u128, x1: f64, y1: f64, x2: f64, y2: f64| {
+            entity_doc(
+                id,
+                10,
+                "wall",
+                json!({ "seg": {"x1":x1,"y1":y1,"x2":x2,"y2":y2}, "blocksMove": true }),
+            )
+        };
+        let scene = entity_doc(
+            10,
+            0,
+            "scene",
+            json!({ "grid": { "kind": kind, "size": 100 }, "background": null,
+                    "bounds": { "width": goal.0 + 400.0, "height": row_y + 400.0 } }),
+        );
+        let mut ecs = SceneEcs::from_documents(
+            vec![
+                scene,
+                tok,
+                wall(12, wall_x, 0.0, wall_x, row_y - 150.0),
+                wall(13, wall_x, row_y + 150.0, wall_x, row_y + 2000.0),
+            ],
+            0,
+        );
+        ecs.set_actors(vec![entity_doc_top(
+            200,
+            "actor",
+            actor_body_shaped("circle", 1.6, 1.6),
+        )]);
+        ecs.set_world_settings_for_test(footprint_world_settings(model_str));
+        (ecs, scene_id, token_id, user, start, goal)
+    }
+
+    /// A `blocksMove` wall at x=100, sitting exactly midway (0.5 cell) between cell (0,0)'s center
+    /// (50,50) and cell (1,0)'s center (150,50) — clears the default 0.4-cell footprint disc test
+    /// (0.5 > 0.4) but still crosses the direct center-to-center step. The wall's y-span is huge
+    /// (±2000, far past the search window) so no detour around either end exists: the reverse-I4
+    /// test below needs column 1 genuinely UNREACHABLE, not merely blocked on the direct step (a
+    /// finite wall's north/south end would let a detour reach the same destination cell via a
+    /// different route, which the test cannot distinguish from a gate/router disagreement). The
+    /// token carries no actor, so `resolve_token_footprint` falls back to the 0.4 default.
+    fn scene_with_wall_between_adjacent_cells_and_default_footprint() -> (SceneEcs, Uuid, Uuid, Uuid)
+    {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let user = Uuid::from_u128(1);
+        let mut tok = entity_doc(
+            11,
+            10,
+            "token",
+            json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let wall = entity_doc(
+            12,
+            10,
+            "wall",
+            json!({ "seg": {"x1":100.0,"y1":-2000.0,"x2":100.0,"y2":2000.0}, "blocksMove": true }),
+        );
+        let scene = entity_doc(
+            10,
+            0,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "bounds": { "width": 300.0, "height": 300.0 } }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![scene, tok, wall], 0);
+        ecs.set_world_settings_for_test(footprint_world_settings("grid-stepped"));
+        (ecs, scene_id, token_id, user)
+    }
+
+    /// A wide token (circle, size 1.2 cells ⇒ footprint radius 0.6, over the 0.5-cell half-width)
+    /// whose vision is explicitly range-limited to 1.2 cells: this lights the token's own cell
+    /// (0,0) and the straight-ahead cell (1,0) (both within range), but excludes the destination
+    /// cell's PERPENDICULAR neighbors (1,-1)/(1,1) (~1.414 cells away) and the next cell along the
+    /// row (2,0) (2.0 cells away) — every one of which the 0.6-radius footprint disc at (1,0)
+    /// overlaps, so each is a candidate the mask must include for the move to succeed.
+    fn scene_with_lit_center_line_only() -> (SceneEcs, Uuid, Uuid, Uuid) {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let user = Uuid::from_u128(1);
+        let mut tok = entity_doc(
+            11,
+            10,
+            "token",
+            json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        tok.embedded.insert(
+            "actor".into(),
+            vec![{
+                let mut a = doc(99, None, "actor");
+                a.engine = Some(actor_body_shaped_with_vision(
+                    "circle",
+                    1.2,
+                    1.2,
+                    json!([{ "mode": "normal", "range": 1.2 }]),
+                ));
+                a
+            }],
+        );
+        let scene = entity_doc(
+            10,
+            0,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "bounds": { "width": 300.0, "height": 300.0 } }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
+        ecs.set_world_settings_for_test(footprint_world_settings("grid-stepped"));
+        (ecs, scene_id, token_id, user)
+    }
+
+    /// A fully open, fully visible scene (no walls, no vision override ⇒ unlimited range) — the
+    /// `is_gm`-free counterpart of the wall/region fixtures above, for tests that need admissible
+    /// footprint movement with nothing else in play.
+    fn scene_with_open_lit_area() -> (SceneEcs, Uuid, Uuid, Uuid) {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let user = Uuid::from_u128(1);
+        let mut tok = entity_doc(
+            11,
+            10,
+            "token",
+            json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let scene = entity_doc(
+            10,
+            0,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "bounds": { "width": 300.0, "height": 300.0 } }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
+        ecs.set_world_settings_for_test(footprint_world_settings("grid-stepped"));
+        (ecs, scene_id, token_id, user)
+    }
+
+    /// A wide token (circle, size 1.2 ⇒ footprint radius 0.6) stepping (0,0)->(1,0) with an
+    /// `arrest` region tightly enclosing NEIGHBOR cell (1,1)'s center only — a cell the 0.6-radius
+    /// footprint disc at (1,0) overlaps (so it must stay in the mask, hence no vision override:
+    /// unlimited range) but the mover's CENTER never enters. Arrest must not spring here.
+    fn scene_with_arrest_cell_beside_the_path_and_wide_token() -> (SceneEcs, Uuid, Uuid, Uuid) {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let user = Uuid::from_u128(1);
+        let mut tok = entity_doc(
+            11,
+            10,
+            "token",
+            json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": Uuid::from_u128(200).to_string() }),
+        );
+        tok.owner = Some(user);
+        let scene = entity_doc(
+            10,
+            0,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "bounds": { "width": 300.0, "height": 300.0 } }),
+        );
+        let mut ecs = SceneEcs::from_documents(
+            vec![
+                scene,
+                tok,
+                region_doc(12, 10, "arrest", 1.0, (100.0, 100.0, 200.0, 200.0)),
+            ],
+            0,
+        );
+        ecs.set_actors(vec![entity_doc_top(
+            200,
+            "actor",
+            actor_body_shaped("circle", 1.2, 1.2),
+        )]);
+        ecs.set_world_settings_for_test(footprint_world_settings("grid-stepped"));
+        (ecs, scene_id, token_id, user)
+    }
+
+    /// Empty vision mask helper reused by `execute_move_refuses_an_out_of_range_footprint`
+    /// (already defined above as `empty_mask`); this scene just needs a wall the Degenerate guard
+    /// must reject BEFORE any per-step gating runs.
+    fn scene_with_wall_across_the_path_for_footprint_guard() -> (SceneEcs, Uuid, Uuid) {
+        scene_with_wall_across_the_path()
+    }
+
+    #[test]
+    fn route_admissible_implies_gate_admissible_for_a_non_gm_grid() {
+        // I4 forward direction. Scoped to GridStepped: there `gate_walk` is the identity on
+        // cell-center input, so the gate's sample points ARE the cell centers `cell_enterable`
+        // evaluates at. On Continuous the two evaluate at different granularity — asserted
+        // separately below as the weaker route ⊆ gate-allowed.
+        for kind in ["square", "hex"] {
+            let (ecs, scene, token, user, start, goal) =
+                scene_with_narrow_gap_and_wide_token(kind, MovementModel::GridStepped);
+            let fp = ecs.resolve_token_footprint(token).expect("in-range");
+            let mask = ecs.visible_cells(user, scene, false);
+            // NOT `if let Ok` — a fixture that yields no route must fail the test, not skip it.
+            let route = ecs
+                .pathfind(user, scene, start, &[goal], fp, false, None)
+                .expect("the fixture is routable for this footprint");
+            let out = execute_move(
+                &ecs,
+                scene,
+                token,
+                &route.path,
+                MovementRestriction::Visible,
+                &mask,
+                100.0,
+                false,
+                fp,
+            )
+            .expect("a routed path is admissible");
+            assert!(
+                !out.truncated,
+                "kind={kind}: the gate accepts every routed step"
+            );
+        }
+    }
+
+    #[test]
+    fn gate_refused_steps_are_absent_from_every_route_non_gm_grid() {
+        // I4 REVERSE direction, which the spec requires and which is what catches a gate MORE
+        // permissive than the router (e.g. a dropped segments_cross check).
+        let (ecs, scene, token, user) =
+            scene_with_wall_between_adjacent_cells_and_default_footprint();
+        let fp = ecs.resolve_token_footprint(token).expect("in-range"); // 0.4
+        let mask = ecs.visible_cells(user, scene, false);
+        let candidates = [
+            [(50.0, 50.0), (150.0, 50.0)],
+            [(50.0, 50.0), (150.0, 150.0)],
+            [(50.0, 50.0), (50.0, 150.0)],
+        ];
+        for path in candidates {
+            let out = execute_move(
+                &ecs,
+                scene,
+                token,
+                &path,
+                MovementRestriction::Visible,
+                &mask,
+                100.0,
+                false,
+                fp,
+            )
+            .expect("admissible input");
+            if out.truncated {
+                let route = ecs.pathfind(user, scene, path[0], &[path[1]], fp, false, None);
+                if let Ok(r) = route {
+                    assert!(
+                        r.path.last().copied() != Some(path[1]),
+                        "the gate refuses {:?} but a route reaches it — the gate is more \
+                         permissive than the router",
+                        path
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_default_footprint_step_across_a_wall_is_still_truncated() {
+        // Regression for the dropped segments_cross check: a wall between two adjacent cell
+        // centers sits 0.5 cell from each, so the 0.4-radius disc test alone would pass it.
+        let (ecs, scene, token, user) =
+            scene_with_wall_between_adjacent_cells_and_default_footprint();
+        let mask = ecs.visible_cells(user, scene, false);
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(50.0, 50.0), (150.0, 50.0)],
+            MovementRestriction::Visible,
+            &mask,
+            100.0,
+            false,
+            0.4,
+        )
+        .expect("admissible");
+        assert!(
+            out.truncated,
+            "the wall still blocks a default-footprint step"
+        );
+    }
+
+    #[test]
+    fn a_wide_token_cannot_enter_a_cell_whose_footprint_overlaps_fog() {
+        let (ecs, scene, token, user) = scene_with_lit_center_line_only();
+        let fp = ecs.resolve_token_footprint(token).expect("in-range"); // > 0.5
+        let mask = ecs.visible_cells(user, scene, false);
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(50.0, 50.0), (150.0, 50.0)],
+            MovementRestriction::Visible,
+            &mask,
+            100.0,
+            false,
+            fp,
+        )
+        .expect("admissible");
+        assert!(
+            out.truncated,
+            "a footprint cell outside the mask stops a wide token"
+        );
+    }
+
+    #[test]
+    fn a_sub_half_cell_footprint_diagonal_stays_admissible() {
+        // The buddy-check P1 case: a small footprint's diagonal must not regress.
+        let (ecs, scene, token, user) = scene_with_open_lit_area();
+        let mask = ecs.visible_cells(user, scene, false);
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(50.0, 50.0), (150.0, 150.0)],
+            MovementRestriction::Visible,
+            &mask,
+            100.0,
+            false,
+            0.4,
+        )
+        .expect("admissible");
+        assert!(
+            !out.truncated,
+            "a 0.4-radius diagonal step is still allowed"
+        );
+    }
+
+    #[test]
+    fn arrest_stays_center_cell_matching_the_router() {
+        // `cell_enterable` does NOT footprint-gate arrest (`pathfinding.rs:133-136`). A wide
+        // token whose FOOTPRINT touches an arrest cell but whose CENTER does not must not be
+        // arrested, or the gate becomes stricter than the router and I4 breaks.
+        let (ecs, scene, token, user) = scene_with_arrest_cell_beside_the_path_and_wide_token();
+        let fp = ecs.resolve_token_footprint(token).expect("in-range"); // > 0.5
+        let mask = ecs.visible_cells(user, scene, false);
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[(50.0, 50.0), (150.0, 50.0)],
+            MovementRestriction::Visible,
+            &mask,
+            100.0,
+            false,
+            fp,
+        )
+        .expect("admissible");
+        assert!(
+            !out.truncated,
+            "arrest is center-cell only, matching the router"
+        );
+    }
+
+    #[test]
+    fn a_gm_is_exempt_from_every_footprint_check() {
+        let (ecs, scene, token, _user, start, goal) =
+            scene_with_narrow_gap_and_wide_token("square", MovementModel::GridStepped);
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &[start, goal],
+            MovementRestriction::Unrestricted,
+            &empty_mask(),
+            100.0,
+            true,
+            5.0,
+        )
+        .expect("admissible");
+        assert!(
+            !out.truncated,
+            "a GM squeezes a wide token through anything"
+        );
+    }
+
+    #[test]
+    fn execute_move_refuses_an_out_of_range_footprint() {
+        // I1: the new gate input gets an admissibility guard like every other. A NaN radius
+        // would make every `dist < r_scene` comparison false — fail-open.
+        let (ecs, scene, token) = scene_with_wall_across_the_path_for_footprint_guard();
+        for bad in [
+            f64::NAN,
+            -1.0,
+            crate::scene::pathfinding::MAX_FOOTPRINT_CELLS + 1.0,
+        ] {
+            let err = execute_move(
+                &ecs,
+                scene,
+                token,
+                &[(50.0, 50.0), (150.0, 50.0)],
+                MovementRestriction::Unrestricted,
+                &empty_mask(),
+                100.0,
+                false,
+                bad,
+            )
+            .expect_err("an out-of-range footprint is refused");
+            assert!(
+                matches!(err, MoveReject::Degenerate),
+                "bad={bad}: got {err:?}"
+            );
+        }
     }
 }
