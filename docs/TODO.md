@@ -111,3 +111,30 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   (Surfaced by the Task 14j `[sec]` review; deliberately kept out of the server security commit to
   avoid batching unrelated concerns.)
 
+## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
+- TODO: `src/server/src/ws/room.rs`'s `Room::execute_move` re-derives `is_gm` via its own
+  `ctx.world_role == WorldRole::Gm` comparison a second time, instead of reusing the `is_gm`
+  binding already in scope from earlier in the same function. Harmless (both read the same
+  field), but two spellings of one role decision in one function is exactly the kind of thing
+  that drifts. (Surfaced by Phase D-alpha's final whole-branch review.)
+- TODO: `SceneEcs::blocks_move` (`src/server/src/scene/mod.rs`) lost its last production caller
+  when Task 9 (Phase D-alpha) moved the wall-crossing check onto `crate::scene::segments_cross`
+  directly — only test callers remain. It is deliberately retained (one home for wall-crossing
+  semantics) rather than deleted. It is `pub`, not `pub(crate)`, so `clippy -D warnings`'
+  `dead_code` lint does not fire regardless of caller count — if a future change narrows its
+  visibility to `pub(crate)`, `-D warnings` will immediately flag it as dead code and it should
+  be revisited then (either re-wire a caller or delete it for real). (Surfaced by Phase
+  D-alpha's final whole-branch review.)
+- TODO: `execute_move`'s footprint-aware wall/mask gate has a residual anchor asymmetry on
+  off-center input: the wall-disc check is anchored at the literal continuous point `next`,
+  while the mask/impassable-disc checks are anchored at `grid.cell_center(next_cell)` (a
+  deliberate fix for a corner-anchoring bug found during Task 9). The two anchors coincide for
+  routed `GridStepped` input (where I4's route↔gate equivalence is claimed), but a
+  client-supplied `MoveRequest` path is not re-snapped to cell centers, so on `Continuous` or
+  off-center `GridStepped` input a wide token's mask-check disc can miss a cell its
+  wall-check disc genuinely overlaps. This is strictly SAFER than the pre-Phase-D-alpha gate
+  (which had no footprint mask check at all) and is not a regression, but full I4-equivalence
+  on the `Continuous` engine would need the mask disc anchored at the true point too. Resolve
+  if/when the `Continuous` engine gets its own full I4 parity pass. (Surfaced by Phase
+  D-alpha's final whole-branch review.)
+
