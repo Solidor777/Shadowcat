@@ -24,13 +24,17 @@
 //! when the move stops before `path.last()` for any reason (wall, mask, region-impassable, or
 //! region-arrest), including a region-arrest on the final path step.
 //!
-//! INVARIANT (spec §13 / M10e-4 per-cell parity): step 2 calls the SAME
-//! `GridShape::line_traversal(prev, next, cell)` (via `ecs.resolve_grid_shape`) and checks
-//! `all ∈ visible` that the M10e-4 gate in `Room::publish` does — square delegates to
-//! `movement::supercover_cells`, hex to a ψ-crossing supercover, so the two callers agree
-//! on every cell on BOTH grid kinds, not square alone. The caller pre-computes `visible` off the
-//! ECS read lock (mirroring `publish`'s `visible_cache`), so this executor is pure and imposes
-//! no lock ordering.
+//! INVARIANT (spec §13 / I4 route-gate parity): step 2 calls `GridShape::line_traversal(prev,
+//! next, cell)` (via `ecs.resolve_grid_shape`) and checks `all ∈ visible` over
+//! `footprint_cells ∪ line_traversal` — square delegates to `movement::supercover_cells`, hex to
+//! a ψ-crossing supercover, so the predicate agrees on every cell on BOTH grid kinds, not square
+//! alone. This is the SAME predicate set `pathfinding::cell_enterable` uses when routing: on
+//! `GridStepped`, route-admissible ⇔ gate-admissible for a non-GM mover (the parity tests in this
+//! file pin the equivalence); on `Continuous` the two evaluate at different granularity (dense
+//! `gate_walk` sampling vs the router's cell-center check), so only the weaker route ⊆
+//! gate-allowed direction holds. `execute_move` is the sole per-cell traversal decision (I2) —
+//! there is no separate gate to keep in sync. The caller pre-computes `visible` off the ECS read
+//! lock, so this executor is pure and imposes no lock ordering.
 //!
 //! Coupling: `token_position` is the ECS committed-position seam; any rename
 //! must update both this caller and `token_move` in `scene/mod.rs`.
@@ -238,14 +242,20 @@ pub(crate) enum MoveReject {
 /// gate below runs over this DENSE walk; the coarse `render_path` returned to the caller is
 /// reconstructed from the authored vertices actually traversed plus the exact stop point.
 ///
-/// # Parity with M10e-4 (`Room::publish`) — per-cell decision only
+/// # Parity with `pathfinding::cell_enterable` — per-cell decision only
 ///
-/// The per-cell decision (step 1 + step 2) uses the SAME primitives as the M10e-4 gate in
-/// `Room::publish`: wall-segment crossing (`segments_cross`, the primitive `blocks_move` wraps),
-/// `GridShape::line_traversal` (a supercover on both grid kinds — square cell-walk, hex
-/// ψ-crossing, per `ecs.resolve_grid_shape`), and the pre-computed `visible` set.
-/// This executor and the `publish` gate agree on every cell for every restriction mode, on
-/// BOTH square and hex scenes. For a grid input this executor is byte-identical in outcome to
+/// The per-cell decision (step 1 + step 2) uses the SAME primitives as the router's
+/// `cell_enterable`: wall-segment crossing (`segments_cross`, the primitive `blocks_move`
+/// wraps), footprint-disc clearance, `GridShape::line_traversal` (a supercover on both grid
+/// kinds — square cell-walk, hex ψ-crossing, per `ecs.resolve_grid_shape`), and the
+/// pre-computed `visible` set over `footprint_cells ∪ line_traversal`. There is no third gate
+/// this executor and the router must independently agree with — `execute_move` is the sole
+/// per-cell traversal decision (I2) — so this parity is pinned directly between the two, not
+/// mediated through a shared middle gate. On `GridStepped` the two are equivalent
+/// (route-admissible ⇔ gate-admissible) for a non-GM mover; on `Continuous` only the weaker
+/// route ⊆ gate-allowed direction holds, since `gate_walk`'s dense sampling and the router's
+/// cell-center evaluation operate at different granularity. For a grid input this executor is
+/// byte-identical in outcome to
 /// the pre-M10f-2 king-step executor (proved via a differential oracle during M10f-2 and now
 /// frozen as literal fixtures — see
 /// `frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes`).
@@ -2603,10 +2613,14 @@ mod tests {
 
     #[test]
     fn route_admissible_implies_gate_admissible_for_a_non_gm_grid() {
-        // I4 forward direction. Scoped to GridStepped: there `gate_walk` is the identity on
+        // I4 forward direction, GridStepped-scoped: there `gate_walk` is the identity on
         // cell-center input, so the gate's sample points ARE the cell centers `cell_enterable`
-        // evaluates at. On Continuous the two evaluate at different granularity — asserted
-        // separately below as the weaker route ⊆ gate-allowed.
+        // evaluates at, giving the STRONG route ⇔ gate equivalence. This test only asserts the
+        // ⇒ half (the ⇐ half is `gate_refused_steps_are_absent_from_every_route_non_gm_grid`
+        // below). Continuous is NOT covered here — `gate_walk`'s dense sampling and the router's
+        // cell-center evaluation operate at different granularity there, so only the WEAKER
+        // route ⊆ gate-allowed direction holds; see
+        // `route_admissible_implies_gate_admissible_for_a_non_gm_continuous` below.
         for kind in ["square", "hex"] {
             let (ecs, scene, token, user, start, goal) =
                 scene_with_narrow_gap_and_wide_token(kind, MovementModel::GridStepped);
@@ -2633,6 +2647,45 @@ mod tests {
                 "kind={kind}: the gate accepts every routed step"
             );
         }
+    }
+
+    #[test]
+    fn route_admissible_implies_gate_admissible_for_a_non_gm_continuous() {
+        // I4 WEAKER direction, Continuous-scoped: `gate_walk`'s dense sampling and the router's
+        // cell-center evaluation operate at different granularity on this model, so only route ⊆
+        // gate-allowed holds here — NOT the reverse/equivalence, which the plan scopes to
+        // GridStepped only (see the GridStepped test above). This reuses
+        // `scene_with_narrow_gap_and_wide_token`'s existing `Continuous` dispatch arm: no region
+        // is present, so `pathfind` takes the pure-polyanya branch and returns a genuine
+        // multi-sample any-angle route through the 300-unit gap (footprint radius 80), not a
+        // degenerate single-point route — the length assertion below rules out a vacuous pass.
+        let (ecs, scene, token, user, start, goal) =
+            scene_with_narrow_gap_and_wide_token("square", MovementModel::Continuous);
+        let fp = ecs.resolve_token_footprint(token).expect("in-range");
+        let mask = ecs.visible_cells(user, scene, false);
+        let route = ecs
+            .pathfind(user, scene, start, &[goal], fp, false, None)
+            .expect("the fixture is routable for this footprint");
+        assert!(
+            route.path.len() >= 2,
+            "the any-angle polyanya route must actually traverse the gap, not collapse to a point"
+        );
+        let out = execute_move(
+            &ecs,
+            scene,
+            token,
+            &route.path,
+            MovementRestriction::Visible,
+            &mask,
+            100.0,
+            false,
+            fp,
+        )
+        .expect("a router-admissible continuous route is gate-admissible");
+        assert!(
+            !out.truncated,
+            "the gate accepts every step of the router's own any-angle route"
+        );
     }
 
     #[test]
