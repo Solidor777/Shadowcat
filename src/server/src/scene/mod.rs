@@ -442,6 +442,14 @@ fn wall_set_key(walls: &[vision::Seg]) -> Vec<(u64, u64, u64, u64)> {
 /// doc comment for what each component means and why.
 type NavmeshCacheKey = (Uuid, i64, Vec<(u64, u64, u64, u64)>);
 
+/// The footprint radius used when no effective actor resolves. Mirrors the client's
+/// `resolveFootprint` fallback (`src/modules/scene-tools/src/controller.svelte.ts:403`).
+/// PARITY-BOUND, not a fail-closed choice: it is more permissive than a 1×1 square's 0.707, and
+/// changing it here without changing the client re-forks the router and the gate. Change both or
+/// neither.
+#[allow(dead_code)] // consumed by the future footprint-aware gate; parity-pinned by tests now
+pub(crate) const DEFAULT_FOOTPRINT_RADIUS_CELLS: f64 = 0.4;
+
 impl SceneEcs {
     pub fn new() -> Self {
         Self {
@@ -1647,6 +1655,86 @@ impl SceneEcs {
             ));
         }
         out
+    }
+
+    /// A token's effective `(shape, size)`, joined through the SAME actor precedence
+    /// `token_vision_floors` implements: a LINKED token (`actor_id` present) resolves the shared
+    /// actor and applies `overrides.shape`/`overrides.size` (each independently, per-field) over
+    /// the actor's own value; a dangling link yields `None` (overrides ignored, mirroring
+    /// `resolveTokenActor`); an INSTANCED token (no `actor_id`) reads its embedded copy through the
+    /// deliberately-uncached direct `engine_as` path — an embedded actor's own `id` differs from
+    /// the token's, so caching under either key would go stale on an `/embedded/actor/0/...` write.
+    fn token_shape_and_size(&self, token: Uuid) -> Option<(String, eng::Size)> {
+        let &e = self.index.get(&token)?;
+        let tok = self.world.get::<&SceneEntity>(e).ok()?;
+        let doc = &tok.doc;
+        let token_eng = self.engine_as_cached::<eng::TokenEngine>(token, doc);
+
+        match token_eng.as_ref().and_then(|t| t.actor_id) {
+            Some(id) => {
+                let actor = self.actors.get(&id)?; // dangling link → None (overrides ignored)
+                let actor_eng = self.engine_as_cached::<eng::ActorEngine>(actor.id, actor)?;
+                let overrides = token_eng.as_ref().and_then(|t| t.overrides.as_ref());
+                let shape = overrides
+                    .and_then(|o| o.shape.clone())
+                    .unwrap_or(actor_eng.shape);
+                let size = overrides.and_then(|o| o.size).unwrap_or(actor_eng.size);
+                Some((shape, size))
+            }
+            None => doc
+                .embedded
+                .get("actor")
+                .and_then(|v| v.first())
+                .and_then(engine_as::<eng::ActorEngine>)
+                .map(|a| (a.shape, a.size)),
+        }
+    }
+
+    /// A token's bounding-disc radius in GRID UNITS (cells). Mirrors the client's `footprintRadius`
+    /// formula (`src/client/core/src/actor.ts:177`): a circle uses `max(w,h)/2`, any other shape
+    /// its half-diagonal `hypot(w,h)/2` (conservative enclosure). Effective-actor resolution
+    /// mirrors `resolveTokenActor` via the SAME join `token_vision_floors` implements: a LINKED
+    /// token resolves the shared actor and applies the per-token override whitelist; a dangling
+    /// link ignores overrides; an INSTANCED token uses its embedded copy and overrides do not
+    /// apply.
+    ///
+    /// `None` means REFUSE — the derived radius is outside `[0, MAX_FOOTPRINT_CELLS]`, or the
+    /// stored size is degenerate. Callers must fail closed, never substitute a default: clamping an
+    /// oversized token to the bound would route and gate it as a smaller disc, letting it enter
+    /// gaps its real footprint cannot (a geometric fail-open).
+    ///
+    /// DELIBERATE DIVERGENCE from the client on degenerate input: the client's `footprintRadius`
+    /// has no finite/sign guard and propagates `NaN` (rejected later by `find`'s range check),
+    /// whereas this refuses. Both fail closed; only the mechanism differs.
+    #[allow(dead_code)] // consumed by the future footprint-aware gate; exercised by tests now
+    pub(crate) fn resolve_token_footprint(&self, token: Uuid) -> Option<f64> {
+        let Some((shape, size)) = self.token_shape_and_size(token) else {
+            return Some(DEFAULT_FOOTPRINT_RADIUS_CELLS);
+        };
+        let (w, h) = (size.w, size.h);
+        if !w.is_finite() || !h.is_finite() || w < 0.0 || h < 0.0 {
+            tracing::warn!(
+                ?token,
+                w,
+                h,
+                "token size is degenerate; refusing a footprint"
+            );
+            return None;
+        }
+        let r = if shape == "circle" {
+            w.max(h) / 2.0
+        } else {
+            w.hypot(h) / 2.0
+        };
+        if !(0.0..=pathfinding::MAX_FOOTPRINT_CELLS).contains(&r) {
+            tracing::warn!(
+                ?token,
+                r,
+                "token footprint exceeds MAX_FOOTPRINT_CELLS; refusing"
+            );
+            return None;
+        }
+        Some(r)
     }
 
     /// Scene-shared lighting/wall inputs for the visibility mask. Computed once per scene per
@@ -3739,6 +3827,153 @@ mod tests {
                     "overrides": { "vision": [{ "mode": "darkvision", "range": 9 }] } }),
         );
         assert_eq!(ecs.token_vision_floors(&dangling), vec![(0.34, 0.0, None)]);
+    }
+
+    /// A minimal, structurally-complete `ActorEngine` body with the caller's `shape`/`size`, for
+    /// this file's footprint tests.
+    fn actor_body_shaped(shape: &str, w: f64, h: f64) -> serde_json::Value {
+        json!({
+            "displayName": "Fixture Actor",
+            "visual": { "kind": "image", "asset": "a.png" },
+            "size": { "w": w, "h": h },
+            "shape": shape,
+            "conditions": [],
+            "prototype": true,
+        })
+    }
+
+    /// A hydrated ECS with one LINKED token (id 11) referencing an actor (id 200) of the given
+    /// `shape`/`size`, no overrides.
+    fn scene_with_linked_token_sized(shape: &str, w: f64, h: f64) -> (SceneEcs, Uuid) {
+        let token_id = Uuid::from_u128(11);
+        let mut ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                entity_doc_eng(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                            "actor_id": Uuid::from_u128(200).to_string() }),
+                ),
+            ],
+            0,
+        );
+        ecs.set_actors(vec![entity_doc_top_eng(
+            200,
+            "actor",
+            actor_body_shaped(shape, w, h),
+        )]);
+        (ecs, token_id)
+    }
+
+    /// A hydrated ECS with one raw (actorless) token (id 12) — no `actor_id`, no embedded actor.
+    fn scene_with_raw_token_no_actor() -> (SceneEcs, Uuid) {
+        let token_id = Uuid::from_u128(12);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                entity_doc_eng(
+                    12,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
+            ],
+            0,
+        );
+        (ecs, token_id)
+    }
+
+    /// A hydrated ECS with one LINKED token (id 11) referencing a "square" 1x1 actor (id 200),
+    /// with a per-token `overrides.size` of the caller's `shape`/`(w, h)`.
+    fn scene_with_linked_token_overriding_size(shape: &str, w: f64, h: f64) -> (SceneEcs, Uuid) {
+        let token_id = Uuid::from_u128(11);
+        let mut ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                entity_doc_eng(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                            "actor_id": Uuid::from_u128(200).to_string(),
+                            "overrides": { "shape": shape, "size": { "w": w, "h": h } } }),
+                ),
+            ],
+            0,
+        );
+        ecs.set_actors(vec![entity_doc_top_eng(
+            200,
+            "actor",
+            actor_body_shaped("square", 1.0, 1.0),
+        )]);
+        (ecs, token_id)
+    }
+
+    #[test]
+    fn footprint_radius_mirrors_the_client_formula() {
+        // Mirrors footprintRadius (src/client/core/src/actor.ts:177-180):
+        //   circle ⇒ max(w,h)/2 ; square (and any other shape) ⇒ hypot(w,h)/2
+        // Representative + boundary cases; `Size` is a free {w,h} pair, so there is no finite
+        // domain to enumerate exhaustively.
+        let cases = [
+            ("square", 1.0, 1.0, std::f64::consts::SQRT_2 / 2.0),
+            ("square", 2.0, 2.0, std::f64::consts::SQRT_2),
+            ("square", 1.0, 2.0, 5.0f64.sqrt() / 2.0),
+            ("circle", 1.0, 1.0, 0.5),
+            ("circle", 2.0, 3.0, 1.5),
+            // A shape outside {"circle","square"} takes the square branch, mirroring the client's
+            // `shape === "circle" ? … : hypot(…)` fallthrough.
+            ("blob", 1.0, 1.0, std::f64::consts::SQRT_2 / 2.0),
+        ];
+        for (shape, w, h, expected) in cases {
+            let (ecs, token) = scene_with_linked_token_sized(shape, w, h);
+            let got = ecs.resolve_token_footprint(token).expect("in-range");
+            assert!(
+                (got - expected).abs() < 1e-12,
+                "shape={shape} w={w} h={h}: want {expected}, got {got}"
+            );
+        }
+    }
+
+    #[test]
+    fn footprint_radius_falls_back_to_the_client_default_for_an_actorless_token() {
+        let (ecs, token) = scene_with_raw_token_no_actor();
+        assert_eq!(
+            ecs.resolve_token_footprint(token),
+            Some(DEFAULT_FOOTPRINT_RADIUS_CELLS),
+            "an actorless token uses the same 0.4 default the client's resolveFootprint uses"
+        );
+    }
+
+    #[test]
+    fn footprint_radius_honors_a_per_token_size_override() {
+        let (ecs, token) = scene_with_linked_token_overriding_size("circle", 4.0, 4.0);
+        assert!((ecs.resolve_token_footprint(token).expect("in-range") - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn footprint_radius_refuses_an_oversized_token_rather_than_clamping() {
+        // w=h=1000 ⇒ ~707 cells, far over MAX_FOOTPRINT_CELLS (64.0). Clamping would gate a
+        // map-scale token as a 64-cell disc — a geometric fail-open.
+        let (ecs, token) = scene_with_linked_token_sized("square", 1000.0, 1000.0);
+        assert_eq!(
+            ecs.resolve_token_footprint(token),
+            None,
+            "an out-of-range footprint is refused"
+        );
+    }
+
+    #[test]
+    fn footprint_radius_admits_a_token_exactly_at_the_bound() {
+        let at = pathfinding::MAX_FOOTPRINT_CELLS; // 64.0
+        let (ecs, token) = scene_with_linked_token_sized("circle", at * 2.0, at * 2.0);
+        assert_eq!(
+            ecs.resolve_token_footprint(token),
+            Some(at),
+            "AT the bound is admissible"
+        );
     }
 
     #[test]
