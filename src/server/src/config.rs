@@ -10,24 +10,34 @@ use serde::{Deserialize, Serialize};
 #[derive(Parser, Debug, Default)]
 #[command(name = "shadowcat")]
 pub struct Cli {
+    /// Listen address override (`host:port`); wins over every other layer.
     #[arg(long)]
     pub bind: Option<String>,
+    /// SQLite database file path override.
     #[arg(long)]
     pub db: Option<String>,
+    /// TOML config file path (default `shadowcat.toml`; a missing file is ignored).
     #[arg(long)]
     pub config: Option<String>,
+    /// Headless first-admin bootstrap: username override (pairs with `--admin-password`).
     #[arg(long)]
     pub admin_user: Option<String>,
+    /// Headless first-admin bootstrap: password override (pairs with `--admin-user`).
     #[arg(long)]
     pub admin_password: Option<String>,
+    /// Setup-window policy override: `auto` | `off` | `required` | an explicit token.
     #[arg(long)]
     pub setup_token: Option<String>,
+    /// Session-cookie signing-key override; set it to keep sessions valid across restarts.
     #[arg(long)]
     pub session_key: Option<String>,
+    /// Asset storage root override (default: sibling `assets/` beside the db file).
     #[arg(long)]
     pub assets_dir: Option<String>,
+    /// Installed-module discovery root override (default: sibling `modules/`).
     #[arg(long)]
     pub modules_dir: Option<String>,
+    /// In-server backup output root override (default: sibling `backups/`).
     #[arg(long)]
     pub backups_dir: Option<String>,
     /// One-shot: snapshot the resolved db + assets into this directory, print
@@ -48,12 +58,20 @@ pub struct Cli {
 /// CLI flag > SHADOWCAT_* env > TOML file > built-in default.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// Listen address (`host:port`). Default `127.0.0.1:30000`; non-loopback
+    /// binds flip the `auto` setup policy to token-required.
     pub bind: String,
+    /// SQLite database file path. Default `./shadowcat.db`; sibling dirs
+    /// (`assets/`, `modules/`, `backups/`) resolve relative to it.
     pub db: String,
+    /// Headless first-admin bootstrap username; `None` = interactive setup form.
     pub admin_user: Option<String>,
+    /// Headless first-admin bootstrap password; `None` = interactive setup form.
     pub admin_password: Option<String>,
     /// "auto" | "off" | "required" | <explicit token>.
     pub setup_token: String,
+    /// Session-cookie signing key; `None` = generated at boot (sessions do not
+    /// survive a restart until this is pinned).
     pub session_key: Option<String>,
     /// Asset storage root. `None` → sibling `assets/` beside the db file.
     pub assets_dir: Option<String>,
@@ -115,13 +133,25 @@ impl Default for Config {
 /// none was supplied — the server generates one at boot.
 #[derive(Debug, Clone)]
 pub enum SetupTokenPolicy {
+    /// `/api/setup` accepts the first admin without a token.
     Open,
+    /// A token gates `/api/setup`; `None` = generate-and-log at boot.
     Required(Option<String>),
 }
 
 impl Config {
     /// Layer file + env over defaults via figment, then apply CLI overrides in
     /// code so CLI strictly wins (figment cannot easily skip `None` CLI fields).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use shadowcat::config::{Cli, Config};
+    ///
+    /// // Reads shadowcat.toml (if present) + SHADOWCAT_* env, then applies CLI wins.
+    /// let cfg = Config::load(Cli::default()).expect("config layering");
+    /// assert!(!cfg.bind.is_empty());
+    /// ```
     // Boot-only call; figment::Error is third-party and large by value, so the
     // large-Result cost is irrelevant here.
     #[allow(clippy::result_large_err)]
@@ -167,6 +197,16 @@ impl Config {
 
     /// Resolve the asset storage root: explicit `assets_dir`, else a sibling
     /// `assets/` directory beside the db file (built via std::path, #2).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cfg = shadowcat::config::Config {
+    ///     db: "data/shadowcat.db".into(),
+    ///     ..Default::default()
+    /// };
+    /// assert_eq!(cfg.assets_path(), std::path::Path::new("data").join("assets"));
+    /// ```
     pub fn assets_path(&self) -> std::path::PathBuf {
         if let Some(dir) = &self.assets_dir {
             return std::path::PathBuf::from(dir);
@@ -184,6 +224,16 @@ impl Config {
     /// manual filesystem extract — no server-side installer exists) — the
     /// directory need not exist; a missing dir scans as "no modules installed"
     /// (see `modules::scan_installed_modules`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cfg = shadowcat::config::Config {
+    ///     modules_dir: Some("staged-modules".into()),
+    ///     ..Default::default()
+    /// };
+    /// assert_eq!(cfg.modules_path(), std::path::PathBuf::from("staged-modules"));
+    /// ```
     pub fn modules_path(&self) -> std::path::PathBuf {
         if let Some(dir) = &self.modules_dir {
             return std::path::PathBuf::from(dir);
@@ -197,6 +247,13 @@ impl Config {
 
     /// Resolve the in-server backup output root: explicit `backups_dir`, else a
     /// sibling `backups/` directory beside the db file (built via std::path, #2).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cfg = shadowcat::config::Config::default(); // db = ./shadowcat.db
+    /// assert_eq!(cfg.backups_path(), std::path::Path::new(".").join("backups"));
+    /// ```
     pub fn backups_path(&self) -> std::path::PathBuf {
         if let Some(dir) = &self.backups_dir {
             return std::path::PathBuf::from(dir);
@@ -209,6 +266,15 @@ impl Config {
     }
 
     /// Role-tiered upload size cap (GM defaults to 2× the regular value).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::WorldRole;
+    ///
+    /// let cfg = shadowcat::config::Config::default(); // 25 MiB player cap
+    /// assert_eq!(cfg.effective_max_bytes(WorldRole::Gm), 2 * cfg.effective_max_bytes(WorldRole::Player));
+    /// ```
     pub fn effective_max_bytes(&self, role: crate::data::document::WorldRole) -> u64 {
         match role {
             crate::data::document::WorldRole::Gm => self
@@ -219,6 +285,15 @@ impl Config {
     }
 
     /// Role-tiered uploads-per-minute (GM defaults to 2× the regular value).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::WorldRole;
+    ///
+    /// let cfg = shadowcat::config::Config::default(); // 20/min player rate
+    /// assert_eq!(cfg.effective_rate_per_min(WorldRole::Gm), 40);
+    /// ```
     pub fn effective_rate_per_min(&self, role: crate::data::document::WorldRole) -> u32 {
         match role {
             crate::data::document::WorldRole::Gm => self
@@ -231,6 +306,15 @@ impl Config {
     /// True when the bind host resolves to a loopback address. `0.0.0.0` /
     /// non-loopback hosts are treated as exposed. On parse failure, default to
     /// the safe answer (not loopback) so the token is required.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut cfg = shadowcat::config::Config::default(); // 127.0.0.1:30000
+    /// assert!(cfg.is_loopback_bind());
+    /// cfg.bind = "0.0.0.0:30000".into();
+    /// assert!(!cfg.is_loopback_bind());
+    /// ```
     pub fn is_loopback_bind(&self) -> bool {
         self.bind
             .to_socket_addrs()
@@ -240,6 +324,19 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// Resolve the `setup_token` string into the effective policy: `off` →
+    /// open, `required` → token generated at boot, `auto` → derived from the
+    /// bind (loopback = open, exposed = required), anything else = that
+    /// literal token.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::config::{Config, SetupTokenPolicy};
+    ///
+    /// let cfg = Config::default(); // setup_token "auto" + loopback bind
+    /// assert!(matches!(cfg.setup_token_policy(), SetupTokenPolicy::Open));
+    /// ```
     pub fn setup_token_policy(&self) -> SetupTokenPolicy {
         match self.setup_token.as_str() {
             "off" => SetupTokenPolicy::Open,
