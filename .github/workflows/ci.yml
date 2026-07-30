@@ -82,6 +82,7 @@ jobs:
       - run: pnpm -r typecheck
       - run: pnpm -r test
       - run: pnpm run test:scripts
+      - run: pnpm docs:check-examples
       - run: pnpm lint
       - run: pnpm --filter @shadowcat/shell build
       # Guards the single-instance-runtime import map: fails the build if any
@@ -129,3 +130,42 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium
       - run: pnpm --filter @shadowcat/shell e2e
+
+  # Docs pipeline: portal + generated references assembled and link-checked.
+  # Single-OS: the docs site is a build artifact, not platform-gated code; the
+  # rust matrix already proves the crate compiles per-OS. The two report steps
+  # are warn-tier (exit 0) until the sweep phases ratchet lints to deny.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: dtolnay/rust-toolchain@stable
+      # docs:build starts with the client build (rust-embed needs dist/ before
+      # cargo doc), then typedoc, cargo doc, vitepress, assembly + link check.
+      - run: pnpm docs:build
+      - name: Doc-coverage report (TS, informational)
+        run: pnpm lint:docs
+      - name: Doc-coverage report (Rust, informational)
+        run: cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -W missing-docs -W clippy::missing-docs-in-private-items
+      # Example-presence report: rustdoc's missing_doc_code_examples lint is
+      # nightly-only; -W keeps it warn-tier (exit 0). continue-on-error covers
+      # nightly toolchain breakage (spec degradation clause: non-blocking until repaired).
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Example-presence report (Rust, nightly, informational)
+        continue-on-error: true
+        env:
+          RUSTDOCFLAGS: "-W rustdoc::missing_doc_code_examples"
+        run: cargo +nightly doc --manifest-path src/server/Cargo.toml --document-private-items --no-deps --target-dir target/nightly-doc
+      - name: Upload docs site
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-docs
+          path: dist-docs/
