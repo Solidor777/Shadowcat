@@ -1518,7 +1518,12 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   A* surface with the cost-per-rule variant docs, lighting/vision/explored/grid-shape/navmesh
   leaf items, HealthStatus with regenerated comment-only bindings). All 12 scene/ files +
   health.rs carry the inner deny pair; both scopes mutation-verified.
-- **Sweeps 6–N — doc-comment sweeps: UPCOMING.** chat/+dice/, then client
+- **Sweep 6a — chat/: COMPLETE (2026-07-30).** 83-item backlog → 0 (link-preview pipeline with
+  both SSRF-arm citations and the misattached `enrich` doc re-anchored; message attribution/
+  audience/segment model with regenerated comment-only `ActorOwnerRef`/`Audience` bindings; roll
+  refusal reasons with real cap-constant citations; content policy, preview cache, shortcodes,
+  command parsing). All 8 chat/ files carry the inner deny pair; mutation-verified in two files.
+- **Sweeps 6b–N — doc-comment sweeps: UPCOMING.** dice/ (172), then client
   packages, then modules. One plan per subsystem (server: data (~300+
   items, likely 2–3 plans) / ws / http+auth / scene / chat+dice; client: core / render /
   ui-kit+shell / formula; modules in 3–4 groups). Every symbol gets description+params+example;

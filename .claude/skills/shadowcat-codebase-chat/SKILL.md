@@ -439,6 +439,12 @@ with zero message-specific plumbing in any of those subsystems.
 
 ## Gotchas
 
+- **Docs-ratchet is live on the whole `chat/` tree (docs sweep 6a):** all eight files carry
+  `#![deny(missing_docs)]` + `#![deny(clippy::missing_docs_in_private_items)]` — a new
+  undocumented item fails the 3-OS CI clippy step, and doc comments on the ts-rs types
+  (`ActorOwnerRef`, `Audience`) flow into the generated bindings (regenerate + commit with any
+  change). SSRF docs state BOTH guard arms (literal-IP in `validate_url`, domain resolution in
+  `GuardedResolver`) — keep the arm citations true when touching the preview pipeline.
 - **The three chat frames carry `request_id`, NOT `intent_id`, and correlate to `ChatError`, not
   `Reject`.** A rejected send/edit/delete is now surfaced to the sender via a `request_id`-
   correlated `ServerMsg::ChatError` (sender-only, never broadcast) — no longer log-only. Client
