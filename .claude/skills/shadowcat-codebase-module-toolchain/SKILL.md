@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-module-toolchain
-description: "Use when touching the external/community module toolchain: server-side installed-module discovery + path-traversal-guarded static serving + per-world enablement (src/server/src/modules.rs, http/module_routes.rs, config.rs modules_dir), the engine-compat semver gate, the Welcome server_version + capability-requirements union, or the client consumption path (core loader.ts/modules.ts/module-rest.ts/manifest.ts engines, shell import-map single-instance build + worldSession external-module loading, settings ModuleManager UI). Covers out-of-tree modules (the Nightfox reference repo) and docs/design/module-authoring.md. Invoke shadowcat-codebase-core first; for the shell/AppContext seams invoke shadowcat-codebase-client-shell."
+description: "Use when touching the external/community module toolchain: server-side installed-module discovery + path-traversal-guarded static serving + per-world enablement (src/server/src/modules.rs, http/module_routes.rs, config.rs modules_dir), the engine-compat semver gate, the Welcome server_version + capability-requirements union, or the client consumption path (core loader.ts/modules.ts/module-rest.ts/manifest.ts engines, shell import-map single-instance build + worldSession external-module loading, settings ModuleManager UI). Covers out-of-tree modules (the Nightfox reference repo), the authoring guide docs/site/guides/creating-a-module.md (docs/design/module-authoring.md is a pointer stub), and the examples/* scaffold packages. Invoke shadowcat-codebase-core first; for the shell/AppContext seams invoke shadowcat-codebase-client-shell."
 ---
 
 # Shadowcat — External Module Toolchain
@@ -80,7 +80,12 @@ existing M6b `ModuleRegistry`.
   keyed on the canonical folder `info.id` (manifest id is display-only).
 
 **Out-of-tree reference + guide:** the Nightfox repo (its own git repo, nested into a checkout at
-`src/modules/nightfox/` for dev, never bundled statically even in dev); `docs/design/module-authoring.md`.
+`src/modules/nightfox/` for dev, never bundled statically even in dev). The authoring guide lives
+in the docs site: `docs/site/guides/creating-a-module.md` (`docs/design/module-authoring.md` is a
+pointer stub to it). Two in-repo CI-built worked examples double as copyable scaffolds:
+`examples/module-initiative-tracker/` (panel + document read/write) and `examples/system-minimal/`
+(sheet takeover + formula rules) — workspace members, so `pnpm -r test/typecheck` and the web CI
+job's example-build step keep them green; the guides code-import their sources region-by-region.
 
 ## Hard invariants
 
@@ -107,7 +112,8 @@ existing M6b `ModuleRegistry`.
   `index.js`), NOT part of the client `ModuleManifest` Zod shape — declare it in module.json only.
 - **The import map serves a FIXED svelte-subpath set** — a module importing a subpath the host does
   not serve (`svelte/store`, `svelte/transition`, …) hard-fails with a runtime `SyntaxError`; adding
-  one is a host change (`RUNTIME_ENTRIES` + import map), not a module change. See `module-authoring.md`.
+  one is a host change (`RUNTIME_ENTRIES` + import map), not a module change. See the
+  creating-a-module guide (`docs/site/guides/creating-a-module.md`).
   `scripts/check-svelte-runtime-entries.mjs` (above) catches an unserved subpath import at CI time.
 - **`loadModules`'s contract CHANGED** from `Promise<void>` throw-on-first-failure to the contained
   `ModuleLoadResult`; any doc describing the old throw behavior is stale.
@@ -134,8 +140,9 @@ existing M6b `ModuleRegistry`.
 ## Pointers
 
 - Rationale: `docs/design/ARCHITECTURE.md` §2 invariant 6 (server runs no third-party code) +
-  Global Constraint 1 (single instance); `docs/design/module-authoring.md` (authoring toolchain);
-  `docs/PLAN.md` M13 (M13-1 DONE entry).
+  Global Constraint 1 (single instance); `docs/site/guides/creating-a-module.md` (authoring
+  toolchain — `docs/design/module-authoring.md` is a pointer stub); `docs/PLAN.md` M13 (M13-1
+  DONE entry).
 - Relationships: `graphify query "installed module discovery serve enable engine-compat import map loader"`.
 - Lessons: [[build-artifact-tests-must-consume-not-just-exist]],
   [[shared-wire-schema-change-needs-full-repo-test]], [[injected-callback-boundary-must-validate-every-site]].

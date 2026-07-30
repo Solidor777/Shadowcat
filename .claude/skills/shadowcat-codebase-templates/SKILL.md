@@ -116,7 +116,10 @@ interprets or merges anything itself.
   write-scope check lives in `push`'s body, not in `canPush`'s predicate.
 - `src/client/ui-kit/src/MergeConflictModal.svelte` (+ `TemplateModalHost.svelte`) — the
   field-level conflict resolution UI (E5/§6.2): renders one `ConflictGroup` per pending child
-  (`{ key, label, conflicts: Conflict[] }`), lets the user pick mine/theirs per leaf path, and
+  (`{ key, label, conflicts: Conflict[] }`; the type lives in
+  `src/client/ui-kit/src/mergeConflict.ts` — a plain TS module, because a named type export
+  from a `.svelte` file is invisible to plain tsc consumers like TypeDoc), lets the user pick
+  mine/theirs per leaf path, and
   calls the session's `resolve(theirsByGroup: Map<string, Set<string>>)`. `TemplateModalHost`
   just renders `MergeConflictModal` when `controller.pending` is non-null — mount once per
   `Table.svelte` alongside the root `<Surface>`.

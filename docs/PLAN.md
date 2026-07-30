@@ -1464,6 +1464,27 @@ Audio (mixer, channels, playlists, world-clock sync; then spatial + wall occlusi
 ## Phase 4 — Platform & scale
 Trusted local modding hardening → freeze the module API on evidence (≥1 external module ships without core patches, **or N internal modules across M independent systems exercise the full API surface** — whichever comes first, so the freeze is not deadlocked on an external author who may never appear) → [only if a marketplace is pursued] WASM sandbox + registry + signing / SRI / CSP + package browser → native wrappers (Tauri 2, Capacitor) → hardening + distribution (backup scheduling / automation, world snapshots, WS load + resync stress tests, rate limiting, rustls-acme TLS, Steam OpenID + plain-executable distribution).
 
+## Documentation campaign (cross-phase, runs alongside feature work)
+- **Phase 1 — infrastructure + guides: COMPLETE (2026-07-30, `docs-phase1-infrastructure` branch).**
+  VitePress portal (`docs/site/` → `pnpm docs:build` → `dist-docs/`, served by `pnpm docs:serve`),
+  TypeDoc workspace reference (packages strategy, per-package `typedoc.json` extending
+  `typedoc.base.json`), rustdoc with private items, assembly + portal link check
+  (`scripts/assemble-docs.mjs`), the `@example` extraction/typecheck staleness gate
+  (`scripts/extract-ts-examples.mjs`, CI-blocking), warn-tier doc-coverage lints
+  (`eslint.docs.config.js` / `pnpm lint:docs`, TS + svelte; informational clippy `-W missing-docs`
+  + nightly rustdoc example-presence steps in the CI `docs` job), three guides (hosting /
+  creating-a-module / creating-a-system) code-importing two CI-built worked examples
+  (`examples/module-initiative-tracker`, `examples/system-minimal`), 20 per-module portal pages,
+  and the wire-protocol page. Spec: `docs/superpowers/specs/2026-07-30-documentation-system-design.md`.
+- **Phases 2–N — doc-comment sweeps: UPCOMING.** One plan per subsystem (server: data / ws /
+  http+auth / scene / chat+dice / ops; client: core / render / ui-kit+shell / formula; modules in
+  3–4 groups). Every symbol gets description+params+example; each completed area flips its lints
+  to deny (Rust: per-module `#![deny(missing_docs)]` + `#![deny(clippy::missing_docs_in_private_items)]`;
+  TS: per-package severity flip in `eslint.docs.config.js`).
+- **Final ratchet — after the last sweep.** Crate-root deny attributes, TypeDoc
+  `treatValidationWarningsAsErrors: true` (in `typedoc.base.json`), docs lint merged into the main
+  `eslint.config.js`.
+
 ## Cross-cutting (not deferred)
 - Observability + desync telemetry: M4.
 - Desync-convergence test: M4, maintained throughout.

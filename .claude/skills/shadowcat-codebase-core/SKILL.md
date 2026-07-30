@@ -95,6 +95,10 @@ source of truth. The ones agents break most:
 **Knowledge-layer map** (which layer answers which question):
 - **this skill family** (`shadowcat-codebase-*`) — orientation: what a subsystem is, its seams,
   invariants, gotchas.
+- **docs site** (`docs/site/` → `pnpm docs:build` → `dist-docs/`, `pnpm docs:serve` to view) —
+  the user-facing layer: guides (hosting / creating-a-module / creating-a-system), per-module
+  pages, wire-protocol page, and the generated API references (TypeDoc under `/api/ts/`, rustdoc
+  with private items under `/api/rust/`). Guides code-import the CI-built `examples/*` packages.
 - **graphify** (`graphify-out/`) — relationships: `graphify query "<q>"`,
   `graphify path "<A>" "<B>"`, `graphify explain "<concept>"`.
 - **`docs/design/`** — rationale: `ARCHITECTURE.md` (invariants/tech), `M2-data-foundation.md`,
@@ -105,6 +109,10 @@ source of truth. The ones agents break most:
 - Client build (produces `dist/`): `pnpm build` (= `pnpm --filter @shadowcat/shell build`).
 - Client tests: `pnpm -r test` (Vitest). Typecheck: `pnpm -r typecheck`. Lint: `pnpm lint` (ESLint).
 - Server (from `src/server/`): `cargo test`, `cargo fmt`, `cargo clippy`.
+- Docs: `pnpm docs:build` (full site → `dist-docs/`; runs `pnpm build` first — embed ordering),
+  `pnpm docs:serve` (view; file:// unsupported), `pnpm docs:check-examples` (`@example` ```ts
+  blocks must typecheck — CI-blocking in the web job), `pnpm lint:docs` (warn-tier doc-coverage
+  report; per-package severities ratchet to error in `eslint.docs.config.js` as sweeps land).
 - CI builds the client **before** `cargo` (embed ordering) across the three-OS matrix.
 
 **Subsystem skills:** `documents-permissions`, `actors-tokens`, `scene-rendering`,

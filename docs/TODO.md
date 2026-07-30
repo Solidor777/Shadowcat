@@ -77,6 +77,16 @@ capability already exists — but are deferred as out-of-scope-for-now work.
 - Server shortcodes: pre-parse replacement also fires inside markdown code spans; refine to
   skip code spans if it ever matters in practice.
 
+## Blocked on a module-facing i18n registration seam
+- Community/external modules cannot add entries to the host i18n catalog — `Ii18n.t` resolves
+  only the built-in `locales/*` catalogs and a missing key falls back to the key string itself
+  (verified 2026-07-30: no `addMessages`/`registerLocale`-style API exists in `@shadowcat/core`
+  i18n or ui-kit). Consequence: a community module's `PanelMeta.labelKey` renders as its literal
+  value, so the creating-a-module guide instructs authors to use a human-readable label as the
+  key. When the seam lands (module-supplied catalog fragments merged per locale, collision
+  rules), update the guide + the `examples/module-initiative-tracker` comment to register real
+  keys.
+
 ## Follow-on feature sub-projects (own brainstorm → spec → plan each)
 
 Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one design pass each
