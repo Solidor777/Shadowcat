@@ -1512,7 +1512,13 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   auth: session-key DB persistence per `load_or_create_key`, invite selector/verifier split,
   ServerRole orthogonality). All 13 http/+auth/ files carry the inner deny pair (both mod.rs
   cascades included, clean files too); both trees mutation-verified.
-- **Sweeps 5–N — doc-comment sweeps: UPCOMING.** scene/, chat/+dice/, then client
+- **Sweep 5 — scene/ + health.rs: COMPLETE (2026-07-30).** 129-item backlog → 0 (resolved-scene
+  settings enums/fields, SceneEcs surface + engine-decode cache, the visibility-inputs
+  fingerprint doc re-anchored onto the struct it describes, region shape/behavior/composition,
+  A* surface with the cost-per-rule variant docs, lighting/vision/explored/grid-shape/navmesh
+  leaf items, HealthStatus with regenerated comment-only bindings). All 12 scene/ files +
+  health.rs carry the inner deny pair; both scopes mutation-verified.
+- **Sweeps 6–N — doc-comment sweeps: UPCOMING.** chat/+dice/, then client
   packages, then modules. One plan per subsystem (server: data (~300+
   items, likely 2–3 plans) / ws / http+auth / scene / chat+dice; client: core / render /
   ui-kit+shell / formula; modules in 3–4 groups). Every symbol gets description+params+example;

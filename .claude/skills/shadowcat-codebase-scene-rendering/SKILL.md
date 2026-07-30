@@ -928,10 +928,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 
 ## Gotchas
 
-- **Docs-ratchet is live on `data/engine/scene.rs` + `geometry.rs` (docs sweep 2b):** both carry
-  `#![deny(missing_docs)]` + the private-items twin — a new undocumented field/variant on the
-  scene/lighting/vision/wall/region/drawing/template engine structs fails the 3-OS CI clippy
-  step, and doc comments flow into the ts-rs bindings (regenerate + commit them with the change).
+- **Docs-ratchet is live on `data/engine/scene.rs` + `geometry.rs` (docs sweep 2b) AND the whole
+  `src/server/src/scene/` tree + `health.rs` (docs sweep 5):** every file carries
+  `#![deny(missing_docs)]` + the private-items twin — a new undocumented item fails the 3-OS CI
+  clippy step, and doc comments on ts-rs types flow into the bindings (regenerate + commit them
+  with the change). Movement/traversal docs cite `move_exec::execute_move`/`gate_walk` (never
+  `Room::publish` — the stale-citation class); hex `size` docs state the outer-radius
+  (circumradius) convention — keep both true when touching those seams.
 
 - **Scene auto-creates on GM entry** (scene system schema `{grid, background}`); Stage reads the
   grid [[scene-lifecycle-gap]].
