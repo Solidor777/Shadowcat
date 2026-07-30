@@ -190,9 +190,13 @@ A `docs` job added to the existing CI:
 
 - Runs on one OS (ubuntu) for the site build: TypeDoc + `cargo doc` + VitePress +
   assembly + link check. Artifacts the `dist-docs/` output.
-- The enforcement lints run wherever their host job already runs: clippy/rustdoc
-  lints in the three-OS Rust matrix jobs, ESLint jsdoc rules in the existing lint
-  job, TS example extraction + typecheck in the client test job.
+- Gate placement: TS example extraction + typecheck runs blocking in the client
+  test job. The two warn-tier coverage *reports* (`lint:docs`, clippy
+  `-W missing-docs`) run informationally in the docs job only — they are Phase-1
+  scaffolding. Real enforcement needs no dedicated placement: sweep phases add
+  deny attributes to source (Rust) and error severities (TS), which the existing
+  three-OS clippy `-D warnings` step and the existing lint job check
+  automatically.
 - Doctests already run under `cargo test` in the matrix.
 
 ## 6. Phasing (campaign decomposition)

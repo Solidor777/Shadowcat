@@ -24,10 +24,10 @@ use clap::Parser;
 
 /// `--modules-dir <path>`: overrides the modules folder the embedded router
 /// scans/serves from (default: none installed). Lets the Node<->Rust e2e
-/// harness — and an external module repo's own smoke script (see
-/// `docs/design/module-authoring.md`) — point a fresh `test_server` at a
-/// fixture-populated temp folder without touching the hardcoded in-memory
-/// fixture data below.
+/// harness — and an external module repo's own smoke script (see the
+/// creating-a-module guide, `docs/site/guides/creating-a-module.md`) — point a
+/// fresh `test_server` at a fixture-populated temp folder without touching the
+/// hardcoded in-memory fixture data below.
 #[derive(Parser, Debug, Default)]
 struct Args {
     #[arg(long)]
