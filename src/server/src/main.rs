@@ -10,7 +10,8 @@
 //! shadowcat --restore-from backups/2026-07-30 --force
 //! ```
 
-// Docs-ratchet: every item in this bin crate ships documented (docs sweep 1).
+// Ratchet: every item in this bin crate must carry a doc comment, enforced by
+// the two deny attributes below.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

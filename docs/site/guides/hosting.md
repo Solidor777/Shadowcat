@@ -85,7 +85,7 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `config` *(CLI only)* | `shadowcat.toml` | TOML config path |
 | `admin_user` / `admin_password` | *(unset)* | Headless first-admin bootstrap |
 | `setup_token` | `auto` | Setup-form policy (table above) |
-| `session_key` | *(generated)* | Session-cookie signing key; set it to keep sessions across restarts and replicas |
+| `session_key` | *(generated + DB-persisted)* | Session-cookie signing key. Unset, a key is generated once and stored in the database, so sessions survive restarts by default; set it explicitly only for multi-replica setups or controlled key rotation |
 | `assets_dir` | `assets/` beside the db | Uploaded-file store |
 | `modules_dir` | `modules/` beside the db | Installed community modules |
 | `backups_dir` | `backups/` beside the db | In-app backup output root |

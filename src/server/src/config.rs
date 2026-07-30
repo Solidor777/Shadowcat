@@ -1,4 +1,5 @@
-// Docs-ratchet: every item in this module ships documented (docs sweep 1).
+// Ratchet: every item in this module must carry a doc comment, enforced by
+// the two deny attributes below.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -32,7 +33,7 @@ pub struct Cli {
     /// Setup-window policy override: `auto` | `off` | `required` | an explicit token.
     #[arg(long)]
     pub setup_token: Option<String>,
-    /// Session-cookie signing-key override; set it to keep sessions valid across restarts.
+    /// Session-cookie signing-key override (base64, >= 64 bytes decoded).
     #[arg(long)]
     pub session_key: Option<String>,
     /// Asset storage root override (default: sibling `assets/` beside the db file).
@@ -74,8 +75,11 @@ pub struct Config {
     pub admin_password: Option<String>,
     /// "auto" | "off" | "required" | <explicit token>.
     pub setup_token: String,
-    /// Session-cookie signing key; `None` = generated at boot (sessions do not
-    /// survive a restart until this is pinned).
+    /// Session-cookie signing key (base64). `None` = generated once and
+    /// persisted to the DB `settings` table, then loaded on every later boot —
+    /// sessions already survive an ordinary restart unpinned. Set it explicitly
+    /// for replicas sharing one key or controlled rotation
+    /// (`auth::session::load_or_create_key`).
     pub session_key: Option<String>,
     /// Asset storage root. `None` → sibling `assets/` beside the db file.
     pub assets_dir: Option<String>,
@@ -276,7 +280,8 @@ impl Config {
     /// ```
     /// use shadowcat::data::document::WorldRole;
     ///
-    /// let cfg = shadowcat::config::Config::default(); // 25 MiB player cap
+    /// let cfg = shadowcat::config::Config::default();
+    /// assert_eq!(cfg.effective_max_bytes(WorldRole::Player), 25 * 1024 * 1024);
     /// assert_eq!(cfg.effective_max_bytes(WorldRole::Gm), 2 * cfg.effective_max_bytes(WorldRole::Player));
     /// ```
     pub fn effective_max_bytes(&self, role: crate::data::document::WorldRole) -> u64 {

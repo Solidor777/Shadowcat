@@ -9,7 +9,8 @@
 //! except by explicit delete — so db-snapshot-then-assets-copy guarantees every
 //! asset the snapshot's rows reference is already present in the assets copy.
 
-// Docs-ratchet: every item in this module ships documented (docs sweep 1).
+// Ratchet: every item in this module must carry a doc comment, enforced by
+// the two deny attributes below.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -31,7 +32,8 @@ pub enum BackupError {
     /// `manifest.json` could not be serialized at backup-write time.
     #[error("manifest serialization error: {0}")]
     Serde(#[from] serde_json::Error),
-    /// Restore refused: the destination db exists and `force` was not given.
+    /// Restore refused without `force`: the destination db file already
+    /// exists, or the destination assets directory exists and is non-empty.
     #[error("refusing to write into non-empty directory {0} without --force")]
     DestinationNotEmpty(String),
     /// The source directory fails pre-restore validation (missing/malformed

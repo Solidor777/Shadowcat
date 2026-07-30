@@ -1,4 +1,5 @@
-// Docs-ratchet: every item in this module ships documented (docs sweep 1).
+// Ratchet: every item in this module must carry a doc comment, enforced by
+// the two deny attributes below.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -10,8 +11,9 @@ use sqlx::SqlitePool;
 ///
 /// # Examples
 ///
-/// ```no_run
-/// # async fn demo() -> Result<(), sqlx::Error> {
+/// ```
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), sqlx::Error> {
 /// let pool = shadowcat::db::open_pool("sqlite::memory:").await?;
 /// let row: (i64,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await?;
 /// assert_eq!(row.0, 1);
