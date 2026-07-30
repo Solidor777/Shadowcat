@@ -5,28 +5,38 @@
 
 use std::collections::BTreeMap;
 
+/// A grid cell `(i, j)` (same convention as `pathfinding::Cell`).
 pub(crate) type Cell = (i32, i32);
 
 /// Authored region geometry (M8d-3a vector-shape vocabulary: rect/circle/polygon).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RegionShape {
+    /// Axis-aligned rectangle; corners may arrive in any order (normalized
+    /// min/max at the containment test).
     Rect { x0: f64, y0: f64, x1: f64, y1: f64 },
+    /// Circle by center + radius, scene units.
     Circle { cx: f64, cy: f64, r: f64 },
+    /// Simple polygon by vertex list; `< 3` points fails closed at `rasterize`.
     Polygon { points: Vec<(f64, f64)> },
 }
 
 /// The region's gameplay effect (spec §2.1).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum RegionBehavior {
+    /// Weighted (difficult) terrain: multiplies entry cost by the region cost.
     Terrain,
+    /// Cells cannot be entered at all.
     Impassable,
+    /// Entering a cell stops the move there (trap/hazard semantics).
     Arrest,
 }
 
 /// Per-cell composed effect after precedence + MAX overlap resolution (spec §2.4).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum RegionEffect {
+    /// At least one impassable region covers the cell (highest precedence).
     Impassable,
+    /// An arrest region covers the cell (no impassable does).
     Arrest,
     /// Terrain cost multiplier, always >= 1.0 (validated at the doc layer, `region_field`).
     Terrain(f64),
@@ -114,6 +124,7 @@ pub(crate) fn rasterize(
     Some(out)
 }
 
+/// Whether point `p` (a cell center) lies inside `shape` (inclusive edges).
 fn cell_center_in_shape(p: (f64, f64), shape: &RegionShape) -> bool {
     match shape {
         RegionShape::Rect { x0, y0, x1, y1 } => {
@@ -180,18 +191,30 @@ pub(crate) fn compose(contributions: &[(RegionBehavior, f64)]) -> Option<RegionE
 /// (the GM's field / `move_exec`'s field). Built by `RegionFieldBuilder`.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct RegionField {
+    /// Composed effect per covered cell; absent cell = no region effect.
     cells: BTreeMap<Cell, RegionEffect>,
 }
 
 impl RegionField {
+    /// An empty accumulating builder.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let mut b = RegionField::builder();
+    /// b.add(&shape, RegionBehavior::Terrain, 2.0, cell, grid);
+    /// let field = b.build();
+    /// ```
     pub(crate) fn builder() -> RegionFieldBuilder {
         RegionFieldBuilder::default()
     }
 
+    /// Whether `c` composes to `Impassable` (router prune + gate refusal).
     pub(crate) fn is_impassable(&self, c: Cell) -> bool {
         matches!(self.cells.get(&c), Some(RegionEffect::Impassable))
     }
 
+    /// Whether `c` composes to `Arrest` (route truncation point).
     pub(crate) fn is_arrest(&self, c: Cell) -> bool {
         matches!(self.cells.get(&c), Some(RegionEffect::Arrest))
     }
@@ -218,8 +241,11 @@ impl RegionField {
     }
 }
 
+/// Accumulates per-region contributions cell-by-cell; `build` composes them
+/// (`compose`'s precedence + MAX-overlap rule) into the final `RegionField`.
 #[derive(Default)]
 pub(crate) struct RegionFieldBuilder {
+    /// Raw `(behavior, cost)` contributions per cell, pre-composition.
     per_cell: BTreeMap<Cell, Vec<(RegionBehavior, f64)>>,
 }
 
@@ -242,6 +268,7 @@ impl RegionFieldBuilder {
         }
     }
 
+    /// Compose all accumulated contributions into the final per-cell field.
     pub(crate) fn build(self) -> RegionField {
         let mut cells = BTreeMap::new();
         for (c, contributions) in self.per_cell {

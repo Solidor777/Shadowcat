@@ -12,9 +12,15 @@
 /// (PF1e/3.5 "5-10-5") costs diagonals 1,2,1,2… and so requires a parity bit in the search node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiagonalRule {
+    /// Diagonals cost 1.0 (equal to orthogonal steps).
     Chebyshev,
+    /// Diagonals cost 2.0 — priced as two orthogonal steps, NOT banned
+    /// (the king-move graph is identical across all four rules).
     Manhattan,
+    /// Diagonals cost sqrt(2).
     Euclidean,
+    /// Diagonals alternate 1,2,1,2… (PF1e/3.5 "5-10-5"); needs the node
+    /// parity bit.
     Alternating,
 }
 
@@ -29,11 +35,18 @@ pub type Cell = (i32, i32);
 /// `window` (i0,j0,i1,j1 inclusive) bounds the search so a GM query with an unreachable goal can't
 /// wander unboundedly.
 pub struct PathGrid<'a> {
+    /// Grid cell size in scene units.
     pub cell: f64,
+    /// Mover footprint radius in CELLS (wall-clearance inflation input).
     pub footprint_radius_cells: f64,
+    /// `blocksMove` wall segments a step may not cross.
     pub walls: &'a [vision::Seg],
+    /// Visibility mask: `None` = unconstrained (GM or `Unrestricted`);
+    /// `Some` = every entered (and footprint-overlapped) cell must be in it.
     pub mask: Option<&'a BTreeSet<Cell>>,
+    /// Composed region field (weighting/impassable/arrest); `None` = no regions.
     pub regions: Option<&'a crate::scene::regions::RegionField>,
+    /// Inclusive `(i0, j0, i1, j1)` search bound (unbounded-wander guard).
     pub window: (i32, i32, i32, i32),
     /// Cell geometry for this scene (`SquareGrid` or `HexGrid`), resolved by the caller from the
     /// scene's `grid.kind` and passed into `find()`.
@@ -389,9 +402,13 @@ mod astar_tests {
 /// Why a path request fails. Mapped to a `PathError` message at the wire boundary.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PathFail {
-    Invalid,     // degenerate request (no destination, non-finite, out-of-range footprint)
-    Unreachable, // no route within walls/mask/window
-    Exceeded,    // search exceeded MAX_PATH_NODES (DoS backstop)
+    /// Degenerate request: no destination, non-finite input, or an
+    /// out-of-range footprint.
+    Invalid,
+    /// No route exists within the walls/mask/window constraints.
+    Unreachable,
+    /// Search expanded more than `MAX_PATH_NODES` nodes (DoS backstop).
+    Exceeded,
 }
 
 /// DoS backstop: total node expansions per leg. For non-GM the mask is the tighter bound; this caps
@@ -403,9 +420,13 @@ pub(crate) const MAX_PATH_NODES: usize = 200_000;
 /// `g` is payload for lazy-deletion stale-pop skip — it is NOT part of the ordering key.
 #[derive(PartialEq)]
 struct QNode {
+    /// Estimated total cost `g + h` (the ordering key).
     f: f64,
+    /// Cost-so-far payload (lazy-deletion stale-pop check; NOT an ordering key).
     g: f64,
+    /// The expanded cell.
     cell: Cell,
+    /// Alternating-rule diagonal parity (0/1); constant 0 under other rules.
     parity: u8,
 }
 impl Eq for QNode {}
@@ -542,8 +563,12 @@ const WINDOW_MARGIN: i32 = 8;
 /// route past a hazard it knows about).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathOutcome {
+    /// Route as cell-center scene points, start and goal included (or cut at
+    /// the arrest cell).
     pub path: Vec<vision::P>,
+    /// Total weighted cost in cells.
     pub cost: f64,
+    /// An arrest region truncated the route (spec §5 honest-preview rule).
     pub arrested: bool,
 }
 
