@@ -8,7 +8,8 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 
-const SKIP_SCHEMES = /^(?:[a-z][a-z0-9+.-]*:|#)/i;
+// Skips scheme-prefixed URLs, fragments, and protocol-relative (//host) URLs.
+const SKIP_SCHEMES = /^(?:[a-z][a-z0-9+.-]*:|#|\/\/)/i;
 
 /** Local link targets (href/src) in one HTML string; fragments/queries stripped. */
 export function extractLocalLinks(html) {

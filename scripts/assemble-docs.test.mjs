@@ -11,6 +11,7 @@ describe("extractLocalLinks", () => {
       <a href="#anchor">frag</a>
       <img src="../logo.png">
       <a href="mailto:testuser-01@example.com">m</a>
+      <a href="//cdn.example/lib.js">protorel</a>
       <a href="api/ts/index.html#setField">deep</a>`;
     expect(extractLocalLinks(html)).toEqual([
       "guides/hosting.html",

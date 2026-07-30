@@ -20,7 +20,9 @@ export function findUnenumeratedSveltePaths(fileContentsByPath, knownEntries) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { RUNTIME_ENTRIES } = await import("../src/client/shell/vite.config.ts");
   const knownEntries = Object.values(RUNTIME_ENTRIES);
-  const files = globSync(["src/client/**/*.{ts,svelte}", "src/modules/**/*.{ts,svelte}"], {
+  // examples/** ships the same externalized-svelte build pattern (and is the
+  // scaffold authors copy), so it needs the same import-map guard.
+  const files = globSync(["src/client/**/*.{ts,svelte}", "src/modules/**/*.{ts,svelte}", "examples/**/*.{ts,svelte}"], {
     exclude: (path) => path.includes("node_modules"),
   });
   const contents = Object.fromEntries(files.map((f) => [f, readFileSync(f, "utf8")]));
