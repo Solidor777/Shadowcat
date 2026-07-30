@@ -32,12 +32,19 @@ pub enum Falloff {
 /// Mirrors the client `LightSystem` (scene-docs.ts).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Light {
+    /// Position in scene units.
     pub pos: P,
+    /// Packed `0xRRGGBB` tint contribution.
     pub color: u32,
+    /// Peak illumination level within `bright_radius`.
     pub intensity: f64,
+    /// Full-intensity radius, grid cells.
     pub bright_radius: f64,
+    /// Outer taper radius, grid cells (`>= bright_radius`).
     pub dim_radius: f64,
+    /// Taper curve across `(bright_radius, dim_radius]`.
     pub falloff: Falloff,
+    /// Disabled lights contribute nothing (kept for cache-key stability).
     pub enabled: bool,
 }
 
@@ -73,6 +80,7 @@ pub fn light_illumination(light: &Light, dist_cells: f64) -> f64 {
 /// to qualify for this band. Mirrors the client `GradationBand`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Band {
+    /// Band name (matched against `VisionMode::illumination_floor`).
     pub name: String,
     /// INVARIANT: must be finite and in [0,1]; non-finite values are dropped by `sorted_bands`.
     pub min_illumination: f64,
@@ -142,7 +150,9 @@ pub fn floor_min(bands: &[Band], floor_name: &str) -> f64 {
 /// contributor's color; `0x000000` when only an unset environment contributes).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CellLight {
+    /// Composed illumination level, `[0, 1]`.
     pub level: f64,
+    /// Dominant contributor's packed `0xRRGGBB` color.
     pub tint: u32,
 }
 

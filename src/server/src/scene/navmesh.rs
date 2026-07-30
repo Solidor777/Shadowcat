@@ -84,6 +84,7 @@ pub(crate) const MAX_NAVMESH_COORD: f64 = 1e15;
 /// construction — a caller-side cache rebuilds a new one on wall/bounds mutation rather than
 /// mutating this in place.
 pub(crate) struct NavMesh {
+    /// The underlying polyanya search mesh (scene-pixel coordinates).
     pub(crate) mesh: polyanya::Mesh,
 }
 

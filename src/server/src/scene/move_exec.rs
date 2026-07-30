@@ -88,6 +88,7 @@ pub(crate) const MAX_GATE_WALK_COORD: f64 = 1.0e9;
 /// plus (when this sample exactly reproduces an authored input vertex) that vertex's index.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct GateSample {
+    /// Sample position, scene units (at most one cell from its predecessor).
     pub pos: (f64, f64),
     /// `Some(i)` exactly when `pos == path[i]` (this sample completes an authored segment);
     /// `None` for an interior subdivision point with no authored counterpart.

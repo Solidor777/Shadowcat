@@ -5,4 +5,12 @@
  * INVARIANT: the TS mirror in src/types/generated must be regenerated whenever
  * this struct changes (CI enforces sync).
  */
-export type HealthStatus = { status: string, db_connected: boolean, };
+export type HealthStatus = { 
+/**
+ * Overall status string; `"ok"` is the only healthy value.
+ */
+status: string, 
+/**
+ * Whether the SQLite pool answered the probe query.
+ */
+db_connected: boolean, };

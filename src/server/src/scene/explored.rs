@@ -22,22 +22,34 @@ pub(crate) const MAX_CELLS_PER_POLYGON: i64 = 4_000_000;
 /// A sparse explored-cell set for one (scene, player).
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct ExploredSet {
+    /// Explored cells, ordered (deterministic wire/persistence output).
     cells: BTreeSet<Cell>,
 }
 
 impl ExploredSet {
+    /// An empty set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let s = shadowcat::scene::explored::ExploredSet::new();
+    /// assert!(s.is_empty());
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Number of explored cells.
     pub fn len(&self) -> usize {
         self.cells.len()
     }
 
+    /// Whether no cell has been explored.
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
     }
 
+    /// Whether `c` is in the explored memory (the `Revealed` gate's second arm).
     pub fn contains(&self, c: Cell) -> bool {
         self.cells.contains(&c)
     }

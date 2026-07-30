@@ -7,11 +7,22 @@ use ts_rs::TS;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct HealthStatus {
+    /// Overall status string; `"ok"` is the only healthy value.
     pub status: String,
+    /// Whether the SQLite pool answered the probe query.
     pub db_connected: bool,
 }
 
 impl HealthStatus {
+    /// An `"ok"` snapshot with the given DB-probe result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let h = shadowcat::health::HealthStatus::ok(true);
+    /// assert_eq!(h.status, "ok");
+    /// assert!(h.db_connected);
+    /// ```
     pub fn ok(db_connected: bool) -> Self {
         Self {
             status: "ok".to_string(),

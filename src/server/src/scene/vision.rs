@@ -13,16 +13,22 @@ pub type P = (f64, f64);
 /// An occluding segment.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Seg {
+    /// First endpoint, scene units.
     pub a: P,
+    /// Second endpoint, scene units.
     pub b: P,
 }
 
 /// An axis-aligned bound whose edges terminate rays that hit no wall.
 #[derive(Clone, Copy)]
 pub struct Rect {
+    /// Left edge.
     pub minx: f64,
+    /// Top edge.
     pub miny: f64,
+    /// Right edge.
     pub maxx: f64,
+    /// Bottom edge.
     pub maxy: f64,
 }
 
@@ -46,6 +52,7 @@ fn wrap_angle(a: f64) -> f64 {
 }
 
 impl Rect {
+    /// The four boundary edges as occluder segments (ray termination).
     fn edges(&self) -> [Seg; 4] {
         let tl = (self.minx, self.miny);
         let tr = (self.maxx, self.miny);

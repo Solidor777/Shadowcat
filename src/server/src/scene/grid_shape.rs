@@ -86,7 +86,9 @@ const HEX_BOUNDS_PAD: i32 = 1;
 /// `astar_leg`'s 8-directional `dirs` + `step_cost`). `cell` and `rule` are the scene's resolved
 /// cell size and diagonal-cost rule.
 pub(crate) struct SquareGrid {
+    /// Cell size in scene units.
     pub cell: f64,
+    /// Diagonal-cost rule (owns step cost + heuristic).
     pub rule: DiagonalRule,
 }
 
@@ -201,6 +203,8 @@ impl GridShape for SquareGrid {
 /// `src/client/render/src/grid.ts`'s `Grid` class's hex math exactly — same coordinate formulas,
 /// same `size` = outer-radius convention, so client and server cell indices always agree.
 pub(crate) struct HexGrid {
+    /// Hex size = OUTER radius (circumradius, center to vertex) in scene
+    /// units — the client `grid.ts` convention, not the across-flats width.
     pub size: f64,
 }
 
