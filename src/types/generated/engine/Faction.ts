@@ -5,4 +5,16 @@ import type { FactionStance } from "./FactionStance";
  * A faction's display + stance (scene-docs.ts:410-414 `Faction`). `color`
  * is "#rrggbb" (the token border color).
  */
-export type Faction = { name: string, color: string, stance: FactionStance, };
+export type Faction = { 
+/**
+ * Display name (factions panel, sheets).
+ */
+name: string, 
+/**
+ * `#rrggbb` token border color (render layer reads it).
+ */
+color: string, 
+/**
+ * Stance toward the party.
+ */
+stance: FactionStance, };

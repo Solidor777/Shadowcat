@@ -17,6 +17,7 @@ use ts_rs::TS;
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Channel {
+    /// Display name shown on the channel tab.
     pub name: String,
 }
 
@@ -27,6 +28,7 @@ pub struct Channel {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct ChannelRegistryEngine {
+    /// Channels keyed by channel id (message docs reference the key).
     pub channels: BTreeMap<String, Channel>,
 }
 
@@ -36,8 +38,11 @@ pub struct ChannelRegistryEngine {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "lowercase")]
 pub enum FactionStance {
+    /// Allied with the party.
     Friendly,
+    /// Neither allied nor opposed.
     Neutral,
+    /// Opposed to the party.
     Hostile,
 }
 
@@ -47,8 +52,11 @@ pub enum FactionStance {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Faction {
+    /// Display name (factions panel, sheets).
     pub name: String,
+    /// `#rrggbb` token border color (render layer reads it).
     pub color: String,
+    /// Stance toward the party.
     pub stance: FactionStance,
 }
 
@@ -59,6 +67,7 @@ pub struct Faction {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct FactionRegistryEngine {
+    /// Factions keyed by faction id (`ActorEngine.faction` references a key).
     pub factions: BTreeMap<String, Faction>,
 }
 
@@ -68,7 +77,9 @@ pub struct FactionRegistryEngine {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Condition {
+    /// Display name (conditions panel, tooltips).
     pub name: String,
+    /// Short glyph (emoji) rendered as a token badge.
     pub icon: String,
 }
 
@@ -79,6 +90,7 @@ pub struct Condition {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct ConditionRegistryEngine {
+    /// Conditions keyed by condition id (`ActorEngine.conditions` holds keys).
     pub conditions: BTreeMap<String, Condition>,
 }
 
@@ -89,31 +101,42 @@ pub struct ConditionRegistryEngine {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, default)]
 pub struct ChatSettingsEngine {
+    /// Allow markdown rendering in message bodies.
     pub markdown: Option<bool>,
+    /// Allow sanitized inline HTML in message bodies.
     pub html: Option<bool>,
+    /// Allow image embeds.
     pub images: Option<bool>,
+    /// Allow clickable hyperlinks.
     pub hyperlinks: Option<bool>,
+    /// Allow mailto links.
     pub emails: Option<bool>,
     /// Tri-state: absent is the spec'd default-on-when-hyperlinks-on
     /// behavior; `Some(true)`/`Some(false)` are an explicit GM override.
     pub link_previews: Option<bool>,
 }
 
+/// World-default dice aggregation mode (`DiceSettingsEngine.mode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
 pub enum DiceModeSetting {
+    /// Sum the kept dice (the default).
     #[default]
     Total,
+    /// Count successes against a threshold.
     SuccessCount,
 }
 
+/// World-default roll direction (`DiceSettingsEngine.direction`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
 pub enum DiceDirectionSetting {
+    /// Higher totals win (the default).
     #[default]
     HighWins,
+    /// Lower totals win.
     LowWins,
 }
 
@@ -124,6 +147,8 @@ pub enum DiceDirectionSetting {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, default)]
 pub struct DiceSettingsEngine {
+    /// Aggregation mode ambient dice notation resolves under.
     pub mode: DiceModeSetting,
+    /// Win direction ambient dice notation resolves under.
     pub direction: DiceDirectionSetting,
 }

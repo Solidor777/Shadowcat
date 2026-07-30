@@ -5,7 +5,27 @@
  * `ChatSettingsSystem`). Every field optional/absent-safe; a partial body
  * is a valid engine band.
  */
-export type ChatSettingsEngine = { markdown: boolean | null, html: boolean | null, images: boolean | null, hyperlinks: boolean | null, emails: boolean | null, 
+export type ChatSettingsEngine = { 
+/**
+ * Allow markdown rendering in message bodies.
+ */
+markdown: boolean | null, 
+/**
+ * Allow sanitized inline HTML in message bodies.
+ */
+html: boolean | null, 
+/**
+ * Allow image embeds.
+ */
+images: boolean | null, 
+/**
+ * Allow clickable hyperlinks.
+ */
+hyperlinks: boolean | null, 
+/**
+ * Allow mailto links.
+ */
+emails: boolean | null, 
 /**
  * Tri-state: absent is the spec'd default-on-when-hyperlinks-on
  * behavior; `Some(true)`/`Some(false)` are an explicit GM override.

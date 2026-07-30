@@ -6,4 +6,8 @@ import type { Channel } from "./Channel";
  * channel id — a MAP, not an array, so add/rename/remove are single-key
  * field Updates (`set_pointer` cannot grow arrays).
  */
-export type ChannelRegistryEngine = { channels: { [key in string]: Channel }, };
+export type ChannelRegistryEngine = { 
+/**
+ * Channels keyed by channel id (message docs reference the key).
+ */
+channels: { [key in string]: Channel }, };

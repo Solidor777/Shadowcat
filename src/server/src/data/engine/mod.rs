@@ -40,6 +40,15 @@ pub const CONDITION_REGISTRY_DOC_TYPE: &str = "condition-registry";
 /// Whether `doc_type` carries a typed `engine` band. The registry is a
 /// hardcoded match — there is no dynamic registration (the server runs no
 /// third-party code).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::is_engine_doc_type;
+///
+/// assert!(is_engine_doc_type("token"));
+/// assert!(!is_engine_doc_type("item")); // client-only doc_type: opaque system band only
+/// ```
 pub fn is_engine_doc_type(doc_type: &str) -> bool {
     matches!(
         doc_type,
@@ -66,6 +75,24 @@ pub fn is_engine_doc_type(doc_type: &str) -> bool {
 /// `Ok(())` iff `engine` is valid for `doc_type`: engine doc types must carry
 /// a body that deserializes into their struct (`deny_unknown_fields`); every
 /// other doc type must carry no `engine` at all.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::validate_engine;
+///
+/// let body = serde_json::json!({ "factions": {} });
+/// assert!(validate_engine("faction-registry", Some(&body)).is_ok());
+///
+/// // deny_unknown_fields: an unknown key is rejected, fail-closed.
+/// let smuggled = serde_json::json!({ "factions": {}, "extra": 1 });
+/// assert!(validate_engine("faction-registry", Some(&smuggled)).is_err());
+///
+/// // The gate cuts both ways: non-engine types must carry NO engine band...
+/// assert!(validate_engine("item", Some(&body)).is_err());
+/// // ...and engine types must carry one.
+/// assert!(validate_engine("faction-registry", None).is_err());
+/// ```
 pub fn validate_engine(
     doc_type: &str,
     engine: Option<&serde_json::Value>,
@@ -78,6 +105,18 @@ pub fn validate_engine(
 /// types), rather than validating the raw input in place. Single source of
 /// truth for the doc_type -> struct dispatch table; `validate_engine` and
 /// `data::validation::validate_engine_tree` both build on this.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::normalize_engine_opt;
+///
+/// // Normalization re-serializes the typed struct: an absent optional field
+/// // comes back as an explicit null, never a silently-missing key.
+/// let body = serde_json::json!({});
+/// let normalized = normalize_engine_opt("chat-settings", Some(&body)).unwrap().unwrap();
+/// assert!(normalized.get("markdown").is_some_and(|v| v.is_null()));
+/// ```
 pub fn normalize_engine_opt(
     doc_type: &str,
     engine: Option<&serde_json::Value>,
@@ -99,6 +138,12 @@ pub fn normalize_engine_opt(
 /// `data::validation::validate_engine_tree` for why re-serialization, not
 /// pass-through, is required). `doc_type` MUST be a registered engine doc
 /// type (callers go through `normalize_engine_opt`, which enforces this).
+///
+/// # Examples
+///
+/// ```text
+/// normalize_engine("scene", &raw)? // -> re-serialized SceneEngine JSON
+/// ```
 fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json::Value, DataError> {
     fn round_trip<T>(v: &serde_json::Value, t: &str) -> Result<serde_json::Value, DataError>
     where
@@ -142,6 +187,28 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
 /// non-engine doc types and stays silent; a present-but-undeserializable
 /// engine indicates schema drift between ingress validation and this typed
 /// read and is logged so it's observable rather than silently masked.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::Document;
+/// use shadowcat::data::engine::engine_of;
+/// use shadowcat::data::engine::registries::DiceSettingsEngine;
+///
+/// let doc: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "note",
+///     "schema_version": 1,
+///     "system": {},
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+///
+/// // Absent engine band -> the type's default, silently (fail-closed read).
+/// let settings: DiceSettingsEngine = engine_of(&doc);
+/// assert_eq!(settings, DiceSettingsEngine::default());
+/// ```
 pub fn engine_of<T: serde::de::DeserializeOwned + Default>(
     doc: &crate::data::document::Document,
 ) -> T {

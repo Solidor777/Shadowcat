@@ -6,4 +6,8 @@ import type { Faction } from "./Faction";
  * faction id — an actor's `faction` field references a key. A MAP, not an
  * array, for the same single-key-Update reason as `ChannelRegistryEngine`.
  */
-export type FactionRegistryEngine = { factions: { [key in string]: Faction }, };
+export type FactionRegistryEngine = { 
+/**
+ * Factions keyed by faction id (`ActorEngine.faction` references a key).
+ */
+factions: { [key in string]: Faction }, };

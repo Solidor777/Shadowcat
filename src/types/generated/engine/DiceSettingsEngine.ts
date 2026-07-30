@@ -7,4 +7,12 @@ import type { DiceModeSetting } from "./DiceModeSetting";
  * `DiceSettingsSystem`). `#[serde(default)]` on the struct means a partial
  * or absent body fills the rest with the safe default (Total + HighWins).
  */
-export type DiceSettingsEngine = { mode: DiceModeSetting, direction: DiceDirectionSetting, };
+export type DiceSettingsEngine = { 
+/**
+ * Aggregation mode ambient dice notation resolves under.
+ */
+mode: DiceModeSetting, 
+/**
+ * Win direction ambient dice notation resolves under.
+ */
+direction: DiceDirectionSetting, };

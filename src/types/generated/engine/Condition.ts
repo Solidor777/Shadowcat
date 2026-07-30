@@ -4,4 +4,12 @@
  * A status condition's display (scene-docs.ts:429-432 `Condition`). `icon`
  * is a short glyph (emoji) rendered as a token badge.
  */
-export type Condition = { name: string, icon: string, };
+export type Condition = { 
+/**
+ * Display name (conditions panel, tooltips).
+ */
+name: string, 
+/**
+ * Short glyph (emoji) rendered as a token badge.
+ */
+icon: string, };

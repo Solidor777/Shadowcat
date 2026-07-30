@@ -3,4 +3,8 @@
 /**
  * A chat channel's display config (chat-docs.ts:131-133 `ChatChannel`).
  */
-export type Channel = { name: string, };
+export type Channel = { 
+/**
+ * Display name shown on the channel tab.
+ */
+name: string, };

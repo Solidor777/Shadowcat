@@ -6,4 +6,8 @@ import type { Condition } from "./Condition";
  * condition id — an actor's `conditions` array holds keys. A MAP, not an
  * array, for the same single-key-Update reason as `ChannelRegistryEngine`.
  */
-export type ConditionRegistryEngine = { conditions: { [key in string]: Condition }, };
+export type ConditionRegistryEngine = { 
+/**
+ * Conditions keyed by condition id (`ActorEngine.conditions` holds keys).
+ */
+conditions: { [key in string]: Condition }, };
