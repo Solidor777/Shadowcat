@@ -7,6 +7,11 @@
 //! constructed with `engine` set directly — `system` stays whatever `world_scoped_doc`
 //! defaults it to (opaque game-system data, never read by movement/vision/region code).
 
+// Ratchet: every item in this module must carry a doc comment, enforced by
+// the two deny attributes below.
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 pub(crate) fn ws_engine(mut system: serde_json::Value) -> serde_json::Value {
     if let Some(scene) = system.get_mut("scene").and_then(|s| s.as_object_mut()) {
         scene

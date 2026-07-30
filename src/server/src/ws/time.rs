@@ -1,5 +1,10 @@
 //! Server time source (wall-clock unix millis) + NTP-style offset calibration.
 
+// Ratchet: every item in this module must carry a doc comment, enforced by
+// the two deny attributes below.
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Wall-clock unix milliseconds. Used for the server time source and event ts.

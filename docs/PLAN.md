@@ -1501,7 +1501,12 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   the five engine files carry inner attrs AND `data/mod.rs` upgraded from its item-scoped
   `#[deny]` exception to file-level inner attrs (every child is now swept — the 2a caveat is
   retired). Both new scopes mutation-verified.
-- **Sweeps 3–N — doc-comment sweeps: UPCOMING.** One plan per subsystem (server: data (~300+
+- **Sweep 3 — ws/ realtime: COMPLETE (2026-07-30).** 157-item backlog → 0 (protocol.rs's full
+  wire surface field-documented — flows into the ServerMsg/ClientMsg ts-rs types the docs-site
+  protocol page links; room fan-out/resync tiers/registry; connection ingress/egress split).
+  All six ws/ files carry the inner deny pair (mod.rs cascade included); mutation-verified.
+- **Sweeps 4–N — doc-comment sweeps: UPCOMING.** http/+auth/, scene/, chat/+dice/, then client
+  packages, then modules. One plan per subsystem (server: data (~300+
   items, likely 2–3 plans) / ws / http+auth / scene / chat+dice; client: core / render /
   ui-kit+shell / formula; modules in 3–4 groups). Every symbol gets description+params+example;
   each completed area flips its lints to deny (Rust: per-file inner deny attributes as in Sweep 1;

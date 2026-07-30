@@ -4,6 +4,11 @@
 //! ts-rs (CI-enforced sync). Binary encodings are rejected: they bypass the
 //! type-generation pipeline and reduce debuggability.
 
+// Ratchet: every item in this module must carry a doc comment, enforced by
+// the two deny attributes below.
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;

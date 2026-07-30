@@ -1,6 +1,11 @@
 //! Realtime WebSocket event bus: per-world rooms, sequenced broadcasts,
 //! ring-buffer + log-backed resync, a server time source, and telemetry.
 
+// Ratchet: every item in this module must carry a doc comment, enforced by
+// the two deny attributes below.
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

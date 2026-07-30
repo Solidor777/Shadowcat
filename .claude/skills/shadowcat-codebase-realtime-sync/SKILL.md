@@ -156,6 +156,12 @@ optimistically and roll back on divergence.
 
 ## Gotchas
 
+- **Docs-ratchet is live on the whole `ws/` tree (docs sweep 3):** all six files carry
+  `#![deny(missing_docs)]` + `#![deny(clippy::missing_docs_in_private_items)]` — a new
+  undocumented item fails the 3-OS CI clippy step, and protocol.rs doc comments flow into the
+  generated `ServerMsg`/`ClientMsg` TS types (regenerate + commit bindings with any change; the
+  docs site's protocol page links these types).
+
 - **Permissions filter every broadcast per recipient** — hidden fields are stripped before
   transmission (see `shadowcat-codebase-documents-permissions`), never sent-then-hidden.
 - **Live search rides the broadcast** as top-N subscriptions over the same egress
