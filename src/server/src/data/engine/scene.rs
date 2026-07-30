@@ -25,8 +25,10 @@ pub enum MovementModel {
     Continuous,
 }
 
-/// How far the server lets a player-driven move reach (the `Room::publish`
-/// move gate's policy input).
+/// How far a player-driven token may reach. The per-cell traversal gate is
+/// `scene::move_exec::execute_move`/`gate_walk` (the sole traversal decision);
+/// `Room::publish` additionally consults this for its Create-placement gate
+/// (center cell only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "lowercase")]
@@ -63,7 +65,8 @@ pub enum DiagonalRule {
     Alternating,
     /// Diagonals cost sqrt(2).
     Euclidean,
-    /// No diagonal moves; 4-neighbor steps only.
+    /// Diagonals cost the same as two orthogonal steps (no diagonal
+    /// shortcut; diagonal moves themselves stay legal).
     Manhattan,
 }
 
@@ -122,7 +125,9 @@ pub struct GridDistance {
 pub struct Grid {
     /// "square" | "hex" — kept a `String` in v1 (asserted by the battery).
     pub kind: String,
-    /// Cell size in scene units (hex: the across-flats diameter).
+    /// Cell size in scene units. For hex grids this is the OUTER radius
+    /// (center-to-vertex circumradius) — `HexGrid` and the client `grid.ts`
+    /// share this convention so cell indices always agree.
     pub size: f64,
     /// Real-world distance scale; absent = unitless.
     #[serde(default)]

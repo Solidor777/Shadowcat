@@ -45,8 +45,9 @@ pub struct WallEngine {
     /// Occludes light propagation; absent/false = transparent to light.
     #[serde(default)]
     pub blocks_light: Option<bool>,
-    /// Blocks token movement (the `Room::publish` move gate reads this);
-    /// absent/false = passable.
+    /// Blocks token movement: read via `SceneEcs::move_walls` and enforced by
+    /// `scene::move_exec::execute_move`/`gate_walk` (the sole per-cell
+    /// traversal decision). Absent/false = passable.
     #[serde(default)]
     pub blocks_move: Option<bool>,
 }

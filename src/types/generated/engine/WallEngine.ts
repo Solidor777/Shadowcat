@@ -20,7 +20,8 @@ blocksSight: boolean | null,
  */
 blocksLight: boolean | null, 
 /**
- * Blocks token movement (the `Room::publish` move gate reads this);
- * absent/false = passable.
+ * Blocks token movement: read via `SceneEcs::move_walls` and enforced by
+ * `scene::move_exec::execute_move`/`gate_walk` (the sole per-cell
+ * traversal decision). Absent/false = passable.
  */
 blocksMove: boolean | null, };
