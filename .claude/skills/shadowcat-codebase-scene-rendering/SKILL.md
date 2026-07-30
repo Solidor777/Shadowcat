@@ -928,6 +928,11 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 
 ## Gotchas
 
+- **Docs-ratchet is live on `data/engine/scene.rs` + `geometry.rs` (docs sweep 2b):** both carry
+  `#![deny(missing_docs)]` + the private-items twin — a new undocumented field/variant on the
+  scene/lighting/vision/wall/region/drawing/template engine structs fails the 3-OS CI clippy
+  step, and doc comments flow into the ts-rs bindings (regenerate + commit them with the change).
+
 - **Scene auto-creates on GM entry** (scene system schema `{grid, background}`); Stage reads the
   grid [[scene-lifecycle-gap]].
 - **Clear tool overlays/previews on a mid-gesture tool swap** (draw preview, measure overlay) or

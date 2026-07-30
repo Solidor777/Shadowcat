@@ -1494,7 +1494,14 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   the two inner deny attributes; `data/mod.rs` uses an ITEM-scoped `#[deny(...)]` on `DataError`
   instead — an inner attr there would cascade to the unswept `data/engine/` (Sweep 2b).
   Ratchet-bite mutation-verified.
-- **Sweeps 2b–N — doc-comment sweeps: UPCOMING.** One plan per subsystem (server: data (~300+
+- **Sweep 2b — data/engine: COMPLETE (2026-07-30).** All five engine files documented (172-item
+  backlog → 0; registry/geometry/token/scene bands with unit- and gate-exact field docs; runnable
+  doctests pin the both-ways engine-band gate, deny_unknown_fields rejection, and
+  absent-optional → explicit-null normalization). The whole `data/` tree is now deny-ratcheted:
+  the five engine files carry inner attrs AND `data/mod.rs` upgraded from its item-scoped
+  `#[deny]` exception to file-level inner attrs (every child is now swept — the 2a caveat is
+  retired). Both new scopes mutation-verified.
+- **Sweeps 3–N — doc-comment sweeps: UPCOMING.** One plan per subsystem (server: data (~300+
   items, likely 2–3 plans) / ws / http+auth / scene / chat+dice; client: core / render /
   ui-kit+shell / formula; modules in 3–4 groups). Every symbol gets description+params+example;
   each completed area flips its lints to deny (Rust: per-file inner deny attributes as in Sweep 1;

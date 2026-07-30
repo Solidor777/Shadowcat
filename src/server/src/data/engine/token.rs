@@ -2,6 +2,11 @@
 //! verbatim from the client's `scene-docs.ts` `TokenSystem`/`ActorSystem`
 //! (minus `name`, which moved to the envelope per S2).
 
+// Ratchet: every item in this module must carry a doc comment, enforced by
+// the two deny attributes below.
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

@@ -223,6 +223,11 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 
 ## Gotchas
 
+- **Docs-ratchet is live on `data/engine/token.rs` (docs sweep 2b):** it carries
+  `#![deny(missing_docs)]` + the private-items twin — a new undocumented field/variant on
+  `TokenEngine`/`ActorEngine`/`TokenVisual`/`AnimatedSource` fails the 3-OS CI clippy step, and
+  doc comments flow into the ts-rs bindings (regenerate + commit them with the change).
+
 - **Linked vs instanced provenance diverges**: a linked token reflects later actor edits; an
   instanced copy is frozen at placement. Instanced re-sync against the source is deferred
   [[document-inheritance-merge-model]].

@@ -1,6 +1,11 @@
 //! The data layer: the document model, per-recipient permissions/redaction,
 //! command application, validation, search, assets, and SQLite persistence.
 
+// Ratchet: every item in this module must carry a doc comment, enforced by
+// the two deny attributes below.
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 /// Uploaded binary assets: rows, content-addressed storage, ETag revalidation.
 pub mod asset;
 /// Commands/operations/field changes + the shared JSON-pointer mutation ops.
@@ -26,9 +31,6 @@ pub use asset::Asset;
 use thiserror::Error;
 
 /// All fallible operations in the data layer return this.
-// Ratchet, item-scoped: an inner attr here would cascade to child modules that
-// are not yet swept (data/engine); the leaf files carry their own inner attrs.
-#[deny(missing_docs, clippy::missing_docs_in_private_items)]
 #[derive(Debug, Error)]
 pub enum DataError {
     /// The underlying SQLite operation failed.

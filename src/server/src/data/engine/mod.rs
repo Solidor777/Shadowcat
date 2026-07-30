@@ -3,6 +3,11 @@
 //! deserialize into that doc_type's struct — a strict ingress gate rather
 //! than an opaque pointer-walked body.
 
+// Ratchet: every item in this module must carry a doc comment, enforced by
+// the two deny attributes below.
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 pub mod geometry;
 pub mod registries;
 pub mod scene;

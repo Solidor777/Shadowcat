@@ -360,13 +360,13 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 
 ## Gotchas
 
-- **Docs-ratchet is live in the data core (docs sweep 2a):** the nine leaf files
-  `data/{document,command,permission,repository,membership,validation,search,asset,sqlite}.rs`
-  carry `#![deny(missing_docs)]` + `#![deny(clippy::missing_docs_in_private_items)]` — a new
-  undocumented item fails the 3-OS CI clippy step. `data/mod.rs` deliberately has NO inner attr
-  (it would cascade to the unswept `data/engine/`); its `DataError` carries an item-scoped
-  `#[deny(...)]` instead. Doc comments on ts-rs types flow into `src/types/generated` — editing
-  them means regenerating (`cargo test`) and committing the bindings, and doc claims about
+- **Docs-ratchet covers the ENTIRE `data/` tree (docs sweeps 2a+2b):** every file —
+  `data/{mod,document,command,permission,repository,membership,validation,search,asset,sqlite}.rs`
+  AND `data/engine/{mod,geometry,registries,scene,token}.rs` — carries `#![deny(missing_docs)]` +
+  `#![deny(clippy::missing_docs_in_private_items)]` (`data/mod.rs`'s inner attrs cascade to all
+  children, all now swept; its former item-scoped exception is retired). A new undocumented item
+  fails the 3-OS CI clippy step. Doc comments on ts-rs types flow into `src/types/generated` —
+  editing them means regenerating (`cargo test`) and committing the bindings, and doc claims about
   authz/redaction must cite the enforcing function (Sweep-1 lesson: a review caught a factually
   wrong doc).
 - **Wire types are generated** — change the Rust `Visibility`/`Document`, regenerate ts-rs, then

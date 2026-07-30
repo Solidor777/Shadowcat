@@ -2,6 +2,11 @@
 //! engine bands (M13-0 S1/S3). Field shapes transcribed verbatim from
 //! scene-docs.ts (minus `name`, moved to the envelope per S2).
 
+// Ratchet: every item in this module must carry a doc comment, enforced by
+// the two deny attributes below.
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
