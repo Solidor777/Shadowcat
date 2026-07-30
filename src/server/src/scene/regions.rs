@@ -146,7 +146,9 @@ pub(crate) fn rasterize(
     Some(out)
 }
 
-/// Whether point `p` (a cell center) lies inside `shape` (inclusive edges).
+/// Whether point `p` (a cell center) lies inside `shape`. Rect/circle edges
+/// are inclusive; the polygon branch is even-odd PNPOLY, whose exact-boundary
+/// behavior is winding-dependent, not uniformly inclusive.
 fn cell_center_in_shape(p: (f64, f64), shape: &RegionShape) -> bool {
     match shape {
         RegionShape::Rect { x0, y0, x1, y1 } => {

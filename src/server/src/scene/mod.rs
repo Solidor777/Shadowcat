@@ -47,15 +47,17 @@ pub enum LightMode {
 }
 
 /// Per-scene movement gate mode. Mirrors `MovementRestriction` in `scene-docs.ts`.
-/// `Visible` = move cells must be currently visible; `Revealed` = visible ∪ explored memory;
-/// `Unrestricted` = walls only (the M9a gate alone).
+/// Selects the VISION-MASK arm of the gate only (`move_exec::execute_move`'s
+/// `check_mask`); the wall and region gates apply to every non-GM move
+/// regardless of mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MovementRestriction {
     /// Move cells must be currently visible to the mover's owner.
     Visible,
     /// Move cells must be visible OR in the owner's explored memory.
     Revealed,
-    /// Walls-only gating (the base wall-crossing gate alone).
+    /// Vision mask skipped; walls and region gates still apply to non-GM
+    /// movers (`check_walls`/`check_regions` are independent of the mode).
     Unrestricted,
 }
 
@@ -1331,8 +1333,10 @@ impl SceneEcs {
     /// fetches it off the lock). An empty non-GM mask ⇒ `find` returns Unreachable (fail-closed —
     /// the dark-scene freeze that mirrors the movement gate, by design).
     ///
-    /// Coupling (spec §13): `visible_cells` is the ONE canonical mask shared between this method
-    /// and the M10e-4 movement gate in `Room::publish`. Do NOT fork the per-cell decision here.
+    /// Coupling (spec §13): `visible_cells` is the ONE canonical mask shared between this
+    /// method, the M10e-4 movement gate (`move_exec::execute_move`, reached via
+    /// `Room::execute_move`), and `Room::publish`'s token-placement gate. Do NOT fork the
+    /// per-cell decision here.
     // Eight args mirrors the flat ECS-assembly signature; the handler that calls this already
     // holds all inputs separately (user, scene, start, waypoints, footprint, is_gm, explored)
     // so a wrapper struct would only obscure the coupling to the movement gate.

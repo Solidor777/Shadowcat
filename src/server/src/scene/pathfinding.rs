@@ -560,14 +560,16 @@ pub(crate) const MAX_FOOTPRINT_CELLS: f64 = 64.0;
 /// Search-window margin (cells) added around the point/wall AABB so detours around walls stay reachable.
 const WINDOW_MARGIN: i32 = 8;
 
-/// The result of a `find()` route: cell-center scene points (incl. start + goal, or truncated at
-/// an arrest cell), the total weighted cost in cells, and whether an arrest region cut the route
+/// The result of a `find()` route: scene points — `path[0]` is the mover's LITERAL start
+/// position, every later point a cell center through the goal (or truncated at an arrest
+/// cell) — the total weighted cost in cells, and whether an arrest region cut the route
 /// short (spec §5: "arrest is honest in preview" — the player-facing router must never show a
 /// route past a hazard it knows about).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathOutcome {
-    /// Route as cell-center scene points, start and goal included (or cut at
-    /// the arrest cell).
+    /// Route points: `path[0]` is the mover's literal start position (what
+    /// `execute_move` requires a `MoveRequest`'s `path[0]` to equal); later
+    /// points are cell centers through the goal, or cut at the arrest cell.
     pub path: Vec<vision::P>,
     /// Total weighted cost in cells.
     pub cost: f64,
@@ -577,7 +579,8 @@ pub struct PathOutcome {
 
 /// Plan a footprint-clear, mask-bounded route `start -> waypoints[0] -> ... -> waypoints[last]`.
 /// `waypoints` is the full ordered leg list whose last element is the goal (empty => `Invalid`).
-/// Returns cell-center scene points (incl. start and goal) and the total cost in cells.
+/// Returns the literal `start` followed by cell-center points through the goal, and the total
+/// cost in cells.
 #[allow(clippy::too_many_arguments)]
 pub fn find(
     start: vision::P,

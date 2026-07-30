@@ -43,7 +43,8 @@ pub struct Light {
     pub intensity: f64,
     /// Full-intensity radius, grid cells.
     pub bright_radius: f64,
-    /// Outer taper radius, grid cells (`>= bright_radius`).
+    /// Outer taper radius, grid cells; the taper spans
+    /// `(bright_radius, dim_radius]` (not validated against `bright_radius`).
     pub dim_radius: f64,
     /// Taper curve across `(bright_radius, dim_radius]`.
     pub falloff: Falloff,
