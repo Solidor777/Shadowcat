@@ -8,10 +8,12 @@ use crate::chat::MessageKind;
 /// Result of parsing a message's leading command token, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCommand {
+    /// The message kind the command selects (never `System`).
     pub kind: MessageKind,
     /// Raw `@usernames` from a `/w` command (unresolved). The async caller
     /// resolves these to UUIDs and builds `Audience::Whisper`.
     pub whisper_to: Option<Vec<String>>,
+    /// The message body with the command token stripped.
     pub body: String,
 }
 

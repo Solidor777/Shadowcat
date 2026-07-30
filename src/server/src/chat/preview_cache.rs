@@ -49,10 +49,18 @@ pub type PreviewRateLimiter = PingRateLimiter;
 /// which additionally applies the TTL appropriate to which kind is stored.
 #[derive(Default)]
 pub struct LinkPreviewCache {
+    /// URL -> (store time, outcome); `None` outcome = negative entry.
     entries: Mutex<HashMap<String, (Instant, Option<LinkPreview>)>>,
 }
 
 impl LinkPreviewCache {
+    /// An empty cache (one per server, shared across worlds).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cache = shadowcat::chat::preview_cache::LinkPreviewCache::new();
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }

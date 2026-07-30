@@ -69,6 +69,7 @@ const TABLE: &[(&str, &str)] = &[
     ("zzz", "💤"),
 ];
 
+/// Binary-search the sorted table for `name`'s emoji.
 fn lookup(name: &str) -> Option<&'static str> {
     TABLE
         .binary_search_by_key(&name, |(n, _)| n)
@@ -76,6 +77,7 @@ fn lookup(name: &str) -> Option<&'static str> {
         .map(|i| TABLE[i].1)
 }
 
+/// Characters legal inside a `:name:` token (lowercase ASCII, digits, `_+-`).
 fn is_name_char(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '+' | '-')
 }

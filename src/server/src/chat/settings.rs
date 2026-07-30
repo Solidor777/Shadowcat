@@ -27,18 +27,23 @@ pub const CHAT_SETTINGS_DOC_TYPE: &str = "chat-settings";
 pub type ChatContentPolicy = ChatSettingsEngine;
 
 impl ChatContentPolicy {
+    /// Markdown rendering allowed (absent = false, fail-closed).
     pub fn markdown(&self) -> bool {
         self.markdown.unwrap_or(false)
     }
+    /// Raw-HTML input allowed (absent = false; output still ammonia-cleaned).
     pub fn html(&self) -> bool {
         self.html.unwrap_or(false)
     }
+    /// Image embeds allowed (absent = false).
     pub fn images(&self) -> bool {
         self.images.unwrap_or(false)
     }
+    /// Hyperlink anchors allowed (absent = false).
     pub fn hyperlinks(&self) -> bool {
         self.hyperlinks.unwrap_or(false)
     }
+    /// Email autolinks allowed (absent = false).
     pub fn emails(&self) -> bool {
         self.emails.unwrap_or(false)
     }
