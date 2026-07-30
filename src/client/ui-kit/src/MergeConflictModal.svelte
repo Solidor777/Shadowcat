@@ -1,8 +1,6 @@
 <script lang="ts">
   import { getAppContext } from "./appContext";
-  import type { Conflict } from "@shadowcat/core";
-
-  export type ConflictGroup = { key: string; label: string | null; conflicts: Conflict[] };
+  import type { ConflictGroup } from "./mergeConflict";
 
   let { groups, onApply, onCancel }: {
     groups: ConflictGroup[];

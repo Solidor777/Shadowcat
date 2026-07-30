@@ -7,7 +7,7 @@ import {
   type WireDocument, type WireOperation, type StampOpts, type SyncState, type Logger,
   type DocumentStore, type ReadableDocuments, type MergePlan,
 } from "@shadowcat/core";
-import type { ConflictGroup } from "./MergeConflictModal.svelte";
+import type { ConflictGroup } from "./mergeConflict";
 
 export interface TemplatesControllerDeps {
   store: DocumentStore;
