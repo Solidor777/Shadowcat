@@ -29,8 +29,11 @@ const SECRET_HEX_LEN: usize = SECRET_BYTES * 2;
 /// A freshly minted code: the plaintext handed to the GM once, and the PHC
 /// hash that is all the server retains.
 pub struct MintedCode {
+    /// Selector half (also the invite row id).
     pub id: Uuid,
+    /// The full bearer code (selector.verifier) — shown once, never stored.
     pub code: String,
+    /// Argon2 PHC hash of the verifier half — all the server retains.
     pub secret_hash: String,
 }
 
@@ -80,6 +83,13 @@ pub fn dummy_phc() -> &'static str {
 /// The plaintext verified against [`dummy_phc`] on the no-such-invite path.
 pub const DUMMY_SECRET: &str = "invite-anti-enumeration-unused";
 
+/// Lowercase hex encoding (verifier-half rendering).
+///
+/// # Examples
+///
+/// ```text
+/// hex(&[0xab, 0x01]) == "ab01"
+/// ```
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     bytes.iter().fold(String::new(), |mut s, b| {

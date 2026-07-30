@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerRole {
+    /// Manages accounts and worlds server-wide; no world role confers this.
     Admin,
+    /// Ordinary account; world authority comes only from per-world roles.
     User,
 }
 

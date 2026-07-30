@@ -18,7 +18,11 @@ use crate::data::sqlite::SqliteRepository;
 use crate::http::error::AppError;
 use crate::http::AppState;
 
+/// Session-record key the logged-in identity is stored under.
 const SESSION_USER_KEY: &str = "user";
+/// `settings`-table key of the DB-persisted cookie signing key — the reason
+/// sessions survive a restart with `Config.session_key` unset
+/// (`load_or_create_key`).
 const SESSION_KEY_SETTING: &str = "session_key";
 
 /// DB-backed session store over the data layer's sqlx 0.9 pool. A separate
@@ -27,10 +31,18 @@ const SESSION_KEY_SETTING: &str = "session_key";
 /// invariant. Sharing the existing pool keeps one writer and one sqlx version.
 #[derive(Debug, Clone)]
 pub struct SqlxSqliteStore {
+    /// The shared single-writer pool (never a second pool/driver).
     pool: SqlitePool,
 }
 
 impl SqlxSqliteStore {
+    /// A store over the shared pool.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let store = SqlxSqliteStore::new(repo.pool().clone()); // session_layer wires this
+    /// ```
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
@@ -46,6 +58,13 @@ impl SqlxSqliteStore {
         Ok(())
     }
 
+    /// Whether a session row with `id` exists (collision probe for `create`).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// store.id_exists(&id).await? // true -> cycle a fresh id
+    /// ```
     async fn id_exists(&self, id: &Id) -> session_store::Result<bool> {
         let row = sqlx::query("SELECT 1 FROM tower_sessions WHERE id = ?")
             .bind(id.to_string())
@@ -181,16 +200,22 @@ pub fn spawn_session_sweep(repo: &SqliteRepository) {
 /// Identity persisted in the session store after login.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionUser {
+    /// Account id.
     pub id: Uuid,
+    /// Account username at login time.
     pub username: String,
+    /// Server tier at login time.
     pub role: ServerRole,
 }
 
 /// Any authenticated user.
 #[derive(Debug, Clone)]
 pub struct AuthUser {
+    /// Account id.
     pub id: Uuid,
+    /// Account username.
     pub username: String,
+    /// Server tier (the `AdminUser` extractor additionally requires `Admin`).
     pub role: ServerRole,
 }
 
