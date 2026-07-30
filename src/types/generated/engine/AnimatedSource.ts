@@ -4,4 +4,25 @@
  * An animated visual's frame source: an ordered list of individually
  * uploaded assets, or one grid-sliced sheet asset.
  */
-export type AnimatedSource = { "type": "frames", frames: Array<string>, } | { "type": "sheet", asset: string, rows: number, cols: number, count: number | null, };
+export type AnimatedSource = { "type": "frames", 
+/**
+ * Asset ids, playback order.
+ */
+frames: Array<string>, } | { "type": "sheet", 
+/**
+ * Asset id of the sheet image.
+ */
+asset: string, 
+/**
+ * Grid rows in the sheet.
+ */
+rows: number, 
+/**
+ * Grid columns in the sheet.
+ */
+cols: number, 
+/**
+ * Frames actually used (row-major from the top-left); absent =
+ * rows * cols.
+ */
+count: number | null, };

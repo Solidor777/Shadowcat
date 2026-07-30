@@ -12,7 +12,16 @@ export type ActorEngine = {
 /**
  * scene-docs.ts:199 `displayName: string` — required, non-nullable.
  */
-displayName: string, visual: TokenVisual, size: Size, 
+displayName: string, 
+/**
+ * The actor's visual, inherited by linked tokens (raw-token/override
+ * visuals take precedence per the resolution order in `actor.ts`).
+ */
+visual: TokenVisual, 
+/**
+ * Default token size for this actor, scene units.
+ */
+size: Size, 
 /**
  * "square" | "circle" — kept a `String` in v1 (asserted by the battery).
  */

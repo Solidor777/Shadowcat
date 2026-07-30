@@ -15,17 +15,25 @@ use uuid::Uuid;
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct TokenEngine {
+    /// Token CENTER x, scene units.
     pub x: f64,
+    /// Token CENTER y, scene units.
     pub y: f64,
+    /// Width, scene units.
     pub w: f64,
+    /// Height, scene units.
     pub h: f64,
+    /// Rotation in degrees.
     pub rotation: f64,
+    /// Raw (actorless) token's own visual; actor-backed tokens resolve via
+    /// the linked/embedded actor instead.
     #[serde(default)]
     pub visual: Option<TokenVisual>,
     /// Linked token: the shared actor's id (absent/null ⇒ instanced, see
     /// `Document.embedded["actor"]`).
     #[serde(default)]
     pub actor_id: Option<Uuid>,
+    /// Per-token whitelisted overrides of the linked actor's presentation.
     #[serde(default)]
     pub overrides: Option<TokenOverrides>,
     /// Active face name when the effective visual is a `faces` union member;
@@ -41,6 +49,12 @@ impl TokenEngine {
     /// (`scene::move_exec::MAX_GATE_WALK_COORD`) — the GM-write/Create path
     /// and the move gate must agree on admissible coordinates structurally,
     /// never by call ordering.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// token.validate()  // Err("x must be finite") for NaN; Err(bound) past the gate bound
+    /// ```
     pub(crate) fn validate(&self) -> Result<(), String> {
         for (name, v) in [
             ("x", self.x),
@@ -130,10 +144,13 @@ mod tests {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct TokenOverrides {
+    /// Display-name override (subject to the name-privacy rules).
     #[serde(default)]
     pub name: Option<String>,
+    /// Visual override; replaces the actor's visual for this token.
     #[serde(default)]
     pub visual: Option<TokenVisual>,
+    /// Size override, scene units.
     #[serde(default)]
     pub size: Option<Size>,
     /// "square" | "circle" — kept a `String` in v1 (the literal set is
@@ -146,11 +163,14 @@ pub struct TokenOverrides {
     pub vision: Option<Vec<VisionAssignment>>,
 }
 
+/// A width/height pair, scene units.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Size {
+    /// Width, scene units.
     pub w: f64,
+    /// Height, scene units.
     pub h: f64,
 }
 
@@ -160,7 +180,9 @@ pub struct Size {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct VisionAssignment {
+    /// `vision-modes` registry entry id.
     pub mode: String,
+    /// Effective range in grid CELLS (not scene units).
     pub range: f64,
 }
 
@@ -171,17 +193,26 @@ pub struct VisionAssignment {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TokenVisual {
+    /// One static image.
     Image {
+        /// Asset id of the image.
         asset: String,
     },
+    /// A frame-animated visual.
     Animated {
+        /// Where the frames come from.
         source: AnimatedSource,
+        /// Playback rate, frames per second.
         fps: f64,
+        /// Loop playback; false = play once and hold the last frame.
         #[serde(rename = "loop")]
         loop_: bool,
     },
+    /// A named set of switchable faces.
     Faces {
+        /// Face name -> drawable visual (never nested `faces`).
         faces: BTreeMap<String, RenderVisual>,
+        /// Face shown when nothing selects otherwise.
         default: String,
         /// Optional conditionId -> face name map; the first match (in the
         /// token's effective `conditions[]` order) wins over `default`, but
@@ -198,12 +229,18 @@ pub enum TokenVisual {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum RenderVisual {
+    /// One static image.
     Image {
+        /// Asset id of the image.
         asset: String,
     },
+    /// A frame-animated visual.
     Animated {
+        /// Where the frames come from.
         source: AnimatedSource,
+        /// Playback rate, frames per second.
         fps: f64,
+        /// Loop playback; false = play once and hold the last frame.
         #[serde(rename = "loop")]
         loop_: bool,
     },
@@ -215,13 +252,21 @@ pub enum RenderVisual {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AnimatedSource {
+    /// An ordered list of individually uploaded frame assets.
     Frames {
+        /// Asset ids, playback order.
         frames: Vec<String>,
     },
+    /// One sheet asset sliced into a grid of frames.
     Sheet {
+        /// Asset id of the sheet image.
         asset: String,
+        /// Grid rows in the sheet.
         rows: u32,
+        /// Grid columns in the sheet.
         cols: u32,
+        /// Frames actually used (row-major from the top-left); absent =
+        /// rows * cols.
         #[serde(default)]
         count: Option<u32>,
     },
@@ -237,7 +282,10 @@ pub struct ActorEngine {
     /// scene-docs.ts:199 `displayName: string` — required, non-nullable.
     #[serde(rename = "displayName")]
     pub display_name: String,
+    /// The actor's visual, inherited by linked tokens (raw-token/override
+    /// visuals take precedence per the resolution order in `actor.ts`).
     pub visual: TokenVisual,
+    /// Default token size for this actor, scene units.
     pub size: Size,
     /// "square" | "circle" — kept a `String` in v1 (asserted by the battery).
     pub shape: String,

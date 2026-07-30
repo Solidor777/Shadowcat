@@ -7,7 +7,31 @@ import type { RenderVisual } from "./RenderVisual";
  * `kind`; serde does not support `deny_unknown_fields` on an internally
  * tagged enum (a documented limitation — NOT applied here).
  */
-export type TokenVisual = { "kind": "image", asset: string, } | { "kind": "animated", source: AnimatedSource, fps: number, loop: boolean, } | { "kind": "faces", faces: { [key in string]: RenderVisual }, default: string, 
+export type TokenVisual = { "kind": "image", 
+/**
+ * Asset id of the image.
+ */
+asset: string, } | { "kind": "animated", 
+/**
+ * Where the frames come from.
+ */
+source: AnimatedSource, 
+/**
+ * Playback rate, frames per second.
+ */
+fps: number, 
+/**
+ * Loop playback; false = play once and hold the last frame.
+ */
+loop: boolean, } | { "kind": "faces", 
+/**
+ * Face name -> drawable visual (never nested `faces`).
+ */
+faces: { [key in string]: RenderVisual }, 
+/**
+ * Face shown when nothing selects otherwise.
+ */
+default: string, 
 /**
  * Optional conditionId -> face name map; the first match (in the
  * token's effective `conditions[]` order) wins over `default`, but

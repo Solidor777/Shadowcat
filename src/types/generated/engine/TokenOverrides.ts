@@ -6,7 +6,19 @@ import type { VisionAssignment } from "./VisionAssignment";
 /**
  * The per-token override whitelist for a linked token.
  */
-export type TokenOverrides = { name: string | null, visual: TokenVisual | null, size: Size | null, 
+export type TokenOverrides = { 
+/**
+ * Display-name override (subject to the name-privacy rules).
+ */
+name: string | null, 
+/**
+ * Visual override; replaces the actor's visual for this token.
+ */
+visual: TokenVisual | null, 
+/**
+ * Size override, scene units.
+ */
+size: Size | null, 
 /**
  * "square" | "circle" — kept a `String` in v1 (the literal set is
  * asserted by the unit battery, not enforced by a Rust enum).

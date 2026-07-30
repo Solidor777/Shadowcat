@@ -7,12 +7,41 @@ import type { TokenVisual } from "./TokenVisual";
  * is the token CENTER. `visual` is set only on raw (actorless) tokens —
  * actor-backed tokens resolve their visual via the linked/embedded actor.
  */
-export type TokenEngine = { x: number, y: number, w: number, h: number, rotation: number, visual: TokenVisual | null, 
+export type TokenEngine = { 
+/**
+ * Token CENTER x, scene units.
+ */
+x: number, 
+/**
+ * Token CENTER y, scene units.
+ */
+y: number, 
+/**
+ * Width, scene units.
+ */
+w: number, 
+/**
+ * Height, scene units.
+ */
+h: number, 
+/**
+ * Rotation in degrees.
+ */
+rotation: number, 
+/**
+ * Raw (actorless) token's own visual; actor-backed tokens resolve via
+ * the linked/embedded actor instead.
+ */
+visual: TokenVisual | null, 
 /**
  * Linked token: the shared actor's id (absent/null ⇒ instanced, see
  * `Document.embedded["actor"]`).
  */
-actor_id: string | null, overrides: TokenOverrides | null, 
+actor_id: string | null, 
+/**
+ * Per-token whitelisted overrides of the linked actor's presentation.
+ */
+overrides: TokenOverrides | null, 
 /**
  * Active face name when the effective visual is a `faces` union member;
  * token-local always (not part of `overrides` — selects INTO the

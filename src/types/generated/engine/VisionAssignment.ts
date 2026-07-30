@@ -4,4 +4,12 @@
  * A per-actor or per-token vision assignment: which mode (by id, referencing
  * a `vision-modes` registry entry) + effective range in grid cells.
  */
-export type VisionAssignment = { mode: string, range: number, };
+export type VisionAssignment = { 
+/**
+ * `vision-modes` registry entry id.
+ */
+mode: string, 
+/**
+ * Effective range in grid CELLS (not scene units).
+ */
+range: number, };

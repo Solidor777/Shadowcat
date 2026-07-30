@@ -6,4 +6,20 @@ import type { AnimatedSource } from "./AnimatedSource";
  * boundary (M10h). A face's own visual is always one of these — no nesting
  * (a face can never itself be `{kind:"faces"}`).
  */
-export type RenderVisual = { "kind": "image", asset: string, } | { "kind": "animated", source: AnimatedSource, fps: number, loop: boolean, };
+export type RenderVisual = { "kind": "image", 
+/**
+ * Asset id of the image.
+ */
+asset: string, } | { "kind": "animated", 
+/**
+ * Where the frames come from.
+ */
+source: AnimatedSource, 
+/**
+ * Playback rate, frames per second.
+ */
+fps: number, 
+/**
+ * Loop playback; false = play once and hold the last frame.
+ */
+loop: boolean, };
