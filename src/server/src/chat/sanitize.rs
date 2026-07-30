@@ -4,6 +4,9 @@
 //! (Markdown rendering, raw HTML passthrough) funnels through one `ammonia`
 //! `clean()` call here before anything is persisted or broadcast.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use crate::chat::{ChatContentPolicy, Segment};
 use pulldown_cmark::{html, Event, Options, Parser};
 

@@ -19,6 +19,9 @@
 //! `handle_delete_message` after their own owner-or-GM check — and granting it a
 //! scoped `Access` (`READ`+`WRITE_FIELDS` only, never `/permissions`/`/embedded`).
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

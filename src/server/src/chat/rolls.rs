@@ -12,6 +12,9 @@
 //! `handle_send_message`'s roll stage (`chat/mod.rs`) — the sole ingest path
 //! that may execute untrusted dice notation.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use uuid::Uuid;
 
 use crate::dice::notation::{self, ParseContext, ParseError};

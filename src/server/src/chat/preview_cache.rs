@@ -5,6 +5,9 @@
 //! (post-redirect-resolution; the ingest stage that calls this cache decides
 //! what "the fetched URL" means for a given message).
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};

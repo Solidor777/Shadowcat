@@ -3,6 +3,9 @@
 //! async) — the async caller (`handle_send_message`) resolves `/w` usernames
 //! to member uuids and re-validates the resulting audience.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use crate::chat::MessageKind;
 
 /// Result of parsing a message's leading command token, if any.

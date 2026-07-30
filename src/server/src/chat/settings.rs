@@ -6,6 +6,9 @@
 //! text). The toggles only ever WIDEN enrichment from that safe baseline, so
 //! any failure mode degrades safe rather than open.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use uuid::Uuid;
 
 use crate::data::engine::{

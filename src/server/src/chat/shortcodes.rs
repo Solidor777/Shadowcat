@@ -4,6 +4,10 @@
 //! plain unicode text with no security surface. v1 limitation (documented in the
 //! design spec): replacement is pre-parse, so a shortcode inside a markdown code
 //! span is also replaced.
+
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::borrow::Cow;
 
 /// Sorted by name (binary-searched). Curated common set; extend freely.

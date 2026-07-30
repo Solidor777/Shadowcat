@@ -13,6 +13,9 @@
 //! per-hop redirect re-validation -> a single deadline over the whole redirect
 //! chain -> streamed size cap -> content-type check -> bounded text extraction.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
