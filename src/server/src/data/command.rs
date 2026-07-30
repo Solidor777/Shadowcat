@@ -22,9 +22,13 @@ use crate::data::DataError;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct FieldChange {
-    pub path: String, // JSON pointer, e.g. "/system/hp"
+    /// JSON pointer to the field, e.g. `/system/hp`.
+    pub path: String,
+    /// OCC pre-image: the raw currently-stored value (`values_semantically_eq`
+    /// compares it at apply time; a mismatch rejects the intent).
     #[ts(type = "unknown")]
     pub old: Value,
+    /// The value to write (unused when `remove` is true).
     #[ts(type = "unknown")]
     pub new: Value,
     /// When true, REMOVE the object key at `path` instead of setting `new`.
@@ -35,6 +39,13 @@ pub struct FieldChange {
     pub remove: bool,
 }
 
+/// Serde `skip_serializing_if` helper: keeps `remove: false` off the wire.
+///
+/// # Examples
+///
+/// ```text
+/// is_false(&false) == true   // field omitted
+/// ```
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -44,14 +55,21 @@ fn is_false(b: &bool) -> bool {
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Operation {
+    /// Insert a whole new document.
     Create {
+        /// The full document to insert.
         doc: Document,
     },
+    /// Remove a document (carries the full pre-image for invertibility).
     Delete {
+        /// The document as it existed at deletion.
         doc: Document,
     },
+    /// Field-level changes against an existing document.
     Update {
+        /// Target document id.
         doc_id: Uuid,
+        /// Ordered field changes, each with its OCC pre-image.
         changes: Vec<FieldChange>,
     },
 }
@@ -59,9 +77,13 @@ pub enum Operation {
 /// A command awaiting a sequence number (constructed by callers).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnsequencedCommand {
+    /// World the command applies to.
     pub world_id: Uuid,
+    /// Originating user.
     pub author: Uuid,
+    /// Author-side timestamp, Unix epoch milliseconds.
     pub ts: i64,
+    /// The operations, applied in order (all-or-nothing).
     pub ops: Vec<Operation>,
 }
 
@@ -69,15 +91,40 @@ pub struct UnsequencedCommand {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct Command {
+    /// Per-world monotonic sequence number (the client's replay watermark).
     pub seq: i64,
+    /// World the command applied to.
     pub world_id: Uuid,
+    /// Originating user.
     pub author: Uuid,
+    /// Author-side timestamp, Unix epoch milliseconds.
     pub ts: i64,
+    /// The applied operations, in order.
     pub ops: Vec<Operation>,
 }
 
 impl Operation {
     /// The inverse operation: Create<->Delete; Update swaps old/new per change, reversed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use serde_json::json;
+    /// use shadowcat::data::command::{FieldChange, Operation};
+    ///
+    /// let op = Operation::Update {
+    ///     doc_id: uuid::Uuid::nil(),
+    ///     changes: vec![FieldChange {
+    ///         path: "/system/hp".into(),
+    ///         old: json!(10),
+    ///         new: json!(7),
+    ///         remove: false,
+    ///     }],
+    /// };
+    /// let Operation::Update { changes, .. } = op.invert() else { unreachable!() };
+    /// assert_eq!(changes[0].old, json!(7));
+    /// assert_eq!(changes[0].new, json!(10));
+    /// ```
     pub fn invert(&self) -> Operation {
         match self {
             Operation::Create { doc } => Operation::Delete { doc: doc.clone() },
@@ -115,6 +162,20 @@ impl Operation {
 
 impl UnsequencedCommand {
     /// The inverse command: every op inverted, op order reversed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::command::UnsequencedCommand;
+    ///
+    /// let cmd = UnsequencedCommand {
+    ///     world_id: uuid::Uuid::nil(),
+    ///     author: uuid::Uuid::nil(),
+    ///     ts: 0,
+    ///     ops: vec![],
+    /// };
+    /// assert_eq!(cmd.invert().ops.len(), 0);
+    /// ```
     pub fn invert(&self) -> UnsequencedCommand {
         UnsequencedCommand {
             world_id: self.world_id,
@@ -127,6 +188,22 @@ impl UnsequencedCommand {
 
 impl Command {
     /// Inverse as an unsequenced command (re-applied gets a fresh seq).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::command::Command;
+    ///
+    /// let cmd = Command {
+    ///     seq: 7,
+    ///     world_id: uuid::Uuid::nil(),
+    ///     author: uuid::Uuid::nil(),
+    ///     ts: 0,
+    ///     ops: vec![],
+    /// };
+    /// let undo = cmd.invert(); // UnsequencedCommand: gets a fresh seq on apply
+    /// assert_eq!(undo.world_id, cmd.world_id);
+    /// ```
     pub fn invert(&self) -> UnsequencedCommand {
         UnsequencedCommand {
             world_id: self.world_id,
@@ -143,7 +220,10 @@ impl Command {
 /// frame — re-opens that path for the sanitized authoritative revision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteOrigin {
+    /// Any wire-derived write (WS intent or HTTP).
     Client,
+    /// The server's own sanitized chat edit/delete revision — never derivable
+    /// from a wire frame.
     ServerMessageRevision,
 }
 
@@ -153,6 +233,12 @@ pub enum WriteOrigin {
 /// Shared by `set_pointer` and `remove_pointer`; their descent semantics differ
 /// (set creates missing intermediates, remove treats them as already-absent), so
 /// only the tokenization is factored out, not the traversal.
+///
+/// # Examples
+///
+/// ```text
+/// pointer_tokens("/system/a~1b")? == ["system", "a/b"]   // ~1 unescapes to /
+/// ```
 fn pointer_tokens(pointer: &str) -> Result<Vec<String>, DataError> {
     if !pointer.starts_with('/') {
         return Err(DataError::BadPath(pointer.to_string()));
@@ -170,6 +256,19 @@ fn pointer_tokens(pointer: &str) -> Result<Vec<String>, DataError> {
 /// A non-empty pointer must begin with `/` (RFC 6901) or it is rejected as
 /// `BadPath`; empty path tokens (from a trailing slash) and `-` are treated
 /// as literal object keys.
+///
+/// # Examples
+///
+/// ```
+/// use serde_json::json;
+/// use shadowcat::data::command::set_pointer;
+///
+/// // Creates missing intermediates, and replaces a null intermediate with an
+/// // object (a serialized `Option::None` engine field is `null`, not absent).
+/// let mut doc = json!({ "engine": null });
+/// set_pointer(&mut doc, "/engine/vision/range", json!(30)).unwrap();
+/// assert_eq!(doc, json!({ "engine": { "vision": { "range": 30 } } }));
+/// ```
 pub fn set_pointer(root: &mut Value, pointer: &str, new: Value) -> Result<(), DataError> {
     if pointer.is_empty() {
         *root = new;
@@ -240,6 +339,22 @@ pub fn set_pointer(root: &mut Value, pointer: &str, new: Value) -> Result<(), Da
 /// - An empty pointer, a missing leading `/`, descent through a scalar, or a
 ///   non-numeric token into an array are rejected as `BadPath` (matching
 ///   `set_pointer`'s malformed-path handling).
+///
+/// # Examples
+///
+/// ```
+/// use serde_json::json;
+/// use shadowcat::data::command::remove_pointer;
+///
+/// let mut doc = json!({ "system": { "hp": 10 } });
+/// remove_pointer(&mut doc, "/system/hp").unwrap();
+/// assert_eq!(doc, json!({ "system": {} })); // key genuinely absent, not null
+///
+/// // Array-index removal has no shift semantics — rejected, array unmutated.
+/// let mut arr = json!({ "tags": ["a", "b"] });
+/// assert!(remove_pointer(&mut arr, "/tags/0").is_err());
+/// assert_eq!(arr, json!({ "tags": ["a", "b"] }));
+/// ```
 pub fn remove_pointer(root: &mut Value, pointer: &str) -> Result<(), DataError> {
     if pointer.is_empty() {
         return Err(DataError::BadPath(pointer.to_string()));
@@ -300,6 +415,30 @@ pub fn remove_pointer(root: &mut Value, pointer: &str) -> Result<(), DataError> 
 /// may be already-committed OR client-proposed (`SceneEcs::token_move` mirrors changes
 /// that have not yet been authorized) — cannot reject and handles the error locally,
 /// at a level chosen by which of the two it is holding.
+///
+/// # Examples
+///
+/// ```
+/// use serde_json::json;
+/// use shadowcat::data::command::{apply_field_change, FieldChange};
+///
+/// let mut doc = json!({ "system": { "hp": 10 } });
+/// apply_field_change(&mut doc, &FieldChange {
+///     path: "/system/hp".into(),
+///     old: json!(10),
+///     new: json!(7),
+///     remove: false,
+/// }).unwrap();
+/// assert_eq!(doc, json!({ "system": { "hp": 7 } }));
+///
+/// apply_field_change(&mut doc, &FieldChange {
+///     path: "/system/hp".into(),
+///     old: json!(7),
+///     new: json!(null),
+///     remove: true,
+/// }).unwrap();
+/// assert_eq!(doc, json!({ "system": {} }));
+/// ```
 pub fn apply_field_change(v: &mut Value, ch: &FieldChange) -> Result<(), DataError> {
     if ch.remove {
         remove_pointer(v, &ch.path)

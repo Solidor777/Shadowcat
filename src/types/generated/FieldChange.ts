@@ -15,7 +15,20 @@
  * key is not re-derived as a removal. `invert` has no live caller (undo/redo is
  * not wired), so this asymmetry is inert today.
  */
-export type FieldChange = { path: string, old: unknown, new: unknown, 
+export type FieldChange = { 
+/**
+ * JSON pointer to the field, e.g. `/system/hp`.
+ */
+path: string, 
+/**
+ * OCC pre-image: the raw currently-stored value (`values_semantically_eq`
+ * compares it at apply time; a mismatch rejects the intent).
+ */
+old: unknown, 
+/**
+ * The value to write (unused when `remove` is true).
+ */
+new: unknown, 
 /**
  * When true, REMOVE the object key at `path` instead of setting `new`.
  * Object keys only — array-index removal is rejected (see `remove_pointer`).

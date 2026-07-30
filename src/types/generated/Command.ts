@@ -4,4 +4,24 @@ import type { Operation } from "./Operation";
 /**
  * A command that has been assigned a per-world sequence number.
  */
-export type Command = { seq: bigint, world_id: string, author: string, ts: bigint, ops: Array<Operation>, };
+export type Command = { 
+/**
+ * Per-world monotonic sequence number (the client's replay watermark).
+ */
+seq: bigint, 
+/**
+ * World the command applied to.
+ */
+world_id: string, 
+/**
+ * Originating user.
+ */
+author: string, 
+/**
+ * Author-side timestamp, Unix epoch milliseconds.
+ */
+ts: bigint, 
+/**
+ * The applied operations, in order.
+ */
+ops: Array<Operation>, };

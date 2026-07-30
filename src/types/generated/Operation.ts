@@ -5,4 +5,20 @@ import type { FieldChange } from "./FieldChange";
 /**
  * A single operation within a command.
  */
-export type Operation = { "op": "create", doc: Document, } | { "op": "delete", doc: Document, } | { "op": "update", doc_id: string, changes: Array<FieldChange>, };
+export type Operation = { "op": "create", 
+/**
+ * The full document to insert.
+ */
+doc: Document, } | { "op": "delete", 
+/**
+ * The document as it existed at deletion.
+ */
+doc: Document, } | { "op": "update", 
+/**
+ * Target document id.
+ */
+doc_id: string, 
+/**
+ * Ordered field changes, each with its OCC pre-image.
+ */
+changes: Array<FieldChange>, };
