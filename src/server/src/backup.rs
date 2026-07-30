@@ -18,14 +18,20 @@ use thiserror::Error;
 /// All fallible backup/restore operations return this.
 #[derive(Debug, Error)]
 pub enum BackupError {
+    /// Filesystem operation failed (copy, rename, read_dir, ...).
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// The `VACUUM INTO` snapshot connection or statement failed.
     #[error("database error: {0}")]
     Sqlx(#[from] sqlx::Error),
+    /// `manifest.json` could not be serialized at backup-write time.
     #[error("manifest serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+    /// Restore refused: the destination db exists and `force` was not given.
     #[error("refusing to write into non-empty directory {0} without --force")]
     DestinationNotEmpty(String),
+    /// The source directory fails pre-restore validation (missing/malformed
+    /// `manifest.json` or missing `world.db`) — nothing was touched.
     #[error("{0} is not a valid backup directory: {1}")]
     InvalidBackupDir(String, String),
 }
@@ -34,17 +40,32 @@ pub enum BackupError {
 /// `restore_backup` before any destination file is touched.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BackupManifest {
+    /// Server version that wrote the backup (shown when restoring later).
     pub shadowcat_version: String,
+    /// Backup creation time, Unix epoch milliseconds.
     pub created_at_unix_ms: u64,
+    /// The db path the snapshot was taken from (informational, not re-resolved).
     pub source_db: String,
+    /// The assets root the copy was taken from (informational).
     pub source_assets_dir: String,
+    /// Files copied into the backup's assets tree; echoed in the CLI summary line.
     pub asset_file_count: u64,
+    /// Byte size of the `world.db` snapshot; echoed in the CLI summary line.
     pub db_bytes: u64,
 }
 
 /// True when `path` does not exist, or exists as an empty directory. A path
 /// that exists as a non-directory (e.g. a file) is not "empty or absent" and
 /// surfaces as an I/O error from the underlying `read_dir` call.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::backup::dir_is_empty_or_absent;
+///
+/// let missing = std::path::Path::new("no-such-dir-usr-test-001");
+/// assert!(dir_is_empty_or_absent(missing).expect("absent is not an error"));
+/// ```
 pub fn dir_is_empty_or_absent(path: &Path) -> std::io::Result<bool> {
     match std::fs::read_dir(path) {
         Ok(mut entries) => Ok(entries.next().is_none()),
@@ -55,6 +76,12 @@ pub fn dir_is_empty_or_absent(path: &Path) -> std::io::Result<bool> {
 
 /// True when `path` does not exist. Used to gate overwrite of the single-file
 /// restore destination (`world.db`).
+///
+/// # Examples
+///
+/// ```text
+/// file_absent(Path::new("shadowcat.db"))? == false  // live server dir
+/// ```
 fn file_absent(path: &Path) -> std::io::Result<bool> {
     match std::fs::metadata(path) {
         Ok(_) => Ok(false),
@@ -69,6 +96,12 @@ fn file_absent(path: &Path) -> std::io::Result<bool> {
 /// directory yet. Symlinks are skipped: the assets tree is server-managed and
 /// never contains one, so silently skipping avoids following into an
 /// unexpected target rather than guessing at semantics.
+///
+/// # Examples
+///
+/// ```text
+/// let copied = copy_dir_recursive(&assets_src, &out.join("assets")).await?; // -> file count
+/// ```
 fn copy_dir_recursive<'a>(
     src: &'a Path,
     dst: &'a Path,
@@ -103,6 +136,23 @@ fn copy_dir_recursive<'a>(
 /// that need the refuse-non-empty-without-force gate call
 /// [`dir_is_empty_or_absent`] first (the CLI layer owns that decision; see
 /// `main.rs::run_backup`).
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+///
+/// # async fn demo() -> Result<(), shadowcat::backup::BackupError> {
+/// let manifest = shadowcat::backup::create_backup(
+///     Path::new("shadowcat.db"),
+///     Path::new("assets"),
+///     Path::new("backups/2026-07-30"),
+/// )
+/// .await?;
+/// println!("{} asset file(s), {} db bytes", manifest.asset_file_count, manifest.db_bytes);
+/// # Ok(())
+/// # }
+/// ```
 pub async fn create_backup(
     db_path: &Path,
     assets_dir: &Path,
@@ -193,6 +243,24 @@ pub async fn create_backup(
 /// (the db swap already completed, so `db_path` now exists and a
 /// force-less retry would refuse), which re-copies the db and completes the
 /// assets swap, leaving both artifacts consistent.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+///
+/// # async fn demo() -> Result<(), shadowcat::backup::BackupError> {
+/// // Overwrites an existing db/assets pair only because force = true.
+/// shadowcat::backup::restore_backup(
+///     Path::new("backups/2026-07-30"),
+///     Path::new("shadowcat.db"),
+///     Path::new("assets"),
+///     true,
+/// )
+/// .await?;
+/// # Ok(())
+/// # }
+/// ```
 pub async fn restore_backup(
     backup_dir: &Path,
     db_path: &Path,

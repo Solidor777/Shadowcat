@@ -3,6 +3,17 @@ use sqlx::SqlitePool;
 
 /// Opens a SQLite connection pool. `"sqlite::memory:"` yields an ephemeral
 /// in-process database — used here to prove the SQLite-only target wires up.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn demo() -> Result<(), sqlx::Error> {
+/// let pool = shadowcat::db::open_pool("sqlite::memory:").await?;
+/// let row: (i64,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await?;
+/// assert_eq!(row.0, 1);
+/// # Ok(())
+/// # }
+/// ```
 pub async fn open_pool(url: &str) -> Result<SqlitePool, sqlx::Error> {
     SqlitePoolOptions::new()
         .max_connections(1)
