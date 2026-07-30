@@ -3,6 +3,16 @@
 Living record of issues surfaced during review/audit. NOT a to-do list — entries
 are observations awaiting triage, not committed work.
 
+- Title: ui-e2e hex-movement setup step flaked once on CI. Summary: on the docs
+  Phase-1 push (run 30558898300, ubuntu), `hex-movement.spec.ts` "non-GM
+  wall-crossing drag rejected" failed at a SETUP assertion — the GM view's
+  `Effective owner: <player>` text did not appear within its 15s timeout after
+  the Token-owner select — while the other 15 tests passed. Same commit: local
+  full suite 16/16 and the CI re-run green with zero code change (the branch's
+  only client-runtime-adjacent diffs were type-only), so this is a timing flake,
+  not a regression. Status: Needs Review (if it recurs, await the owner-select
+  round-trip explicitly or raise that assertion's timeout).
+
 - Title: Phase-B world delete swallows asset-directory removal failures. Summary: `routes.rs::
   delete_world` returns 204 even when `remove_dir_all` on `<assets_path>/<world_id>/` fails for a
   reason other than NotFound (permission error, Windows open-handle lock); the failure is a
