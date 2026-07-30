@@ -4,4 +4,12 @@ import type { Cardinality } from "./Cardinality";
 /**
  * A UI surface contract a module provides, with its cardinality.
  */
-export type ContractProvide = { contract: string, cardinality: Cardinality, };
+export type ContractProvide = { 
+/**
+ * The surface contract id (e.g. `shadowcat.panel`).
+ */
+contract: string, 
+/**
+ * How many providers the contract admits.
+ */
+cardinality: Cardinality, };

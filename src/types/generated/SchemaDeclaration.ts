@@ -8,4 +8,28 @@ import type { Schema } from "./Schema";
  * `schema_format` is the engine-owned vocabulary version; `version` is the
  * module's content version (provenance only).
  */
-export type SchemaDeclaration = { module_id: string, version: string, schema_format: number, doc_type: string, subtree_pointer: string, schema: Schema, };
+export type SchemaDeclaration = { 
+/**
+ * Declaring module's id (provenance).
+ */
+module_id: string, 
+/**
+ * Declaring module's content version (provenance only).
+ */
+version: string, 
+/**
+ * Engine-owned schema-vocabulary version (`SCHEMA_FORMAT_V1`).
+ */
+schema_format: number, 
+/**
+ * The doc_type whose `system` band this schema constrains.
+ */
+doc_type: string, 
+/**
+ * Strict `/system/…` descendant pointer the schema roots at (set-time enforced).
+ */
+subtree_pointer: string, 
+/**
+ * The structural type-tree itself.
+ */
+schema: Schema, };

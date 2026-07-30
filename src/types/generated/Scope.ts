@@ -3,4 +3,13 @@
 /**
  * Storage/runtime scope of a document.
  */
-export type Scope = { "kind": "compendium", pack: string, } | { "kind": "world", world_id: string, };
+export type Scope = { "kind": "compendium", 
+/**
+ * The compendium pack this document ships in.
+ */
+pack: string, } | { "kind": "world", 
+/**
+ * The owning world's id; cross-world reads compare against this
+ * (`world_of` is the single chokepoint).
+ */
+world_id: string, };

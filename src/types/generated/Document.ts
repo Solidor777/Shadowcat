@@ -6,11 +6,33 @@ import type { Source } from "./Source";
 /**
  * The persisted document: typed envelope around an opaque `system` body.
  */
-export type Document = { id: string, scope: Scope, doc_type: string, schema_version: number, 
+export type Document = { 
+/**
+ * Stable identity; immutable after create.
+ */
+id: string, 
+/**
+ * World or compendium the document lives in.
+ */
+scope: Scope, 
+/**
+ * Free-form type string; engine-defined types additionally carry `engine`.
+ */
+doc_type: string, 
+/**
+ * Envelope schema version for forward migration.
+ */
+schema_version: number, 
 /**
  * Universal display name (S2). Redacts to `null` under a `/name` override.
  */
-name: string | null, source: Source | null, 
+name: string | null, 
+/**
+ * Provenance of a stamped instance; `None` = not an instance. Immutable:
+ * `required_cap_for_path` maps no capability to `/source`, so no write
+ * path can re-target a document at a different template.
+ */
+source: Source | null, 
 /**
  * Opaque snapshot of this child's mergeable content (`name`/`engine`/`system`/
  * `embedded`) at last sync (stamp or a successful pull/push/revert). Present only
@@ -20,7 +42,22 @@ name: string | null, source: Source | null,
  * `cap::WRITE_FIELDS` (see follow-up task). Client-owned shape (`MergeBase`,
  * `@shadowcat/core`).
  */
-base: unknown, owner: string | null, permissions: PermissionSet, embedded: { [key in string]: Array<Document> }, 
+base: unknown, 
+/**
+ * Owning user. On tokens, ownership is EFFECTIVE — the token's own owner,
+ * else the linked actor's (`effective_owner`, permission.rs); on every
+ * other doc_type this is provenance only and grants no capability.
+ */
+owner: string | null, 
+/**
+ * Per-document access policy (see `PermissionSet`).
+ */
+permissions: PermissionSet, 
+/**
+ * Child documents keyed by collection name (e.g. an actor's `item`s),
+ * recursively full `Document`s.
+ */
+embedded: { [key in string]: Array<Document> }, 
 /**
  * Scene-entity link: the id of the scene (or other parent) this document
  * belongs to. `None` for top-level documents (actors, compendium entries,
@@ -32,4 +69,17 @@ parent_id: string | null,
  * against the doc_type's typed struct at ingress (data/engine). Stored
  * post-validation. `None` for community/system doc types.
  */
-engine: unknown, system: unknown, created_at: bigint, updated_at: bigint, };
+engine: unknown, 
+/**
+ * Opaque game-system band: structurally validated only (size, JSON,
+ * optional tier-2 shape schema) — the server NEVER interprets its meaning.
+ */
+system: unknown, 
+/**
+ * Creation time, Unix epoch milliseconds.
+ */
+created_at: bigint, 
+/**
+ * Last-write time, Unix epoch milliseconds.
+ */
+updated_at: bigint, };

@@ -7,7 +7,26 @@ import type { Visibility } from "./Visibility";
  * Document-level permissions: default role, per-user overrides, property-level
  * visibility keyed by JSON pointer, and additive capability grants.
  */
-export type PermissionSet = { default: DocRole, users: { [key in string]: DocRole }, property_overrides: { [key in string]: Visibility }, capabilities: CapabilityGrants, 
+export type PermissionSet = { 
+/**
+ * Role floor for any user without a `users` entry. `DocRole::None` here
+ * makes the document invisible by default (fail-closed).
+ */
+default: DocRole, 
+/**
+ * Per-user role that REPLACES `default` for that user — it can demote as
+ * well as promote (`effective_role`, permission.rs).
+ */
+users: { [key in string]: DocRole }, 
+/**
+ * Per-JSON-pointer visibility tiers; enforced per recipient by
+ * `Access::can_see` inside `filter_properties` before transmission.
+ */
+property_overrides: { [key in string]: Visibility }, 
+/**
+ * Additive capability grants beyond the role floor (never revoking it).
+ */
+capabilities: CapabilityGrants, 
 /**
  * When `Some(role)`, a `WorldRole::Gm` actor's access to THIS document is
  * capped like any other actor's — resolved via the same per-document

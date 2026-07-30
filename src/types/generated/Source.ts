@@ -3,4 +3,16 @@
 /**
  * Provenance link for the deferred pull/push merge.
  */
-export type Source = { id: string, pack: string | null, version: number, };
+export type Source = { 
+/**
+ * The template/original document this one was stamped from.
+ */
+id: string, 
+/**
+ * Compendium pack of the source, when it came from one.
+ */
+pack: string | null, 
+/**
+ * Source content version at stamp time (provenance for pull/push).
+ */
+version: number, };

@@ -6,4 +6,12 @@ import type { DocRole } from "./DocRole";
  * namespaced capability string (e.g. `core:manage_embedded`). Grants widen
  * what a role/user may do on a document; they never revoke the floor.
  */
-export type CapabilityGrants = { by_role: { [key in DocRole]?: Array<string> }, by_user: { [key in string]: Array<string> }, };
+export type CapabilityGrants = { 
+/**
+ * Extra capabilities granted to everyone holding a given `DocRole`.
+ */
+by_role: { [key in DocRole]?: Array<string> }, 
+/**
+ * Extra capabilities granted to specific users, regardless of role.
+ */
+by_user: { [key in string]: Array<string> }, };

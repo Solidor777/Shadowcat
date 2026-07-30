@@ -9,4 +9,29 @@ import type { SchemaType } from "./SchemaType";
  * Cross-field legality (e.g. `items` only on an array) is not enforced by serde;
  * `validate_schema` (routes.rs) enforces it at set-time.
  */
-export type Schema = { type?: SchemaType, properties?: { [key in string]: Schema }, required?: Array<string>, additionalProperties?: boolean | Schema, items?: Schema, nullable?: boolean, };
+export type Schema = { 
+/**
+ * Required JSON type of the node; absent = any type.
+ */
+type?: SchemaType, 
+/**
+ * Per-key subschemas for an object node.
+ */
+properties?: { [key in string]: Schema }, 
+/**
+ * Object keys that must be present.
+ */
+required?: Array<string>, 
+/**
+ * Policy for object keys not named in `properties`; absent behaves as
+ * `false` (closed — a deliberate, documented divergence from JSON Schema).
+ */
+additionalProperties?: boolean | Schema, 
+/**
+ * Subschema every array element must match.
+ */
+items?: Schema, 
+/**
+ * When true, JSON `null` also matches regardless of `type`.
+ */
+nullable?: boolean, };

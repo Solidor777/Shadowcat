@@ -6,4 +6,13 @@
  * structural base capability for that path). Pure data — the server enforces
  * possession and never interprets the meaning of the path or the capabilities.
  */
-export type CapabilityRequirement = { path_prefix: string, caps: Array<string>, };
+export type CapabilityRequirement = { 
+/**
+ * JSON-pointer prefix the rule applies to (writes at or under it).
+ */
+path_prefix: string, 
+/**
+ * Capabilities the writer must ALL hold, on top of the structural base
+ * capability for the path (`required_cap_for_path`).
+ */
+caps: Array<string>, };

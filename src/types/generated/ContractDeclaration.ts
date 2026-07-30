@@ -6,4 +6,20 @@ import type { ContractProvide } from "./ContractProvide";
  * which it requires an active provider for. Pure data — the server validates
  * and distributes these strings; it never holds components or runs module code.
  */
-export type ContractDeclaration = { module_id: string, version: string, provides: Array<ContractProvide>, requires: Array<string>, };
+export type ContractDeclaration = { 
+/**
+ * Declaring module's id.
+ */
+module_id: string, 
+/**
+ * Declaring module's version.
+ */
+version: string, 
+/**
+ * Contracts this module provides, with cardinality.
+ */
+provides: Array<ContractProvide>, 
+/**
+ * Contract ids this module requires an active provider for.
+ */
+requires: Array<string>, };
