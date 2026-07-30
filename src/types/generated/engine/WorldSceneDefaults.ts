@@ -8,4 +8,40 @@ import type { MovementRestriction } from "./MovementRestriction";
  * The full set of world-level scene defaults that individual scenes may
  * override (scene-docs.ts:78-88 `WorldSceneDefaults`).
  */
-export type WorldSceneDefaults = { losRestriction: boolean, fog: boolean, lightingEnabled: boolean, lightMode: LightMode, environment: EnvironmentLight, observerVision: boolean, movementRestriction: MovementRestriction, movementModel: MovementModel, partialCellLeniency: boolean, };
+export type WorldSceneDefaults = { 
+/**
+ * Walls occlude sight by default.
+ */
+losRestriction: boolean, 
+/**
+ * Fog of war on by default.
+ */
+fog: boolean, 
+/**
+ * Lighting simulation on by default.
+ */
+lightingEnabled: boolean, 
+/**
+ * Default light mode.
+ */
+lightMode: LightMode, 
+/**
+ * Default ambient light.
+ */
+environment: EnvironmentLight, 
+/**
+ * Whether non-owner observers contribute vision by default.
+ */
+observerVision: boolean, 
+/**
+ * Default movement-gate policy.
+ */
+movementRestriction: MovementRestriction, 
+/**
+ * Default movement engine.
+ */
+movementModel: MovementModel, 
+/**
+ * Grid gate counts a cell partially inside vision as reachable.
+ */
+partialCellLeniency: boolean, };

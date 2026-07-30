@@ -3,4 +3,12 @@
 /**
  * A scene's authored dimensions in GRID UNITS (width × height cells).
  */
-export type SceneDimensions = { width: number, height: number, };
+export type SceneDimensions = { 
+/**
+ * Width in grid cells.
+ */
+width: number, 
+/**
+ * Height in grid cells.
+ */
+height: number, };

@@ -5,4 +5,8 @@
  * `String` in v1 (asserted by the battery), matching `"linear" | "quadratic"
  * | "none"`.
  */
-export type Falloff = { curve: string, };
+export type Falloff = { 
+/**
+ * "linear" | "quadratic" | "none" — kept a `String` in v1.
+ */
+curve: string, };

@@ -4,4 +4,12 @@
  * Distance-per-cell scale for a scene grid. `unit` is a display label
  * (e.g. "ft", "m").
  */
-export type GridDistance = { perCell: number, unit: string, };
+export type GridDistance = { 
+/**
+ * Distance one cell represents, in `unit`s.
+ */
+perCell: number, 
+/**
+ * Display label (e.g. "ft", "m") — never interpreted.
+ */
+unit: string, };

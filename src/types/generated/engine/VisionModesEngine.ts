@@ -4,4 +4,8 @@ import type { VisionMode } from "./VisionMode";
 /**
  * The engine body of a "vision-modes" config document.
  */
-export type VisionModesEngine = { modes: { [key in string]: VisionMode }, };
+export type VisionModesEngine = { 
+/**
+ * Vision modes keyed by mode id.
+ */
+modes: { [key in string]: VisionMode }, };

@@ -9,4 +9,24 @@ import type { MovementRestriction } from "./MovementRestriction";
  * identical — a stored explicit null re-serializes as absent, which is
  * semantically lossless.
  */
-export type SceneVisionOverrides = { losRestriction: boolean | null, fog: boolean | null, observerVision: boolean | null, movementRestriction: MovementRestriction | null, movementModel: MovementModel | null, };
+export type SceneVisionOverrides = { 
+/**
+ * Line-of-sight restriction override (walls occlude sight).
+ */
+losRestriction: boolean | null, 
+/**
+ * Fog-of-war override.
+ */
+fog: boolean | null, 
+/**
+ * Whether observers (non-owners) contribute vision override.
+ */
+observerVision: boolean | null, 
+/**
+ * Movement-gate policy override.
+ */
+movementRestriction: MovementRestriction | null, 
+/**
+ * Movement-engine override.
+ */
+movementModel: MovementModel | null, };

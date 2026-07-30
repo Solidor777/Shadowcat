@@ -9,11 +9,31 @@ import type { SceneVisionOverrides } from "./SceneVisionOverrides";
  * `bounds` = the navmesh's outer rectangle in grid units; absent ⇒
  * `DEFAULT_SCENE_BOUNDS_UNITS` (read-side backstop, unchanged).
  */
-export type SceneEngine = { grid: Grid, background: string | null, bounds: SceneDimensions | null, 
+export type SceneEngine = { 
+/**
+ * The scene's grid geometry.
+ */
+grid: Grid, 
+/**
+ * Background image asset id; wire-required but nullable.
+ */
+background: string | null, 
+/**
+ * Navmesh outer rectangle in grid units; absent = the read-side default.
+ */
+bounds: SceneDimensions | null, 
 /**
  * Scene-level snap-to-grid toggle, independent of `movementModel`.
  * Absent ⇒ derived default resolved at read time (false for a
  * continuous scene, true otherwise) — reading this field alone is NOT
  * the effective value.
  */
-snapToGrid: boolean | null, vision: SceneVisionOverrides | null, lighting: SceneLightingOverrides | null, };
+snapToGrid: boolean | null, 
+/**
+ * Per-scene vision overrides; absent fields fall back to world defaults.
+ */
+vision: SceneVisionOverrides | null, 
+/**
+ * Per-scene lighting overrides; absent fields fall back to world defaults.
+ */
+lighting: SceneLightingOverrides | null, };

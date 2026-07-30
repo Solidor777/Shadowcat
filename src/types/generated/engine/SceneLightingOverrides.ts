@@ -6,4 +6,16 @@ import type { LightMode } from "./LightMode";
  * Per-scene overrides for lighting; same null-vs-absent equivalence as
  * `SceneVisionOverrides`.
  */
-export type SceneLightingOverrides = { enabled: boolean | null, mode: LightMode | null, environment: EnvironmentLight | null, };
+export type SceneLightingOverrides = { 
+/**
+ * Lighting on/off override.
+ */
+enabled: boolean | null, 
+/**
+ * Light-mode override.
+ */
+mode: LightMode | null, 
+/**
+ * Ambient-light override.
+ */
+environment: EnvironmentLight | null, };

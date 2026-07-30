@@ -4,4 +4,8 @@ import type { GradationBand } from "./GradationBand";
 /**
  * The engine body of a "light-gradation" config document.
  */
-export type LightGradationEngine = { bands: Array<GradationBand>, };
+export type LightGradationEngine = { 
+/**
+ * The world's illumination bands (sorted brightest-first at resolution).
+ */
+bands: Array<GradationBand>, };

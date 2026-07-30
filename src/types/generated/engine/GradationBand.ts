@@ -5,4 +5,12 @@
  * `minIllumination` is the minimum light level [0,1] a cell must reach to
  * qualify; bands are sorted brightest-first at resolution time.
  */
-export type GradationBand = { name: string, minIllumination: number, };
+export type GradationBand = { 
+/**
+ * Band name (`VisionMode.illumination_floor` references it).
+ */
+name: string, 
+/**
+ * Minimum light level [0,1] a cell must reach to qualify.
+ */
+minIllumination: number, };

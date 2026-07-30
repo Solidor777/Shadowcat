@@ -6,4 +6,36 @@ import type { Falloff } from "./Falloff";
  * falloff curve (scene-docs.ts:532-541 `LightSystem`). `brightRadius`/
  * `dimRadius` are in grid cells.
  */
-export type LightEngine = { x: number, y: number, color: string, intensity: number, brightRadius: number, dimRadius: number, falloff: Falloff | null, enabled: boolean, };
+export type LightEngine = { 
+/**
+ * Position x, scene units.
+ */
+x: number, 
+/**
+ * Position y, scene units.
+ */
+y: number, 
+/**
+ * `#rrggbb` light color.
+ */
+color: string, 
+/**
+ * Emission strength 0..=1 at the source.
+ */
+intensity: number, 
+/**
+ * Full-brightness radius, grid cells.
+ */
+brightRadius: number, 
+/**
+ * Dim-light outer radius, grid cells.
+ */
+dimRadius: number, 
+/**
+ * Brightness falloff curve; absent = linear (read-side default).
+ */
+falloff: Falloff | null, 
+/**
+ * GM toggle; a disabled light emits nothing.
+ */
+enabled: boolean, };

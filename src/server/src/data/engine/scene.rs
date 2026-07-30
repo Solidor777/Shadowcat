@@ -8,56 +8,80 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+/// Which movement engine a scene uses — the dispatch axis between the grid
+/// A* pathfinder and the continuous/navmesh router (`SceneEcs::pathfind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "kebab-case")]
 pub enum MovementModel {
+    /// Cell-to-cell movement on the grid (A* over cells).
     GridStepped,
+    /// Free continuous movement routed on the navmesh (polyanya).
     Continuous,
 }
 
+/// How far the server lets a player-driven move reach (the `Room::publish`
+/// move gate's policy input).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "lowercase")]
 pub enum MovementRestriction {
+    /// Only cells the mover can currently see.
     Visible,
+    /// Anywhere already revealed (explored fog), seen now or before.
     Revealed,
+    /// No visibility gating (walls/regions still apply).
     Unrestricted,
 }
 
+/// Scene lighting mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 pub enum LightMode {
+    /// Everything fully lit; placed lights are cosmetic.
     #[serde(rename = "globalIllumination")]
     GlobalIllumination,
+    /// The scene's ambient `EnvironmentLight` + placed lights drive
+    /// illumination (and therefore lighting-aware vision).
     #[serde(rename = "environmentLight")]
     EnvironmentLight,
 }
 
+/// Diagonal-step cost rule for the grid pathfinder (`scene/pathfinding.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "lowercase")]
 pub enum DiagonalRule {
+    /// Diagonals cost the same as orthogonals (D&D 5e-style).
     Chebyshev,
+    /// Diagonals alternate 1-2-1-2 cells (PF/3.5-style).
     Alternating,
+    /// Diagonals cost sqrt(2).
     Euclidean,
+    /// No diagonal moves; 4-neighbor steps only.
     Manhattan,
 }
 
+/// Token move-animation easing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 pub enum EasingMode {
+    /// Accelerate then decelerate.
     #[serde(rename = "easeInOut")]
     EaseInOut,
+    /// Constant speed.
     #[serde(rename = "linear")]
     Linear,
 }
 
+/// Ambient scene light for `LightMode::EnvironmentLight`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentLight {
+    /// `#rrggbb` ambient color.
     pub color: String,
+    /// Ambient level 0..=1 (0 = darkness, placed lights only).
     pub intensity: f64,
 }
 
@@ -66,7 +90,9 @@ pub struct EnvironmentLight {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct SceneDimensions {
+    /// Width in grid cells.
     pub width: f64,
+    /// Height in grid cells.
     pub height: f64,
 }
 
@@ -76,17 +102,24 @@ pub struct SceneDimensions {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct GridDistance {
+    /// Distance one cell represents, in `unit`s.
     pub per_cell: f64,
+    /// Display label (e.g. "ft", "m") — never interpreted.
     pub unit: String,
 }
 
+/// A scene's grid geometry. There is NO fallback size anywhere downstream:
+/// consumers refuse (`None`/empty) on an absent grid rather than synthesizing
+/// a default (`scene_grid_sizes` is the sole defaulting source).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Grid {
     /// "square" | "hex" — kept a `String` in v1 (asserted by the battery).
     pub kind: String,
+    /// Cell size in scene units (hex: the across-flats diameter).
     pub size: f64,
+    /// Real-world distance scale; absent = unitless.
     #[serde(default)]
     pub distance: Option<GridDistance>,
 }
@@ -100,14 +133,19 @@ pub struct Grid {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SceneVisionOverrides {
+    /// Line-of-sight restriction override (walls occlude sight).
     #[serde(default)]
     pub los_restriction: Option<bool>,
+    /// Fog-of-war override.
     #[serde(default)]
     pub fog: Option<bool>,
+    /// Whether observers (non-owners) contribute vision override.
     #[serde(default)]
     pub observer_vision: Option<bool>,
+    /// Movement-gate policy override.
     #[serde(default)]
     pub movement_restriction: Option<MovementRestriction>,
+    /// Movement-engine override.
     #[serde(default)]
     pub movement_model: Option<MovementModel>,
 }
@@ -118,10 +156,13 @@ pub struct SceneVisionOverrides {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SceneLightingOverrides {
+    /// Lighting on/off override.
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// Light-mode override.
     #[serde(default)]
     pub mode: Option<LightMode>,
+    /// Ambient-light override.
     #[serde(default)]
     pub environment: Option<EnvironmentLight>,
 }
@@ -133,8 +174,11 @@ pub struct SceneLightingOverrides {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SceneEngine {
+    /// The scene's grid geometry.
     pub grid: Grid,
+    /// Background image asset id; wire-required but nullable.
     pub background: Option<String>,
+    /// Navmesh outer rectangle in grid units; absent = the read-side default.
     #[serde(default)]
     pub bounds: Option<SceneDimensions>,
     /// Scene-level snap-to-grid toggle, independent of `movementModel`.
@@ -143,8 +187,10 @@ pub struct SceneEngine {
     /// the effective value.
     #[serde(default)]
     pub snap_to_grid: Option<bool>,
+    /// Per-scene vision overrides; absent fields fall back to world defaults.
     #[serde(default)]
     pub vision: Option<SceneVisionOverrides>,
+    /// Per-scene lighting overrides; absent fields fall back to world defaults.
     #[serde(default)]
     pub lighting: Option<SceneLightingOverrides>,
 }
@@ -155,29 +201,43 @@ pub struct SceneEngine {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct WorldSceneDefaults {
+    /// Walls occlude sight by default.
     pub los_restriction: bool,
+    /// Fog of war on by default.
     pub fog: bool,
+    /// Lighting simulation on by default.
     pub lighting_enabled: bool,
+    /// Default light mode.
     pub light_mode: LightMode,
+    /// Default ambient light.
     pub environment: EnvironmentLight,
+    /// Whether non-owner observers contribute vision by default.
     pub observer_vision: bool,
+    /// Default movement-gate policy.
     pub movement_restriction: MovementRestriction,
+    /// Default movement engine.
     pub movement_model: MovementModel,
+    /// Grid gate counts a cell partially inside vision as reachable.
     pub partial_cell_leniency: bool,
 }
 
+/// World pathfinding settings.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Pathfinding {
+    /// Diagonal-step cost rule for the grid pathfinder.
     pub diagonal_rule: DiagonalRule,
 }
 
+/// Token move-animation settings.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AnimationSettings {
+    /// Playback speed, grid cells per second.
     pub speed_cells_per_sec: f64,
+    /// Easing curve.
     pub easing: EasingMode,
 }
 
@@ -187,8 +247,11 @@ pub struct AnimationSettings {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct WorldSettingsEngine {
+    /// World-level scene defaults (scenes override per field).
     pub scene: WorldSceneDefaults,
+    /// Pathfinding settings.
     pub pathfinding: Pathfinding,
+    /// Move-animation settings.
     pub animation: AnimationSettings,
     /// The scene players render. `None`/absent/dangling ⇒ the first scene
     /// (legacy behavior). Deliberately NOT part of the structural-
@@ -236,14 +299,22 @@ impl Default for WorldSettingsEngine {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct LightEngine {
+    /// Position x, scene units.
     pub x: f64,
+    /// Position y, scene units.
     pub y: f64,
+    /// `#rrggbb` light color.
     pub color: String,
+    /// Emission strength 0..=1 at the source.
     pub intensity: f64,
+    /// Full-brightness radius, grid cells.
     pub bright_radius: f64,
+    /// Dim-light outer radius, grid cells.
     pub dim_radius: f64,
+    /// Brightness falloff curve; absent = linear (read-side default).
     #[serde(default)]
     pub falloff: Option<Falloff>,
+    /// GM toggle; a disabled light emits nothing.
     pub enabled: bool,
 }
 
@@ -254,6 +325,7 @@ pub struct LightEngine {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Falloff {
+    /// "linear" | "quadratic" | "none" — kept a `String` in v1.
     pub curve: String,
 }
 
@@ -265,10 +337,16 @@ pub struct Falloff {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct VisionMode {
+    /// Stable id `VisionAssignment.mode` references.
     pub id: String,
+    /// Display name.
     pub name: String,
+    /// Lowest gradation band name this mode can see into.
     pub illumination_floor: String,
+    /// Default sight distance in grid cells (0 = unlimited).
     pub default_range: f64,
+    /// Optional client render treatment tag (e.g. a tint); never interpreted
+    /// server-side.
     #[serde(default)]
     pub render_hint: Option<String>,
 }
@@ -278,6 +356,7 @@ pub struct VisionMode {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct VisionModesEngine {
+    /// Vision modes keyed by mode id.
     pub modes: BTreeMap<String, VisionMode>,
 }
 
@@ -288,7 +367,9 @@ pub struct VisionModesEngine {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct GradationBand {
+    /// Band name (`VisionMode.illumination_floor` references it).
     pub name: String,
+    /// Minimum light level [0,1] a cell must reach to qualify.
     pub min_illumination: f64,
 }
 
@@ -297,5 +378,6 @@ pub struct GradationBand {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct LightGradationEngine {
+    /// The world's illumination bands (sorted brightest-first at resolution).
     pub bands: Vec<GradationBand>,
 }

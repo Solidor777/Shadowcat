@@ -7,7 +7,19 @@ import type { WorldSceneDefaults } from "./WorldSceneDefaults";
  * The engine body of a "world-settings" config document
  * (scene-docs.ts:90-99 `WorldSettingsSystem`).
  */
-export type WorldSettingsEngine = { scene: WorldSceneDefaults, pathfinding: Pathfinding, animation: AnimationSettings, 
+export type WorldSettingsEngine = { 
+/**
+ * World-level scene defaults (scenes override per field).
+ */
+scene: WorldSceneDefaults, 
+/**
+ * Pathfinding settings.
+ */
+pathfinding: Pathfinding, 
+/**
+ * Move-animation settings.
+ */
+animation: AnimationSettings, 
 /**
  * The scene players render. `None`/absent/dangling ⇒ the first scene
  * (legacy behavior). Deliberately NOT part of the structural-

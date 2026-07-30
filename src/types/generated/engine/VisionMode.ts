@@ -6,4 +6,25 @@
  * with this mode can see into. `defaultRange`: effective sight distance in
  * grid cells (0 = unlimited).
  */
-export type VisionMode = { id: string, name: string, illuminationFloor: string, defaultRange: number, renderHint: string | null, };
+export type VisionMode = { 
+/**
+ * Stable id `VisionAssignment.mode` references.
+ */
+id: string, 
+/**
+ * Display name.
+ */
+name: string, 
+/**
+ * Lowest gradation band name this mode can see into.
+ */
+illuminationFloor: string, 
+/**
+ * Default sight distance in grid cells (0 = unlimited).
+ */
+defaultRange: number, 
+/**
+ * Optional client render treatment tag (e.g. a tint); never interpreted
+ * server-side.
+ */
+renderHint: string | null, };
