@@ -58,8 +58,8 @@ impl LinkPreviewCache {
     ///
     /// # Examples
     ///
-    /// ```
-    /// let cache = shadowcat::chat::preview_cache::LinkPreviewCache::new();
+    /// ```text
+    /// let cache = LinkPreviewCache::new(); // module is crate-private
     /// ```
     pub fn new() -> Self {
         Self::default()
