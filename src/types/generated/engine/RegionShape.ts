@@ -10,4 +10,9 @@ export type RegionShape = {
  * "rect" | "circle" | "polygon" — kept a `String` in v1 (asserted by
  * the unit battery).
  */
-kind: string, points: Array<number>, };
+kind: string, 
+/**
+ * Flat coordinate list in scene units; layout depends on `kind` (see the
+ * struct doc).
+ */
+points: Array<number>, };

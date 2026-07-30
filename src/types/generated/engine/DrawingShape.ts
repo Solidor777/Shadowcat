@@ -4,4 +4,14 @@
  * `points` layout mirrors `RegionShape` (path vertices for freehand/line/
  * polygon, or bbox corners `[x0,y0,x1,y1]` for rect/ellipse).
  */
-export type DrawingShape = { kind: string, points: Array<number>, };
+export type DrawingShape = { 
+/**
+ * "freehand" | "line" | "polygon" | "rect" | "ellipse" (render-layer
+ * vocabulary; kept a `String` in v1).
+ */
+kind: string, 
+/**
+ * Flat coordinate list in scene units; layout depends on `kind` (see the
+ * struct doc).
+ */
+points: Array<number>, };

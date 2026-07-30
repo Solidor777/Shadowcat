@@ -9,13 +9,19 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+/// A line segment in scene units (the scene's continuous coordinate space,
+/// not grid cells).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Seg {
+    /// Start point x, scene units.
     pub x1: f64,
+    /// Start point y, scene units.
     pub y1: f64,
+    /// End point x, scene units.
     pub x2: f64,
+    /// End point y, scene units.
     pub y2: f64,
 }
 
@@ -26,11 +32,16 @@ pub struct Seg {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct WallEngine {
+    /// The wall's segment, scene units.
     pub seg: Seg,
+    /// Occludes vision rays; absent/false = transparent to sight.
     #[serde(default)]
     pub blocks_sight: Option<bool>,
+    /// Occludes light propagation; absent/false = transparent to light.
     #[serde(default)]
     pub blocks_light: Option<bool>,
+    /// Blocks token movement (the `Room::publish` move gate reads this);
+    /// absent/false = passable.
     #[serde(default)]
     pub blocks_move: Option<bool>,
 }
@@ -45,6 +56,8 @@ pub struct RegionShape {
     /// "rect" | "circle" | "polygon" — kept a `String` in v1 (asserted by
     /// the unit battery).
     pub kind: String,
+    /// Flat coordinate list in scene units; layout depends on `kind` (see the
+    /// struct doc).
     pub points: Vec<f64>,
 }
 
@@ -57,11 +70,15 @@ pub struct RegionShape {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct RegionEngine {
+    /// The zone's vector geometry, scene units.
     pub shape: RegionShape,
     /// "terrain" | "impassable" | "arrest" — kept a `String` in v1 (asserted
     /// by the battery).
     pub behavior: String,
+    /// Movement-cost multiplier (>= 1, clamped read-side); meaningful only
+    /// for `behavior: "terrain"`.
     pub cost: f64,
+    /// GM toggle; a disabled region is dropped entirely at read time.
     pub enabled: bool,
 }
 
@@ -71,23 +88,33 @@ pub struct RegionEngine {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct DrawingShape {
+    /// "freehand" | "line" | "polygon" | "rect" | "ellipse" (render-layer
+    /// vocabulary; kept a `String` in v1).
     pub kind: String,
+    /// Flat coordinate list in scene units; layout depends on `kind` (see the
+    /// struct doc).
     pub points: Vec<f64>,
 }
 
+/// A drawing's outline style.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Stroke {
+    /// `#rrggbb` stroke color.
     pub color: String,
+    /// Stroke width, scene units.
     pub width: f64,
 }
 
+/// A drawing's fill style.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Fill {
+    /// `#rrggbb` fill color.
     pub color: String,
+    /// Fill opacity 0..=1; absent = opaque.
     #[serde(default)]
     pub alpha: Option<f64>,
 }
@@ -101,8 +128,11 @@ pub struct Fill {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct DrawingEngine {
+    /// The drawing's geometry, scene units.
     pub shape: DrawingShape,
+    /// Outline style; wire-required but nullable (`Stroke | null`).
     pub stroke: Option<Stroke>,
+    /// Fill style; wire-required but nullable (`Fill | null`).
     pub fill: Option<Fill>,
 }
 
@@ -113,17 +143,27 @@ pub struct DrawingEngine {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct TemplateShape {
+    /// "circle" | "cone" | "rect" | "line" (`template-view.ts`'s tessellation
+    /// vocabulary; kept a `String` in v1).
     pub kind: String,
+    /// Anchor x, scene units.
     pub x: f64,
+    /// Anchor y, scene units.
     pub y: f64,
+    /// Radius/length, scene units.
     pub size: f64,
+    /// Orientation in degrees; the render layer converts via standard radian
+    /// math (`template-view.ts`).
     pub direction: f64,
 }
 
+/// A template document's engine body: a measured-area overlay.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct TemplateEngine {
+    /// The template's area, scene units.
     pub shape: TemplateShape,
+    /// `#rrggbb` overlay color.
     pub color: String,
 }

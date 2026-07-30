@@ -6,4 +6,21 @@ import type { Seg } from "./Seg";
  * flags exclude the wall from that gate exactly as the pre-M13-0 pointer
  * read did (read-side backstop unchanged).
  */
-export type WallEngine = { seg: Seg, blocksSight: boolean | null, blocksLight: boolean | null, blocksMove: boolean | null, };
+export type WallEngine = { 
+/**
+ * The wall's segment, scene units.
+ */
+seg: Seg, 
+/**
+ * Occludes vision rays; absent/false = transparent to sight.
+ */
+blocksSight: boolean | null, 
+/**
+ * Occludes light propagation; absent/false = transparent to light.
+ */
+blocksLight: boolean | null, 
+/**
+ * Blocks token movement (the `Room::publish` move gate reads this);
+ * absent/false = passable.
+ */
+blocksMove: boolean | null, };

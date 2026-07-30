@@ -10,4 +10,16 @@ import type { Stroke } from "./Stroke";
  * mirrors that exactly (the key must be present, either an object or
  * `null`).
  */
-export type DrawingEngine = { shape: DrawingShape, stroke: Stroke | null, fill: Fill | null, };
+export type DrawingEngine = { 
+/**
+ * The drawing's geometry, scene units.
+ */
+shape: DrawingShape, 
+/**
+ * Outline style; wire-required but nullable (`Stroke | null`).
+ */
+stroke: Stroke | null, 
+/**
+ * Fill style; wire-required but nullable (`Fill | null`).
+ */
+fill: Fill | null, };

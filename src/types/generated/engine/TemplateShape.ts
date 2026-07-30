@@ -5,4 +5,26 @@
  * (degrees), tessellated per `kind` (`template-view.ts:9-11`
  * `TemplateSystem`).
  */
-export type TemplateShape = { kind: string, x: number, y: number, size: number, direction: number, };
+export type TemplateShape = { 
+/**
+ * "circle" | "cone" | "rect" | "line" (`template-view.ts`'s tessellation
+ * vocabulary; kept a `String` in v1).
+ */
+kind: string, 
+/**
+ * Anchor x, scene units.
+ */
+x: number, 
+/**
+ * Anchor y, scene units.
+ */
+y: number, 
+/**
+ * Radius/length, scene units.
+ */
+size: number, 
+/**
+ * Orientation in degrees; the render layer converts via standard radian
+ * math (`template-view.ts`).
+ */
+direction: number, };

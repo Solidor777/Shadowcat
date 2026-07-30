@@ -8,9 +8,22 @@ import type { RegionShape } from "./RegionShape";
  * `behavior:"terrain"`. `enabled` lets a GM toggle a region off without
  * deleting it (disabled regions are dropped entirely at read time).
  */
-export type RegionEngine = { shape: RegionShape, 
+export type RegionEngine = { 
+/**
+ * The zone's vector geometry, scene units.
+ */
+shape: RegionShape, 
 /**
  * "terrain" | "impassable" | "arrest" — kept a `String` in v1 (asserted
  * by the battery).
  */
-behavior: string, cost: number, enabled: boolean, };
+behavior: string, 
+/**
+ * Movement-cost multiplier (>= 1, clamped read-side); meaningful only
+ * for `behavior: "terrain"`.
+ */
+cost: number, 
+/**
+ * GM toggle; a disabled region is dropped entirely at read time.
+ */
+enabled: boolean, };
