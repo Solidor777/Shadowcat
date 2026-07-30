@@ -28,6 +28,8 @@ node_modules/
 
 # Client build output
 /dist/
+# Worked-example lib builds (rebuilt by CI; guides code-import the sources)
+examples/*/dist/
 
 # TS incremental build info
 *.tsbuildinfo
