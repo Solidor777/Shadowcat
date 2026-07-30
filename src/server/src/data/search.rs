@@ -10,8 +10,11 @@ use crate::data::document::Document;
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct SearchHit {
+    /// The matched document, already per-recipient filtered.
     pub document: Document,
+    /// BM25 relevance as SQLite returns it (lower = more relevant).
     pub score: f64,
+    /// Highlighted match snippet from the recipient's own index partition.
     pub snippet: String,
 }
 
@@ -19,7 +22,9 @@ pub struct SearchHit {
 /// page, or `None` when the ranked candidates are exhausted.
 #[derive(Debug, Clone)]
 pub struct SearchPage {
+    /// The page's hits, rank order.
     pub hits: Vec<SearchHit>,
+    /// Opaque raw-rank offset for the next page; `None` = exhausted.
     pub next_cursor: Option<i64>,
 }
 
@@ -28,6 +33,28 @@ pub struct SearchPage {
 /// leaf value of the `engine` band (if present) and the `system` body
 /// (recursing objects and arrays in both). Keys, booleans, nulls, and the rest
 /// of the envelope are excluded.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::Document;
+/// use shadowcat::data::search::index_content;
+///
+/// let doc: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "note",
+///     "schema_version": 1,
+///     "name": "MOCK_NOTE_A",
+///     "system": { "body": "the cellar key", "hidden_flag": true },
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+///
+/// let text = index_content(&doc);
+/// assert!(text.contains("MOCK_NOTE_A") && text.contains("cellar"));
+/// assert!(!text.contains("hidden_flag")); // keys and booleans are not indexed
+/// ```
 pub fn index_content(doc: &Document) -> String {
     let mut out = String::new();
     out.push_str(&doc.doc_type);
@@ -47,6 +74,33 @@ pub fn index_content(doc: &Document) -> String {
 /// for document reads, so this is the index a non-GM search matches and snippets
 /// against. Keeps the searchable text in exact lockstep with what the recipient
 /// could otherwise see — no GM-only leak through MATCH, score, or snippet.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::Document;
+/// use shadowcat::data::search::index_content_public;
+///
+/// let doc: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "note",
+///     "schema_version": 1,
+///     "permissions": {
+///         "default": "observer", "users": {},
+///         "property_overrides": { "/system/secret": "gm_only" },
+///         "capabilities": { "by_role": {}, "by_user": {} }, "gm_role": null
+///     },
+///     "system": { "secret": "MOCK_SECRET_A", "body": "public text" },
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+///
+/// // The public partition never contains GM-only text — not even for MATCH.
+/// let public = index_content_public(&doc);
+/// assert!(!public.contains("MOCK_SECRET_A"));
+/// assert!(public.contains("public"));
+/// ```
 pub fn index_content_public(doc: &Document) -> String {
     let non_gm = crate::data::permission::Access {
         caps: std::collections::BTreeSet::new(),
@@ -57,6 +111,14 @@ pub fn index_content_public(doc: &Document) -> String {
     index_content(&crate::data::permission::filter_properties(doc, &non_gm))
 }
 
+/// Append every string and number leaf of `value` (recursing objects/arrays)
+/// to `out`, space-separated. Keys, booleans, and nulls are excluded.
+///
+/// # Examples
+///
+/// ```text
+/// collect_leaves(&json!({"hp": 10, "name": "MOCK"}), &mut s) // s: " 10 MOCK"
+/// ```
 fn collect_leaves(value: &serde_json::Value, out: &mut String) {
     match value {
         serde_json::Value::String(s) => {
@@ -90,6 +152,15 @@ fn collect_leaves(value: &serde_json::Value, out: &mut String) {
 /// word characters means a punctuation-only query cannot reach the MATCH parser
 /// as a term-less phrase (which FTS5 would reject) — it yields `None`, an empty
 /// result, instead. Returns `None` for an empty query.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::search::build_match;
+///
+/// assert_eq!(build_match("cellar ke"), Some("\"cellar\" \"ke\"*".to_string()));
+/// assert_eq!(build_match("!!!"), None); // punctuation-only never reaches FTS5
+/// ```
 pub fn build_match(input: &str) -> Option<String> {
     // Bound the work an untrusted query can drive: cap the length (by chars, so
     // never splitting a UTF-8 boundary) and the number of terms.

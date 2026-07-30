@@ -5,4 +5,16 @@ import type { Document } from "./Document";
  * One search result: the per-recipient-filtered document, its BM25 relevance
  * (lower = more relevant, as SQLite returns it), and a highlighted snippet.
  */
-export type SearchHit = { document: Document, score: number, snippet: string, };
+export type SearchHit = { 
+/**
+ * The matched document, already per-recipient filtered.
+ */
+document: Document, 
+/**
+ * BM25 relevance as SQLite returns it (lower = more relevant).
+ */
+score: number, 
+/**
+ * Highlighted match snippet from the recipient's own index partition.
+ */
+snippet: string, };

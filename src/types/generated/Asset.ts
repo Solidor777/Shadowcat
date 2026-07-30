@@ -4,15 +4,39 @@
  * Metadata for one stored asset. Bytes live on disk at `storage_key`
  * (relative to `assets_dir`); identity (`id`) is stable across rename/replace.
  */
-export type Asset = { id: string, world_id: string, 
+export type Asset = { 
+/**
+ * Stable identity; survives rename and replace.
+ */
+id: string, 
+/**
+ * Owning world (assets are world-scoped).
+ */
+world_id: string, 
 /**
  * "<world_id>/<uuid>", relative to the configured assets_dir.
  */
-storage_key: string, original_name: string, content_type: string, byte_size: bigint, 
+storage_key: string, 
+/**
+ * Filename as uploaded (display only; never a storage path).
+ */
+original_name: string, 
+/**
+ * MIME type recorded at upload.
+ */
+content_type: string, 
+/**
+ * Size of the stored bytes.
+ */
+byte_size: bigint, 
 /**
  * NULL when the uploading account has been deleted.
  */
-created_by: string | null, created_at: bigint, 
+created_by: string | null, 
+/**
+ * Upload time, Unix epoch milliseconds.
+ */
+created_at: bigint, 
 /**
  * Bumped on every replace; backs the ETag and the resync source of truth.
  */
