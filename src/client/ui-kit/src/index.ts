@@ -25,6 +25,6 @@ export type { ConflictGroup } from "./mergeConflict";
 export { TemplatesController } from "./templatesController.svelte";
 export type { TemplatesControllerDeps, PendingSession } from "./templatesController.svelte";
 export { default as TemplateModalHost } from "./TemplateModalHost.svelte";
-export type { TemplatesApi } from "./appContext";
+export type { ChatApi, TemplatesApi } from "./appContext";
 export { default as TemplateControls } from "./TemplateControls.svelte";
 export { default as SheetHost } from "./SheetHost.svelte";
