@@ -325,9 +325,19 @@ pub fn declared_caps_for_path<'a>(path: &str, reqs: &'a [CapabilityRequirement])
 ///
 /// # Examples
 ///
-/// ```text
-/// // Create-time: requirements whose protected path exists in the new body apply.
-/// let caps = declared_caps_for_document(&doc_json, &world_requirements);
+/// ```
+/// use shadowcat::data::document::CapabilityRequirement;
+/// use shadowcat::data::permission::declared_caps_for_document;
+///
+/// let reqs = vec![CapabilityRequirement {
+///     path_prefix: "/engine/vision".into(),
+///     caps: ["module:edit_vision".to_string()].into(),
+/// }];
+/// // Create-time: a requirement applies iff its protected path is PRESENT in the body.
+/// let with = serde_json::json!({ "engine": { "vision": { "range": 30 } } });
+/// let without = serde_json::json!({ "engine": { "x": 0 } });
+/// assert_eq!(declared_caps_for_document(&with, &reqs), vec!["module:edit_vision"]);
+/// assert!(declared_caps_for_document(&without, &reqs).is_empty());
 /// ```
 pub fn declared_caps_for_document<'a>(
     doc_json: &serde_json::Value,
@@ -580,9 +590,29 @@ pub fn resolve_access(
 /// correct only for document types that can never carry an actor link.
 /// # Examples
 ///
-/// ```text
-/// // resolve_access + the world's per-doc_type default grants layered in:
-/// let access = resolve_access_world(user, role, &doc, &world_defaults, effective_owner);
+/// ```
+/// use shadowcat::data::document::{DocRole, Document, WorldCapDefaults, WorldRole};
+/// use shadowcat::data::permission::resolve_access_world;
+///
+/// let mut doc: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "note",
+///     "schema_version": 1,
+///     "system": {},
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+/// doc.permissions.default = DocRole::Observer;
+///
+/// // A world-level by_role grant layers onto the per-document role floor.
+/// let mut defaults = WorldCapDefaults::default();
+/// defaults.all.by_role.entry(DocRole::Observer).or_default().insert("module:x".into());
+///
+/// let player = uuid::Uuid::new_v4();
+/// let grants = defaults.grants_for(&doc.doc_type); // world defaults, projected per doc_type
+/// let access = resolve_access_world(player, WorldRole::Player, &doc, &grants, None);
+/// assert!(access.has("module:x"));
 /// ```
 pub fn resolve_access_world(
     user: Uuid,

@@ -50,7 +50,6 @@ pub(crate) fn world_of(doc: &Document) -> Option<Uuid> {
 #[ts(export, export_to = "../../types/generated/")]
 pub struct Source {
     /// The template/original document this one was stamped from.
-    pub id: Uuid,
     /// Compendium pack of the source, when it came from one.
     pub pack: Option<String>,
     /// Source content version at stamp time (provenance for pull/push).
