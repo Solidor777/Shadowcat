@@ -13,11 +13,30 @@ pub(crate) type Cell = (i32, i32);
 pub(crate) enum RegionShape {
     /// Axis-aligned rectangle; corners may arrive in any order (normalized
     /// min/max at the containment test).
-    Rect { x0: f64, y0: f64, x1: f64, y1: f64 },
+    Rect {
+        /// First corner x, scene units.
+        x0: f64,
+        /// First corner y, scene units.
+        y0: f64,
+        /// Opposite corner x, scene units.
+        x1: f64,
+        /// Opposite corner y, scene units.
+        y1: f64,
+    },
     /// Circle by center + radius, scene units.
-    Circle { cx: f64, cy: f64, r: f64 },
+    Circle {
+        /// Center x.
+        cx: f64,
+        /// Center y.
+        cy: f64,
+        /// Radius.
+        r: f64,
+    },
     /// Simple polygon by vertex list; `< 3` points fails closed at `rasterize`.
-    Polygon { points: Vec<(f64, f64)> },
+    Polygon {
+        /// Vertices in order, scene units.
+        points: Vec<(f64, f64)>,
+    },
 }
 
 /// The region's gameplay effect (spec §2.1).
