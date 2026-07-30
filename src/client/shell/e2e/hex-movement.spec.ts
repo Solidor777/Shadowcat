@@ -14,16 +14,38 @@ const PNG_1X1 = Buffer.from(
 const WALL_X = 450;
 const WALL_Y0 = 60;
 const WALL_Y1 = 560;
+/** Left edge of the enclosing box (below) — strictly less than every position the token holds
+ * before the illegal leg (`PLACE_X`/`HANDOFF_X`/`LEGAL_X`), so the box's interior contains them
+ * all. */
+const BOX_X0 = 50;
 const TOKEN_Y = 300;
 const PLACE_X = 200;
-/** Where the GM parks the token after assigning ownership (the happens-before barrier). */
+/** Where the GM parks the token after assigning ownership (the happens-before barrier). A raw
+ * GM position write, so it need not land on a hex cell center. */
 const HANDOFF_X = 240;
-/** Control leg: a legal destination on the token's own side of the wall. */
-const LEGAL_X = 340;
+
+/** Scene's hex grid size (`resolve_grid_shape` passes the authored `grid.size`, default 100 —
+ * this scene never overrides it). Mirrors `HexGrid::axial_to_pixel` (`grid_shape.rs`): for the
+ * fixed row r=2 that `TOKEN_Y = 300` sits on (`y = size * 1.5 * r`), the pixel x of axial column
+ * `q` is `size * sqrt(3) * (q + 1)`. A non-GM's move is server-authoritative and grid-stepped —
+ * `SceneEcs::pathfind` always snaps a requested destination to its containing cell's center
+ * (`pathfinding::find`'s per-waypoint contract; only the MOVER's own start point is preserved
+ * literally, since that is the token's actual position, which need not be cell-centered). A
+ * legal player move therefore lands on this formula's output, not on the literal pixel the drag
+ * gesture named as its target. */
+const HEX_SIZE = 100;
+function hexCenterXOnRow2(q: number): number {
+  return HEX_SIZE * Math.sqrt(3) * (q + 1);
+}
+/** Control leg: the destination cell adjacent to `HANDOFF_X`'s cell, well short of the wall. A
+ * non-GM's requested (340, TOKEN_Y) snaps to this cell's center on commit — see `HEX_SIZE` above. */
+const LEGAL_X = hexCenterXOnRow2(1);
 /** Rejected leg: past the wall, so the move segment crosses it. */
 const ILLEGAL_X = 640;
-/** Second legal destination, used as the post-rejection sync barrier. */
-const SETTLE_X = 290;
+/** Second legal destination, used as the post-rejection sync barrier — the NEXT cell back toward
+ * `HANDOFF_X`, distinct from `LEGAL_X`'s cell (a same-cell request is a zero-length route the
+ * client never turns into a `MoveRequest` at all, so this barrier would never fire). */
+const SETTLE_X = hexCenterXOnRow2(0);
 
 const VIEWPORT = { width: 1600, height: 1000 };
 
@@ -118,20 +140,32 @@ async function expectTokenX(page: Page, x: number, why: string): Promise<void> {
 // an illegal move — hence the admin-minted account, seated by invite, given player
 // tools and a token it effectively owns.
 //
-// THE CONTROL LEG. `Room::publish` runs the movement gate BEFORE `apply_intent`, so a
-// permission denial and a wall denial are the same `Forbidden` and are indistinguishable
-// from the client. "The move rolled back" alone would therefore also be produced by an
-// ownership regression, proving nothing about the wall. The scene is set to
-// `movementRestriction: "unrestricted"`, where `blocks_move` is the ONLY thing that can
-// reject a non-GM move, and the same player drags the same token in the same session to a
-// LEGAL destination first: that leg must succeed. Only then does a rejection isolate the wall.
+// A non-GM's move is request-only and server-authoritative (`SceneEcs::pathfind` then
+// `Room::execute_move`; `Room::publish` no longer runs any traversal/wall/mask geometry for a
+// non-GM at all — see `ws/room.rs`). A rejection can therefore come from EITHER the presence/
+// ownership gate (`handle_pathfind`'s Step 0) or the router genuinely finding no route
+// (`PathFail::Unreachable`) or the executor refusing the resulting request — all indistinguishable
+// generic failures from the client. "The move never committed" alone would therefore also be
+// produced by an ownership regression, proving nothing about the wall specifically.
 //
-// SCOPE — this does NOT cover the hex traversal gate. `Unrestricted` makes `Room::publish`
-// `continue` before it ever resolves a `GridShape` or walks `line_traversal`, so the server-side
-// gate exercised here is the grid-kind-AGNOSTIC `blocks_move` segment check. The scene being hex
-// drives the client (render, snapping) and proves the hex authoring path round-trips; the
-// hex-specific mask/traversal gate is proven by the server's own unit and integration tests, not
-// by this spec. Do not read a change here as changing that coverage.
+// THE CONTROL LEG closes that gap: the same player drags the same token in the same session to a
+// LEGAL destination first (a hex-adjacent cell, well inside the enclosing box below); only once
+// that leg demonstrably succeeds does the rejected leg's failure isolate the wall, not ownership.
+//
+// THE ENCLOSING BOX. `movementRestriction: "unrestricted"` removes the visibility mask, so in
+// principle only `blocksMove` walls gate a route. But a single open wall segment is NOT a
+// reliable gate against real A* routing: the router's search window auto-expands past a wall's
+// own endpoints (`WINDOW_MARGIN`, `pathfinding.rs`), so a lone finite segment is always flankable
+// by a detour, regardless of its length. A CLOSED boundary has no such gap — any path from
+// strictly inside to strictly outside a simple closed polygon must cross it. Four wall segments
+// below enclose every position the token holds before the illegal leg; `ILLEGAL_X` sits outside.
+//
+// SCOPE. The scene being hex drives the client (render, snapping) and the server's hex-specific
+// `GridShape` (axial rounding, supercover traversal, `cell_enterable`'s footprint/mask/wall
+// checks) for every leg — Unrestricted no longer means routing-agnostic, since a non-GM's move
+// is ALWAYS routed post-D9. The hex router's exact per-cell parity with the executor is also
+// pinned by the server's own unit and integration tests; this spec proves the end-to-end
+// authoring→drag→commit path round-trips through a real hex scene, not that parity itself.
 test("a non-GM player's wall-crossing drag on a hex scene is rejected by the server and rolled back", async ({
   page,
   browser,
@@ -175,6 +209,20 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     viewport: VIEWPORT,
   });
   const player = await playerCtx.newPage();
+  // Captures every WS frame the player's client SENDS, for the rest of the test. Post-D9 a
+  // gated player move issues no optimistic document write at all (`commitMoves`'s player branch
+  // never touches `ctx.documents` — the token's rendered position advances only off the
+  // server's own `MoveStream`), so proving a drag actually dispatched a request — rather than
+  // silently no-op'ing — requires observing the wire frame itself, not an optimistic value that
+  // no longer exists.
+  const playerWsFrames: string[] = [];
+  player.on("websocket", (ws) => {
+    ws.on("framesent", ({ payload }) => {
+      if (typeof payload === "string") playerWsFrames.push(payload);
+    });
+  });
+  const pathfindCount = (): number =>
+    playerWsFrames.filter((f) => f.includes('"type":"pathfind"')).length;
   try {
     await login(player, playerName, playerPassword);
     await player.getByLabel("Invite code").fill(code);
@@ -234,10 +282,21 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-assets:panel").click();
 
-    // A `blocksMove` wall between the token and the illegal destination.
+    // A `blocksMove` wall between the token and the illegal destination is NOT enough on its
+    // own: post-D9 a player's move is real A* routing (`SceneEcs::pathfind`), and Unrestricted
+    // mode has no visibility mask to bound the search — a single open wall segment is always
+    // flankable by detouring around its endpoint within the router's fixed search-window margin
+    // (`WINDOW_MARGIN`, `pathfinding.rs`), REGARDLESS of how long the segment is made, since the
+    // window expands past wherever the segment's own endpoints sit. A CLOSED boundary has no such
+    // gap: any path from strictly inside to strictly outside a simple closed polygon must cross
+    // it, independent of window size. Four segments enclose the token's PLACE/HANDOFF/LEGAL/SETTLE
+    // positions in a box; ILLEGAL_X sits outside it.
     await gm.getByTestId("tool-wall").click();
-    await dragScene(gm, { x: WALL_X, y: WALL_Y0 }, { x: WALL_X, y: WALL_Y1 });
-    await expect(stageHost(gm)).toHaveAttribute("data-wall-count", "1", { timeout: 15_000 });
+    await dragScene(gm, { x: BOX_X0, y: WALL_Y0 }, { x: BOX_X0, y: WALL_Y1 }); // left
+    await dragScene(gm, { x: BOX_X0, y: WALL_Y0 }, { x: WALL_X, y: WALL_Y0 }); // top
+    await dragScene(gm, { x: WALL_X, y: WALL_Y0 }, { x: WALL_X, y: WALL_Y1 }); // right
+    await dragScene(gm, { x: BOX_X0, y: WALL_Y1 }, { x: WALL_X, y: WALL_Y1 }); // bottom
+    await expect(stageHost(gm)).toHaveAttribute("data-wall-count", "4", { timeout: 15_000 });
 
     // Hand the token to the player. The per-token override lives in the Actors panel
     // and needs the token selected, which is the select tool's job.
@@ -271,24 +330,33 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     await expectTokenX(player, LEGAL_X, "the accepted move must stand on the player's client");
     const beforeIllegal = await currentPositions(player);
 
-    // --- Rejected leg: the same drag, but across the wall. ---
+    // --- Rejected leg: the same drag, but across the wall (now a closed box — see above). ---
+    const pathfindsBeforeIllegalDrag = pathfindCount();
     await dragScene(player, { x: LEGAL_X, y: TOKEN_Y }, { x: ILLEGAL_X, y: TOKEN_Y });
 
-    // The optimistic position must return to exactly its pre-drag value.
+    // The position must never change: post-D9 a gated player move issues no optimistic write, so
+    // a rejection has nothing to "roll back" — it simply never applies. The enclosing box makes
+    // this leg genuinely Unreachable to the router itself (`PathError`, client-side `pathfind`
+    // promise rejects), so the client's `.catch()` never even calls `moveRequest` — the absence
+    // of a commit is expected here, not just the absence of a wall-crossing MoveStream.
     await expect
       .poll(() => currentPositions(player), {
-        message: "the rejected move must roll back to the pre-drag position",
+        message: "the rejected move must never leave the pre-drag position",
         timeout: 20_000,
       })
       .toBe(beforeIllegal);
 
-    // …and it must have actually left it first. Without this the assertion above is
-    // also satisfied by a drag that never dispatched anything.
-    const playerLog = await positionLog(player);
-    expect(
-      playerLog.some((p) => p.length > 0 && parseX(p) > WALL_X),
-      "the player's client must have optimistically written a position past the wall",
-    ).toBe(true);
+    // …and the drag must have actually been dispatched to the server. Without this the assertion
+    // above is also satisfied by a drag that never sent anything — proven via the wire frame
+    // itself (`playerWsFrames`), since there is no client-side optimistic write left to observe.
+    // A `pathfind` frame, not `move_request`: the router itself refuses this leg (Unreachable),
+    // so the client never gets far enough to issue a `move_request` at all.
+    await expect
+      .poll(pathfindCount, {
+        message: "the illegal drag must have dispatched a pathfind request the router then refused",
+        timeout: 20_000,
+      })
+      .toBeGreaterThan(pathfindsBeforeIllegalDrag);
 
     // Second sync barrier: a legal move the GM observes. Once it lands, the rejected
     // move's round trip is provably complete, so the authoritative log below is final.

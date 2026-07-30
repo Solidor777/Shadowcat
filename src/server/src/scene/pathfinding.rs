@@ -701,10 +701,22 @@ pub fn find(
         }
     }
 
-    let path: Vec<vision::P> = cells
+    // The FIRST point is the mover's literal current position, not `cell_center(cells[0])`: a
+    // token need not sit exactly on a cell center (snap-off authoring, a GM's freeform nudge,
+    // any off-grid placement), and `execute_move` requires a `MoveRequest`'s `path[0]` to equal
+    // the token's committed position within `EPS` (its sole proof the request originates where
+    // the token actually is). Cell-centering it here would silently desync the router's route
+    // from the token's real position on every off-center mover, and `execute_move` would refuse
+    // the resulting request as `Degenerate` regardless of how legal the move itself is. Every
+    // OTHER point remains a cell center — waypoints (including the goal) are still grid-snapped,
+    // matching the router's per-cell contract; only the mover's own starting point is literal.
+    let mut path: Vec<vision::P> = cells
         .into_iter()
         .map(|c| grid.shape.cell_center(c))
         .collect();
+    if let Some(first) = path.first_mut() {
+        *first = start;
+    }
     Ok(PathOutcome {
         path,
         cost: total,
