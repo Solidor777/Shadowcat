@@ -2,7 +2,7 @@
 // sources is extracted to .docs-tmp/examples/ and typechecked (compile-checked,
 // not executed — the TS analogue of `no_run` doctests). ```svelte and untagged
 // fences are ignored by design.
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -26,6 +26,35 @@ export function extractExamples(sourceText) {
     }
   }
   return out;
+}
+
+/** Maps every workspace package name to its TS entry (package.json `main`, else
+ * exports["."], else src/index.ts) so extracted examples can import ANY workspace
+ * package by name — examples must be self-contained (import what they use). */
+export function workspacePaths(repoRoot, outDir, pkgDirs) {
+  const paths = {};
+  for (const dir of pkgDirs) {
+    const pkgFile = join(repoRoot, dir, "package.json");
+    let pkg;
+    try { pkg = JSON.parse(readFileSync(pkgFile, "utf8")); } catch { continue; }
+    const entry = pkg.main ?? (typeof pkg.exports?.["."] === "string" ? pkg.exports["."] : "src/index.ts");
+    const abs = join(repoRoot, dir, entry);
+    paths[pkg.name] = [relative(outDir, abs).split("\\").join("/")];
+  }
+  return paths;
+}
+
+/** Direct child package dirs under the workspace roots (mirrors pnpm-workspace.yaml). */
+export function workspacePackageDirs(repoRoot) {
+  const dirs = ["src/types"];
+  for (const parent of ["src/client", "src/modules", "examples"]) {
+    try {
+      for (const e of readdirSync(join(repoRoot, parent), { withFileTypes: true })) {
+        if (e.isDirectory()) dirs.push(`${parent}/${e.name}`);
+      }
+    } catch { /* an optional root (examples/) may be absent */ }
+  }
+  return dirs;
 }
 
 /** All candidate .ts files under the given roots (skips node_modules/dist/tests/generated). */
@@ -61,10 +90,23 @@ if (isMain) {
       index.push({ name, source: `${relative(repo, f)}:${ex.line}` });
     }
   }
-  copyFileSync(join(repo, "scripts", "ts-examples-tsconfig.template.json"), join(outDir, "tsconfig.json"));
+  // Workspace sources pulled in via paths import .svelte files; the scratch
+  // program has no svelte ambient types, so a default-export shim stands in
+  // (component types are irrelevant to example typechecking).
+  writeFileSync(
+    join(outDir, "_svelte-shim.d.ts"),
+    'declare module "*.svelte" {\n  const component: unknown;\n  export default component;\n}\n',
+  );
+  const template = JSON.parse(readFileSync(join(repo, "scripts", "ts-examples-tsconfig.template.json"), "utf8"));
+  template.compilerOptions.paths = {
+    ...template.compilerOptions.paths,
+    ...workspacePaths(repo, outDir, workspacePackageDirs(repo)),
+  };
+  writeFileSync(join(outDir, "tsconfig.json"), JSON.stringify(template, null, 2) + "\n");
   if (index.length === 0) { console.log("no @example ts blocks found — trivially green"); process.exit(0); }
-  const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  const res = spawnSync(pnpm, ["exec", "tsc", "-p", outDir], { stdio: "inherit", shell: process.platform === "win32" });
+  // tsc's JS entry runs under the current node — no shell, no PATH lookup.
+  const tsc = join(repo, "node_modules", "typescript", "bin", "tsc");
+  const res = spawnSync(process.execPath, [tsc, "-p", outDir], { stdio: "inherit" });
   if (res.status !== 0) {
     console.error(`example typecheck FAILED — map exNNNN.ts to sources via the header comment in each file (${index.length} examples)`);
     process.exit(res.status ?? 1);

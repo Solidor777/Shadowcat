@@ -85,6 +85,8 @@ jobs:
       - run: pnpm docs:check-examples
       - run: pnpm lint
       - run: pnpm --filter @shadowcat/shell build
+      - name: Build worked examples (guide code must stay buildable)
+        run: pnpm --filter "shadowcat-example-*" build
       # Guards the single-instance-runtime import map: fails the build if any
       # svelte/* subpath import isn't enumerated in RUNTIME_ENTRIES.
       - run: pnpm run check:svelte-runtime

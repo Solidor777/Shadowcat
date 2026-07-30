@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { extractExamples } from "./extract-ts-examples.mjs";
+import { fileURLToPath } from "node:url";
+import { resolve, join } from "node:path";
+import { extractExamples, workspacePaths, workspacePackageDirs } from "./extract-ts-examples.mjs";
 
 describe("extractExamples", () => {
   it("extracts a ts fence inside an @example tag with its line number", () => {
@@ -35,5 +37,15 @@ describe("extractExamples", () => {
   it("extracts multiple examples from one file", () => {
     const one = "/**\n * @example\n * ```ts\n * a();\n * ```\n */\n";
     expect(extractExamples(one + one)).toHaveLength(2);
+  });
+});
+
+describe("workspacePaths", () => {
+  it("maps every workspace package name to a forward-slash entry path", () => {
+    const repo = resolve(fileURLToPath(import.meta.url), "..", "..");
+    const outDir = join(repo, ".docs-tmp", "examples");
+    const paths = workspacePaths(repo, outDir, workspacePackageDirs(repo));
+    expect(paths["@shadowcat/core"]).toEqual(["../../src/client/core/src/index.ts"]);
+    for (const v of Object.values(paths)) expect(v[0]).not.toContain("\\");
   });
 });

@@ -1,0 +1,10 @@
+{
+  "id": "example-initiative-tracker",
+  "version": "0.1.0",
+  "engines": { "shadowcat": "^0.1.0" },
+  "dependencies": {},
+  "capabilities": [],
+  "requirements": [],
+  "provides": [],
+  "requires": ["shadowcat.panel"]
+}

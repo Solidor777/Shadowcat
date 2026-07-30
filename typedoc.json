@@ -1,7 +1,7 @@
 {
   "$schema": "https://typedoc.org/schema.json",
   "entryPointStrategy": "packages",
-  "entryPoints": ["src/types", "src/client/*", "src/modules/*"],
+  "entryPoints": ["src/types", "src/client/*", "src/modules/*", "examples/*"],
   "exclude": ["**/node_modules/**", "**/*.test.ts", "**/vitest.setup.ts", "src/modules/nightfox"],
   "out": ".docs-tmp/api/ts",
   "name": "Shadowcat TypeScript API",
