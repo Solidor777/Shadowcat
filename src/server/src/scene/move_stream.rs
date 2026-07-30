@@ -13,6 +13,9 @@
 //! `SceneEcs::player_vision_inputs` + `VisionMoveInputs::polygons_at`. The cap
 //! prevents a pathologically long path from flooding the broadcast.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 /// Maximum number of samples in a `MoveStream` (position or vision).
 /// Shared cap across all sample types on a single `MoveStream` frame.
 pub(crate) const MAX_VISION_SAMPLES: usize = 96;

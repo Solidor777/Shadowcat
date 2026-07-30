@@ -7,6 +7,9 @@
 //! INVARIANT (spec §13): the per-cell mask test consumes the SAME `visible_cells` set the M10e-4
 //! movement gate uses — the route can never thread the unknown nor leak hidden geometry.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 /// Grid diagonal-cost rule (from `world-settings.pathfinding.diagonalRule`). All four are the same
 /// king-move graph; they differ only in diagonal cost + the admissible heuristic. `Alternating`
 /// (PF1e/3.5 "5-10-5") costs diagonals 1,2,1,2… and so requires a parity bit in the search node.

@@ -39,6 +39,9 @@
 //! Coupling: `token_position` is the ECS committed-position seam; any rename
 //! must update both this caller and `token_move` in `scene/mod.rs`.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::collections::BTreeSet;
 
 use uuid::Uuid;

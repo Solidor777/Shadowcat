@@ -4,6 +4,9 @@
 //! router's fail-closed discipline (`scene/pathfinding.rs`) — this checkpoint carries WALLS ONLY;
 //! impassable/terrain regions land in M10f-4 (parent spec §7/§10).
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 #[cfg(test)]
 mod smoke {
     // Locks down the real polyanya 0.16 headless API before the adapter is built on top: a bare

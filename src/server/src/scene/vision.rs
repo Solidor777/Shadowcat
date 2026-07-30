@@ -7,6 +7,9 @@
 //! star-shaped polygon. Source: standard 2D visibility-polygon technique (Red Blob Games;
 //! de Berg et al., *Computational Geometry*).
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 /// A point in scene coordinates.
 pub type P = (f64, f64);
 

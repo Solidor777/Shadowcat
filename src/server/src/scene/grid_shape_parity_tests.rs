@@ -12,6 +12,9 @@
 //! run: each scenario is constructed so its optimal route / visible set / rasterized set is UNIQUE
 //! (no A* tie-break ambiguity, no occlusion), making the pin independently re-derivable by hand.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::collections::BTreeSet;
 
 use serde_json::{json, Value};

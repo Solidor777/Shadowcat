@@ -10,6 +10,9 @@
 //! `move_exec::execute_move`; `cell_of` is wired into `move_exec::execute_move`'s region-cell
 //! lookup (and `HexGrid::cells_in_bounds`'s corner mapping). `cell_vertices` is proven only by the
 //! tests below until the leniency corner-clip cutover calls it — allowed dead code until then.
+
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
 #![allow(dead_code)]
 
 use crate::scene::pathfinding::{self, Cell, DiagonalRule};

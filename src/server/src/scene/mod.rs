@@ -2,6 +2,9 @@
 //! never authoritative. Holds one hecs entity per scene-entity document so
 //! engine-owned systems (M9 vision, M10 pathfinding) can query spatial state.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 pub mod explored;
 pub(crate) mod grid_shape;
 pub mod lighting;

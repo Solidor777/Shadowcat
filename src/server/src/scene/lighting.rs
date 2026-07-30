@@ -5,6 +5,9 @@
 //! Mirrors the client `light-gradation`/`light`/`vision-modes` shapes in scene-docs.ts; the server
 //! stays structural-only (callers parse documents and pass these plain structs).
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use crate::scene::vision;
 use crate::scene::vision::point_in_poly;
 use crate::scene::vision::P;

@@ -2,6 +2,9 @@
 //! headless. INVARIANT: `supercover_cells` is the SAME cell set the gate tests against the
 //! visibility mask, so the authoritative move gate and (M10e-6) path preview agree.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::collections::BTreeSet;
 
 /// A grid cell coordinate `(i, j)`; cell `(i,j)` covers `[i*cell,(i+1)*cell) × [j*cell,(j+1)*cell)`.

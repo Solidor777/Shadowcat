@@ -3,6 +3,9 @@
 //! `SceneEcs::region_field` (hydration + visibility filtering) and `scene::pathfinding` /
 //! `scene::move_exec` (the two enforcement points, spec §5/§6).
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::collections::BTreeMap;
 
 /// A grid cell `(i, j)` (same convention as `pathfinding::Cell`).

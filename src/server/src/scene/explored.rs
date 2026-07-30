@@ -7,6 +7,9 @@
 //! grid cell — sufficient for the dimmed "explored memory" layer per spec §7). Accumulation is a
 //! set union, so revisiting marks nothing new (bounded by O(explored area), no growth on revisit).
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use crate::scene::grid_shape::GridShape;
 use std::collections::BTreeSet;
 
