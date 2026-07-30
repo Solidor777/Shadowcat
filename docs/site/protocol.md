@@ -1,5 +1,119 @@
 # Wire protocol
 
-Overview of the Shadowcat client↔server protocol: connection lifecycle,
-sequencing, intents/events, and the full frame catalog. Full content lands with
-the docs Phase-1 protocol task.
+The Shadowcat client↔server protocol: one HTTP login, one WebSocket per world
+session, JSON frames both ways. This page is the frame-level map; every payload
+type links into the generated reference, where the ts-rs types carry the Rust
+source's own documentation.
+
+Authoritative source: the discriminated unions in `src/client/core/src/wire.ts`
+([`ServerMsg`](/api/ts/types/_shadowcat_core.ServerMsg.html),
+[`ClientMsg`](/api/ts/types/_shadowcat_core.ClientMsg.html)) — the client
+validates every inbound frame against these Zod schemas.
+
+## Connection lifecycle
+
+1. **Login over HTTP** — `POST /api/login` sets a signed session cookie
+   (rate-limited per identity and per IP).
+2. **WebSocket** — the client opens `/ws` (cookie carries auth) and sends
+   `hello` naming the world and its last-applied sequence number (or `null` for
+   a cold start).
+3. **`welcome`** — the server answers with the world id, `current_seq`, server
+   time and version, the world's default capability grants, the caller's world
+   role, capability requirements, UI contract declarations, and system schema
+   declarations.
+4. **Event stream** — from then on the socket carries sequenced events,
+   request/response frames, and pushes until close or `evicted`.
+
+## Sequencing and resync
+
+Every mutation is a sequenced `event` (monotonic `seq` per world). The client
+tracks its applied watermark (`appliedSeq`); on reconnect it sends the watermark
+in `hello`, and the server replays what was missed — either as individual
+events or bracketed by `resync_begin` / `resync_end` when a snapshot is cheaper.
+The optimistic client keeps rendering its predicted view throughout; the
+watermark is what makes rollback sound.
+
+## Intents and events
+
+Clients never mutate state — they send an `intent` carrying operations
+([`WireOperation`](/api/ts/types/_shadowcat_core.WireOperation.html)):
+
+- `create` / `delete` — a whole document,
+- `update` — field-level changes
+  ([`WireFieldChange`](/api/ts/types/_shadowcat_core.WireFieldChange.html)):
+  JSON-pointer `path`, the OCC pre-image `old`, the value `new`, and an optional
+  `remove: true` meaning *delete the key* (genuine absence, distinct from
+  `null`).
+
+The server validates (permissions, OCC, schema), applies, and broadcasts a
+[`WireCommand`](/api/ts/types/_shadowcat_core.WireCommand.html) inside an
+`event` frame whose `intent_id` echoes yours — or answers `reject` with a
+reason. **Broadcasts are filtered per recipient before transmission**: fields a
+user may not see are stripped server-side and never cross the wire
+(ARCHITECTURE invariant — redact-then-send, never send-then-hide).
+
+## Frame catalog — server → client
+
+Every `ServerMsg` variant:
+
+| Frame | Purpose |
+|---|---|
+| `welcome` | Session bootstrap: world, `current_seq`, versions, grants, role, contract/schema declarations |
+| `event` | One sequenced, per-recipient-filtered command (ops batch), with correlating `intent_id` when it answers yours |
+| `reject` | Your intent was refused; carries `intent_id` + reason — roll back the prediction |
+| `resync_begin` | Replay window opens (`from_seq`..`to_seq`, with source) |
+| `resync_end` | Replay window closed; `current_seq` is authoritative again |
+| `time_pong` | Answer to `time_ping`: echoes `client_t0` with `server_t` for clock offset |
+| `ping` | Server liveness probe; answer with `pong` |
+| `error` | Protocol-level error with a machine code + message |
+| `search_result` | First page for a `search` request (`hits`, `next_cursor`) |
+| `search_update` | Live push of refreshed hits for a subscribed search |
+| `search_error` | Search request failed |
+| `scene_derived` | One update on a subscribed scene channel (`channel`, `computed_at_seq`, opaque payload) |
+| `scene_error` | Scene subscription failed |
+| `asset_changed` | Out-of-band notice: an asset was `replaced` or `deleted` (cache-bust signal) |
+| `scene_ping` | A user's transient location ping on a scene (includes your own echo) |
+| `path_result` | Pathfinder answer: waypointed `path`, `cost`, `arrested` flag ([`PathResult`](/api/ts/interfaces/_shadowcat_core.PathResult.html)) |
+| `path_error` | Pathfind request failed |
+| `move_error` | Move request failed |
+| `chat_error` | Chat send/edit/delete failed |
+| `move_stream` | Broadcast move animation: timed position samples, per-recipient-clipped mover vision, nullable cost ([`MoveStream`](/api/ts/interfaces/_shadowcat_core.MoveStream.html)) |
+| `evicted` | Terminal: your seat or the world is gone; the server closes the socket — do not reconnect |
+
+## Frame catalog — client → server
+
+Every `ClientMsg` variant:
+
+| Frame | Purpose |
+|---|---|
+| `hello` | Join a world with `last_seq` watermark (`null` = full sync) |
+| `intent` | Optimistic ops batch under an `intent_id` |
+| `resync_request` | Ask for replay from a sequence number |
+| `time_ping` | Clock-offset probe |
+| `pong` | Liveness answer |
+| `search` | Full-text query (`limit`, cursor, `subscribe` for live updates) |
+| `unsubscribe` | End a live search |
+| `scene_subscribe` | Open a scene-derived channel |
+| `scene_unsubscribe` | Close it |
+| `scene_ping` | Broadcast a location ping at scene coords |
+| `pathfind` | Request a route (`start`, `waypoints`, footprint or `token`) |
+| `move_request` | Request server-executed movement of a token along a path |
+| `send_message` | Chat: post to a channel (optional actor attribution + audience) |
+| `edit_message` | Chat: edit own message |
+| `delete_message` | Chat: delete own message |
+
+## Scene channels
+
+Scene-derived data (vision, fog, lighting masks) does not travel as documents —
+a client subscribes to a channel with `scene_subscribe` and receives
+[`SceneFrame`](/api/ts/interfaces/_shadowcat_core.SceneFrame.html) payloads via
+`scene_derived`, recomputed server-side as world state changes
+(`computed_at_seq` orders them against the event stream). Subscriptions are
+re-established by the session layer across reconnects.
+
+Movement is server-authoritative end to end: `move_request` → the server
+validates and *executes* the move → every viewer receives `move_stream`, whose
+position samples and mover-vision polygons are **clipped per recipient** before
+sending — an observer who cannot see a stretch of the path simply never
+receives it (the nullable `cost` exists for the same reason: the true cost can
+leak secret terrain).
