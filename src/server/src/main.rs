@@ -1,3 +1,15 @@
+//! The `shadowcat` executable: serves the embedded web client + API from one
+//! process, or runs a one-shot backup/restore and exits.
+//!
+//! # Examples
+//!
+//! ```text
+//! shadowcat                                     # serve on 127.0.0.1:30000
+//! shadowcat --bind 0.0.0.0:30000 --db /srv/shadowcat.db
+//! shadowcat --backup-to backups/2026-07-30      # snapshot, then exit
+//! shadowcat --restore-from backups/2026-07-30 --force
+//! ```
+
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 

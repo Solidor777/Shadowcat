@@ -3,6 +3,13 @@
 //! world, a player-owned document, and a declarative capability requirement on
 //! `/engine/vision`. Prints the bind address and a machine-readable
 //! `e2e-fixture:` JSON line the harness parses.
+//!
+//! # Examples
+//!
+//! ```text
+//! test_server                                   # in-memory fixture world
+//! test_server --modules-dir staged-modules/     # + installed-module discovery
+//! ```
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -30,6 +37,7 @@ use clap::Parser;
 /// hardcoded in-memory fixture data below.
 #[derive(Parser, Debug, Default)]
 struct Args {
+    /// Modules folder the embedded router scans/serves; `None` = none installed.
     #[arg(long)]
     modules_dir: Option<String>,
 }
