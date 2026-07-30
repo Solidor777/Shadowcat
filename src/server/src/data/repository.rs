@@ -50,6 +50,19 @@ pub trait Repository: Send + Sync {
 
     /// Fetch one document by id, or `None` if it does not exist. Unredacted —
     /// callers gate egress via `resolve_access` + `filter_properties`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.get_document(uuid::Uuid::nil()).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DataError>;
 
     /// Resolve `doc`'s effective owner against LIVE actor state — the same
@@ -61,6 +74,20 @@ pub trait Repository: Send + Sync {
 
     /// All documents of one `doc_type` in `world_id` (unredacted; egress-gated
     /// by callers).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let actors = repo.query_documents(uuid::Uuid::nil(), "actor").await?;
+    /// assert!(actors.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn query_documents(
         &self,
         world_id: Uuid,
@@ -88,6 +115,20 @@ pub trait Repository: Send + Sync {
 
     /// Instances stamped from a given source (`source.id` + optional pack) —
     /// the template push path's audience query.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let instances = repo.documents_by_source(None, uuid::Uuid::nil()).await?;
+    /// assert!(instances.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn documents_by_source(
         &self,
         pack: Option<&str>,
@@ -96,6 +137,20 @@ pub trait Repository: Send + Sync {
 
     /// The world's committed commands with sequence strictly greater than
     /// `seq`, in order — the reconnect/resync replay source.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let replay = repo.events_since(uuid::Uuid::nil(), 0).await?;
+    /// assert!(replay.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn events_since(&self, world_id: Uuid, seq: i64) -> Result<Vec<Command>, DataError>;
 
     /// Fetch a world row by id, or `None` if it does not exist.

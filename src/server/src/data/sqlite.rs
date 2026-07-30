@@ -146,10 +146,18 @@ impl SqliteRepository {
     /// The underlying pool, for callers that run their own queries (tests,
     /// one-shot admin paths).
     ///
+    ///
     /// # Examples
     ///
-    /// ```text
-    /// sqlx::query("SELECT 1").fetch_one(repo.pool()).await?;
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let row: (i64,) = sqlx::query_as("SELECT 1").fetch_one(repo.pool()).await?;
+    /// assert_eq!(row.0, 1);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
@@ -204,6 +212,18 @@ impl SqliteRepository {
     }
 
     /// Fetch one asset row by id, or `None` if absent.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.get_asset(uuid::Uuid::nil()).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn get_asset(
         &self,
         id: Uuid,
@@ -254,6 +274,19 @@ impl SqliteRepository {
     }
 
     /// All asset rows for `world`, newest first.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let none = repo.list_assets_by_world(uuid::Uuid::nil()).await?;
+    /// assert!(none.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn list_assets_by_world(
         &self,
         world: Uuid,
@@ -266,6 +299,19 @@ impl SqliteRepository {
     }
 
     /// Insert a new world row with `seq = 0` and return it.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("MOCK_WORLD_A", 0).await?;
+    /// assert_eq!(world.seq, 0);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn create_world(&self, name: &str, now: i64) -> Result<World, DataError> {
         let id = Uuid::new_v4();
         sqlx::query(
@@ -466,6 +512,21 @@ impl SqliteRepository {
 
     /// Remove `user` from `world`. Refuses (Conflict) to remove the last GM —
     /// a world must always have at least one.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// # let (world_id, sole_gm) = (uuid::Uuid::nil(), uuid::Uuid::nil());
+    /// // Removing the only GM is refused with DataError::Conflict.
+    /// let err = repo.remove_member(world_id, sole_gm).await.unwrap_err();
+    /// # let _ = err;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn remove_member(&self, world: Uuid, user: Uuid) -> Result<(), DataError> {
         let mut tx = self.pool.begin().await?;
         if Self::is_last_gm(&mut tx, world, user).await? {
@@ -483,6 +544,19 @@ impl SqliteRepository {
     }
 
     /// The world's members as `(user_id, username, role)`, username order.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let members = repo.list_members(uuid::Uuid::nil()).await?;
+    /// assert!(members.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn list_members(
         &self,
         world: Uuid,
@@ -582,6 +656,20 @@ impl SqliteRepository {
 
     /// Insert a new account. `password_hash` is a ready Argon2 PHC string
     /// (hashing happens in the auth layer); `None` disables login.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// use shadowcat::auth::role::ServerRole;
+    /// let id = repo.create_user("testuser-01", None, ServerRole::User, 0).await?;
+    /// assert!(!id.is_nil());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn create_user(
         &self,
         username: &str,
@@ -701,6 +789,18 @@ impl SqliteRepository {
     }
 
     /// Look up an account by exact username, or `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.user_by_username("no-such-user").await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn user_by_username(&self, username: &str) -> Result<Option<UserRecord>, DataError> {
         let row = sqlx::query(
             "SELECT id, username, password_hash, server_role FROM users WHERE username = ?",
@@ -794,6 +894,18 @@ impl SqliteRepository {
     }
 
     /// Whether any server-admin account exists (gates the first-run setup window).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(!repo.admin_exists().await?); // a fresh database has no admin
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn admin_exists(&self) -> Result<bool, DataError> {
         let row = sqlx::query("SELECT 1 FROM users WHERE server_role = 'admin' LIMIT 1")
             .fetch_optional(&self.pool)
@@ -839,6 +951,19 @@ impl SqliteRepository {
 
     /// Read one key from the server-global `settings` table (e.g. the persisted
     /// session key), or `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// repo.set_setting("mock_key", "mock_value").await?;
+    /// assert_eq!(repo.get_setting("mock_key").await?.as_deref(), Some("mock_value"));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>, DataError> {
         let row = sqlx::query("SELECT value FROM settings WHERE key = ?")
             .bind(key)
@@ -848,6 +973,18 @@ impl SqliteRepository {
     }
 
     /// Upsert one key in the server-global `settings` table.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// repo.set_setting("mock_key", "v2").await?; // second write overwrites
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), DataError> {
         sqlx::query(
             "INSERT INTO settings (key, value) VALUES (?, ?) \
@@ -917,6 +1054,20 @@ impl SqliteRepository {
 
     /// Seat `user_id` in `world_id` with `role` (upsert; idempotent for an
     /// existing member with the same role).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// use shadowcat::data::document::WorldRole;
+    /// # let (world_id, user_id) = (uuid::Uuid::nil(), uuid::Uuid::nil());
+    /// repo.add_member(world_id, user_id, WorldRole::Player).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn add_member(
         &self,
         world_id: Uuid,
@@ -974,6 +1125,19 @@ impl SqliteRepository {
     }
 
     /// The user's role in the world, or `None` when not a member.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let role = repo.member_role(uuid::Uuid::nil(), uuid::Uuid::nil()).await?;
+    /// assert!(role.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn member_role(
         &self,
         world_id: Uuid,
