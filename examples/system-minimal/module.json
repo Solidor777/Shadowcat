@@ -1,0 +1,10 @@
+{
+  "id": "example-system-minimal",
+  "version": "0.1.0",
+  "engines": { "shadowcat": "^0.1.0" },
+  "dependencies": {},
+  "capabilities": [],
+  "requirements": [],
+  "provides": [{ "contract": "shadowcat.sheet:actor", "cardinality": "multi" }],
+  "requires": []
+}
