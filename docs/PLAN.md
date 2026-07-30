@@ -1505,7 +1505,13 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   wire surface field-documented — flows into the ServerMsg/ClientMsg ts-rs types the docs-site
   protocol page links; room fan-out/resync tiers/registry; connection ingress/egress split).
   All six ws/ files carry the inner deny pair (mod.rs cascade included); mutation-verified.
-- **Sweeps 4–N — doc-comment sweeps: UPCOMING.** http/+auth/, scene/, chat/+dice/, then client
+- **Sweep 4 — http/ + auth/: COMPLETE (2026-07-30).** 109-item backlog → 0 (routes.rs's full
+  REST surface: request/response struct fields + handler docs citing the real authz gate per
+  route and the 404-uniform existence-hiding contract; AppState/AppError/throttle/upload-limiter;
+  auth: session-key DB persistence per `load_or_create_key`, invite selector/verifier split,
+  ServerRole orthogonality). All 13 http/+auth/ files carry the inner deny pair (both mod.rs
+  cascades included, clean files too); both trees mutation-verified.
+- **Sweeps 5–N — doc-comment sweeps: UPCOMING.** scene/, chat/+dice/, then client
   packages, then modules. One plan per subsystem (server: data (~300+
   items, likely 2–3 plans) / ws / http+auth / scene / chat+dice; client: core / render /
   ui-kit+shell / formula; modules in 3–4 groups). Every symbol gets description+params+example;
