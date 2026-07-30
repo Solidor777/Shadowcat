@@ -9,6 +9,7 @@
     "test": "pnpm -r test",
     "lint": "eslint .",
     "build": "pnpm --filter @shadowcat/shell build",
+    "docs:api:rust": "cargo doc --manifest-path src/server/Cargo.toml --document-private-items --no-deps",
     "docs:api:ts": "typedoc",
     "docs:dev": "vitepress dev docs/site",
     "docs:build:portal": "vitepress build docs/site",
