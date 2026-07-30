@@ -5,11 +5,17 @@ use crate::dice::spec::{CritTrigger, Direction, SuccessConfig, SuccessRule, Symb
 /// the pool's net successes/counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DieCrit {
+    /// The crit-success trigger fired.
     pub is_success: bool,
+    /// The crit-fail trigger fired (can coexist with `is_success`).
     pub is_fail: bool,
+    /// Successes to add (from `CritSuccess::extra_successes`).
     pub extra_successes: i32,
+    /// Successes to subtract (from `CritFail::lost`).
     pub lost: i32,
+    /// Positive-counter delta.
     pub positive_counter: i32,
+    /// Negative-counter delta.
     pub negative_counter: i32,
 }
 
@@ -66,7 +72,9 @@ pub fn score_die(
 /// re-matching `cfg.success` and re-deriving the net formula independently.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DieScore {
+    /// The die passed the base success rule.
     pub base_success: bool,
+    /// Its crit deltas/flags.
     pub crit: DieCrit,
 }
 

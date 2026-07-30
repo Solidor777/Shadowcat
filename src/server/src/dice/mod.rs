@@ -3,13 +3,19 @@
 //! (deterministic). Randomness is a stateless noise function, so any roll is
 //! reproducible from its seed. INVARIANT: (spec, raws) fully determines the outcome.
 
+/// Deterministic evaluation pipeline (roll + score).
 pub mod eval;
+/// Notation string -> `RollSpec` (lexer + parser).
 pub mod notation;
+/// Wire/result types: raw naturals, per-die records, scored outcomes.
 pub mod outcome;
 #[cfg(test)]
 mod proptests;
+/// Targeted re-evaluation of an existing roll (reroll/replace/remove).
 pub mod recalc;
+/// Seeded noise-function RNG (the only randomness source).
 pub mod rng;
+/// The canonical roll-parameter types (AST, modes, crit/tier config).
 pub mod spec;
 
 pub use eval::{evaluate, roll};

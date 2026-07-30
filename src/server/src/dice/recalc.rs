@@ -16,7 +16,12 @@ pub enum RecalcOp {
     /// Draw a fresh natural (via `rng`) for each targeted die.
     RerollDice(Vec<DieId>),
     /// Force a specific natural onto one die (e.g. GM override, undo).
-    ReplaceDie { id: DieId, natural: i32 },
+    ReplaceDie {
+        /// The targeted die.
+        id: DieId,
+        /// The natural face to force.
+        natural: i32,
+    },
     /// Drop targeted dice from their group's base naturals entirely.
     RemoveDice(Vec<DieId>),
 }

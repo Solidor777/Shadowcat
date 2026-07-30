@@ -102,16 +102,19 @@ fn checked_add_saturating(acc: i64, next: i64) -> i64 {
 /// never see it -- and a chain of `Mul`-combined dice groups (`1d10000 *
 /// 1d10000 * ...`) can overflow `i64` even within those caps. Overflow here
 /// is genuinely reachable, so these saturate silently (no `debug_assert!`).
+/// `l + r`, saturating at the i64 rails instead of overflowing.
 fn add_saturating(l: i64, r: i64) -> i64 {
     l.checked_add(r)
         .unwrap_or(if r >= 0 { i64::MAX } else { i64::MIN })
 }
 
+/// `l - r`, saturating at the i64 rails.
 fn sub_saturating(l: i64, r: i64) -> i64 {
     l.checked_sub(r)
         .unwrap_or(if r <= 0 { i64::MAX } else { i64::MIN })
 }
 
+/// `l * r`, saturating toward the sign-correct rail.
 fn mul_saturating(l: i64, r: i64) -> i64 {
     l.checked_mul(r).unwrap_or(if (l >= 0) == (r >= 0) {
         i64::MAX

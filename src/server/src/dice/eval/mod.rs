@@ -3,11 +3,17 @@ use crate::dice::outcome::{RawDie, RawRoll, RollOutcome};
 use crate::dice::rng::{roll_uniform, RngSource};
 use crate::dice::spec::{DieKind, Expr, Mode, RollSpec};
 
+/// Margin -> pass/tier ladder classification.
 pub mod classify;
+/// Per-die crit-event scoring.
 pub mod crit;
+/// Expertise-budget allocation (bounded knapsack DP).
 pub mod expertise;
+/// Per-group modifier pipeline (reroll/explode/keep/drop).
 pub mod groups;
+/// SuccessCount-mode scoring.
 pub mod success;
+/// Total-mode arithmetic fold (saturating).
 pub mod sum;
 
 /// Roll every die in the spec's expression, left-to-right, running each group's

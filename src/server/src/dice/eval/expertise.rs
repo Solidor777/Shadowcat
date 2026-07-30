@@ -58,6 +58,7 @@ fn die_values(
         .collect()
 }
 
+/// Component-wise pair addition (net successes, net counters).
 fn add(a: (i32, i32), b: (i32, i32)) -> (i32, i32) {
     (a.0 + b.0, a.1 + b.1)
 }

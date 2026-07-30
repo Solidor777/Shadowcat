@@ -5,8 +5,11 @@ use crate::dice::spec::{Direction, Tier};
 /// (custom ladder), never both.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Classification {
+    /// Default 2-rung ladder verdict (`None` when a custom ladder ran).
     pub pass: Option<bool>,
+    /// Custom-ladder rung label.
     pub tier_label: Option<String>,
+    /// Custom-ladder rung payload.
     pub tier_value: Option<i32>,
 }
 

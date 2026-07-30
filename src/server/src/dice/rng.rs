@@ -13,17 +13,30 @@ pub fn noise(seed: u64, n: u64) -> u64 {
 /// Abstract randomness source: tests seed deterministically; production seeds from
 /// entropy at the transport boundary. Trait-object friendly (`&mut dyn RngSource`).
 pub trait RngSource {
+    /// The next 32 uniformly-distributed bits.
     fn next_u32(&mut self) -> u32;
 }
 
 /// Deterministic generator over the noise function: output i = `noise(seed, i)`,
 /// advancing an index counter. Reproducible: rebuild with the same seed to replay.
 pub struct NoiseRng {
+    /// The fixed stream seed.
     seed: u64,
+    /// Position in the stream (increments per draw).
     index: u64,
 }
 
 impl NoiseRng {
+    /// A generator at position 0 of `seed`'s stream.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::dice::rng::{NoiseRng, RngSource};
+    /// let mut a = NoiseRng::from_seed(7);
+    /// let mut b = NoiseRng::from_seed(7);
+    /// assert_eq!(a.next_u32(), b.next_u32()); // same seed, same stream
+    /// ```
     pub fn from_seed(seed: u64) -> Self {
         NoiseRng { seed, index: 0 }
     }
