@@ -9,8 +9,11 @@ pub type DieId = u32;
 /// `is_ordered`, M11b-3 §9) iff EVERY face has `value: Some`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Face {
+    /// Numeric worth, or `None` for a symbols-only face (makes the die
+    /// unordered — see `DieKind::is_ordered`).
     #[serde(default)]
     pub value: Option<i32>,
+    /// Opaque tags this face contributes (system-defined meaning).
     pub symbols: Vec<Symbol>,
 }
 
@@ -21,8 +24,18 @@ pub type Symbol = String;
 /// explicit, possibly-unordered, possibly-symbolic list (M11b-3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DieKind {
-    Numeric { min: i32, max: i32 },
-    Faces { faces: Vec<Face> },
+    /// An ordered inclusive integer range.
+    Numeric {
+        /// Lowest face value.
+        min: i32,
+        /// Highest face value (inclusive).
+        max: i32,
+    },
+    /// An explicit face list (possibly unordered/symbolic).
+    Faces {
+        /// The faces, uniformly sampled; must be non-empty (`validate`).
+        faces: Vec<Face>,
+    },
 }
 
 /// Construction-time validation error for a `DieKind`. `Numeric` has no
@@ -40,6 +53,16 @@ pub enum DieKindError {
 }
 
 impl DieKind {
+    /// Construction-time check: rejects an empty `Faces` list (see
+    /// `DieKindError::EmptyFaces`); `Numeric` always passes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::dice::spec::DieKind;
+    /// assert!(DieKind::Numeric { min: 1, max: 6 }.validate().is_ok());
+    /// assert!(DieKind::Faces { faces: vec![] }.validate().is_err());
+    /// ```
     pub fn validate(&self) -> Result<(), DieKindError> {
         match self {
             DieKind::Numeric { .. } => Ok(()),
@@ -66,18 +89,35 @@ impl DieKind {
     }
 }
 
+/// A binary comparison operator used by explode/reroll triggers and success
+/// rules. Defaults to `Gte` (the common "meets or beats" reading).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Comparator {
+    /// `value == target`.
     Eq,
+    /// `value != target`.
     Ne,
+    /// `value > target`.
     Gt,
+    /// `value < target`.
     Lt,
+    /// `value >= target` (the default).
     #[default]
     Gte,
+    /// `value <= target`.
     Lte,
 }
 
 impl Comparator {
+    /// Apply the comparison: `value <op> target`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::dice::spec::Comparator;
+    /// assert!(Comparator::Gte.test(7, 7));
+    /// assert!(!Comparator::Lt.test(7, 7));
+    /// ```
     pub fn test(self, value: i32, target: i32) -> bool {
         match self {
             Comparator::Eq => value == target,
@@ -90,6 +130,7 @@ impl Comparator {
     }
 }
 
+/// How an explode trigger spawns/merges extra rolls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExplodeKind {
     /// Roll an extra die per trigger; each extra can itself trigger.
@@ -100,27 +141,44 @@ pub enum ExplodeKind {
     Penetrate,
 }
 
+/// One dice-group modifier. Applied in `DiceGroup.modifiers` vec order:
+/// reroll/explode alter the die set, keep/drop select from it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GroupModifier {
+    /// Keep only the N highest dice.
     KeepHighest(u32),
+    /// Keep only the N lowest dice.
     KeepLowest(u32),
+    /// Drop the N highest dice.
     DropHighest(u32),
+    /// Drop the N lowest dice.
     DropLowest(u32),
+    /// Roll extra dice while the trigger fires.
     Explode {
+        /// Standard/compound/penetrating behavior.
         kind: ExplodeKind,
+        /// Trigger comparison operator.
         comp: Comparator,
+        /// Trigger threshold the die value is compared against.
         target: i32,
     },
+    /// Re-roll dice matching the trigger.
     Reroll {
+        /// Trigger comparison operator.
         comp: Comparator,
+        /// Trigger threshold.
         target: i32,
+        /// Re-roll at most once per die (`ro`) instead of repeatedly (`rr`).
         once: bool,
     },
 }
 
+/// One rolled dice group (`NdX` plus modifiers).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiceGroup {
+    /// Number of base dice rolled.
     pub count: u32,
+    /// The face space every die in the group shares.
     pub kind: DieKind,
     /// Applied in vec order: reroll/explode alter the die set, keep/drop select from it.
     pub modifiers: Vec<GroupModifier>,
@@ -131,11 +189,17 @@ pub struct DiceGroup {
     pub label: Option<String>,
 }
 
+/// Arithmetic operator of an `Expr::Bin` node (Sum mode only).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinOp {
+    /// `lhs + rhs`.
     Add,
+    /// `lhs - rhs`.
     Sub,
+    /// `lhs * rhs`.
     Mul,
+    /// `lhs / rhs` — integer division; a zero divisor evaluates to 0 (the
+    /// parser rejects a literal `/0`).
     Div,
 }
 
@@ -146,7 +210,9 @@ pub enum BinOp {
 /// a Sum-mode display/provenance decoration (see `RollOutcome::labeled_consts`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstTerm {
+    /// The constant's numeric value.
     pub value: i32,
+    /// Display-only tag (see the struct doc — never a pool-comparison label).
     #[serde(default)]
     pub label: Option<String>,
 }
@@ -155,13 +221,20 @@ pub struct ConstTerm {
 /// the arithmetic and pools the dice reachable from `Dice` nodes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Expr {
+    /// A rolled dice group.
     Dice(DiceGroup),
+    /// A constant term.
     Const(ConstTerm),
+    /// A binary arithmetic node.
     Bin {
+        /// The operator.
         op: BinOp,
+        /// Left operand.
         lhs: Box<Expr>,
+        /// Right operand.
         rhs: Box<Expr>,
     },
+    /// Unary negation.
     Neg(Box<Expr>),
 }
 
@@ -170,7 +243,14 @@ pub enum Expr {
 /// serde-defaulted `SuccessConfig` never silently becomes symbol-driven.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SuccessRule {
-    Numeric { comp: Comparator, target: i32 },
+    /// A die succeeds when its value passes the comparison.
+    Numeric {
+        /// Comparison operator.
+        comp: Comparator,
+        /// Threshold the die value is compared against.
+        target: i32,
+    },
+    /// A die succeeds when any kept face carries this symbol.
     HasSymbol(Symbol),
 }
 
@@ -190,8 +270,10 @@ impl Default for SuccessRule {
 /// systems). Global to the spec — orients every margin/tier/crit computation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Direction {
+    /// Higher totals/success counts are better (the default).
     #[default]
     HighWins,
+    /// Lower is better (roll-under systems).
     LowWins,
 }
 
@@ -199,9 +281,13 @@ pub enum Direction {
 /// (higher = better). `margin_offset` is the threshold the margin must reach.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tier {
+    /// Oriented-margin threshold this rung requires. Unique per ladder
+    /// (`validate_tiers` refuses duplicates — a tie would be nondeterministic).
     pub margin_offset: i32,
+    /// Display label for the rung.
     #[serde(default)]
     pub label: Option<String>,
+    /// System-defined numeric payload for the rung.
     #[serde(default)]
     pub tier_value: Option<i32>,
 }
@@ -212,7 +298,9 @@ pub struct Tier {
 /// "better end" to flip.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CritTrigger {
+    /// Fires at-or-past this die value (orientation-flipped under `LowWins`).
     AtLeast(i32),
+    /// Fires when the kept face carries this symbol (direction-insensitive).
     HasSymbol(Symbol),
 }
 
@@ -221,8 +309,11 @@ pub enum CritTrigger {
 /// success and `positive_counter` to the positive tally.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CritSuccess {
+    /// What fires the event.
     pub trigger: CritTrigger,
+    /// Successes added beyond the die's base success.
     pub extra_successes: i32,
+    /// Amount added to the positive counter tally.
     pub positive_counter: i32,
 }
 
@@ -231,9 +322,13 @@ pub struct CritSuccess {
 /// 0 unless `allow_negative`) and adds `negative_counter`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CritFail {
+    /// What fires the event.
     pub trigger: CritTrigger,
+    /// Successes subtracted from the net count.
     pub lost: i32,
+    /// Amount added to the negative counter tally.
     pub negative_counter: i32,
+    /// Permit the net count to go below zero (else clamped at 0).
     pub allow_negative: bool,
 }
 
@@ -257,8 +352,10 @@ pub struct SuccessConfig {
     pub required_successes: Option<i32>,
     /// Ladder over `margin = net_successes - required_successes`. Empty => default 2-rung.
     pub tiers: Vec<Tier>,
+    /// Optional crit-success event (see `CritSuccess`).
     #[serde(default)]
     pub crit_success: Option<CritSuccess>,
+    /// Optional crit-fail event (see `CritFail`).
     #[serde(default)]
     pub crit_fail: Option<CritFail>,
     /// Expertise budget (M11b-2): points distributed across the pooled kept dice
@@ -267,17 +364,23 @@ pub struct SuccessConfig {
     pub expertise: u32,
 }
 
+/// The roll's scoring mode.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mode {
+    /// Fold the expression arithmetic to a total.
     Total(TotalConfig),
+    /// Count net successes across the pooled kept dice.
     SuccessCount(SuccessConfig),
 }
 
 /// Canonical roll parameters. Notation parses INTO this; recalculation re-runs it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollSpec {
+    /// The roll expression AST.
     pub expr: Expr,
+    /// Which end of every margin/comparison is "better".
     pub direction: Direction,
+    /// Total vs SuccessCount scoring.
     pub mode: Mode,
 }
 
