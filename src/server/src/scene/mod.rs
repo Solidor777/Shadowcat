@@ -31,9 +31,15 @@ use crate::data::engine as eng;
 use crate::data::membership::PermissionContext;
 use crate::scene::lighting::Band;
 
+/// Resolved per-scene lighting mode. Mirrors `LightMode` in `scene-docs.ts`
+/// (wire twin: `eng::LightMode` — see the module-header alias note).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LightMode {
+    /// Every LOS cell is fully bright; per-light raycasts are skipped
+    /// (`LightingInputs::all_bright`).
     GlobalIllumination,
+    /// Ambient environment level + per-light contributions, sampled per cell
+    /// by `lighting::cell_illumination`.
     EnvironmentLight,
 }
 
@@ -42,8 +48,11 @@ pub enum LightMode {
 /// `Unrestricted` = walls only (the M9a gate alone).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MovementRestriction {
+    /// Move cells must be currently visible to the mover's owner.
     Visible,
+    /// Move cells must be visible OR in the owner's explored memory.
     Revealed,
+    /// Walls-only gating (the base wall-crossing gate alone).
     Unrestricted,
 }
 
@@ -52,7 +61,9 @@ pub enum MovementRestriction {
 /// navmesh router.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MovementModel {
+    /// Grid A* router (`pathfinding::find`).
     GridStepped,
+    /// Polyanya navmesh router (`navmesh::navmesh_find`).
     Continuous,
 }
 
@@ -64,17 +75,29 @@ pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 /// `ResolvedSceneSettings`; pathfinding/animation fields are resolved in later checkpoints).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedScene {
+    /// Walls with `blocksSight` restrict line of sight (LOS raycasting on).
     pub los_restriction: bool,
+    /// Fog-of-war on: unseen state is withheld/clipped for players.
     pub fog: bool,
+    /// Observer-tier tokens also contribute vision sources
+    /// (`gather_vision_sources_in_scene`).
     pub observer_vision: bool,
+    /// Master lighting toggle; off forces the all-bright arm with tint 0.
     pub lighting_enabled: bool,
+    /// Resolved lighting mode (see `LightMode`).
     pub light_mode: LightMode,
+    /// Environment ambient color, packed `0xRRGGBB` (`parse_hex_color`).
     pub env_color: u32,
+    /// Environment ambient intensity level fed to `cell_illumination`.
     pub env_intensity: f64,
+    /// Resolved movement gate mode (see `MovementRestriction`).
     pub movement_restriction: MovementRestriction,
     /// Per-scene/world-default pathfinding engine choice (M10f-1). `GridStepped` dispatches to
     /// `pathfinding::find`; `Continuous` dispatches to `navmesh::navmesh_find`.
     pub movement_model: MovementModel,
+    /// Lenient cell sampling: a cell qualifies if its center or a sampled
+    /// corner qualifies; strict samples the center only (`point_qualifies`
+    /// is the shared per-point decision for all arms).
     pub partial_cell_leniency: bool,
     /// Scene dimensions (width, height) in grid units. Always finite `> 0`
     /// (default `DEFAULT_SCENE_BOUNDS_UNITS`). The M10f navmesh's outer rectangle.
@@ -86,8 +109,11 @@ pub struct ResolvedScene {
 /// darkvision); absent in seed → `None`, absent in an authored doc entry → `None`.
 #[derive(Clone, Debug)]
 pub struct VisionMode {
+    /// Minimum illumination band name the mode can see under.
     pub illumination_floor: String,
+    /// Default vision range in cells (used when a token authors none).
     pub default_range: f64,
+    /// Client render treatment (e.g. `"desaturate"`); `None` = plain.
     pub render_hint: Option<String>,
 }
 
@@ -130,10 +156,13 @@ fn engine_as<T: serde::de::DeserializeOwned>(doc: &Document) -> Option<T> {
 /// `Send` so the enclosing `Mutex` stays `Sync` — `SceneEcs` is shared behind a
 /// `tokio::sync::RwLock` across connection tasks, matching `navmesh_cache`'s same constraint).
 struct CachedEngine {
+    /// The exact `engine` `Value` `decoded` was parsed from (validity check).
     source: serde_json::Value,
+    /// The type-erased successful decode.
     decoded: Box<dyn std::any::Any + Send>,
 }
 
+/// Wire (`eng::LightMode`) → resolved bridge; see the module-header alias note.
 fn conv_light_mode(v: eng::LightMode) -> LightMode {
     match v {
         eng::LightMode::GlobalIllumination => LightMode::GlobalIllumination,
@@ -141,6 +170,7 @@ fn conv_light_mode(v: eng::LightMode) -> LightMode {
     }
 }
 
+/// Wire (`eng::MovementRestriction`) → resolved bridge.
 fn conv_movement_restriction(v: eng::MovementRestriction) -> MovementRestriction {
     match v {
         eng::MovementRestriction::Visible => MovementRestriction::Visible,
@@ -149,6 +179,7 @@ fn conv_movement_restriction(v: eng::MovementRestriction) -> MovementRestriction
     }
 }
 
+/// Wire (`eng::MovementModel`) → resolved bridge.
 fn conv_movement_model(v: eng::MovementModel) -> MovementModel {
     match v {
         eng::MovementModel::GridStepped => MovementModel::GridStepped,
@@ -156,6 +187,7 @@ fn conv_movement_model(v: eng::MovementModel) -> MovementModel {
     }
 }
 
+/// Wire (`eng::DiagonalRule`) → router-enum bridge.
 fn conv_diagonal_rule(v: eng::DiagonalRule) -> pathfinding::DiagonalRule {
     match v {
         eng::DiagonalRule::Chebyshev => pathfinding::DiagonalRule::Chebyshev,
@@ -167,6 +199,7 @@ fn conv_diagonal_rule(v: eng::DiagonalRule) -> pathfinding::DiagonalRule {
 
 /// A hydrated scene-entity document, one per hecs entity.
 pub struct SceneEntity {
+    /// The authoritative document this entity mirrors (derived, ephemeral).
     pub doc: Document,
 }
 
@@ -181,8 +214,11 @@ pub type TokenMove = (Uuid, (f64, f64), (f64, f64));
 /// One scene's visible cells for a player: `cells` are `(i, j, band_index, tint 0xRRGGBB, render_hint)`.
 #[derive(Debug)]
 pub struct LitScene {
+    /// Scene document id.
     pub scene: Uuid,
+    /// Grid cell size in scene units.
     pub cell: f64,
+    /// Visible cells as `(i, j, band_index, tint, render_hint)` tuples.
     pub cells: Vec<(i32, i32, usize, u32, Option<String>)>,
 }
 
@@ -236,7 +272,9 @@ impl VisionMoveInputs {
 /// (`Room::publish` under `publish_guard`); reads (derived recompute) take a
 /// shared borrow.
 pub struct SceneEcs {
+    /// The hecs world holding one `SceneEntity` per hydrated scene doc.
     world: hecs::World,
+    /// Document id → hecs entity handle (single lookup index).
     index: HashMap<Uuid, hecs::Entity>,
     /// Per-world seq of the last command reflected in this ECS. Updated under
     /// the same `scene.write()` lock as the entities in `Room::publish`, so a
@@ -248,7 +286,9 @@ pub struct SceneEcs {
     /// (M10e-2). Held outside the hecs `world` because they are NOT scene entities
     /// (`is_scene_entity` excludes them); they are maintained by `apply_op` and the room setters.
     world_settings: Option<Document>,
+    /// The `light-gradation` singleton config-doc, or `None` (built-in bands).
     gradation: Option<Document>,
+    /// The `vision-modes` singleton config-doc, or `None` (seed modes).
     vision_modes: Option<Document>,
     /// Point-lookup table keyed by actor doc id. Used only for `actors.get(id)` joins; must
     /// not be iterated for ordered or wire output (HashMap iteration order is non-deterministic).
@@ -451,6 +491,14 @@ type NavmeshCacheKey = (Uuid, i64, Vec<(u64, u64, u64, u64)>);
 pub(crate) const DEFAULT_FOOTPRINT_RADIUS_CELLS: f64 = 0.4;
 
 impl SceneEcs {
+    /// An empty derived world: no entities, `committed_seq` 0, cold caches.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert_eq!(ecs.committed_seq(), 0);
+    /// ```
     pub fn new() -> Self {
         Self {
             world: hecs::World::new(),
@@ -549,15 +597,25 @@ impl SceneEcs {
         self.actors = actors.into_iter().map(|d| (d.id, d)).collect();
     }
 
+    /// Point-lookup into the hydrated actor table (effective-owner joins).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let owner = ecs.actor(&actor_id).and_then(|d| d.owner); // in-memory, no pool read
+    /// ```
     pub fn actor(&self, id: &Uuid) -> Option<&Document> {
         self.actors.get(id)
     }
+    /// The `world-settings` singleton, or `None` (resolvers use defaults).
     pub fn world_settings_doc(&self) -> Option<&Document> {
         self.world_settings.as_ref()
     }
+    /// The `vision-modes` singleton, or `None` (seed modes apply).
     pub fn vision_modes_doc(&self) -> Option<&Document> {
         self.vision_modes.as_ref()
     }
+    /// The `light-gradation` singleton, or `None` (built-in bands apply).
     pub fn gradation_doc(&self) -> Option<&Document> {
         self.gradation.as_ref()
     }
@@ -2280,12 +2338,16 @@ impl SceneEcs {
 /// dispatch and reused for every vision source. `all_bright` short-circuits light raycasts
 /// under lighting-off or globalIllumination (spec §3/§6).
 pub(crate) struct LightingInputs {
+    /// Skip per-light raycasts: lighting off or `GlobalIllumination`.
     pub(crate) all_bright: bool,
+    /// Resolved scene lights (empty under `all_bright`).
     pub(crate) lights: Vec<lighting::Light>,
+    /// Per-light visibility polygons, index-aligned with `lights`.
     pub(crate) lit_polys: Vec<Vec<vision::P>>,
     /// Scene-boundary visibility polygons occluding the environment ambient (`env_light_polys`).
     /// Empty under `all_bright` (env is not the mechanism there — every LOS cell is forced bright).
     pub(crate) env_polys: Vec<Vec<vision::P>>,
+    /// `blocksSight` wall segments (LOS raycast input).
     pub(crate) sight_walls: Vec<vision::Seg>,
 }
 
@@ -2337,10 +2399,16 @@ fn point_qualifies(
 /// token's viewpoint + resolved vision floors. `id` is carried only for `visible_cells_cached`'s
 /// deterministic snapshot ordering — `visible_cells` itself never reads it.
 struct VisSrc {
+    /// Source token id (snapshot ordering only; see the struct doc).
     id: Uuid,
+    /// Viewpoint in scene units.
     vp: vision::P,
+    /// Resolved vision floors: `(illumination floor, range cells, render hint)`.
     floors: Vec<(f64, f64, Option<String>)>,
 }
+
+/// One `sources` entry in `VisibilityInputsSnapshot`: `(token id, viewpoint, vision floors)`.
+type VisSrcSnapshot = (Uuid, vision::P, Vec<(f64, f64, Option<String>)>);
 
 /// Fingerprint of every input `visible_cells`'s computation reads for one `(user, scene,
 /// lenient)` call, used by `visible_cells_cached` to decide whether a prior mask may be reused.
@@ -2358,17 +2426,21 @@ struct VisSrc {
 /// own grid size or vision/lighting overrides changing, or world-settings' `observerVision`/
 /// `losRestriction`/lighting defaults changing — is captured because it necessarily changes the
 /// value of one of these fields, making the snapshot compare unequal.
-/// One `sources` entry in `VisibilityInputsSnapshot`: `(token id, viewpoint, vision floors)`.
-type VisSrcSnapshot = (Uuid, vision::P, Vec<(f64, f64, Option<String>)>);
-
 #[derive(Clone, PartialEq)]
 struct VisibilityInputsSnapshot {
+    /// The sampling mode the mask was computed under.
     lenient: bool,
+    /// The resolved scene settings the computation read.
     settings: ResolvedScene,
+    /// Grid cell size in scene units.
     cell: f64,
+    /// Every vision source's `(id, viewpoint, floors)` snapshot.
     sources: Vec<VisSrcSnapshot>,
+    /// Resolved scene lights.
     lights: Vec<lighting::Light>,
+    /// `blocksLight` wall segments.
     light_walls: Vec<vision::Seg>,
+    /// `blocksSight` wall segments.
     sight_walls: Vec<vision::Seg>,
 }
 
