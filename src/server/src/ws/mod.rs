@@ -30,12 +30,16 @@ pub struct PingRateLimiter {
 }
 
 impl PingRateLimiter {
-    /// An empty limiter.
+    /// An empty limiter (one per `WsState`; budget shared per user).
     ///
     /// # Examples
     ///
-    /// ```text
-    /// let limiter = PingRateLimiter::new(); // one per WsState, shared per user
+    /// ```
+    /// use shadowcat::ws::PingRateLimiter;
+    ///
+    /// let limiter = PingRateLimiter::new();
+    /// let user = uuid::Uuid::new_v4();
+    /// assert!(limiter.check(user, 0, 5)); // first hit is within budget
     /// ```
     pub fn new() -> Self {
         Self::default()

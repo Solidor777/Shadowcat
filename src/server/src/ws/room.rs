@@ -76,8 +76,11 @@ impl RingBuffer {
     ///
     /// # Examples
     ///
-    /// ```text
-    /// let ring = RingBuffer::new(); // fills as events publish
+    /// ```
+    /// use shadowcat::ws::room::RingBuffer;
+    ///
+    /// // An empty ring cannot serve any range — the caller falls to the log tier.
+    /// assert!(RingBuffer::new().range_from(1).is_none());
     /// ```
     pub fn new() -> Self {
         Self {

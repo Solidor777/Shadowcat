@@ -24,7 +24,8 @@ intent_id: string,
  */
 ops: Array<Operation>, } | { "type": "resync_request", 
 /**
- * Replay from the first seq strictly greater than this.
+ * The first seq to replay, INCLUSIVE — the next seq the client has
+ * not yet applied (both resync tiers deliver `seq >= from_seq`).
  */
 from_seq: bigint, } | { "type": "time_ping", 
 /**

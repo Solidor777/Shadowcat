@@ -40,7 +40,8 @@ pub enum ClientMsg {
     },
     /// Explicit gap recovery from the client's sequence guard.
     ResyncRequest {
-        /// Replay from the first seq strictly greater than this.
+        /// The first seq to replay, INCLUSIVE — the next seq the client has
+        /// not yet applied (both resync tiers deliver `seq >= from_seq`).
         from_seq: i64,
     },
     /// Time calibration ping carrying the client's send timestamp.
@@ -228,7 +229,8 @@ pub enum RejectReason {
     Forbidden,
     /// OCC pre-image mismatch or duplicate singleton — re-read and retry.
     Conflict,
-    /// Structurally invalid payload — fix the request.
+    /// Anything else: structurally invalid payload, an absent target, or an
+    /// internal failure — not retryable without changing the request.
     Invalid,
 }
 
@@ -323,7 +325,8 @@ pub enum ServerMsg {
     },
     /// Opens a resync replay range.
     ResyncBegin {
-        /// First seq in the replay (exclusive floor requested by the client).
+        /// First seq delivered in the replay (inclusive; equals the client's
+        /// requested `from_seq`).
         from_seq: i64,
         /// Last seq the replay will deliver.
         to_seq: i64,

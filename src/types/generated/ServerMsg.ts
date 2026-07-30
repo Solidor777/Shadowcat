@@ -77,7 +77,8 @@ intent_id: string,
  */
 reason: RejectReason, } | { "type": "resync_begin", 
 /**
- * First seq in the replay (exclusive floor requested by the client).
+ * First seq delivered in the replay (inclusive; equals the client's
+ * requested `from_seq`).
  */
 from_seq: bigint, 
 /**
