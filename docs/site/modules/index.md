@@ -23,16 +23,16 @@ Community modules follow the same model — see
 | [assets](/modules/assets) | Asset upload/browse panel |
 | [scene-browser](/modules/scene-browser) | GM scene list/activate/roam panel |
 | [sheet-fallback](/modules/sheet-fallback) | The always-available generic document sheet |
-| stage | The PixiJS scene canvas |
-| scene-tools | Scene tool rail: place/select/move/draw/measure/ping/wall/region |
-| actors | Actor browser panel (live search, open sheet) |
-| factions | Faction registry panel |
-| conditions | Condition registry panel |
-| chat | Chat panel: channels, messages, rolls |
-| chat-composer | Message composer contribution |
-| chat-card | Message rendering contribution |
-| sheet-actor | Generic actor sheet (priority 0) |
-| sheet-item | Generic item sheet (priority 0) |
+| [stage](/modules/stage) | The PixiJS scene canvas |
+| [scene-tools](/modules/scene-tools) | Scene tool rail: place/select/move/draw/measure/ping/wall/region |
+| [actors](/modules/actors) | Actor browser panel (live search, open sheet) |
+| [factions](/modules/factions) | Faction registry panel |
+| [conditions](/modules/conditions) | Condition registry panel |
+| [chat](/modules/chat) | Chat panel: channels, messages, rolls |
+| [chat-composer](/modules/chat-composer) | Message composer contribution |
+| [chat-card](/modules/chat-card) | Message rendering contribution |
+| [sheet-actor](/modules/sheet-actor) | Generic actor sheet (priority 0) |
+| [sheet-item](/modules/sheet-item) | Generic item sheet (priority 0) |
 
 A nested `src/modules/nightfox/` checkout, when present, is the external
 Nightfox system repo in its dev position — it documents itself in its own
