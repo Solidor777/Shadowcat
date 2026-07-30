@@ -12,6 +12,7 @@
     "docs:api:rust": "cargo doc --manifest-path src/server/Cargo.toml --document-private-items --no-deps",
     "docs:api:ts": "typedoc",
     "docs:build": "pnpm build && pnpm docs:api:ts && pnpm docs:api:rust && pnpm docs:build:portal && node scripts/assemble-docs.mjs",
+    "docs:check-examples": "node scripts/extract-ts-examples.mjs",
     "docs:dev": "vitepress dev docs/site",
     "docs:build:portal": "vitepress build docs/site",
     "docs:serve": "node scripts/serve-docs.mjs",
