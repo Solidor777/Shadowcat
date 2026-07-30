@@ -57,6 +57,10 @@ dist-docs/
 - Assembly is a Node script in `scripts/` (copy generated outputs into the VitePress
   dist, then run the link check). Cross-platform: `node:path`/`node:fs` only, no
   shell-isms, no hardcoded separators.
+- Viewing: `pnpm docs:serve` (a small in-repo static server script). VitePress
+  output uses absolute asset paths, so the portal does not render from `file://` —
+  the site needs any static file server; `docs:serve` ships one so there is no
+  extra install.
 - `dist-docs/` and `docs/site/.vitepress/cache` are git-ignored.
 
 ### New dev-dependencies (root `package.json`)
@@ -72,11 +76,15 @@ code changes beyond doc comments and lint attributes.
   to `dist-docs/api/rust/` by the assembly script.
 - The crate has both `lib.rs` and `main.rs`; items reachable from the lib target are
   what rustdoc documents and doctests run against. `main.rs` stays a thin entry.
-- Coverage enforcement:
-  - `#![warn(missing_docs)]` in `lib.rs` (public items), and
-  - `#![warn(clippy::missing_docs_in_private_items)]` (private items),
-  - escalated to deny in CI (`-D` via RUSTFLAGS/clippy flags) per the phased ratchet
-    in §6.
+- Coverage enforcement (constraint: the existing CI clippy step runs
+  `-D warnings`, so warn-tier lint *attributes* would go red immediately):
+  - Phase 1: an **informational CI step** runs
+    `cargo clippy -- -W missing-docs -W clippy::missing-docs-in-private-items`
+    (no `-D`; exits 0, reports counts). No crate attributes yet.
+  - Sweep phases: each completed module adds `#![deny(missing_docs)]` +
+    `#![deny(clippy::missing_docs_in_private_items)]` module-scoped attributes —
+    these fail the normal clippy step on regression.
+  - Final phase: crate-root deny attributes replace the per-module ones.
 - Examples are `/// # Examples` doctest blocks — compiled and run by `cargo test`.
   Examples needing live infrastructure (DB pool, Room, sockets) use ` ```no_run `
   (compiled, not executed) rather than pseudo-code. ` ```ignore ` is banned.
@@ -98,8 +106,14 @@ code changes beyond doc comments and lint attributes.
     in CI. Covers everything TypeDoc renders (exported symbols).
   - **ESLint** — `eslint-plugin-jsdoc` `require-jsdoc` + `require-param` +
     `require-description` for **all** functions including non-exported helpers,
-    which TypeDoc cannot see. `.svelte` script blocks are included via the existing
-    svelte ESLint processor.
+    which TypeDoc cannot see. The root ESLint config currently ignores
+    `**/*.svelte` entirely; Phase 1 adds `svelte-eslint-parser` so the jsdoc rules
+    reach `.svelte` script blocks. Fallback if the jsdoc plugin proves incompatible
+    with the svelte parser: `.svelte` doc coverage is review-enforced during the
+    sweep phases instead. The jsdoc rules live in a separate docs ESLint config
+    (`eslint.docs.config.js`, run as `pnpm lint:docs`) until the final ratchet
+    phase merges them into the main config — `pnpm lint` stays warning-free
+    meanwhile.
 - Every function's doc comment carries an `@example` fenced ` ```ts ` block
   (enforced by `jsdoc/require-example`; see §5 for its staleness gate).
 - Exclusions are explicit: any file TypeDoc/ESLint must skip (e.g. generated
