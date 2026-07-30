@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use axum::extract::State;
 use axum::Json;
 use serde::Serialize;

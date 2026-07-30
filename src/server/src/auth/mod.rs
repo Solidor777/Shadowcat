@@ -1,6 +1,9 @@
 //! Accounts and access: password hashing, sessions, server roles, invites,
 //! and the first-run setup flow.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 /// Invite-code mint/verify (selector + Argon2-hashed verifier halves).
 pub mod invite;
 /// Argon2id password hashing + verification.

@@ -6,6 +6,9 @@
 //! return one uniform 429 — the throttle must never behave differently for an
 //! identity that exists.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 

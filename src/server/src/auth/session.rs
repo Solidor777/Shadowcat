@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use async_trait::async_trait;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;

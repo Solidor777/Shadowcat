@@ -1,6 +1,9 @@
 //! The HTTP surface: REST routes, asset serving, module serving, the
 //! embedded SPA, error mapping, and auth throttles.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 /// Asset upload/serve routes + the upload rate limiter.
 pub mod assets;
 /// The rust-embedded client bundle (`dist/`) served as the SPA.

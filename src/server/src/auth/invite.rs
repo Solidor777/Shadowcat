@@ -14,6 +14,9 @@
 //! years. Each attempt additionally costs a full Argon2id verify, so the real
 //! attainable rate is lower by ~7 orders of magnitude.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use argon2::password_hash::rand_core::{OsRng, RngCore};
 use std::sync::OnceLock;
 use uuid::Uuid;
