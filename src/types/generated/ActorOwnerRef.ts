@@ -6,4 +6,12 @@
  * `SendMessage` frame and stored in `MessageEngine`. No ID newtypes exist —
  * identifiers are bare `Uuid` (rendered `string` in TS).
  */
-export type ActorOwnerRef = { "kind": "actor", actor_id: string, } | { "kind": "token_instance", token_id: string, };
+export type ActorOwnerRef = { "kind": "actor", 
+/**
+ * The actor document id (world-pinned in `handle_send_message`).
+ */
+actor_id: string, } | { "kind": "token_instance", 
+/**
+ * The token document id the instanced actor lives on.
+ */
+token_id: string, };

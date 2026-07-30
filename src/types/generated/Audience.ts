@@ -9,4 +9,8 @@
  * derives audience from it; a client module choosing to post into a "GM"
  * channel is what sets `Audience::GmOnly`, not the channel string itself.
  */
-export type Audience = { "kind": "public" } | { "kind": "whisper", recipients: Array<string>, } | { "kind": "gm_only" };
+export type Audience = { "kind": "public" } | { "kind": "whisper", 
+/**
+ * User ids allowed to read (sender implicitly included).
+ */
+recipients: Array<string>, } | { "kind": "gm_only" };

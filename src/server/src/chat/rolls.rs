@@ -49,10 +49,15 @@ pub(crate) const MAX_INLINE_ROLLS: usize = 8;
 /// inline roll to execute, or a button to validate-and-store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BodyChunk<'a> {
+    /// Literal body text between spans.
     Text(&'a str),
+    /// An `[[formula]]` inline roll to execute.
     Inline(&'a str),
+    /// An `[[btn:...]]` button to validate and store unexecuted.
     Button {
+        /// The formula inside the span.
         formula: &'a str,
+        /// Optional label after the `|` separator.
         label: Option<&'a str>,
     },
 }
@@ -155,14 +160,23 @@ pub(crate) fn entropy_seed() -> u64 {
 // `pub`, not `pub(crate)`: `SendMessageError::Roll` (a publicly-reachable
 // error variant) carries this type, so it must be at least as visible as
 // that public enum, even though the `rolls` module itself stays private.
+/// Why a roll formula was refused (parse failure or a resource cap).
+/// Rendered to the sender as the refusal message via `Display`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RollError {
+    /// The formula failed to parse (wraps the parser's error).
     Parse(ParseError),
+    /// Total requested dice across all groups above `MAX_ROLL_DICE`.
     TooManyDice(u32),
+    /// Evaluation emitted more records than `MAX_ROLL_RECORDS`.
     TooManyRecords(usize),
+    /// Expertise die count above `MAX_EXPERTISE`.
     ExpertiseTooLarge(u32),
+    /// Die sides above `MAX_DIE_SIDES`.
     SidesTooLarge(i64),
+    /// More inline/button spans than `MAX_INLINE_ROLLS` in one body.
     TooManyInline(usize),
+    /// A `[[` span never closed with `]]`.
     Unterminated,
     /// Two ladder rungs share one `margin_offset` -- `classify`'s
     /// max_by_key/min_by_key tie is caller-order-dependent, so which rung wins

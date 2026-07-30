@@ -87,8 +87,16 @@ pub fn ops_target_message(ops: &[Operation]) -> bool {
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActorOwnerRef {
-    Actor { actor_id: Uuid },
-    TokenInstance { token_id: Uuid },
+    /// A canonical world-scoped actor document.
+    Actor {
+        /// The actor document id (world-pinned in `handle_send_message`).
+        actor_id: Uuid,
+    },
+    /// An instanced actor addressed through its token.
+    TokenInstance {
+        /// The token document id the instanced actor lives on.
+        token_id: Uuid,
+    },
 }
 
 /// The intended readership of a message, beyond the ordinary world-readable
@@ -107,7 +115,10 @@ pub enum Audience {
     Public,
     /// Only `recipients` (plus the sender) may read. The GM reads it ONLY if
     /// their own uuid is among `recipients` — not automatically.
-    Whisper { recipients: Vec<Uuid> },
+    Whisper {
+        /// User ids allowed to read (sender implicitly included).
+        recipients: Vec<Uuid>,
+    },
     /// Only whoever currently holds `WorldRole::Gm` (plus the sender) may
     /// read — resolved dynamically, not a frozen roster at send time.
     GmOnly,
@@ -119,10 +130,14 @@ pub enum Audience {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
+    /// Ordinary chat message.
     #[default]
     Normal,
+    /// `/em`-style emote (rendered third-person).
     Emote,
+    /// A message whose content came from the roll pipeline.
     Roll,
+    /// Server-authored notice (never client-set).
     System,
 }
 
@@ -135,10 +150,16 @@ pub enum MessageKind {
 pub enum Segment {
     /// Literal text. Rendered as a DOM text node by the client (never innerHTML),
     /// so any markup it contains is inert.
-    Text { text: String },
+    Text {
+        /// The literal text (inert; rendered as a DOM text node).
+        text: String,
+    },
     /// A run of ammonia-sanitized HTML (safe by construction; the client renders
     /// it via innerHTML). Produced only by `sanitize` (chat/sanitize.rs).
-    Html { sanitized_html: String },
+    Html {
+        /// The ammonia-sanitized run (safe for innerHTML by construction).
+        sanitized_html: String,
+    },
     /// A completed roll: the formula plus its full deterministic outcome.
     /// `outcome` embeds the evaluated `RollOutcome` (records included — the
     /// natural faces make the roll reproducible/auditable from the stored
@@ -149,7 +170,9 @@ pub enum Segment {
     /// stage; never produced on edit (rolls are immutable, see
     /// `handle_edit_message`).
     RollEmbed {
+        /// The formula as the author wrote it.
         formula: String,
+        /// The full deterministic outcome, natural faces included.
         outcome: RollOutcome,
     },
     /// An unexecuted, parse-and-cap-validated formula the card renders as a
@@ -157,7 +180,9 @@ pub enum Segment {
     /// (a new, independently-attributed roll). `label` is plain data (never
     /// rendered as markup).
     RollButton {
+        /// The validated-but-unexecuted formula the button re-sends.
         formula: String,
+        /// Optional display label (plain data, never markup).
         label: Option<String>,
     },
     /// A server-fetched, SSRF-guarded preview of a link in the message.
@@ -167,8 +192,11 @@ pub enum Segment {
     /// after every other segment the send/edit pipeline produced (`enrich`
     /// never reorders or removes an existing segment).
     LinkPreview {
+        /// The previewed URL as posted.
         url: String,
+        /// Server-extracted title.
         title: String,
+        /// Server-extracted description (may be empty).
         description: String,
     },
     // Reserved, produced later: DocLink (M11d).
@@ -191,14 +219,21 @@ pub fn plain_text_content(raw: &str) -> Vec<Segment> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageEngine {
+    /// Client-chosen channel label (never validated; audience never derives
+    /// from it — see `Audience`).
     pub channel: String,
     /// The owning user; server-set to the authenticated poster (== `Document.owner`).
     pub user_owner: Uuid,
+    /// Actor attribution, if the sender spoke as an actor (world-pinned and
+    /// ownership-checked at send).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_owner: Option<ActorOwnerRef>,
+    /// Message subtype (normal/emote/roll/system).
     pub kind: MessageKind,
+    /// Readership beyond world-readable; drives the doc's `PermissionSet`.
     #[serde(default)]
     pub audience: Audience,
+    /// The sanitized segment list the client renders.
     pub content: Vec<Segment>,
     /// The author's raw input (post-`/w`-strip), kept for client edit-prefill —
     /// sanitized `Segment::Html` cannot be reversed to author input. Data only,
