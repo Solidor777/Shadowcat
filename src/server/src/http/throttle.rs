@@ -23,14 +23,27 @@ pub const INVITE_PER_MIN_PER_IP: usize = 30;
 /// overflow new keys FAIL CLOSED (throttled) rather than evicting live state.
 pub const MAX_TRACKED_KEYS: usize = 65_536;
 
+/// The trailing sliding-window width.
 const WINDOW_MS: i64 = 60_000;
 
+/// Sliding-window budgets for login/invite abuse, keyed by opaque strings
+/// (`login:user:<name>`, `login:ip:<addr>`, ...). Fails closed at capacity.
 pub struct AuthThrottle {
+    /// Per-key hit timestamps within the window.
     hits: Mutex<HashMap<String, Vec<i64>>>,
+    /// Tracked-key bound (`MAX_TRACKED_KEYS`); new keys throttle on overflow.
     capacity: usize,
 }
 
 impl AuthThrottle {
+    /// A limiter at the production capacity bound.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let t = shadowcat::http::throttle::AuthThrottle::new();
+    /// assert!(t.check("login:user:testuser-01", 0, 5)); // first hit within budget
+    /// ```
     pub fn new() -> Self {
         Self {
             hits: Mutex::new(HashMap::new()),

@@ -7,14 +7,23 @@ use serde::Serialize;
 /// returned in the body.
 #[derive(Debug)]
 pub enum AppError {
+    /// 401: no valid session.
     Unauthorized,
+    /// 403: authenticated but not allowed.
     Forbidden,
+    /// 404: absent — also used to HIDE existence where READ is refused.
     NotFound,
+    /// 409: OCC mismatch / duplicate singleton / last-GM removal.
     Conflict(String),
+    /// 400: malformed request.
     BadRequest(String),
+    /// 422: well-formed but semantically rejected payload.
     Unprocessable(String),
+    /// 413: body over the configured cap.
     PayloadTooLarge(String),
+    /// 429: a throttle budget was exceeded.
     TooManyRequests(String),
+    /// 500: server fault — detail logged, never echoed to the client.
     Internal,
 }
 
@@ -46,8 +55,10 @@ impl From<crate::data::DataError> for AppError {
     }
 }
 
+/// The uniform JSON error payload: `{ "error": "..." }`.
 #[derive(Serialize)]
 struct ErrorBody {
+    /// Player-presentable message.
     error: String,
 }
 

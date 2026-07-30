@@ -25,10 +25,18 @@ pub fn detect_image_type(bytes: &[u8]) -> Option<&'static str> {
 /// Per-user sliding-window upload limiter (trailing 60s). In-memory; resets on
 /// restart, which is acceptable for an abuse backstop.
 pub struct UploadRateLimiter {
+    /// Per-user hit timestamps within the trailing window.
     hits: Mutex<HashMap<Uuid, Vec<i64>>>,
 }
 
 impl UploadRateLimiter {
+    /// An empty limiter (one per `AppState`).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// state.upload_rate.check(user, now_ms, per_min) // role-tiered per_min from Config
+    /// ```
     pub fn new() -> Self {
         Self {
             hits: Mutex::new(HashMap::new()),

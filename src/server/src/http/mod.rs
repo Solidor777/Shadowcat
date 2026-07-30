@@ -1,8 +1,17 @@
+//! The HTTP surface: REST routes, asset serving, module serving, the
+//! embedded SPA, error mapping, and auth throttles.
+
+/// Asset upload/serve routes + the upload rate limiter.
 pub mod assets;
+/// The rust-embedded client bundle (`dist/`) served as the SPA.
 pub mod embed;
+/// `AppError` and its status-code mapping.
 pub mod error;
+/// Installed-module discovery + path-guarded static serving.
 pub mod module_routes;
+/// All REST route handlers.
 pub mod routes;
+/// Login/invite sliding-window throttles.
 pub mod throttle;
 
 use std::sync::atomic::AtomicBool;
@@ -20,12 +29,19 @@ use crate::data::sqlite::SqliteRepository;
 /// `/api/setup` requires.
 #[derive(Clone)]
 pub struct AppState {
+    /// The SQLite repository (single-writer pool).
     pub repo: Arc<SqliteRepository>,
+    /// Effective layered configuration.
     pub config: Arc<Config>,
+    /// The token `/api/setup` requires; `None` = open setup window.
     pub setup_token: Option<String>,
+    /// Cached "an admin exists" bit (avoids a DB hit per request).
     pub initialized: Arc<AtomicBool>,
+    /// Realtime rooms + per-user limiters.
     pub ws: crate::ws::WsState,
+    /// Per-user upload budget.
     pub upload_rate: Arc<assets::UploadRateLimiter>,
+    /// Login/invite abuse throttles (per identity + per IP).
     pub auth_throttle: Arc<throttle::AuthThrottle>,
     /// Write-quiesce barrier for the in-server backup route: held in write mode
     /// across `create_backup`'s `VACUUM INTO` + assets copy so no asset
@@ -57,6 +73,14 @@ impl AppState {
     }
 }
 
+/// Build the complete axum router: sessions, request-id + trace layers, all
+/// REST/WS/asset/module routes, and the embedded SPA fallback.
+///
+/// # Examples
+///
+/// ```text
+/// let app = http::router(state).await; // axum::serve(listener, app...)
+/// ```
 pub async fn router(state: AppState) -> Router {
     use tower::ServiceBuilder;
     use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
