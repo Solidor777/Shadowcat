@@ -13,6 +13,16 @@ are observations awaiting triage, not committed work.
   not a regression. Status: Needs Review (if it recurs, await the owner-select
   round-trip explicitly or raise that assertion's timeout).
 
+- Title: ui-e2e panels reload test flaked once locally. Summary: on the docs
+  Sweep-4 local matrix (doc-comment-only branch), `panels.spec.ts` "a panel
+  opened from the launcher docks and survives a full page reload" timed out
+  (30s) waiting for `.stage-host[data-render-ready=true]` after `page.reload()`;
+  the other 15 tests passed. Immediate re-run of the spec: 3/3 green in 4s with
+  zero code change. Same timing-flake class as the hex-movement setup flake
+  above (render-ready wait after a heavyweight reload). Status: Needs Review
+  (two members of the class now — if a third appears, audit the render-ready
+  signal's startup path rather than the individual specs).
+
 - Title: Phase-B world delete swallows asset-directory removal failures. Summary: `routes.rs::
   delete_world` returns 204 even when `remove_dir_all` on `<assets_path>/<world_id>/` fails for a
   reason other than NotFound (permission error, Windows open-handle lock); the failure is a

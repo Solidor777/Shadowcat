@@ -599,7 +599,9 @@ pub struct MemberEntry {
 }
 
 /// List the world's roster. Any member may call it (chat resolves user ids to
-/// names); non-members get 404 (existence-hiding).
+/// names); non-members get 403 Forbidden — the world id is caller-supplied, so
+/// a membership denial leaks nothing (contrast `by_id_not_found`'s by-id
+/// routes, where 403-vs-404 would confirm existence).
 pub async fn list_members(
     user: AuthUser,
     State(state): State<AppState>,
