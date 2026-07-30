@@ -31,38 +31,53 @@ use crate::ws::protocol::{ClientMsg, RejectReason, ServerMsg, WsErrorCode};
 use crate::ws::room::Room;
 use crate::ws::time::now_millis;
 
+/// Query parameters of the `/ws` upgrade request.
 #[derive(Debug, Deserialize)]
 pub struct WsQuery {
+    /// The world the connection joins.
     pub world: Uuid,
 }
 
 /// Intents the ingress task hands to the egress task (which owns the sink).
 enum Egress {
+    /// Deliver a ready frame to this connection.
     Frame(Arc<ServerMsg>),
+    /// Send a time-calibration reply.
     TimePong {
+        /// Echo of the ping's client send time.
         client_t0: i64,
+        /// Server wall-clock at reply, ms.
         server_t: i64,
     },
+    /// Run a resync replay from this seq.
     Resync(i64),
     /// Register a live search subscription (the egress task owns the registry).
     Subscribe {
+        /// Subscription correlation token.
         request_id: Uuid,
+        /// The live query text.
         query: String,
+        /// Top-N size.
         limit: u32,
     },
     /// Cancel a live search subscription.
     Unsubscribe {
+        /// The subscription to cancel.
         request_id: Uuid,
     },
     /// Register a derived scene-channel subscription (egress-owned). `as_user` (GM-only
     /// see-as-player) is authorized + resolved in the egress handler.
     SceneSubscribe {
+        /// Subscription correlation token.
         request_id: Uuid,
+        /// Channel name.
         channel: String,
+        /// GM-only see-as-player target (authorized in the egress handler).
         as_user: Option<Uuid>,
     },
     /// Cancel a derived scene-channel subscription.
     SceneUnsubscribe {
+        /// The subscription to cancel.
         request_id: Uuid,
     },
 }
@@ -79,7 +94,9 @@ const MESSAGE_RATE_PER_MIN: usize = 30;
 
 /// A live search subscription's stored state.
 struct Sub {
+    /// The live query text.
     query: String,
+    /// Top-N size.
     limit: u32,
     /// Last delivered result identity, in rank order. Used to suppress a push
     /// when re-evaluation yields an identical top-N.
@@ -91,8 +108,11 @@ struct Sub {
 /// context the channel is computed for: the connection's own ctx, or — for a GM see-as-player
 /// subscription (M9c-2) — the server-resolved target player's context.
 struct SceneSub {
+    /// Channel name.
     channel: String,
+    /// Last delivered payload; a re-eval pushes only on change.
     fingerprint: Option<serde_json::Value>,
+    /// The context the channel is computed for (own, or GM see-as target).
     view_ctx: PermissionContext,
 }
 
@@ -181,6 +201,15 @@ where
     sink.send(text(&out)).await.map_err(|_| ())
 }
 
+/// One connection's lifetime: splits the socket into an ingress task (parses
+/// frames, applies intents through the one write path) and an egress task
+/// (owns the sink + subscription registries), joined until either ends.
+///
+/// # Examples
+///
+/// ```text
+/// // Spawned by the /ws upgrade handler once auth + world membership pass.
+/// ```
 async fn handle_socket(
     socket: WebSocket,
     state: AppState,
@@ -1142,6 +1171,16 @@ async fn welcome_capability_requirements(
         .collect()
 }
 
+/// The egress half: fans room broadcasts into this connection with
+/// per-recipient filtering, serves resyncs/time-pongs, and owns the live
+/// search + scene-channel subscription registries (re-evaluated on events,
+/// debounced, fingerprint-suppressed).
+///
+/// # Examples
+///
+/// ```text
+/// // One egress_loop per connection; it exits when the socket or room closes.
+/// ```
 #[allow(clippy::too_many_arguments)]
 async fn egress_loop<S>(
     mut sink: S,
