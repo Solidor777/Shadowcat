@@ -6,9 +6,162 @@ import type { Operation } from "./Operation";
 /**
  * Client -> server frames.
  */
-export type ClientMsg = { "type": "hello", world: string, last_seq: bigint | null, } | { "type": "intent", intent_id: string, ops: Array<Operation>, } | { "type": "resync_request", from_seq: bigint, } | { "type": "time_ping", client_t0: bigint, } | { "type": "pong" } | { "type": "search", request_id: string, query: string, limit: number, cursor: string | null, subscribe: boolean, } | { "type": "unsubscribe", request_id: string, } | { "type": "scene_subscribe", request_id: string, channel: string, as_user?: string, } | { "type": "scene_unsubscribe", request_id: string, } | { "type": "scene_ping", scene: string, x: number, y: number, } | { "type": "pathfind", request_id: string, scene: string, start: [number, number], waypoints: Array<[number, number]>, footprint_radius: number, token?: string, } | { "type": "move_request", request_id: string, scene: string, token_id: string, 
+export type ClientMsg = { "type": "hello", 
+/**
+ * The world to join.
+ */
+world: string, 
+/**
+ * Highest seq the client has applied; `None` = cold start (full sync).
+ */
+last_seq: bigint | null, } | { "type": "intent", 
+/**
+ * Client-chosen correlation token echoed on `Event`/`Reject`.
+ */
+intent_id: string, 
+/**
+ * The proposed operations, applied all-or-nothing.
+ */
+ops: Array<Operation>, } | { "type": "resync_request", 
+/**
+ * Replay from the first seq strictly greater than this.
+ */
+from_seq: bigint, } | { "type": "time_ping", 
+/**
+ * Client send timestamp, echoed back in `TimePong`.
+ */
+client_t0: bigint, } | { "type": "pong" } | { "type": "search", 
+/**
+ * Correlation token for the result/update/error frames.
+ */
+request_id: string, 
+/**
+ * Raw query text (sanitized server-side into an FTS MATCH).
+ */
+query: string, 
+/**
+ * Maximum hits per page.
+ */
+limit: number, 
+/**
+ * Opaque page token from a prior `SearchResult`; `None` = first page.
+ */
+cursor: string | null, 
+/**
+ * True = keep a live top-N subscription pushing `SearchUpdate`s.
+ */
+subscribe: boolean, } | { "type": "unsubscribe", 
+/**
+ * The live search to cancel.
+ */
+request_id: string, } | { "type": "scene_subscribe", 
+/**
+ * Correlation token for the derived pushes/errors.
+ */
+request_id: string, 
+/**
+ * Channel name (e.g. "vision").
+ */
+channel: string, 
+/**
+ * GM-only see-as-player target; `None` = the connection's own view.
+ */
+as_user?: string, } | { "type": "scene_unsubscribe", 
+/**
+ * The derived subscription to cancel.
+ */
+request_id: string, } | { "type": "scene_ping", 
+/**
+ * Scene the ping lands on (must grant the sender READ).
+ */
+scene: string, 
+/**
+ * Scene-coordinate x.
+ */
+x: number, 
+/**
+ * Scene-coordinate y.
+ */
+y: number, } | { "type": "pathfind", 
+/**
+ * Correlation token for `PathResult`/`PathError`.
+ */
+request_id: string, 
+/**
+ * Scene to route on.
+ */
+scene: string, 
+/**
+ * Route origin, scene coords.
+ */
+start: [number, number], 
+/**
+ * Intermediate points; the LAST element is the goal, scene coords.
+ */
+waypoints: Array<[number, number]>, 
+/**
+ * Mover radius in grid units; IGNORED when `token` is named.
+ */
+footprint_radius: number, 
+/**
+ * The token the route is for; authorized server-side and the source
+ * of the authoritative footprint (see the variant doc).
+ */
+token?: string, } | { "type": "move_request", 
+/**
+ * Correlation token for `MoveError` (success echoes via `MoveStream`).
+ */
+request_id: string, 
+/**
+ * Scene the token moves on.
+ */
+scene: string, 
+/**
+ * The token to move (must be effectively owned by the requester).
+ */
+token_id: string, 
 /**
  * Ordered cell-center scene points: start … goal (inclusive). Type is `[f64; 2]` not a
  * tuple so the TS binding emits `[number, number][]` (array literal, not tuple object).
  */
-path: Array<[number, number]>, } | { "type": "send_message", request_id: string, channel: string, content: string, actor_owner: ActorOwnerRef | null, audience: Audience, } | { "type": "edit_message", request_id: string, message_id: string, content: string, } | { "type": "delete_message", request_id: string, message_id: string, };
+path: Array<[number, number]>, } | { "type": "send_message", 
+/**
+ * Correlation token for a `ChatError` rejection.
+ */
+request_id: string, 
+/**
+ * Target channel id.
+ */
+channel: string, 
+/**
+ * Raw message text (sanitized server-side).
+ */
+content: string, 
+/**
+ * Optional in-character attribution (authz-checked server-side).
+ */
+actor_owner: ActorOwnerRef | null, 
+/**
+ * Visibility policy (public / gm-only / whisper).
+ */
+audience: Audience, } | { "type": "edit_message", 
+/**
+ * Correlation token for a `ChatError` rejection.
+ */
+request_id: string, 
+/**
+ * The message to edit.
+ */
+message_id: string, 
+/**
+ * Replacement text (re-sanitized server-side).
+ */
+content: string, } | { "type": "delete_message", 
+/**
+ * Correlation token for a `ChatError` rejection.
+ */
+request_id: string, 
+/**
+ * The message to tombstone.
+ */
+message_id: string, };

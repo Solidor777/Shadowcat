@@ -16,7 +16,19 @@ import type { WsErrorCode } from "./WsErrorCode";
 /**
  * Server -> client frames.
  */
-export type ServerMsg = { "type": "welcome", world: string, current_seq: bigint, server_time: bigint, 
+export type ServerMsg = { "type": "welcome", 
+/**
+ * The joined world.
+ */
+world: string, 
+/**
+ * The world's latest committed seq at join time.
+ */
+current_seq: bigint, 
+/**
+ * Server wall-clock at send, Unix epoch milliseconds.
+ */
+server_time: bigint, 
 /**
  * The running server's semver (`CARGO_PKG_VERSION`). The client's
  * load-time engine-compat gate checks each external module's
@@ -24,7 +36,19 @@ export type ServerMsg = { "type": "welcome", world: string, current_seq: bigint,
  * per-session) rather than on public `/api/config` to avoid disclosing
  * the exact build to unauthenticated callers.
  */
-server_version: string, world_default_grants: CapabilityGrants, user_role: WorldRole, capability_requirements: Array<CapabilityRequirement>, 
+server_version: string, 
+/**
+ * The world's default per-document capability grants.
+ */
+world_default_grants: CapabilityGrants, 
+/**
+ * The connecting user's role in this world.
+ */
+user_role: WorldRole, 
+/**
+ * Declarative path-prefix capability requirements (advisory mirror).
+ */
+capability_requirements: Array<CapabilityRequirement>, 
 /**
  * The world's UI contract declarations, so the client can validate its
  * loaded module set against the world's declared topology.
@@ -35,7 +59,175 @@ contract_declarations: Array<ContractDeclaration>,
  * can mirror expectations. Informational/parity only — tier-1 Zod
  * validates client-side; this is NOT a client enforcement gate.
  */
-schema_declarations: Array<SchemaDeclaration>, } | { "type": "event", command: Command, intent_id: string | null, } | { "type": "reject", intent_id: string, reason: RejectReason, } | { "type": "resync_begin", from_seq: bigint, to_seq: bigint, source: ResyncSource, } | { "type": "resync_end", current_seq: bigint, } | { "type": "time_pong", client_t0: bigint, server_t: bigint, } | { "type": "ping" } | { "type": "error", code: WsErrorCode, message: string, } | { "type": "evicted", user: string | null, } | { "type": "search_result", request_id: string, hits: Array<SearchHit>, next_cursor: string | null, } | { "type": "search_error", request_id: string, message: string, } | { "type": "search_update", request_id: string, hits: Array<SearchHit>, } | { "type": "scene_derived", request_id: string, channel: string, computed_at_seq: bigint, payload: unknown, } | { "type": "scene_error", request_id: string, message: string, } | { "type": "asset_changed", uuid: string, op: AssetOp, } | { "type": "scene_ping", scene: string, x: number, y: number, user: string, } | { "type": "path_result", request_id: string, path: Array<[number, number]>, cost: number, arrested: boolean, } | { "type": "path_error", request_id: string, message: string, } | { "type": "move_error", request_id: string, message: string, } | { "type": "chat_error", request_id: string, message: string, } | { "type": "move_stream", 
+schema_declarations: Array<SchemaDeclaration>, } | { "type": "event", 
+/**
+ * The committed, per-recipient-filtered command.
+ */
+command: Command, 
+/**
+ * Originator's correlation token; `None` on the shared broadcast.
+ */
+intent_id: string | null, } | { "type": "reject", 
+/**
+ * The refused intent's correlation token.
+ */
+intent_id: string, 
+/**
+ * Why it was refused.
+ */
+reason: RejectReason, } | { "type": "resync_begin", 
+/**
+ * First seq in the replay (exclusive floor requested by the client).
+ */
+from_seq: bigint, 
+/**
+ * Last seq the replay will deliver.
+ */
+to_seq: bigint, 
+/**
+ * Which tier serves the replay.
+ */
+source: ResyncSource, } | { "type": "resync_end", 
+/**
+ * The authoritative seq after replay; live delivery resumes here.
+ */
+current_seq: bigint, } | { "type": "time_pong", 
+/**
+ * Echo of the ping's client send time.
+ */
+client_t0: bigint, 
+/**
+ * Server wall-clock at reply, Unix epoch milliseconds.
+ */
+server_t: bigint, } | { "type": "ping" } | { "type": "error", 
+/**
+ * Machine-actionable category.
+ */
+code: WsErrorCode, 
+/**
+ * Player-presentable text (never internal details).
+ */
+message: string, } | { "type": "evicted", 
+/**
+ * `None` = every connection in the room; `Some(id)` = that user only.
+ */
+user: string | null, } | { "type": "search_result", 
+/**
+ * The originating search's correlation token.
+ */
+request_id: string, 
+/**
+ * Per-recipient-filtered hits, rank order.
+ */
+hits: Array<SearchHit>, 
+/**
+ * Opaque next-page token; `None` = exhausted.
+ */
+next_cursor: string | null, } | { "type": "search_error", 
+/**
+ * The failed search's correlation token.
+ */
+request_id: string, 
+/**
+ * Player-presentable failure text.
+ */
+message: string, } | { "type": "search_update", 
+/**
+ * The live subscription's correlation token.
+ */
+request_id: string, 
+/**
+ * The refreshed, per-recipient-filtered top-N (full replace).
+ */
+hits: Array<SearchHit>, } | { "type": "scene_derived", 
+/**
+ * The subscription's correlation token.
+ */
+request_id: string, 
+/**
+ * The channel this push belongs to.
+ */
+channel: string, 
+/**
+ * The document seq this state was computed at (orders vs events).
+ */
+computed_at_seq: bigint, 
+/**
+ * Channel-defined derived state; opaque to the transport.
+ */
+payload: unknown, } | { "type": "scene_error", 
+/**
+ * The failed subscription's correlation token.
+ */
+request_id: string, 
+/**
+ * Player-presentable failure text.
+ */
+message: string, } | { "type": "asset_changed", 
+/**
+ * The mutated asset's id.
+ */
+uuid: string, 
+/**
+ * What happened to it.
+ */
+op: AssetOp, } | { "type": "scene_ping", 
+/**
+ * Scene the ping landed on.
+ */
+scene: string, 
+/**
+ * Scene-coordinate x.
+ */
+x: number, 
+/**
+ * Scene-coordinate y.
+ */
+y: number, 
+/**
+ * Who pinged (senders receive their own echo).
+ */
+user: string, } | { "type": "path_result", 
+/**
+ * The originating pathfind's correlation token.
+ */
+request_id: string, 
+/**
+ * Ordered cell-center scene points, start through goal inclusive.
+ */
+path: Array<[number, number]>, 
+/**
+ * Total route cost in cells (multiply by `grid.distance.perCell`).
+ */
+cost: number, 
+/**
+ * True when an arrest region truncated the route short of the goal.
+ */
+arrested: boolean, } | { "type": "path_error", 
+/**
+ * The failed pathfind's correlation token.
+ */
+request_id: string, 
+/**
+ * Player-presentable failure text.
+ */
+message: string, } | { "type": "move_error", 
+/**
+ * The refused move's correlation token.
+ */
+request_id: string, 
+/**
+ * Player-presentable failure text.
+ */
+message: string, } | { "type": "chat_error", 
+/**
+ * The refused chat op's correlation token.
+ */
+request_id: string, 
+/**
+ * `SendMessageError`'s player-presentable `Display` text.
+ */
+message: string, } | { "type": "move_stream", 
 /**
  * Correlates with the originating `MoveRequest`.
  */

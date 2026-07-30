@@ -18,18 +18,31 @@ use crate::data::search::SearchHit;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
     /// First frame after upgrade: names the world and the client's last known seq.
-    Hello { world: Uuid, last_seq: Option<i64> },
+    Hello {
+        /// The world to join.
+        world: Uuid,
+        /// Highest seq the client has applied; `None` = cold start (full sync).
+        last_seq: Option<i64>,
+    },
     /// A proposed write: a client-chosen `intent_id` for correlation plus the
     /// ops to apply. The server authorizes/validates/sequences them through the
     /// one write path; success broadcasts an `Event`, failure returns `Reject`.
     Intent {
+        /// Client-chosen correlation token echoed on `Event`/`Reject`.
         intent_id: Uuid,
+        /// The proposed operations, applied all-or-nothing.
         ops: Vec<Operation>,
     },
     /// Explicit gap recovery from the client's sequence guard.
-    ResyncRequest { from_seq: i64 },
+    ResyncRequest {
+        /// Replay from the first seq strictly greater than this.
+        from_seq: i64,
+    },
     /// Time calibration ping carrying the client's send timestamp.
-    TimePing { client_t0: i64 },
+    TimePing {
+        /// Client send timestamp, echoed back in `TimePong`.
+        client_t0: i64,
+    },
     /// Heartbeat reply.
     Pong,
     /// A full-text search request, correlated by `request_id`. `cursor` is the
@@ -37,34 +50,55 @@ pub enum ClientMsg {
     /// true, the initial `SearchResult` is followed by `SearchUpdate`s on change
     /// (a live top-N subscription keyed by `request_id`).
     Search {
+        /// Correlation token for the result/update/error frames.
         request_id: Uuid,
+        /// Raw query text (sanitized server-side into an FTS MATCH).
         query: String,
+        /// Maximum hits per page.
         limit: u32,
+        /// Opaque page token from a prior `SearchResult`; `None` = first page.
         cursor: Option<String>,
+        /// True = keep a live top-N subscription pushing `SearchUpdate`s.
         #[serde(default)]
         subscribe: bool,
     },
     /// Cancel a live search subscription (idempotent; unknown id ignored).
-    Unsubscribe { request_id: Uuid },
+    Unsubscribe {
+        /// The live search to cancel.
+        request_id: Uuid,
+    },
     /// Subscribe to a derived scene channel (e.g. M9 "vision"). M8a recognizes
     /// only the debug "identity" channel; unknown channels yield SceneError.
     /// `as_user` (M9c-2 see-as-player) is **GM-only**: it views the channel as that user; the
     /// server rejects it for non-GMs and resolves the target's role server-side. Omitted/None =
     /// the connection's own view.
     SceneSubscribe {
+        /// Correlation token for the derived pushes/errors.
         request_id: Uuid,
+        /// Channel name (e.g. "vision").
         channel: String,
+        /// GM-only see-as-player target; `None` = the connection's own view.
         #[serde(default)]
         #[ts(optional)]
         as_user: Option<Uuid>,
     },
     /// Cancel a derived subscription by request id.
-    SceneUnsubscribe { request_id: Uuid },
+    SceneUnsubscribe {
+        /// The derived subscription to cancel.
+        request_id: Uuid,
+    },
     /// A transient location ping at scene coords. Relayed out-of-band to the world
     /// room with the sender stamped; never sequenced, logged, or a document (#3).
     /// Coordinates are not validated; the scene must exist in this world and grant the sender
     /// READ (silent drop otherwise); rate-limited per connection.
-    ScenePing { scene: Uuid, x: f64, y: f64 },
+    ScenePing {
+        /// Scene the ping lands on (must grant the sender READ).
+        scene: Uuid,
+        /// Scene-coordinate x.
+        x: f64,
+        /// Scene-coordinate y.
+        y: f64,
+    },
     /// A one-shot grid pathfinding request, correlated by `request_id`. `start`/`waypoints` are
     /// scene coords; `waypoints`' LAST element is the goal. The route is mask-bounded for non-GM
     /// requesters.
@@ -78,11 +112,18 @@ pub enum ClientMsg {
     /// honored and the result is an explicitly hypothetical preview carrying no
     /// preview-equals-execution guarantee.
     Pathfind {
+        /// Correlation token for `PathResult`/`PathError`.
         request_id: Uuid,
+        /// Scene to route on.
         scene: Uuid,
+        /// Route origin, scene coords.
         start: (f64, f64),
+        /// Intermediate points; the LAST element is the goal, scene coords.
         waypoints: Vec<(f64, f64)>,
+        /// Mover radius in grid units; IGNORED when `token` is named.
         footprint_radius: f64,
+        /// The token the route is for; authorized server-side and the source
+        /// of the authoritative footprint (see the variant doc).
         #[serde(default)]
         #[ts(optional)]
         token: Option<Uuid>,
@@ -93,8 +134,11 @@ pub enum ClientMsg {
     /// to the originator on failure. `path` carries the exact route preview so the server can
     /// reproduce the animation.
     MoveRequest {
+        /// Correlation token for `MoveError` (success echoes via `MoveStream`).
         request_id: Uuid,
+        /// Scene the token moves on.
         scene: Uuid,
+        /// The token to move (must be effectively owned by the requester).
         token_id: Uuid,
         /// Ordered cell-center scene points: start … goal (inclusive). Type is `[f64; 2]` not a
         /// tuple so the TS binding emits `[number, number][]` (array literal, not tuple object).
@@ -106,11 +150,16 @@ pub enum ClientMsg {
     /// `request_id` correlates a rejection back to the sender via `ChatError`
     /// (success is confirmed by the broadcast `Event` echo, same as `Intent`).
     SendMessage {
+        /// Correlation token for a `ChatError` rejection.
         request_id: Uuid,
+        /// Target channel id.
         channel: String,
+        /// Raw message text (sanitized server-side).
         content: String,
+        /// Optional in-character attribution (authz-checked server-side).
         #[serde(default)]
         actor_owner: Option<ActorOwnerRef>,
+        /// Visibility policy (public / gm-only / whisper).
         #[serde(default)]
         audience: Audience,
     },
@@ -118,14 +167,22 @@ pub enum ClientMsg {
     /// re-runs the sanitize+command pipeline; audience/channel are frozen.
     /// `request_id` correlates a rejection back to the sender via `ChatError`.
     EditMessage {
+        /// Correlation token for a `ChatError` rejection.
         request_id: Uuid,
+        /// The message to edit.
         message_id: Uuid,
+        /// Replacement text (re-sanitized server-side).
         content: String,
     },
     /// Soft-delete a message the requester owns (or any, if GM): the doc stays
     /// in the sequenced log as a tombstone (content cleared, deleted_at set).
     /// `request_id` correlates a rejection back to the sender via `ChatError`.
-    DeleteMessage { request_id: Uuid, message_id: Uuid },
+    DeleteMessage {
+        /// Correlation token for a `ChatError` rejection.
+        request_id: Uuid,
+        /// The message to tombstone.
+        message_id: Uuid,
+    },
 }
 
 /// Which tier served a resync.
@@ -133,7 +190,9 @@ pub enum ClientMsg {
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum ResyncSource {
+    /// Served from the room's in-memory ring buffer.
     Buffer,
+    /// Served from the persisted `world_events` log.
     Log,
 }
 
@@ -142,10 +201,15 @@ pub enum ResyncSource {
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum WsErrorCode {
+    /// The named world does not exist (or is invisible to the caller).
     WorldNotFound,
+    /// The frame failed to parse/validate.
     BadMessage,
+    /// The write path failed to apply a publish.
     PublishFailed,
+    /// The caller lacks the required authority.
     Forbidden,
+    /// Unexpected server-side failure (details logged, never echoed).
     Internal,
 }
 
@@ -155,8 +219,11 @@ pub enum WsErrorCode {
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum RejectReason {
+    /// Authorization refused — re-auth or give up.
     Forbidden,
+    /// OCC pre-image mismatch or duplicate singleton — re-read and retry.
     Conflict,
+    /// Structurally invalid payload — fix the request.
     Invalid,
 }
 
@@ -165,7 +232,9 @@ pub enum RejectReason {
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum AssetOp {
+    /// The asset's bytes were replaced (version bumped; re-fetch).
     Replaced,
+    /// The asset row was removed.
     Deleted,
 }
 
@@ -204,8 +273,11 @@ pub enum ServerMsg {
     /// requirements so the client can replicate access resolution for advisory
     /// UI gating (the server remains authoritative).
     Welcome {
+        /// The joined world.
         world: Uuid,
+        /// The world's latest committed seq at join time.
         current_seq: i64,
+        /// Server wall-clock at send, Unix epoch milliseconds.
         server_time: i64,
         /// The running server's semver (`CARGO_PKG_VERSION`). The client's
         /// load-time engine-compat gate checks each external module's
@@ -213,8 +285,11 @@ pub enum ServerMsg {
         /// per-session) rather than on public `/api/config` to avoid disclosing
         /// the exact build to unauthenticated callers.
         server_version: String,
+        /// The world's default per-document capability grants.
         world_default_grants: crate::data::document::CapabilityGrants,
+        /// The connecting user's role in this world.
         user_role: crate::data::document::WorldRole,
+        /// Declarative path-prefix capability requirements (advisory mirror).
         capability_requirements: Vec<crate::data::document::CapabilityRequirement>,
         /// The world's UI contract declarations, so the client can validate its
         /// loaded module set against the world's declared topology.
@@ -229,71 +304,122 @@ pub enum ServerMsg {
     /// (an originator confirms its own write by receiving this echo of its
     /// authored command). Per-intent `Some` correlation is added in M6.
     Event {
+        /// The committed, per-recipient-filtered command.
         command: Command,
+        /// Originator's correlation token; `None` on the shared broadcast.
         intent_id: Option<Uuid>,
     },
     /// An `Intent` the write path refused, addressed to its originator only.
     Reject {
+        /// The refused intent's correlation token.
         intent_id: Uuid,
+        /// Why it was refused.
         reason: RejectReason,
     },
     /// Opens a resync replay range.
     ResyncBegin {
+        /// First seq in the replay (exclusive floor requested by the client).
         from_seq: i64,
+        /// Last seq the replay will deliver.
         to_seq: i64,
+        /// Which tier serves the replay.
         source: ResyncSource,
     },
     /// Closes a resync replay range; live delivery resumes after this.
-    ResyncEnd { current_seq: i64 },
+    ResyncEnd {
+        /// The authoritative seq after replay; live delivery resumes here.
+        current_seq: i64,
+    },
     /// Time calibration reply: echoes the client send time, adds the server time.
-    TimePong { client_t0: i64, server_t: i64 },
+    TimePong {
+        /// Echo of the ping's client send time.
+        client_t0: i64,
+        /// Server wall-clock at reply, Unix epoch milliseconds.
+        server_t: i64,
+    },
     /// Heartbeat.
     Ping,
     /// A non-fatal or fatal error, by code.
-    Error { code: WsErrorCode, message: String },
+    Error {
+        /// Machine-actionable category.
+        code: WsErrorCode,
+        /// Player-presentable text (never internal details).
+        message: String,
+    },
     /// Terminal eviction notice: the recipient's world or account is being
     /// deleted. `user: None` addresses every connection in the room (world
     /// deletion); `Some(id)` addresses only that user's connections (account
     /// deletion — broadcast to every room, non-targets skip it silently). The
     /// egress loop delivers this frame, sends a protocol Close, and terminates
     /// the connection; the client must treat it as terminal (no reconnect).
-    Evicted { user: Option<Uuid> },
+    Evicted {
+        /// `None` = every connection in the room; `Some(id)` = that user only.
+        user: Option<Uuid>,
+    },
     /// Results for the `Search` with this `request_id`. Documents are already
     /// filtered for the recipient. `next_cursor` is `None` when exhausted.
     SearchResult {
+        /// The originating search's correlation token.
         request_id: Uuid,
+        /// Per-recipient-filtered hits, rank order.
         hits: Vec<SearchHit>,
+        /// Opaque next-page token; `None` = exhausted.
         next_cursor: Option<String>,
     },
     /// The `Search` with this `request_id` failed.
-    SearchError { request_id: Uuid, message: String },
+    SearchError {
+        /// The failed search's correlation token.
+        request_id: Uuid,
+        /// Player-presentable failure text.
+        message: String,
+    },
     /// A live subscription's refreshed top-N (full replace). Documents are
     /// already filtered for the recipient.
     SearchUpdate {
+        /// The live subscription's correlation token.
         request_id: Uuid,
+        /// The refreshed, per-recipient-filtered top-N (full replace).
         hits: Vec<SearchHit>,
     },
     /// A derived-state push: coalesced, per recipient, ordered after the
     /// document events it reflects via `computed_at_seq`. `payload` is opaque to
     /// the transport (#6).
     SceneDerived {
+        /// The subscription's correlation token.
         request_id: Uuid,
+        /// The channel this push belongs to.
         channel: String,
+        /// The document seq this state was computed at (orders vs events).
         computed_at_seq: i64,
+        /// Channel-defined derived state; opaque to the transport.
         #[ts(type = "unknown")]
         payload: serde_json::Value,
     },
     /// A derived subscription failed (e.g. unknown channel).
-    SceneError { request_id: Uuid, message: String },
+    SceneError {
+        /// The failed subscription's correlation token.
+        request_id: Uuid,
+        /// Player-presentable failure text.
+        message: String,
+    },
     /// Out-of-band asset mutation notice. Carries no seq and is never buffered
     /// or resynced; holders re-resolve against the record's `version`.
-    AssetChanged { uuid: Uuid, op: AssetOp },
+    AssetChanged {
+        /// The mutated asset's id.
+        uuid: Uuid,
+        /// What happened to it.
+        op: AssetOp,
+    },
     /// A relayed location ping: the sender's transient marker at scene coords.
     /// Out-of-band (no seq, never buffered/resynced), mirroring `AssetChanged`.
     ScenePing {
+        /// Scene the ping landed on.
         scene: Uuid,
+        /// Scene-coordinate x.
         x: f64,
+        /// Scene-coordinate y.
         y: f64,
+        /// Who pinged (senders receive their own echo).
         user: Uuid,
     },
     /// The route for the `Pathfind` with this `request_id`: ordered cell-center scene points
@@ -302,16 +428,30 @@ pub enum ServerMsg {
     /// (spec §5 "honest preview" — the player-facing route never silently ends short without
     /// telling the client why).
     PathResult {
+        /// The originating pathfind's correlation token.
         request_id: Uuid,
+        /// Ordered cell-center scene points, start through goal inclusive.
         path: Vec<(f64, f64)>,
+        /// Total route cost in cells (multiply by `grid.distance.perCell`).
         cost: f64,
+        /// True when an arrest region truncated the route short of the goal.
         arrested: bool,
     },
     /// The `Pathfind` with this `request_id` failed (unreachable / invalid request / search exceeded).
-    PathError { request_id: Uuid, message: String },
+    PathError {
+        /// The failed pathfind's correlation token.
+        request_id: Uuid,
+        /// Player-presentable failure text.
+        message: String,
+    },
     /// A `MoveRequest` was rejected (token already moving, caller not owner, malformed path, etc.).
     /// Addressed to the originating connection only; never broadcast.
-    MoveError { request_id: Uuid, message: String },
+    MoveError {
+        /// The refused move's correlation token.
+        request_id: Uuid,
+        /// Player-presentable failure text.
+        message: String,
+    },
     /// A `SendMessage`/`EditMessage`/`DeleteMessage` was rejected. One shared
     /// variant covers all three chat ops: they share a single error enum
     /// (`chat::SendMessageError`) and its player-presentable `Display`; the
@@ -319,7 +459,12 @@ pub enum ServerMsg {
     /// Addressed to the originating connection only; never broadcast. `message`
     /// is `SendMessageError`'s `Display` text — authorization/existence/internal
     /// classes are already collapsed to a generic string there (no leak).
-    ChatError { request_id: Uuid, message: String },
+    ChatError {
+        /// The refused chat op's correlation token.
+        request_id: Uuid,
+        /// `SendMessageError`'s player-presentable `Display` text.
+        message: String,
+    },
     /// Broadcast to the scene, then clipped per recipient at egress: the mover receives the full
     /// trajectory and `mover_vision`; observers receive only the position samples their own vision
     /// admits, with `mover_vision` nulled; a fully-occluded recipient receives nothing.
@@ -359,6 +504,15 @@ pub enum ServerMsg {
 
 impl ServerMsg {
     /// seq of an `Event` frame, else `None`. Only `Event`s are buffered/resynced.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::protocol::ServerMsg;
+    ///
+    /// // Out-of-band frames carry no seq — egress skips gap/resync logic for them.
+    /// assert_eq!(ServerMsg::Ping.event_seq(), None);
+    /// ```
     pub fn event_seq(&self) -> Option<i64> {
         match self {
             ServerMsg::Event { command, .. } => Some(command.seq),
@@ -367,6 +521,14 @@ impl ServerMsg {
     }
 
     /// server-stamped ts of an `Event` frame, else `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::protocol::ServerMsg;
+    ///
+    /// assert_eq!(ServerMsg::Ping.event_ts(), None);
+    /// ```
     pub fn event_ts(&self) -> Option<i64> {
         match self {
             ServerMsg::Event { command, .. } => Some(command.ts),
