@@ -37,6 +37,25 @@ pub const TOKEN_DOC_TYPE: &str = "token";
 /// `engine.actor_id` is a link — an instanced token's `embedded.actor[0]` is a
 /// frozen placement-time copy and is deliberately NOT a link, so it can never
 /// re-derive ownership from stale embedded state.
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::Document;
+/// use shadowcat::data::permission::token_actor_link;
+///
+/// let token: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "token",
+///     "schema_version": 1,
+///     "engine": { "x": 0.0, "y": 0.0, "actor_id": "00000000-0000-0000-0000-000000000002" },
+///     "system": {},
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+/// // Only a `token`'s engine.actor_id is a link; other doc_types yield None.
+/// assert!(token_actor_link(&token).is_some());
+/// ```
 pub fn token_actor_link(doc: &Document) -> Option<Uuid> {
     if doc.doc_type != TOKEN_DOC_TYPE {
         return None;
@@ -66,6 +85,29 @@ pub fn token_actor_link(doc: &Document) -> Option<Uuid> {
 /// `linked_actor` MUST be the document `token_actor_link(doc)` names; the
 /// identity/type re-check below rejects any other document rather than trusting
 /// the caller's join.
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::Document;
+/// use shadowcat::data::permission::effective_owner;
+///
+/// let mut token: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "token",
+///     "schema_version": 1,
+///     "system": {},
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+///
+/// // No own owner, no link, no actor: unowned.
+/// assert_eq!(effective_owner(&token, None), None);
+/// // The token's OWN owner always wins over any linked actor's.
+/// let user = uuid::Uuid::new_v4();
+/// token.owner = Some(user);
+/// assert_eq!(effective_owner(&token, None), Some(user));
+/// ```
 pub fn effective_owner(doc: &Document, linked_actor: Option<&Document>) -> Option<Uuid> {
     if let Some(own) = doc.owner {
         return Some(own);
@@ -82,6 +124,13 @@ pub fn effective_owner(doc: &Document, linked_actor: Option<&Document>) -> Optio
 /// (the room's `SceneEcs` actor table on the WS/HTTP write-read hot paths, or
 /// `|_| None` where no such table exists). Never queries the pool — the C1
 /// no-pool-query-on-hot-path property egress relies on.
+///
+/// # Examples
+///
+/// ```text
+/// // WS hot path: join through the room's in-memory actor table.
+/// let owner = effective_owner_via(&token, |id| ecs.actor(id));
+/// ```
 pub fn effective_owner_via<'a>(
     doc: &Document,
     actor_lookup: &impl Fn(&Uuid) -> Option<&'a Document>,
@@ -240,6 +289,19 @@ fn paths_overlap(a: &str, b: &str) -> bool {
 /// write. This over-approximates (an ancestor write that does not touch the
 /// protected leaf still demands the cap), the safe direction for an authz gate.
 /// Boundary-matched, so `/system/visionmode` does not match `/system/vision`.
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::CapabilityRequirement;
+/// use shadowcat::data::permission::declared_caps_for_path;
+///
+/// let reqs = vec![CapabilityRequirement {
+///     path_prefix: "/engine/vision".into(),
+///     caps: ["module:edit_vision".to_string()].into(),
+/// }];
+/// assert_eq!(declared_caps_for_path("/engine/vision/range", &reqs), vec!["module:edit_vision"]);
+/// assert!(declared_caps_for_path("/system/hp", &reqs).is_empty());
+/// ```
 pub fn declared_caps_for_path<'a>(path: &str, reqs: &'a [CapabilityRequirement]) -> Vec<&'a str> {
     let mut out = Vec::new();
     for req in reqs {
@@ -255,6 +317,13 @@ pub fn declared_caps_for_path<'a>(path: &str, reqs: &'a [CapabilityRequirement])
 /// is **present** in `doc_json` — the Create path writes the entire body at once,
 /// so a populated protected subtree must be authorized exactly as an Update to it
 /// would be. Closes the create-time bypass of declarative requirements.
+///
+/// # Examples
+///
+/// ```text
+/// // Create-time: requirements whose protected path exists in the new body apply.
+/// let caps = declared_caps_for_document(&doc_json, &world_requirements);
+/// ```
 pub fn declared_caps_for_document<'a>(
     doc_json: &serde_json::Value,
     reqs: &'a [CapabilityRequirement],
@@ -504,6 +573,12 @@ pub fn resolve_access(
 /// Same `effective_owner` resolution contract as `resolve_access`: the
 /// caller must resolve it from its source, and a literal `doc.owner` is
 /// correct only for document types that can never carry an actor link.
+/// # Examples
+///
+/// ```text
+/// // resolve_access + the world's per-doc_type default grants layered in:
+/// let access = resolve_access_world(user, role, &doc, &world_defaults, effective_owner);
+/// ```
 pub fn resolve_access_world(
     user: Uuid,
     world_role: WorldRole,
@@ -530,6 +605,23 @@ pub fn resolve_access_world(
 /// access resolution client-side: the per-role tiers (world policy, no PII) plus
 /// **only** this user's own per-user grants. Other users' UUIDs and grants are
 /// dropped — the full `by_user` map must never cross to a client.
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::CapabilityGrants;
+/// use shadowcat::data::permission::project_grants_for;
+///
+/// let me = uuid::Uuid::new_v4();
+/// let other = uuid::Uuid::new_v4();
+/// let mut grants = CapabilityGrants::default();
+/// grants.by_user.entry(me).or_default().insert("module:x".into());
+/// grants.by_user.entry(other).or_default().insert("module:y".into());
+///
+/// // Only the recipient's own by_user entry survives projection.
+/// let mine = project_grants_for(&grants, me);
+/// assert!(mine.by_user.contains_key(&me));
+/// assert!(!mine.by_user.contains_key(&other));
+/// ```
 pub fn project_grants_for(grants: &CapabilityGrants, user: Uuid) -> CapabilityGrants {
     CapabilityGrants {
         by_role: grants.by_role.clone(),
