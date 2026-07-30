@@ -20,10 +20,18 @@ pub use room::RoomRegistry;
 /// abuse backstop. 60 s window; over-budget pings drop silently at the call site.
 #[derive(Default)]
 pub struct PingRateLimiter {
+    /// Per-user hit timestamps within the sliding window.
     hits: Mutex<HashMap<Uuid, Vec<i64>>>,
 }
 
 impl PingRateLimiter {
+    /// An empty limiter.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let limiter = PingRateLimiter::new(); // one per WsState, shared per user
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
@@ -46,6 +54,7 @@ impl PingRateLimiter {
 /// bus internals (actor pool / external broker) without touching callers.
 #[derive(Clone)]
 pub struct WsState {
+    /// The world -> room fan-out registry.
     pub rooms: Arc<RoomRegistry>,
     /// Per-user ping budget (shared across a user's connections).
     pub ping_rate: Arc<PingRateLimiter>,
@@ -66,6 +75,14 @@ pub struct WsState {
 }
 
 impl WsState {
+    /// Fresh realtime state (empty registry + limiters).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ws = shadowcat::ws::WsState::new();
+    /// assert!(ws.rooms.get(uuid::Uuid::nil()).is_none());
+    /// ```
     pub fn new() -> Self {
         Self {
             rooms: Arc::new(RoomRegistry::new()),

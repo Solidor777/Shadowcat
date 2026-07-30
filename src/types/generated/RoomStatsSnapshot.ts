@@ -3,4 +3,36 @@
 /**
  * Serializable snapshot of a room's telemetry for the admin debug endpoint.
  */
-export type RoomStatsSnapshot = { world_id: string, connections: bigint, current_seq: bigint, events_published: bigint, gaps_detected: bigint, resyncs_hot: bigint, resyncs_cold: bigint, lagged_drops: bigint, };
+export type RoomStatsSnapshot = { 
+/**
+ * The room's world.
+ */
+world_id: string, 
+/**
+ * Live connection count at snapshot time.
+ */
+connections: bigint, 
+/**
+ * The room's committed seq at snapshot time.
+ */
+current_seq: bigint, 
+/**
+ * Sequenced events published since room creation.
+ */
+events_published: bigint, 
+/**
+ * Client-reported sequence gaps.
+ */
+gaps_detected: bigint, 
+/**
+ * Resyncs served from the ring buffer.
+ */
+resyncs_hot: bigint, 
+/**
+ * Resyncs served from the persisted log.
+ */
+resyncs_cold: bigint, 
+/**
+ * Frames dropped on lagging receivers.
+ */
+lagged_drops: bigint, };

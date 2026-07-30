@@ -51,17 +51,29 @@ pub(crate) struct MoveExecution {
     pub cost: f64,
 }
 
+/// Ring-buffer event cap (hot-resync depth).
 const MAX_EVENTS: usize = 1024;
+/// Ring-buffer age cap, ms, relative to the newest buffered event.
 const MAX_AGE_MS: i64 = 5 * 60 * 1000;
+/// Tokio broadcast channel capacity; a receiver farther behind than this lags
+/// out and resyncs from the ring/log tiers.
 const BROADCAST_CAPACITY: usize = 256;
 
 /// Recent `Event` frames for hot resync, bounded by count and age. Age is
 /// measured relative to the newest buffered event's `ts`.
 pub struct RingBuffer {
-    events: VecDeque<Arc<ServerMsg>>, // ascending seq; each is ServerMsg::Event
+    /// Buffered frames, ascending seq; every entry is a `ServerMsg::Event`.
+    events: VecDeque<Arc<ServerMsg>>,
 }
 
 impl RingBuffer {
+    /// An empty buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let ring = RingBuffer::new(); // fills as events publish
+    /// ```
     pub fn new() -> Self {
         Self {
             events: VecDeque::new(),
@@ -113,11 +125,17 @@ impl Default for RingBuffer {
 /// Per-room telemetry counters (lock-free).
 #[derive(Default)]
 pub struct RoomStats {
+    /// Live connection count.
     pub connections: AtomicI64,
+    /// Sequenced events published since room creation.
     pub events_published: AtomicU64,
+    /// Client-reported sequence gaps.
     pub gaps_detected: AtomicU64,
+    /// Resyncs served from the ring buffer.
     pub resyncs_hot: AtomicU64,
+    /// Resyncs served from the persisted log.
     pub resyncs_cold: AtomicU64,
+    /// Frames dropped on lagging receivers (they resync afterward).
     pub lagged_drops: AtomicU64,
 }
 
@@ -125,25 +143,40 @@ pub struct RoomStats {
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct RoomStatsSnapshot {
+    /// The room's world.
     pub world_id: Uuid,
+    /// Live connection count at snapshot time.
     pub connections: i64,
+    /// The room's committed seq at snapshot time.
     pub current_seq: i64,
+    /// Sequenced events published since room creation.
     pub events_published: u64,
+    /// Client-reported sequence gaps.
     pub gaps_detected: u64,
+    /// Resyncs served from the ring buffer.
     pub resyncs_hot: u64,
+    /// Resyncs served from the persisted log.
     pub resyncs_cold: u64,
+    /// Frames dropped on lagging receivers.
     pub lagged_drops: u64,
 }
 
 /// A per-world fan-out room. The `broadcast` channel is intentionally lossy —
 /// a lagging receiver gets `Lagged(n)` and resyncs from the ring/log tiers.
 pub struct Room {
+    /// The world this room fans out for.
     pub world_id: Uuid,
+    /// The lossy broadcast sender every connection subscribes to.
     tx: broadcast::Sender<Arc<ServerMsg>>,
+    /// Hot-resync tier (recent events, count/age bounded).
     ring: Mutex<RingBuffer>,
+    /// Serializes publishes so seq order equals broadcast order.
     publish_guard: Mutex<()>,
+    /// The room's committed sequence watermark.
     current_seq: AtomicI64,
+    /// The derived, in-memory scene read-model (vision/movement source).
     scene: RwLock<SceneEcs>,
+    /// Telemetry counters.
     pub stats: RoomStats,
     /// Per-token moving lock: token → move-end epoch-ms. An entry is expired when
     /// `now_millis() >= end`; expired/absent entries are treated as available (lazy expiry,
@@ -152,6 +185,13 @@ pub struct Room {
 }
 
 impl Room {
+    /// A room seeded at `seed_seq` with a hydrated scene read-model.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// RoomRegistry::get_or_create hydrates and constructs rooms; never build one directly.
+    /// ```
     fn new(world_id: Uuid, seed_seq: i64, scene: SceneEcs, broadcast_capacity: usize) -> Self {
         let (tx, _rx) = broadcast::channel(broadcast_capacity);
         Self {
@@ -181,6 +221,13 @@ impl Room {
         )
     }
 
+    /// The room's committed sequence watermark.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let seq = room.current_seq(); // compare against a client's last_seq
+    /// ```
     pub fn current_seq(&self) -> i64 {
         self.current_seq.load(Ordering::Acquire)
     }
@@ -739,6 +786,14 @@ impl Room {
         Ok((frames, ResyncSource::Log))
     }
 
+    /// One consistent-enough telemetry snapshot (relaxed loads; counters may
+    /// skew by in-flight increments).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let stats = room.snapshot(); // admin debug endpoint payload
+    /// ```
     fn snapshot(&self) -> RoomStatsSnapshot {
         RoomStatsSnapshot {
             world_id: self.world_id,
@@ -757,6 +812,7 @@ impl Room {
 /// can later be swapped for an actor or an external broker without touching
 /// callers or connections.
 pub struct RoomRegistry {
+    /// Live rooms by world id.
     rooms: DashMap<Uuid, Arc<Room>>,
     /// Worlds mid-deletion. `get_or_create` refuses these so an evicted
     /// client's reconnect (or a racing HTTP document write) cannot re-hydrate
@@ -769,6 +825,16 @@ pub struct RoomRegistry {
 }
 
 impl RoomRegistry {
+    /// A registry with the production broadcast capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// let reg = RoomRegistry::new();
+    /// assert!(reg.get(uuid::Uuid::nil()).is_none()); // no room until a join hydrates one
+    /// ```
     pub fn new() -> Self {
         Self {
             rooms: DashMap::new(),
@@ -871,10 +937,12 @@ impl RoomRegistry {
         Ok(Some(room))
     }
 
+    /// The live room for `world_id`, or `None` if nobody has joined it.
     pub fn get(&self, world_id: Uuid) -> Option<Arc<Room>> {
         self.rooms.get(&world_id).map(|r| r.clone())
     }
 
+    /// Telemetry snapshots for every live room (admin debug endpoint).
     pub fn snapshot(&self) -> Vec<RoomStatsSnapshot> {
         self.rooms.iter().map(|r| r.snapshot()).collect()
     }
