@@ -31,8 +31,13 @@ use super::Segment;
 /// stored strings and never fetches `url` itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkPreview {
+    /// The fetched URL (post-redirect origin is NOT substituted; this is the
+    /// URL the author posted).
     pub url: String,
+    /// Extracted page title, entity-decoded, capped at `MAX_TITLE_CHARS`.
     pub title: String,
+    /// Extracted description, entity-decoded, capped at
+    /// `MAX_DESCRIPTION_CHARS`; may be empty.
     pub description: String,
 }
 
@@ -94,6 +99,18 @@ fn extract_href_urls(html: &str) -> Vec<String> {
     urls
 }
 
+/// Borrow-bundle of the three link-preview dependencies threaded through
+/// `handle_send_message`/`handle_edit_message`, replacing three positional
+/// params with one. Not stored — constructed inline at each call site.
+pub struct LinkPreviewDeps<'a> {
+    /// The shared preview-fetch HTTP client (SSRF-guarded resolver).
+    pub client: &'a reqwest::Client,
+    /// Positive/negative preview outcome cache.
+    pub cache: &'a LinkPreviewCache,
+    /// Per-user fetch rate limiter (`PREVIEW_FETCH_PER_MIN`).
+    pub rate: &'a PreviewRateLimiter,
+}
+
 /// Extracts candidate preview URLs from `segments`' `Html` runs — specifically
 /// the `href` of an actual `<a>` tag in the sanitized output (see
 /// `extract_href_urls`'s doc for why this must be scoped to a real anchor
@@ -113,15 +130,6 @@ fn extract_href_urls(html: &str) -> Vec<String> {
 /// the cache's TTL — both must be consistent with the caller's clock but are
 /// deliberately separate types/precisions, matching each dependency's own
 /// clock source.
-/// Borrow-bundle of the three link-preview dependencies threaded through
-/// `handle_send_message`/`handle_edit_message`, replacing three positional
-/// params with one. Not stored — constructed inline at each call site.
-pub struct LinkPreviewDeps<'a> {
-    pub client: &'a reqwest::Client,
-    pub cache: &'a LinkPreviewCache,
-    pub rate: &'a PreviewRateLimiter,
-}
-
 pub async fn enrich(
     segments: &mut Vec<Segment>,
     client: &reqwest::Client,
@@ -201,15 +209,27 @@ pub async fn enrich(
 /// host) — the spec's guard #1 is a single fail-closed step with one outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewError {
+    /// URL-validation reject: scheme, userinfo, or host (incl. a blocked
+    /// literal-IP host — checked here because hyper skips DNS for IP
+    /// literals).
     BadScheme,
+    /// A resolved (or literal) address fell in an SSRF-blocked range.
     BlockedAddress,
+    /// The host did not resolve, or resolution returned no addresses.
     Dns,
+    /// More than `MAX_REDIRECTS` hops.
     Redirects,
+    /// Connect or total deadline exceeded.
     Timeout,
+    /// Body exceeded `MAX_PREVIEW_BYTES` (streamed count, not Content-Length).
     TooLarge,
+    /// Response Content-Type was not HTML/XHTML.
     NotHtml,
+    /// HTML fetched but no usable title/description found.
     NoContent,
+    /// Non-success HTTP status.
     Http(u16),
+    /// Any other transport-layer failure.
     Transport,
 }
 
@@ -238,12 +258,18 @@ pub const MAX_REDIRECTS: u8 = 5;
 /// fast-reject hint (never trusted alone) — the running total during
 /// `bytes_stream()` iteration is the real enforcement.
 pub const MAX_PREVIEW_BYTES: usize = 512 * 1024;
+/// Stored-title character cap (applied after entity decode + whitespace fold).
 const MAX_TITLE_CHARS: usize = 200;
+/// Stored-description character cap.
 const MAX_DESCRIPTION_CHARS: usize = 400;
+/// Identifying User-Agent sent with every preview fetch.
 const USER_AGENT: &str = "shadowcat-linkpreview/1.0";
+/// TCP-connect budget per attempt.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+/// Whole-fetch budget (all redirects + body streaming).
 const TOTAL_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Boxed error type the resolver seam returns (reqwest's dyn-error shape).
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Sentinel error returned by `GuardedResolver::resolve` when a resolved
@@ -298,6 +324,7 @@ const V4_BLOCKED: &[(Ipv4Addr, u32)] = &[
     (Ipv4Addr::new(255, 255, 255, 255), 32), // RFC 919 limited broadcast
 ];
 
+/// Whether `ip` falls inside `network/prefix` (`prefix == 0` matches all).
 fn ipv4_in_cidr(ip: u32, network: u32, prefix: u32) -> bool {
     if prefix == 0 {
         return true;
@@ -306,6 +333,7 @@ fn ipv4_in_cidr(ip: u32, network: u32, prefix: u32) -> bool {
     (ip & mask) == (network & mask)
 }
 
+/// Whether `ip` is in any `V4_BLOCKED` range.
 fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
     let n = u32::from(ip);
     V4_BLOCKED
@@ -313,6 +341,8 @@ fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
         .any(|&(network, prefix)| ipv4_in_cidr(n, u32::from(network), prefix))
 }
 
+/// Whether `ip` is in a blocked v6 range; v4-mapped and NAT64 forms are
+/// unwrapped and re-checked through the v4 table.
 fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
     let s = ip.segments();
 
@@ -398,6 +428,10 @@ pub fn is_blocked_ip(ip: IpAddr) -> bool {
 /// `Arc<dyn reqwest::dns::Resolve>`.
 type ResolveFn = dyn Fn(&str) -> std::io::Result<Vec<IpAddr>> + Send + Sync;
 
+/// The DOMAIN-host resolution point: resolves via `resolve_fn` (or real DNS)
+/// then rejects any blocked address BEFORE reqwest connects — reqwest
+/// connects to exactly the returned set, closing the resolve-vs-connect
+/// rebind gap. Literal-IP hosts never reach it (`validate_url` handles them).
 pub struct GuardedResolver {
     /// When `true`, a loopback address (127.0.0.0/8, `::1`) is treated as
     /// allowed — every OTHER blocked range still applies unconditionally. This
@@ -406,6 +440,8 @@ pub struct GuardedResolver {
     /// legitimate use is pointing tests at a `127.0.0.1`-bound stub server;
     /// production code cannot reopen loopback.
     allow_loopback: bool,
+    /// Test-injectable resolution seam; `None` = real DNS
+    /// (`tokio::net::lookup_host`).
     resolve_fn: Option<Arc<ResolveFn>>,
 }
 
@@ -576,6 +612,10 @@ async fn fetch_preview_with_deadline(
     }
 }
 
+/// The undeadlined fetch pipeline: validate URL (scheme/userinfo/host incl.
+/// literal-IP ranges) -> manual redirect loop (each hop re-validated) ->
+/// status/Content-Type gates -> streamed body capped at `MAX_PREVIEW_BYTES`
+/// -> meta extraction. `fetch_preview` wraps it in the total deadline.
 async fn fetch_preview_inner(
     client: &reqwest::Client,
     raw_url: &str,
@@ -684,6 +724,14 @@ fn validate_url(url: &Url) -> Result<(), PreviewError> {
     }
 }
 
+/// Whether the Content-Type's base (before any `;charset=`) is HTML/XHTML.
+///
+/// # Examples
+///
+/// ```text
+/// is_html_content_type("text/html; charset=utf-8") == true
+/// is_html_content_type("application/json") == false
+/// ```
 fn is_html_content_type(content_type: &str) -> bool {
     let base = content_type
         .split(';')
@@ -764,9 +812,13 @@ pub fn extract_preview(bytes: &[u8]) -> Option<(String, String)> {
     }
 }
 
+/// One parsed `<meta>` tag's relevant attributes.
 struct MetaTag {
+    /// `property="..."` value (OpenGraph keys, e.g. `og:title`).
     property: Option<String>,
+    /// `name="..."` value (e.g. `description`).
     name: Option<String>,
+    /// `content="..."` value.
     content: Option<String>,
 }
 
@@ -866,6 +918,7 @@ fn clean_text(raw: &str, max_chars: usize) -> String {
         .collect()
 }
 
+/// Drop everything between `<` and `>` (title text may contain markup).
 fn strip_tags(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_tag = false;
@@ -906,6 +959,15 @@ fn decode_entities(s: &str) -> String {
     out
 }
 
+/// Decode one HTML entity name/number to its character; `None` = unknown
+/// (the caller then keeps the raw `&...;` text).
+///
+/// # Examples
+///
+/// ```text
+/// decode_one_entity("amp") == Some('&')
+/// decode_one_entity("#39") == Some('\'')
+/// ```
 fn decode_one_entity(entity: &str) -> Option<char> {
     match entity {
         "amp" => Some('&'),
