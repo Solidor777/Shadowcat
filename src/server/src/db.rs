@@ -1,3 +1,7 @@
+// Docs-ratchet: every item in this module ships documented (docs sweep 1).
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 

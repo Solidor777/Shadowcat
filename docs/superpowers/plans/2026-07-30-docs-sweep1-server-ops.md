@@ -86,7 +86,7 @@ security-sensitive paths). Standard final review only.
 **Interfaces:**
 - Produces: the per-item-class doc patterns Tasks 2–4 copy.
 
-- [ ] **Step 1: Enumerate the real backlog**
+- [x] **Step 1: Enumerate the real backlog**
 
 Run the scoped count command for `config.rs` — expect 18 (11 `Cli` fields at
 lines 14–32, 5 `Config` fields at 51–57 (`bind`, `db`, `admin_user`,
@@ -94,7 +94,7 @@ lines 14–32, 5 `Config` fields at 51–57 (`bind`, `db`, `admin_user`,
 `setup_token_policy` at 243). Re-derive the exact list from the clippy output,
 not from these line numbers.
 
-- [ ] **Step 2: Document the 18 items**
+- [x] **Step 2: Document the 18 items**
 
 Class patterns (write real content per item; these are SHAPE examples):
 
@@ -121,7 +121,7 @@ doc must state its default and which env/TOML key reaches it (the figment
 layering is already documented on the struct — don't repeat it per field, state
 the field's own meaning/default).
 
-- [ ] **Step 3: Add `# Examples` to every method**
+- [x] **Step 3: Add `# Examples` to every method**
 
 `config.rs` methods: `Config::load`, `assets_path`, `modules_path`,
 `backups_path`, `effective_max_bytes`, `effective_rate_per_min`,
@@ -143,13 +143,13 @@ doctests. Pattern:
 not its effects). Doctests must import via `shadowcat::...` (external-crate
 view) and compile — `cargo test` runs them.
 
-- [ ] **Step 4: Verify green**
+- [x] **Step 4: Verify green**
 
 From `src/server/` (subshell): scoped count for `config.rs` → 0; `cargo test`
 (new doctests PASS, count them in the doctest summary line); `cargo fmt --all
 --check`; `cargo clippy --all-targets -- -D warnings`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/server/src/config.rs
@@ -163,15 +163,15 @@ git commit -m "docs(server/config): document all items + doctests on every metho
 **Files:**
 - Modify: `src/server/src/backup.rs`, `src/server/src/db.rs`
 
-- [ ] **Step 1: Enumerate** — scoped counts: `backup.rs` expect 11 (6 manifest
+- [x] **Step 1: Enumerate** — scoped counts: `backup.rs` expect 11 (6 manifest
   struct fields ~37–42, 5 error/enum variants ~22–30), `db.rs` expect 0
   (verify; it still needs Step 3's examples).
 
-- [ ] **Step 2: Document the 11 items** — variant docs state the failure
+- [x] **Step 2: Document the 11 items** — variant docs state the failure
   condition each variant represents; manifest field docs state what the value
   records and who reads it (restore-time validation, the printed summary line).
 
-- [ ] **Step 3: Examples on every function** — `create_backup`,
+- [x] **Step 3: Examples on every function** — `create_backup`,
   `restore_backup` (async + sqlite + fs) → `no_run` doctests showing a
   realistic call. `db.rs` has exactly one fn, `open_pool(url)` (already
   described): give it a RUNNABLE async doctest using `"sqlite::memory:"`
@@ -182,9 +182,9 @@ git commit -m "docs(server/config): document all items + doctests on every metho
   `std::env::temp_dir()` ONLY if deterministic; otherwise `no_run`. Private
   helpers → example through the public caller or ` ```text `.
 
-- [ ] **Step 4: Verify green** — scoped counts 0 + the Task 1 Step 4 gate set.
+- [x] **Step 4: Verify green** — scoped counts 0 + the Task 1 Step 4 gate set.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/server/src/backup.rs src/server/src/db.rs
@@ -198,22 +198,22 @@ git commit -m "docs(server/backup,db): document all items + doctests"
 **Files:**
 - Modify: `src/server/src/modules.rs`
 
-- [ ] **Step 1: Enumerate** — scoped count expect 12 (6 fields ~18–31, the
+- [x] **Step 1: Enumerate** — scoped count expect 12 (6 fields ~18–31, the
   struct at ~30, a function at ~34, 4 struct fields ~49–52).
 
-- [ ] **Step 2: Document** — the discovery types' docs must carry the
+- [x] **Step 2: Document** — the discovery types' docs must carry the
   subsystem's load-bearing invariant where it lives: the install FOLDER name is
   the identity key (author-declared manifest ids are untrusted), and a missing
   modules dir scans as "no modules installed" (see the module-toolchain skill —
   the docs must agree with it, not paraphrase it into drift).
 
-- [ ] **Step 3: Examples** — `scan_installed_modules(path)` returns empty for a
+- [x] **Step 3: Examples** — `scan_installed_modules(path)` returns empty for a
   missing dir → RUNNABLE doctest with a nonexistent temp path asserting
   `is_empty()`. Other fns per policy.
 
-- [ ] **Step 4: Verify green** — scoped count 0 + full gate set.
+- [x] **Step 4: Verify green** — scoped count 0 + full gate set.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/server/src/modules.rs
@@ -228,22 +228,22 @@ git commit -m "docs(server/modules): document discovery types + doctests"
 - Modify: `src/server/src/lib.rs`, `src/server/src/main.rs`,
   `src/server/src/bin/test_server.rs`
 
-- [ ] **Step 1: Enumerate** — lib.rs expect 8 (crate-level doc + 7 `pub mod`
+- [x] **Step 1: Enumerate** — lib.rs expect 8 (crate-level doc + 7 `pub mod`
   decls), main.rs expect 1 (crate doc), test_server.rs expect 1 (one field).
 
-- [ ] **Step 2: lib.rs** — `//!` crate doc: what the `shadowcat` lib crate is
+- [x] **Step 2: lib.rs** — `//!` crate doc: what the `shadowcat` lib crate is
   (authoritative server: documents/permissions/realtime/scene under one
   embedded-client binary), one sentence per `pub mod` on its own `///`.
 
-- [ ] **Step 3: main.rs + test_server.rs** — `//!` crate docs with ` ```text `
+- [x] **Step 3: main.rs + test_server.rs** — `//!` crate docs with ` ```text `
   CLI examples (serve mode, `--backup-to`, `--restore-from`; test_server's
   `--modules-dir` e2e harness role). Document the one bare field. Any fn in
   these bins still lacking a description gets one (bin doctests don't run —
   ` ```text ` only).
 
-- [ ] **Step 4: Verify green** — scoped counts 0 for all three + full gate set.
+- [x] **Step 4: Verify green** — scoped counts 0 for all three + full gate set.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/server/src/lib.rs src/server/src/main.rs src/server/src/bin/test_server.rs
@@ -260,7 +260,7 @@ git commit -m "docs(server): crate + module-decl docs for lib and bins"
 - Modify: `docs/PLAN.md` (campaign section: Sweep 1 complete)
 - Modify: `.claude/skills/shadowcat-codebase-server-ops/SKILL.md` (ratchet note)
 
-- [ ] **Step 1: Flip the cluster to deny**
+- [x] **Step 1: Flip the cluster to deny**
 
 Top of each of the six files (after the `//!` docs, before items):
 
@@ -275,21 +275,21 @@ gets NO attribute (a crate-root inner attr would cover every module — that fli
 is the campaign's final-ratchet phase); its 8 documented items are
 regression-guarded only by review until then — state this in the PLAN.md entry.
 
-- [ ] **Step 2: Prove the ratchet bites**
+- [x] **Step 2: Prove the ratchet bites**
 
 Temporarily delete one doc comment in `config.rs`, run `cargo clippy
 --all-targets -- -D warnings` from `src/server/` → expect ERROR (the deny
 fires). Restore the comment, re-run → clean. (Anti-drift proof: a green gate
 that cannot fail proves nothing.)
 
-- [ ] **Step 3: Full verification sweep**
+- [x] **Step 3: Full verification sweep**
 
 From repo root, all green: `(cd src/server && cargo test && cargo fmt --all
 --check && cargo clippy --all-targets -- -D warnings)`; `pnpm docs:build`
 (rustdoc regenerates with the new docs; link check green); scoped counts for
 all six files → 0.
 
-- [ ] **Step 4: Docs-sync + skill gate**
+- [x] **Step 4: Docs-sync + skill gate**
 
 - `docs/PLAN.md` campaign section: mark Sweep 1 (server-ops) complete with the
   doctest-policy line ("calibration patterns live in the sweep-1 plan"), note
@@ -301,7 +301,7 @@ all six files → 0.
 - Dispatch `shadowcat-spec-reviewer` on the skill diff (findings in final
   message; read-only git only). Fix findings.
 
-- [ ] **Step 5: Merge + push + CI watch**
+- [x] **Step 5: Merge + push + CI watch**
 
 ```bash
 git checkout main && git merge --ff-only docs-sweep1-server-ops

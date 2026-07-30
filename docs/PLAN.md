@@ -1476,11 +1476,21 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   creating-a-module / creating-a-system) code-importing two CI-built worked examples
   (`examples/module-initiative-tracker`, `examples/system-minimal`), 20 per-module portal pages,
   and the wire-protocol page. Spec: `docs/superpowers/specs/2026-07-30-documentation-system-design.md`.
-- **Phases 2–N — doc-comment sweeps: UPCOMING.** One plan per subsystem (server: data / ws /
-  http+auth / scene / chat+dice / ops; client: core / render / ui-kit+shell / formula; modules in
-  3–4 groups). Every symbol gets description+params+example; each completed area flips its lints
-  to deny (Rust: per-module `#![deny(missing_docs)]` + `#![deny(clippy::missing_docs_in_private_items)]`;
-  TS: per-package severity flip in `eslint.docs.config.js`).
+- **Sweep 1 — server-ops: COMPLETE (2026-07-30).** `config.rs`/`db.rs`/`backup.rs`/`modules.rs`/
+  `lib.rs`/`main.rs`/`bin/test_server.rs` fully documented (51-item backlog → 0) with doctests on
+  every lib function (15 doctests; `no_run` for infra-bound, ` ```text ` in bin crates where
+  rustdoc runs no doctests). All six non-root files carry `#![deny(missing_docs)]` +
+  `#![deny(clippy::missing_docs_in_private_items)]` — the 3-OS clippy `-D warnings` step now
+  enforces them (ratchet-bite verified by mutation). Caveat: `lib.rs` itself carries no deny (a
+  crate-root inner attr would cover every module prematurely); its items are review-guarded until
+  the final ratchet. Calibration patterns (doctest policy, per-item-class doc shapes, flip
+  mechanics): `docs/superpowers/plans/2026-07-30-docs-sweep1-server-ops.md`.
+- **Sweeps 2–N — doc-comment sweeps: UPCOMING.** One plan per subsystem (server: data (~300+
+  items, likely 2–3 plans) / ws / http+auth / scene / chat+dice; client: core / render /
+  ui-kit+shell / formula; modules in 3–4 groups). Every symbol gets description+params+example;
+  each completed area flips its lints to deny (Rust: per-file inner deny attributes as in Sweep 1;
+  TS: per-package severity flip in `eslint.docs.config.js`). Server-wide informational count at
+  Sweep-1 start: 1,059.
 - **Final ratchet — after the last sweep.** Crate-root deny attributes, TypeDoc
   `treatValidationWarningsAsErrors: true` (in `typedoc.base.json`), docs lint merged into the main
   `eslint.config.js`.

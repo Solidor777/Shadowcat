@@ -11,6 +11,10 @@
 //! test_server --modules-dir staged-modules/     # + installed-module discovery
 //! ```
 
+// Docs-ratchet: every item in this bin crate ships documented (docs sweep 1).
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 

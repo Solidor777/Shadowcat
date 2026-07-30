@@ -9,6 +9,10 @@
 //! except by explicit delete — so db-snapshot-then-assets-copy guarantees every
 //! asset the snapshot's rows reference is already present in the assets copy.
 
+// Docs-ratchet: every item in this module ships documented (docs sweep 1).
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};

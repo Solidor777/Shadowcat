@@ -92,6 +92,13 @@ and restore as a deployment-operator tool, not an in-app feature.
 
 ## Gotchas
 
+- **Docs-ratchet is live in this subsystem (docs sweep 1):** `config.rs`, `db.rs`, `backup.rs`,
+  `modules.rs`, `main.rs`, and `bin/test_server.rs` all carry `#![deny(missing_docs)]` +
+  `#![deny(clippy::missing_docs_in_private_items)]` — a new item without a doc comment fails the
+  3-OS CI clippy step. Every lib function also carries a `# Examples` doctest (`no_run` for
+  infra-bound; bins use ` ```text ` — rustdoc runs no doctests for bin targets). Doctest policy +
+  flip mechanics: `docs/superpowers/plans/2026-07-30-docs-sweep1-server-ops.md`. `lib.rs` has NO
+  deny attr (crate-root inner attr would flip the whole crate early — that's the final ratchet).
 - `copy_dir_recursive` (`backup.rs`) silently skips symlinks (documented on the function itself)
   — the assets tree is server-managed and never contains one today, so this avoids following into
   an unexpected target rather than guessing at semantics. Revisit if `assets_dir` is ever pointed
