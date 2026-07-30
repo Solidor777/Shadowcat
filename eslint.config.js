@@ -10,7 +10,9 @@ export default [
   {
     // .claude/worktrees holds harness-created git worktrees whose own dist/
     // builds are not at the repo-root "dist/" path this list matches.
-    ignores: ["dist/", "node_modules/", "target/", "**/*.svelte", "src/types/generated/", ".claude/worktrees/"],
+    ignores: ["dist/", "node_modules/", "target/", "**/*.svelte", "src/types/generated/", ".claude/worktrees/",
+      // Docs pipeline output: generated sites/scratch, never hand-written code.
+      ".docs-tmp/", "dist-docs/", "docs/site/.vitepress/cache/", "docs/site/.vitepress/dist/"],
   },
   // Import boundary: dockview-core is an implementation detail of the panels
   // engine adapter (EngineAdapter seam) — only engine/dockview.ts and its test
