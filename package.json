@@ -9,6 +9,8 @@
     "test": "pnpm -r test",
     "lint": "eslint .",
     "build": "pnpm --filter @shadowcat/shell build",
+    "docs:dev": "vitepress dev docs/site",
+    "docs:build:portal": "vitepress build docs/site",
     "check:svelte-runtime": "node scripts/check-svelte-runtime-entries.mjs",
     "test:scripts": "vitest run scripts/check-svelte-runtime-entries.test.mjs"
   },
@@ -22,6 +24,7 @@
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.61.1",
     "vite": "^8.0.0",
+    "vitepress": "^1.6.4",
     "vitest": "^4.1.9"
   }
 }

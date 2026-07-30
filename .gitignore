@@ -49,3 +49,9 @@ playwright-report/
 
 # Brainstorming visual-companion scratch
 .superpowers/
+
+# Docs pipeline output (assembled site, generator scratch, VitePress cache/dist)
+dist-docs/
+.docs-tmp/
+docs/site/.vitepress/cache/
+docs/site/.vitepress/dist/
