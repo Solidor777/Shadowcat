@@ -14,11 +14,18 @@ use crate::data::repository::Repository;
 /// namespaced capabilities (`<ns>:<verb>`); the server treats those as opaque
 /// tokens and enforces only possession (Phase 2 gates custom actions).
 pub mod cap {
+    /// See the document at all (whole-doc egress gate).
     pub const READ: &str = "core:read";
+    /// Write `/name`, `/engine/…`, `/system/…`, `/base` field paths.
     pub const WRITE_FIELDS: &str = "core:write_fields";
+    /// Add/remove/replace embedded child documents.
     pub const MANAGE_EMBEDDED: &str = "core:manage_embedded";
+    /// Delete the document.
     pub const DELETE: &str = "core:delete";
+    /// Write `/permissions` and `/owner`.
     pub const EDIT_PERMISSIONS: &str = "core:edit_permissions";
+    /// World-level: create a document of a doc_type (no document exists yet,
+    /// so this is granted via `RoleCaps`, never per-document).
     pub const CREATE: &str = "core:create";
 }
 
@@ -108,6 +115,15 @@ pub async fn load_update_docs(
 
 /// The capability required to write a document field at `path`, or `None` when
 /// the path targets an immutable envelope field (not patchable via `Update`).
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::{cap, required_cap_for_path};
+///
+/// assert_eq!(required_cap_for_path("/system/hp"), Some(cap::WRITE_FIELDS));
+/// assert_eq!(required_cap_for_path("/permissions/default"), Some(cap::EDIT_PERMISSIONS));
+/// assert_eq!(required_cap_for_path("/source"), None); // immutable: no cap reaches it
+/// ```
 pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
     // `/name` is a leaf (a display string, not a container): `/name/...`
     // does NOT match — there is no sub-path to write.
@@ -264,14 +280,36 @@ pub fn declared_caps_for_document<'a>(
 /// widening to `GmOnly`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Access {
+    /// Capabilities this user holds on the document (unioned role + user grants).
     pub caps: BTreeSet<String>,
+    /// Unconditional everything (the un-capped GM/admin short-circuit); `has`
+    /// returns true for every capability when set.
     pub all: bool,
+    /// Passes the `GmOnly` property tier; stays true for any `WorldRole::Gm`
+    /// even when `gm_role` caps their whole-document access.
     pub see_gm_only: bool,
+    /// The recipient is the document's EFFECTIVE owner; admits the `OwnerOrGm`
+    /// property tier without widening to `GmOnly`.
     pub is_owner: bool,
 }
 
 impl Access {
     /// Whether the user holds capability `c` (GM holds everything).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::permission::{cap, Access};
+    ///
+    /// let access = Access {
+    ///     caps: [cap::READ.to_string()].into(),
+    ///     all: false,
+    ///     see_gm_only: false,
+    ///     is_owner: false,
+    /// };
+    /// assert!(access.has(cap::READ));
+    /// assert!(!access.has(cap::DELETE));
+    /// ```
     pub fn has(&self, c: &str) -> bool {
         self.all || self.caps.contains(c)
     }
@@ -280,6 +318,17 @@ impl Access {
     /// recipient. `GmOnly` requires the GM short-circuit; `OwnerOrGm` also admits
     /// the document owner. The single redaction predicate (`filter_properties`,
     /// `collect_hidden`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::Visibility;
+    /// use shadowcat::data::permission::Access;
+    ///
+    /// let owner = Access { caps: Default::default(), all: false, see_gm_only: false, is_owner: true };
+    /// assert!(owner.can_see(Visibility::OwnerOrGm)); // owner sees their own hidden fields
+    /// assert!(!owner.can_see(Visibility::GmOnly));   // without widening to GM-only
+    /// ```
     pub fn can_see(&self, v: Visibility) -> bool {
         match v {
             Visibility::All => true,
@@ -387,6 +436,28 @@ fn effective_role(
 /// types that can never carry an actor link (e.g. scene pings, region
 /// fields) — for any other type it under-permits, treating an inheriting
 /// owner as a stranger.
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, WorldRole};
+/// use shadowcat::data::permission::{cap, resolve_access};
+///
+/// let doc: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "note",
+///     "schema_version": 1,
+///     "system": {},
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+///
+/// // Default PermissionSet denies: a player gets no READ (fail-closed) ...
+/// let player = uuid::Uuid::new_v4();
+/// assert!(!resolve_access(player, WorldRole::Player, &doc, None).has(cap::READ));
+/// // ... while a GM (no gm_role cap set) short-circuits to everything.
+/// assert!(resolve_access(player, WorldRole::Gm, &doc, None).all);
+/// ```
 pub fn resolve_access(
     user: Uuid,
     world_role: WorldRole,
@@ -472,6 +543,34 @@ pub fn project_grants_for(grants: &CapabilityGrants, user: Uuid) -> CapabilityGr
 
 /// Produce the recipient's view of a document: when `access.see_gm_only` is
 /// false, strip every property whose override is `GmOnly`.
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::Document;
+/// use shadowcat::data::permission::{filter_properties, Access};
+///
+/// let doc: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "note",
+///     "schema_version": 1,
+///     "permissions": {
+///         "default": "observer",
+///         "users": {},
+///         "property_overrides": { "/system/secret": "gm_only" },
+///         "capabilities": { "by_role": {}, "by_user": {} },
+///         "gm_role": null
+///     },
+///     "system": { "secret": "MOCK_SECRET_A", "public": 1 },
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+///
+/// let observer = Access { caps: Default::default(), all: false, see_gm_only: false, is_owner: false };
+/// let filtered = filter_properties(&doc, &observer);
+/// assert!(filtered.system.get("secret").is_none()); // stripped BEFORE transmission
+/// assert_eq!(filtered.system["public"], 1);
+/// ```
 pub fn filter_properties(doc: &Document, access: &Access) -> Document {
     let mut out = doc.clone();
     if access.see_gm_only {

@@ -9,6 +9,8 @@ use crate::data::document::WorldRole;
 /// connection and per HTTP request; gates writes/reads and filters broadcasts.
 #[derive(Debug, Clone, Copy)]
 pub struct PermissionContext {
+    /// The authenticated user this context authorizes.
     pub user_id: Uuid,
+    /// Their role in the world being acted on.
     pub world_role: WorldRole,
 }

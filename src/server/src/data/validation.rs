@@ -85,11 +85,19 @@ pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
 /// value's content.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchemaMismatch {
+    /// JSON pointer (relative to the validated root) of the offending node.
     pub pointer: String,
+    /// Shape-only description; never echoes the value's content.
     pub reason: String,
 }
 
 /// The JSON type name of a value, for structural error phrasing.
+///
+/// # Examples
+///
+/// ```text
+/// json_type_name(&json!(3)) == "number"
+/// ```
 fn json_type_name(v: &serde_json::Value) -> &'static str {
     match v {
         serde_json::Value::Null => "null",
@@ -129,6 +137,14 @@ pub fn validate_value_against_schema(
     check_value(value, schema, String::new())
 }
 
+/// Recursive worker for `validate_value_against_schema`; `at` accumulates the
+/// JSON pointer reported on mismatch.
+///
+/// # Examples
+///
+/// ```text
+/// check_value(&json!({}), &schema, String::new()) // pointer "" = the root
+/// ```
 fn check_value(
     value: &serde_json::Value,
     schema: &Schema,

@@ -43,6 +43,8 @@ pub trait Repository: Send + Sync {
         origin: crate::data::command::WriteOrigin,
     ) -> Result<Command, DataError>;
 
+    /// Fetch one document by id, or `None` if it does not exist. Unredacted —
+    /// callers gate egress via `resolve_access` + `filter_properties`.
     async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DataError>;
 
     /// Resolve `doc`'s effective owner against LIVE actor state — the same
@@ -52,6 +54,8 @@ pub trait Repository: Send + Sync {
     /// in-memory actor table instead (zero pool reads per recipient).
     async fn effective_owner_of(&self, doc: &Document) -> Result<Option<Uuid>, DataError>;
 
+    /// All documents of one `doc_type` in `world_id` (unredacted; egress-gated
+    /// by callers).
     async fn query_documents(
         &self,
         world_id: Uuid,
@@ -77,12 +81,16 @@ pub trait Repository: Send + Sync {
     /// live `apply_op` path share one definition of "scene entity".
     async fn query_scene_entities(&self, world: Uuid) -> Result<Vec<Document>, DataError>;
 
+    /// Instances stamped from a given source (`source.id` + optional pack) —
+    /// the template push path's audience query.
     async fn documents_by_source(
         &self,
         pack: Option<&str>,
         source_id: Uuid,
     ) -> Result<Vec<Document>, DataError>;
 
+    /// The world's committed commands with sequence strictly greater than
+    /// `seq`, in order — the reconnect/resync replay source.
     async fn events_since(&self, world_id: Uuid, seq: i64) -> Result<Vec<Command>, DataError>;
 
     /// Fetch a world row by id, or `None` if it does not exist.
