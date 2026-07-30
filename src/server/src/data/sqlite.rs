@@ -39,9 +39,13 @@ const SINGLETON_DOC_TYPES: &[&str] = &[
 /// Auth-facing projection of a user row.
 #[derive(Debug, Clone)]
 pub struct UserRecord {
+    /// Account id.
     pub id: Uuid,
+    /// Unique login name.
     pub username: String,
+    /// Argon2 PHC string; `None` = login disabled (e.g. seeded fixture accounts).
     pub password_hash: Option<String>,
+    /// Server tier (admin/user), orthogonal to any per-world role.
     pub server_role: ServerRole,
 }
 
@@ -52,13 +56,21 @@ pub struct UserRecord {
 /// UPDATE (see [[two-query-guard-needs-tx]]).
 #[derive(Debug, Clone)]
 pub struct InviteRecord {
+    /// Selector half of the invite code (also the row id).
     pub id: Uuid,
+    /// World the invite seats into.
     pub world_id: Uuid,
+    /// Argon2 PHC string over the code's verifier half; the code is never stored.
     pub secret_hash: String,
+    /// Role granted on redemption (for a NEW member; standing is never changed).
     pub role: WorldRole,
+    /// Mint time, Unix epoch milliseconds.
     pub created_at: i64,
+    /// Expiry, Unix epoch milliseconds.
     pub expires_at: i64,
+    /// Set when a GM revokes the invite (listing context only).
     pub revoked_at: Option<i64>,
+    /// Set when redeemed (listing context only).
     pub consumed_at: Option<i64>,
 }
 
@@ -68,8 +80,11 @@ pub struct InviteRecord {
 /// standing). Every field is read inside `consume_invite`'s transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatedByInvite {
+    /// The world the caller is now a member of.
     pub world: Uuid,
+    /// Its display name (for the redemption response).
     pub world_name: String,
+    /// The role they hold there (pre-existing role if already a member).
     pub role: WorldRole,
 }
 
@@ -77,18 +92,24 @@ pub struct SeatedByInvite {
 pub struct NewInvite<'a> {
     /// Selector half of the minted code — the row id and the code must agree.
     pub id: Uuid,
+    /// World the invite is for.
     pub world: Uuid,
     /// Argon2 PHC string over the code's verifier half.
     pub secret_hash: &'a str,
+    /// Role a new member is seated with.
     pub role: WorldRole,
+    /// Minting GM's user id.
     pub created_by: Uuid,
+    /// Mint time, Unix epoch milliseconds.
     pub now: i64,
+    /// Expiry, Unix epoch milliseconds.
     pub expires_at: i64,
 }
 
 /// SQLite-backed storage. Holds a connection pool; migrations are embedded
 /// from `migrations/` and run at connect time.
 pub struct SqliteRepository {
+    /// Single-connection pool: the one writer serializing every transaction.
     pool: SqlitePool,
 }
 
@@ -117,6 +138,14 @@ impl SqliteRepository {
         Ok(Self { pool })
     }
 
+    /// The underlying pool, for callers that run their own queries (tests,
+    /// one-shot admin paths).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// sqlx::query("SELECT 1").fetch_one(repo.pool()).await?;
+    /// ```
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
@@ -142,6 +171,13 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// Map an `assets` row to the `Asset` struct (uuid columns parse from TEXT).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let asset = Self::asset_from_row(&row)?;
+    /// ```
     fn asset_from_row(
         row: &sqlx::sqlite::SqliteRow,
     ) -> Result<crate::data::asset::Asset, DataError> {
@@ -162,6 +198,7 @@ impl SqliteRepository {
         })
     }
 
+    /// Fetch one asset row by id, or `None` if absent.
     pub async fn get_asset(
         &self,
         id: Uuid,
@@ -211,6 +248,7 @@ impl SqliteRepository {
         row.map(|r| Self::asset_from_row(&r)).transpose()
     }
 
+    /// All asset rows for `world`, newest first.
     pub async fn list_assets_by_world(
         &self,
         world: Uuid,
@@ -222,6 +260,7 @@ impl SqliteRepository {
         rows.iter().map(Self::asset_from_row).collect()
     }
 
+    /// Insert a new world row with `seq = 0` and return it.
     pub async fn create_world(&self, name: &str, now: i64) -> Result<World, DataError> {
         let id = Uuid::new_v4();
         sqlx::query(
@@ -420,6 +459,8 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// Remove `user` from `world`. Refuses (Conflict) to remove the last GM —
+    /// a world must always have at least one.
     pub async fn remove_member(&self, world: Uuid, user: Uuid) -> Result<(), DataError> {
         let mut tx = self.pool.begin().await?;
         if Self::is_last_gm(&mut tx, world, user).await? {
@@ -436,6 +477,7 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// The world's members as `(user_id, username, role)`, username order.
     pub async fn list_members(
         &self,
         world: Uuid,
@@ -533,6 +575,8 @@ impl SqliteRepository {
         }
     }
 
+    /// Insert a new account. `password_hash` is a ready Argon2 PHC string
+    /// (hashing happens in the auth layer); `None` disables login.
     pub async fn create_user(
         &self,
         username: &str,
@@ -651,6 +695,7 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// Look up an account by exact username, or `None`.
     pub async fn user_by_username(&self, username: &str) -> Result<Option<UserRecord>, DataError> {
         let row = sqlx::query(
             "SELECT id, username, password_hash, server_role FROM users WHERE username = ?",
@@ -743,6 +788,7 @@ impl SqliteRepository {
             .collect()
     }
 
+    /// Whether any server-admin account exists (gates the first-run setup window).
     pub async fn admin_exists(&self) -> Result<bool, DataError> {
         let row = sqlx::query("SELECT 1 FROM users WHERE server_role = 'admin' LIMIT 1")
             .fetch_optional(&self.pool)
@@ -786,6 +832,8 @@ impl SqliteRepository {
         Ok((res.rows_affected() == 1).then_some(id))
     }
 
+    /// Read one key from the server-global `settings` table (e.g. the persisted
+    /// session key), or `None`.
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>, DataError> {
         let row = sqlx::query("SELECT value FROM settings WHERE key = ?")
             .bind(key)
@@ -794,6 +842,7 @@ impl SqliteRepository {
         Ok(row.map(|r| r.get("value")))
     }
 
+    /// Upsert one key in the server-global `settings` table.
     pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), DataError> {
         sqlx::query(
             "INSERT INTO settings (key, value) VALUES (?, ?) \
@@ -861,6 +910,8 @@ impl SqliteRepository {
         self.set_setting(&world_modules_key(world), &json).await
     }
 
+    /// Seat `user_id` in `world_id` with `role` (upsert; idempotent for an
+    /// existing member with the same role).
     pub async fn add_member(
         &self,
         world_id: Uuid,
@@ -917,6 +968,7 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// The user's role in the world, or `None` when not a member.
     pub async fn member_role(
         &self,
         world_id: Uuid,
@@ -1133,6 +1185,13 @@ impl SqliteRepository {
         }))
     }
 
+    /// Map an `invites` row to `InviteRecord`.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let invite = Self::invite_row(row)?;
+    /// ```
     fn invite_row(r: sqlx::sqlite::SqliteRow) -> Result<InviteRecord, DataError> {
         Ok(InviteRecord {
             id: Uuid::parse_str(r.get::<String, _>("id").as_str())
@@ -1244,6 +1303,14 @@ impl SqliteRepository {
         Ok(out)
     }
 
+    /// Walk `parent_id` links breadth-first from `node`, collecting every
+    /// descendant id into `seen` (visited-set bounds a cyclic self-FK walk).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// Self::collect_descendants(&mut tx, scene_id, &mut seen).await?; // seen: subtree ids
+    /// ```
     async fn collect_descendants(
         tx: &mut sqlx::SqliteConnection,
         node: Uuid,
