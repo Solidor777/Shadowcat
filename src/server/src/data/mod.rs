@@ -26,6 +26,9 @@ pub use asset::Asset;
 use thiserror::Error;
 
 /// All fallible operations in the data layer return this.
+// Ratchet, item-scoped: an inner attr here would cascade to child modules that
+// are not yet swept (data/engine); the leaf files carry their own inner attrs.
+#[deny(missing_docs, clippy::missing_docs_in_private_items)]
 #[derive(Debug, Error)]
 pub enum DataError {
     /// The underlying SQLite operation failed.

@@ -1485,15 +1485,33 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   crate-root inner attr would cover every module prematurely); its items are review-guarded until
   the final ratchet. Calibration patterns (doctest policy, per-item-class doc shapes, flip
   mechanics): `docs/superpowers/plans/2026-07-30-docs-sweep1-server-ops.md`.
-- **Sweeps 2–N — doc-comment sweeps: UPCOMING.** One plan per subsystem (server: data (~300+
+- **Sweep 2a — data core: COMPLETE (2026-07-30).** `data/{document,command,mod,permission,
+  repository,membership,validation,search,asset,sqlite}.rs` fully documented (185-item backlog
+  → 0) with doctests on constructible public fns (authz predicates, pointer ops, search
+  partitioning — several pin security semantics: fail-closed default access, strip-before-
+  transmission, the public index's no-GM-text property, null-vs-absent). ts-rs bindings
+  regenerated with inherited doc comments (shape-checked comment-only). Nine leaf files carry
+  the two inner deny attributes; `data/mod.rs` uses an ITEM-scoped `#[deny(...)]` on `DataError`
+  instead — an inner attr there would cascade to the unswept `data/engine/` (Sweep 2b).
+  Ratchet-bite mutation-verified.
+- **Sweeps 2b–N — doc-comment sweeps: UPCOMING.** One plan per subsystem (server: data (~300+
   items, likely 2–3 plans) / ws / http+auth / scene / chat+dice; client: core / render /
   ui-kit+shell / formula; modules in 3–4 groups). Every symbol gets description+params+example;
   each completed area flips its lints to deny (Rust: per-file inner deny attributes as in Sweep 1;
   TS: per-package severity flip in `eslint.docs.config.js`). Server-wide informational count at
   Sweep-1 start: 1,059.
-- **Final ratchet — after the last sweep.** Crate-root deny attributes, TypeDoc
+- **Buddy-check convergence — after the last sweep (user directive 2026-07-30).** The completed
+  first-pass documentation is buddy-checked (superpowers two-reviewer cross-check debate)
+  **crate by crate**: the `shadowcat` server crate, then each TS workspace package. Any problems
+  surfaced → fix → re-buddy-check THAT crate; repeat until a buddy-check pass finds no problems.
+  Only then does the final ratchet run.
+- **Final ratchet — after buddy-check convergence.** Crate-root deny attributes, TypeDoc
   `treatValidationWarningsAsErrors: true` (in `typedoc.base.json`), docs lint merged into the main
   `eslint.config.js`.
+- **Skills documentation-reference pass — after the final ratchet (user directive 2026-07-30).**
+  Every `shadowcat-codebase-*` skill's Pointers section gains its documentation references
+  (subsystem rustdoc path under `/api/rust/`, TypeDoc package pages under `/api/ts/`, relevant
+  guide/protocol/module portal pages), via the reviewed skill-update gate.
 
 ## Cross-cutting (not deferred)
 - Observability + desync telemetry: M4.
