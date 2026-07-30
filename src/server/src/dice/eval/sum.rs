@@ -123,6 +123,8 @@ fn mul_saturating(l: i64, r: i64) -> i64 {
     })
 }
 
+/// Recursive Total-mode fold: consts as-is, dice groups as their kept-record
+/// sums (consumed left-to-right via `next_group`), operators saturating.
 fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
     match expr {
         Expr::Const(c) => c.value as i64,
