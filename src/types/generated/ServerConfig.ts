@@ -5,4 +5,8 @@
  * login). Exposes nothing beyond the `initialized` bit the setup-409 already
  * reveals.
  */
-export type ServerConfig = { initialized: boolean, };
+export type ServerConfig = { 
+/**
+ * Whether a first admin exists (routes the SPA to setup vs login).
+ */
+initialized: boolean, };

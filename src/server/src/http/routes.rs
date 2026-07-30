@@ -78,16 +78,23 @@ pub async fn admin_backup(
     Ok(Json(manifest))
 }
 
+/// `POST /api/login` body.
 #[derive(Deserialize)]
 pub struct LoginRequest {
+    /// Account username.
     pub username: String,
+    /// Plaintext password (verified against the Argon2 hash; never stored).
     pub password: String,
 }
 
+/// `GET /api/me` response: the session's identity.
 #[derive(Serialize)]
 pub struct MeResponse {
+    /// Account id.
     pub id: uuid::Uuid,
+    /// Account username.
     pub username: String,
+    /// Server tier (admin/user) — orthogonal to any world role.
     pub server_role: ServerRole,
 }
 
@@ -148,6 +155,7 @@ pub async fn put_ui_state(
 #[derive(Serialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct ServerConfig {
+    /// Whether a first admin exists (routes the SPA to setup vs login).
     pub initialized: bool,
 }
 
@@ -245,10 +253,14 @@ pub async fn logout(session: Session) -> Result<axum::http::StatusCode, AppError
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+/// `POST /api/setup` body: first-admin creation.
 #[derive(Deserialize)]
 pub struct SetupRequest {
+    /// First admin's username.
     pub username: String,
+    /// First admin's password (hashed with Argon2 before storage).
     pub password: String,
+    /// Setup token, when the policy requires one (`Config::setup_token_policy`).
     pub token: Option<String>,
 }
 
@@ -289,6 +301,7 @@ pub async fn setup(
 /// Unicode-homoglyph variants that would otherwise let one account impersonate
 /// another in a member roster or chat attribution.
 const MIN_USERNAME_LEN: usize = 3;
+/// Username length ceiling (roster/attribution display bound).
 const MAX_USERNAME_LEN: usize = 32;
 /// Floor on an admin-issued password. The server never stores plaintext, so
 /// this only guards against trivially guessable seeded accounts.
@@ -321,9 +334,12 @@ pub(crate) fn validate_username(raw: &str) -> Result<String, AppError> {
     Ok(name.to_owned())
 }
 
+/// `POST /api/users` body (admin-only route).
 #[derive(Deserialize)]
 pub struct CreateUserRequest {
+    /// New account's username (validated length/uniqueness).
     pub username: String,
+    /// New account's password (Argon2-hashed before storage).
     pub password: String,
     /// Server tier of the new account; omitted means `User`. Only an admin can
     /// reach this field at all (the `AdminUser` extractor runs before the body
@@ -336,8 +352,11 @@ pub struct CreateUserRequest {
 /// the password hash is neither a field here nor selected by `list_users`.
 #[derive(Serialize)]
 pub struct UserEntry {
+    /// Account id.
     pub id: Uuid,
+    /// Account username.
     pub username: String,
+    /// Server tier.
     pub server_role: ServerRole,
 }
 
@@ -477,8 +496,10 @@ pub(crate) async fn require_gm(
     Ok(ctx)
 }
 
+/// `POST /api/worlds` body.
 #[derive(Deserialize)]
 pub struct CreateWorldRequest {
+    /// Display name for the new world.
     pub name: String,
 }
 
@@ -487,8 +508,11 @@ pub struct CreateWorldRequest {
 #[derive(Serialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct WorldEntry {
+    /// World id.
     pub id: Uuid,
+    /// World display name.
     pub name: String,
+    /// The caller's effective role in it (admin sees all worlds as GM).
     pub role: WorldRole,
 }
 
@@ -560,13 +584,19 @@ pub async fn delete_world(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// A roster row of `GET /api/worlds/{id}/members`.
 #[derive(Serialize)]
 pub struct MemberEntry {
+    /// Member's user id.
     pub user: Uuid,
+    /// Member's username (chat/GM UI name resolution).
     pub username: String,
+    /// Member's world role.
     pub role: WorldRole,
 }
 
+/// List the world's roster. Any member may call it (chat resolves user ids to
+/// names); non-members get 404 (existence-hiding).
 pub async fn list_members(
     user: AuthUser,
     State(state): State<AppState>,
@@ -609,7 +639,9 @@ pub async fn list_members(
 /// express, let alone grant, a `ServerRole`.
 #[derive(Deserialize)]
 pub struct AddMemberRequest {
+    /// The account to seat.
     pub user: Uuid,
+    /// Their world role (a `WorldRole` — no server tier is representable).
     pub role: WorldRole,
 }
 
@@ -642,6 +674,7 @@ const INVITE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// Bounds table growth from a GM minting in a loop; far above any real table.
 const MAX_ACTIVE_INVITES_PER_WORLD: i64 = 64;
 
+/// `POST /api/worlds/{id}/invites` body (GM-only route).
 #[derive(Deserialize)]
 pub struct CreateInviteRequest {
     /// The world role the redeemer is seated at. A [`WorldRole`], so no
@@ -654,9 +687,13 @@ pub struct CreateInviteRequest {
 /// it cannot be re-read from the listing or recovered from the database.
 #[derive(Serialize)]
 pub struct MintedInvite {
+    /// Invite id (the code's selector half).
     pub id: Uuid,
+    /// The bearer code — shown once here, stored only as a hash.
     pub code: String,
+    /// Role the redeemer is seated at.
     pub role: WorldRole,
+    /// Expiry, Unix epoch milliseconds.
     pub expires_at: i64,
 }
 
@@ -664,11 +701,18 @@ pub struct MintedInvite {
 /// material — neither the code nor its hash is a field here.
 #[derive(Serialize)]
 pub struct InviteEntry {
+    /// Invite id.
     pub id: Uuid,
+    /// Role it seats at.
     pub role: WorldRole,
+    /// Mint time, Unix epoch milliseconds.
     pub created_at: i64,
+    /// Expiry, Unix epoch milliseconds.
     pub expires_at: i64,
+    /// Set when revoked (listing context only; the redemption gate lives in
+    /// `consume_invite`'s guarded UPDATE).
     pub revoked_at: Option<i64>,
+    /// Set when redeemed (listing context only).
     pub consumed_at: Option<i64>,
 }
 
@@ -755,6 +799,7 @@ pub async fn revoke_invite(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `POST /api/invites/accept` body.
 #[derive(Deserialize)]
 pub struct AcceptInviteRequest {
     /// The bearer code. Carried in the BODY, never the path: a request line is
@@ -845,6 +890,8 @@ pub async fn accept_invite(
     }))
 }
 
+/// Unseat a member. GM-only (`require_gm`); refuses to remove the last GM
+/// (surfaces the repository's Conflict).
 pub async fn remove_member(
     user: AuthUser,
     State(state): State<AppState>,
@@ -855,6 +902,8 @@ pub async fn remove_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Create a document over HTTP: same authoritative write path as a WS intent
+/// (`write_ops` -> `apply_intent`), same authz and validation.
 pub async fn create_document(
     user: AuthUser,
     State(state): State<AppState>,
@@ -864,11 +913,15 @@ pub async fn create_document(
     write_ops(&state, &user, world, vec![Operation::Create { doc }]).await
 }
 
+/// Query string of `GET /api/worlds/{id}/documents`.
 #[derive(Deserialize)]
 pub struct DocQuery {
+    /// The doc_type to list.
     pub r#type: String,
 }
 
+/// List documents of one type, per-recipient filtered (READ-gated per doc,
+/// properties redacted via `filter_properties`; tokens join effective owners).
 pub async fn list_documents(
     user: AuthUser,
     State(state): State<AppState>,
@@ -922,6 +975,9 @@ fn by_id_not_found(e: crate::data::DataError) -> AppError {
     }
 }
 
+/// Fetch one document by id: world derived from the doc (`world_of`),
+/// READ-gated, redacted via `filter_properties`; absent and forbidden are both
+/// 404 (existence-hiding).
 pub async fn get_document(
     user: AuthUser,
     State(state): State<AppState>,
@@ -956,11 +1012,15 @@ pub async fn get_document(
     Ok(Json(filter_properties(&doc, &access)))
 }
 
+/// `PATCH /api/documents/{id}` body.
 #[derive(Deserialize)]
 pub struct PatchRequest {
+    /// Field-level changes, each with its OCC pre-image.
     pub changes: Vec<FieldChange>,
 }
 
+/// Field-level update by id: same authoritative write path as a WS intent;
+/// world derived from the doc; refusals surface as 404/409/422 per `AppError`.
 pub async fn patch_document(
     user: AuthUser,
     State(state): State<AppState>,
@@ -995,6 +1055,8 @@ pub async fn patch_document(
     .await
 }
 
+/// Delete by id through the authoritative write path (carries the full
+/// pre-image for invertibility; cascades handled by `delete_document_tx`).
 pub async fn delete_document(
     user: AuthUser,
     State(state): State<AppState>,
@@ -1029,6 +1091,14 @@ fn validate_capability(token: &str) -> Result<(), AppError> {
     }
 }
 
+/// Structural validation of a capability-defaults payload: every grant token
+/// must be a namespaced `<ns>:<verb>` string within length bounds.
+///
+/// # Examples
+///
+/// ```text
+/// validate_grants(&defaults)?; // rejects "not-namespaced" tokens with 422
+/// ```
 fn validate_grants(defaults: &WorldCapDefaults) -> Result<(), AppError> {
     // Per-document grants (all + every doc-type override).
     for g in std::iter::once(&defaults.all).chain(defaults.by_type.values()) {

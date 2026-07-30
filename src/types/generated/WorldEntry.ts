@@ -5,4 +5,16 @@ import type { WorldRole } from "./WorldRole";
  * A world the caller can access, with their effective role. The client's
  * world-select list item.
  */
-export type WorldEntry = { id: string, name: string, role: WorldRole, };
+export type WorldEntry = { 
+/**
+ * World id.
+ */
+id: string, 
+/**
+ * World display name.
+ */
+name: string, 
+/**
+ * The caller's effective role in it (admin sees all worlds as GM).
+ */
+role: WorldRole, };

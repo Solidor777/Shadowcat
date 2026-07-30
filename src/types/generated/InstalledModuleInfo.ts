@@ -11,4 +11,16 @@
  * membership on this `id` field, never `manifest.id`, or toggle state and
  * save requests silently diverge from the server's authoritative key space.
  */
-export type InstalledModuleInfo = { id: string, manifest: unknown, entry_url: string, };
+export type InstalledModuleInfo = { 
+/**
+ * The install FOLDER name — the authoritative enablement key.
+ */
+id: string, 
+/**
+ * The raw module.json, byte-for-byte (the client's Zod schema reads it).
+ */
+manifest: unknown, 
+/**
+ * Served entry URL: `/modules/<folder-id>/<entry>`.
+ */
+entry_url: string, };
