@@ -14,23 +14,38 @@ struct ModuleManifestMirror {
     // Deserialization presence-validates id/version (a manifest missing either
     // fails parse and is skipped); the fields themselves are never read past
     // that point, since `InstalledModule::id` is the folder name, not this one.
+    /// Author-declared id — presence-validated only, never trusted as a key.
     #[allow(dead_code)]
     id: String,
+    /// Author-declared semver — presence-validated only.
     #[allow(dead_code)]
     version: String,
+    /// Declarative path-prefix → capability rules, unioned into the world's
+    /// broadcast `capability_requirements` (advisory to the client only).
     #[serde(default)]
     requirements: Vec<CapabilityRequirement>,
+    /// Engine-compat declaration; absent = the module can never be enabled.
     #[serde(default)]
     engines: ModuleEngines,
+    /// Built entry file name relative to the install folder; default `index.js`.
     #[serde(default = "default_entry")]
     entry: String,
 }
 
+/// The `engines` object of a community `module.json`.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ModuleEngines {
+    /// Semver range the running server version must satisfy (exact / `^` / `~` / `*`).
     shadowcat: Option<String>,
 }
 
+/// Serde default for `ModuleManifestMirror::entry`.
+///
+/// # Examples
+///
+/// ```text
+/// default_entry() == "index.js"
+/// ```
 fn default_entry() -> String {
     "index.js".into()
 }
@@ -46,9 +61,14 @@ pub struct InstalledModule {
     /// from (and cross-checked against, client-side, exactly as `loader.ts`
     /// already cross-checks discovery-id vs the module's own declared id).
     pub id: String,
+    /// The manifest's declarative capability rules (advisory; unioned into the
+    /// world's broadcast `capability_requirements` where the module is enabled).
     pub requirements: Vec<CapabilityRequirement>,
+    /// Declared `engines.shadowcat` range; `None` fails the enable gate closed.
     pub engines_shadowcat: Option<String>,
+    /// The raw `module.json`, served byte-for-byte at `GET /api/modules`.
     pub manifest_json: serde_json::Value,
+    /// Served entry URL: `/modules/<folder-id>/<entry>`.
     pub entry_url: String,
 }
 
@@ -60,6 +80,15 @@ pub struct InstalledModule {
 /// Constraint 4, not itself an ARCHITECTURE invariant). A missing `modules_dir`
 /// (nothing installed yet) yields an empty list, not an error. Deterministic
 /// id-sorted order.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::modules::scan_installed_modules;
+///
+/// let none = scan_installed_modules(std::path::Path::new("no-such-modules-dir"));
+/// assert!(none.is_empty());
+/// ```
 pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
     let mut out = Vec::new();
     let entries = match std::fs::read_dir(modules_dir) {
@@ -119,6 +148,17 @@ pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
 /// there), so the tiny algorithm is duplicated intentionally rather than
 /// shared across the Rust/TS boundary. Fails closed (false) on a malformed
 /// version or range rather than panicking.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::modules::semver_satisfies;
+///
+/// assert!(semver_satisfies("0.1.4", "^0.1.0")); // 0.x line: minor is breaking
+/// assert!(!semver_satisfies("0.2.0", "^0.1.0"));
+/// assert!(semver_satisfies("1.9.0", "~1.9.0"));
+/// assert!(!semver_satisfies("not-semver", "*")); // "*" still needs a valid version
+/// ```
 pub fn semver_satisfies(version: &str, range: &str) -> bool {
     fn parse(v: &str) -> Option<(u64, u64, u64)> {
         let mut parts = v.trim().split('.');
@@ -164,6 +204,22 @@ pub fn semver_satisfies(version: &str, range: &str) -> bool {
 /// range fails closed (never enables) — the field is optional on the shared
 /// client `ModuleManifest` TS type (first-party modules never set it) but is
 /// effectively mandatory for anything going through this pipeline.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::modules::{engine_compat_ok, InstalledModule};
+///
+/// let m = InstalledModule {
+///     id: "example-mod".into(),
+///     requirements: vec![],
+///     engines_shadowcat: None, // no declared range
+///     manifest_json: serde_json::json!({}),
+///     entry_url: "/modules/example-mod/index.js".into(),
+/// };
+/// assert!(!engine_compat_ok(&m)); // fails closed without engines.shadowcat
+/// assert!(engine_compat_ok(&InstalledModule { engines_shadowcat: Some("*".into()), ..m }));
+/// ```
 pub fn engine_compat_ok(m: &InstalledModule) -> bool {
     match &m.engines_shadowcat {
         Some(range) => semver_satisfies(env!("CARGO_PKG_VERSION"), range),
