@@ -7,8 +7,11 @@ use crate::dice::spec::{ConstTerm, DieId, DieKind, RollSpec, Symbol};
 /// A single die's natural (RNG) result — the only nondeterministic artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawDie {
+    /// Stable per-roll die id.
     pub id: DieId,
+    /// The face space it was rolled from.
     pub kind: DieKind,
+    /// The natural (unmodified) RNG face.
     pub natural: i32,
 }
 
@@ -17,8 +20,11 @@ pub struct RawDie {
 /// stable ids so reroll/add ops never collide with existing dice.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawRoll {
+    /// Natural-face log, in roll order.
     pub dice: Vec<RawDie>,
+    /// Post-pipeline per-die results (filled by `roll`/`recalculate`).
     pub records: Vec<DieRecord>,
+    /// Next fresh `DieId` (never reused within the roll).
     pub next_id: DieId,
     /// Per-`Dice`-AST-node `(start, base_count)` into `dice`, in AST left-to-right
     /// order. Covers ONLY the base naturals rolled for that group (explosion/
@@ -59,17 +65,25 @@ impl RawRoll {
 /// `crit::score_die`'s doc comment for the rationale.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DieRecord {
+    /// The die's stable id (matches its `RawDie`).
     pub id: DieId,
     /// Index of the `Dice` AST node that produced this die, in left-to-right walk
     /// order. Lets Total-mode fold per-group without positional heuristics over a
     /// flattened record list (`eval::sum::evaluate_total`).
     pub group_index: usize,
+    /// The original natural face.
     pub natural: i32,
+    /// Post-modifier face (see the struct doc for penetrate's out-of-range case).
     pub value: i32,
+    /// Survived keep/drop selection.
     pub kept: bool,
+    /// This die triggered an explosion.
     pub exploded: bool,
+    /// Immediately-preceding value for a rerolled die (see the struct doc).
     pub rerolled_from: Option<i32>,
+    /// Crit-success event fired on this die.
     pub crit_success: bool,
+    /// Crit-fail event fired on this die (can coexist with `crit_success`).
     pub crit_fail: bool,
     /// Expertise points allocated to this die by `eval::expertise` (M11b-2);
     /// 0 for every die when the roll has no expertise budget. Audit trail:
@@ -108,16 +122,27 @@ fn default_ordered() -> bool {
 /// aggregates (0 in Total mode).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollOutcome {
+    /// Total-mode fold result (0 in SuccessCount mode).
     pub total: i64,
+    /// Per-die results, AST left-to-right then roll order.
     pub records: Vec<DieRecord>,
+    /// Net successes (SuccessCount mode only).
     pub successes: Option<i32>,
+    /// Pass/fail against the margin reference, when one exists.
     pub pass: Option<bool>,
+    /// Oriented margin against difficulty/required successes.
     pub margin: Option<i64>,
+    /// Ladder rung label `margin` classified into.
     pub tier_label: Option<String>,
+    /// Ladder rung numeric payload.
     pub tier_value: Option<i32>,
+    /// Count of crit-success events across kept dice.
     pub crit_successes: i32,
+    /// Count of crit-fail events across kept dice.
     pub crit_fails: i32,
+    /// Sum of fired `CritSuccess::positive_counter` values.
     pub positive_counter: i32,
+    /// Sum of fired `CritFail::negative_counter` values.
     pub negative_counter: i32,
     /// Per-symbol tallies over KEPT dice, computed unconditionally (independent
     /// of `SuccessRule`'s variant). Deterministic iteration order (`BTreeMap`).
@@ -162,10 +187,14 @@ impl RollOutcome {
     }
 }
 
+/// A complete roll: what was asked, what the RNG produced, what it means.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollResult {
+    /// The canonical parameters the roll ran with.
     pub spec: RollSpec,
+    /// The natural faces + per-die pipeline results.
     pub raws: RawRoll,
+    /// The scored outcome.
     pub outcome: RollOutcome,
 }
 

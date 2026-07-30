@@ -17,8 +17,11 @@ use crate::dice::spec::{
 /// Re-evaluate with an explicit depth counter if any future caller ever
 /// exposes this parser to longer untrusted input than that.
 struct P {
+    /// The full token stream.
     toks: Vec<Token>,
+    /// Cursor into `toks`.
     pos: usize,
+    /// `cs`-modifier success rule, once seen (forces SuccessCount mode).
     success: Option<SuccessRule>,
     /// Mode-agnostic `t<N>` target (design's notation pillar, §10): resolves to
     /// `TotalConfig::difficulty` in Total mode, or a direction-derived
@@ -94,10 +97,12 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
 }
 
 impl P {
+    /// The current token without consuming it.
     fn peek(&self) -> Option<&Token> {
         self.toks.get(self.pos)
     }
 
+    /// Consume and return the current token.
     fn bump(&mut self) -> Option<Token> {
         let t = self.toks.get(self.pos).cloned();
         if t.is_some() {
@@ -119,6 +124,7 @@ impl P {
         }
     }
 
+    /// Consume an `Int` or fail with a player-presentable message.
     fn expect_int(&mut self) -> Result<i32, ParseError> {
         match self.bump() {
             Some(Token::Int(n)) => Ok(n),
@@ -129,6 +135,7 @@ impl P {
         }
     }
 
+    /// `expr := term (('+' | '-') term)*` — left-associative.
     fn expr(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.term()?;
         while let Some(op) = match self.peek() {
@@ -147,6 +154,7 @@ impl P {
         Ok(lhs)
     }
 
+    /// `term := factor (('*' | '/') factor)*` — binds tighter than +/-.
     fn term(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.factor()?;
         while let Some(op) = match self.peek() {
@@ -165,6 +173,8 @@ impl P {
         Ok(lhs)
     }
 
+    /// `factor := '-' factor | '(' expr ')' | dice | int` — the leaf level;
+    /// dice factors continue into `modifiers`.
     fn factor(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
             Some(Token::Minus) => {
@@ -220,6 +230,8 @@ impl P {
         }
     }
 
+    /// Zero or more trailing group modifiers (`!`/`!!`/`!p`, keep/drop,
+    /// reroll, comparator targets); `sides` feeds default explode targets.
     fn modifiers(&mut self, sides: i32) -> Result<Vec<GroupModifier>, ParseError> {
         let mut mods = Vec::new();
         loop {
@@ -325,6 +337,7 @@ impl P {
     }
 }
 
+/// Logical complement of a comparator (`>=` <-> `<`, `=` <-> `!=`).
 fn invert(c: Comparator) -> Comparator {
     match c {
         Comparator::Gte => Comparator::Lt,

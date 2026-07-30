@@ -1,4 +1,6 @@
+/// Notation tokenizer.
 pub mod lexer;
+/// Recursive-descent parser: tokens -> `RollSpec`.
 pub mod parser;
 
 pub use parser::parse;
@@ -10,7 +12,9 @@ use crate::dice::spec::Direction;
 /// modifier always forces `SuccessCount` regardless of this ambient setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModeKind {
+    /// Fold arithmetic to a total.
     Total,
+    /// Count per-die successes.
     SuccessCount,
 }
 
@@ -20,7 +24,9 @@ pub enum ModeKind {
 /// => `Lte`) and seeds `RollSpec::direction`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParseContext {
+    /// Ambient mode a bare `t<N>` resolves against.
     pub mode: ModeKind,
+    /// Orientation: seeds `RollSpec::direction` and picks `t<N>`'s comparator.
     pub direction: Direction,
 }
 
@@ -33,10 +39,14 @@ impl Default for ParseContext {
     }
 }
 
+/// Why a notation string was refused. Messages are player-presentable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParseError {
+    /// The input was empty/whitespace.
     Empty,
+    /// An out-of-place token (carries the built message).
     Unexpected(String),
+    /// Leftover tokens after a complete expression (carries the message).
     Trailing(String),
     /// A dice factor's sides count is not a positive integer (`sides < 1`).
     /// Rejected here so `DieKind::Numeric { min: 1, max: sides }` can never be

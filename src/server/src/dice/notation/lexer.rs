@@ -1,21 +1,36 @@
 use crate::dice::notation::ParseError;
 use crate::dice::spec::Comparator;
 
+/// One lexed notation token.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Token {
+    /// An integer literal.
     Int(i32),
+    /// The die marker `d` / `D`.
     D,
+    /// A bare word (modifier keywords like `kh`, `ro`, `t`, `cs`).
     Ident(String),
+    /// `+`.
     Plus,
+    /// `-`.
     Minus,
+    /// `*`.
     Star,
+    /// `/`.
     Slash,
+    /// `(`.
     LParen,
+    /// `)`.
     RParen,
+    /// A comparator (`=`, `!=`, `>`, `<`, `>=`, `<=`).
     Cmp(Comparator),
+    /// `!` — standard explode.
     Bang,
+    /// `!!` — compound explode.
     BangBang,
+    /// `!p` — penetrating explode.
     BangP,
+    /// A `[bracketed]` label's text (printable ASCII + spaces only).
     Label(String),
 }
 
@@ -43,6 +58,7 @@ impl std::fmt::Display for Token {
     }
 }
 
+/// The comparator's notation spelling (for player-facing messages).
 fn comparator_symbol(c: Comparator) -> &'static str {
     match c {
         Comparator::Eq => "=",
