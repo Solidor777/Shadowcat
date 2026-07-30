@@ -34,8 +34,9 @@ use super::Segment;
 /// stored strings and never fetches `url` itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkPreview {
-    /// The fetched URL (post-redirect origin is NOT substituted; this is the
-    /// URL the author posted).
+    /// The URL the fetch ended on — redirects substitute it (`url = next` per
+    /// hop in `fetch_preview_inner`), so this is the post-redirect address,
+    /// not necessarily what the author posted.
     pub url: String,
     /// Extracted page title, entity-decoded, capped at `MAX_TITLE_CHARS`.
     pub title: String,
@@ -212,9 +213,8 @@ pub async fn enrich(
 /// host) — the spec's guard #1 is a single fail-closed step with one outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewError {
-    /// URL-validation reject: scheme, userinfo, or host (incl. a blocked
-    /// literal-IP host — checked here because hyper skips DNS for IP
-    /// literals).
+    /// URL-validation reject: scheme, userinfo, or a missing/non-domain
+    /// host. (A blocked literal-IP host is `BlockedAddress`, not this.)
     BadScheme,
     /// A resolved (or literal) address fell in an SSRF-blocked range.
     BlockedAddress,

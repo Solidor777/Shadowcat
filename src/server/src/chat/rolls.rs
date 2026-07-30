@@ -56,7 +56,7 @@ pub(crate) enum BodyChunk<'a> {
     Text(&'a str),
     /// An `[[formula]]` inline roll to execute.
     Inline(&'a str),
-    /// An `[[btn:...]]` button to validate and store unexecuted.
+    /// A `[[roll:...]]` button to validate and store unexecuted.
     Button {
         /// The formula inside the span.
         formula: &'a str,
