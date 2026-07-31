@@ -128,6 +128,24 @@ const defaultSleep = (ms: number): Promise<void> =>
  * (5s) so a slow-but-successful send never resolves ahead of a would-be error. */
 const CHAT_ERROR_WINDOW_MS = 15_000;
 
+/**
+ * Client-side WebSocket connection to one world: owns the transport lifecycle (connect,
+ * Welcome watchdog, exponential-backoff reconnect), the ordered application watermark
+ * (`nextExpected`) with gap-triggered resync, correlated one-shot requests (search/pathfind/
+ * moveRequest/scene-subscribe), the asymmetric chat-op reply protocol, and broadcast
+ * `MoveStream`/`onScenePing`/`onAssetChanged` fan-out. One instance per world connection;
+ * `start()`/`stop()` bracket its lifetime.
+ * @example
+ * ```ts
+ * import { WsClient, webSocketConnect } from "@shadowcat/core";
+ *
+ * const client = new WsClient({
+ *   connect: webSocketConnect("wss://example.test/ws"),
+ *   handlers: { onCommand: (cmd) => console.log(cmd.seq) },
+ * });
+ * await client.start();
+ * ```
+ */
 export class WsClient {
   private transport: Transport | null = null;
   private running_ = false;
@@ -191,6 +209,20 @@ export class WsClient {
    * connection would be closed at the watchdog window, forever. */
   private welcomedGeneration = -1;
 
+  /**
+   * Construct a client bound to one connection factory + handler set; call `start()` to open it.
+   * @param opts Connection factory + handlers + timing knobs (`backoffBaseMs`/`backoffMaxMs`/
+   * `welcomeTimeoutMs` all default per `WsClientOptions`'s own field docs).
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * ```
+   */
   constructor(private readonly opts: WsClientOptions) {
     this.now = opts.now ?? Date.now;
     this.sleep = opts.sleep ?? defaultSleep;
@@ -201,7 +233,13 @@ export class WsClient {
 
   /** Arm the Welcome watchdog for the currently-open transport. Identity guard:
    * close only the transport this timer was armed for — a stale timer
-   * surviving into a successor connection must no-op. */
+   * surviving into a successor connection must no-op.
+   * @example
+   * ```
+   * // called from open() once opts.connect resolves; not part of the public API
+   * this.armWelcomeWatchdog();
+   * ```
+   */
   private armWelcomeWatchdog(): void {
     this.clearWelcomeWatchdog();
     if (this.welcomedGeneration === this.connGeneration) {
@@ -221,6 +259,15 @@ export class WsClient {
     }, this.welcomeTimeoutMs);
   }
 
+  /** Disarm the Welcome watchdog, if one is currently armed. Called on Welcome
+   * receipt, on `stop()`, and before re-arming (`armWelcomeWatchdog`'s own
+   * leading call) so at most one watchdog timer is ever live.
+   * @example
+   * ```
+   * // called from handleFrame's "welcome" case and from stop(); not public API
+   * this.clearWelcomeWatchdog();
+   * ```
+   */
   private clearWelcomeWatchdog(): void {
     if (this.welcomeTimer !== null) {
       clearTimeout(this.welcomeTimer);
@@ -228,12 +275,39 @@ export class WsClient {
     }
   }
 
-  /** Open the connection (and keep it open across drops until `stop`). */
+  /** Open the connection (and keep it open across drops until `stop`).
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.start();
+   * ```
+   */
   async start(): Promise<void> {
     this.running_ = true;
     await this.open();
   }
 
+  /** Stop reconnecting and close the live transport (if any); fails every
+   * in-flight correlated request/subscription with "client stopped". Terminal
+   * for this instance's connection attempts — a subsequent `start()` begins a
+   * fresh cycle (`connGeneration` keeps counting up, so a stray frame from the
+   * stopped connection cannot be mistaken for the new one).
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * client.stop();
+   * ```
+   */
   stop(): void {
     this.running_ = false;
     this.clearWelcomeWatchdog();
@@ -244,7 +318,14 @@ export class WsClient {
 
   /** Reject every in-flight correlated request (e.g. on disconnect/stop): the
    * request was sent on a socket that will not answer it, so fail fast rather
-   * than wait out the timeout (which would also outlive the connection). */
+   * than wait out the timeout (which would also outlive the connection).
+   * @param reason Message for the `Error` every pending promise rejects with.
+   * @example
+   * ```
+   * // called from handleClose() / stop(); not part of the public API
+   * this.failPending("connection closed");
+   * ```
+   */
   private failPending(reason: string): void {
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);
@@ -273,7 +354,14 @@ export class WsClient {
 
   /** Run a consumer callback in isolation: a throw is routed to `onError` and
    * never propagates into the socket message pump. A throw from `onError`
-   * itself is swallowed so the pump cannot die. */
+   * itself is swallowed so the pump cannot die.
+   * @param fn The handler-invoking callback to run in isolation.
+   * @example
+   * ```
+   * // wraps every handler dispatch in handleFrame(); not part of the public API
+   * this.safeEmit(() => this.opts.handlers.onWelcome?.(msg));
+   * ```
+   */
   private safeEmit(fn: () => void): void {
     try {
       fn();
@@ -286,32 +374,76 @@ export class WsClient {
     }
   }
 
-  /** Send a client frame (no-op if currently disconnected). */
+  /** Send a client frame (no-op if currently disconnected). `ClientMsg` is a plain TS union
+   * (outgoing frames are not runtime-validated, unlike `ServerMsgSchema` on the inbound side —
+   * `SendMessageSchema`/`PathfindSchema` in `wire.ts` are standalone opt-in mirrors for callers
+   * that want to validate before sending, not enforced here).
+   * @param msg The frame to serialize (`JSON.stringify`) and send.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * client.send({ type: "time_ping", client_t0: Date.now() });
+   * ```
+   */
   send(msg: ClientMsg): void {
     this.transport?.send(JSON.stringify(msg));
   }
 
-  /** The highest authoritative seq applied. */
+  /** The highest authoritative seq applied.
+   * @returns `nextExpected - 1`; the watermark `OptimisticClient`/`DocumentStore` key their
+   * rebase against (see `render-from-optimistic-view`). */
   get appliedSeq(): number {
     return this.nextExpected - 1;
   }
 
-  /** True when a live transport is attached, so `send` will actually transmit. */
+  /** True when a live transport is attached, so `send` will actually transmit.
+   * @returns `true` between a successful `open()` and the next `handleClose`/`stop()`. */
   get connected(): boolean {
     return this.transport !== null;
   }
 
   /** True between `start` and `stop`: a dropped transport will reconnect. Lets a
-   * caller distinguish "reconnecting" (queue + retry) from "stopped" (give up). */
+   * caller distinguish "reconnecting" (queue + retry) from "stopped" (give up).
+   * @returns `true` from `start()` until the matching `stop()`, regardless of the transport's
+   * own connected state. */
   get running(): boolean {
     return this.running_;
   }
 
-  /** Estimated server clock. */
+  /** Estimated server clock.
+   * @returns `this.now() + serverOffsetMs`, where `serverOffsetMs` is set from the `welcome`
+   * frame's `server_time` (and refreshed on every `time_pong`).
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * const t: number = client.serverNow();
+   * ```
+   */
   serverNow(): number {
     return this.now() + this.serverOffsetMs;
   }
 
+  /** One connection attempt: bumps `connGeneration`, awaits `opts.connect`, and on success arms
+   * the Welcome watchdog; on failure (or if `stop()` ran while the connect was pending — see
+   * the `running_`-not-rechecked-post-await gotcha, `docs/TODO.md`) schedules a reconnect
+   * instead. Called by `start()` and by `scheduleReconnect`'s resolved sleep. Not exported.
+   * @returns Resolves once this attempt has either armed the watchdog or scheduled a retry.
+   * @example
+   * ```
+   * // called from start() and scheduleReconnect(); not part of the public API
+   * await this.open();
+   * ```
+   */
   private async open(): Promise<void> {
     if (!this.running_) return;
     const gen = ++this.connGeneration;
@@ -331,6 +463,15 @@ export class WsClient {
     }
   }
 
+  /** `Transport.onClose` handler: disarms the watchdog, clears `this.transport`, fails every
+   * in-flight correlated request with "connection closed", and — if still `running_` (not
+   * a `stop()`-triggered close) — schedules a reconnect. Not exported.
+   * @example
+   * ```
+   * // wired as onClose: this.opts.connect({ onMessage, onClose: () => this.handleClose() })
+   * this.handleClose();
+   * ```
+   */
   private handleClose(): void {
     this.clearWelcomeWatchdog();
     this.transport = null;
@@ -340,6 +481,18 @@ export class WsClient {
     if (this.running_) this.scheduleReconnect();
   }
 
+  /** Schedule the next `open()` attempt after an exponential-with-full-jitter delay:
+   * `min(backoffMaxMs, backoffBaseMs * 2**attempt) * (0.5 + random()*0.5)`. `reconnectAttempt`
+   * increments on every call and resets ONLY on a successful Welcome (`handleFrame`'s
+   * `"welcome"` case), not on socket `open` — so a server that accepts the socket but never
+   * welcomes keeps backing off across watchdog-close/reconnect cycles instead of retrying at
+   * the base delay forever. Not exported.
+   * @example
+   * ```
+   * // called from open()'s catch and from handleClose(); not part of the public API
+   * this.scheduleReconnect();
+   * ```
+   */
   private scheduleReconnect(): void {
     const attempt = this.reconnectAttempt++;
     const ceiling = Math.min(
@@ -350,6 +503,23 @@ export class WsClient {
     void this.sleep(delay).then(() => this.open());
   }
 
+  /** Parse (`parseServerMsg`, Zod-validated against `ServerMsgSchema` — malformed/unknown JSON
+   * is silently dropped) and dispatch one inbound text frame by `msg.type`. `gen` is the
+   * `connGeneration` this connection's `onMessage` closure was created with (stamped in
+   * `open()` before the connect `await`); ONLY the `"welcome"` and `"resync_end"` cases compare
+   * `gen !== this.connGeneration` and bail — every other frame type (`event`, `reject`,
+   * `move_stream`, chat/search/pathfind replies, etc.) acts regardless of generation, because
+   * those either carry their own `request_id` correlation (dropped harmlessly if the requester
+   * already gave up) or are idempotent/order-tolerant on the applied-seq watermark.
+   * @param text The raw frame text off the socket.
+   * @param gen This connection's `connGeneration`, captured when its `onMessage` closure was
+   * created.
+   * @example
+   * ```
+   * // wired as onMessage in open(): this.opts.connect({ onMessage: (d) => this.handleFrame(d, gen), ... })
+   * this.handleFrame(text, gen);
+   * ```
+   */
   private handleFrame(text: string, gen: number): void {
     const msg = parseServerMsg(text);
     if (!msg) return;
@@ -541,6 +711,25 @@ export class WsClient {
    * Core.search — issue a correlated full-text search request and resolve with
    * the page when the matching reply arrives. Rejects on a `search_error` frame
    * or after `timeoutMs`.
+   * @param query The full-text query string.
+   * @param opts Search options.
+   * @param opts.limit Max hits per page, sent on the wire as `limit: opts.limit ?? 20`
+   * (client-side default only — the server's `Search` frame field is mandatory, no server
+   * default; `ws/protocol.rs`'s `ClientMsg::Search.limit: u32`).
+   * @param opts.cursor Opaque pagination cursor from a prior `SearchPage.nextCursor`.
+   * @param opts.timeoutMs How long to wait for `search_result`/`search_error` before rejecting
+   * (default 10000).
+   * @returns The resolved page of hits + an optional `nextCursor`.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * const page = await client.search("goblin", { limit: 10 });
+   * ```
    */
   search(
     query: string,
@@ -574,6 +763,27 @@ export class WsClient {
    * arrives (and fires `onUpdate` for it); subsequent server pushes fire
    * `onUpdate(hits)`. `unsubscribe()` stops updates and tells the server. On
    * disconnect the subscription is dropped and a pending initial rejects.
+   * @param query The full-text query string.
+   * @param opts Live-search options.
+   * @param opts.limit Max hits tracked, sent on the wire as `limit: opts.limit ?? 20`
+   * (client-side default only — the server's `Search` frame field is mandatory, no server
+   * default; `ws/protocol.rs`'s `ClientMsg::Search.limit: u32`).
+   * @param opts.timeoutMs How long to wait for the initial result before rejecting
+   * (default 10000).
+   * @param onUpdate Fires with the current top-N hits on the initial result and every
+   * subsequent `search_update` push.
+   * @returns A handle whose `unsubscribe()` stops updates and sends `{ type: "unsubscribe" }`.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * const handle = await client.subscribeSearch("goblin", {}, (hits) => console.log(hits.length));
+   * handle.unsubscribe();
+   * ```
    */
   subscribeSearch(
     query: string,
@@ -621,6 +831,26 @@ export class WsClient {
    * Subscribe to a SceneDerived channel. Resolves once the first frame arrives;
    * `onUpdate` fires for every frame. Rejects on `scene_error`, timeout, or no
    * transport. Dropped on disconnect (WorldSession re-subscribes on reconnect).
+   * @param channel The SceneDerived channel name to subscribe to.
+   * @param onUpdate Fires with `{ payload, computedAtSeq }` for every frame delivered on this
+   * subscription.
+   * @param opts Subscription options.
+   * @param opts.timeoutMs How long to wait for the first `scene_derived`/`scene_error` before
+   * rejecting (default 10000).
+   * @param opts.asUser GM-only see-as-player override; sent as `as_user` only when set (the
+   * server gates and resolves it — an unauthorized value is the server's rejection to make).
+   * @returns A handle whose `unsubscribe()` drops the channel and sends `scene_unsubscribe`.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * const sub = await client.subscribeScene("vision", (frame) => console.log(frame.computedAtSeq));
+   * sub.unsubscribe();
+   * ```
    */
   subscribeScene(
     channel: string,
@@ -655,6 +885,27 @@ export class WsClient {
    * `token`, when given, names the token the route is for: the server derives the footprint from
    * it and IGNORES `footprintRadius` entirely — the client value is honored only when `token` is
    * omitted (an explicitly hypothetical preview with no preview-equals-execution guarantee).
+   * @param scene The scene id to route through.
+   * @param start Starting `[x, y]` grid/world coordinate.
+   * @param waypoints Ordered `[x, y]` waypoints the route must pass through.
+   * @param footprintRadius Hypothetical mover footprint radius; ignored server-side when
+   * `token` is given.
+   * @param token Optional token id the route is for; when present the server derives the
+   * footprint from the token and this method's `footprintRadius` argument is not honored.
+   * @param opts Request options.
+   * @param opts.timeoutMs How long to wait for `path_result`/`path_error` before rejecting
+   * (default 10000).
+   * @returns The computed path, cost, and whether it was cut short by a visible arrest region.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * const result = await client.pathfind("scene-1", [0, 0], [[5, 5]], 0.5);
+   * ```
    */
   pathfind(
     scene: string,
@@ -693,6 +944,24 @@ export class WsClient {
    * the matching `move_stream` frame arrives (mover's request_id correlates). Rejects on a
    * `move_error` frame or after `timeoutMs`. Pure transport mirror — no client-side movement
    * logic. All scene viewers (mover + observers) also receive the frame via `onMoveStream`.
+   * @param scene The scene id the token is on.
+   * @param tokenId The token to move.
+   * @param path Ordered `[x, y]` waypoints for the requested move.
+   * @param opts Request options.
+   * @param opts.timeoutMs How long to wait for the mover's own `move_stream`/`move_error`
+   * before rejecting (default 10000).
+   * @returns The mover's `MoveStream` (full trajectory + `moverVision`); observers instead
+   * receive their own clipped copy via `onMoveStream`, never through this promise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * const stream = await client.moveRequest("scene-1", "token-1", [[1, 1]]);
+   * ```
    */
   moveRequest(
     scene: string,
@@ -720,6 +989,20 @@ export class WsClient {
    * Subscribe to broadcast MoveStream frames. Called for every recipient (mover + observers)
    * whenever a token's server-authoritative move completes. Returns an unsubscribe function.
    * Listeners survive reconnects; a caller that subscribes once keeps receiving across drops.
+   * @param cb Fires with every `MoveStream` frame (mover's own move and every other visible
+   * mover's move on the current scene).
+   * @returns An unsubscribe function that removes `cb` from the listener set.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * const off = client.onMoveStream((s) => console.log(s.tokenId));
+   * off();
+   * ```
    */
   onMoveStream(cb: (s: MoveStream) => void): () => void {
     this.moveStreamListeners.add(cb);
@@ -729,7 +1012,16 @@ export class WsClient {
   /** Register a correlated chat op: resolves (success-assumed) when no
    * `chat_error` arrives within the window, rejects with the server's reason
    * when one does. The timer is unref'd where supported so it never keeps a
-   * test's event loop alive. */
+   * test's event loop alive.
+   * @param request_id The op's correlation id (already sent on the wire by the caller).
+   * @returns Resolves (void) after `CHAT_ERROR_WINDOW_MS` with no error; rejects immediately
+   * if a matching `chat_error` arrives first.
+   * @example
+   * ```
+   * // called from sendChatMessage/editChatMessage/deleteChatMessage; not part of the public API
+   * const p = this.trackChatOp(request_id);
+   * ```
+   */
   private trackChatOp(request_id: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -746,6 +1038,24 @@ export class WsClient {
    * broadcast Event echo; assumed after `CHAT_ERROR_WINDOW_MS` with no error),
    * rejects with the server's player-presentable reason on a correlated
    * `chat_error`. The composer surfaces the rejection instead of it vanishing.
+   * @param opts Send options.
+   * @param opts.channel The chat channel to post into.
+   * @param opts.content The message body (server-sanitized; see `shadowcat-codebase-chat`).
+   * @param opts.actorOwner Optional actor attribution for the message; sent as `null` when
+   * omitted.
+   * @param opts.audience Optional recipient scoping; defaults to `{ kind: "public" }`.
+   * @returns Resolves (void) once the send is accepted; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.sendChatMessage({ channel: "main", content: "hello" });
+   * ```
    */
   sendChatMessage(opts: {
     channel: string;
@@ -767,7 +1077,22 @@ export class WsClient {
   }
 
   /** Edit an existing chat message. Resolves/rejects like `sendChatMessage`; the
-   * server enforces edit ownership and rejects via a correlated `chat_error`. */
+   * server enforces edit ownership and rejects via a correlated `chat_error`.
+   * @param messageId The message document id to edit.
+   * @param content The replacement content.
+   * @returns Resolves (void) once the edit is accepted; rejects with the server's reason
+   * otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.editChatMessage("msg-1", "corrected text");
+   * ```
+   */
   editChatMessage(messageId: string, content: string): Promise<void> {
     const request_id = crypto.randomUUID();
     const p = this.trackChatOp(request_id);
@@ -776,7 +1101,21 @@ export class WsClient {
   }
 
   /** Delete an existing chat message. Resolves/rejects like `sendChatMessage`; the
-   * server enforces delete ownership and rejects via a correlated `chat_error`. */
+   * server enforces delete ownership and rejects via a correlated `chat_error`.
+   * @param messageId The message document id to delete.
+   * @returns Resolves (void) once the delete is accepted; rejects with the server's reason
+   * otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.deleteChatMessage("msg-1");
+   * ```
+   */
   deleteChatMessage(messageId: string): Promise<void> {
     const request_id = crypto.randomUUID();
     const p = this.trackChatOp(request_id);
@@ -784,6 +1123,19 @@ export class WsClient {
     return p;
   }
 
+  /** Apply one authoritative `event` frame's `WireCommand` against the ordering watermark:
+   * a duplicate (`seq < nextExpected`) is dropped, a gap (`seq > nextExpected`) triggers a
+   * `resync_request` from the current watermark instead of applying out of order, and an
+   * in-order command is dispatched to `handlers.onCommand` (a thrown apply error is surfaced
+   * via `onError`, never left to kill the socket loop) before `nextExpected` advances past it.
+   * @param cmd The command to apply, from `ServerMsgSchema`'s `"event"` variant's `command`
+   * field (`CommandSchema`: `seq`/`world_id`/`author`/`ts`/`ops`).
+   * @example
+   * ```
+   * // called from handleFrame's "event" case; not part of the public API
+   * this.applyEvent(msg.command);
+   * ```
+   */
   private applyEvent(cmd: WireCommand): void {
     if (cmd.seq < this.nextExpected) return; // duplicate / already applied
     if (cmd.seq > this.nextExpected) {
