@@ -7,8 +7,11 @@ import jsdoc from "eslint-plugin-jsdoc";
 import tseslint from "typescript-eslint";
 import svelteParser from "svelte-eslint-parser";
 
-const RULES = {
-  "jsdoc/require-jsdoc": ["warn", {
+// One rule set, parameterized by severity, so a ratcheted package and a
+// still-warning one can never drift in WHICH rules they enforce — only in how
+// loudly. Adding a rule here applies it at both tiers by construction.
+const rulesAt = (sev) => ({
+  "jsdoc/require-jsdoc": [sev, {
     require: {
       FunctionDeclaration: true,
       MethodDefinition: true,
@@ -21,12 +24,21 @@ const RULES = {
     // "every function" surface the spec enforces mechanically. Inline callbacks
     // are covered by their enclosing declaration's docs.
   }],
-  "jsdoc/require-description": "warn",
-  "jsdoc/require-param": "warn",
-  "jsdoc/require-param-description": "warn",
-  "jsdoc/require-returns": "warn",
-  "jsdoc/require-example": ["warn", { exemptNoArguments: false }],
-};
+  "jsdoc/require-description": sev,
+  "jsdoc/require-param": sev,
+  "jsdoc/require-param-description": sev,
+  "jsdoc/require-returns": sev,
+  "jsdoc/require-example": [sev, { exemptNoArguments: false }],
+});
+
+const RULES = rulesAt("warn");
+
+// These rules gate on tag PRESENCE only. They cannot detect a tag whose text is
+// vacuous, nor a second doc block appended below an existing one — jsdoc,
+// TypeDoc, and editor hover all bind to the NEAREST preceding block, so an
+// appended block satisfies the linter while orphaning the richer one above it.
+// A clean run here is evidence the tags exist, not that the docs are correct.
+const RULES_RATCHETED = rulesAt("error");
 
 export default [
   {
@@ -39,14 +51,26 @@ export default [
     languageOptions: { parser: tseslint.parser },
     // typescript-eslint is registered (no rules enabled) so source files' inline
     // eslint-disable directives naming its rules resolve under this config too.
-    // Those rules never fire here (unregistered), so the directive is unused
-    // from THIS config's perspective even though eslint.config.js needs it —
-    // report-unused-directives is off for this file set so a directive that
-    // exists solely for the main config doesn't count against the doc-coverage
-    // warning total.
-    linterOptions: { reportUnusedDisableDirectives: false },
     plugins: { jsdoc, "@typescript-eslint": tseslint.plugin },
     rules: RULES,
+  },
+  // Ratcheted packages: doc coverage is a hard gate, not advisory. A package
+  // joins this list only once it is at zero under the warn tier.
+  {
+    files: ["src/client/core/**/*.ts"],
+    ignores: ["**/node_modules/**", "**/dist/**", "**/*.test.ts", "**/vitest.setup.ts"],
+    languageOptions: { parser: tseslint.parser },
+    plugins: { jsdoc, "@typescript-eslint": tseslint.plugin },
+    rules: RULES_RATCHETED,
+  },
+  // A registered-but-ruleless plugin makes any inline disable naming its rules
+  // dead FROM THIS CONFIG's perspective, even though eslint.config.js genuinely
+  // needs it (tseslint.configs.recommended enables the rule there). Scoped to
+  // the single file that carries such a directive rather than the whole tree, so
+  // a genuinely dead directive anywhere else still reports.
+  {
+    files: ["src/client/core/src/hooks.ts"],
+    linterOptions: { reportUnusedDisableDirectives: false },
   },
   {
     files: ["src/client/**/*.svelte", "src/modules/**/*.svelte", "examples/**/*.svelte"],
