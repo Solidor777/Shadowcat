@@ -505,10 +505,12 @@ export function buildActorDoc(worldId: string, name: string | null, engine: Acto
 }
 
 /** Client-only `item` doc_type (M12c): NOT engine-defined (`data::engine::is_engine_doc_type`
- * excludes "item") — the server stays fully structural for items, mirroring
- * `movementModel`/`bounds`/`visual`. An item lives standalone (top-level, parentless) or
- * embedded in an actor's inventory. Display name lives in the envelope; every other field
- * is opaque, edited via the tree editor. */
+ * excludes "item") — the server runs no server-side validation on an item's body at all
+ * (unlike the 17 engine-defined doc types, whose `movementModel`/`bounds`/`visual`-shaped
+ * fields DO get real server-side ingress validation post-M13-0 — item is the one doc_type
+ * that stays fully opaque). An item lives standalone (top-level, parentless) or embedded in
+ * an actor's inventory. Display name lives in the envelope; every other field is opaque,
+ * edited via the tree editor. */
 export const ITEM_DOC_TYPE = "item";
 
 export interface ItemSystem {
@@ -683,9 +685,11 @@ export function buildConditionRegistryDoc(worldId: string, conditions: Record<st
   return envelope(worldId, "condition-registry", null, {}, id, { conditions } satisfies ConditionRegistryEngine, null);
 }
 
-/** A generic scene-entity document (drawing/template/wall/…) parented to `sceneId`; every
- * doc_type this builder is used for (`wall`, `region`, `drawing`, `template`) is
- * engine-defined, so the caller's shape lands in `engine` — `system` stays `{}`.
+/** A generic scene-entity document (wall/drawing/template/…) parented to `sceneId`; every
+ * doc_type this builder is used for (`wall`, `drawing`, `template` — see call sites in
+ * `src/modules/scene-tools/src/controller.svelte.ts`) is engine-defined, so the caller's shape
+ * lands in `engine` — `system` stays `{}`. `region` documents use the dedicated
+ * `buildRegionDoc` instead (it calls `envelope` directly), not this generic builder.
  * @param worldId The owning world's id.
  * @param sceneId The scene document this entity is parented to.
  * @param docType The engine-defined doc_type (e.g. `"wall"`, `"drawing"`, `"template"`).
