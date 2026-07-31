@@ -146,8 +146,12 @@ export class ModuleRegistry {
     }));
   }
 
-  /** Every active module's declared capability requirements, pooled for the
-   * Welcome frame's capability-requirements union.
+  /** Every active module's declared capability requirements, pooled for GM
+   * review/publish into the server's per-world `capability_requirements` record
+   * (the workflow `manifest.ts` describes: `requirements` is data the GM
+   * publishes, not something the server consumes automatically). Has no
+   * production caller today — unlike the structurally similar `declarations()`,
+   * which `worldSession.svelte.ts` wires into `reconcileTopology`.
    * @returns The concatenated `requirements` of every currently active module.
    * @example
    * ```ts
@@ -376,10 +380,13 @@ export class ModuleRegistry {
   }
 
   /** Builds the capability-scoped `ModuleContext` passed to `Module.register`:
-   * every host dependency, plus per-call wrappers over `hooks`/`services`/`use`/
-   * `contributions` that stamp `moduleId` onto each registration so `unload` can
-   * find and strip them again. Not exported — folded into `activate`'s public
-   * surface.
+   * every host dependency, plus per-call wrappers over `hooks.on`/`services.provide`/
+   * `use`/`contributions.contribute` that stamp `moduleId` onto each registration
+   * so `unload` can find and strip them again. `hooks.defineHook` is the one
+   * exception — it passes straight through to `HookBus.defineHook` unstamped,
+   * since a hook DEFINITION (unlike a listener) carries no module ownership and
+   * `HookBus.removeModule` never touches `defs`, only listeners. Not exported —
+   * folded into `activate`'s public surface.
    * @param moduleId The id of the module this context is being built for.
    * @returns The `ModuleContext` to pass to that module's `register`.
    * @example
