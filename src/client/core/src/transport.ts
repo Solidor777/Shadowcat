@@ -26,9 +26,7 @@ export type Connect = (handlers: TransportHandlers) => Promise<Transport>;
  * unreachable behind the unsettled await. Handlers attach semantically AFTER
  * open: pre-open close/error only reject (they must not leak into onClose —
  * the caller's open() failure path already schedules the reconnect, and a
- * pre-open onClose would double-schedule it). */
-/**
- * A `Connect` backed by the platform global `WebSocket` (browser / Node 22+).
+ * pre-open onClose would double-schedule it).
  * @param url The WebSocket URL to connect to.
  * @param connectTimeoutMs Bounds the handshake; a TCP-accepted-but-never-upgraded socket rejects (and is closed) after this many ms instead of hanging forever.
  * @returns A `Connect` function suitable for `WsClient`.

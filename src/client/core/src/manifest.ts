@@ -96,7 +96,7 @@ export function parseManifest(value: unknown): ModuleManifest {
 
 /** Project a manifest to its UI contract declaration (empty arrays when unset).
  * @param m The module manifest.
- * @returns The `ContractDeclaration` the client sends the server for topology reconciliation.
+ * @returns The `ContractDeclaration`, compared locally by `reconcileTopology` against the server-broadcast `Welcome.contract_declarations`.
  * @example
  * ```ts
  * import { declarationOf, parseManifest } from "@shadowcat/core";
