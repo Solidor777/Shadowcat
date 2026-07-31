@@ -110,8 +110,9 @@ pub async fn me(user: AuthUser) -> Json<MeResponse> {
     })
 }
 
-/// Upper bound on a stored UI-state blob. It is read/written whole per user and
-/// is small UI session state; far above any realistic payload.
+/// Upper bound on a stored UI-state blob, applied to the MERGED result of a
+/// patch (only the store sees that; see `SqliteRepository::merge_ui_state`).
+/// Small UI session state; far above any realistic payload.
 const MAX_UI_STATE_BYTES: usize = 64 * 1024;
 
 /// The caller's opaque UI-state object, or `{}` when unset.
@@ -128,8 +129,14 @@ pub async fn get_ui_state(
     Ok(Json(val))
 }
 
-/// Replace the caller's UI-state. Validates object-shape + size only; the body
-/// is otherwise opaque (the client owns its structure).
+/// Merge a partial UI-state patch into the caller's stored state. Each
+/// top-level key present in the body replaces the stored key wholesale,
+/// except `worlds`, whose entries each replace only that world's slice;
+/// absent keys are untouched. Sending only changed slices is the concurrency
+/// control: concurrent sessions of one account contend only on slices both
+/// write, instead of last-writer-wins on the whole blob. Slices are
+/// otherwise opaque (the client owns their structure). The size cap applies
+/// to the merged result (422 via `DataError::TooLarge`).
 pub async fn put_ui_state(
     user: AuthUser,
     State(state): State<AppState>,
@@ -140,15 +147,17 @@ pub async fn put_ui_state(
             "ui_state must be a JSON object".into(),
         ));
     }
-    // Cap the canonical compact serialization (what is actually persisted), not
-    // the raw request bytes — deterministic regardless of client whitespace.
-    let s = serde_json::to_string(&body).map_err(|_| AppError::Internal)?;
-    if s.len() > MAX_UI_STATE_BYTES {
-        return Err(AppError::Unprocessable(format!(
-            "ui_state too large (max {MAX_UI_STATE_BYTES} bytes)"
-        )));
+    if let Some(worlds) = body.get("worlds") {
+        if !worlds.is_object() {
+            return Err(AppError::Unprocessable(
+                "ui_state `worlds` must be a JSON object".into(),
+            ));
+        }
     }
-    state.repo.set_ui_state(user.id, &s).await?;
+    state
+        .repo
+        .merge_ui_state(user.id, &body, MAX_UI_STATE_BYTES)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

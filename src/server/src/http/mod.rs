@@ -427,9 +427,24 @@ pub(crate) mod tests {
         let got: serde_json::Value = u.get("/api/me/ui-state").await.json();
         assert_eq!(got["global"]["locale"], "en");
 
+        // A worlds-only patch merges: the stored global slice survives.
+        u.put("/api/me/ui-state")
+            .json(&serde_json::json!({ "worlds": { "w1": { "panelLayout": { "v": 1 } } } }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let got: serde_json::Value = u.get("/api/me/ui-state").await.json();
+        assert_eq!(got["global"]["locale"], "en");
+        assert_eq!(got["worlds"]["w1"]["panelLayout"]["v"], 1);
+
         // A non-object body is rejected.
         u.put("/api/me/ui-state")
             .json(&serde_json::json!([1, 2, 3]))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // A non-object `worlds` value is rejected.
+        u.put("/api/me/ui-state")
+            .json(&serde_json::json!({ "worlds": [1] }))
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
 

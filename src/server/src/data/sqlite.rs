@@ -701,17 +701,72 @@ impl SqliteRepository {
         Ok(row.and_then(|r| r.get::<Option<String>, _>("ui_state")))
     }
 
-    /// Replace the user's opaque UI-state JSON. `NotFound` if the user is absent.
-    /// The string is stored verbatim; shape/size are validated at the HTTP boundary.
-    pub async fn set_ui_state(&self, user: Uuid, json: &str) -> Result<(), DataError> {
-        let res = sqlx::query("UPDATE users SET ui_state = ? WHERE id = ?")
-            .bind(json)
+    /// Merge a partial UI-state patch into the user's stored blob. Each
+    /// top-level key in `patch` replaces the stored key wholesale, EXCEPT
+    /// `worlds`: its entries each replace only `worlds.<id>`. Absent keys are
+    /// untouched. The write granularity is the concurrency control —
+    /// concurrent sessions of the same user (two tabs, parallel e2e workers)
+    /// contend only on slices both actually write, so a session's write can
+    /// never revert a slice it did not touch. Read+merge+write run in ONE
+    /// transaction (a check-then-act across two pool queries is TOCTOU-racy
+    /// even on the single-writer pool). `max_bytes` caps the MERGED
+    /// serialization — only this function sees it, so the cap cannot live at
+    /// the HTTP boundary. `NotFound` if the user is absent. INVARIANT:
+    /// `patch` is an object and `patch.worlds`, when present, is an object
+    /// (the HTTP boundary rejects other shapes; violations here surface as
+    /// `OpFailed`).
+    pub async fn merge_ui_state(
+        &self,
+        user: Uuid,
+        patch: &serde_json::Value,
+        max_bytes: usize,
+    ) -> Result<(), DataError> {
+        let patch_obj = patch
+            .as_object()
+            .ok_or_else(|| DataError::OpFailed("ui_state patch must be an object".into()))?;
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query("SELECT ui_state FROM users WHERE id = ?")
             .bind(user.to_string())
-            .execute(&self.pool)
+            .fetch_optional(&mut *tx)
             .await?;
-        if res.rows_affected() == 0 {
+        let Some(row) = row else {
             return Err(DataError::NotFound);
+        };
+        let mut stored: serde_json::Value = match row.get::<Option<String>, _>("ui_state") {
+            Some(s) => serde_json::from_str(&s)?,
+            None => serde_json::json!({}),
+        };
+        let stored_obj = stored
+            .as_object_mut()
+            .ok_or_else(|| DataError::OpFailed("stored ui_state is not an object".into()))?;
+        for (key, value) in patch_obj {
+            if key == "worlds" {
+                let worlds_patch = value.as_object().ok_or_else(|| {
+                    DataError::OpFailed("ui_state patch `worlds` must be an object".into())
+                })?;
+                let worlds = stored_obj
+                    .entry("worlds")
+                    .or_insert_with(|| serde_json::json!({}));
+                let worlds_obj = worlds.as_object_mut().ok_or_else(|| {
+                    DataError::OpFailed("stored ui_state `worlds` is not an object".into())
+                })?;
+                for (id, slice) in worlds_patch {
+                    worlds_obj.insert(id.clone(), slice.clone());
+                }
+            } else {
+                stored_obj.insert(key.clone(), value.clone());
+            }
         }
+        let merged = serde_json::to_string(&stored)?;
+        if merged.len() > max_bytes {
+            return Err(DataError::TooLarge(merged.len()));
+        }
+        sqlx::query("UPDATE users SET ui_state = ? WHERE id = ?")
+            .bind(&merged)
+            .bind(user.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -3960,8 +4015,13 @@ mod tests {
         assert!(admin_worlds.iter().all(|(_, r)| *r == WorldRole::Gm));
     }
 
+    /// Parse a user's stored UI-state for structural assertions.
+    async fn ui_state_of(repo: &SqliteRepository, user: Uuid) -> serde_json::Value {
+        serde_json::from_str(&repo.get_ui_state(user).await.unwrap().unwrap()).unwrap()
+    }
+
     #[tokio::test]
-    async fn ui_state_round_trips_and_defaults_to_none() {
+    async fn ui_state_merges_per_top_level_key_and_per_world() {
         let repo = repo().await;
         let user = repo
             .create_user("u", Some("hash"), ServerRole::User, 0)
@@ -3971,30 +4031,95 @@ mod tests {
         // Unset → None.
         assert_eq!(repo.get_ui_state(user).await.unwrap(), None);
 
-        // Set then read back verbatim.
-        repo.set_ui_state(user, r#"{"global":{"locale":"en"}}"#)
-            .await
-            .unwrap();
-        assert_eq!(
-            repo.get_ui_state(user).await.unwrap().as_deref(),
-            Some(r#"{"global":{"locale":"en"}}"#)
-        );
+        // Seed one session's slices: global + world w1.
+        repo.merge_ui_state(
+            user,
+            &serde_json::json!({
+                "global": { "locale": "en", "lastWorld": null },
+                "worlds": { "w1": { "panelLayout": { "version": 1, "dock": true } } },
+            }),
+            64 * 1024,
+        )
+        .await
+        .unwrap();
 
-        // Replace (not merge).
-        repo.set_ui_state(user, r#"{"global":{"locale":"fr"}}"#)
-            .await
-            .unwrap();
-        assert_eq!(
-            repo.get_ui_state(user).await.unwrap().as_deref(),
-            Some(r#"{"global":{"locale":"fr"}}"#)
-        );
+        // A second session writing ONLY w2 must not revert global or w1 —
+        // the clobber this granularity exists to prevent.
+        repo.merge_ui_state(
+            user,
+            &serde_json::json!({ "worlds": { "w2": { "chatRead": { "general": 5 } } } }),
+            64 * 1024,
+        )
+        .await
+        .unwrap();
+        let v = ui_state_of(&repo, user).await;
+        assert_eq!(v["global"]["locale"], "en");
+        assert_eq!(v["worlds"]["w1"]["panelLayout"]["dock"], true);
+        assert_eq!(v["worlds"]["w2"]["chatRead"]["general"], 5);
+
+        // Re-writing w1 replaces that slice WHOLESALE (stale nested keys
+        // drop; no deep merge) and leaves w2/global untouched.
+        repo.merge_ui_state(
+            user,
+            &serde_json::json!({ "worlds": { "w1": { "panelLayout": { "version": 2 } } } }),
+            64 * 1024,
+        )
+        .await
+        .unwrap();
+        let v = ui_state_of(&repo, user).await;
+        assert_eq!(v["worlds"]["w1"]["panelLayout"]["version"], 2);
+        assert_eq!(v["worlds"]["w1"]["panelLayout"].get("dock"), None);
+        assert_eq!(v["worlds"]["w2"]["chatRead"]["general"], 5);
+
+        // A global-only patch replaces global wholesale, untouched worlds.
+        repo.merge_ui_state(
+            user,
+            &serde_json::json!({ "global": { "locale": "fr", "lastWorld": "w2" } }),
+            64 * 1024,
+        )
+        .await
+        .unwrap();
+        let v = ui_state_of(&repo, user).await;
+        assert_eq!(v["global"]["locale"], "fr");
+        assert_eq!(v["worlds"]["w1"]["panelLayout"]["version"], 2);
 
         // Unknown user → NotFound.
         let ghost = Uuid::from_u128(1);
         assert!(matches!(
-            repo.set_ui_state(ghost, "{}").await,
+            repo.merge_ui_state(ghost, &serde_json::json!({}), 64 * 1024)
+                .await,
             Err(DataError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn ui_state_merge_caps_the_merged_result_not_the_patch() {
+        let repo = repo().await;
+        let user = repo
+            .create_user("u", Some("hash"), ServerRole::User, 0)
+            .await
+            .unwrap();
+        let big = "x".repeat(600);
+        repo.merge_ui_state(
+            user,
+            &serde_json::json!({ "worlds": { "w1": { "panelLayout": big } } }),
+            1024,
+        )
+        .await
+        .unwrap();
+
+        // The second patch is small, but merged with w1 it exceeds the cap —
+        // and the store must be left UNCHANGED (the tx never commits).
+        let err = repo
+            .merge_ui_state(
+                user,
+                &serde_json::json!({ "worlds": { "w2": { "panelLayout": "y".repeat(600) } } }),
+                1024,
+            )
+            .await;
+        assert!(matches!(err, Err(DataError::TooLarge(_))));
+        let v = ui_state_of(&repo, user).await;
+        assert_eq!(v["worlds"].get("w2"), None);
     }
 
     #[tokio::test]
