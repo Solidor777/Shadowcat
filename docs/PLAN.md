@@ -1529,13 +1529,28 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   saturating-fold semantics incl. the div-by-zero-yields-0 truth). All 16 dice/ files carry the
   inner deny pair; mutation-verified in spec.rs + eval/crit.rs. **The server crate is now fully
   deny-ratcheted except `lib.rs` (reserved for the final ratchet).**
-- **Sweeps 7–N — doc-comment sweeps: UPCOMING.** Client
-  packages, then modules. One plan per subsystem (server: data (~300+
-  items, likely 2–3 plans) / ws / http+auth / scene / chat+dice; client: core / render /
-  ui-kit+shell / formula; modules in 3–4 groups). Every symbol gets description+params+example;
-  each completed area flips its lints to deny (Rust: per-file inner deny attributes as in Sweep 1;
-  TS: per-package severity flip in `eslint.docs.config.js`). Server-wide informational count at
-  Sweep-1 start: 1,059.
+- **Sweep 7 — client/core: COMPLETE (2026-07-31).** 620-item backlog → 0 across 6 tasks
+  (scene-docs 119; ws-client+merge 144; templates+actor 97; user-rest/store/capabilities/optimistic
+  89; contributions/modules/hooks/i18n/mock-server/asset-rest/sheets 101; the remaining 14 small
+  files 70). **First per-package TS ratchet:** `client/core` globs now run at `error` in
+  `eslint.docs.config.js` via a dedicated block, with the rule set extracted into
+  `rulesAt(severity)` so ratcheted and warn-tier packages cannot drift in WHICH rules they enforce.
+  Mutation-verified (`pnpm lint:docs` exits 1 naming the file when a doc comment is removed).
+  `reportUnusedDisableDirectives:false` narrowed from the whole TS glob to the single file that
+  needs it. Also corrected a stale server-crate authz claim found while documenting the client:
+  `assets.rs`'s upload/replace/delete were documented "GM/owner-gated" but are GM-only via
+  `require_gm` with no owner exception.
+  Plan: `docs/superpowers/plans/2026-07-30-docs-sweep7-client-core.md`.
+- **Sweeps 8–N — doc-comment sweeps: UPCOMING.** Remaining client packages, then modules:
+  client/render (339), shell+ui-kit+formula (281), module packages (~530, 3–4 groups). Every symbol
+  gets description+params+example; each completed area flips its lints to deny (Rust: per-file inner
+  deny attributes as in Sweep 1; TS: per-package severity flip in `eslint.docs.config.js`).
+  Server-wide informational count at Sweep-1 start: 1,059.
+  **Required reading for every implementer and reviewer:**
+  `docs/design/doc-sweep-truthfulness-rules.md` — nine rules derived empirically from Sweep 7,
+  where all eight fix rounds were triggered by doc sentences asserting something FALSE, never by a
+  missing comment. Note especially that a green `lint:docs` proves tag presence, not correctness or
+  placement, so the ratchet does not reduce the need for review.
 - **Buddy-check convergence — after the last sweep (user directive 2026-07-30).** The completed
   first-pass documentation is buddy-checked (superpowers two-reviewer cross-check debate)
   **crate by crate**: the `shadowcat` server crate, then each TS workspace package. Any problems

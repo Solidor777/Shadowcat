@@ -209,6 +209,19 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   id never enters `store`; ids are globally unique), so `store.get()` cannot today return a
   cross-scope document, and `effectiveOwner` is advisory-only (the server re-resolves in its own
   transaction). Needs its own runtime-change test + review, not a docs-only edit.
+- TODO: `worldSession.canEdit` (`src/client/shell/src/lib/worldSession.svelte.ts:152-161`) is the
+  LIVE client-side GM-bypass gate — it returns `true` for `role === "gm"` at :153 before resolving
+  any capabilities — and it is unaware of `permissions.gm_role`. The server's GM bypass is
+  conditional: a document carrying `gm_role: Some(role)` floors even a GM to an ordinary `DocRole`
+  resolution instead of the unconditional grant (`data/permission.rs`'s `effective_role`
+  :489-498 / `resolve_access` :551-557). So a GM's client-side write affordances can over-permit on
+  a `gm_role`-capped document. Document the caveat on `canEdit` itself when the shell doc sweep
+  reaches this file. NOT a live bug and NOT an OPEN_BUGS item: the gate is advisory-only (the
+  server enforces independently at `apply_intent`), `gm_role` is currently set only by chat-message
+  construction (`chat/mod.rs:299-311`), and `apply_intent` rejects every ordinary client Update to
+  a `message` doc outright (`data/sqlite.rs:2187-2190`). Note the caveat belongs HERE, not on
+  `canWritePath` — that function's `isGm` branch has no production caller (`canEdit` always passes
+  the literal `false`), which is why its own doc comment scopes its `gm_role` note explicitly.
 
 ## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
 - TODO: `src/server/src/ws/room.rs`'s `Room::execute_move` re-derives `is_gm` via its own
