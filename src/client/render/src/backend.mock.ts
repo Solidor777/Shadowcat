@@ -335,6 +335,12 @@ export class MockBackend implements DisplayBackend {
    * from `PixiBackend`:** the real backend hooks Pixi's own `app.ticker` and calls `cb` on every
    * render frame automatically; this mock never calls `cb` on its own — a test must explicitly
    * invoke it, either directly (`backend.tick!(dtMs)`) or via the {@link runTicker} helper.
+   * **Second divergence, on a REPEAT call:** here, a second `startTicker` call silently OVERWRITES
+   * `this.tick` — only the latest registration ever fires. `PixiBackend.startTicker` instead
+   * ACCUMULATES: every call adds a new, never-removed listener to `app.ticker`, so on the real
+   * backend a second call means BOTH callbacks fire every frame, not just the latest. A test
+   * asserting "the first-registered callback no longer fires after a second `startTicker` call"
+   * would pass against this mock and fail against the real backend.
    * @param cb The per-frame render callback to record.
    * @example
    * ```ts

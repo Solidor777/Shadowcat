@@ -800,7 +800,17 @@ export class PixiBackend implements DisplayBackend {
   /** `DisplayBackend.startTicker`: register the per-frame render ticker — forwards Pixi's own
    * `app.ticker` per-tick callback, translating its `deltaMS` into `cb`'s `dtMs` argument. Pixi
    * drives this ticker automatically (no manual pump needed), unlike `MockBackend`'s `startTicker`,
-   * which only records `cb` for a test to invoke explicitly via `runTicker`.
+   * which only records `cb` for a test to invoke explicitly via `runTicker`. **Repeat calls
+   * ACCUMULATE, never replace:** `app.ticker.add(...)` always inserts a fresh listener (no dedup
+   * against an already-registered callback, even the identical `cb` reference — verified against
+   * the vendored `Ticker._addListener` source) and this method never captures a handle to remove
+   * one, so a second `startTicker` call on the same backend means BOTH callbacks fire every frame
+   * for the backend's remaining lifetime. `MockBackend.startTicker` diverges here too: a second
+   * call silently OVERWRITES `this.tick`, so only the latest ever fires via `runTicker`. No
+   * current caller invokes this twice on one backend instance (`RenderEngine.start()` — the sole
+   * caller — itself has no double-start guard, but every production caller,
+   * `Stage.svelte`'s `$effect`, constructs a fresh `RenderEngine`/backend pair on each run and
+   * tears the old one down first) — a contract caveat, not a live bug.
    * @param cb Called once per render frame with the elapsed milliseconds since the previous frame.
    * @example
    * ```ts
