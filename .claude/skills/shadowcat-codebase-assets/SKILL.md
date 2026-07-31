@@ -34,9 +34,10 @@ and serves uploads unconverted (the conversion pipeline is deferred).
 - **All three mutation routes are GM-ONLY, with no owner exception.** `upload`, `replace`, and
   `delete` each call `require_gm` (`http/routes.rs`), which returns `Forbidden` unless
   `ctx.world_role == WorldRole::Gm`; a server admin reaches GM via `permission_context`
-  (`data/sqlite.rs`, `server_role == Admin ⇒ world_role: Gm`, before any membership lookup). There
-  is no asset-owner concept and no per-asset permission check — uploading a file does not grant its
-  uploader any subsequent authority over it. `serve` is the odd one out: membership-gated, not
+  (`data/sqlite.rs`, `server_role == Admin ⇒ world_role: Gm`, before any membership lookup).
+  `Asset.created_by` (`data/asset.rs`) records the uploader but is **never read by any authz
+  check** — it is provenance, not authority, so uploading a file grants no subsequent rights over
+  it and there is no per-asset permission check. `serve` is the odd one out: membership-gated, not
   GM-gated. Corrected in the client/core doc sweep, where all three route comments had claimed
   "GM/owner-gated" — treat any surviving "owner" language about asset mutation as stale.
 - **`replace` commits the source-of-truth/cache-key row BEFORE swapping the file** (row-first).
