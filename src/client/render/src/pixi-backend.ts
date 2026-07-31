@@ -22,7 +22,16 @@ interface TokenNode {
 }
 
 /** Identity key for a `TokenNodeSpec.visual` — equal specs must produce an equal key so a
- * tweening token's re-push (same visual, new transform) skips texture (re)loading. */
+ * tweening token's re-push (same visual, new transform) skips texture (re)loading.
+ * @param v A token's resolved visual spec (image URL, or an animated source + fps/loop).
+ * @returns A string key equal for equal specs; an `"image:"`- vs `"animated:"`-prefixed key never
+ * collides across kinds.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render's index.ts
+ * visualSourceKey({ kind: "image", url: "https://example.test/token.png" });
+ * ```
+ */
 function visualSourceKey(v: TokenNodeSpec["visual"]): string {
   return v.kind === "image" ? `image:${v.url}` : `animated:${JSON.stringify(v.source)}:${v.fps}:${v.loop}`;
 }
@@ -65,6 +74,23 @@ export class PixiBackend implements DisplayBackend {
   /** Monotonic counter disambiguating concurrent background loads. */
   private loadSeq = 0;
 
+  /** Wire this backend to a running Pixi `Application`: parents the `world` container (which
+   * every layer/camera transform lives under) onto the stage, and adds the cross-fade sprites
+   * (`fogBlendFrom`/`fogBlendTo`) directly to the stage — not `world` — so they render in screen
+   * space, unaffected by the camera transform `setCameraTransform` applies to `world`. Both
+   * cross-fade sprites start hidden; `setVisibilityBlend` reveals them.
+   * @param app A Pixi `Application` already initialized via `app.init(...)` — see
+   * {@link createPixiBackend}, the normal construction path.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * // Derived, not imported from "pixi.js" directly: pixi.js is a dependency of
+   * // @shadowcat/render only, not hoisted to every consumer's own node_modules.
+   * declare const app: ConstructorParameters<typeof PixiBackend>[0];
+   * const backend = new PixiBackend(app);
+   * ```
+   */
   constructor(private readonly app: Application) {
     this.app.stage.addChild(this.world);
     // Screen-space, added directly to the stage (not `world`) so the captured, already
@@ -74,6 +100,22 @@ export class PixiBackend implements DisplayBackend {
     this.app.stage.addChild(this.fogBlendFrom, this.fogBlendTo);
   }
 
+  /** `DisplayBackend.ensureLayers`: create any layer Containers named in `orderedIds` that don't
+   * exist yet (parenting their fixed children — e.g. `grid`'s Graphics, `mask`'s fog sheets,
+   * `lighting`'s BlurFilter — exactly once, on first creation), then re-parent EVERY container in
+   * `orderedIds` order via `addChild` (which moves an already-parented child to the top) so the
+   * final z-order matches `orderedIds` regardless of creation order or how many times this is
+   * called. Idempotent: a repeat call with the same ids is a same-order re-append, a no-op in
+   * effect.
+   * @param orderedIds The z-order (bottom to top) of core layer ids to ensure exist.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.ensureLayers(["background", "grid", "tokens", "mask", "overlays"]);
+   * ```
+   */
   ensureLayers(orderedIds: string[]): void {
     for (const id of orderedIds) {
       if (this.layers.has(id)) continue;
@@ -113,6 +155,23 @@ export class PixiBackend implements DisplayBackend {
     }
   }
 
+  /** `DisplayBackend.setBackground`: set or clear the background-layer sprite. `null` invalidates
+   * any in-flight load (bumping `loadSeq`) and destroys the current sprite. A non-null spec whose
+   * `url` already matches the current background is a steady-state no-op (skips a redundant
+   * reload). Otherwise loads the texture asynchronously (`Assets.load`) and swaps the sprite in
+   * once the load resolves, guarded by a monotonic `loadSeq` token — not a URL comparison — so a
+   * rapid set-X → set-Y → set-X sequence can't let the now-superseded first X load win the race
+   * and flash a stale sprite after Y's more recent commit.
+   * @param spec The background image `url` to load and display, or `null` to clear it.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.setBackground({ url: "https://example.test/map.png" });
+   * backend.setBackground(null); // clear
+   * ```
+   */
   setBackground(spec: { url: string } | null): void {
     if (spec === null) {
       this.loadSeq++; // invalidate any in-flight load
@@ -136,6 +195,20 @@ export class PixiBackend implements DisplayBackend {
     });
   }
 
+  /** `DisplayBackend.drawGrid`: replace the grid-layer line set. Clears the grid Graphics first
+   * (so a shrinking line set doesn't leave stale strokes), then strokes each segment at 1px width,
+   * 50% alpha. An empty `lines` array leaves the grid blank (e.g. a 0×0 viewport) rather than
+   * erroring.
+   * @param lines The grid line segments to stroke, in scene coordinates.
+   * @param color The stroke color, packed `0xRRGGBB`.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.drawGrid([{ x1: 0, y1: 0, x2: 100, y2: 0 }], 0x3a3a4a);
+   * ```
+   */
   drawGrid(lines: LineSeg[], color: number): void {
     this.grid.clear();
     if (lines.length === 0) return; // nothing to stroke (e.g. a 0×0 viewport)
@@ -143,11 +216,41 @@ export class PixiBackend implements DisplayBackend {
     this.grid.stroke({ width: 1, color, alpha: 0.5 });
   }
 
+  /** `DisplayBackend.setCameraTransform`: apply the camera transform to the `world` container —
+   * translate then uniform scale, matching every layer parented under `world` (everything except
+   * the stage-level fog cross-fade sprites, which are deliberately screen-space — see the
+   * constructor doc).
+   * @param t The camera transform: translation `(x,y)` plus uniform `scale`.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.setCameraTransform({ x: 0, y: 0, scale: 1 });
+   * ```
+   */
   setCameraTransform(t: CameraTransform): void {
     this.world.position.set(t.x, t.y);
     this.world.scale.set(t.scale);
   }
 
+  /** `DisplayBackend.setVisibility`: apply the fog mask, ending any in-flight cross-fade
+   * (`setVisibilityBlend`) — restores the normal `fogDark`/`fogDim` sheets, and eagerly destroys
+   * the last cross-fade capture textures (`fogBlendFromRT`/`fogBlendToRT`) rather than leaving
+   * them GPU-resident until the next blend call or backend teardown. `mode:"all"` clears both
+   * sheets' masks (no fog); `mode:"masked"` repaints them via `paintFogSheets` — the same helper
+   * `captureFog` uses for a cross-fade capture, so a plain apply and a captured snapshot of the
+   * same input are pixel-identical.
+   * @param input The visibility mask to apply (empty `visible`/`explored` under `mode:"masked"` ⇒
+   * full fog).
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.setVisibility({ mode: "all", visible: [], explored: [] });
+   * ```
+   */
   setVisibility(input: VisibilityInput): void {
     // A plain (non-blended) apply ends any in-flight cross-fade — restore the normal sheets and
     // eagerly free the last sweep's capture textures rather than leaving them GPU-resident until
@@ -181,7 +284,23 @@ export class PixiBackend implements DisplayBackend {
    * reused across calls (`captureFog` renders fresh content into the same texture, which the
    * renderer clears before drawing) — only destroyed and recreated when `fogBlendRtStale` finds
    * the renderer's current size/resolution no longer matches (first call, a window resize, or a
-   * DPR change), avoiding a GPU alloc/free pair on every one of the ~60 calls/sec a sweep makes. */
+   * DPR change), avoiding a GPU alloc/free pair on every one of the ~60 calls/sec a sweep makes.
+   * @param from The outgoing sample's visibility mask.
+   * @param to The incoming sample's visibility mask.
+   * @param factor Blend position in `[0,1]`, clamped: 0 shows `from` fully opaque, 1 shows `to`
+   * fully opaque.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.setVisibilityBlend(
+   *   { mode: "masked", visible: [], explored: [] },
+   *   { mode: "masked", visible: [], explored: [] },
+   *   0.5,
+   * );
+   * ```
+   */
   setVisibilityBlend(from: VisibilityInput, to: VisibilityInput, factor: number): void {
     const width = Math.max(1, this.app.screen.width);
     const height = Math.max(1, this.app.screen.height);
@@ -211,7 +330,22 @@ export class PixiBackend implements DisplayBackend {
    * to the scratch capture container so the snapshot lines up with what is on screen right now.
    * Reuses `existing` (rendering into it clears+overwrites its prior content) when given, so a
    * caller can hold a `RenderTexture` across ticks; creates a fresh one when `existing` is
-   * `null` (first call, or `setVisibilityBlend` just discarded a stale-sized pair). */
+   * `null` (first call, or `setVisibilityBlend` just discarded a stale-sized pair).
+   * @param input The visibility sample to rasterize (same shape `setVisibility` accepts).
+   * @param width Capture width in CSS pixels (the current `app.screen.width`, clamped to `>=1`).
+   * @param height Capture height in CSS pixels (the current `app.screen.height`, clamped to
+   * `>=1`).
+   * @param resolution Device-pixel-ratio resolution to render at (matches
+   * `app.renderer.resolution` so the capture doesn't blur on HiDPI displays).
+   * @param existing A `RenderTexture` to render into (cleared and overwritten in place), or `null`
+   * to allocate a fresh one.
+   * @returns The rasterized `RenderTexture` — `existing` if given, otherwise a newly allocated one.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.captureFog({ mode: "all", visible: [], explored: [] }, 800, 600, 1, null);
+   * ```
+   */
   private captureFog(input: VisibilityInput, width: number, height: number, resolution: number, existing: RenderTexture | null): RenderTexture {
     const dark = new Graphics();
     const dim = new Graphics();
@@ -230,6 +364,24 @@ export class PixiBackend implements DisplayBackend {
     return texture;
   }
 
+  /** `DisplayBackend.setToken`: upsert a token render node — create one (`createTokenNode`) if
+   * `id` is new, then update its transform, visual (image or animated), border, and badges in
+   * place. `visualContainer.angle` rotates the art + border only; `container`'s own position is
+   * the token center and its badge children never rotate (see `TokenNode`'s field doc).
+   * @param id The token document id.
+   * @param spec The resolved token render spec (transform, size, visual, border, badges, shape).
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.setToken("00000000-0000-0000-0000-000000000001", {
+   *   x: 0, y: 0, w: 70, h: 70, rotation: 0,
+   *   visual: { kind: "image", url: "https://example.test/token.png" },
+   *   borderColor: null, badges: [], shape: "square",
+   * });
+   * ```
+   */
   setToken(id: string, spec: TokenNodeSpec): void {
     let node = this.tokens.get(id);
     if (!node) node = this.createTokenNode(id);
@@ -240,6 +392,19 @@ export class PixiBackend implements DisplayBackend {
     this.updateTokenBadges(node, spec);
   }
 
+  /** Construct a new `TokenNode`: an outer non-rotating `container` (positioned at the token
+   * center in `setToken`) holding an inner `visualContainer` (which rotates), which in turn holds
+   * a placeholder `Sprite` visual (anchored at its center, `(0.5,0.5)`) plus an empty `border`
+   * Graphics. Parents `container` into the `tokens` layer and registers the node in `this.tokens`
+   * keyed by `id`.
+   * @param id The token document id to register the node under.
+   * @returns The newly created, registered `TokenNode`.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.createTokenNode("00000000-0000-0000-0000-000000000001");
+   * ```
+   */
   private createTokenNode(id: string): TokenNode {
     const container = new Container();
     const visualContainer = new Container();
@@ -254,6 +419,31 @@ export class PixiBackend implements DisplayBackend {
     return node;
   }
 
+  /** Resolve `spec.visual` onto `node.visual`, sized to `spec.w`×`spec.h` on both entry and exit
+   * (so a size-only re-push still applies even when the visual itself is unchanged — see the
+   * `sourceKey` short-circuit below). Guarded by `visualSourceKey(spec.visual)`: an unchanged key
+   * is a tweening token's transform-only re-push and returns immediately without touching
+   * `node.visual`/reloading anything. On a changed key: swaps `node.visual` to a plain `Sprite`
+   * (image) or an `AnimatedSprite` (animated) via `replaceVisualChild` only when the CURRENT node
+   * doesn't already have that kind of sprite (an image→image or animated→animated key change
+   * reuses the existing sprite object, avoiding a needless destroy/recreate), sets `node.anim`
+   * (`null` for image; a placeholder `{frameCount:1}` for animated, pending the async
+   * texture/frame load), then kicks off the async load (`Assets.load` for an image,
+   * `loadAnimatedTextures` for animated). Each load's completion callback re-checks object
+   * identity — `this.tokens.get(id) === node`, `node.visual === sprite`, AND `node.sourceKey ===
+   * key` — before writing the resolved texture/frames, so a stale in-flight load from a visual
+   * that has since been replaced (or a token that has since been removed) can never write into an
+   * already-destroyed or already-superseded Pixi object.
+   * @param id The token document id (used to re-check `this.tokens.get(id) === node` in the async
+   * completion callback).
+   * @param node The token's render node, mutated in place.
+   * @param spec The resolved token spec; only `.visual`/`.w`/`.h` are read here.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.updateTokenVisual("00000000-0000-0000-0000-000000000001", node, spec);
+   * ```
+   */
   private updateTokenVisual(id: string, node: TokenNode, spec: TokenNodeSpec): void {
     const key = visualSourceKey(spec.visual);
     node.visual.width = spec.w;
@@ -289,6 +479,17 @@ export class PixiBackend implements DisplayBackend {
     node.visual.height = spec.h;
   }
 
+  /** Swap `node.visual` for `next`: re-anchors `next` to `(0.5,0.5)`, removes and destroys the old
+   * `node.visual` from `visualContainer`, inserts `next` at the SAME child index (preserving
+   * `visual`/`border` sibling order), and updates `node.visual` to point at it.
+   * @param node The token render node whose visual to replace.
+   * @param next The new visual object (a fresh `Sprite` or `AnimatedSprite`) to install.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.replaceVisualChild(node, new Sprite());
+   * ```
+   */
   private replaceVisualChild(node: TokenNode, next: Sprite | AnimatedSprite): void {
     next.anchor.set(0.5);
     const i = node.visualContainer.getChildIndex(node.visual);
@@ -298,6 +499,21 @@ export class PixiBackend implements DisplayBackend {
     node.visual = next;
   }
 
+  /** Resolve an animated visual's source into an ordered `Texture` array: `"frames"` loads each
+   * URL independently via `Assets.load`; `"sheet"` loads one sprite-sheet image and slices it into
+   * `rows`×`cols` equal cells (row-major), capped at `source.count` when given (never exceeding
+   * `rows*cols`). Fails closed to an empty array — never throws — on a `"frames"` source with no
+   * URLs, or a `"sheet"` source with a non-positive/non-integer `rows`/`cols`; the caller
+   * (`updateTokenVisual`) treats an empty result as "load produced nothing" and leaves `node.anim`
+   * at its placeholder state.
+   * @param source The resolved animated source (already asset-id-resolved to serve URLs).
+   * @returns The ordered animation-frame textures, or `[]` on a degenerate/empty source.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * await this.loadAnimatedTextures({ type: "frames", urls: [] }); // []
+   * ```
+   */
   private async loadAnimatedTextures(source: ResolvedAnimatedSource): Promise<Texture[]> {
     if (source.type === "frames") {
       if (source.urls.length === 0) return [];
@@ -317,6 +533,18 @@ export class PixiBackend implements DisplayBackend {
     return frames;
   }
 
+  /** Redraw `node.border`: clears it first, then strokes an ellipse (`shape:"circle"`) or rect
+   * (otherwise) sized to `spec.w`×`spec.h`, centered on the visual's own origin. `borderColor:
+   * null` leaves the border cleared (no stroke) — the caller's way of expressing "no faction
+   * border".
+   * @param node The token render node whose border to redraw.
+   * @param spec The resolved token spec; only `.w`/`.h`/`.shape`/`.borderColor` are read here.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.updateTokenBorder(node, spec);
+   * ```
+   */
   private updateTokenBorder(node: TokenNode, spec: TokenNodeSpec): void {
     const hw = spec.w / 2;
     const hh = spec.h / 2;
@@ -326,6 +554,20 @@ export class PixiBackend implements DisplayBackend {
     else node.border.rect(-hw, -hh, spec.w, spec.h).stroke({ width: 3, color: spec.borderColor });
   }
 
+  /** Redraw `node`'s condition-marker badges: emoji glyph chips laid out left-to-right along the
+   * token's top edge, sized to `max(12, min(w,h)*0.28)`px and positioned relative to the
+   * non-rotating outer `container`'s own origin (so they stay upright regardless of
+   * `visualContainer`'s rotation — see `TokenNode`'s field doc). Guarded by a joined `badgeKey`:
+   * an unchanged badge list only re-places the existing `Text` nodes (`place`); a changed one
+   * destroys every existing badge and rebuilds the set from scratch.
+   * @param node The token render node whose badges to redraw.
+   * @param spec The resolved token spec; only `.w`/`.h`/`.badges` are read here.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.updateTokenBadges(node, spec);
+   * ```
+   */
   private updateTokenBadges(node: TokenNode, spec: TokenNodeSpec): void {
     // Upright glyph chips along the token's top edge, relative to the (non-rotating) outer
     // container's own origin — badges are its direct children, so they stay upright automatically
@@ -350,6 +592,18 @@ export class PixiBackend implements DisplayBackend {
     });
   }
 
+  /** `DisplayBackend.removeToken`: destroy a token's render node (container + all children,
+   * including `visualContainer`/`visual`/`border`/badges) and drop it from `this.tokens`. A no-op
+   * for an unknown `id`.
+   * @param id The token document id to remove.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.removeToken("00000000-0000-0000-0000-000000000001");
+   * ```
+   */
   removeToken(id: string): void {
     const node = this.tokens.get(id);
     if (!node) return;
@@ -357,6 +611,23 @@ export class PixiBackend implements DisplayBackend {
     this.tokens.delete(id);
   }
 
+  /** `DisplayBackend.tickTokenAnimations`: advance every token's `AnimatedSprite` by `dtMs`. Skips
+   * any token with no `node.anim` (an image-visual token, or an animated one whose texture load
+   * hasn't resolved yet) or whose `node.visual` isn't currently an `AnimatedSprite`. Frame index is
+   * computed by `computeAnimatedFrame` (pure, tick-driven — `autoUpdate` is `false`, so Pixi's own
+   * shared ticker never advances these sprites); `gotoAndStop` is called only when the computed
+   * frame differs from `currentFrame`, avoiding a redundant per-frame write. `MockBackend`'s
+   * implementation of this same method is an intentional no-op — frame-advance state lives only in
+   * these real `AnimatedSprite` objects, which the mock never creates.
+   * @param dtMs Milliseconds elapsed since the previous tick.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.tickTokenAnimations(16);
+   * ```
+   */
   tickTokenAnimations(dtMs: number): void {
     for (const node of this.tokens.values()) {
       if (!node.anim || !(node.visual instanceof AnimatedSprite)) continue;
@@ -366,6 +637,22 @@ export class PixiBackend implements DisplayBackend {
     }
   }
 
+  /** `DisplayBackend.setShape`: upsert a drawn shape node — creates a `Graphics` for a new `id`,
+   * (re)parents it into `spec.layer` if it isn't already there (an id→layer change moves the node
+   * rather than leaking the old parent), clears it, then paints `spec` via `paintShape`.
+   * @param id The shape document id.
+   * @param spec The resolved shape spec (target layer, points, fill/stroke).
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.setShape("00000000-0000-0000-0000-000000000001", {
+   *   layer: "drawings", points: [0, 0, 10, 0, 10, 10, 0, 10], closed: true,
+   *   stroke: { color: 0xffffff, width: 2 }, fill: null,
+   * });
+   * ```
+   */
   setShape(id: string, spec: ShapeNodeSpec): void {
     let g = this.shapes.get(id);
     if (!g) {
@@ -380,6 +667,17 @@ export class PixiBackend implements DisplayBackend {
     paintShape(g, spec);
   }
 
+  /** `DisplayBackend.removeShape`: destroy a drawn shape node and drop it from `this.shapes`. A
+   * no-op for an unknown `id`.
+   * @param id The shape document id to remove.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.removeShape("00000000-0000-0000-0000-000000000001");
+   * ```
+   */
   removeShape(id: string): void {
     const g = this.shapes.get(id);
     if (g) {
@@ -388,15 +686,49 @@ export class PixiBackend implements DisplayBackend {
     }
   }
 
+  /** `DisplayBackend.drawOverlay`: replace the ephemeral tool-preview overlay. Clears the shared
+   * `toolOverlay` Graphics, then paints every shape in order onto it (`paintShape` appends without
+   * clearing, so multiple shapes share one Graphics object).
+   * @param shapes The preview shapes to draw, in paint order.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.drawOverlay([{ points: [0, 0, 10, 0, 10, 10, 0, 10], closed: true, stroke: null, fill: null }]);
+   * ```
+   */
   drawOverlay(shapes: Omit<ShapeNodeSpec, "layer">[]): void {
     this.toolOverlay.clear();
     for (const s of shapes) paintShape(this.toolOverlay, s);
   }
 
+  /** `DisplayBackend.clearOverlay`: clear the ephemeral tool-preview overlay.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.clearOverlay();
+   * ```
+   */
   clearOverlay(): void {
     this.toolOverlay.clear();
   }
 
+  /** `DisplayBackend.drawMeasure`: draw the measurement overlay — a stroked segment `from`→`to`
+   * (2px, `0xffd400`) plus a centered `Text` label shown at the segment's midpoint.
+   * @param from The segment's start point (scene coords).
+   * @param to The segment's end point (scene coords).
+   * @param label The distance label text to center on the segment.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.drawMeasure({ x: 0, y: 0 }, { x: 10, y: 0 }, "2");
+   * ```
+   */
   drawMeasure(from: Point, to: Point, label: string): void {
     this.measureGraphics.clear();
     this.measureGraphics.moveTo(from.x, from.y).lineTo(to.x, to.y).stroke({ width: 2, color: 0xffd400 });
@@ -405,11 +737,31 @@ export class PixiBackend implements DisplayBackend {
     this.measureText.visible = true;
   }
 
+  /** `DisplayBackend.clearMeasure`: clear the measurement segment and hide its label.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.clearMeasure();
+   * ```
+   */
   clearMeasure(): void {
     this.measureGraphics.clear();
     this.measureText.visible = false;
   }
 
+  /** `DisplayBackend.drawPings`: redraw the ping-ring overlay — clears it, then strokes one circle
+   * per ring (3px, `0xffd400`, at the ring's own `alpha`).
+   * @param rings The current ping rings to draw (center, radius, alpha), in draw order.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.drawPings([{ x: 0, y: 0, radius: 20, alpha: 0.8 }]);
+   * ```
+   */
   drawPings(rings: { x: number; y: number; radius: number; alpha: number }[]): void {
     this.pingGraphics.clear();
     for (const r of rings) {
@@ -417,6 +769,21 @@ export class PixiBackend implements DisplayBackend {
     }
   }
 
+  /** `DisplayBackend.setLighting`: repaint the lighting overlay — clears `lightingGraphics`, then
+   * for each cell draws up to three stacked fills at that cell's rect: a black darkening fill
+   * (`c.alpha`, skipped when `0`), a tinted fill (`c.tint` at `c.tintAlpha`, skipped when `0`), and
+   * — when `c.desaturate` — a flat neutral-gray wash (`0x808080` at `0.18` alpha) approximating
+   * desaturation for a darkvision-only cell. An empty `frame.cells` clears the overlay entirely
+   * (no lighting effect).
+   * @param frame The resolved per-cell lighting to paint.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.setLighting({ cell: 70, cells: [] });
+   * ```
+   */
   setLighting(frame: LightingFrame): void {
     this.lightingGraphics.clear();
     // empty cells = no lighting overlay (all-clear)
@@ -431,10 +798,40 @@ export class PixiBackend implements DisplayBackend {
     }
   }
 
+  /** `DisplayBackend.startTicker`: register the per-frame render ticker — forwards Pixi's own
+   * `app.ticker` per-tick callback, translating its `deltaMS` into `cb`'s `dtMs` argument. Pixi
+   * drives this ticker automatically (no manual pump needed), unlike `MockBackend`'s `startTicker`,
+   * which only records `cb` for a test to invoke explicitly via `runTicker`.
+   * @param cb Called once per render frame with the elapsed milliseconds since the previous frame.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.startTicker((dtMs) => {});
+   * ```
+   */
   startTicker(cb: (dtMs: number) => void): void {
     this.app.ticker.add((ticker) => cb(ticker.deltaMS));
   }
 
+  /** `DisplayBackend.addLayerFilter`: attach an opaque filter to a layer's Container. A no-op
+   * (returns a no-op dispose) for an unknown `layerId` — unlike `MockBackend`'s implementation,
+   * which records the registration unconditionally regardless of whether `layerId` names a real
+   * layer.
+   * @param layerId The target core-layer id (e.g. `"tokens"`).
+   * @param filter A Pixi `Filter` (typed `unknown` at this seam — see `DisplayBackend`).
+   * @returns A dispose function that removes exactly this filter from the layer's filter list.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * declare const filter: unknown; // e.g. a PixiJS `Filter`
+   * const dispose = backend.addLayerFilter("tokens", filter);
+   * dispose();
+   * ```
+   */
   addLayerFilter(layerId: string, filter: unknown): () => void {
     const c = this.layers.get(layerId);
     if (!c) return () => {};
@@ -444,10 +841,38 @@ export class PixiBackend implements DisplayBackend {
     };
   }
 
+  /** `DisplayBackend.resize`: resize the Pixi renderer/viewport to CSS pixels; HiDPI scaling is
+   * handled internally by the renderer's own `resolution`/`autoDensity` settings (set once at
+   * `createPixiBackend` init time).
+   * @param width The new viewport width, in CSS pixels.
+   * @param height The new viewport height, in CSS pixels.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.resize(1280, 720);
+   * ```
+   */
   resize(width: number, height: number): void {
     this.app.renderer.resize(width, height);
   }
 
+  /** `DisplayBackend.destroy`: release all GPU resources and detach the canvas. Bumps `loadSeq`
+   * first so any in-flight background load resolving after destroy is a no-op; explicitly
+   * destroys the cross-fade `RenderTexture`s (`fogBlendFromRT`/`fogBlendToRT`) before the cascade
+   * below, since — unlike `Assets.load` results, which are shared/cached — they are owned solely
+   * by this backend and would otherwise leak; then calls `app.destroy({removeView:true},
+   * {children:true, texture:true})`, which recursively destroys every remaining child and its
+   * textures and removes the `<canvas>` element from the DOM.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.destroy();
+   * ```
+   */
   destroy(): void {
     this.loadSeq++; // invalidate any in-flight background load post-destroy
     // Destroy the blend RenderTextures explicitly first: they are NOT shared/cached (unlike
@@ -460,7 +885,18 @@ export class PixiBackend implements DisplayBackend {
 }
 
 /** Append one shape (a polyline/polygon subpath + its fill/stroke) onto a Graphics.
- * Does not clear, so multiple shapes can share one Graphics (the overlay). */
+ * Does not clear, so multiple shapes can share one Graphics (the overlay).
+ * @param g The Graphics to paint onto (not cleared by this call).
+ * @param spec The shape to paint: a polyline/polygon (flat scene-coord points) with optional
+ * `closed`/`fill`/`stroke`.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render's index.ts
+ * import { Graphics } from "pixi.js";
+ * const g = new Graphics();
+ * paintShape(g, { points: [0, 0, 10, 0, 10, 10, 0, 10], closed: true, stroke: null, fill: null });
+ * ```
+ */
 function paintShape(g: Graphics, spec: Omit<ShapeNodeSpec, "layer">): void {
   const p = spec.points;
   if (p.length < 4) return; // need at least two points
@@ -476,7 +912,20 @@ function paintShape(g: Graphics, spec: Omit<ShapeNodeSpec, "layer">): void {
  * masks built from the input's `explored`/`visible` polygons. Shared by the live `mask` layer
  * (`setVisibility`) and the cross-fade capture (`captureFog`) so both draw IDENTICAL fog for
  * the same input — the cross-fade blends between two genuinely equivalent renders, not a
- * lookalike approximation. `mode:"all"` paints nothing (caller handles the no-fog case). */
+ * lookalike approximation. `mode:"all"` paints nothing (caller handles the no-fog case).
+ * @param dark The near-opaque "unexplored" sheet to paint + mask.
+ * @param dim The semi-transparent "explored memory" sheet to paint + mask.
+ * @param exploredHoles Inverse-mask shape accumulator cut from `dark` (explored ∪ visible).
+ * @param visibleHoles Inverse-mask shape accumulator cut from `dim` (visible only).
+ * @param input The visibility sample to paint; `mode:"all"` is a no-op (caller handles no-fog).
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render's index.ts
+ * import { Graphics } from "pixi.js";
+ * const dark = new Graphics(), dim = new Graphics(), eh = new Graphics(), vh = new Graphics();
+ * paintFogSheets(dark, dim, eh, vh, { mode: "all", visible: [], explored: [] });
+ * ```
+ */
 function paintFogSheets(dark: Graphics, dim: Graphics, exploredHoles: Graphics, visibleHoles: Graphics, input: VisibilityInput): void {
   if (input.mode !== "masked") return;
   const R = 1_000_000; // world units; the viewport shows only a portion, so this covers it
@@ -496,7 +945,20 @@ function paintFogSheets(dark: Graphics, dim: Graphics, exploredHoles: Graphics, 
   dim.setMask({ mask: visibleHoles, inverse: true });
 }
 
-/** Construct a PixiBackend over a canvas (async: v8 Application.init is async). */
+/** Construct a PixiBackend over a canvas (async: v8 Application.init is async).
+ * @param canvas The `<canvas>` element Pixi renders into.
+ * @param opts Initial renderer options.
+ * @param opts.background The initial background clear color, packed `0xRRGGBB`.
+ * @returns A `PixiBackend` wrapping a fully-initialized Pixi `Application` (antialiased, WebGL
+ * preferred, HiDPI-aware via `devicePixelRatio` resolution + `autoDensity`).
+ * @example
+ * ```ts
+ * import { createPixiBackend } from "@shadowcat/render";
+ *
+ * declare const canvas: HTMLCanvasElement;
+ * const backend = await createPixiBackend(canvas, { background: 0x1e1e2e });
+ * ```
+ */
 export async function createPixiBackend(
   canvas: HTMLCanvasElement,
   opts: { background: number },
