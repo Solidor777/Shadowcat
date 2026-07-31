@@ -436,6 +436,16 @@ pub(crate) mod tests {
         assert_eq!(got["global"]["locale"], "en");
         assert_eq!(got["worlds"]["w1"]["panelLayout"]["v"], 1);
 
+        // A second world-slice patch touching only `chatRead` merges INSIDE
+        // w1 — `panelLayout` (a different key owner) survives alongside it.
+        u.put("/api/me/ui-state")
+            .json(&serde_json::json!({ "worlds": { "w1": { "chatRead": { "general": 2 } } } }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let got: serde_json::Value = u.get("/api/me/ui-state").await.json();
+        assert_eq!(got["worlds"]["w1"]["panelLayout"]["v"], 1);
+        assert_eq!(got["worlds"]["w1"]["chatRead"]["general"], 2);
+
         // A non-object body is rejected.
         u.put("/api/me/ui-state")
             .json(&serde_json::json!([1, 2, 3]))

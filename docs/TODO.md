@@ -121,6 +121,27 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   (Surfaced by the Task 14j `[sec]` review; deliberately kept out of the server security commit to
   avoid batching unrelated concerns.)
 
+## Actionable now — ui-state per-key merge (Task 4 final-review backlog)
+- TODO: `worlds` in the stored `ui_state` blob is grow-only — `merge_ui_state` never removes a
+  `worlds.<id>` entry or a leaf key within it, only inserts/replaces. A world a user leaves (or a
+  stale panel-layout/chat-read key a module retires) accumulates forever, and there is no recovery
+  path if an accumulated blob ever exceeds the 64KB merged cap short of a manual DB edit. Add
+  `null`-removes-entry/key semantics to the merge rule (mirroring `FieldChange.remove` elsewhere in
+  the data layer) plus client-side pruning (e.g. dropping a `worlds.<id>` entry for a world no
+  longer in the caller's membership list) so an over-cap blob is recoverable.
+- TODO: `put_ui_state` (`http/routes.rs`) opens the single-connection tx via `merge_ui_state`
+  before the merged-size check runs (the check happens inside the tx, after the read). A cheap
+  route-level pre-check (e.g. rejecting a patch whose own serialized size already exceeds
+  `MAX_UI_STATE_BYTES`, before touching the pool) would reject an obviously-oversized patch
+  without holding the single-writer connection for the read+merge+serialize round trip.
+- TODO: `sessionState.svelte.ts` has no in-flight-PUT ordering guard — `schedulePersist`'s leading
+  edge can fire a second `persist()` while an earlier one's `putUiState` is still unresolved (e.g.
+  a slow network on the first write, a new mutation arriving before it settles), so two writes for
+  the same account can be in flight concurrently with no ordering guarantee on which lands last at
+  the server. Defer the leading edge while a persist is unresolved (a simple in-flight flag,
+  scheduling the deferred attempt for when the current one settles) instead of the current
+  fire-and-forget leading edge.
+
 ## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
 - TODO: `src/server/src/ws/room.rs`'s `Room::execute_move` re-derives `is_gm` via its own
   `ctx.world_role == WorldRole::Gm` comparison a second time, instead of reusing the `is_gm`

@@ -175,3 +175,13 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   write. Concurrent same-user sessions now contend only on slices both sessions actually write,
   instead of last-writer-wins on the whole blob. Commits: `daf5eae` (server per-slice merge),
   `819d2c0` (client dirty-slice patches).
+
+  A whole-branch final review found the clobber still reachable WITHIN one slice: `worlds.<id>`
+  holds `panelLayout` (panels module) vs `chatRead` (chat module), and `global` holds `locale` vs
+  `lastWorld` (two independent mutators) — two owners of the same slice still last-writer-won each
+  other. Fixed by extending the merge/dirty-tracking granularity to the individual leaf key
+  (`global.<field>` / `worlds.<id>.<key>`): `merge_ui_state` merges one level inside `worlds.<id>`
+  and inside any other top-level object key (a leaf blob like `panelLayout` still replaces
+  wholesale — no deep merge), and `sessionState.svelte.ts` tracks dirty fields/keys instead of
+  whole slices. `flushOnUnload()` also now re-marks on a rejected keepalive PUT (it previously
+  cleared its dirty tracking unconditionally, silently dropping the write on failure).

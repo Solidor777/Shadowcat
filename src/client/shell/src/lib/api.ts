@@ -71,14 +71,23 @@ export async function getUiState(): Promise<UiState> {
   };
 }
 
-/** Partial UI-state write. Only the keys present are written: `global`
- * replaces the stored global slice wholesale; each `worlds` entry replaces
- * just that world's slice server-side; absent keys are untouched. Sending
- * only changed slices is the concurrency control — concurrent sessions of
- * one account (two tabs) contend only on slices both actually write. */
+/** Partial UI-state write, at leaf-key granularity — **the single
+ * client-side statement of the merge rule** (mirrors
+ * `SqliteRepository::merge_ui_state`'s doc comment server-side). Only the
+ * individual fields/keys present are written: each present `global.<field>`
+ * (e.g. `locale`, `lastWorld`) replaces just that field server-side; each
+ * present `worlds.<id>.<key>` (e.g. `panelLayout`, `chatRead`) replaces just
+ * that key within `worlds.<id>` — never the whole slice, and never the whole
+ * `worlds.<id>` object unless every key happens to be present. A present
+ * value still replaces its leaf wholesale (a `panelLayout`/`chatRead` blob is
+ * opaque and is never itself deep-merged). Absent fields/keys are untouched.
+ * Sending only changed leaves is the concurrency control — concurrent
+ * sessions of one account (two tabs, or two independent module owners of the
+ * same world's slice) contend only on the individual fields/keys both
+ * actually write. */
 export interface UiStatePatch {
-  global?: UiState["global"];
-  worlds?: Record<string, UiState["worlds"][string]>;
+  global?: Partial<UiState["global"]>;
+  worlds?: Record<string, Partial<UiState["worlds"][string]>>;
 }
 
 export async function putUiState(

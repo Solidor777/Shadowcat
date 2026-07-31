@@ -34,9 +34,13 @@ test("getUiState passes through a stored blob", async () => {
   expect(s.global.lastWorld).toBe("w1");
 });
 
-test("putUiState PUTs the blob", async () => {
+test("putUiState PUTs the patch body verbatim", async () => {
   const f = mockFetch(204);
-  await api.putUiState({ global: { locale: "en", lastWorld: null }, worlds: {} });
-  expect(f).toHaveBeenCalledWith("/api/me/ui-state", expect.objectContaining({ method: "PUT" }));
+  const patch = { global: { lastWorld: "w2" }, worlds: { w1: { chatRead: { general: 1 } } } };
+  await api.putUiState(patch);
+  expect(f).toHaveBeenCalledWith(
+    "/api/me/ui-state",
+    expect.objectContaining({ method: "PUT", body: JSON.stringify(patch) }),
+  );
 });
 

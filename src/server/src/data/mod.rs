@@ -43,7 +43,8 @@ pub enum DataError {
     /// (e.g. array-index removal).
     #[error("invalid field path: {0}")]
     BadPath(String),
-    /// A `system`/`engine`/`base` block exceeded the size cap.
+    /// A size-capped JSON payload (a document `system`/`engine`/`base` block,
+    /// or the merged UI-state blob) exceeded its cap.
     #[error("system body too large: {0} bytes")]
     TooLarge(usize),
     /// The addressed row/document does not exist (also used to hide existence).

@@ -26,7 +26,7 @@ are observations awaiting triage, not committed work.
   panel-restore `asset-upload` visibility, not the render-ready wait) — that
   failure mode was root-caused to the same-user ui_state clobber race
   (resolved — see the 2026-07-31 note below and CLOSED_BUGS.md), and is NOT a
-  member of this render-ready class (which stays at two members). 2026-07-31
+  member of this render-ready class (which was then at two members). 2026-07-31
   resolution: the panel-restore assert failure mode is fixed — the ui_state
   clobber race is closed by the per-slice merge (server `merge_ui_state` +
   client dirty-slice `UiStatePatch` writes, commits `daf5eae`/`819d2c0`; see
@@ -56,6 +56,17 @@ are observations awaiting triage, not committed work.
   is plain load contention against a 5s default expect timeout. Status: Needs
   Review (if login-step waits keep flaking, raise the suite's default expect
   timeout under parallel workers rather than per-spec patches).
+
+- Title: ui-e2e stage draw-freehand test flaked once during Task 4 (ui-state clobber fix wave)
+  verification. Summary: on the full 6-worker `pnpm --filter @shadowcat/shell e2e` run,
+  `stage.spec.ts` "draw a freehand stroke via the tool rail; the drawing renders" failed
+  `data-shape-count` at "1" (stayed "0") within its 15s timeout, while the other 15 tests passed.
+  Isolated re-run (1 worker, no contention): 1/1 green in 7s with zero code change. Unrelated to
+  this task's diff (drawing/shape-count assertion, not ui-state/panel-layout persistence) and NOT
+  a member of either documented flake class above (not a render-ready wait, not a login-step
+  worlds-list wait) — a new, as-yet-single-occurrence worker-contention timing flake on the tool
+  rail's draw-commit path. Status: Needs Review (single occurrence; if it recurs, audit the
+  freehand-draw commit's render-ready/paint timing under parallel-worker contention).
 
 - Title: Phase-B world delete swallows asset-directory removal failures. Summary: `routes.rs::
   delete_world` returns 204 even when `remove_dir_all` on `<assets_path>/<world_id>/` fails for a

@@ -129,14 +129,14 @@ pub async fn get_ui_state(
     Ok(Json(val))
 }
 
-/// Merge a partial UI-state patch into the caller's stored state. Each
-/// top-level key present in the body replaces the stored key wholesale,
-/// except `worlds`, whose entries each replace only that world's slice;
-/// absent keys are untouched. Sending only changed slices is the concurrency
-/// control: concurrent sessions of one account contend only on slices both
-/// write, instead of last-writer-wins on the whole blob. Slices are
-/// otherwise opaque (the client owns their structure). The size cap applies
-/// to the merged result (422 via `DataError::TooLarge`).
+/// Merge a partial UI-state patch into the caller's stored state; the merge
+/// rule itself is stated once, on `SqliteRepository::merge_ui_state`. This
+/// route only validates the wire shape (`body` and any `worlds` value must be
+/// JSON objects) before delegating. Sending only changed slices/keys is the
+/// concurrency control: concurrent sessions of one account contend only on
+/// the individual keys both write, instead of last-writer-wins on the whole
+/// blob. The size cap applies to the merged result (422 via
+/// `DataError::TooLarge`).
 pub async fn put_ui_state(
     user: AuthUser,
     State(state): State<AppState>,

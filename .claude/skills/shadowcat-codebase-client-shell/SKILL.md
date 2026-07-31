@@ -83,17 +83,23 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` (M12a, replaced
   activeTab) persist the per-world panel layout into `UiState.worlds[world].panelLayout` via
   the existing leading-edge-debounced PUT. The blob is OPAQUE to the shell — the panel host
-  owns its shape/validation. **Per-slice dirty tracking (fixes the same-user cross-session
-  clobber, `docs/CLOSED_BUGS.md` "Server + client / ui-state persistence")**: a `global` dirty
-  flag + a `Set` of touched world ids track which slices changed since the last successful
-  write; `persist()`/`flushOnUnload()` send only a `UiStatePatch` (`api.ts`) covering those
-  slices — never the whole `{global, worlds}` blob — clearing the dirty markers on success and
-  re-marking them on failure so a retry doesn't lose the write. Server-side,
-  `SqliteRepository::merge_ui_state` (`data/sqlite.rs`) merges the patch per top-level key (each
-  `worlds` entry replaces only that world's slice) in one transaction; the HTTP surface and size
-  cap live in `http/routes.rs::put_ui_state`. A whole-blob `PUT` no longer exists. Concurrent
-  same-user sessions (two tabs) now contend only
-  on slices both sessions actually write, instead of last-writer-wins on the whole blob.
+  owns its shape/validation. **Leaf-key dirty tracking (fixes the same-user cross-session
+  clobber, `docs/CLOSED_BUGS.md` "Server + client / ui-state persistence")**: a `dirty` structure
+  (`Set<GlobalField>` + a `Map<worldId, Set<WorldKey>>`) tracks which individual FIELDS/KEYS
+  changed since the last successful write — `global.locale`/`global.lastWorld` and
+  `worlds.<id>.panelLayout`/`worlds.<id>.chatRead` each track independently, so two owners of the
+  same slice (the panels module writing `panelLayout`, the chat module writing `chatRead` inside
+  the same `worlds.<id>`) no longer clobber each other. `persist()`/`flushOnUnload()` build a
+  `UiStatePatch` (`api.ts`) covering only those dirty leaves — never the whole slice, and never
+  the whole `{global, worlds}` blob — clearing them before the write and re-marking on failure
+  (both functions snapshot the dirty structure, clear it, attempt the write, and on rejection
+  re-add every snapshotted field/key) so a retry doesn't lose the write. Server-side,
+  `SqliteRepository::merge_ui_state` (`data/sqlite.rs`) merges the patch one level inside
+  `worlds.<id>` and inside any other top-level object key — a leaf blob (`panelLayout`, etc.)
+  still replaces wholesale, never deep-merged — in one transaction; the HTTP surface and size cap
+  live in `http/routes.rs::put_ui_state`. The client never sends the whole `{global, worlds}` blob.
+  Concurrent same-user sessions (two tabs) now contend only on the individual fields/keys both
+  sessions actually write, instead of last-writer-wins on a whole slice or the whole blob.
 - **Multi-scene / viewed-scene seams (M12d)** — `AppContext.viewedSceneId: string | null`
   (a live getter, `Table.svelte`: `get viewedSceneId() { return session.viewedSceneId; }` —
   NEVER destructure a snapshot of it), `AppContext.setGmViewedScene(id): void` (GM-only local

@@ -40,7 +40,7 @@ impl From<crate::data::DataError> for AppError {
             Conflict(m) => AppError::Conflict(m),
             NotFound => AppError::NotFound,
             BadPath(m) => AppError::Unprocessable(format!("invalid field path: {m}")),
-            TooLarge(n) => AppError::Unprocessable(format!("system body too large: {n} bytes")),
+            TooLarge(n) => AppError::Unprocessable(format!("payload too large: {n} bytes")),
             BadEngine(m) => AppError::Unprocessable(format!("invalid engine body: {m}")),
             SchemaViolation { pointer, reason } => {
                 AppError::Unprocessable(format!("schema violation at {pointer}: {reason}"))

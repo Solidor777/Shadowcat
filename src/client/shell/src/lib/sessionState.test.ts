@@ -103,10 +103,13 @@ test("setChatRead records the blob per-world and schedules a debounced persist",
   expect(put.mock.calls.at(-1)?.[0].worlds?.w1?.chatRead).toBe(blob);
 });
 
-test("a world-slice change persists ONLY that world's slice (no global, no other worlds)", async () => {
+test("a world-slice change persists ONLY the touched key within that world's slice", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
     global: { locale: "en", lastWorld: null },
-    worlds: { wOther: { chatRead: { general: 1 } } },
+    worlds: {
+      w1: { chatRead: { general: 1 } }, // a different key owner already stored on w1
+      wOther: { chatRead: { general: 1 } },
+    },
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
   await loadSessionState();
@@ -118,9 +121,9 @@ test("a world-slice change persists ONLY that world's slice (no global, no other
   expect(patch?.worlds?.wOther).toBeUndefined();
 });
 
-test("a global change persists ONLY the global slice", async () => {
+test("a global change persists ONLY the touched field within global", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
+    global: { locale: "en", lastWorld: null }, // `locale` untouched below
     worlds: { w1: { panelLayout: { version: 1 } } },
   });
   const put = vi.spyOn(api, "putUiState").mockResolvedValue();
@@ -128,8 +131,42 @@ test("a global change persists ONLY the global slice", async () => {
   setLastWorld("w2");
   await flushSessionState();
   const patch = put.mock.calls.at(-1)?.[0];
-  expect(patch?.global?.lastWorld).toBe("w2");
+  expect(patch?.global).toEqual({ lastWorld: "w2" });
   expect(patch?.worlds).toBeUndefined();
+});
+
+test("a locale-only change persists locale without lastWorld", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: "w1" }, // `lastWorld` untouched below
+    worlds: {},
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  i18n.setLocale("zz");
+  await flushSessionState();
+  const patch = put.mock.calls.at(-1)?.[0];
+  expect(patch?.global).toEqual({ locale: "zz" });
+});
+
+test("a failed persist re-marks the lost slice so a later flush retries it alongside a new one", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {},
+  });
+  const put = vi
+    .spyOn(api, "putUiState")
+    .mockRejectedValueOnce(new Error("network"))
+    .mockResolvedValue();
+  await loadSessionState();
+  setPanelLayout("w1", { version: 1 }); // leading-edge persist rejects
+  await flushSessionState(); // lets the rejection's catch re-mark w1.panelLayout
+  setChatRead("w2", { general: 1 }); // a new mutation while w1 is still dirty from the failure
+  await flushSessionState();
+  const patch = put.mock.calls.at(-1)?.[0];
+  expect(patch?.worlds).toEqual({
+    w1: { panelLayout: { version: 1 } },
+    w2: { chatRead: { general: 1 } },
+  });
 });
 
 test("flushOnUnload keepalive-persists a change made during the cooldown", async () => {
@@ -146,4 +183,24 @@ test("flushOnUnload keepalive-persists a change made during the cooldown", async
     expect.objectContaining({ global: expect.objectContaining({ lastWorld: "w2" }) }),
     { keepalive: true },
   );
+});
+
+test("flushOnUnload re-marks the slice on a rejected keepalive PUT so a later flush retries it", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {},
+  });
+  const put = vi
+    .spyOn(api, "putUiState")
+    .mockResolvedValueOnce() // leading-edge persist for "w1"
+    .mockRejectedValueOnce(new Error("unload")) // the keepalive flush rejects
+    .mockResolvedValue(); // the later retry succeeds
+  await loadSessionState();
+  setLastWorld("w1"); // leading-edge persist, cooldown timer armed
+  setLastWorld("w2"); // lands during cooldown → pending, not yet written
+  flushOnUnload(); // keepalive PUT rejects
+  await flushSessionState(); // no dirty slice yet; lets the rejection's catch re-mark lastWorld
+  await flushSessionState(); // this time lastWorld is dirty again → retries
+  const patch = put.mock.calls.at(-1)?.[0];
+  expect(patch?.global).toEqual({ lastWorld: "w2" });
 });

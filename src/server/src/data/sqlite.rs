@@ -41,6 +41,34 @@ const SINGLETON_DOC_TYPES: &[&str] = &[
     crate::chat::DICE_SETTINGS_DOC_TYPE,
 ];
 
+/// One-level merge of a single key into `map`: when both the existing
+/// `map[key]` and the incoming `value` are JSON objects, merges `value`'s
+/// entries into the existing object (each of THOSE entries replaces
+/// wholesale — this never recurses past one level, so an opaque leaf blob
+/// like `panelLayout` is never deep-merged); otherwise `value` replaces
+/// `map[key]` wholesale. The shared leaf-key merge step behind
+/// `SqliteRepository::merge_ui_state`'s per-top-level-key and per-`worlds.<id>`
+/// merge rule.
+fn merge_one_level(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: &serde_json::Value,
+) {
+    let existing_is_object = map.get(key).is_some_and(serde_json::Value::is_object);
+    if existing_is_object && value.is_object() {
+        // Safe: `existing_is_object` just confirmed `map[key]` is present and an object.
+        let existing_obj = map
+            .get_mut(key)
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("existing_is_object confirmed map[key] is a present object");
+        for (k, v) in value.as_object().expect("value.is_object() checked above") {
+            existing_obj.insert(k.clone(), v.clone());
+        }
+    } else {
+        map.insert(key.to_string(), value.clone());
+    }
+}
+
 /// Auth-facing projection of a user row.
 #[derive(Debug, Clone)]
 pub struct UserRecord {
@@ -701,13 +729,23 @@ impl SqliteRepository {
         Ok(row.and_then(|r| r.get::<Option<String>, _>("ui_state")))
     }
 
-    /// Merge a partial UI-state patch into the user's stored blob. Each
-    /// top-level key in `patch` replaces the stored key wholesale, EXCEPT
-    /// `worlds`: its entries each replace only `worlds.<id>`. Absent keys are
-    /// untouched. The write granularity is the concurrency control —
-    /// concurrent sessions of the same user (two tabs, parallel e2e workers)
-    /// contend only on slices both actually write, so a session's write can
-    /// never revert a slice it did not touch. Read+merge+write run in ONE
+    /// Merge a partial UI-state patch into the user's stored blob, one level
+    /// at the individual leaf key (`global.<field>` / `worlds.<id>.<key>`) —
+    /// **the single server-side statement of this rule.** For each top-level
+    /// patch key `K`: if `K == "worlds"` (an object; route-validated), then
+    /// for each `(id, slice)` in it — when BOTH the stored `worlds.<id>` and
+    /// `slice` are objects, merge one level (each slice key, e.g.
+    /// `panelLayout`/`chatRead`, replaces wholesale — a leaf blob is opaque
+    /// and NEVER deep-merged); otherwise insert `slice` wholesale. For any
+    /// other `K` (e.g. `global`) — when BOTH `stored[K]` and `patch[K]` are
+    /// objects, merge one level (each second-level key replaces wholesale);
+    /// otherwise replace `stored[K]` wholesale. Absent keys are untouched.
+    /// This leaf-key granularity is the concurrency control — concurrent
+    /// sessions of the same user (two tabs, two mutating owners of the same
+    /// slice: e.g. the panels module writing `panelLayout` and the chat
+    /// module writing `chatRead` inside the same `worlds.<id>`) contend only
+    /// on the individual keys both actually write, so a session's write can
+    /// never revert a key it did not touch. Read+merge+write run in ONE
     /// transaction (a check-then-act across two pool queries is TOCTOU-racy
     /// even on the single-writer pool). `max_bytes` caps the MERGED
     /// serialization — only this function sees it, so the cap cannot live at
@@ -751,10 +789,10 @@ impl SqliteRepository {
                     DataError::OpFailed("stored ui_state `worlds` is not an object".into())
                 })?;
                 for (id, slice) in worlds_patch {
-                    worlds_obj.insert(id.clone(), slice.clone());
+                    merge_one_level(worlds_obj, id, slice);
                 }
             } else {
-                stored_obj.insert(key.clone(), value.clone());
+                merge_one_level(stored_obj, key, value);
             }
         }
         let merged = serde_json::to_string(&stored)?;
@@ -4035,7 +4073,7 @@ mod tests {
         repo.merge_ui_state(
             user,
             &serde_json::json!({
-                "global": { "locale": "en", "lastWorld": null },
+                "global": { "locale": "en", "lastWorld": "w1" },
                 "worlds": { "w1": { "panelLayout": { "version": 1, "dock": true } } },
             }),
             64 * 1024,
@@ -4054,11 +4092,26 @@ mod tests {
         .unwrap();
         let v = ui_state_of(&repo, user).await;
         assert_eq!(v["global"]["locale"], "en");
+        assert_eq!(v["global"]["lastWorld"], "w1");
         assert_eq!(v["worlds"]["w1"]["panelLayout"]["dock"], true);
         assert_eq!(v["worlds"]["w2"]["chatRead"]["general"], 5);
 
-        // Re-writing w1 replaces that slice WHOLESALE (stale nested keys
-        // drop; no deep merge) and leaves w2/global untouched.
+        // A `worlds.w1.chatRead`-only patch merges INSIDE w1 — the other
+        // owner's `panelLayout` key survives (leaf-key granularity).
+        repo.merge_ui_state(
+            user,
+            &serde_json::json!({ "worlds": { "w1": { "chatRead": { "general": 9 } } } }),
+            64 * 1024,
+        )
+        .await
+        .unwrap();
+        let v = ui_state_of(&repo, user).await;
+        assert_eq!(v["worlds"]["w1"]["panelLayout"]["dock"], true);
+        assert_eq!(v["worlds"]["w1"]["chatRead"]["general"], 9);
+
+        // Re-writing w1's `panelLayout` replaces THAT KEY wholesale (stale
+        // nested keys inside the blob drop; no deep merge) and leaves
+        // `chatRead`, w2, and global untouched.
         repo.merge_ui_state(
             user,
             &serde_json::json!({ "worlds": { "w1": { "panelLayout": { "version": 2 } } } }),
@@ -4069,18 +4122,21 @@ mod tests {
         let v = ui_state_of(&repo, user).await;
         assert_eq!(v["worlds"]["w1"]["panelLayout"]["version"], 2);
         assert_eq!(v["worlds"]["w1"]["panelLayout"].get("dock"), None);
+        assert_eq!(v["worlds"]["w1"]["chatRead"]["general"], 9);
         assert_eq!(v["worlds"]["w2"]["chatRead"]["general"], 5);
 
-        // A global-only patch replaces global wholesale, untouched worlds.
+        // A `global.locale`-only patch merges INSIDE global — `lastWorld`
+        // (the other owner's key) survives.
         repo.merge_ui_state(
             user,
-            &serde_json::json!({ "global": { "locale": "fr", "lastWorld": "w2" } }),
+            &serde_json::json!({ "global": { "locale": "fr" } }),
             64 * 1024,
         )
         .await
         .unwrap();
         let v = ui_state_of(&repo, user).await;
         assert_eq!(v["global"]["locale"], "fr");
+        assert_eq!(v["global"]["lastWorld"], "w1");
         assert_eq!(v["worlds"]["w1"]["panelLayout"]["version"], 2);
 
         // Unknown user → NotFound.
