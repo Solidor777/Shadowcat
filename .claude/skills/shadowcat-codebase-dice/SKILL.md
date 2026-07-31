@@ -380,6 +380,11 @@ on.
 
 ## Gotchas
 
+- **Docs-ratchet is live on the whole `dice/` tree (docs sweep 6b):** all 16 files carry
+  `#![deny(missing_docs)]` + `#![deny(clippy::missing_docs_in_private_items)]` — a new
+  undocumented item fails the 3-OS CI clippy step. Notation-token and grammar docs are quoted
+  from the lexer/parser's enforcing lines — never document a marker or grammar rule from memory
+  (the invented-`[[btn:]]` lesson from sweep 6a).
 - **The plan text and the real code can drift** — this module was built through several
   buddy-check fix rounds that changed signatures after the plan's own example code was written.
   Always read the actual current file before assuming a plan snippet's exact signature.

@@ -1523,7 +1523,13 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   audience/segment model with regenerated comment-only `ActorOwnerRef`/`Audience` bindings; roll
   refusal reasons with real cap-constant citations; content policy, preview cache, shortcodes,
   command parsing). All 8 chat/ files carry the inner deny pair; mutation-verified in two files.
-- **Sweeps 6b–N — doc-comment sweeps: UPCOMING.** dice/ (172), then client
+- **Sweep 6b — dice/: COMPLETE (2026-07-30).** 172-item backlog → 0 (AST/modifier/crit/tier
+  types per-variant + per-field; notation tokens and grammar rules quoted from the lexer/parser;
+  outcome wire types; eval-stage modules; seeded-RNG determinism with a same-seed doctest;
+  saturating-fold semantics incl. the div-by-zero-yields-0 truth). All 16 dice/ files carry the
+  inner deny pair; mutation-verified in spec.rs + eval/crit.rs. **The server crate is now fully
+  deny-ratcheted except `lib.rs` (reserved for the final ratchet).**
+- **Sweeps 7–N — doc-comment sweeps: UPCOMING.** Client
   packages, then modules. One plan per subsystem (server: data (~300+
   items, likely 2–3 plans) / ws / http+auth / scene / chat+dice; client: core / render /
   ui-kit+shell / formula; modules in 3–4 groups). Every symbol gets description+params+example;
