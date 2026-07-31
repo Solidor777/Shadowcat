@@ -58,7 +58,13 @@ export default [
   // joins this list only once it is at zero under the warn tier.
   {
     files: ["src/client/core/**/*.ts"],
-    ignores: ["**/node_modules/**", "**/dist/**", "**/*.test.ts", "**/vitest.setup.ts"],
+    // Kept identical to the warn block's ignores, including `src/types/generated`
+    // (inert against today's `files` glob). The two blocks must stay symmetric:
+    // the next package added here inherits whatever asymmetry is left behind.
+    ignores: [
+      "**/node_modules/**", "**/dist/**", "**/*.test.ts", "**/vitest.setup.ts",
+      "src/types/generated/**",
+    ],
     languageOptions: { parser: tseslint.parser },
     plugins: { jsdoc, "@typescript-eslint": tseslint.plugin },
     rules: RULES_RATCHETED,
