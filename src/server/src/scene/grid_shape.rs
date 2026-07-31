@@ -518,7 +518,16 @@ impl GridShape for HexGrid {
     }
 }
 
-/// Ported verbatim from `pathfinding.rs`'s private `step_cost`.
+/// Per-step move cost under `rule`, plus the carried parity for the next step.
+///
+/// Orthogonal steps always cost 1.0 and leave `parity` untouched. Diagonals cost per rule;
+/// only `Alternating` consumes parity, charging 1.0/2.0 on alternate diagonals and flipping
+/// the bit so the caller must thread the returned parity through consecutive steps.
+///
+/// The sole definition of this rule — `pathfinding.rs` reaches it through the `GridShape`
+/// trait's neighbor enumeration rather than duplicating it, so the A* cost and any other
+/// consumer cannot drift apart. The client mirrors the same four rules in
+/// `src/client/render/src/grid.ts`'s `Grid.distance`.
 fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
     let diagonal = di != 0 && dj != 0;
     if !diagonal {
