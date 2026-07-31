@@ -577,11 +577,12 @@ function merge3Embedded(
 /** Full 3-way merge over the mergeable bands (`name`+`engine`+`system` tree + `embedded`).
  * `exclusions` apply to the top-level doc; embedded children use their own doc_type exclusions.
  * Pure + order-independent. Conflicts default to the child ("keep mine") in `mergedBands`.
- * @param base The last-synced `MergeBase` snapshot. The sole caller, `templates.ts`'s
- * `computePull`, passes `child.base ?? snapshotBase(child)` — a base-less (unstamped) child
- * falls back to a snapshot of ITSELF, not the template: `childDiff` is then empty against that
- * base, so every template-side change auto-applies with zero conflicts (a clean template-wins
- * result), matching `computePull`'s own doc comment.
+ * @param base The last-synced `MergeBase` snapshot. `templates.ts`'s `computePull` passes
+ * `child.base ?? snapshotBase(child)` — a base-less (unstamped) child falls back to a snapshot
+ * of ITSELF, not the template: `childDiff` is then empty against that base, so every
+ * template-side change auto-applies with zero conflicts (a clean template-wins result),
+ * matching `computePull`'s own doc comment. (`merge3` also recurses on itself for correlated
+ * embedded children, via `merge3Embedded`.)
  * @param parentNow The template's current document.
  * @param childNow The instance's current document.
  * @param exclusions Top-level placement-excluded pointers (see `placementExclusions`); embedded
