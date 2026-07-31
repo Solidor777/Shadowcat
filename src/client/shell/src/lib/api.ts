@@ -71,16 +71,26 @@ export async function getUiState(): Promise<UiState> {
   };
 }
 
+/** Partial UI-state write. Only the keys present are written: `global`
+ * replaces the stored global slice wholesale; each `worlds` entry replaces
+ * just that world's slice server-side; absent keys are untouched. Sending
+ * only changed slices is the concurrency control — concurrent sessions of
+ * one account (two tabs) contend only on slices both actually write. */
+export interface UiStatePatch {
+  global?: UiState["global"];
+  worlds?: Record<string, UiState["worlds"][string]>;
+}
+
 export async function putUiState(
-  state: UiState,
+  patch: UiStatePatch,
   opts: { keepalive?: boolean } = {},
 ): Promise<void> {
-  // `keepalive` lets the request outlive a page unload (the blob is within the
-  // server's 64KB cap, under keepalive's body limit).
+  // `keepalive` lets the request outlive a page unload (the patch is within
+  // the server's 64KB merged cap, under keepalive's body limit).
   const res = await fetch("/api/me/ui-state", {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(state),
+    body: JSON.stringify(patch),
     keepalive: opts.keepalive,
   });
   if (!res.ok) throw new Error(`PUT /api/me/ui-state → ${res.status}`);

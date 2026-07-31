@@ -38,7 +38,7 @@ test("setLastWorld updates state and persists (debounced)", async () => {
   expect(getSessionState().global.lastWorld).toBe("w2");
   await flushSessionState();
   expect(put).toHaveBeenCalled();
-  expect(put.mock.calls.at(-1)?.[0].global.lastWorld).toBe("w2");
+  expect(put.mock.calls.at(-1)?.[0].global?.lastWorld).toBe("w2");
 });
 
 test("a locale change persists the new locale", async () => {
@@ -50,7 +50,7 @@ test("a locale change persists the new locale", async () => {
   await loadSessionState();
   i18n.setLocale("zz");
   await flushSessionState();
-  expect(put.mock.calls.at(-1)?.[0].global.locale).toBe("zz");
+  expect(put.mock.calls.at(-1)?.[0].global?.locale).toBe("zz");
 });
 
 test("getPanelLayout returns null for a world with no recorded state", async () => {
@@ -75,7 +75,7 @@ test("setPanelLayout records the blob per-world and schedules a debounced persis
   expect(getPanelLayout("w2")).toBeNull();
   await flushSessionState();
   expect(put).toHaveBeenCalled();
-  expect(put.mock.calls.at(-1)?.[0].worlds.w1?.panelLayout).toBe(blob);
+  expect(put.mock.calls.at(-1)?.[0].worlds?.w1?.panelLayout).toBe(blob);
 });
 
 test("getChatRead returns null for a world with no recorded state", async () => {
@@ -100,7 +100,36 @@ test("setChatRead records the blob per-world and schedules a debounced persist",
   expect(getChatRead("w2")).toBeNull();
   await flushSessionState();
   expect(put).toHaveBeenCalled();
-  expect(put.mock.calls.at(-1)?.[0].worlds.w1?.chatRead).toBe(blob);
+  expect(put.mock.calls.at(-1)?.[0].worlds?.w1?.chatRead).toBe(blob);
+});
+
+test("a world-slice change persists ONLY that world's slice (no global, no other worlds)", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: { wOther: { chatRead: { general: 1 } } },
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  setPanelLayout("w1", { version: 1 });
+  await flushSessionState();
+  const patch = put.mock.calls.at(-1)?.[0];
+  expect(patch?.worlds).toEqual({ w1: { panelLayout: { version: 1 } } });
+  expect(patch?.global).toBeUndefined();
+  expect(patch?.worlds?.wOther).toBeUndefined();
+});
+
+test("a global change persists ONLY the global slice", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: { w1: { panelLayout: { version: 1 } } },
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  setLastWorld("w2");
+  await flushSessionState();
+  const patch = put.mock.calls.at(-1)?.[0];
+  expect(patch?.global?.lastWorld).toBe("w2");
+  expect(patch?.worlds).toBeUndefined();
 });
 
 test("flushOnUnload keepalive-persists a change made during the cooldown", async () => {
