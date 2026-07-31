@@ -150,3 +150,28 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   `optimistic.test.ts` (bad intent between two good ones — good lands, bad stays pending, warn fired;
   `applyCommand`/`reject` still function with a bad intent queued). Commit `4c1c46f`. (Found by the
   Task 14c player e2e.)
+
+## Server + client / ui-state persistence
+
+- [Race] Concurrent sessions of the SAME user clobbered each other's `ui_state`. `PUT
+  /api/me/ui-state` replaced the whole blob (`routes.rs::put_ui_state`), and each client session
+  held its own in-memory snapshot of the entire `{global, worlds}` object
+  (`sessionState.svelte.ts`) — a read-modify-write with no merge or concurrency control. A session
+  that fetched its snapshot before another session's write and persisted after it silently
+  reverted the other session's slice (e.g. a panel-layout dock made in tab A vanished when tab B
+  persisted a locale/lastWorld change). Product impact: same account in two tabs/devices. Test
+  impact: the ui-e2e suite runs 6 parallel workers all logged in as `ops`, so cross-worker
+  clobbers intermittently broke `panels.spec.ts` "survives a full page reload" at the
+  panel-restore assert (2 of 3 full-suite runs on 2026-07-31; 8/8 green in isolation). Fixed by
+  narrowing the write granularity to per-slice merge instead of whole-blob replace: server-side,
+  `SqliteRepository::merge_ui_state` (`data/sqlite.rs`) merges a partial patch into the stored
+  state in a single transaction — each top-level key present in the body replaces the stored key
+  wholesale, except `worlds`, whose entries each replace only that world's slice; absent keys are
+  untouched, and the 64KB size cap now applies to the merged result
+  (`http/routes.rs::put_ui_state`, `MAX_UI_STATE_BYTES`). Client-side, `sessionState.svelte.ts`
+  tracks which slices are dirty (`global` flag + a `Set` of touched world ids) and `persist()`/
+  `flushOnUnload()` send only a `UiStatePatch` covering those slices (`api.ts::putUiState`),
+  clearing the dirty markers on success and re-marking them on failure so a retry doesn't lose the
+  write. Concurrent same-user sessions now contend only on slices both sessions actually write,
+  instead of last-writer-wins on the whole blob. Commits: `daf5eae` (server per-slice merge),
+  `819d2c0` (client dirty-slice patches).

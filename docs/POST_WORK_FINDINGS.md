@@ -26,7 +26,14 @@ are observations awaiting triage, not committed work.
   panel-restore `asset-upload` visibility, not the render-ready wait) — that
   failure mode was root-caused to the same-user ui_state clobber race, now a
   confirmed defect in OPEN_BUGS.md, and is NOT a member of this render-ready
-  class (which stays at two members).
+  class (which stays at two members). 2026-07-31 resolution: the panel-restore
+  assert failure mode is fixed — the ui_state clobber race is closed by the
+  per-slice merge (server `merge_ui_state` + client dirty-slice `UiStatePatch`
+  writes, commits `daf5eae`/`819d2c0`; see `docs/CLOSED_BUGS.md` "Server +
+  client / ui-state persistence"). The full local matrix (incl. 5 repeats of
+  this spec) ran 5/5 + 15/15 green post-fix. The render-ready wait itself
+  remains open and unaffected by this fix, still at two members (this spec's
+  original occurrence + the hex-movement setup flake above).
 
 - Title: ui-e2e assets test flaked once locally at the post-login worlds list.
   Summary: on the migration-squash local matrix (schema-file-only branch),
