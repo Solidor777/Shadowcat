@@ -27,8 +27,35 @@ interface SceneRect {
  * engine draws `lines(...)` into the grid layer and uses `snap`/`cellOf` for
  * placement (M8d). Hex uses axial coords (Red Blob Games). */
 export class Grid {
+  /**
+   * Constructs a grid from a fixed spec — the grid's kind, size, and diagonal rule
+   * never change over the instance's lifetime; a new spec means a new `Grid`.
+   * @param spec The grid's kind, cell size, and (square-only) diagonal-cost rule.
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "square", size: 70 });
+   * ```
+   */
   constructor(private readonly spec: GridSpec) {}
 
+  /**
+   * Snaps a scene point to the active grid's nearest CELL CENTER — never a
+   * vertex/corner, on either grid kind. Square: the containing cell's center. Hex: the
+   * nearest hex's center, via {@link axialRound}-then-{@link axialToPixel} — the same
+   * `axialToPixel` call {@link hexLines} uses as the origin it draws the six corners
+   * around, so this is provably a center, not a vertex.
+   * @param p A scene-coordinate point.
+   * @returns `p` snapped to the nearest cell center.
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "square", size: 70 });
+   * grid.snap({ x: 12, y: 34 }); // { x: 35, y: 35 }
+   * ```
+   */
   snap(p: Point): Point {
     if (this.spec.kind === "square") {
       const { col, row } = this.cellOf(p);
@@ -46,7 +73,22 @@ export class Grid {
    *   - manhattan  — dCol + dRow (no diagonal shortcuts).
    *   - euclidean  — (dmax−dmin) + √2·dmin (true Euclidean cell distance).
    *   - alternating — (dmax−dmin) + dmin + floor(dmin/2) (5-10-5: diagonals cost 1,2,1,2…).
-   * All four mirror the server's per-rule costs in `scene/pathfinding.rs`. */
+   * All four mirror the server's per-rule step costs: chebyshev/manhattan/euclidean
+   * match `pathfinding.rs`'s `heuristic()` exactly (an admissible AND tight bound for a
+   * direct, obstacle-free route); alternating matches `grid_shape.rs`'s `step_cost`'s
+   * 1,2,1,2… parity-threaded diagonal cost, whose closed-form sum over `dmin` diagonal
+   * steps is `dmin + floor(dmin/2)`.
+   * @param a One scene-coordinate point.
+   * @param b The other scene-coordinate point.
+   * @returns The whole-cell distance between `a` and `b`, per the rule above.
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "square", size: 70 });
+   * grid.distance({ x: 0, y: 0 }, { x: 140, y: 70 }); // 2 (chebyshev)
+   * ```
+   */
   distance(a: Point, b: Point): number {
     const ca = this.cellOf(a);
     const cb = this.cellOf(b);
@@ -70,6 +112,21 @@ export class Grid {
     }
   }
 
+  /**
+   * The integer cell containing `p`. Square: `floor(x/size), floor(y/size)`. Hex: the
+   * nearest hex's axial `(q,r)` (`col`/`row` alias `q`/`r`) — a hex "contains" `p` when
+   * `p` is closer to that hex's center than to any other, so this is a rounded
+   * nearest-center lookup, not a floor division.
+   * @param p A scene-coordinate point.
+   * @returns The containing cell as `{col, row}` (square indices, or hex axial `q`/`r`).
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "square", size: 70 });
+   * grid.cellOf({ x: 12, y: 34 }); // { col: 0, row: 0 }
+   * ```
+   */
   cellOf(p: Point): { col: number; row: number } {
     if (this.spec.kind === "square") {
       return {
@@ -81,12 +138,35 @@ export class Grid {
     return { col: q, row: r };
   }
 
+  /**
+   * Grid-overlay line segments covering `rect` (plus a margin), for the grid render
+   * layer to draw. Dispatches on `spec.kind` — square and hex never share a code path.
+   * @param rect The visible scene rectangle to cover.
+   * @returns The grid line segments to draw.
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "square", size: 70 });
+   * grid.lines({ x: 0, y: 0, w: 700, h: 700 });
+   * ```
+   */
   lines(rect: SceneRect): LineSeg[] {
     return this.spec.kind === "square"
       ? this.squareLines(rect)
       : this.hexLines(rect);
   }
 
+  /**
+   * Square-grid line segments: one vertical line per column boundary, one horizontal
+   * line per row boundary, spanning `rect`.
+   * @param rect The visible scene rectangle to cover.
+   * @returns The square grid's line segments.
+   * @example
+   * ```
+   * // private — not constructible/callable outside Grid.
+   * ```
+   */
   private squareLines(rect: SceneRect): LineSeg[] {
     const s = this.spec.size;
     const out: LineSeg[] = [];
@@ -110,6 +190,17 @@ export class Grid {
 
   // --- pointy-top axial hex (Red Blob Games) ---
   // radius = size; width = sqrt(3)*size, height = 2*size; rows offset by height*3/4.
+  /**
+   * Pixel → fractional axial `(q,r)`, pointy-top orientation (Red Blob Games' hex grid
+   * reference). Fractional: the caller rounds via {@link axialRound} when an integer
+   * cell is needed — this function alone does not identify a specific hex.
+   * @param p A scene-coordinate point.
+   * @returns The point's fractional axial coordinates.
+   * @example
+   * ```
+   * // private — not constructible/callable outside Grid.
+   * ```
+   */
   private pixelToAxial(p: Point): { q: number; r: number } {
     const size = this.spec.size;
     const q = ((Math.sqrt(3) / 3) * p.x - (1 / 3) * p.y) / size;
@@ -117,6 +208,19 @@ export class Grid {
     return { q, r };
   }
 
+  /**
+   * Axial `(q,r)` → the CENTER pixel of that hex, pointy-top orientation. {@link
+   * hexLines} calls this to get each hex's center, then generates its six corners at
+   * `size` (the circumradius) around it — the same call this function makes proves
+   * `snap`'s hex branch also returns a center, never a vertex.
+   * @param q Axial q.
+   * @param r Axial r.
+   * @returns The hex's center, in scene coordinates.
+   * @example
+   * ```
+   * // private — not constructible/callable outside Grid.
+   * ```
+   */
   private axialToPixel(q: number, r: number): Point {
     const size = this.spec.size;
     return {
@@ -125,6 +229,20 @@ export class Grid {
     };
   }
 
+  /**
+   * Rounds fractional axial coordinates to the nearest integer hex (Red Blob Games'
+   * cube-rounding algorithm): converts to cube coordinates `(x,y,z) = (q, -q-r, r)`,
+   * rounds each independently, then recomputes whichever component drifted furthest
+   * from its rounded value so the `x+y+z=0` cube invariant holds exactly.
+   * @param a Fractional axial coordinates (as returned by {@link pixelToAxial}).
+   * @param a.q Fractional axial q.
+   * @param a.r Fractional axial r.
+   * @returns The nearest integer axial `(q,r)`.
+   * @example
+   * ```
+   * // private — not constructible/callable outside Grid.
+   * ```
+   */
   private axialRound(a: { q: number; r: number }): { q: number; r: number } {
     // Round in cube space then fix the largest-drift component.
     let rx = Math.round(a.q);
@@ -139,6 +257,17 @@ export class Grid {
     return { q: rx, r: rz };
   }
 
+  /**
+   * Hex-grid line segments: draws the six-edge outline of every hex whose center falls
+   * within `rect` plus a margin. Adjacent hex outlines overlap (each edge is drawn
+   * twice, once per flanking hex) — acceptable for a grid overlay, not deduplicated.
+   * @param rect The visible scene rectangle to cover.
+   * @returns The hex grid's line segments.
+   * @example
+   * ```
+   * // private — not constructible/callable outside Grid.
+   * ```
+   */
   private hexLines(rect: SceneRect): LineSeg[] {
     // Draw each hex outline whose center falls in (a margin around) the rect. The
     // overlap between adjacent hexes is acceptable for a grid overlay.
