@@ -17,6 +17,14 @@ const bin = path.join(
 
 export default defineConfig({
   testDir: "./e2e",
+  // Budgets sized for the contended 6-worker full-suite run (isolated boots take
+  // 3-8s; contention has been measured at 15-53s per test). Without an explicit
+  // test timeout, Playwright's 30s default equals the specs' own 30s
+  // render-ready assertion budget, so that assertion could never actually use
+  // its stated window — the root cause of the render-ready flake class
+  // (POST_WORK_FINDINGS "ui-e2e panels reload test flaked once locally").
+  timeout: 120_000,
+  expect: { timeout: 15_000 },
   webServer: {
     command: `"${bin}"`,
     cwd: repoRoot,

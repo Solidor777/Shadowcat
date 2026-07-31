@@ -43,7 +43,20 @@ are observations awaiting triage, not committed work.
   three members and the startup-path audit is a pending follow-up, not yet
   done. Separately, 5 additional targeted repeats of `panels.spec.ts` alone
   (1 worker, no contention) ran 5/5 green, confirming the per-slice merge
-  removes the clobber interference mechanism specifically.
+  removes the clobber interference mechanism specifically. 2026-07-31 AUDIT
+  RESOLUTION: the startup-path audit ran. Proximate cause of every class
+  member: `playwright.config.ts` set no `timeout`, so Playwright's 30s
+  default TEST budget equaled the specs' own 30s render-ready ASSERTION
+  budget — under measured 6-worker contention (15–53s per test vs 3–8s
+  isolated) the assertion could never use its stated window. Fixed: the
+  config now sets `timeout: 120_000` + `expect: { timeout: 15_000 }`
+  (hex-movement keeps its larger explicit 180s). The audit also surfaced WHY
+  the symptom is "element(s) not found" rather than slow-but-green: the
+  client has NO Welcome watchdog — plus three adjacent unbounded/unretried
+  startup awaits — now logged as confirmed defects in OPEN_BUGS.md
+  ("Silent-hang startup paths"). Status: suite defect RESOLVED; recurrence
+  under the new budgets would indicate the OPEN_BUGS product gaps, not the
+  specs.
 
 - Title: ui-e2e assets test flaked once locally at the post-login worlds list.
   Summary: on the migration-squash local matrix (schema-file-only branch),
@@ -53,9 +66,10 @@ are observations awaiting triage, not committed work.
   tests in the same 6-worker run took 15–53s under contention. Isolated re-run:
   3/3 green with zero code change. NOT the render-ready class (that signal is
   the stage's `data-render-ready`; this is the worlds-list route render) — this
-  is plain load contention against a 5s default expect timeout. Status: Needs
-  Review (if login-step waits keep flaking, raise the suite's default expect
-  timeout under parallel workers rather than per-spec patches).
+  is plain load contention against a 5s default expect timeout. Status:
+  RESOLVED 2026-07-31 — exactly this entry's recommendation shipped with the
+  render-ready audit fix: `playwright.config.ts` now sets
+  `expect: { timeout: 15_000 }` suite-wide.
 
 - Title: ui-e2e stage draw-freehand test flaked once during Task 4 (ui-state clobber fix wave)
   verification. Summary: on the full 6-worker `pnpm --filter @shadowcat/shell e2e` run,
@@ -65,8 +79,10 @@ are observations awaiting triage, not committed work.
   this task's diff (drawing/shape-count assertion, not ui-state/panel-layout persistence) and NOT
   a member of either documented flake class above (not a render-ready wait, not a login-step
   worlds-list wait) — a new, as-yet-single-occurrence worker-contention timing flake on the tool
-  rail's draw-commit path. Status: Needs Review (single occurrence; if it recurs, audit the
-  freehand-draw commit's render-ready/paint timing under parallel-worker contention).
+  rail's draw-commit path. Status: Needs Review, mitigated 2026-07-31 — the render-ready audit's
+  suite fix (`timeout: 120_000` in `playwright.config.ts`) means the 15s shape-count assert no
+  longer competes with a 30s whole-test budget; if it still recurs, audit the freehand-draw
+  commit's paint timing under parallel-worker contention.
 
 - Title: Phase-B world delete swallows asset-directory removal failures. Summary: `routes.rs::
   delete_world` returns 204 even when `remove_dir_all` on `<assets_path>/<world_id>/` fails for a

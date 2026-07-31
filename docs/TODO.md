@@ -151,6 +151,18 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   type but silently drops the new key from every patch, with no compile error. Drive the copy from
   an exhaustive `Record<WorldKey, …>`/switch so a widened union becomes a type error.
 
+## Actionable now — render-ready audit backlog (2026-07-31, non-defect items)
+- TODO: `ws/conn.rs`'s Welcome preamble runs `spawn_blocking(scan_installed_modules)` — a full
+  filesystem scan — on EVERY WS connect. Cache the scan result (invalidate on module
+  install/uninstall) so reconnect storms and multi-client entry don't re-walk the modules dir.
+- TODO: tower-sessions shares the single-connection SQLite pool (`auth/session.rs` builds
+  `SqlxSqliteStore` over `repo.pool()`), so every authenticated request queues the session read
+  behind app writes on `max_connections(1)`. Give the session store its own connection (or a read
+  pool) — the write path's deliberate single-writer serialization stays untouched.
+- TODO: `Stage.svelte`'s backend-init failure path sets `data-render-error="true"` silently. Route
+  it through the project logger so a real WebGL/backend init failure is distinguishable from a
+  timeout in e2e output and user bug reports.
+
 ## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
 - TODO: `src/server/src/ws/room.rs`'s `Room::execute_move` re-derives `is_gm` via its own
   `ctx.world_role == WorldRole::Gm` comparison a second time, instead of reusing the `is_gm`
