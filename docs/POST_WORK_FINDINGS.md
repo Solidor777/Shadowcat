@@ -21,7 +21,12 @@ are observations awaiting triage, not committed work.
   zero code change. Same timing-flake class as the hex-movement setup flake
   above (render-ready wait after a heavyweight reload). Status: Needs Review
   (two members of the class now — if a third appears, audit the render-ready
-  signal's startup path rather than the individual specs).
+  signal's startup path rather than the individual specs). 2026-07-31 update:
+  this SAME spec later failed twice at a DIFFERENT assert (the post-reload
+  panel-restore `asset-upload` visibility, not the render-ready wait) — that
+  failure mode was root-caused to the same-user ui_state clobber race, now a
+  confirmed defect in OPEN_BUGS.md, and is NOT a member of this render-ready
+  class (which stays at two members).
 
 - Title: ui-e2e assets test flaked once locally at the post-login worlds list.
   Summary: on the migration-squash local matrix (schema-file-only branch),
