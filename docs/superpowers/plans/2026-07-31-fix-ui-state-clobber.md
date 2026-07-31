@@ -242,6 +242,43 @@ git commit -m "docs: close the ui-state clobber bug; sync findings + client-shel
 
 ---
 
+### Task 4: Final-review fix wave — per-key slice granularity + converged findings
+
+Added 2026-07-31 after the whole-branch final review (both opus reviewers). Their converged Important finding: per-world granularity still last-writer-wins ACROSS the independent keys inside one slice — `worlds.<id>` holds `panelLayout` vs `chatRead` (two owners: panels module, chat module), and `global` holds `locale` vs `lastWorld` (two mutators). This task supersedes the earlier tasks' granularity statement: **the slice unit is the individual leaf key** — `global.<field>` and `worlds.<id>.<key>` — everywhere below that a value replaces wholesale (leaf blobs like `panelLayout` are opaque and must NEVER deep-merge).
+
+**Files:**
+- Modify: `src/server/src/data/sqlite.rs` (merge rule + tests)
+- Modify: `src/server/src/http/error.rs` + `src/server/src/data/mod.rs` (band-neutral TooLarge message + doc)
+- Modify: `src/server/src/http/mod.rs` (route-level cross-key preservation assertions)
+- Modify: `src/client/shell/src/lib/api.ts` (`UiStatePatch` per-key partial types)
+- Modify: `src/client/shell/src/lib/sessionState.svelte.ts` (per-key dirty tracking; `flushOnUnload` re-mark; `loadSessionState` dirty reset)
+- Modify: `src/client/shell/src/lib/sessionState.test.ts` + `src/client/shell/src/lib/api.test.ts`
+- Modify: `docs/CLOSED_BUGS.md`, `.claude/skills/shadowcat-codebase-client-shell/SKILL.md`, `docs/POST_WORK_FINDINGS.md`, `docs/TODO.md`
+
+**Server merge rule (replaces the Task-1 loop body verbatim):** for each top-level patch key K: if K == `"worlds"` (object, route-validated), then for each `(id, slice)` in it — when BOTH the stored `worlds.<id>` and `slice` are objects, merge one level (each slice key `panelLayout`/`chatRead`/future replaces wholesale); otherwise insert `slice` wholesale. For any other K — when BOTH stored[K] and patch[K] are objects, merge one level (each second-level key replaces wholesale); otherwise replace stored[K] wholesale. Absent keys untouched; cap/tx/NotFound/OpFailed semantics unchanged. Update `merge_ui_state`'s doc comment to state THIS rule (it is the single server-side statement of the semantics).
+
+**Error message (both reviewers, must-fix):** `http/error.rs:43` → `format!("payload too large: {n} bytes")`; `data/mod.rs` `TooLarge` doc → "A size-capped JSON payload (a document `system`/`engine`/`base` block, or the merged UI-state blob) exceeded its cap."
+
+**Client:**
+```ts
+// api.ts
+export interface UiStatePatch {
+  global?: Partial<UiState["global"]>;
+  worlds?: Record<string, Partial<UiState["worlds"][string]>>;
+}
+```
+`sessionState.svelte.ts`: `const dirty = { global: new Set<"locale" | "lastWorld">(), worlds: new Map<string, Set<"panelLayout" | "chatRead">>() };` — `buildPatch()` copies only the dirty fields/keys from live `state`; `persist()` snapshots the structure, clears, sends, and on catch re-marks EVERY captured field/key (deep re-add). `flushOnUnload()` uses the same snapshot/clear/RE-MARK-on-catch shape (fixing the Important: it currently clears without re-marking, and it fires on non-terminal `visibilitychange`). `loadSessionState()` clears both dirty structures at its top (re-login hygiene). Mutators: `setLastWorld` → `dirty.global.add("lastWorld")`; locale subscriber → `add("locale")`; `setPanelLayout(w)` → world-set `add("panelLayout")`; `setChatRead(w)` → `add("chatRead")`.
+
+**Tests (all red-first where new):**
+- sqlite.rs: extend the merge test — a `{global:{locale}}` patch preserves `global.lastWorld`; a `{worlds:{w1:{chatRead}}}` patch preserves `worlds.w1.panelLayout`; a new `panelLayout` value still replaces the old blob wholesale (stale nested key drops — keep the existing assertion).
+- http/mod.rs: route-level — PUT `{worlds:{w1:{panelLayout:{v:1}}}}` then PUT `{worlds:{w1:{chatRead:{general:2}}}}` → GET shows BOTH under w1.
+- sessionState.test.ts: update the two granularity tests to per-key shape (`patch.worlds` = `{w1:{panelLayout:…}}` with NO `chatRead` key; `patch.global` = `{lastWorld:"w2"}` with NO `locale` key); add a locale-only test (no `lastWorld` in patch); add the failed-PUT re-mark test (mock `putUiState` rejected once → mutate another slice → flush → assert the patch contains BOTH the lost and the new slice); add a `flushOnUnload` failure re-mark test (reject the keepalive PUT → assert a later flush retries the slice).
+- api.test.ts: rename the whole-blob-framed test and pass a patch-shaped body, asserting the serialized body verbatim.
+
+**Docs:** update `CLOSED_BUGS.md`'s entry and the client-shell SKILL bullet to the per-key granularity (skill also fixes the "clearing the dirty markers on success" wording → "clears them before the write and re-marks on failure", and "whole-blob PUT no longer exists" → "the client never sends the whole `{global, worlds}` blob"); add the three-word clarifier at the POST_WORK_FINDINGS "which stays at two members" sentence (→ "which was then at two members"); add `docs/TODO.md` entries for the three review-deferred items: (1) `worlds` is grow-only — add `null`-removes-entry semantics + client pruning so an over-cap blob is recoverable; (2) cheap route-level size pre-check before opening the single-connection tx; (3) in-flight-PUT ordering guard (defer the leading edge while a persist is unresolved).
+
+**Verification:** shell tests + typecheck + `pnpm lint`; from `src/server/`: `cargo test` (full) + `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings`; `pnpm build`; `pnpm --filter @shadowcat/core test:e2e`; full `pnpm --filter @shadowcat/shell e2e` once (the panels predicate still matches: the dock PUT carries the world's whole `panelLayout` blob). Commit everything as ONE commit: `fix(ui-state): per-key slice granularity; unload re-mark; band-neutral cap message`.
+
 ## Final Review
 
-Whole-branch review (merge-base `main`..HEAD) by `shadowcat-spec-reviewer-opus` + `shadowcat-code-reviewer-opus` with the full-branch review package, the ledger's deferred minors, and this plan. Then merge `fix-ui-state-clobber` into main `--ff-only`, push, delete the branch (finishing-a-development-branch, autonomous-commit rules).
+Whole-branch review (merge-base `main`..HEAD) by `shadowcat-spec-reviewer-opus` + `shadowcat-code-reviewer-opus` with the full-branch review package, the ledger's deferred minors, and this plan. Result 2026-07-31: CHANGES REQUESTED / Not approved → Task 4 above is the single fix wave; it gets ONE scoped re-review (per SDD), then merge `fix-ui-state-clobber` into main `--ff-only`, push, delete the branch (finishing-a-development-branch, autonomous-commit rules).
