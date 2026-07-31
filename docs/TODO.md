@@ -141,6 +141,15 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   the server. Defer the leading edge while a persist is unresolved (a simple in-flight flag,
   scheduling the deferred attempt for when the current one settles) instead of the current
   fire-and-forget leading edge.
+- TODO: `sessionState.svelte.ts`'s `loaded` flag is never reset to `false` on logout, so a
+  mutation landing inside a re-login `loadSessionState()`'s `await getUiState()` window passes the
+  `loaded` guard and can persist a pre-login `state` value under the new session's cookie.
+  `clearDirty()` at load start covers only the marker half of re-login hygiene; reset `loaded`
+  (and cancel the cooldown timer) at logout so the write guard is structural.
+- TODO: `buildGlobalPatch`/`buildWorldPatch` (`sessionState.svelte.ts`) enumerate the leaf keys by
+  hand — adding a third key to `UiState["worlds"][string]` (or a new `global` field) widens the
+  type but silently drops the new key from every patch, with no compile error. Drive the copy from
+  an exhaustive `Record<WorldKey, …>`/switch so a widened union becomes a type error.
 
 ## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
 - TODO: `src/server/src/ws/room.rs`'s `Room::execute_move` re-derives `is_gm` via its own
