@@ -508,9 +508,11 @@ export function buildActorDoc(worldId: string, name: string | null, engine: Acto
  * excludes "item") — the server stays fully structural for an item's body, same as every
  * other doc_type's `system` blob: `validate_system_size` caps it (`MAX_SYSTEM_BYTES`) and
  * `validate_system_schema_tree` enforces any module-registered tier-2 schema for `"item"`
- * (both run unconditionally on every doc_type), but item never goes through
- * `validate_engine_tree`'s semantic/typed validation — the 17 engine-defined doc types'
- * `movementModel`/`bounds`/`visual`-shaped `engine` fields do, item's `system` fields don't.
+ * (both run unconditionally on every doc_type). `validate_engine_tree` also runs on an item,
+ * but only to REJECT one carrying an `engine` body (`normalize_engine_opt`'s
+ * `(false, Some(_))` arm: "not engine-defined; `engine` must be absent") — an item never
+ * receives the semantic/typed validation the 17 engine-defined doc types' `engine` bodies
+ * get, because it has no typed struct and no `engine` body to deserialize.
  * An item lives standalone (top-level, parentless) or embedded in an actor's inventory.
  * Display name lives in the envelope; every other field is opaque, edited via the tree
  * editor. */
