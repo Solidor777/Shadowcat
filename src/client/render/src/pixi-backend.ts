@@ -85,8 +85,10 @@ export class PixiBackend implements DisplayBackend {
    * ```ts
    * import { PixiBackend } from "@shadowcat/render";
    *
-   * // Derived, not imported from "pixi.js" directly: pixi.js is a dependency of
-   * // @shadowcat/render only, not hoisted to every consumer's own node_modules.
+   * // Derived from PixiBackend's own constructor rather than naming pixi.js's
+   * // `Application` type directly, so this example stays correct even if the
+   * // constructor's parameter type is ever narrowed/widened independently of
+   * // pixi.js's own export surface.
    * declare const app: ConstructorParameters<typeof PixiBackend>[0];
    * const backend = new PixiBackend(app);
    * ```
@@ -252,9 +254,6 @@ export class PixiBackend implements DisplayBackend {
    * ```
    */
   setVisibility(input: VisibilityInput): void {
-    // A plain (non-blended) apply ends any in-flight cross-fade — restore the normal sheets and
-    // eagerly free the last sweep's capture textures rather than leaving them GPU-resident until
-    // the next setVisibilityBlend call (or backend teardown).
     this.fogBlendFrom.visible = false;
     this.fogBlendTo.visible = false;
     this.fogBlendFromRT?.destroy(true);
@@ -818,10 +817,18 @@ export class PixiBackend implements DisplayBackend {
   /** `DisplayBackend.addLayerFilter`: attach an opaque filter to a layer's Container. A no-op
    * (returns a no-op dispose) for an unknown `layerId` — unlike `MockBackend`'s implementation,
    * which records the registration unconditionally regardless of whether `layerId` names a real
-   * layer.
+   * layer. **Dispose is VALUE-based, not identity-of-registration-based:** the returned dispose
+   * removes every entry `=== filter` from the layer's filter list, not just this specific
+   * registration — registering the SAME filter object twice on one layer and calling EITHER
+   * dispose strips BOTH entries. `MockBackend.addLayerFilter`'s dispose is stricter here: it
+   * removes only its own `{layerId, filter}` entry (by object identity, via `indexOf`), so a
+   * duplicate-registration test scenario would pass against the mock and fail against this
+   * backend. No current caller registers the same filter twice on one layer (`engine.ts`'s
+   * `registerLayerFilter` is the sole forwarder) — a live gap, not a live bug.
    * @param layerId The target core-layer id (e.g. `"tokens"`).
    * @param filter A Pixi `Filter` (typed `unknown` at this seam — see `DisplayBackend`).
-   * @returns A dispose function that removes exactly this filter from the layer's filter list.
+   * @returns A dispose function that removes every filter list entry `=== filter` — see the
+   * value-based-removal note above.
    * @example
    * ```ts
    * import { PixiBackend } from "@shadowcat/render";

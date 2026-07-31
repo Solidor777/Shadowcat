@@ -140,14 +140,21 @@ export class MockBackend implements DisplayBackend {
     this.visibility = factor < 0.5 ? from : to;
   }
   /** `DisplayBackend.addLayerFilter`: records `{layerId, filter}` into `this.filters`
-   * unconditionally. **Divergence from `PixiBackend`:** this never validates `layerId` — an unknown
-   * id is recorded just like a real one, whereas `PixiBackend.addLayerFilter` silently no-ops
-   * (returns a no-op dispose, never touching `this.filters`-equivalent state) for a `layerId` that
-   * names no layer Container. A test asserting filter registration against an invalid layer id
-   * would pass here and fail against the real backend.
+   * unconditionally. **Divergence from `PixiBackend` (mock LOOSER):** this never validates
+   * `layerId` — an unknown id is recorded just like a real one, whereas `PixiBackend.addLayerFilter`
+   * silently no-ops (returns a no-op dispose, never touching `this.filters`-equivalent state) for a
+   * `layerId` that names no layer Container. A test asserting filter registration against an
+   * invalid layer id would pass here and fail against the real backend. **Divergence #2
+   * (mock STRICTER, the opposite direction):** dispose here removes only THIS registration's own
+   * `entry` object (by identity, via `indexOf`), whereas `PixiBackend.addLayerFilter`'s dispose
+   * removes every filter-list entry `=== filter` — registering the same filter value twice on one
+   * layer and disposing either one strips both on the real backend, but only the disposed one
+   * here. A test asserting "disposing one registration leaves a duplicate-value registration
+   * intact" would pass against this mock and fail against the real backend.
    * @param layerId The target core-layer id (recorded as given, not validated).
    * @param filter An opaque filter value.
-   * @returns A dispose function that removes exactly this entry from `this.filters`.
+   * @returns A dispose function that removes exactly this registration's entry from
+   * `this.filters`, by object identity — see the stricter-than-`PixiBackend` note above.
    * @example
    * ```ts
    * import { MockBackend } from "@shadowcat/render";
