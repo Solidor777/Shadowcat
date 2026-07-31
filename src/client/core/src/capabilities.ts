@@ -157,16 +157,13 @@ function pathsOverlap(a: string, b: string): boolean {
  * `permission.rs:489-498`,`551-557`). Calling this with `isGm: true` against a
  * `gm_role`-capped document would over-permit. `gm_role` is an ordinary field
  * on every document's `permissions` block (`PermissionSet.gm_role`,
- * `data/document.rs:439`) — writable on ANY doc_type by any caller holding
- * `EDIT_PERMISSIONS`, since `required_cap_for_path` maps `/permissions` and
- * every `/permissions/*` sub-path, `gm_role` included, to that one capability
- * with no doc_type restriction (`permission.rs:195-196`). Do NOT assume it is
- * rare or actor/token-exempt: `chat/mod.rs:299-341` is where the SERVER
+ * `data/document.rs:439`), not a chat-specific one — do NOT assume it is rare
+ * or actor/token-exempt; `chat/mod.rs:299-341` is only where the SERVER
  * constructs it for chat audiences (`Public` → `None`, `Whisper` →
- * `Some(None)`, `GmOnly` → `Some(Observer)`), not an exhaustive inventory of
- * where it can be set. The bound here rests solely on `isGm: true` having no
- * production caller today: `worldSession.canEdit` resolves the GM case itself
- * and always passes `isGm: false` (`worldSession.svelte.ts:153`, `:161` — see
+ * `Some(None)`, `GmOnly` → `Some(Observer)`), not a bound on where it can
+ * live. The bound here rests solely on `isGm: true` having no production
+ * caller today: `worldSession.canEdit` resolves the GM case itself and always
+ * passes `isGm: false` (`worldSession.svelte.ts:153`, `:161` — see
  * `resolveCaps`'s doc above); that gate is equally unaware of `gm_role` and is
  * out of scope here (`shell` package).
  * @param path A JSON pointer identifying the field being written.
