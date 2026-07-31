@@ -23,6 +23,18 @@ are observations awaiting triage, not committed work.
   (two members of the class now — if a third appears, audit the render-ready
   signal's startup path rather than the individual specs).
 
+- Title: ui-e2e assets test flaked once locally at the post-login worlds list.
+  Summary: on the migration-squash local matrix (schema-file-only branch),
+  `assets.spec.ts` "upload an image…" timed out (default 5s expect) waiting for
+  `getByText("Your worlds")` right after the login click, while the other 15
+  tests — including every other spec's identical login step — passed; sibling
+  tests in the same 6-worker run took 15–53s under contention. Isolated re-run:
+  3/3 green with zero code change. NOT the render-ready class (that signal is
+  the stage's `data-render-ready`; this is the worlds-list route render) — this
+  is plain load contention against a 5s default expect timeout. Status: Needs
+  Review (if login-step waits keep flaking, raise the suite's default expect
+  timeout under parallel workers rather than per-spec patches).
+
 - Title: Phase-B world delete swallows asset-directory removal failures. Summary: `routes.rs::
   delete_world` returns 204 even when `remove_dir_all` on `<assets_path>/<world_id>/` fails for a
   reason other than NotFound (permission error, Windows open-handle lock); the failure is a
