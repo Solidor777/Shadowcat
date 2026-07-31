@@ -124,7 +124,8 @@ export interface LightingInput {
 export interface SceneToolHost {
   /** Set (or clear) the active tool; the no-tool case falls back to camera pan/zoom. */
   setActiveTool(tool: SceneTool | null): void;
-  /** Snap a scene point to the active grid (cell/vertex). */
+  /** Snap a scene point to the active grid's nearest cell CENTER (square: the containing
+   * cell's center; hex: the nearest hex's center) — never a vertex/corner. */
   snap(p: Point): Point;
   /** Toggle the scene-level snap-to-grid axis (M10f-3 §4.2): disabled makes `snap` identity
    * (free-form float placement/movement for a snap-off scene); grid RENDERING is unaffected —
@@ -149,10 +150,11 @@ export interface SceneToolHost {
   /** Drive a smooth local walk of a token along a route's scene-coord waypoints. */
   animateAlongPath(id: string, path: [number, number][]): void;
   /** Drive server-broadcast sample-based playback: interpolates position between adjacent
-   * MoveSamples by tMs; hides the token across occlusion gaps. `serverNow` is optional and
-   * used only at call time for catch-up (defaults to Date.now). `moverVision` (mover-only; null
-   * for observers) drives a progressive fog sweep in step with this same clock — see
-   * `MoveVisionSample`. */
+   * MoveSamples by tMs; hides the token across occlusion gaps. `serverNow` is optional, used
+   * once at call time as `Math.max(0, serverNow() - startServerMs)` to compute catch-up elapsed
+   * time; when absent, elapsed starts at `0` (no catch-up assumed — NOT a `Date.now` fallback).
+   * `moverVision` (mover-only; null for observers) drives a progressive fog sweep in step with
+   * this same clock — see `MoveVisionSample`. */
   animateSamples(
     id: string,
     samples: { tMs: number; pos: [number, number] }[],

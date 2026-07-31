@@ -343,10 +343,14 @@ export class RenderEngine implements SceneToolHost {
     }
   }
 
-  /** Records a resolved fog frame as applied and renders it. The single write site for
-   * `lastAppliedSeq`/`lastInput` — both `onSceneFrame`'s immediate branch and
-   * `flushPendingDerived`'s deferred branch funnel through here, so the watermark and the
-   * rendered mask can never disagree about which frame is current.
+  /** Records a resolved `vision`-frame application and renders it. The sole write site for
+   * `lastAppliedSeq`/`lastInput` reached from frame handling — both `onSceneFrame`'s immediate
+   * branch and `flushPendingDerived`'s deferred branch funnel through here, so those two paths
+   * can never disagree about which applied frame is current. Two other write sites exist
+   * outside frame handling, neither a frame application: {@link setViewAsUser} resets
+   * `lastAppliedSeq` to `-1` (a view-switch watermark reset) without touching `lastInput`, and
+   * {@link reapplyViewedScene} writes `lastInput` directly (a scene-switch re-filter of the
+   * already-cached raw payload) without touching `lastAppliedSeq`.
    * @param input The resolved `VisibilityInput` (already scene-filtered by `toVisibility`).
    * @param seq The frame's `computedAtSeq`, recorded as the new watermark.
    * @example
@@ -600,9 +604,12 @@ export class RenderEngine implements SceneToolHost {
     this.clearMeasure();
   }
 
-  /** `SceneToolHost.snap`: snap a scene point to the active grid — cell center for square grids,
-   * nearest axial vertex for hex (`Grid.snap`, `grid.ts:32`) — or the identity function when
-   * {@link setSnapEnabled} has disabled snapping for the current scene.
+  /** `SceneToolHost.snap`: snap a scene point to the active grid's nearest CELL CENTER — for
+   * square grids, the containing cell's center; for hex, the nearest hex's center via
+   * axial-round-then-convert (`Grid.snap`, `grid.ts:32`; `axialToPixel` returns a hex center, the
+   * same function `Grid`'s own `hexLines` uses as the origin it draws the six corners around —
+   * `grid.ts:156` — so this is a center, never a vertex, on either grid kind) — or the identity
+   * function when {@link setSnapEnabled} has disabled snapping for the current scene.
    * @param p A scene-coordinate point.
    * @returns `p` snapped to the active grid, or `p` unchanged when snapping is disabled.
    * @example
