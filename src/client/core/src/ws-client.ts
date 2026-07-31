@@ -989,8 +989,12 @@ export class WsClient {
    * Subscribe to broadcast MoveStream frames. Called for every recipient (mover + observers)
    * whenever a token's server-authoritative move completes. Returns an unsubscribe function.
    * Listeners survive reconnects; a caller that subscribes once keeps receiving across drops.
-   * @param cb Fires with every `MoveStream` frame (mover's own move and every other visible
-   * mover's move on the current scene).
+   * @param cb Fires with every `MoveStream` frame delivered to this connection, from ANY scene
+   * in the world — `WsClient` is a per-world connection with no notion of a "current scene",
+   * and the server's per-recipient egress clip (`clip_move_stream`, `ws/conn.rs`) filters only
+   * by vision/GM-trust, never by scene (a GM with no active see-as gets the full unclipped
+   * stream regardless of scene). Filtering to a viewed scene via `MoveStream.scene` is the
+   * CALLER's responsibility (see `worldSession`'s `onMoveStream` handler).
    * @returns An unsubscribe function that removes `cb` from the listener set.
    * @example
    * ```ts
