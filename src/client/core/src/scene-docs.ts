@@ -114,8 +114,17 @@ export type FaceVisual = RenderVisual;
 export type RegionShapeKind = "rect" | "circle" | "polygon";
 export type RegionBehavior = "terrain" | "impassable" | "arrest";
 
-// Recursive freeze helper — makes default constants immutable so shared refs
-// returned by resolver functions cannot be mutated by consumers in dev.
+/** Recursively `Object.freeze`s `obj` and every nested plain object reachable from it, so a
+ * shared default constant (e.g. `DEFAULT_SCENE_BOUNDS`) cannot be mutated in place by a
+ * consumer holding a reference to it. Internal helper — not exported from the package.
+ * @param obj The value to freeze in place.
+ * @returns `obj`, now recursively frozen (same reference, not a copy).
+ * @example
+ * ```
+ * const frozen = deepFreeze({ nested: { a: 1 } });
+ * Object.isFrozen(frozen.nested); // true
+ * ```
+ */
 function deepFreeze<T>(obj: T): T {
   Object.freeze(obj);
   for (const v of Object.values(obj as object)) {
@@ -175,7 +184,16 @@ export interface ResolvedSceneSettings {
   bounds: SceneDimensions;
 }
 
-/** Visible-to-all defaults; the server normalizes permissions per the creator's role. */
+/** Visible-to-all defaults; the server normalizes permissions per the creator's role.
+ * Internal helper — not exported from the package.
+ * @returns A fresh `WireDocument["permissions"]` object (observer-default, no per-user or
+ * per-property overrides, unconditional GM access via `gm_role: null`).
+ * @example
+ * ```
+ * const perms = defaultPermissions();
+ * perms.default; // "observer"
+ * ```
+ */
 function defaultPermissions(): WireDocument["permissions"] {
   return {
     default: "observer",
@@ -193,7 +211,31 @@ function defaultPermissions(): WireDocument["permissions"] {
  * `doc_type` (the key is then omitted on the wire, matching the server's
  * `Option<serde_json::Value>` default-`None`); `system` is always present (`{}` for a
  * doc_type whose real data lives entirely in `engine`). `name` is the universal envelope
- * display name, independent of the engine/system split. */
+ * display name, independent of the engine/system split.
+ * @param worldId The owning world's id (`scope.world_id`).
+ * @param docType The document's `doc_type` (e.g. `"scene"`, `"token"`, `"region"`).
+ * @param parentId The parent document id, or `null` for a top-level document.
+ * @param system The opaque `system` body; always present on the wire (`{}` when a
+ * doc_type's real data lives entirely in `engine`).
+ * @param id An explicit id, or `undefined` to generate one via `crypto.randomUUID()`.
+ * @param engine The typed, server-validated engine body, or `undefined` for a
+ * non-engine-defined doc_type (omitted from the wire object entirely).
+ * @param name The envelope display name, or `null` (default) when the doc_type has none.
+ * @returns A fully-formed `WireDocument` with fresh `created_at`/`updated_at` timestamps,
+ * visible-to-all-observers default permissions, no owner, and no embedded documents.
+ * @example
+ * ```ts
+ * import { envelope } from "@shadowcat/core";
+ *
+ * const doc = envelope("world-1", "region", "scene-1", {}, undefined, {
+ *   shape: { kind: "rect", points: [0, 0, 1, 1] },
+ *   behavior: "terrain",
+ *   cost: 1,
+ *   enabled: true,
+ * });
+ * doc.doc_type; // "region"
+ * ```
+ */
 export function envelope(
   worldId: string,
   docType: string,
@@ -222,7 +264,18 @@ export function envelope(
   };
 }
 
-/** 32-bit FNV-1a mix, seeded, over `str`. Building block for `deterministicId`. */
+/** 32-bit FNV-1a mix, seeded, over `str`. Building block for `deterministicId`.
+ * Internal helper — not exported from the package.
+ * @param str The input string to mix.
+ * @param seed The 32-bit seed to mix in (a different seed over the same `str` yields an
+ * independent-looking 32-bit output — used to derive 128 bits of id material from four seeds).
+ * @returns The mixed 32-bit hash, unsigned (`>>> 0`).
+ * @example
+ * ```
+ * const h = fnv1a32("world-1:faction-registry", 0x811c9dc5);
+ * typeof h; // "number"
+ * ```
+ */
 function fnv1a32(str: string, seed: number): number {
   let h = seed >>> 0;
   for (let i = 0; i < str.length; i++) {
@@ -242,7 +295,19 @@ function fnv1a32(str: string, seed: number): number {
  * the server's singleton create-gate rejects a duplicate Create by `doc_type`, not by id, so a
  * (practically impossible) id collision would only ever surface as an ordinary id-uniqueness
  * conflict. Reference id scheme for singleton config-doc seeders (`faction-registry`,
- * `condition-registry`, `world-settings`, …). */
+ * `condition-registry`, `world-settings`, …).
+ * @param namespace The id-space discriminator (e.g. a world id).
+ * @param name The item name within that namespace (e.g. `"faction-registry"`).
+ * @returns A UUID-v5-shaped (36-char, hyphenated) deterministic string id.
+ * @example
+ * ```ts
+ * import { deterministicId } from "@shadowcat/core";
+ *
+ * const idA = deterministicId("world-1", "faction-registry");
+ * const idB = deterministicId("world-1", "faction-registry");
+ * idA === idB; // true — same inputs always produce the same id
+ * ```
+ */
 export function deterministicId(namespace: string, name: string): string {
   const input = `${namespace}:${name}`;
   const hex = [0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35]
@@ -257,7 +322,20 @@ export function deterministicId(namespace: string, name: string): string {
 /** A top-level scene document with a default square/100 grid and no background.
  * Optional `vision`/`lighting` overrides, `grid.distance`, and `snapToGrid` are included
  * only when provided; absent keys fall back to world-settings defaults at resolution time.
- * `doc_type: "scene"` is engine-defined — the body lands in `engine`, `system` stays `{}`. */
+ * `doc_type: "scene"` is engine-defined — the body lands in `engine`, `system` stays `{}`.
+ * @param worldId The owning world's id.
+ * @param engine A partial `SceneEngine`; any omitted field falls back to the default square
+ * grid (`{ kind: "square", size: 100, distance: null }`) or `null`.
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "scene"`.
+ * @example
+ * ```ts
+ * import { buildSceneDoc } from "@shadowcat/core";
+ *
+ * const scene = buildSceneDoc("world-1", { grid: { kind: "square", size: 50, distance: null } });
+ * scene.doc_type; // "scene"
+ * ```
+ */
 export function buildSceneDoc(worldId: string, engine: Partial<SceneEngine> = {}, id?: string): WireDocument {
   const full: SceneEngine = {
     grid: engine.grid ?? { kind: "square", size: 100, distance: null },
@@ -274,7 +352,20 @@ export function buildSceneDoc(worldId: string, engine: Partial<SceneEngine> = {}
  * Seeds the FULL default object so that a world-settings doc is always complete;
  * single-field edits patch it in place via set_pointer.
  * Default param is a fresh deep clone — the returned doc's `.engine` must not alias
- * DEFAULT_WORLD_SETTINGS (value-independence-at-construction invariant). */
+ * DEFAULT_WORLD_SETTINGS (value-independence-at-construction invariant).
+ * @param worldId The owning world's id.
+ * @param engine The full `WorldSettingsEngine`; defaults to a deep clone of
+ * `DEFAULT_WORLD_SETTINGS` when omitted.
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "world-settings"`.
+ * @example
+ * ```ts
+ * import { buildWorldSettingsDoc } from "@shadowcat/core";
+ *
+ * const settings = buildWorldSettingsDoc("world-1");
+ * settings.doc_type; // "world-settings"
+ * ```
+ */
 export function buildWorldSettingsDoc(
   worldId: string,
   engine: WorldSettingsEngine = structuredClone(DEFAULT_WORLD_SETTINGS),
@@ -284,7 +375,15 @@ export function buildWorldSettingsDoc(
 }
 
 /** Fail-closed bounds resolve: a present-but-malformed bounds (non-finite or ≤ 0 on either
- * axis) falls back to the finite default rather than yielding a degenerate navmesh rectangle. */
+ * axis) falls back to the finite default rather than yielding a degenerate navmesh rectangle.
+ * Internal helper — not exported from the package.
+ * @param b A candidate `SceneDimensions`, possibly absent or malformed.
+ * @returns `b` unchanged when both axes are finite and `> 0`; otherwise `DEFAULT_SCENE_BOUNDS`.
+ * @example
+ * ```
+ * resolveBounds({ width: 0, height: 100 }); // DEFAULT_SCENE_BOUNDS (width is not > 0)
+ * ```
+ */
 function resolveBounds(b: SceneDimensions | null | undefined): SceneDimensions {
   const w = b?.width, h = b?.height;
   if (typeof w === "number" && Number.isFinite(w) && w > 0 &&
@@ -300,7 +399,20 @@ function resolveBounds(b: SceneDimensions | null | undefined): SceneDimensions {
  * DEFAULT_WORLD_SETTINGS; never throws. A partial wire payload (e.g. a set_pointer
  * that removed a top-level key) is non-null but structurally incomplete, so the `??`
  * guard alone is insufficient; we require all three top-level keys to be present.
- * Default gridDistance: 5 ft/cell (standard D&D 5e scale). */
+ * Default gridDistance: 5 ft/cell (standard D&D 5e scale).
+ * @param scene The scene document to resolve settings for (may be `undefined`).
+ * @param store The document store to query the world-settings singleton from.
+ * @returns The fully resolved `ResolvedSceneSettings` for `scene`.
+ * @example
+ * ```ts
+ * import { resolveSceneSettings, type ReadableDocuments } from "@shadowcat/core";
+ *
+ * declare const scene: Parameters<typeof resolveSceneSettings>[0];
+ * declare const store: ReadableDocuments;
+ * const settings = resolveSceneSettings(scene, store);
+ * settings.gridDistance; // { perCell: 5, unit: "ft" } when unset
+ * ```
+ */
 export function resolveSceneSettings(scene: WireDocument | undefined, store: ReadableDocuments): ResolvedSceneSettings {
   const ws = store.query("world-settings")[0]?.engine as WorldSettingsEngine | undefined;
   // Structural guard: a partial doc (missing scene/pathfinding/animation) falls back to
@@ -339,7 +451,20 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
  * `world-settings.activeScene` (players follow) → the first scene (legacy). `null` ONLY when
  * no scene exists. Fail-closed by construction: an id that no longer names a scene is ignored
  * (never renders nothing while scenes exist, never leaks a nonexistent scene's channel).
- * Players never pass `gmViewedScene`, so they always follow `activeScene`. */
+ * Players never pass `gmViewedScene`, so they always follow `activeScene`.
+ * @param store The document store to query scenes and world-settings from.
+ * @param opts Resolution options.
+ * @param opts.gmViewedScene The GM's local-roam scene id override, or `undefined`/`null`
+ * for a player (who always follows `activeScene`).
+ * @returns The scene id this client should render/subscribe to, or `null` if no scene exists.
+ * @example
+ * ```ts
+ * import { resolveViewedScene, type ReadableDocuments } from "@shadowcat/core";
+ *
+ * declare const store: ReadableDocuments;
+ * const sceneId = resolveViewedScene(store, { gmViewedScene: null });
+ * ```
+ */
 export function resolveViewedScene(
   store: ReadableDocuments,
   opts: { gmViewedScene?: string | null } = {},
@@ -356,7 +481,25 @@ export function resolveViewedScene(
 /** A top-level (world-scoped, parentless) actor document. `name` is the actor's real,
  * privacy-gateable identity (envelope field); `engine` carries every other engine-owned
  * field (`displayName`, visual, size, shape, faction, conditions, prototype, vision)
- * per `ActorEngine`. */
+ * per `ActorEngine`.
+ * @param worldId The owning world's id.
+ * @param name The actor's real name (envelope field; use `setNameHidden` to privacy-gate it).
+ * @param engine The full `ActorEngine` body.
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "actor"`.
+ * @example
+ * ```ts
+ * import { buildActorDoc, type ActorEngine } from "@shadowcat/core";
+ *
+ * const engine: ActorEngine = {
+ *   displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
+ *   size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
+ *   prototype: false, vision: null,
+ * };
+ * const actor = buildActorDoc("world-1", "Goblin", engine);
+ * actor.doc_type; // "actor"
+ * ```
+ */
 export function buildActorDoc(worldId: string, name: string | null, engine: ActorEngine, id?: string): WireDocument {
   return envelope(worldId, "actor", null, {}, id, engine, name);
 }
@@ -372,6 +515,21 @@ export interface ItemSystem {
   [key: string]: unknown;
 }
 
+/** A client-only `item` document (top-level, parentless, or later embedded in an actor's
+ * inventory). NOT engine-defined — the server stays fully structural for `system`.
+ * @param worldId The owning world's id.
+ * @param name The item's display name (envelope field).
+ * @param system The opaque item body, edited via the tree editor; defaults to `{}`.
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "item"` (no `engine` body).
+ * @example
+ * ```ts
+ * import { buildItemDoc } from "@shadowcat/core";
+ *
+ * const item = buildItemDoc("world-1", "Longsword", { damage: "1d8" });
+ * item.doc_type; // "item"
+ * ```
+ */
 export function buildItemDoc(worldId: string, name: string | null, system: ItemSystem = {}, id?: string): WireDocument {
   return envelope(worldId, ITEM_DOC_TYPE, null, system, id, undefined, name);
 }
@@ -379,7 +537,28 @@ export function buildItemDoc(worldId: string, name: string | null, system: ItemS
 /** Build a token from an actor. `link` references the shared actor; `instance` embeds an
  * independent copy with `source` provenance (the deferred merge engine consumes it). Size/
  * shape resolve from the actor (M10d); `w`/`h` seed the rendered cell size now.
- * `doc_type: "token"` is engine-defined — the transform/visual/link body lands in `engine`. */
+ * `doc_type: "token"` is engine-defined — the transform/visual/link body lands in `engine`.
+ * @param worldId The owning world's id.
+ * @param sceneId The scene document this token is parented to.
+ * @param actor The source actor document to link or instance.
+ * @param mode `"link"` shares the actor (`engine.actor_id`); `"instance"` embeds a deep-cloned,
+ * independent copy with `source` provenance.
+ * @param pos The token's initial scene-unit position.
+ * @param pos.x The initial x coordinate, scene units.
+ * @param pos.y The initial y coordinate, scene units.
+ * @param cellSize The dangling-link fallback size (`w`/`h`); the actor-backed render path
+ * resolves size through `EffectiveActor.size × grid-cell` instead (see `resolveTokenBox`).
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "token"`, parented to `sceneId`.
+ * @example
+ * ```ts
+ * import { buildTokenFromActor, type WireDocument } from "@shadowcat/core";
+ *
+ * declare const actor: WireDocument;
+ * const token = buildTokenFromActor("world-1", "scene-1", actor, "link", { x: 0, y: 0 }, 100);
+ * token.doc_type; // "token"
+ * ```
+ */
 export function buildTokenFromActor(
   worldId: string,
   sceneId: string,
@@ -414,7 +593,24 @@ export function buildTokenFromActor(
  * `/name` (the envelope field) as the `owner_or_gm` tier (the server redacts it to `null`
  * from non-owner players on egress, and retroactively retracts an already-delivered value
  * when the override is added); clearing removes the declaration. Mutates in place +
- * returns `doc`. */
+ * returns `doc`.
+ * @param doc The document to mutate (typically an `actor` or `token`).
+ * @param hidden `true` to hide the name from non-owner/non-GM recipients; `false` to reveal it.
+ * @returns `doc`, mutated in place.
+ * @example
+ * ```ts
+ * import { setNameHidden, buildActorDoc, type ActorEngine } from "@shadowcat/core";
+ *
+ * const engine: ActorEngine = {
+ *   displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
+ *   size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
+ *   prototype: false, vision: null,
+ * };
+ * const actor = buildActorDoc("world-1", "Goblin", engine);
+ * setNameHidden(actor, true);
+ * actor.permissions.property_overrides["/name"]; // "owner_or_gm"
+ * ```
+ */
 export function setNameHidden(doc: WireDocument, hidden: boolean): WireDocument {
   const overrides = { ...doc.permissions.property_overrides };
   if (hidden) overrides["/name"] = "owner_or_gm";
@@ -423,26 +619,91 @@ export function setNameHidden(doc: WireDocument, hidden: boolean): WireDocument 
   return doc;
 }
 
-/** A token document parented to `sceneId`, carrying the given transform + visual. */
+/** A token document parented to `sceneId`, carrying the given transform + visual.
+ * @param worldId The owning world's id.
+ * @param sceneId The scene document this token is parented to.
+ * @param engine The full `TokenEngine` body (transform, visual, link, overrides, face).
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "token"`, parented to `sceneId`.
+ * @example
+ * ```ts
+ * import { buildTokenDoc, type TokenEngine } from "@shadowcat/core";
+ *
+ * const engine: TokenEngine = {
+ *   x: 50, y: 50, w: 100, h: 100, rotation: 0,
+ *   visual: null, actor_id: null, overrides: null, face: null,
+ * };
+ * const token = buildTokenDoc("world-1", "scene-1", engine);
+ * token.doc_type; // "token"
+ * ```
+ */
 export function buildTokenDoc(worldId: string, sceneId: string, engine: TokenEngine, id?: string): WireDocument {
   return envelope(worldId, "token", sceneId, {}, id, engine, null);
 }
 
 /** A top-level (world-scoped, parentless) faction-registry document.
- * `doc_type: "faction-registry"` is engine-defined. */
+ * `doc_type: "faction-registry"` is engine-defined.
+ * @param worldId The owning world's id.
+ * @param factions The id-keyed faction map.
+ * @param id An explicit id, or `undefined` to generate one; use `deterministicId` for a
+ * singleton seed so racing GMs converge on one id.
+ * @returns A `WireDocument` with `doc_type: "faction-registry"`.
+ * @example
+ * ```ts
+ * import { buildFactionRegistryDoc } from "@shadowcat/core";
+ *
+ * const doc = buildFactionRegistryDoc("world-1", {
+ *   goblins: { name: "Goblins", color: "#00ff00", stance: "hostile" },
+ * });
+ * doc.doc_type; // "faction-registry"
+ * ```
+ */
 export function buildFactionRegistryDoc(worldId: string, factions: Record<string, Faction>, id?: string): WireDocument {
   return envelope(worldId, "faction-registry", null, {}, id, { factions } satisfies FactionRegistryEngine, null);
 }
 
 /** A top-level (world-scoped, parentless) condition-registry document.
- * `doc_type: "condition-registry"` is engine-defined. */
+ * `doc_type: "condition-registry"` is engine-defined.
+ * @param worldId The owning world's id.
+ * @param conditions The id-keyed condition map.
+ * @param id An explicit id, or `undefined` to generate one; use `deterministicId` for a
+ * singleton seed so racing GMs converge on one id.
+ * @returns A `WireDocument` with `doc_type: "condition-registry"`.
+ * @example
+ * ```ts
+ * import { buildConditionRegistryDoc } from "@shadowcat/core";
+ *
+ * const doc = buildConditionRegistryDoc("world-1", {
+ *   prone: { name: "Prone", icon: "🔻" },
+ * });
+ * doc.doc_type; // "condition-registry"
+ * ```
+ */
 export function buildConditionRegistryDoc(worldId: string, conditions: Record<string, Condition>, id?: string): WireDocument {
   return envelope(worldId, "condition-registry", null, {}, id, { conditions } satisfies ConditionRegistryEngine, null);
 }
 
 /** A generic scene-entity document (drawing/template/wall/…) parented to `sceneId`; every
  * doc_type this builder is used for (`wall`, `region`, `drawing`, `template`) is
- * engine-defined, so the caller's shape lands in `engine` — `system` stays `{}`. */
+ * engine-defined, so the caller's shape lands in `engine` — `system` stays `{}`.
+ * @param worldId The owning world's id.
+ * @param sceneId The scene document this entity is parented to.
+ * @param docType The engine-defined doc_type (e.g. `"wall"`, `"drawing"`, `"template"`).
+ * @param engine The doc_type's engine body (typed by the caller per `docType`).
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with the given `doc_type`, parented to `sceneId`.
+ * @example
+ * ```ts
+ * import { buildSceneEntityDoc, type WallEngine } from "@shadowcat/core";
+ *
+ * const engine: WallEngine = {
+ *   seg: { x1: 0, y1: 0, x2: 10, y2: 0 },
+ *   blocksSight: true, blocksLight: true, blocksMove: true,
+ * };
+ * const wall = buildSceneEntityDoc("world-1", "scene-1", "wall", engine);
+ * wall.doc_type; // "wall"
+ * ```
+ */
 export function buildSceneEntityDoc(worldId: string, sceneId: string, docType: string, engine: unknown, id?: string): WireDocument {
   return envelope(worldId, docType, sceneId, {}, id, engine, null);
 }
@@ -462,14 +723,38 @@ export const DEFAULT_GRADATION: LightGradationEngine = deepFreeze({
 
 /** A top-level (world-scoped, parentless) light-gradation config document.
  * Default param is a fresh deep clone — the returned doc's `.engine` must not alias
- * DEFAULT_GRADATION (value-independence-at-construction invariant). */
+ * DEFAULT_GRADATION (value-independence-at-construction invariant).
+ * @param worldId The owning world's id.
+ * @param engine The full `LightGradationEngine`; defaults to a deep clone of
+ * `DEFAULT_GRADATION` when omitted.
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "light-gradation"`.
+ * @example
+ * ```ts
+ * import { buildLightGradationDoc } from "@shadowcat/core";
+ *
+ * const doc = buildLightGradationDoc("world-1");
+ * doc.doc_type; // "light-gradation"
+ * ```
+ */
 export function buildLightGradationDoc(worldId: string, engine: LightGradationEngine = structuredClone(DEFAULT_GRADATION), id?: string): WireDocument {
   return envelope(worldId, "light-gradation", null, {}, id, engine, null);
 }
 
 /** Returns bands sorted brightest-first (descending `minIllumination`) so a consumer
  * can walk the array and pick the first band whose floor a cell's illumination meets.
- * Fail-closed: absent or malformed doc falls back to DEFAULT_GRADATION; never throws. */
+ * Fail-closed: absent or malformed doc falls back to DEFAULT_GRADATION; never throws.
+ * @param store The document store to query the light-gradation singleton from.
+ * @returns The effective gradation bands, sorted brightest-first.
+ * @example
+ * ```ts
+ * import { resolveGradation, type ReadableDocuments } from "@shadowcat/core";
+ *
+ * declare const store: ReadableDocuments;
+ * const bands = resolveGradation(store);
+ * bands[0].name; // "bright" (or the highest-minIllumination band on record)
+ * ```
+ */
 export function resolveGradation(store: ReadableDocuments): GradationBand[] {
   const eng = store.query("light-gradation")[0]?.engine as LightGradationEngine | undefined;
   const bands = eng?.bands ?? DEFAULT_GRADATION.bands;
@@ -487,13 +772,37 @@ export const SEED_VISION_MODES: Record<string, VisionMode> = deepFreeze({
 
 /** A top-level (world-scoped, parentless) vision-modes config document.
  * Default param is a fresh deep clone — the returned doc's `.engine.modes` must not alias
- * SEED_VISION_MODES (value-independence-at-construction invariant). */
+ * SEED_VISION_MODES (value-independence-at-construction invariant).
+ * @param worldId The owning world's id.
+ * @param engine The full `VisionModesEngine`; defaults to a deep clone of the `modes` map
+ * built from `SEED_VISION_MODES` when omitted.
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "vision-modes"`.
+ * @example
+ * ```ts
+ * import { buildVisionModesDoc } from "@shadowcat/core";
+ *
+ * const doc = buildVisionModesDoc("world-1");
+ * doc.doc_type; // "vision-modes"
+ * ```
+ */
 export function buildVisionModesDoc(worldId: string, engine: VisionModesEngine = { modes: structuredClone(SEED_VISION_MODES) }, id?: string): WireDocument {
   return envelope(worldId, "vision-modes", null, {}, id, engine, null);
 }
 
 /** Returns the effective vision-mode map.
- * Fail-closed: absent or malformed doc falls back to SEED_VISION_MODES; never throws. */
+ * Fail-closed: absent or malformed doc falls back to SEED_VISION_MODES; never throws.
+ * @param store The document store to query the vision-modes singleton from.
+ * @returns The effective id-keyed `VisionMode` map.
+ * @example
+ * ```ts
+ * import { resolveVisionModes, type ReadableDocuments } from "@shadowcat/core";
+ *
+ * declare const store: ReadableDocuments;
+ * const modes = resolveVisionModes(store);
+ * modes.darkvision?.defaultRange; // 12 when unconfigured
+ * ```
+ */
 export function resolveVisionModes(store: ReadableDocuments): Record<string, VisionMode> {
   const eng = store.query("vision-modes")[0]?.engine as VisionModesEngine | undefined;
   return eng?.modes ?? SEED_VISION_MODES;
@@ -502,7 +811,24 @@ export function resolveVisionModes(store: ReadableDocuments): Record<string, Vis
 // --- Light source doc type (M10e-1) ---
 
 /** A light-source document parented to `sceneId`. The caller supplies the full `engine`
- * body (no default constant — no aliasing concern). `doc_type: "light"` is engine-defined. */
+ * body (no default constant — no aliasing concern). `doc_type: "light"` is engine-defined.
+ * @param worldId The owning world's id.
+ * @param sceneId The scene document this light is parented to.
+ * @param engine The full `LightEngine` body (position, color, intensity, radii, falloff).
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "light"`, parented to `sceneId`.
+ * @example
+ * ```ts
+ * import { buildLightDoc, type LightEngine } from "@shadowcat/core";
+ *
+ * const engine: LightEngine = {
+ *   x: 0, y: 0, color: "#ffcc66", intensity: 1,
+ *   brightRadius: 4, dimRadius: 8, falloff: null, enabled: true,
+ * };
+ * const light = buildLightDoc("world-1", "scene-1", engine);
+ * light.doc_type; // "light"
+ * ```
+ */
 export function buildLightDoc(worldId: string, sceneId: string, engine: LightEngine, id?: string): WireDocument {
   return envelope(worldId, "light", sceneId, {}, id, engine, null);
 }
@@ -510,7 +836,24 @@ export function buildLightDoc(worldId: string, sceneId: string, engine: LightEng
 // --- Region doc type (M10g) ---
 
 /** A region document parented to `sceneId`. Visible to all by default; use
- * `setRegionVisibility` to make it a secret trap. `doc_type: "region"` is engine-defined. */
+ * `setRegionVisibility` to make it a secret trap. `doc_type: "region"` is engine-defined.
+ * @param worldId The owning world's id.
+ * @param sceneId The scene document this region is parented to.
+ * @param engine The full `RegionEngine` body (shape, behavior, cost, enabled).
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "region"`, parented to `sceneId`.
+ * @example
+ * ```ts
+ * import { buildRegionDoc, type RegionEngine } from "@shadowcat/core";
+ *
+ * const engine: RegionEngine = {
+ *   shape: { kind: "rect", points: [0, 0, 5, 5] },
+ *   behavior: "impassable", cost: 1, enabled: true,
+ * };
+ * const region = buildRegionDoc("world-1", "scene-1", engine);
+ * region.doc_type; // "region"
+ * ```
+ */
 export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionEngine, id?: string): WireDocument {
   return envelope(worldId, "region", sceneId, {}, id, engine, null);
 }
@@ -524,7 +867,23 @@ export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionE
  *     (the region's shape/behavior/cost lives in `engine`, not `/system`) if a future
  *     capability grant ever widens `default`/`users` without revisiting secrecy.
  * Un-hiding restores `default = "observer"` (the original `envelope()` default) and clears the
- * override. Mutates in place + returns `doc`. */
+ * override. Mutates in place + returns `doc`.
+ * @param doc The region document to mutate.
+ * @param hidden `true` to hide the region from non-owner/non-GM recipients; `false` to reveal it.
+ * @returns `doc`, mutated in place.
+ * @example
+ * ```ts
+ * import { setRegionVisibility, buildRegionDoc, type RegionEngine } from "@shadowcat/core";
+ *
+ * const engine: RegionEngine = {
+ *   shape: { kind: "rect", points: [0, 0, 5, 5] },
+ *   behavior: "impassable", cost: 1, enabled: true,
+ * };
+ * const region = buildRegionDoc("world-1", "scene-1", engine);
+ * setRegionVisibility(region, true);
+ * region.permissions.default; // "none"
+ * ```
+ */
 export function setRegionVisibility(doc: WireDocument, hidden: boolean): WireDocument {
   const overrides = { ...doc.permissions.property_overrides };
   if (hidden) overrides["/engine"] = "gm_only";
