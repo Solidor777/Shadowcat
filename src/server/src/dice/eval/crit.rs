@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use crate::dice::spec::{CritTrigger, Direction, SuccessConfig, SuccessRule, Symbol};
 
 /// Per-die crit scoring result. `is_success`/`is_fail` gate whether the die's

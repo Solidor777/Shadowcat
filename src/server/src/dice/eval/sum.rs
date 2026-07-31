@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use crate::dice::eval::classify;
 use crate::dice::outcome::{RawRoll, RollOutcome};
 use crate::dice::spec::{BinOp, ConstTerm, Expr, RollSpec, TotalConfig};

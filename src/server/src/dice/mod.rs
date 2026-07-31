@@ -3,6 +3,9 @@
 //! (deterministic). Randomness is a stateless noise function, so any roll is
 //! reproducible from its seed. INVARIANT: (spec, raws) fully determines the outcome.
 
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 /// Deterministic evaluation pipeline (roll + score).
 pub mod eval;
 /// Notation string -> `RollSpec` (lexer + parser).

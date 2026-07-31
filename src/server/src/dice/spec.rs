@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use serde::{Deserialize, Serialize};
 
 /// Stable identity of a rolled die within one roll; lets `recalculate` target a subset.

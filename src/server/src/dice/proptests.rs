@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use proptest::prelude::*;
 
 use crate::dice::eval::{evaluate, roll};

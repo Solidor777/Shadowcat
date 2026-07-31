@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 /// Stateless 64-bit noise (SplitMix64 finalizer). Deterministic: `noise(seed, n)`
 /// depends only on its inputs, so any die is reproducible from (seed, index) with no
 /// carried state. Source: SplitMix64 [Steele, Lea & Flood 2014]; constants are the

@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use crate::dice::notation::ParseError;
 use crate::dice::spec::Comparator;
 

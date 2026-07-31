@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 /// Notation tokenizer.
 pub mod lexer;
 /// Recursive-descent parser: tokens -> `RollSpec`.

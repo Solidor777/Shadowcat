@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use crate::dice::spec::{Direction, Tier};
 
 /// Classification of an oriented margin (higher = better). Mutually exclusive

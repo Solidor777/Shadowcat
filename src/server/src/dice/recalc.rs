@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use crate::dice::eval::evaluate;
 use crate::dice::eval::groups::resolve_group;
 use crate::dice::outcome::{RawDie, RawRoll, RollOutcome};

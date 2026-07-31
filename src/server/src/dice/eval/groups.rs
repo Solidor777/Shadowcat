@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use crate::dice::outcome::{DieRecord, RawDie, RawRoll};
 use crate::dice::rng::{roll_uniform, RngSource};
 use crate::dice::spec::{DiceGroup, DieKind, ExplodeKind, GroupModifier};
