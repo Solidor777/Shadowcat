@@ -129,6 +129,33 @@ files) for the same claim, and check the interface the symbol implements. Better
 plan an explicit step — "verify claims in already-clean files this sweep's subject matter touches" —
 because the ratchet, the census, and the task list are all blind here by construction.
 
+## RULE 11 — when two findings share a shape, stop hunting instances and audit that dimension
+
+Two defects with the same *form* are evidence of a blind spot, not a coincidence. Switch from
+opportunistic hunting to a systematic pass over the dimension they share, enumerating every member of
+the relevant surface.
+
+Sweep 8 Task 2 documented a real/mock backend pair. The implementer found 7 divergences; a code review
+found an 8th (`addLayerFilter` dispose removes by value vs. by identity); a spec review found a 9th
+(`startTicker` accumulates vs. replaces). Both new ones were **repeat-call semantics** — what happens
+when a method is invoked twice — which no doc addressed for any method. Reframing that as a dimension
+and walking all 21 methods with three questions produced **two more** (a 10th and 11th) that three prior
+passes over the same two files had missed:
+
+1. What does calling this **twice** do — accumulate, replace, no-op, or throw?
+2. Do the two implementations **agree** on that answer?
+3. Is the answer **documented**?
+
+The 10th was the sharpest in the set: the real backend's `destroy()` throws on a second call (Pixi nulls
+`stage`/`renderer`), while the mock's is silently idempotent — so a double-destroy test passes green and
+production crashes. Ad-hoc reading had walked past it three times.
+
+**How to apply.** Name the dimension explicitly, work from the *real* member list (read the interface,
+don't reuse the list in the brief — the guessed list in this case omitted the method that yielded the
+11th), bound each finding's reachability so it can ship as a contract caveat rather than a bug report,
+and **report the negative result too**: a pass that lists only hits is indistinguishable from a pass
+that stopped early. The explicit "these 17 agree" list is what makes a completeness claim credible.
+
 ## Report contract
 
 The implementer's report must carry a claims table (claim → verifying `file:line`), and corrections in a
