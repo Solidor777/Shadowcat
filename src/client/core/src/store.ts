@@ -6,7 +6,18 @@ import { DocumentSchema } from "./wire";
 
 /** Set `value` at JSON-pointer `pointer` in `root`, mirroring the server's
  * set-only `set_pointer` (creates intermediate objects; array indices replace).
- * A non-empty pointer must start with "/". */
+ * A non-empty pointer must start with "/".
+ * @param root The document (sub)tree to mutate in place.
+ * @param pointer A JSON pointer (`/a/b/0`); must be non-empty and start with `/`.
+ * @param value The value to write at `pointer`.
+ * @example
+ * ```ts
+ * import { setPointer } from "@shadowcat/core";
+ *
+ * const doc: Record<string, unknown> = { system: {} };
+ * setPointer(doc, "/system/hp", 10);
+ * ```
+ */
 export function setPointer(
   root: unknown,
   pointer: string,
@@ -59,7 +70,17 @@ export function setPointer(
  * `remove_pointer`: object keys only; removing an already-absent key — or one beneath an
  * absent OR explicit-`null` intermediate — is a silent no-op (no intermediate is created).
  * Array-index removal throws (an array shrinks via whole-array replacement, never a leaf
- * remove). A non-empty pointer must start with "/". */
+ * remove). A non-empty pointer must start with "/".
+ * @param root The document (sub)tree to mutate in place.
+ * @param pointer A JSON pointer to an object key (`/a/b`); must be non-empty and start with `/`.
+ * @example
+ * ```ts
+ * import { removePointer } from "@shadowcat/core";
+ *
+ * const doc: Record<string, unknown> = { system: { hp: 10 } };
+ * removePointer(doc, "/system/hp"); // { system: {} } — key genuinely absent, not null
+ * ```
+ */
 export function removePointer(root: unknown, pointer: string): void {
   if (pointer === "") {
     throw new Error("empty JSON pointer cannot target a field");
@@ -101,7 +122,18 @@ export function removePointer(root: unknown, pointer: string): void {
 
 /** Reads the value at JSON-pointer `pointer` in `root`; `undefined` for any missing
  * segment or out-of-range array index. Never throws (the read-only mirror of
- * `setPointer`). An empty pointer returns `root`. */
+ * `setPointer`). An empty pointer returns `root`.
+ * @param root The document (sub)tree to read from.
+ * @param pointer A JSON pointer (`/a/b/0`); the empty string returns `root` itself.
+ * @returns The value at `pointer`, or `undefined` if any segment is missing/out of range.
+ * @example
+ * ```ts
+ * import { getPointer } from "@shadowcat/core";
+ *
+ * getPointer({ system: { hp: 10 } }, "/system/hp"); // 10
+ * getPointer({ system: {} }, "/system/missing"); // undefined
+ * ```
+ */
 export function getPointer(root: unknown, pointer: string): unknown {
   if (pointer === "") return root;
   const tokens = pointer.split("/").slice(1).map((t) => t.replace(/~1/g, "/").replace(/~0/g, "~"));
@@ -121,7 +153,20 @@ export function getPointer(root: unknown, pointer: string): unknown {
 }
 
 /** Apply one operation to a document map (mutates it). Update clones the target
- * before mutating, so callers sharing document refs are not affected. */
+ * before mutating, so callers sharing document refs are not affected.
+ * @param docs The document map to mutate in place, keyed by document id.
+ * @param op The operation: `create` inserts, `delete` removes, `update` applies each
+ * `FieldChange` in order via `setPointer`/`removePointer` and re-validates the result.
+ * @example
+ * ```ts
+ * import { applyOperation } from "@shadowcat/core";
+ * import type { WireOperation, WireDocument } from "@shadowcat/core";
+ *
+ * declare const docs: Map<string, WireDocument>;
+ * declare const op: WireOperation;
+ * applyOperation(docs, op);
+ * ```
+ */
 export function applyOperation(
   docs: Map<string, WireDocument>,
   op: WireOperation,
@@ -169,31 +214,93 @@ export class DocumentStore implements ReadableDocuments {
   /** Highest authoritative seq applied. */
   appliedSeq = 0;
 
-  /** Apply a confirmed, sequenced command, then notify subscribers. */
+  /** Apply a confirmed, sequenced command, then notify subscribers.
+   * @param cmd An authoritative, server-sequenced command (wire `WsClient.onCommand`
+   * to this — see `shadowcat-codebase-realtime-sync`).
+   * @example
+   * ```ts
+   * import { DocumentStore } from "@shadowcat/core";
+   * import type { WireCommand } from "@shadowcat/core";
+   *
+   * const store = new DocumentStore();
+   * declare const cmd: WireCommand;
+   * store.applyCommand(cmd);
+   * ```
+   */
   applyCommand(cmd: WireCommand): void {
     for (const op of cmd.ops) applyOperation(this.docs, op);
     this.appliedSeq = cmd.seq;
     this.emit();
   }
 
+  /** Look up one document by id.
+   * @param id The document id.
+   * @returns The document, or `undefined` if not present in this world's store.
+   * @example
+   * ```ts
+   * import { DocumentStore } from "@shadowcat/core";
+   *
+   * const store = new DocumentStore();
+   * store.get("00000000-0000-0000-0000-000000000001"); // undefined until applyCommand creates it
+   * ```
+   */
   get(id: string): WireDocument | undefined {
     return this.docs.get(id);
   }
 
+  /** All documents of one `doc_type`.
+   * @param docType The `doc_type` string to filter on (e.g. `"actor"`, `"scene"`).
+   * @returns Every stored document whose `doc_type` matches, in no particular order.
+   * @example
+   * ```ts
+   * import { DocumentStore } from "@shadowcat/core";
+   *
+   * const store = new DocumentStore();
+   * store.query("actor"); // []
+   * ```
+   */
   query(docType: string): WireDocument[] {
     return [...this.docs.values()].filter((d) => d.doc_type === docType);
   }
 
+  /** Every document currently held.
+   * @returns All stored documents, in no particular order.
+   * @example
+   * ```ts
+   * import { DocumentStore } from "@shadowcat/core";
+   *
+   * const store = new DocumentStore();
+   * store.snapshot(); // []
+   * ```
+   */
   snapshot(): WireDocument[] {
     return [...this.docs.values()];
   }
 
-  /** Subscribe to any change; returns an unsubscribe. */
+  /** Subscribe to any change; returns an unsubscribe.
+   * @param listener Called (with no arguments) after every `applyCommand`.
+   * @returns A function that removes `listener`.
+   * @example
+   * ```ts
+   * import { DocumentStore } from "@shadowcat/core";
+   *
+   * const store = new DocumentStore();
+   * const unsubscribe = store.subscribe(() => console.log("changed"));
+   * unsubscribe();
+   * ```
+   */
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
+  /** Notify every subscriber. Private: called only from `applyCommand`.
+   * @example
+   * ```
+   * // internal; not part of the public API — invoked only from applyCommand
+   * this.emit();
+   * ```
+   */
   private emit(): void {
     for (const fn of this.listeners) fn();
   }

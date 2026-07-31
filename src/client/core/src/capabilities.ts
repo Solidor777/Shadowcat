@@ -15,6 +15,19 @@ import type { WireDocument, WireCapabilityRequirement } from "./wire";
 type Grants = { by_role: Record<string, string[]>; by_user: Record<string, string[]> };
 type Perms = WireDocument["permissions"];
 
+/** The built-in capability floor for a `DocRole`, mirroring the server's `role_floor`
+ * (`data/permission.rs`): `owner` → read + write_fields, `observer` → read, anything
+ * else (including `"none"`) → no capabilities — fail-closed by construction, since an
+ * unrecognized/unknown role string falls through to the empty set rather than a grant.
+ * Not exported — folded into `resolveCaps`'s public surface.
+ * @param role A `DocRole` string (`"owner"` | `"observer"` | `"none"`).
+ * @returns The floor capability list for `role`.
+ * @example
+ * ```
+ * // internal helper; not part of the public API (see resolveCaps for the public entry point)
+ * roleFloor("owner"); // ["core:read", "core:write_fields"]
+ * ```
+ */
 function roleFloor(role: string): string[] {
   switch (role) {
     case "owner":
@@ -32,6 +45,27 @@ function roleFloor(role: string): string[] {
  * document's additive grants and the world-default grants. GM/admin holds
  * everything — callers pass `role === "gm"` to `canWritePath`, which
  * short-circuits; this returns the concrete non-GM set.
+ * @param perms The document's `permissions` block.
+ * @param userId The resolving user's id.
+ * @param _role The user's world role. Unused here — a GM/admin bypasses this
+ * function entirely via `canWritePath`'s `isGm` short-circuit, so `resolveCaps` only
+ * ever computes the non-GM floor; the parameter exists for call-site symmetry with
+ * the server's `resolve_access_world`, not because this function branches on it.
+ * @param worldGrants The world's default per-role/per-user capability grants.
+ * @param isEffectiveOwner Whether `userId` is the effective owner of a TOKEN document
+ * (see `effectiveOwner` in `./actor`); floors the resolved role at `"owner"`. Defaults
+ * to `false` — pass `true` only for `doc_type === "token"`, mirroring the server's
+ * `owner_floor` gate (`data/permission.rs`), which applies this floor to no other
+ * `doc_type`.
+ * @returns The resolved capability set (e.g. `"core:read"`, `"core:write_fields"`).
+ * @example
+ * ```ts
+ * import { resolveCaps } from "@shadowcat/core";
+ * import type { WireDocument } from "@shadowcat/core";
+ *
+ * declare const perms: WireDocument["permissions"];
+ * resolveCaps(perms, "00000000-0000-0000-0000-000000000001", "player", { by_role: {}, by_user: {} });
+ * ```
  */
 export function resolveCaps(
   perms: Perms,
@@ -57,7 +91,17 @@ export function resolveCaps(
 
 /** The structural base capability for a field path (mirrors the server's
  * `required_cap_for_path`, `data/permission.rs`). `/name` is a leaf (a display string,
- * not a container): `/name/...` does NOT match — there is no sub-path to write. */
+ * not a container): `/name/...` does NOT match — there is no sub-path to write.
+ * Not exported — folded into `canWritePath`'s public surface.
+ * @param path A JSON pointer into the document (e.g. `/system/hp`).
+ * @returns The required base capability, or `null` if `path` maps to no known gate
+ * (advisory fail-closed: `canWritePath` treats `null` as denied, never as unrestricted).
+ * @example
+ * ```
+ * // internal helper; not part of the public API (see canWritePath for the public entry point)
+ * baseCapForPath("/system/hp"); // "core:write_fields"
+ * ```
+ */
 function baseCapForPath(path: string): string | null {
   if (
     path === "/system" ||
@@ -79,7 +123,17 @@ function baseCapForPath(path: string): string | null {
   return null;
 }
 
-/** Whether `a` and `b` overlap as JSON-pointer subtrees (either contains the other). */
+/** Whether `a` and `b` overlap as JSON-pointer subtrees (either contains the other).
+ * Not exported — folded into `canWritePath`'s public surface.
+ * @param a A JSON pointer.
+ * @param b A JSON pointer.
+ * @returns `true` if `a === b`, `a` is a descendant of `b`, or `b` is a descendant of `a`.
+ * @example
+ * ```
+ * // internal helper; not part of the public API (see canWritePath for the public entry point)
+ * pathsOverlap("/system/hp", "/system"); // true — /system/hp is a descendant of /system
+ * ```
+ */
 function pathsOverlap(a: string, b: string): boolean {
   return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 }
@@ -89,6 +143,33 @@ function pathsOverlap(a: string, b: string): boolean {
  * the world's declarative requirements. Mirrors the server: the structural base
  * cap must be held, plus every declared cap for any requirement whose prefix
  * overlaps the path (ancestor or descendant). GM bypasses all checks. Advisory.
+ *
+ * DIVERGENCE from the server (documented, not silently smoothed over): the `isGm`
+ * short-circuit here is UNCONDITIONAL, but the server's own GM bypass is not — a
+ * document with `permissions.gm_role: Some(role)` (M13-0's restricted-audience cap,
+ * currently used only by whisper/GM-only chat messages, see `PermissionSet.gm_role`
+ * in `shadowcat-codebase-documents-permissions`) floors even a GM's write caps to an
+ * ordinary `DocRole` resolution (`effective_role`/`resolve_access`, `data/permission.rs`)
+ * instead of the usual `all: true` short-circuit. This function has no `gm_role` input
+ * and cannot see that cap, so it over-permits a GM/admin caller on a `gm_role`-capped
+ * document. Harmless in practice because this module is advisory-only UX gating — the
+ * server enforces the real cap independently at `apply_intent` — but a caller must not
+ * assume `canWritePath(..., isGm: true)` reflects the server's answer for every document.
+ * @param path A JSON pointer identifying the field being written.
+ * @param caps The caller's resolved capability set (from `resolveCaps`).
+ * @param isGm Whether the caller is a world GM/admin; bypasses every check below
+ * (see the DIVERGENCE note above for the one case where the server disagrees).
+ * @param requirements The world's declarative capability requirements
+ * (`WireCapabilityRequirement[]`), each naming a `path_prefix` subtree and the caps
+ * it additionally demands.
+ * @returns `true` if the write is advisory-permitted.
+ * @example
+ * ```ts
+ * import { canWritePath } from "@shadowcat/core";
+ *
+ * canWritePath("/system/hp", new Set(["core:write_fields"]), false, []); // true
+ * canWritePath("/permissions", new Set(["core:write_fields"]), false, []); // false — needs core:edit_permissions
+ * ```
  */
 export function canWritePath(
   path: string,
