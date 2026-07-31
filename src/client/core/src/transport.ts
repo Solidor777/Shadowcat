@@ -20,12 +20,27 @@ export type Connect = (handlers: TransportHandlers) => Promise<Transport>;
 
 /** A `Connect` backed by the platform global `WebSocket` (browser / Node 22+).
  * Cookies are sent automatically by the browser; Node test/integration code that
- * needs a cookie header supplies its own `Connect` instead. */
-export function webSocketConnect(url: string): Connect {
+ * needs a cookie header supplies its own `Connect` instead. `connectTimeoutMs`
+ * bounds the handshake: a TCP-accepted-but-never-upgraded socket otherwise
+ * never settles this promise, and the caller's reconnect machinery is
+ * unreachable behind the unsettled await. Handlers attach semantically AFTER
+ * open: pre-open close/error only reject (they must not leak into onClose —
+ * the caller's open() failure path already schedules the reconnect, and a
+ * pre-open onClose would double-schedule it). */
+export function webSocketConnect(url: string, connectTimeoutMs = 10_000): Connect {
   return (handlers) =>
     new Promise<Transport>((resolve, reject) => {
       const ws = new WebSocket(url);
+      let opened = false;
+      const timer = setTimeout(() => {
+        if (!opened) {
+          reject(new Error("websocket connect timeout"));
+          ws.close();
+        }
+      }, connectTimeoutMs);
       ws.addEventListener("open", () => {
+        opened = true;
+        clearTimeout(timer);
         resolve({
           send: (data) => ws.send(data),
           close: () => ws.close(),
@@ -36,7 +51,16 @@ export function webSocketConnect(url: string): Connect {
           typeof ev.data === "string" ? ev.data : String(ev.data),
         );
       });
-      ws.addEventListener("close", () => handlers.onClose());
-      ws.addEventListener("error", () => reject(new Error("websocket error")));
+      ws.addEventListener("close", () => {
+        clearTimeout(timer);
+        if (opened) handlers.onClose();
+      });
+      ws.addEventListener("error", () => {
+        if (!opened) {
+          clearTimeout(timer);
+          reject(new Error("websocket error"));
+        }
+        // Post-open errors are followed by `close`; onClose handles teardown.
+      });
     });
 }

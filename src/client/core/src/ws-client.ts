@@ -111,6 +111,13 @@ export interface WsClientOptions {
   sleep?: (ms: number) => Promise<void>;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
+  /** Ms to wait for the server's Welcome after a transport opens before the
+   * connection is treated as dead (closed → normal reconnect/backoff). The
+   * browser's socket `open` fires at HTTP 101, BEFORE the server's Welcome
+   * preamble, so "open but never welcomed" is otherwise an unbounded silent
+   * wait no reconnect machinery can see. Same 10s convention as the
+   * correlated-request timeouts below. */
+  welcomeTimeoutMs?: number;
 }
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -164,12 +171,38 @@ export class WsClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly backoffBaseMs: number;
   private readonly backoffMaxMs: number;
+  private readonly welcomeTimeoutMs: number;
+  private welcomeTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly opts: WsClientOptions) {
     this.now = opts.now ?? Date.now;
     this.sleep = opts.sleep ?? defaultSleep;
     this.backoffBaseMs = opts.backoffBaseMs ?? 250;
     this.backoffMaxMs = opts.backoffMaxMs ?? 10_000;
+    this.welcomeTimeoutMs = opts.welcomeTimeoutMs ?? 10_000;
+  }
+
+  /** Arm the Welcome watchdog for the currently-open transport. Identity guard:
+   * close only the transport this timer was armed for — a stale timer
+   * surviving into a successor connection must no-op. */
+  private armWelcomeWatchdog(): void {
+    this.clearWelcomeWatchdog();
+    const armed = this.transport;
+    this.welcomeTimer = setTimeout(() => {
+      this.welcomeTimer = null;
+      if (this.running_ && armed !== null && this.transport === armed) {
+        // Treat as a dead link: close() fires the transport's onClose →
+        // handleClose → failPending + scheduleReconnect. Self-healing.
+        armed.close();
+      }
+    }, this.welcomeTimeoutMs);
+  }
+
+  private clearWelcomeWatchdog(): void {
+    if (this.welcomeTimer !== null) {
+      clearTimeout(this.welcomeTimer);
+      this.welcomeTimer = null;
+    }
   }
 
   /** Open the connection (and keep it open across drops until `stop`). */
@@ -180,6 +213,7 @@ export class WsClient {
 
   stop(): void {
     this.running_ = false;
+    this.clearWelcomeWatchdog();
     this.transport?.close();
     this.transport = null;
     this.failPending("client stopped");
@@ -263,12 +297,14 @@ export class WsClient {
         onClose: () => this.handleClose(),
       });
       this.reconnectAttempt = 0;
+      this.armWelcomeWatchdog();
     } catch {
       this.scheduleReconnect();
     }
   }
 
   private handleClose(): void {
+    this.clearWelcomeWatchdog();
     this.transport = null;
     // In-flight requests were sent on the now-dead socket; a reconnect will not
     // replay them, so reject rather than leave them hanging until timeout.
@@ -291,6 +327,7 @@ export class WsClient {
     if (!msg) return;
     switch (msg.type) {
       case "welcome":
+        this.clearWelcomeWatchdog();
         this.serverOffsetMs = msg.server_time - this.now();
         this.safeEmit(() => this.opts.handlers.onWelcome?.(msg));
         // Catch up anything applied-after our watermark (initial sync or a

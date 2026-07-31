@@ -48,6 +48,22 @@ function intent(n: number, ops: WireOperation[]): ClientMsg {
   return { type: "intent", intent_id: `i${n}`, ops };
 }
 
+/** A minimal well-formed Welcome frame for tests that only need it to parse. */
+function welcomeFrame(): ServerMsg {
+  return {
+    type: "welcome",
+    world: "w",
+    current_seq: 0,
+    server_time: 0,
+    server_version: "0.0.0-test",
+    world_default_grants: { by_role: {}, by_user: {} },
+    user_role: "player",
+    capability_requirements: [],
+    contract_declarations: [],
+    schema_declarations: [],
+  };
+}
+
 describe("WsClient", () => {
   it("syncs existing events on join", async () => {
     const server = new MockServer();
@@ -192,6 +208,93 @@ describe("WsClient", () => {
     pub.send(intent(2, [createOp("d2")]));
     await waitFor(() => sub.appliedSeq === 2);
     expect(store.get("d2")).toBeDefined();
+  });
+
+  it("a connection that never receives Welcome is closed and reconnected after welcomeTimeoutMs", async () => {
+    let opens = 0;
+    const closes: number[] = [];
+    const connect: Connect = (h) => {
+      const id = ++opens;
+      return Promise.resolve({
+        send: () => {},
+        // A real Transport's close() fires onClose (see transport.ts); the mock
+        // mirrors that so the watchdog's close() actually engages reconnect.
+        close: () => {
+          closes.push(id);
+          h.onClose();
+        },
+      });
+    };
+    const client = new WsClient({
+      connect,
+      handlers: noop,
+      sleep: () => Promise.resolve(),
+      welcomeTimeoutMs: 5,
+    });
+    await client.start();
+    await waitFor(() => opens === 2);
+    expect(closes).toEqual([1]);
+  });
+
+  it("a Welcome inside the window disarms the watchdog (no spurious close)", async () => {
+    let opens = 0;
+    let onMessage: (d: string) => void = () => {};
+    const closes: number[] = [];
+    const connect: Connect = (h) => {
+      const id = ++opens;
+      onMessage = h.onMessage;
+      return Promise.resolve({
+        send: () => {},
+        close: () => {
+          closes.push(id);
+          h.onClose();
+        },
+      });
+    };
+    const client = new WsClient({
+      connect,
+      handlers: noop,
+      sleep: () => Promise.resolve(),
+      welcomeTimeoutMs: 5,
+    });
+    await client.start();
+    onMessage(JSON.stringify(welcomeFrame()));
+    // Give the (now-disarmed) watchdog window time to elapse.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(closes).toEqual([]);
+    expect(opens).toBe(1);
+  });
+
+  it("the watchdog re-arms on reconnect and a stale timer from a superseded transport no-ops", async () => {
+    let opens = 0;
+    let onMessage: (d: string) => void = () => {};
+    const closes: number[] = [];
+    const connect: Connect = (h) => {
+      const id = ++opens;
+      onMessage = h.onMessage;
+      return Promise.resolve({
+        send: () => {},
+        close: () => {
+          closes.push(id);
+          h.onClose();
+        },
+      });
+    };
+    const client = new WsClient({
+      connect,
+      handlers: noop,
+      sleep: () => Promise.resolve(),
+      welcomeTimeoutMs: 5,
+    });
+    await client.start();
+    // First connection times out and reconnects.
+    await waitFor(() => opens === 2);
+    // Second connection welcomes immediately, before its own watchdog fires.
+    onMessage(JSON.stringify(welcomeFrame()));
+    // Advance well past both connections' windows.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(closes).toEqual([1]); // only the first (superseded) transport ever closed
+    expect(opens).toBe(2); // no further reconnect triggered by the stale timer
   });
 
   it("a throwing onCommand is surfaced, not thrown into the socket loop", async () => {
