@@ -3,8 +3,10 @@ import type { Point, LineSeg } from "./types";
 export type GridKind = "square" | "hex";
 
 /** Cost rule for diagonal movement on square grids. Mirrors `DiagonalRule` in
- * `scene-docs.ts` and the server's `pathfinding.rs` `DiagonalRule` enum — the
- * distance metric must match the server's A* cost exactly. */
+ * `scene-docs.ts` and the server's `pathfinding.rs` `DiagonalRule` enum — see
+ * {@link Grid.distance} for the exact per-rule formulas and the scope of the parity
+ * they match (unweighted routes; terrain regions can raise the server's real cost
+ * above what this client-side distance reports). */
 export type DiagonalRule = "chebyshev" | "manhattan" | "euclidean" | "alternating";
 
 export interface GridSpec {
@@ -72,12 +74,21 @@ export class Grid {
    *   - chebyshev  — max(dCol, dRow) (chessboard / 1-per-diagonal).
    *   - manhattan  — dCol + dRow (no diagonal shortcuts).
    *   - euclidean  — (dmax−dmin) + √2·dmin (true Euclidean cell distance).
-   *   - alternating — (dmax−dmin) + dmin + floor(dmin/2) (5-10-5: diagonals cost 1,2,1,2…).
+   *   - alternating — (dmax−dmin) + dmin + floor(dmin/2) (5-10-5: diagonals cost 1,2,1,2…,
+   *     starting at parity 0 — this closed form is the parity-0 case only; a hypothetical
+   *     variant carrying parity across chained waypoint legs would need the general
+   *     recurrence instead, but this method always measures a single fresh pair, so parity
+   *     0 is the only case that applies here).
    * All four mirror the server's per-rule step costs: chebyshev/manhattan/euclidean
    * match `pathfinding.rs`'s `heuristic()` exactly (an admissible AND tight bound for a
-   * direct, obstacle-free route); alternating matches `grid_shape.rs`'s `step_cost`'s
-   * 1,2,1,2… parity-threaded diagonal cost, whose closed-form sum over `dmin` diagonal
-   * steps is `dmin + floor(dmin/2)`.
+   * direct route with no obstacles AND no terrain weighting — `pathfinding.rs:453-457`
+   * notes the heuristic bounds only the UNWEIGHTED step cost, so a terrain region's
+   * `terrain_multiplier > 1.0` can raise the server's real A* cost above what this
+   * client-side `distance()` reports, even on an otherwise-direct, wall-free route);
+   * alternating matches `grid_shape.rs`'s `step_cost`'s 1,2,1,2… parity-threaded
+   * diagonal cost starting at parity 0, whose closed-form sum over `dmin` diagonal
+   * steps is `dmin + floor(dmin/2)` (odd `dmin` diverges from this if the parity
+   * sequence didn't start fresh; even `dmin` agrees regardless of starting parity).
    * @param a One scene-coordinate point.
    * @param b The other scene-coordinate point.
    * @returns The whole-cell distance between `a` and `b`, per the rule above.
@@ -259,8 +270,14 @@ export class Grid {
 
   /**
    * Hex-grid line segments: draws the six-edge outline of every hex whose center falls
-   * within `rect` plus a margin. Adjacent hex outlines overlap (each edge is drawn
-   * twice, once per flanking hex) — acceptable for a grid overlay, not deduplicated.
+   * within `rect` plus a margin. Covers ALL FOUR corners of `rect` when computing the
+   * axial `q`/`r` search bounds — not just two opposite corners — because
+   * {@link pixelToAxial}'s `q = (√3/3·x − 1/3·y)/size` mixes x and y with OPPOSITE
+   * signs, so q's extrema sit on the top-right/bottom-left diagonal while r (a
+   * function of y alone) peaks on the other diagonal; sampling only one diagonal
+   * understates q's true range and silently drops in-viewport hexes (fixed; see
+   * `docs/CLOSED_BUGS.md`). Adjacent hex outlines overlap (each edge is drawn twice,
+   * once per flanking hex) — acceptable for a grid overlay, not deduplicated.
    * @param rect The visible scene rectangle to cover.
    * @returns The hex grid's line segments.
    * @example

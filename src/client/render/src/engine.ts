@@ -606,10 +606,10 @@ export class RenderEngine implements SceneToolHost {
 
   /** `SceneToolHost.snap`: snap a scene point to the active grid's nearest CELL CENTER — for
    * square grids, the containing cell's center; for hex, the nearest hex's center via
-   * axial-round-then-convert (`Grid.snap`, `grid.ts:32`; `axialToPixel` returns a hex center, the
-   * same function `Grid`'s own `hexLines` uses as the origin it draws the six corners around —
-   * `grid.ts:156` — so this is a center, never a vertex, on either grid kind) — or the identity
-   * function when {@link setSnapEnabled} has disabled snapping for the current scene.
+   * axial-round-then-convert (`Grid.snap`; `Grid.axialToPixel` returns a hex center, the same
+   * method `Grid.hexLines` calls to get the origin it draws the six corners around — so this is a
+   * center, never a vertex, on either grid kind) — or the identity function when {@link
+   * setSnapEnabled} has disabled snapping for the current scene.
    * @param p A scene-coordinate point.
    * @returns `p` snapped to the active grid, or `p` unchanged when snapping is disabled.
    * @example
