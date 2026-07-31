@@ -1550,6 +1550,10 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   guide/protocol/module portal pages), via the reviewed skill-update gate.
 
 ## Cross-cutting (not deferred)
+- Data migrations: NONE are built pre-customers — `migrations/0001_init.sql` is a single
+  baseline edited in place, and `data/migrate.rs` stays step-free machinery. This line is the
+  campaign marker: when a release milestone declares live customer databases, flip this entry
+  and start authoring real incremental migrations from that point on.
 - Observability + desync telemetry: M4.
 - Desync-convergence test: M4, maintained throughout.
 - Backups: a basic backup + snapshot-restore deliverable (M12.5) satisfies the dogfood gate; Phase 4 adds scheduling / automation.

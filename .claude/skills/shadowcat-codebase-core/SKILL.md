@@ -82,6 +82,14 @@ source of truth. The ones agents break most:
 
 ## Gotchas
 
+- **No data migrations pre-customers (user directive 2026-07-30).** Until a PLAN.md milestone
+  explicitly marks live customer databases, there is no upgrade path to preserve: SQL schema
+  changes EDIT `src/server/migrations/0001_init.sql` (the single baseline) in place — never add
+  an incremental migration file — and document-schema changes keep `data/migrate.rs` step-free
+  (`CURRENT_SCHEMA_VERSION` machinery only). The sqlx/`migrate()` machinery itself MUST stay, so
+  real migrations can begin at that milestone. A dev DB predating a baseline edit fails the sqlx
+  checksum — delete the dev DB file and restart. Any migration files that accumulate anyway are
+  deleted on sight (squashed into the baseline).
 - **`CLAUDE.md` is git-ignored** — it is local-only; durable rules live in `ARCHITECTURE.md` §2,
   the real source of truth. [[claude-md-is-git-ignored]]
 - **ts-rs types are generated** — change the Rust enum/struct, regenerate, then mirror in the
