@@ -274,12 +274,27 @@ export class Grid {
     const size = this.spec.size;
     const out: LineSeg[] = [];
     const margin = size * 2;
-    const minA = this.pixelToAxial({ x: rect.x - margin, y: rect.y - margin });
-    const maxA = this.pixelToAxial({ x: rect.x + rect.w + margin, y: rect.y + rect.h + margin });
-    const qLo = Math.floor(Math.min(minA.q, maxA.q)) - 1;
-    const qHi = Math.ceil(Math.max(minA.q, maxA.q)) + 1;
-    const rLo = Math.floor(Math.min(minA.r, maxA.r)) - 1;
-    const rHi = Math.ceil(Math.max(minA.r, maxA.r)) + 1;
+    // Sample ALL FOUR corners: `pixelToAxial`'s q mixes x and y with OPPOSITE signs
+    // (`(√3/3·x − 1/3·y)/size`), so q's extrema fall on the top-right/bottom-left
+    // diagonal while r (a function of y alone) peaks on the other. Sampling one
+    // diagonal only understates the q-range and leaves undrawn hexes inside the
+    // viewport — worse the smaller `size` is relative to the rect.
+    const x0 = rect.x - margin;
+    const y0 = rect.y - margin;
+    const x1 = rect.x + rect.w + margin;
+    const y1 = rect.y + rect.h + margin;
+    const corners = [
+      this.pixelToAxial({ x: x0, y: y0 }),
+      this.pixelToAxial({ x: x1, y: y0 }),
+      this.pixelToAxial({ x: x0, y: y1 }),
+      this.pixelToAxial({ x: x1, y: y1 }),
+    ];
+    const qs = corners.map((c) => c.q);
+    const rs = corners.map((c) => c.r);
+    const qLo = Math.floor(Math.min(...qs)) - 1;
+    const qHi = Math.ceil(Math.max(...qs)) + 1;
+    const rLo = Math.floor(Math.min(...rs)) - 1;
+    const rHi = Math.ceil(Math.max(...rs)) + 1;
     for (let r = rLo; r <= rHi; r++) {
       for (let q = qLo; q <= qHi; q++) {
         const c = this.axialToPixel(q, r);

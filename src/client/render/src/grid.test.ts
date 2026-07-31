@@ -48,6 +48,43 @@ test("hex grid emits a non-empty line set over a viewport", () => {
   expect(lines.length).toBeGreaterThan(0);
 });
 
+// `pixelToAxial`'s q mixes x and y with opposite signs, so its extrema sit on the
+// top-right/bottom-left diagonal. Sampling only the other diagonal understated the
+// q-range and left hexes CENTERED INSIDE the viewport undrawn (50 of them at
+// 1920x1080/size=50). Asserting line COUNT alone cannot catch that — this walks the
+// emitted outlines and checks every in-viewport hex center is actually covered.
+test("hex grid covers every hex centered inside the viewport", () => {
+  for (const [w, h, size] of [
+    [1920, 1080, 50],
+    [800, 600, 40],
+    [1000, 1000, 50],
+  ] as const) {
+    const g = new Grid({ kind: "hex", size });
+    const lines = g.lines({ x: 0, y: 0, w, h });
+    // A drawn hex contributes six segments around its center; collect centers as the
+    // centroid of each consecutive 6-segment group.
+    const drawn = new Set<string>();
+    for (let i = 0; i + 5 < lines.length; i += 6) {
+      let cx = 0;
+      let cy = 0;
+      for (let k = 0; k < 6; k++) {
+        cx += lines[i + k].x1;
+        cy += lines[i + k].y1;
+      }
+      drawn.add(`${Math.round(cx / 6)},${Math.round(cy / 6)}`);
+    }
+    // Every hex whose center lies within the viewport must have been emitted.
+    for (let q = -60; q <= 60; q++) {
+      for (let r = -60; r <= 60; r++) {
+        const cx = size * (Math.sqrt(3) * q + (Math.sqrt(3) / 2) * r);
+        const cy = size * (1.5 * r);
+        if (cx < 0 || cx > w || cy < 0 || cy > h) continue;
+        expect(drawn.has(`${Math.round(cx)},${Math.round(cy)}`)).toBe(true);
+      }
+    }
+  }
+});
+
 test("square distance is Chebyshev in whole cells", () => {
   const g = new Grid({ kind: "square", size: 100 });
   expect(g.distance({ x: 0, y: 0 }, { x: 250, y: 40 })).toBe(2); // cols 0→2, rows 0→0

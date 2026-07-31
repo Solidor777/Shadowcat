@@ -3,6 +3,25 @@
 Confirmed-real defects that have since been fixed, kept for provenance. New fixes append a new
 `##` section (or bullet under an existing one); do not delete resolved entries.
 
+## Client / hex grid overlay dropped cells near the viewport edge (2026-07-31 docs sweep 8)
+
+- [Render] `Grid.hexLines` (`src/client/render/src/grid.ts`) scanned too narrow a `q` range, so
+  hexes whose centers lie **inside the viewport** were never drawn — visible gaps in the hex grid
+  overlay toward the top-right and bottom-left. `pixelToAxial` computes
+  `q = (√3/3·x − 1/3·y)/size`, mixing x and y with OPPOSITE signs, so q's extrema fall on the
+  top-right/bottom-left diagonal; `r = (2/3·y)/size` depends on y alone. The bounds code sampled
+  only the top-left and bottom-right corners and padded by ±1, which happens to capture r's true
+  extremes but understates q's badly. Measured before the fix: **50 undrawn in-viewport hexes at
+  1920×1080 with `size` 50**, 15 at 800×600/40, 6 at 1920×1080/100 — worse the smaller `size` is
+  relative to the rect, i.e. worse the more zoomed out the camera. Fixed by sampling all four
+  corners of the padded rect for both axes. The pre-existing test asserted only
+  `lines.length > 0`, which cannot detect a too-small range; the regression test now walks the
+  emitted outlines, reconstructs each drawn hex center, and asserts every in-viewport center is
+  covered across three viewport/size combinations. Mutation-proven: restoring two-corner sampling
+  fails the new test. Found by the sweep-8 spec reviewer while verifying a NEW doc comment that
+  claimed `hexLines` "draws the six-edge outline of every hex whose center falls within `rect`
+  plus a margin" — the claim was false, and checking it surfaced the underlying defect.
+
 ## Client / silent-hang startup paths (2026-07-31 render-ready audit)
 
 - [Hang] No Welcome watchdog: `WorldSession.enter` awaited the server's `Welcome` frame with no
