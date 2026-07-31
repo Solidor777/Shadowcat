@@ -431,7 +431,16 @@ export const PathfindSchema = z.object({
   token: z.string().uuid().nullish(),
 });
 
-/** Parse + validate an inbound text frame; `null` on malformed/unknown input. */
+/** Parse + validate an inbound text frame; `null` on malformed/unknown input.
+ * @param text The raw text frame received from the WebSocket.
+ * @returns The parsed `ServerMsg`, or `null` if it fails `JSON.parse` or Zod validation.
+ * @example
+ * ```ts
+ * import { parseServerMsg } from "@shadowcat/core";
+ *
+ * parseServerMsg('{"type":"ping"}');
+ * ```
+ */
 export function parseServerMsg(text: string): ServerMsg | null {
   const json = ((): unknown => {
     try {

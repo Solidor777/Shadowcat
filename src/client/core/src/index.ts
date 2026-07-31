@@ -1,6 +1,15 @@
 import type { HealthStatus } from "@shadowcat/types";
 
-/** Returns true when the server reports itself healthy with a live database. */
+/** Returns true when the server reports itself healthy with a live database.
+ * @param status The parsed `/api/health` response body.
+ * @returns `true` when `status.status === "ok"` and the database is connected.
+ * @example
+ * ```ts
+ * import { isHealthy } from "@shadowcat/core";
+ *
+ * isHealthy({ status: "ok", db_connected: true });
+ * ```
+ */
 export function isHealthy(status: HealthStatus): boolean {
   return status.status === "ok" && status.db_connected;
 }

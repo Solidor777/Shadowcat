@@ -24,6 +24,19 @@ export interface TestServer {
 // .../src/client/core/src/e2e/server-process.ts -> repo root is five levels up.
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../..");
 
+/** Builds and launches the Rust `test_server` binary directly, waits for its
+ * printed bind address and e2e fixture on stdout, and returns a handle to
+ * query and tear it down. Not part of `@shadowcat/core`'s public surface —
+ * imported by relative path from `*.e2e.test.ts` files only.
+ * @param opts Startup options.
+ * @param opts.modulesDir An optional `--modules-dir` flag passed to the binary.
+ * @returns The server's base/WS URLs, its seeded e2e fixture, and a `stop()` to reap the process.
+ * @example
+ * ```
+ * const server = await startTestServer();
+ * server.stop();
+ * ```
+ */
 export async function startTestServer(opts: { modulesDir?: string } = {}): Promise<TestServer> {
   const isWindows = process.platform === "win32";
   const exe = path.join(repoRoot, "target", "debug", isWindows ? "test_server.exe" : "test_server");
@@ -95,7 +108,18 @@ export async function startTestServer(opts: { modulesDir?: string } = {}): Promi
   return { baseUrl, wsUrl, fixture: fixture!, stop };
 }
 
-/** Log in via /api/login; returns the session cookie header value (name=value). */
+/** Log in via /api/login; returns the session cookie header value (name=value).
+ * Not part of `@shadowcat/core`'s public surface — imported by relative path
+ * from `*.e2e.test.ts` files only.
+ * @param baseUrl The test server's base URL (`TestServer.baseUrl`).
+ * @param username The account username.
+ * @param password The account password.
+ * @returns The `name=value` session cookie pair (attributes like `Path`/`HttpOnly` stripped).
+ * @example
+ * ```
+ * const cookie = await login("http://127.0.0.1:0", "gm", "password");
+ * ```
+ */
 export async function login(
   baseUrl: string,
   username: string,

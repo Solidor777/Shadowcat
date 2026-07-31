@@ -14,6 +14,15 @@ interface WireLike {
  * side, keyed by `module_id`. Version and the `provides`/`requires` payload are
  * NOT compared — a same-id/different-contract-set drift reconciles silently.
  * Richer mismatch detection is deferred to module management (see TODO.md).
+ * @param local This client's own loaded module contract declarations.
+ * @param remote The server-broadcast `Welcome.contract_declarations`.
+ * @param logger Diagnostic sink for each presence mismatch.
+ * @example
+ * ```ts
+ * import { reconcileTopology, silentLogger } from "@shadowcat/core";
+ *
+ * reconcileTopology([], [], silentLogger);
+ * ```
  */
 export function reconcileTopology(
   local: ContractDeclaration[],

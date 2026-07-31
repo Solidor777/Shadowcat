@@ -30,6 +30,14 @@ export interface ModuleLoadResult {
   failed: ModuleLoadFailure[];
 }
 
+/** Unwraps a default-exported module from a `ModuleEntry`'s raw import result.
+ * @param imported The value resolved by `ImportFn` — either a `Module` or an `{ default: Module }` ESM shape.
+ * @returns The `Module`.
+ * @example
+ * ```
+ * normalize({ default: { manifest: { id: "example", version: "1.0.0", dependencies: {} }, register() {} } });
+ * ```
+ */
 function normalize(imported: { default: Module } | Module): Module {
   return "default" in imported && (imported as { default: Module }).default
     ? (imported as { default: Module }).default
@@ -40,7 +48,14 @@ function normalize(imported: { default: Module } | Module): Module {
  * not satisfy it. A missing `engines.shadowcat` is NOT an error here — the
  * field is optional on the shared manifest shape (first-party modules never
  * set it); the modules-folder pipeline's enable/load gate is what makes it
- * effectively required for community modules (T6). */
+ * effectively required for community modules (T6).
+ * @param manifest The module's manifest.
+ * @param shadowcatVersion The running host's version, checked against `manifest.engines.shadowcat`.
+ * @example
+ * ```
+ * checkEngineCompat({ id: "example", version: "1.0.0", dependencies: {}, engines: { shadowcat: "^1.0.0" } }, "1.2.0");
+ * ```
+ */
 function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): void {
   const range = manifest.engines?.shadowcat;
   if (!range) return;
@@ -51,6 +66,48 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
   }
 }
 
+/** Imports and registers every discovered module entry, in order. Per-entry
+ * contained: a manifest-parse, engine-compat, import, or id-mismatch failure
+ * on one entry is collected in `failed` and never aborts the batch.
+ * @param opts Load options.
+ * @param opts.entries The discovered manifest/entry pairs.
+ * @param opts.importFn The environment's dynamic import.
+ * @param opts.registry The `ModuleRegistry` to add successful imports to.
+ * @param opts.shadowcatVersion Optional running host version, for the T6 load-time engine-compat gate.
+ * @returns The ids that loaded, and the entries that failed with a reason.
+ * @example
+ * ```ts
+ * import {
+ *   loadModules,
+ *   ModuleRegistry,
+ *   HookBus,
+ *   ServiceRegistry,
+ *   MiddlewareChain,
+ *   DocumentStore,
+ *   OptimisticClient,
+ *   ContributionRegistry,
+ *   silentLogger,
+ * } from "@shadowcat/core";
+ *
+ * const registry = new ModuleRegistry({
+ *   hooks: new HookBus(silentLogger),
+ *   services: new ServiceRegistry(),
+ *   middleware: new MiddlewareChain(),
+ *   store: new DocumentStore(),
+ *   client: new OptimisticClient("00000000-0000-0000-0000-000000000001"),
+ *   logger: silentLogger,
+ *   contributions: new ContributionRegistry(),
+ * });
+ * await loadModules({
+ *   entries: [],
+ *   importFn: async (entry) => ({
+ *     manifest: { id: entry, version: "1.0.0", dependencies: {} },
+ *     register() {},
+ *   }),
+ *   registry,
+ * });
+ * ```
+ */
 export async function loadModules(opts: {
   entries: ModuleEntry[];
   importFn: ImportFn;

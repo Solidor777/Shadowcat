@@ -113,6 +113,19 @@ const UnknownSegmentSchema = z
 export type UnknownSegment = z.infer<typeof UnknownSegmentSchema>;
 const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegmentSchema]));
 
+/** Narrows a parsed segment to a known `ChatSegment` kind. See the type guard's
+ * companion `UnknownSegmentSchema` note: this fallback deliberately refuses
+ * every known `kind` string, so a malformed known-kind segment fails the
+ * whole message rather than being misclassified as trustworthy here.
+ * @param s The parsed segment (known or opaque forward-compat).
+ * @returns `true` if `s.kind` is one of `text`/`html`/`roll_embed`/`roll_button`/`link_preview`.
+ * @example
+ * ```ts
+ * import { isKnownSegment } from "@shadowcat/core";
+ *
+ * isKnownSegment({ kind: "text", text: "hello" });
+ * ```
+ */
 export function isKnownSegment(s: ChatSegment | UnknownSegment): s is ChatSegment {
   return (
     s.kind === "text" ||
@@ -136,7 +149,18 @@ export const ChatMessageEngineSchema = z.object({
 });
 export type ChatMessageEngine = z.infer<typeof ChatMessageEngineSchema>;
 
-/** Fail-closed body parse: null unless `doc` is a message with a valid `engine` body. */
+/** Fail-closed body parse: null unless `doc` is a message with a valid `engine` body.
+ * @param doc The candidate document.
+ * @returns The parsed `ChatMessageEngine`, or `null` for a non-message `doc_type` or a malformed body.
+ * @example
+ * ```ts
+ * import { parseMessageEngine } from "@shadowcat/core";
+ * import type { WireDocument } from "@shadowcat/core";
+ *
+ * declare const doc: WireDocument;
+ * parseMessageEngine(doc);
+ * ```
+ */
 export function parseMessageEngine(doc: WireDocument): ChatMessageEngine | null {
   if (doc.doc_type !== MESSAGE_DOC_TYPE) return null;
   const r = ChatMessageEngineSchema.safeParse(doc.engine);
@@ -145,7 +169,18 @@ export function parseMessageEngine(doc: WireDocument): ChatMessageEngine | null 
 
 /** Singleton config doc (doc_type "channel-registry"): id→channel MAP, so
  * add/rename/remove are single-key field Updates (set_pointer cannot grow arrays).
- * `doc_type: "channel-registry"` is engine-defined — the map lands in `engine`. */
+ * `doc_type: "channel-registry"` is engine-defined — the map lands in `engine`.
+ * @param worldId The owning world's id.
+ * @param channels The channel-id → `Channel` map.
+ * @param id Optional explicit document id; a fresh uuid is generated when omitted.
+ * @returns The unsaved `WireDocument`, ready to `Create`.
+ * @example
+ * ```ts
+ * import { buildChannelRegistryDoc } from "@shadowcat/core";
+ *
+ * buildChannelRegistryDoc("00000000-0000-0000-0000-000000000001", { general: { name: "General" } });
+ * ```
+ */
 export function buildChannelRegistryDoc(
   worldId: string,
   channels: ChannelRegistryEngine["channels"],
@@ -162,6 +197,18 @@ export function buildChannelRegistryDoc(
  * full shape via the reactive seed. */
 export const DICE_SETTINGS_DOC_TYPE = "dice-settings";
 
+/** Builds the singleton per-world `dice-settings` config document.
+ * @param worldId The owning world's id.
+ * @param engine The dice-settings body (mode + win direction).
+ * @param id Optional explicit document id; a fresh uuid is generated when omitted.
+ * @returns The unsaved `WireDocument`, ready to `Create`.
+ * @example
+ * ```ts
+ * import { buildDiceSettingsDoc } from "@shadowcat/core";
+ *
+ * buildDiceSettingsDoc("00000000-0000-0000-0000-000000000001", { mode: "total", direction: "high_wins" });
+ * ```
+ */
 export function buildDiceSettingsDoc(
   worldId: string,
   engine: DiceSettingsEngine,
@@ -180,6 +227,25 @@ export function buildDiceSettingsDoc(
  * JSON-pointer update, never the whole doc. */
 export const CHAT_SETTINGS_DOC_TYPE = "chat-settings";
 
+/** Builds the singleton per-world `chat-settings` config document.
+ * @param worldId The owning world's id.
+ * @param engine The chat content-policy body (markdown/html/images/hyperlinks/emails/link_previews toggles).
+ * @param id Optional explicit document id; a fresh uuid is generated when omitted.
+ * @returns The unsaved `WireDocument`, ready to `Create`.
+ * @example
+ * ```ts
+ * import { buildChatSettingsDoc } from "@shadowcat/core";
+ *
+ * buildChatSettingsDoc("00000000-0000-0000-0000-000000000001", {
+ *   markdown: true,
+ *   html: null,
+ *   images: null,
+ *   hyperlinks: true,
+ *   emails: null,
+ *   link_previews: null,
+ * });
+ * ```
+ */
 export function buildChatSettingsDoc(
   worldId: string,
   engine: ChatSettingsEngine,

@@ -79,11 +79,32 @@ export const ManifestSchema: z.ZodType<ModuleManifest> = z.object({
   engines: ModuleEnginesSchema.optional(),
 });
 
+/** Validates and parses an unknown value as a `ModuleManifest`; throws a Zod
+ * error on shape mismatch.
+ * @param value The candidate manifest, typically `module.json` parsed as JSON.
+ * @returns The validated `ModuleManifest`.
+ * @example
+ * ```ts
+ * import { parseManifest } from "@shadowcat/core";
+ *
+ * const manifest = parseManifest({ id: "example", version: "1.0.0", dependencies: {} });
+ * ```
+ */
 export function parseManifest(value: unknown): ModuleManifest {
   return ManifestSchema.parse(value);
 }
 
-/** Project a manifest to its UI contract declaration (empty arrays when unset). */
+/** Project a manifest to its UI contract declaration (empty arrays when unset).
+ * @param m The module manifest.
+ * @returns The `ContractDeclaration` the client sends the server for topology reconciliation.
+ * @example
+ * ```ts
+ * import { declarationOf, parseManifest } from "@shadowcat/core";
+ *
+ * const manifest = parseManifest({ id: "example", version: "1.0.0", dependencies: {} });
+ * declarationOf(manifest);
+ * ```
+ */
 export function declarationOf(m: ModuleManifest): ContractDeclaration {
   return {
     module_id: m.id,

@@ -13,7 +13,16 @@ export const silentLogger: Logger = {
   error() {},
 };
 
-/** The production console logger; prefixes the project tag. Shell entry points (worldSession, sessionState, Table) construct it per consumer. */
+/** The production console logger; prefixes the project tag. Shell entry points (worldSession, sessionState, Table) construct it per consumer.
+ * @returns A fresh `Logger` that writes to `console.debug`/`warn`/`error`.
+ * @example
+ * ```ts
+ * import { consoleLogger } from "@shadowcat/core";
+ *
+ * const logger = consoleLogger();
+ * logger.warn("world session degraded", { reason: "welcome timeout" });
+ * ```
+ */
 export function consoleLogger(): Logger {
   return {
     debug: (m, meta) => console.debug(`[shadowcat] ${m}`, meta),

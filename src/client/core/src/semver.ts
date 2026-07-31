@@ -3,12 +3,29 @@
 // the `semver` package only if richer ranges become a real requirement.
 type V = [number, number, number];
 
+/** Parses a strict `major.minor.patch` version string (no pre-release/build metadata).
+ * @param v The version string.
+ * @returns The parsed `[major, minor, patch]` tuple.
+ * @example
+ * ```
+ * parse("1.2.3");
+ * ```
+ */
 function parse(v: string): V {
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v.trim());
   if (!m) throw new Error(`invalid semver: ${v}`);
   return [Number(m[1]), Number(m[2]), Number(m[3])];
 }
 
+/** Lexicographic `[major, minor, patch]` comparison.
+ * @param a The candidate version.
+ * @param b The floor version.
+ * @returns `true` if `a` is greater than or equal to `b`.
+ * @example
+ * ```
+ * gte([1, 2, 3], [1, 2, 0]);
+ * ```
+ */
 function gte(a: V, b: V): boolean {
   for (let i = 0; i < 3; i++) {
     if (a[i] > b[i]) return true;
@@ -17,6 +34,19 @@ function gte(a: V, b: V): boolean {
   return true;
 }
 
+/** Tests a strict `major.minor.patch` version against a range: an exact version,
+ * `*` (any), `^` (caret, npm-semver leftmost-non-zero-component semantics — see
+ * the module note), or `~` (tilde, same major+minor, patch >= the range's patch).
+ * Not exported from `@shadowcat/core`'s public surface — internal to module
+ * engine-compat checks (`loader.ts`, `hooks.ts`, `modules.ts`).
+ * @param version The version being tested.
+ * @param range The range to test against.
+ * @returns `true` if `version` satisfies `range`.
+ * @example
+ * ```
+ * satisfies("1.4.0", "^1.2.0");
+ * ```
+ */
 export function satisfies(version: string, range: string): boolean {
   const r = range.trim();
   const v = parse(version);
