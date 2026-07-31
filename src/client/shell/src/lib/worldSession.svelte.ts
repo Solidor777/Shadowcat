@@ -527,8 +527,9 @@ export class WorldSession {
   /** Fetch the world's enabled installed-module set + their (manifest,
    * entry_url) pairs and load them through the shared, per-module-contained
    * loader (M13-1 §3). Runs exactly once per WorldSession (called only inside
-   * the `#bootstrapped` guard) — external modules never hot-reload across a
-   * reconnect within one session (no hot unload, M13-1 §2); "next client load
+   * the `#activated` guard, after a successful `activate()`) — external
+   * modules never hot-reload across a reconnect within one session (no hot
+   * unload, M13-1 §2); "next client load
    * of that world" means a fresh WorldSession (page load / re-enter), not a
    * WS reconnect. A discovery-level failure (network, malformed response)
    * degrades to a logged warning; the session still enters the world with

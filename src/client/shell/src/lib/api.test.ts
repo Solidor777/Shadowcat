@@ -66,7 +66,7 @@ test("putUiState passes a bounded AbortSignal alongside keepalive", async () => 
   expect(init.keepalive).toBe(true);
 });
 
-test("withRetry retries the configured attempts then rethrows the last error", async () => {
+test("withRetry resolves with the eventual success after two failing attempts", async () => {
   vi.useFakeTimers();
   try {
     let calls = 0;
@@ -84,16 +84,18 @@ test("withRetry retries the configured attempts then rethrows the last error", a
   }
 });
 
-test("withRetry rejects after the configured attempts, not more", async () => {
+test("withRetry retries the configured attempts then rethrows the LAST (not first) error", async () => {
   vi.useFakeTimers();
   try {
+    let calls = 0;
     const fn = vi.fn(async () => {
-      throw new Error("always fails");
+      calls++;
+      throw new Error(`fail-${calls}`);
     });
     const p = api.withRetry(fn, 3, [1, 1]);
     p.catch(() => {}); // avoid an unhandled-rejection warning racing the assertion below
     await vi.runAllTimersAsync();
-    await expect(p).rejects.toThrow("always fails");
+    await expect(p).rejects.toThrow("fail-3");
     expect(fn).toHaveBeenCalledTimes(3);
   } finally {
     vi.useRealTimers();
