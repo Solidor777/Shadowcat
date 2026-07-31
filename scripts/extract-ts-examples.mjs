@@ -2,7 +2,7 @@
 // sources is extracted to .docs-tmp/examples/ and typechecked (compile-checked,
 // not executed — the TS analogue of `no_run` doctests). ```svelte and untagged
 // fences are ignored by design.
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -40,6 +40,32 @@ export function workspacePaths(repoRoot, outDir, pkgDirs) {
     const entry = pkg.main ?? (typeof pkg.exports?.["."] === "string" ? pkg.exports["."] : "src/index.ts");
     const abs = join(repoRoot, dir, entry);
     paths[pkg.name] = [relative(outDir, abs).split("\\").join("/")];
+  }
+  return paths;
+}
+
+/** Maps each workspace package's EXTERNAL dependencies to their on-disk location under that
+ * package's own `node_modules`. pnpm installs a dependency into the dependent package's
+ * `node_modules`, not the workspace root, so an extracted example living in `.docs-tmp/examples/`
+ * resolves nothing by walking up — without these entries a `@example` that imports a third-party
+ * type (`pixi.js` for `@shadowcat/render`) fails with "Cannot find module", which would push a
+ * whole package's examples onto untagged fences and silently drop them from typechecking.
+ *
+ * A name declared by two packages resolves to whichever is visited last; acceptable because this
+ * tsconfig only ever compiles doc examples, never shipped code. Only deps that actually exist on
+ * disk are mapped, so a pruned/optional install degrades to the previous "unresolvable" behavior
+ * rather than a broken path. */
+export function externalDepPaths(repoRoot, outDir, pkgDirs) {
+  const paths = {};
+  for (const dir of pkgDirs) {
+    let pkg;
+    try { pkg = JSON.parse(readFileSync(join(repoRoot, dir, "package.json"), "utf8")); } catch { continue; }
+    for (const dep of Object.keys(pkg.dependencies ?? {})) {
+      if (dep.startsWith("@shadowcat/")) continue; // workspace packages: mapped to source by workspacePaths
+      const abs = join(repoRoot, dir, "node_modules", dep);
+      if (!existsSync(abs)) continue;
+      paths[dep] = [relative(outDir, abs).split("\\").join("/")];
+    }
   }
   return paths;
 }
@@ -98,9 +124,13 @@ if (isMain) {
     'declare module "*.svelte" {\n  const component: unknown;\n  export default component;\n}\n',
   );
   const template = JSON.parse(readFileSync(join(repo, "scripts", "ts-examples-tsconfig.template.json"), "utf8"));
+  const pkgDirs = workspacePackageDirs(repo);
   template.compilerOptions.paths = {
+    // External deps first: a workspace package of the same name must win, since
+    // examples should typecheck against workspace SOURCE, not an installed copy.
     ...template.compilerOptions.paths,
-    ...workspacePaths(repo, outDir, workspacePackageDirs(repo)),
+    ...externalDepPaths(repo, outDir, pkgDirs),
+    ...workspacePaths(repo, outDir, pkgDirs),
   };
   writeFileSync(join(outDir, "tsconfig.json"), JSON.stringify(template, null, 2) + "\n");
   if (index.length === 0) { console.log("no @example ts blocks found — trivially green"); process.exit(0); }
