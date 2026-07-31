@@ -302,6 +302,26 @@ if (!this.#activated) {
 
 ---
 
+### Task 4: Regression fix — escalating Welcome-watchdog window
+
+Added 2026-07-31 after Task 3's reviews. Dispatcher evidence: on a CALM machine (0% load), 3/3 full-suite runs fail `panels.spec.ts:18` at a `toHaveAttribute` (render-ready) wait at ~32-41s — deterministic in the 6-worker suite, green in isolation, and the same suite was 16/16 pre-branch. Mechanism hypothesis: the fixed 10s Welcome watchdog kills connections whose server preamble is merely SLOW under parallel-startup contention (single DB connection + per-connect fs scan); each kill discards queue position and re-enters the preamble from the back — the watchdog converts slow-but-progressing into never-completes. The plan's fixed-window watchdog spec was the defect; this task supersedes it.
+
+**Files:**
+- Modify: `src/client/core/src/ws-client.ts` (+ its test file)
+- Modify: `.claude/skills/shadowcat-codebase-realtime-sync/SKILL.md` (watchdog contract: escalating window)
+- Modify: `docs/CLOSED_BUGS.md` (watchdog bug entry gains the escalation note + this task's commit)
+- Modify: `docs/POST_WORK_FINDINGS.md` (entry: the Task-3 gate-run panels failure was THIS regression, discovered by the review pair's blocking + dispatcher 3x calm-machine runs; corrects the task report's contention adjudication and its misquoted blocking criterion)
+
+**Step 1 — falsify the hypothesis first (systematic-debugging):** on the current HEAD, temporarily set the `welcomeTimeoutMs` default to `60_000`, rebuild (`pnpm build` + `pnpm --filter @shadowcat/shell e2e:build` as needed), run the full shell e2e once. Expected: 16/16 (confirms the watchdog is the mechanism). Revert the temporary value. If the suite still fails, STOP — report BLOCKED with the output (the mechanism is something else in this branch; do not proceed to Step 2).
+
+**Step 2 — failing test:** in `ws-client.test.ts`, add: "consecutive unwelcomed connections escalate the watchdog window and a Welcome resets it" — connection 1 unwelcomed closes at the base window; connection 2's window is 2x base (assert no close occurs between 1x and just-under-2x, then close at 2x); after a connection that DOES receive Welcome, the next connection's window is back to 1x base.
+
+**Step 3 — implement:** in `WsClient`, track `private consecutiveUnwelcomed = 0`. `armWelcomeWatchdog()` computes `const window = this.welcomeTimeoutMs * 2 ** Math.min(this.consecutiveUnwelcomed, 3);` (cap 8x = 80s at the default base). The watchdog's fire path increments `consecutiveUnwelcomed` before closing; `handleFrame`'s welcome case resets it to 0 (alongside the existing clear). `stop()` also resets it. Update `welcomeTimeoutMs`'s doc comment: it is the BASE window; consecutive unwelcomed connections double it (cap 8x) so a slow-but-progressing server preamble under load is tolerated instead of amplified (each kill discards the connection's queue position server-side), while a truly hung link still self-heals at the base window on the first occurrence.
+
+**Step 4 — gates:** `pnpm --filter @shadowcat/core test && pnpm --filter @shadowcat/core typecheck && pnpm lint && pnpm -r test`; rebuild; then the regression gate: full `pnpm --filter @shadowcat/shell e2e` THREE times — all 3 must be 16/16 (the pre-branch suite achieved 16/16 in ~42s on a calm machine; match it).
+
+**Step 5 — docs** per Files (the POST_WORK_FINDINGS entry names the real criterion from Task 3's brief and states the corrected adjudication), **Step 6 — commit** (`fix(core/ws): welcome watchdog escalates its window under consecutive unwelcomed connections`), **Step 7 — review pair**.
+
 ## Final Review
 
 Whole-branch review (merge-base `main`..HEAD) by the `-opus` twins with the full-branch package, this plan, and the ledger's deferred minors. Then `--ff-only` merge to main, push, delete branch.
