@@ -458,3 +458,33 @@ are observations awaiting triage, not committed work.
   is covered by its unit test but never exercised through `pathfind`. Not a defect (both call sites
   pass the same `&*grid_shape` binding), but a non-GM hex + continuous `pathfind` test with a real
   mask would close the class. Status: Actionable — add the test.
+
+- Title: `panels.spec.ts` reload failures were one pre-existing product defect, not a branch
+  regression — Task 3/4 forensic closeout (silent-hang-startup, 2026-07-31). Summary: the three
+  distinct-looking `panels.spec.ts` reload failure shapes logged above (wrong-world dock miss,
+  worlds-list bounce on a since-deleted world, render-ready timeout in a busy world) are ONE
+  mechanism: `App.svelte`'s `boot()` ignored the URL hash's world route on every load and
+  unconditionally entered `ui.global.lastWorld` instead. Under the shared-account 6-worker e2e
+  suite (all workers authenticate as the same `ops` account and every `enterWorld` persists
+  `global.lastWorld`), a reload's `boot()` restores whichever world ANY concurrent worker entered
+  last, not the URL's own world — proven by a captured Playwright network trace showing the
+  reload's `GET /api/me/ui-state` returning a different worker's world id, followed by the page
+  entering that foreign world. This is a real product defect independent of the e2e harness: a
+  human reloading a deep-linked world URL in production would be teleported away from it the same
+  way. Fixed in Task 4 (route-first boot resolution, see `docs/CLOSED_BUGS.md`). This corrects
+  Task 3's report, which adjudicated the render-ready-timeout shape as a startup-contention timing
+  flake (and separately misquoted the brief's blocking criterion) — the underlying cause was this
+  routing defect, not contention, though the fixed 120s/15s Playwright budgets from that task
+  remain independently correct. The Task 4 escalating-watchdog hypothesis (raising
+  `welcomeTimeoutMs` to 60s) was FALSIFIED at its own Step-1 gate: the suite still failed
+  `panels.spec.ts` at 60s, and the captured trace showed the page landing on the worlds list, not a
+  stalled-but-present stage — every captured trace across every investigation round shows the
+  `Welcome` frame arriving in under 1s, so no watchdog kill was ever observed. The shipped fixed
+  10s watchdog window is exonerated and unchanged. Separately, a stale-binary confound corrupted a
+  night's worth of run evidence during this investigation: `pnpm --filter @shadowcat/shell e2e`'s
+  `e2e:build` step embeds `dist/` into the server binary at compile time (`rust-embed`), so a
+  source edit reverted via `git checkout` WITHOUT an intervening rebuild leaves the previously
+  built (and already-embedded) behavior in the binary under test — a constant change believed
+  reverted can silently still be live for however many runs preceded the next rebuild. Status:
+  RESOLVED — Task 4's route-first fix + this entry close the class; the render-ready timing-flake
+  audit and its 120s/15s budget fix remain valid as independent, separate work.

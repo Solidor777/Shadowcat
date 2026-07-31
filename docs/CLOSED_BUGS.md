@@ -46,6 +46,21 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   same-tick concurrent Welcomes re-enter `#onWelcome`, and an after-await latch would
   double-activate. `src/client/shell/src/lib/worldSession.svelte.ts`. Commits: `1d2f3b6`,
   `4efea22`.
+- [Teleport] `App.svelte`'s `boot()` ignored the current URL hash entirely and re-entered
+  `ui.global.lastWorld` on every load, including a reload of a deep-linked `#/world/<id>` route —
+  a reload of ANY world URL silently teleported to whichever world was entered last, discarding
+  the URL. Proven by a captured Playwright network trace of a failing `panels.spec.ts` reload: the
+  reload's `GET /api/me/ui-state` returned a DIFFERENT concurrent e2e worker's `lastWorld`, and the
+  page entered that foreign world instead of the URL's own — one mechanism behind three distinct
+  observed failure shapes (wrong-world dock miss, worlds-list bounce when the foreign world was
+  since deleted, render-ready timeout in a busy foreign world). Fixed with a route-first resolution
+  rule: a world route in the URL hash always wins over `lastWorld` (which is not consulted at all
+  while a world route is present); `lastWorld` seeds ONLY a bare/non-world load; a route's world id
+  absent from `listWorlds()` (deleted/revoked) falls through to the existing stale-reference
+  handling (clear + worlds list) rather than silently substituting `lastWorld`. Extracted as a pure
+  `resolveBootWorld(route, lastWorld, worlds)` helper so the rule lives in one place and is
+  testable without mounting `App.svelte`. `src/client/shell/src/lib/bootResolution.ts`,
+  `src/client/shell/src/App.svelte`. Commit: `<TASK4_COMMIT>`.
 
 ## Server / move-execution
 

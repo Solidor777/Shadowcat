@@ -4,6 +4,7 @@
   import { getMe, listWorlds, withRetry, type Me } from "./lib/api";
   import { loadSessionState, setLastWorld, flushOnUnload } from "./lib/sessionState.svelte";
   import { currentRoute, navigate } from "./lib/route.svelte";
+  import { resolveBootWorld } from "./lib/bootResolution";
   import { coreUi } from "@shadowcat/module-core-ui";
   import { panels } from "@shadowcat/module-panels";
   import { topBar } from "@shadowcat/module-topbar";
@@ -36,15 +37,19 @@
       if (me) {
         const ui = await withRetry(() => loadSessionState()); // applies the saved locale
         const last = ui.global.lastWorld;
-        if (last) {
+        // A world route in the URL always wins over lastWorld (resolveBootWorld) —
+        // only call /api/worlds when either could resolve to an entry.
+        const route = currentRoute();
+        if (route.name === "world" || last) {
           // A transient /api/worlds failure here degrades to entry, not a hard error.
           try {
             const worlds = await withRetry(() => listWorlds());
-            if (worlds.some((w) => w.id === last)) {
-              enterWorld(last); // reload returns you to your last world
+            const resolved = resolveBootWorld(route, last, worlds);
+            if (resolved.enterWorldId) {
+              enterWorld(resolved.enterWorldId); // reload returns you to the URL's/last world
               return;
             }
-            setLastWorld(null); // stale (deleted / revoked) — clear it
+            if (resolved.clearLastWorld) setLastWorld(null); // stale (deleted / revoked) — clear it
           } catch {
             // fall through to entry
           }

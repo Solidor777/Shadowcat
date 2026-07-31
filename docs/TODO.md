@@ -47,6 +47,13 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   M12e Task 5 brief's scope (menu pop-out + its own close translation only); wire it if/when
   multi-panel popout groups become a supported gesture.
 
+## Actionable now
+- TODO: Give the e2e suite per-worker accounts (instead of all 6 Playwright workers sharing the
+  `ops` account) so parallel workers stop contending on one user's `global.lastWorld`/ui-state
+  slice — the deeper test-hygiene fix behind the `panels.spec.ts` reload failures. The Task 4
+  route-first boot fix (`docs/CLOSED_BUGS.md`) already makes a reload deterministic regardless of
+  which account entered which world last, so this is hygiene/isolation, not a correctness gap.
+
 ## Blocked on real pointer-gesture QA (unsimulable under jsdom)
 - TODO: `DockviewEngine#toDropSite`'s one remaining fallback branch (a drop's target group
   falling outside the engine's own zone bookkeeping) is a best-effort approximation (falls back
