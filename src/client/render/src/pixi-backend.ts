@@ -107,8 +107,16 @@ export class PixiBackend implements DisplayBackend {
    * `lighting`'s BlurFilter — exactly once, on first creation), then re-parent EVERY container in
    * `orderedIds` order via `addChild` (which moves an already-parented child to the top) so the
    * final z-order matches `orderedIds` regardless of creation order or how many times this is
-   * called. Idempotent: a repeat call with the same ids is a same-order re-append, a no-op in
-   * effect.
+   * called — for a repeat call with the SAME id set (same-order re-append, a no-op in effect) or a
+   * GROWING one (new ids appended on top). **A SHRINKING set does not remove the omitted layer —
+   * it sinks to the bottom of the z-stack instead:** the reorder loop only re-parents ids present
+   * in THIS call's `orderedIds`, so a Container created by an earlier call but omitted from a
+   * later one is never removed from `this.layers`/`world`'s children; it simply isn't touched by
+   * this call's re-append, and everything that IS re-appended moves above it. `MockBackend`'s
+   * `ensureLayers` diverges here: it does `this.layers = [...orderedIds]`, a full replace, so an
+   * omitted layer id is gone entirely from the recorded state, as if never created. No current
+   * caller ever shrinks the set (the sole call site, `RenderEngine.start()`, passes a fixed
+   * `this.layers.orderedIds()` once per engine instance) — a live gap, not a live bug.
    * @param orderedIds The z-order (bottom to top) of core layer ids to ensure exist.
    * @example
    * ```ts
@@ -879,9 +887,21 @@ export class PixiBackend implements DisplayBackend {
    * first so any in-flight background load resolving after destroy is a no-op; explicitly
    * destroys the cross-fade `RenderTexture`s (`fogBlendFromRT`/`fogBlendToRT`) before the cascade
    * below, since — unlike `Assets.load` results, which are shared/cached — they are owned solely
-   * by this backend and would otherwise leak; then calls `app.destroy({removeView:true},
-   * {children:true, texture:true})`, which recursively destroys every remaining child and its
-   * textures and removes the `<canvas>` element from the DOM.
+   * by this backend and would otherwise leak (NOT nulled afterward, so a second `destroy()` call
+   * would re-invoke `.destroy(true)` on them too — moot per the next point); then calls
+   * `app.destroy({removeView:true}, {children:true, texture:true})`, which recursively destroys
+   * every remaining child and its textures and removes the `<canvas>` element from the DOM.
+   * **SINGLE-USE — a second call THROWS, does not no-op:** Pixi's `Application.destroy` nulls
+   * `this.stage`/`this.renderer` after destroying them (verified against the vendored
+   * `Application.destroy` source, which also documents this outright: "After calling destroy, the
+   * application instance should no longer be used… further operations will throw errors."), so a
+   * second `destroy()` call on this backend hits `this.stage.destroy(...)` on `null` and throws
+   * a `TypeError`. `MockBackend.destroy()` diverges here: it is trivially idempotent (`this.destroyed
+   * = true` again, no error) and does NOT clear `this.tick`/`this.tokens`/other recorded state, so
+   * a stale `runTicker()` call after a mock `destroy()` still fires — the opposite of the real
+   * backend's crash-on-reuse contract. No current call site destroys twice
+   * (`RenderEngine.destroy()`'s own doc already states "call once… not reusable afterward", but
+   * that contract has no code-level guard at this layer) — a live gap, not a live bug.
    * @example
    * ```ts
    * import { PixiBackend } from "@shadowcat/render";

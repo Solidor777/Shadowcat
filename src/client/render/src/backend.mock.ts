@@ -27,7 +27,12 @@ export class MockBackend implements DisplayBackend {
   /** `DisplayBackend.ensureLayers`: records the requested z-order verbatim into `this.layers`,
    * replacing any previous value. Unlike `PixiBackend`, which idempotently creates/re-parents real
    * Containers, this is a plain overwrite with no notion of "already exists" — a test asserts the
-   * layer order by reading `this.layers` directly.
+   * layer order by reading `this.layers` directly. **Divergence on a SHRINKING set:** a repeat
+   * call that omits an id present in an earlier call makes that id vanish entirely from
+   * `this.layers` here, whereas `PixiBackend.ensureLayers` never removes an omitted layer's
+   * Container — it survives, un-reparented, and sinks to the bottom of the real z-stack instead
+   * of disappearing. A test asserting "an omitted layer is gone" would pass against this mock and
+   * fail against the real backend (which would show the layer still present, just misordered).
    * @param orderedIds The z-order (bottom to top) of core layer ids to record.
    * @example
    * ```ts
@@ -370,7 +375,14 @@ export class MockBackend implements DisplayBackend {
   }
   /** `DisplayBackend.destroy`: sets `this.destroyed = true`. Does not release any resources (this
    * mock never allocates GPU state) — a test asserts teardown was requested by reading
-   * `this.destroyed`.
+   * `this.destroyed`. **Divergence from `PixiBackend` (mock LOOSER, sharpest divergence in this
+   * pair — crash vs. silent success):** this is idempotent — a second call just re-sets
+   * `this.destroyed = true` with no error — and it does NOT clear `this.tick`/`this.tokens`/any
+   * other recorded state, so a stale `runTicker()` or `lastTokenX()` call after `destroy()` still
+   * works here. `PixiBackend.destroy()` is single-use: its second call THROWS (Pixi's
+   * `Application.destroy` nulls `stage`/`renderer`, and the second call dereferences the null). A
+   * test double-destroying a backend, or calling a mock method after `destroy()`, passes green
+   * against this mock and would throw against the real backend.
    * @example
    * ```ts
    * import { MockBackend } from "@shadowcat/render";
