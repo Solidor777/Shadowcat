@@ -167,7 +167,8 @@ async fn store_streamed(
     Ok((ct, total as i64, original_name))
 }
 
-/// `POST /api/worlds/{world}/assets` — GM/owner-gated multipart image upload.
+/// `POST /api/worlds/{world}/assets` — GM-gated multipart image upload
+/// (`require_gm`; server admins resolve to GM). There is no owner exception.
 pub async fn upload(
     State(state): State<AppState>,
     user: AuthUser,
@@ -292,8 +293,9 @@ pub async fn serve(
         .into_response())
 }
 
-/// `POST /api/assets/{uuid}/replace` — GM/owner-gated byte-swap behind a stable
-/// id. Undo-exempt: no world seq, no event-log entry.
+/// `POST /api/assets/{uuid}/replace` — GM-gated byte-swap behind a stable id
+/// (`require_gm`; no owner exception). Undo-exempt: no world seq, no
+/// event-log entry.
 pub async fn replace(
     State(state): State<AppState>,
     user: AuthUser,
@@ -383,7 +385,8 @@ pub async fn replace(
     }
 }
 
-/// `DELETE /api/assets/{uuid}` — GM/owner-gated. Undo-exempt.
+/// `DELETE /api/assets/{uuid}` — GM-gated (`require_gm`; no owner exception).
+/// Undo-exempt.
 pub async fn delete(
     State(state): State<AppState>,
     user: AuthUser,
