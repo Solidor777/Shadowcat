@@ -159,12 +159,11 @@ function pathsOverlap(a: string, b: string): boolean {
  * production caller: `gm_role` is set in exactly one place, chat-message
  * construction (`chat/mod.rs:299-341` — `Public` → `None`, `Whisper` →
  * `Some(None)`, `GmOnly` → `Some(Observer)`), and no chat module calls
- * `canEdit`/`canWritePath` at all — the production callers are the token
- * panels and sheets (`modules/{actors,conditions,sheet-item,sheet-actor,
- * sheet-fallback}`), which never touch a `gm_role`-capped document; and
- * `isGm: true` itself has no production caller today (`worldSession.canEdit`
- * resolves the GM case and always passes `isGm: false`, see `resolveCaps`'s
- * doc above). The live GM-bypass gate is `worldSession.canEdit`'s own
+ * `canEdit`/`canWritePath` at all — the production callers are the token panels
+ * and sheets (`modules/{actors,conditions,sheet-item,sheet-actor,sheet-fallback}`).
+ * Decisively, `isGm: true` itself has no production caller at all
+ * (`worldSession.canEdit` resolves the GM case and always passes `isGm: false`,
+ * see `resolveCaps`'s doc above). The live GM-bypass gate is `canEdit`'s own
  * `role === "gm"` early return (`worldSession.svelte.ts:153`), which is
  * equally unaware of `gm_role` — out of scope here (`shell` package).
  * @param path A JSON pointer identifying the field being written.
