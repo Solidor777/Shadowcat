@@ -78,6 +78,26 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   + `preserveEntrySignatures:"strict"` + the `index.html` import map. GM management UI =
   `src/modules/settings/src/ModuleManager.svelte`. Full subsystem (server discovery/serving/enablement,
   engine-compat gate) → [[shadowcat-codebase-module-toolchain]].
+- **Bounded + retried boot fetches (silent-hang-startup fix)** — `lib/api.ts`'s session/boot
+  fetches (`getMe`, `getUiState`, `listWorlds`) each carry `AbortSignal.timeout(FETCH_TIMEOUT_MS)`
+  (15s), so a hung backend rejects instead of leaving the fetch unsettled forever. `App.svelte`'s
+  `boot()` wraps each of the three awaits in `withRetry` (3 attempts, flat delays) before
+  degrading to the login/worlds route — a transient non-2xx or connection reset during startup no
+  longer permanently strands the SPA on that fallback route with no retry.
+- **`WorldSession`'s activation latch is split, and the split order is load-bearing
+  (silent-hang-startup fix)** — a single `#bootstrapped` boolean used to latch BEFORE
+  `await #modules.activate()`, so a failed/hung first activation (e.g. a manifest dependency
+  cycle) cached "done" for the session's life: reconnect Welcomes short-circuited, `role` was set,
+  but every Surface stayed empty. It is now two fields: `#modulesAdded` (latches once per
+  session — re-adding modules would duplicate registrations) and `#activated` (latches only on a
+  successful `activate()`, reverted to `false` in the `catch` on a thrown activation, so the NEXT
+  Welcome retries instead of caching the failure). **`#activated` is still set to `true`
+  SYNCHRONOUSLY, before the `activate()` await** — this is the one part of the old single-latch
+  behavior deliberately preserved: same-tick concurrent Welcomes re-enter `#onWelcome`, and
+  setting `#activated` only after the await (e.g. in a `.then()`) would let a second Welcome
+  arriving mid-activation see `#activated === false` and call `activate()` again, double-
+  activating. Any future change to this seam must keep the synchronous pre-await set — do not
+  "simplify" it to an after-await assignment.
 - `src/client/shell/src/` — `App.svelte`, `main.ts`, `lib/` (hash router, api client, session,
   WorldSession controller, default-module wiring). `sessionState.svelte.ts` owns the
   `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` (M12a, replaced

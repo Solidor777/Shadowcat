@@ -162,6 +162,17 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 - TODO: `Stage.svelte`'s backend-init failure path sets `data-render-error="true"` silently. Route
   it through the project logger so a real WebGL/backend init failure is distinguishable from a
   timeout in e2e output and user bug reports.
+- TODO: `ws-client.ts`'s connection-generation guard (added for `"welcome"` in `fb1d5be`) does not
+  cover `resync_end` — a superseded connection's queued `resync_end` frame can still fire
+  `onResyncComplete`/`#flushOfflineQueue` prematurely on the successor connection. The seq math
+  itself is safe (`nextExpected` only ever advances), but the flush trigger is not gated by
+  generation. Extend the same `gen !== this.connGeneration` guard already applied to `"welcome"`
+  to the `"resync_end"` case in `handleFrame`.
+- TODO: `WsClient.open()` (`ws-client.ts`) adopts a resolving transport (`this.transport =
+  await this.opts.connect(...)`) without re-checking `running_` after the await — a `stop()`
+  call during a pending connect leaves an adopted-but-unwatched socket assigned to
+  `this.transport`. Re-check `running_` immediately after the connect await and close/discard the
+  transport if the client was stopped in the meantime.
 
 ## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
 - TODO: `src/server/src/ws/room.rs`'s `Room::execute_move` re-derives `is_gm` via its own

@@ -132,7 +132,25 @@ optimistically and roll back on divergence.
   deleted account fully authenticated until cookie expiry. Client side: `WsClient` treats
   `evicted` as terminal (`stop()` — no reconnect) and surfaces `onEvicted`, which the shell routes
   to `leaveWorld()`.
-- `src/client/core/src/ws-client.ts` — client WS connection + resync.
+- `src/client/core/src/ws-client.ts` — client WS connection + resync. **Welcome watchdog +
+  connection-generation guard (silent-hang-startup fix):** `open()` arms a `welcomeTimeoutMs`
+  watchdog (default 10s, `opts.welcomeTimeoutMs`) once `opts.connect` resolves; an open-but-
+  unwelcomed transport is closed into the normal `scheduleReconnect` path instead of hanging on
+  "Connecting…" forever (the browser's socket `open` fires at HTTP 101, BEFORE the server's
+  Welcome preamble — see `ws/conn.rs`'s per-connect DB round trips + blocking
+  `scan_installed_modules` scan). Every `open()` attempt is tagged with a monotonically
+  increasing `connGeneration`; `handleFrame` ignores a `"welcome"` frame whose generation doesn't
+  match the CURRENT connection before acting (clearing the watchdog, setting `serverOffsetMs`,
+  emitting `onWelcome`) — this closes the reintroduction where a Welcome already queued as a
+  message task when the watchdog fired could still arrive after reconnect and incorrectly disarm
+  the successor connection's own watchdog. **`resync_end` is NOT yet generation-guarded** — a
+  superseded connection's queued `resync_end` can still fire `onResyncComplete` prematurely on
+  the successor (seq math itself stays safe; see `docs/TODO.md`).
+- `src/client/core/src/transport.ts` — `webSocketConnect(url, connectTimeoutMs = 10_000)`: bounds
+  the handshake so an accepted-but-never-upgraded socket settles (rejects + closes) instead of
+  leaving `ws-client.ts`'s reconnect path unreachable behind an unsettled connect promise. A
+  settled-guard ensures a pre-open close/error only rejects the connect promise — it never ALSO
+  reaches `handlers.onClose` (which could double-schedule a reconnect).
 - `src/client/core/src/store.ts` — `DocumentStore implements ReadableDocuments` (authoritative,
   rollback base).
 - `src/client/core/src/optimistic.ts` — `OptimisticClient implements ReadableDocuments` (the
@@ -156,6 +174,9 @@ optimistically and roll back on divergence.
 
 ## Gotchas
 
+- **`WsClient.open()` does not re-check `running_` after its connect await** — a `stop()` call
+  during a pending connect can leave an adopted-but-unwatched transport assigned to
+  `this.transport`. See `docs/TODO.md`.
 - **Docs-ratchet is live on the whole `ws/` tree (docs sweep 3) AND the `http/` + `auth/` trees
   (docs sweep 4):** every file in all three trees carries `#![deny(missing_docs)]` +
   `#![deny(clippy::missing_docs_in_private_items)]` — a new undocumented item fails the 3-OS CI

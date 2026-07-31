@@ -3,6 +3,50 @@
 Confirmed-real defects that have since been fixed, kept for provenance. New fixes append a new
 `##` section (or bullet under an existing one); do not delete resolved entries.
 
+## Client / silent-hang startup paths (2026-07-31 render-ready audit)
+
+- [Hang] No Welcome watchdog: `WorldSession.enter` awaited the server's `Welcome` frame with no
+  timeout, retry, or error state (`worldSession.svelte.ts` — `role` is only set in `#onWelcome`,
+  and `App.svelte`'s world gate rendered "Connecting…" until then). The browser's socket `open`
+  fires at HTTP 101, BEFORE the server's Welcome preamble (~9 DB round trips + a blocking
+  `scan_installed_modules` fs scan per connect, `ws/conn.rs`), so a stalled preamble left the
+  client on "Connecting…" forever — reconnect machinery only reacted to socket CLOSE. Fixed by
+  arming a `welcomeTimeoutMs` watchdog (default 10s) after `open()` succeeds, cleared on receipt
+  of a matching Welcome; an open-but-unwelcomed transport is closed into the normal reconnect
+  path instead of hanging silently. A follow-up fix round closed a reintroduction: a Welcome
+  frame already queued as a message task when the watchdog closed its connection could still
+  deliver after reconnect and incorrectly disarm the successor connection's own watchdog —
+  `handleFrame` now tags each `open()` attempt with a monotonically increasing generation id and
+  ignores a `"welcome"` frame whose generation doesn't match the current connection before
+  acting (`resync_end` is NOT yet guarded this way — see `docs/TODO.md`). `src/client/core/src/
+  ws-client.ts`. Commits: `69c47c9`, `fb1d5be`.
+- [Hang] `webSocketConnect` (`client/core/src/transport.ts`) settled only on the socket's
+  `open`/`error` events — a TCP-accepted-but-never-upgraded handshake never settled, and
+  `ws-client.ts`'s reconnect path was unreachable behind the unsettled await. Fixed by adding a
+  `connectTimeoutMs` handshake bound (default 10s) that rejects and closes the socket so
+  `scheduleReconnect` runs, plus a settled-guard so a pre-open close/error only rejects the
+  connect promise instead of also leaking into `handlers.onClose` (which could have
+  double-scheduled a reconnect). `src/client/core/src/transport.ts`. Commit: `69c47c9`.
+- [Hang] `boot()`'s three fetches (`getMe`, `getUiState`, `listWorlds` — `App.svelte`/`api.ts`)
+  were unbounded and unretried; any transient non-2xx or connection reset permanently degraded to
+  the login or worlds route with no visible error and no retry. Fixed by bounding every
+  session/boot fetch with a 15s `AbortSignal.timeout` (`FETCH_TIMEOUT_MS`) and adding `withRetry`
+  (3 attempts, flat delays) around the boot chain's three awaits before degrading.
+  `src/client/shell/src/lib/api.ts`, `src/client/shell/src/App.svelte`. Commits: `1d2f3b6`,
+  `4efea22`.
+- [Wedge] `WorldSession.#bootstrapped` latched `true` BEFORE `await #modules.activate()`
+  (`worldSession.svelte.ts`), so a failed or hung first activation (e.g. a manifest dependency
+  cycle throwing out of `topoSort`) was cached for the session's life: reconnect Welcomes
+  short-circuited, `role` was set, the Table mounted, but every Surface stayed empty and
+  `.stage-host` never appeared — logged only. Fixed by splitting the single latch into
+  `#modulesAdded` (once per session — re-adding would duplicate registrations) and `#activated`
+  (latches only on a successful `activate()`, reverting to `false` on a thrown activation so a
+  contract-cycle failure is retried on the next Welcome instead of being cached for the session's
+  life). `#activated` is still set SYNCHRONOUSLY before the `activate()` await — load-bearing:
+  same-tick concurrent Welcomes re-enter `#onWelcome`, and an after-await latch would
+  double-activate. `src/client/shell/src/lib/worldSession.svelte.ts`. Commits: `1d2f3b6`,
+  `4efea22`.
+
 ## Server / move-execution
 
 - [Movement] `movement::supercover_cells` spuriously failed-closed (returned `None`, rejecting an
