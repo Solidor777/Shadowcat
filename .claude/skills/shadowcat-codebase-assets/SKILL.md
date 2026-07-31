@@ -20,7 +20,8 @@ and serves uploads unconverted (the conversion pipeline is deferred).
   backs the ETag + the resync source of truth.
 - `src/server/src/http/assets.rs`:
   - `upload(...)` — streams to disk; `UploadRateLimiter::{check,refund}` enforces tiered per-minute
-    limits (GM gets a higher tier than a regular user); `detect_image_type`.
+    limits (configured per role); `detect_image_type`. **The non-GM tier is unreachable from this
+    route** — `require_gm` gates it (below), so only the GM tier is ever selected here.
   - `serve(...)` — `GET /api/assets/{uuid}`, membership-gated; ETag = `"{id}-{version}"`;
     `If-None-Match` is an RFC 7232 comma-separated list → 304 if our ETag appears anywhere in it.
   - `replace(...)` — swaps bytes, keeping the stable UUID; broadcasts `AssetChanged`.
@@ -30,6 +31,14 @@ and serves uploads unconverted (the conversion pipeline is deferred).
 
 ## Hard invariants
 
+- **All three mutation routes are GM-ONLY, with no owner exception.** `upload`, `replace`, and
+  `delete` each call `require_gm` (`http/routes.rs`), which returns `Forbidden` unless
+  `ctx.world_role == WorldRole::Gm`; a server admin reaches GM via `permission_context`
+  (`data/sqlite.rs`, `server_role == Admin ⇒ world_role: Gm`, before any membership lookup). There
+  is no asset-owner concept and no per-asset permission check — uploading a file does not grant its
+  uploader any subsequent authority over it. `serve` is the odd one out: membership-gated, not
+  GM-gated. Corrected in the client/core doc sweep, where all three route comments had claimed
+  "GM/owner-gated" — treat any surviving "owner" language about asset mutation as stale.
 - **`replace` commits the source-of-truth/cache-key row BEFORE swapping the file** (row-first).
   The inverse strands new bytes under a stale ETag/version — a silent 304 of changed content;
   `replace` has prior bytes to preserve and an existing ETag to protect, so the failure that

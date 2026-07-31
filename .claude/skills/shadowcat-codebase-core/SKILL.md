@@ -119,8 +119,19 @@ source of truth. The ones agents break most:
 - Server (from `src/server/`): `cargo test`, `cargo fmt`, `cargo clippy`.
 - Docs: `pnpm docs:build` (full site → `dist-docs/`; runs `pnpm build` first — embed ordering),
   `pnpm docs:serve` (view; file:// unsupported), `pnpm docs:check-examples` (`@example` ```ts
-  blocks must typecheck — CI-blocking in the web job), `pnpm lint:docs` (warn-tier doc-coverage
-  report; per-package severities ratchet to error in `eslint.docs.config.js` as sweeps land).
+  blocks must typecheck — CI-blocking in the web job), `pnpm lint:docs` (doc-coverage gate;
+  `eslint.docs.config.js` holds one rule set via `rulesAt(severity)`, applied at `warn` repo-wide
+  and at `error` for ratcheted packages. **`@shadowcat/core` is ratcheted — a missing doc comment
+  there fails the command**; every other package is still advisory. A sweep flips its package only
+  after reaching zero.)
+- **A green `pnpm lint:docs` is NOT evidence the docs are correct.** The `jsdoc/require-*` rules
+  gate on tag PRESENCE only: they cannot see a vacuous tag (`@returns The result.`), a false
+  statement, or a second doc block appended below an existing one. That last case actively
+  misleads — jsdoc, TypeDoc, and editor hover all bind to the NEAREST preceding block, so an
+  appended block satisfies the linter while ORPHANING the richer one above it (found in
+  `transport.ts` during the client/core sweep, at 0 warnings the whole time). Detecting it needs a
+  manual scan for a `*/` line immediately followed by `/**`. Truthfulness and placement are review
+  concerns, not gate concerns: `docs/design/doc-sweep-truthfulness-rules.md`.
 - CI builds the client **before** `cargo` (embed ordering) across the three-OS matrix.
 
 **Subsystem skills:** `documents-permissions`, `actors-tokens`, `scene-rendering`,
