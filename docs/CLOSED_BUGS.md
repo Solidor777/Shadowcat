@@ -60,7 +60,7 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   handling (clear + worlds list) rather than silently substituting `lastWorld`. Extracted as a pure
   `resolveBootWorld(route, lastWorld, worlds)` helper so the rule lives in one place and is
   testable without mounting `App.svelte`. `src/client/shell/src/lib/bootResolution.ts`,
-  `src/client/shell/src/App.svelte`. Commit: `<TASK4_COMMIT>`.
+  `src/client/shell/src/App.svelte`. Commit: `694415d`.
 
 ## Server / move-execution
 
