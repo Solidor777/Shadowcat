@@ -31,6 +31,12 @@ Same shape as Sweep 7 (client/core, 620→0).
 - **Report contract:** every report carries a CLAIMS TABLE (claim → enforcing `file:line`) and an
   explicit statement of what the pre-existing-prose re-scan covered ("none found" is acceptable only
   with a list; that verdict was wrong three times in Sweep 7).
+- **Check the already-clean files too (Rule 10).** This task list is built from the warning census, so
+  files already at 0 are invisible to it — and that is where stale claims hide, because nothing forces
+  anyone to open them. When you document a symbol, grep the package for the same claim and check the
+  **interface** the symbol implements (`types.ts` especially: it has zero warnings and no task owns
+  it). Task 1 found the same false `serverNow` sentence in `token-animator.ts` AND `types.ts`; the
+  latter would have survived the whole sweep, leaving the interface contradicting its implementation.
 
 ## Why this package is harder than client/core
 

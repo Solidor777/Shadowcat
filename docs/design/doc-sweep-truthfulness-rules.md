@@ -111,6 +111,24 @@ reader. It cannot catch these, and neither can the `warn`→`error` ratchet:
 So: when a task reports "N → 0", that is evidence the tags exist, not that the documentation is good.
 Review the placement and the substance separately from the count.
 
+## RULE 10 — a file at 0 warnings is not a file with correct docs, and the plan is blind to it
+
+**A sweep plan's task list is built from the warning census, so every already-documented file is
+invisible to it.** Nothing in the process forces anyone to open those files — which makes them the
+best hiding place in the package for a stale or false claim.
+
+Sweep 8 Task 1 hit this immediately. `token-animator.ts` documented `@param serverNow` as "defaults to
+`Date.now`"; `Date.now` appears nowhere in that file's code, and omitting the argument yields elapsed
+`0` (no catch-up at all) — a materially different behavior, reachable through a public seam. The same
+false sentence also sat in `types.ts`, on the *interface* the method implements. `types.ts` had **zero
+warnings**, so no task in the plan touched it: the claim would have survived the entire sweep, and the
+newly-written implementation doc would have been left contradicting its own interface.
+
+**How to apply.** When a sweep documents a symbol, grep the package (and its `types.ts`/interface
+files) for the same claim, and check the interface the symbol implements. Better: give every sweep
+plan an explicit step — "verify claims in already-clean files this sweep's subject matter touches" —
+because the ratchet, the census, and the task list are all blind here by construction.
+
 ## Report contract
 
 The implementer's report must carry a claims table (claim → verifying `file:line`), and corrections in a
