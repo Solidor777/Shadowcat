@@ -8,6 +8,17 @@
  * once the sequence completes (a one-shot animation holds its final frame, never wraps or stops
  * rendering). Degenerate input (`frameCount<=0`, non-finite `elapsedMs`/`fps`, `fps<=0`) fails
  * closed to frame 0 — always a valid index into a non-empty frame array, never a crash.
+ * @param elapsedMs Milliseconds of playback elapsed since the animation started.
+ * @param fps Playback rate in frames per second.
+ * @param frameCount Total frame count in the source (sprite-sheet cell count or frame-URL list length).
+ * @param loop Whether the sequence wraps (`true`) or holds its final frame (`false`).
+ * @returns A valid index in `[0, frameCount)`, or `0` on degenerate input.
+ * @example
+ * ```
+ * // not exported from @shadowcat/render's index.ts; internal to TokenView/PixiBackend
+ * computeAnimatedFrame(250, 8, 4, true); // 2 (2 frames/sec into an 8fps loop of 4 frames)
+ * computeAnimatedFrame(10000, 8, 4, false); // 3 (clamped: the one-shot sequence has completed)
+ * ```
  */
 export function computeAnimatedFrame(elapsedMs: number, fps: number, frameCount: number, loop: boolean): number {
   if (!Number.isFinite(elapsedMs) || !Number.isFinite(fps) || fps <= 0 || frameCount <= 0) return 0;

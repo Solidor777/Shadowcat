@@ -49,7 +49,16 @@ const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
  * visible to this observer. A robust fix would need the animator to know the server's nominal
  * inter-sample interval independent of the clipped sample count (e.g. threaded through from
  * move_stream.rs's SAMPLES_PER_CELL/duration), which this pure client-side heuristic cannot
- * derive from 2 points alone without risking new false-positive/negative gap calls. */
+ * derive from 2 points alone without risking new false-positive/negative gap calls.
+ * @param samples The full (already server-clipped) sample list for one MoveStream playback.
+ * @returns The gap threshold in ms (minimum positive consecutive inter-sample delta × 1.5), or
+ * `Infinity` when fewer than 3 samples are present (gap detection disabled).
+ * @example
+ * ```
+ * // module-private; not exported from @shadowcat/render's index.ts
+ * computeGapThreshold([{ tMs: 0, pos: [0, 0] }, { tMs: 100, pos: [1, 0] }, { tMs: 200, pos: [2, 0] }]); // 150
+ * ```
+ */
 function computeGapThreshold(samples: MoveSample[]): number {
   if (samples.length < 3) return Infinity;
   let minDelta = Infinity;
@@ -89,15 +98,61 @@ export class TokenAnimator {
   private hidden = new Set<string>();
   private cfg: AnimationConfig = { speedCellsPerSec: 6, easing: "easeInOut", cellSize: 100 };
 
+  /** Replace the tween-duration tuning (speed/easing/cellSize). Affects only FUTURE tweens started
+   * by `startAnim` — an animation already in progress keeps the duration computed from the config
+   * that was active when it started.
+   * @param cfg The new speed/easing/cellSize tuple.
+   * @example
+   * ```ts
+   * import { TokenAnimator } from "@shadowcat/render";
+   *
+   * const animator = new TokenAnimator();
+   * animator.setConfig({ speedCellsPerSec: 6, easing: "easeInOut", cellSize: 100 });
+   * ```
+   */
   setConfig(cfg: AnimationConfig): void {
     this.cfg = cfg;
   }
+  /** Whether `id` has a rendered transform recorded (i.e. `get(id)` would return non-undefined).
+   * @param id The token id to check.
+   * @returns True if a transform is being tracked for this token.
+   * @example
+   * ```ts
+   * import { TokenAnimator } from "@shadowcat/render";
+   *
+   * const animator = new TokenAnimator();
+   * animator.has("token-1"); // false
+   * ```
+   */
   has(id: string): boolean {
     return this.cur.has(id);
   }
+  /** The token's current rendered transform (interpolated mid-tween), or `undefined` if untracked.
+   * @param id The token id.
+   * @returns The current `{x,y,rotation}`, or `undefined` when no transform has been set.
+   * @example
+   * ```ts
+   * import { TokenAnimator } from "@shadowcat/render";
+   *
+   * const animator = new TokenAnimator();
+   * animator.get("token-1"); // undefined
+   * ```
+   */
   get(id: string): TokenTransform | undefined {
     return this.cur.get(id);
   }
+  /** Drop all tracked state for `id` — transform, polyline tween, sample playback, and hidden flag.
+   * A subsequent `setTarget`/`animateAlongPath` for the same id starts fresh (snaps rather than
+   * tweening from stale state).
+   * @param id The token id to forget.
+   * @example
+   * ```ts
+   * import { TokenAnimator } from "@shadowcat/render";
+   *
+   * const animator = new TokenAnimator();
+   * animator.remove("token-1");
+   * ```
+   */
   remove(id: string): void {
     this.cur.delete(id);
     this.anim.delete(id);
@@ -105,7 +160,17 @@ export class TokenAnimator {
     this.hidden.delete(id);
   }
 
-  /** True when the token is in a server-defined occlusion gap and should not be rendered. */
+  /** True when the token is in a server-defined occlusion gap and should not be rendered.
+   * @param id The token id to check.
+   * @returns True while `id` is inside an occlusion gap set by `applySamplesAt`.
+   * @example
+   * ```ts
+   * import { TokenAnimator } from "@shadowcat/render";
+   *
+   * const animator = new TokenAnimator();
+   * animator.isHidden("token-1"); // false
+   * ```
+   */
   isHidden(id: string): boolean {
     return this.hidden.has(id);
   }
@@ -117,9 +182,22 @@ export class TokenAnimator {
    * where the authoritative position Event (→ setTarget) arrives before the MoveStream broadcast.
    * Catch-up: if the server clock (serverNow) is ahead of startServerMs, playback begins from the
    * matching elapsed offset.
+   * @param id The token id to animate.
+   * @param samples The (already server-clipped) position samples to play back.
+   * @param durationMs Total playback duration in ms.
+   * @param startServerMs The server clock time (ms) at which this playback begins.
+   * @param serverNow Optional injected server clock, used once at call time as
+   * `Math.max(0, serverNow() - startServerMs)` to compute the initial catch-up offset; when absent,
+   * elapsed starts at `0` (no catch-up assumed — NOT a `Date.now` fallback). Subsequent ticks
+   * advance `elapsed` by `tick`'s own `dtMs`, never by re-reading this accessor.
+   * @example
+   * ```ts
+   * import { TokenAnimator } from "@shadowcat/render";
    *
-   * @param serverNow Optional injected server clock (defaults to Date.now). Used only once at
-   *   call time to compute the initial catch-up offset; subsequent ticks use the render clock. */
+   * const animator = new TokenAnimator();
+   * animator.animateSamples("token-1", [{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [1, 1] }], 500, Date.now());
+   * ```
+   */
   animateSamples(
     id: string,
     samples: MoveSample[],
@@ -144,6 +222,26 @@ export class TokenAnimator {
     this.applySamplesAt(id, sa);
   }
 
+  /** Retarget `id` to `t`, the latest document-authoritative transform (from `reconcile()`).
+   * No-ops while sample-driven playback (`animateSamples`) is live for this id — the broadcast
+   * trajectory takes exclusive precedence over the authoritative Event's retarget (handles the
+   * typical MoveStream-before-Event server ordering; see `animateSamples`). A brand-new id snaps
+   * immediately (no prior transform to tween from). While a path-driven walk
+   * (`animateAlongPath`) is in progress, a `t` that matches an ahead vertex on the live polyline is
+   * treated as expected progress (adopts the authoritative rotation, keeps tweening) instead of
+   * restarting a new tween — see the ignore-scan loop below for the full rationale and its
+   * accepted edge case. Otherwise starts a fresh two-point ease-to-stop tween from the current
+   * rendered position to `t`.
+   * @param id The token id to retarget.
+   * @param t The new authoritative transform.
+   * @example
+   * ```ts
+   * import { TokenAnimator } from "@shadowcat/render";
+   *
+   * const animator = new TokenAnimator();
+   * animator.setTarget("token-1", { x: 100, y: 100, rotation: 0 });
+   * ```
+   */
   setTarget(id: string, t: TokenTransform): void {
     // Guard: do not start an ease tween while sample playback is live for this id.
     // Handles MoveStream-before-Event ordering: samplesAnim registered first; the late-arriving
@@ -178,6 +276,25 @@ export class TokenAnimator {
     this.startAnim(id, c, [[c.x, c.y], [t.x, t.y]], t.rotation, false);
   }
 
+  /** Drive a smooth local walk of `id` along `path`'s scene-coord waypoints, holding `rotation`
+   * fixed for the whole walk (a route move does not rotate the token; a later `setTarget` call
+   * supplies the settle rotation once the authoritative commit arrives). A brand-new id (no prior
+   * rendered transform) snaps to the path's final point instead of tweening. Consecutive coincident
+   * points are deduped and the walk is anchored at the token's live current position (not
+   * `path[0]`), so a mid-tween re-issue continues smoothly rather than jumping back to the route's
+   * nominal start. A path that dedups down to fewer than 2 points delegates to `setTarget` (no
+   * distance to walk).
+   * @param id The token id to animate.
+   * @param path The route's scene-coord waypoints, in order.
+   * @param rotation The rotation to hold for the whole walk.
+   * @example
+   * ```ts
+   * import { TokenAnimator } from "@shadowcat/render";
+   *
+   * const animator = new TokenAnimator();
+   * animator.animateAlongPath("token-1", [[0, 0], [1, 0], [1, 1]], 0);
+   * ```
+   */
   animateAlongPath(id: string, path: [number, number][], rotation: number): void {
     const c = this.cur.get(id);
     if (!c) {
@@ -200,7 +317,15 @@ export class TokenAnimator {
 
   /** Evaluate the sample-driven position at `sa.elapsed` and apply it to `cur`.
    * Sets or clears the hidden flag based on whether elapsed falls in an occlusion gap.
-   * INVARIANT: elapsed at or past the last sample tMs → settle visible at last position. */
+   * INVARIANT: elapsed at or past the last sample tMs → settle visible at last position.
+   * @param id The token id being animated.
+   * @param sa The sample-playback state (samples + elapsed + gapThreshold) to evaluate.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.applySamplesAt("token-1", sa);
+   * ```
+   */
   private applySamplesAt(id: string, sa: SamplesAnim): void {
     const { samples, elapsed, gapThreshold } = sa;
     const cur = this.cur.get(id);
@@ -263,6 +388,24 @@ export class TokenAnimator {
     this.hidden.delete(id);
   }
 
+  /** Compute per-segment lengths for `poly` and register a new ease-to-stop `Anim` entry for `id`,
+   * duration = `(total px / cfg.cellSize) / cfg.speedCellsPerSec * 1000` using the CURRENT `cfg` (a
+   * later `setConfig` call does not retroactively affect this tween — see `setConfig`). Degenerate
+   * input (non-finite `total`, `total < EPSILON`, non-positive `cellSize` or `speedCellsPerSec`)
+   * fails closed: snaps directly to `poly`'s last vertex (when finite) instead of animating,
+   * mirroring the fail-closed convention used server-side in movement.rs/lighting.rs/vision.rs
+   * (non-finite input → snap/under-reveal, never freeze on NaN or animate forever).
+   * @param id The token id to animate.
+   * @param c The token's current rendered transform (tween start point).
+   * @param poly The polyline to walk, in scene px; `poly[0]` should equal `(c.x, c.y)`.
+   * @param finalRot The rotation to settle at once the tween completes.
+   * @param pathDriven Whether this is an explicit route walk (gates the `setTarget` ignore-scan rule).
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.startAnim("token-1", { x: 0, y: 0, rotation: 0 }, [[0, 0], [100, 0]], 0, false);
+   * ```
+   */
   private startAnim(id: string, c: TokenTransform, poly: [number, number][], finalRot: number, pathDriven: boolean): void {
     const segLen: number[] = [];
     let total = 0;
@@ -297,7 +440,18 @@ export class TokenAnimator {
     });
   }
 
-  /** Advance all animations by `dtMs`; return ids whose transform changed. */
+  /** Advance all animations by `dtMs`; return ids whose transform changed.
+   * @param dtMs Elapsed render-frame time in ms since the last tick.
+   * @returns The ids whose rendered transform changed this tick (sample-driven and
+   * polyline-driven animations both included).
+   * @example
+   * ```ts
+   * import { TokenAnimator } from "@shadowcat/render";
+   *
+   * const animator = new TokenAnimator();
+   * animator.tick(16); // []
+   * ```
+   */
   tick(dtMs: number): string[] {
     const moved: string[] = [];
     // Advance sample-driven playbacks (broadcast MoveStream animations).

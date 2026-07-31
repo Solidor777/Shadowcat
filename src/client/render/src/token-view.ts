@@ -24,6 +24,23 @@ export class TokenView {
   private animSpeed = 6;
   private animEasing: EasingMode = "easeInOut";
 
+  /** Constructs a view bound to `store`/`assets`/`backend`; call `reconcile()` once to populate it.
+   * @param store The document store to read `token` docs (and their linked actor/faction/
+   * condition-registry docs) from.
+   * @param assets Resolves asset ids embedded in a token's visual to serve URLs.
+   * @param backend The display backend to push resolved token nodes to.
+   * @param viewedSceneId Resolves the currently-viewed scene id; `reconcile()` scopes its query to
+   * this scene (falls back to unscoped — every token in the store — when it resolves to `null`).
+   * Defaults to always-`null` (legacy/test callers that never pass one).
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * ```
+   */
   constructor(
     private readonly store: ReadableDocuments,
     private readonly assets: AssetResolver,
@@ -31,17 +48,57 @@ export class TokenView {
     private readonly viewedSceneId: () => string | null = () => null,
   ) {}
 
+  /** Mark `id` as the locally-dragged token (its sprite snaps to the authoritative transform each
+   * reconcile, no tween lag) or clear the latch with `null`.
+   * @param id The token id being dragged, or `null` to clear.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.setDragging("token-1");
+   * view.setDragging(null);
+   * ```
+   */
   setDragging(id: string | null): void {
     this.dragging = id;
   }
 
-  /** Update the pixel-per-cell value used to compute tween durations. */
+  /** Update the pixel-per-cell value used to compute tween durations. Affects only FUTURE tweens
+   * (`TokenAnimator.setConfig` does not retarget an animation already in progress).
+   * @param px The active grid's pixel-per-cell size.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.setCellSize(100);
+   * ```
+   */
   setCellSize(px: number): void {
     this.cellSize = px;
     this.pushAnimConfig();
   }
 
-  /** Update the speed + easing used to compute tween durations. */
+  /** Update the speed + easing used to compute tween durations. Affects only FUTURE tweens, same
+   * as `setCellSize`.
+   * @param cfg The new tween speed/easing.
+   * @param cfg.speedCellsPerSec Tween speed, in grid cells per second.
+   * @param cfg.easing The easing curve applied to polyline tweens.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.setAnimationConfig({ speedCellsPerSec: 6, easing: "easeInOut" });
+   * ```
+   */
   setAnimationConfig(cfg: { speedCellsPerSec: number; easing: EasingMode }): void {
     this.animSpeed = cfg.speedCellsPerSec;
     this.animEasing = cfg.easing;
@@ -50,14 +107,32 @@ export class TokenView {
 
   /** Merge the stored speed/easing/cellSize into a single AnimationConfig and forward it to the
    * animator. Coupling: both setCellSize and setAnimationConfig must call this so the animator's
-   * config is always the product of the latest values of all three fields. */
+   * config is always the product of the latest values of all three fields.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.pushAnimConfig();
+   * ```
+   */
   private pushAnimConfig(): void {
     this.animator.setConfig({ speedCellsPerSec: this.animSpeed, easing: this.animEasing, cellSize: this.cellSize });
   }
 
   /** Drive a smooth local walk along a route's scene-coord waypoints. Rotation is held (a route
    * move does not rotate the token). The prompt authoritative commit catches up via reconcile()'s
-   * setTarget, which the animator recognizes as expected progress. */
+   * setTarget, which the animator recognizes as expected progress.
+   * @param id The token id to animate.
+   * @param path The route's scene-coord waypoints, in order.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.animateAlongPath("token-1", [[0, 0], [100, 0]]);
+   * ```
+   */
   animateAlongPath(id: string, path: [number, number][]): void {
     const rotation = this.specs.get(id)?.rotation ?? 0;
     this.animator.animateAlongPath(id, path, rotation);
@@ -66,7 +141,24 @@ export class TokenView {
 
   /** Drive server-broadcast sample-based playback. Interpolates position between adjacent samples
    * by tMs; hides the token across occlusion gaps (server-clipped visibility spans). Catch-up: if
-   * `serverNow()` is ahead of `startServerMs`, playback begins from the matching elapsed offset. */
+   * `serverNow()` is ahead of `startServerMs`, playback begins from the matching elapsed offset.
+   * @param id The token id to animate.
+   * @param samples The (already server-clipped) position samples to play back.
+   * @param durationMs Total playback duration in ms.
+   * @param startServerMs The server clock time (ms) at which this playback begins.
+   * @param serverNow Optional injected server clock, used once at call time as
+   * `Math.max(0, serverNow() - startServerMs)` to compute the initial catch-up offset; when
+   * absent, elapsed starts at `0` (no catch-up assumed — NOT a `Date.now` fallback).
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.animateSamples("token-1", [{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [1, 1] }], 500, Date.now());
+   * ```
+   */
   animateSamples(
     id: string,
     samples: MoveSample[],
@@ -78,6 +170,22 @@ export class TokenView {
     this.push(id);
   }
 
+  /** Diff the store's `token` docs (scoped to `viewedSceneId`) against the ids currently tracked in
+   * `specs`: every current doc gets a fresh spec + an immediate `push` (so a new/dragged token
+   * snaps to its authoritative transform this call, not next tick), and every tracked id no longer
+   * present is fully torn down (`animator.remove` + `wasHidden` cleared + `backend.removeToken`). A
+   * doc whose `toSpec` resolves to `null` (e.g. an unresolvable visual) is treated as absent — it
+   * is never added to `seen`, so it is torn down on this same pass if it was tracked.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.reconcile();
+   * ```
+   */
   reconcile(): void {
     const seen = new Set<string>();
     for (const doc of sceneScopedDocs(this.store, "token", this.viewedSceneId)) {
@@ -100,6 +208,22 @@ export class TokenView {
     }
   }
 
+  /** Advance both independent per-frame facilities: `animator.tick` (transform tweens — polyline
+   * walks and sample playback) pushes each changed id's latest transform to the backend, and
+   * `backend.tickTokenAnimations` (frame-index playback for a token's `kind:"animated"` visual —
+   * see `computeAnimatedFrame` in `token-animation.ts`) advances independently of any transform
+   * tween, so an animated-sprite token still cycles frames while stationary.
+   * @param dtMs Elapsed render-frame time in ms since the last tick.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.tick(16);
+   * ```
+   */
   tick(dtMs: number): void {
     for (const id of this.animator.tick(dtMs)) this.push(id);
     this.backend.tickTokenAnimations(dtMs);
@@ -110,7 +234,14 @@ export class TokenView {
    * not every tick. setToken is called on every visible tick. wasHidden tracks the prior-call
    * state to detect transitions without querying backend state.
    * Coupling: reconcile respects isHidden through this path; wasHidden is cleared on token
-   * removal so a re-created token starts from a clean visible state. */
+   * removal so a re-created token starts from a clean visible state.
+   * @param id The token id to push.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.push("token-1");
+   * ```
+   */
   private push(id: string): void {
     const spec = this.specs.get(id);
     const t = this.animator.get(id);
@@ -129,6 +260,17 @@ export class TokenView {
     if (t) this.backend.setToken(id, { ...spec, x: t.x, y: t.y, rotation: t.rotation });
   }
 
+  /** Resolve an actor/token-declared `AnimatedSource` (raw asset ids) into a `ResolvedAnimatedSource`
+   * (already-URL'd) via `this.assets`, mirroring the `visual.kind === "image"` branch's
+   * `assets.url(...)` call in `toSpec` — the backend never resolves asset ids itself.
+   * @param source The animated-visual source (a frame-URL list, or a sprite sheet), pre-resolution.
+   * @returns The same shape with every asset id replaced by its resolved serve URL.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.resolveSource({ type: "frames", frames: ["00000000-0000-0000-0000-000000000001"] });
+   * ```
+   */
   private resolveSource(source: AnimatedSource): ResolvedAnimatedSource {
     return source.type === "frames"
       ? { type: "frames", urls: source.frames.map((id) => this.assets.url(id)) }
@@ -138,6 +280,21 @@ export class TokenView {
       : { type: "sheet", url: this.assets.url(source.asset), rows: source.rows, cols: source.cols, count: source.count ?? undefined };
   }
 
+  /** Project a `token` doc into a renderable `TokenNodeSpec`: resolves the effective actor
+   * (`resolveTokenActor`), the visual (`resolveTokenVisual`, image or animated, URL-resolved via
+   * `resolveSource`), the faction border color (via the world `faction-registry` doc; `null` when
+   * the effective actor has no faction or the faction has no registered color), condition badges
+   * (`resolveConditions`), and the footprint box/shape (`resolveTokenBox`). Fails closed to `null`
+   * when the doc has no `engine` body or `resolveTokenVisual` cannot resolve a visual; `reconcile`
+   * treats a `null` result as "this token is absent" and tears down any tracked state for its id.
+   * @param doc The `token` document to project.
+   * @returns The resolved spec, or `null` when the doc cannot be rendered.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.toSpec(doc);
+   * ```
+   */
   private toSpec(doc: WireDocument): TokenNodeSpec | null {
     const s = doc.engine as TokenEngine | undefined;
     if (!s) return null;
