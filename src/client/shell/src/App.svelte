@@ -1,7 +1,7 @@
 <script lang="ts">
   import { webSocketConnect } from "@shadowcat/core";
   import { Entry } from "@shadowcat/module-entry";
-  import { getMe, listWorlds, type Me } from "./lib/api";
+  import { getMe, listWorlds, withRetry, type Me } from "./lib/api";
   import { loadSessionState, setLastWorld, flushOnUnload } from "./lib/sessionState.svelte";
   import { currentRoute, navigate } from "./lib/route.svelte";
   import { coreUi } from "@shadowcat/module-core-ui";
@@ -32,14 +32,14 @@
 
   async function boot() {
     try {
-      me = await getMe();
+      me = await withRetry(() => getMe());
       if (me) {
-        const ui = await loadSessionState(); // applies the saved locale
+        const ui = await withRetry(() => loadSessionState()); // applies the saved locale
         const last = ui.global.lastWorld;
         if (last) {
           // A transient /api/worlds failure here degrades to entry, not a hard error.
           try {
-            const worlds = await listWorlds();
+            const worlds = await withRetry(() => listWorlds());
             if (worlds.some((w) => w.id === last)) {
               enterWorld(last); // reload returns you to your last world
               return;

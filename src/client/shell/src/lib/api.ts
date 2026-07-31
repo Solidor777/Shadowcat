@@ -7,8 +7,36 @@ export interface Me {
   server_role: string;
 }
 
+/** Bound on every session/boot fetch. A hung backend request otherwise pins the
+ * SPA on its current route forever (the boot chain has no other timeout). */
+const FETCH_TIMEOUT_MS = 15_000;
+
+/** Bounded retry for the boot chain: transient backend blips (restart, single
+ * 5xx) must not permanently strand the SPA on the login/worlds route — the
+ * pre-fix behavior degraded on the FIRST failure with no retry and no error
+ * surface. Delays are flat values, not a policy knob (YAGNI). */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  attempts = 3,
+  delays: number[] = [500, 1500],
+): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, delays[Math.min(i, delays.length - 1)]));
+    }
+  }
+  throw lastErr;
+}
+
 async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers: { accept: "application/json" } });
+  const res = await fetch(url, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   if (!res.ok) throw new Error(`${url} → ${res.status}`);
   return (await res.json()) as T;
 }
@@ -18,11 +46,15 @@ async function postJson(url: string, body: unknown): Promise<Response> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
 }
 
 export async function getMe(): Promise<Me | null> {
-  const res = await fetch("/api/me", { headers: { accept: "application/json" } });
+  const res = await fetch("/api/me", {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   if (res.status === 401) return null;
   if (!res.ok) throw new Error(`/api/me → ${res.status}`);
   return (await res.json()) as Me;
@@ -101,6 +133,7 @@ export async function putUiState(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(patch),
     keepalive: opts.keepalive,
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`PUT /api/me/ui-state → ${res.status}`);
 }

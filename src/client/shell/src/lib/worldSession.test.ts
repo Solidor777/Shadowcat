@@ -113,6 +113,60 @@ test("a repeated Welcome (reconnect) does not re-add core-ui or throw", async ()
   expect(coreUiStub.register).toHaveBeenCalledTimes(1);
 });
 
+// Two modules whose contract declarations are mutually circular (A requires
+// B's contract, B requires A's), so `ModuleRegistry.activate()`'s `topoSort`
+// throws on the cycle. Used to prove a thrown activation is re-attempted on
+// the next Welcome, not latched for the session's life.
+const cycleModA = {
+  manifest: {
+    id: "cycle-a",
+    version: "0.1.0",
+    dependencies: {},
+    provides: [{ contract: "cycle-a:out", cardinality: "singleton" as const }],
+    requires: ["cycle-b:out"],
+  },
+  register: vi.fn(),
+};
+const cycleModB = {
+  manifest: {
+    id: "cycle-b",
+    version: "0.1.0",
+    dependencies: {},
+    provides: [{ contract: "cycle-b:out", cardinality: "singleton" as const }],
+    requires: ["cycle-a:out"],
+  },
+  register: vi.fn(),
+};
+
+test("a failed first activation is re-attempted on the next Welcome (no permanent latch)", async () => {
+  // Sequential (not concurrent) Welcome deliveries: the second is pushed only
+  // after the first has fully resolved (including the outer catch/log), which
+  // is what "re-attempted on the NEXT Welcome" means — a second Welcome that
+  // races the first's still-pending activation is a different, already-covered
+  // concurrency invariant (see "a repeated Welcome (reconnect) does not
+  // re-add core-ui or throw").
+  const { connect, push } = pushConnect([]);
+  const errors: unknown[][] = [];
+  const logger = { ...silentLogger, error: (...args: unknown[]) => errors.push(args) };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [cycleModA, cycleModB],
+    logger,
+  });
+  await session.enter("w1");
+  push(welcomeFrame);
+  // Pre-fix behavior: the second Welcome short-circuits the bootstrap guard and
+  // logs nothing, latching the first failure for the session's life. Fixed
+  // behavior: both Welcomes re-attempt activation and both log the failure.
+  await vi.waitFor(() => expect(errors).toHaveLength(1));
+  expect(errors[0][0]).toBe("world session welcome handling failed");
+
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(errors).toHaveLength(2));
+  expect(errors[1][0]).toBe("world session welcome handling failed");
+});
+
 test("applies asset_changed to the resolver and notifies subscribers", async () => {
   // A connect that delivers Welcome and lets the test push later frames.
   let push!: (frame: unknown) => void;

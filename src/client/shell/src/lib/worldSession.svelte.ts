@@ -162,9 +162,17 @@ export class WorldSession {
   }
   #modules: ModuleRegistry;
   #logger: Logger;
-  /** One-time in-world bootstrap (module activation) guard — Welcome re-fires on
-   * every reconnect, so adding/activating core-ui must not repeat. */
-  #bootstrapped = false;
+  /** In-world bootstrap guards. Modules are ADDED exactly once per session
+   * (re-adding would duplicate registrations). `#activated` is set
+   * synchronously before the `activate()` call (so a Welcome arriving while a
+   * prior one is still mid-activation cannot re-enter and double-activate),
+   * but reverts to `false` if `activate()` throws — a thrown activation (e.g.
+   * a contract cycle) is therefore re-attempted on the next Welcome instead of
+   * being cached for the session's life with every Surface silently empty.
+   * `ModuleRegistry.activate` is incremental (activates only not-yet-active
+   * modules), so a retry never double-activates an already-active module. */
+  #modulesAdded = false;
+  #activated = false;
 
   constructor(private readonly opts: WorldSessionOpts) {
     this.#logger = opts.logger ?? consoleLogger();
@@ -445,12 +453,28 @@ export class WorldSession {
       // Activate modules BEFORE any await below (the member fetch) so the
       // layout module contributes Layout into the `root` surface the host renders
       // — the table chrome paints immediately on mount, never a blank frame during
-      // the member-fetch round-trip. `#bootstrapped` set before the await so a
-      // second Welcome (reconnect) cannot re-enter and double-add the modules.
-      if (!this.#bootstrapped) {
-        this.#bootstrapped = true;
-        for (const m of this.opts.modules) this.#modules.add(m);
-        await this.#modules.activate();
+      // the member-fetch round-trip. `#modulesAdded` and `#activated` are both set
+      // synchronously BEFORE the `activate()` await: Welcome frames delivered back
+      // to back in the same tick (e.g. a `Connect` that replays a burst on
+      // reconnect) invoke `#onWelcome` re-entrantly while the first call is still
+      // suspended at that await, and only a synchronous guard closes that window —
+      // setting `#activated` in a `.then()`/after-await would let the second
+      // in-flight call see it still `false` and double-activate every module. A
+      // GENUINELY failed activation (thrown, e.g. a contract cycle) reverts
+      // `#activated` to `false` in the catch below so a later, sequential Welcome
+      // retries it — it is not cached for the session's life.
+      if (!this.#activated) {
+        if (!this.#modulesAdded) {
+          this.#modulesAdded = true;
+          for (const m of this.opts.modules) this.#modules.add(m);
+        }
+        this.#activated = true;
+        try {
+          await this.#modules.activate();
+        } catch (e) {
+          this.#activated = false;
+          throw e;
+        }
         await this.#loadExternalModules(w.world, w.server_version);
       }
       // Fetch member usernames: every role needs these to resolve chat author

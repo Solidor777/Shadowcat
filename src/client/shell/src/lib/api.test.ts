@@ -44,3 +44,59 @@ test("putUiState PUTs the patch body verbatim", async () => {
   );
 });
 
+test("getJson passes a bounded AbortSignal to fetch", async () => {
+  const f = mockFetch(200, [{ id: "w1", name: "W", role: "gm" }]);
+  await api.listWorlds();
+  const init = f.mock.calls[0][1] as RequestInit;
+  expect(init.signal).toBeInstanceOf(AbortSignal);
+});
+
+test("getMe passes a bounded AbortSignal to fetch", async () => {
+  const f = mockFetch(200, { id: "u1", username: "a", server_role: "user" });
+  await api.getMe();
+  const init = f.mock.calls[0][1] as RequestInit;
+  expect(init.signal).toBeInstanceOf(AbortSignal);
+});
+
+test("putUiState passes a bounded AbortSignal alongside keepalive", async () => {
+  const f = mockFetch(204);
+  await api.putUiState({}, { keepalive: true });
+  const init = f.mock.calls[0][1] as RequestInit;
+  expect(init.signal).toBeInstanceOf(AbortSignal);
+  expect(init.keepalive).toBe(true);
+});
+
+test("withRetry retries the configured attempts then rethrows the last error", async () => {
+  vi.useFakeTimers();
+  try {
+    let calls = 0;
+    const fn = vi.fn(async () => {
+      calls++;
+      if (calls < 3) throw new Error(`fail ${calls}`);
+      return "ok";
+    });
+    const p = api.withRetry(fn);
+    await vi.runAllTimersAsync();
+    await expect(p).resolves.toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(3);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("withRetry rejects after the configured attempts, not more", async () => {
+  vi.useFakeTimers();
+  try {
+    const fn = vi.fn(async () => {
+      throw new Error("always fails");
+    });
+    const p = api.withRetry(fn, 3, [1, 1]);
+    p.catch(() => {}); // avoid an unhandled-rejection warning racing the assertion below
+    await vi.runAllTimersAsync();
+    await expect(p).rejects.toThrow("always fails");
+    expect(fn).toHaveBeenCalledTimes(3);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
