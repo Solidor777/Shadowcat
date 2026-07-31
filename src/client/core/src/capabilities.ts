@@ -155,17 +155,20 @@ function pathsOverlap(a: string, b: string): boolean {
  * `gm_role` floors even a GM's write caps to an ordinary `DocRole` resolution
  * instead of an unconditional grant (`effective_role`/`resolve_access`,
  * `permission.rs:489-498`,`551-557`). Calling this with `isGm: true` against a
- * `gm_role`-capped document would over-permit. Today that combination has no
- * production caller: `gm_role` is set in exactly one place, chat-message
- * construction (`chat/mod.rs:299-341` — `Public` → `None`, `Whisper` →
- * `Some(None)`, `GmOnly` → `Some(Observer)`), and no chat module calls
- * `canEdit`/`canWritePath` at all — the production callers are the token panels
- * and sheets (`modules/{actors,conditions,sheet-item,sheet-actor,sheet-fallback}`).
- * Decisively, `isGm: true` itself has no production caller at all
- * (`worldSession.canEdit` resolves the GM case and always passes `isGm: false`,
- * see `resolveCaps`'s doc above). The live GM-bypass gate is `canEdit`'s own
- * `role === "gm"` early return (`worldSession.svelte.ts:153`), which is
- * equally unaware of `gm_role` — out of scope here (`shell` package).
+ * `gm_role`-capped document would over-permit. `gm_role` is an ordinary field
+ * on every document's `permissions` block (`PermissionSet.gm_role`,
+ * `data/document.rs:439`) — writable on ANY doc_type by any caller holding
+ * `EDIT_PERMISSIONS`, since `required_cap_for_path` maps `/permissions` and
+ * every `/permissions/*` sub-path, `gm_role` included, to that one capability
+ * with no doc_type restriction (`permission.rs:195-196`). Do NOT assume it is
+ * rare or actor/token-exempt: `chat/mod.rs:299-341` is where the SERVER
+ * constructs it for chat audiences (`Public` → `None`, `Whisper` →
+ * `Some(None)`, `GmOnly` → `Some(Observer)`), not an exhaustive inventory of
+ * where it can be set. The bound here rests solely on `isGm: true` having no
+ * production caller today: `worldSession.canEdit` resolves the GM case itself
+ * and always passes `isGm: false` (`worldSession.svelte.ts:153`, `:161` — see
+ * `resolveCaps`'s doc above); that gate is equally unaware of `gm_role` and is
+ * out of scope here (`shell` package).
  * @param path A JSON pointer identifying the field being written.
  * @param caps The caller's resolved capability set (from `resolveCaps`).
  * @param isGm Whether to bypass every check below (see the SCOPE NOTE above).
