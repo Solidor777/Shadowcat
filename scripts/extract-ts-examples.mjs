@@ -2,7 +2,7 @@
 // sources is extracted to .docs-tmp/examples/ and typechecked (compile-checked,
 // not executed — the TS analogue of `no_run` doctests). ```svelte and untagged
 // fences are ignored by design.
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -15,7 +15,12 @@ export function extractExamples(sourceText) {
     const body = block[0];
     if (!/@example/.test(body)) continue;
     const offsetLine = sourceText.slice(0, block.index).split("\n").length;
-    for (const fence of body.matchAll(/```ts\n([\s\S]*?)```/g)) {
+    // `\r?\n`: a CRLF working copy (Windows editor, or a tool writing without newline
+    // translation disabled) otherwise matches nothing, silently dropping EVERY example in
+    // that file while the gate still reports green — a false pass with no signal. Git
+    // normalizes to LF on commit via .gitattributes, so this only bites local runs, which
+    // is precisely where it is least likely to be noticed.
+    for (const fence of body.matchAll(/```ts\r?\n([\s\S]*?)```/g)) {
       const code = fence[1]
         .split("\n")
         .map((l) => l.replace(/^\s*\* ?/, ""))
@@ -105,6 +110,12 @@ const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(imp
 if (isMain) {
   const repo = resolve(fileURLToPath(import.meta.url), "..", "..");
   const outDir = join(repo, ".docs-tmp", "examples");
+  // Purge stale examples first. The generated tsconfig compiles the whole directory
+  // (`include: ["*.ts"]`), so an exNNNN.ts left by an earlier run is still typechecked:
+  // a deleted @example keeps reporting as covered, and one referencing a since-renamed
+  // symbol fails the gate pointing at a file no current source doc produces. Example
+  // numbering is positional, so any content change also reshuffles which file holds what.
+  rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
   const files = candidateFiles(repo, ["src/types", "src/client", "src/modules", "examples"]);
   const index = [];
