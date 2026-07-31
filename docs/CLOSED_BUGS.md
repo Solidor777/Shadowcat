@@ -18,7 +18,7 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   deliver after reconnect and incorrectly disarm the successor connection's own watchdog —
   `handleFrame` now tags each `open()` attempt with a monotonically increasing generation id and
   ignores a `"welcome"` frame whose generation doesn't match the current connection before
-  acting (`resync_end` is NOT yet guarded this way — see `docs/TODO.md`). `src/client/core/src/
+  acting (`resync_end` carries the same guard, commit `69d32ee`). `src/client/core/src/
   ws-client.ts`. Commits: `69c47c9`, `fb1d5be`.
 - [Hang] `webSocketConnect` (`client/core/src/transport.ts`) settled only on the socket's
   `open`/`error` events — a TCP-accepted-but-never-upgraded handshake never settled, and
@@ -56,8 +56,10 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   since deleted, render-ready timeout in a busy foreign world). Fixed with a route-first resolution
   rule: a world route in the URL hash always wins over `lastWorld` (which is not consulted at all
   while a world route is present); `lastWorld` seeds ONLY a bare/non-world load; a route's world id
-  absent from `listWorlds()` (deleted/revoked) falls through to the existing stale-reference
-  handling (clear + worlds list) rather than silently substituting `lastWorld`. Extracted as a pure
+  absent from `listWorlds()` (deleted/revoked) falls back to the worlds list rather than silently
+  substituting `lastWorld`, clearing `lastWorld` only when it is ALSO stale (narrowed in a
+  final-review fix wave, commit `69d32ee` — the original fix unconditionally cleared it, wiping an
+  otherwise-valid `lastWorld` as a side effect of an unrelated dead deep link). Extracted as a pure
   `resolveBootWorld(route, lastWorld, worlds)` helper so the rule lives in one place and is
   testable without mounting `App.svelte`. `src/client/shell/src/lib/bootResolution.ts`,
   `src/client/shell/src/App.svelte`. Commit: `694415d`.

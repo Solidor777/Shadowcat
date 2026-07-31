@@ -13,10 +13,9 @@ export interface BootResolution {
  * (`#/world/<id>`) always wins over `lastWorld` — `lastWorld` is not
  * consulted at all while a world route is present, even if it would resolve
  * to a different, still-valid world. `lastWorld` seeds ONLY a bare/non-world
- * load. A route world absent from `worlds` (deleted/revoked) falls through to
- * the same stale-reference handling as a stale `lastWorld` — clear + let the
- * caller fall back to the worlds list — rather than silently substituting
- * `lastWorld`. */
+ * load. A route world absent from `worlds` (deleted/revoked) falls back to
+ * the worlds list, clearing `lastWorld` only when it is ALSO stale — a dead
+ * deep link must never wipe an otherwise-valid `lastWorld` reference. */
 export function resolveBootWorld(
   route: Route,
   lastWorld: string | null,

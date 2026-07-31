@@ -379,13 +379,20 @@ describe("WsClient", () => {
   it("a welcomed connection resets the reconnect attempt counter — a later drop backs off from the base delay again", async () => {
     const delays: number[] = [];
     let opens = 0;
-    let onMessage: (d: string) => void = () => {};
     const closers: Array<() => void> = [];
     const connect: Connect = (h) => {
       opens += 1;
-      onMessage = h.onMessage;
       const close = () => h.onClose();
       closers.push(close);
+      if (opens === 2) {
+        // Deliver connection 2's Welcome SYNCHRONOUSLY, inside `connect`,
+        // before this call even returns its promise — deterministically
+        // welcomed before its own watchdog can possibly arm (armWelcomeWatchdog
+        // runs only after `connect`'s promise resolves). Avoids racing a real
+        // watchdog timer with a real-time `onMessage` delivery (with real
+        // timers, a 5ms-class window leaves ~0ms of margin for the latter).
+        h.onMessage(JSON.stringify(welcomeFrame()));
+      }
       return Promise.resolve({ send: () => {}, close });
     };
     const client = new WsClient({
@@ -403,12 +410,10 @@ describe("WsClient", () => {
     try {
       await client.start();
       // Connection 1 never welcomes; the watchdog closes it -> one reconnect
-      // at the base delay (attempt 0).
+      // at the base delay (attempt 0). Connection 2 is welcomed synchronously
+      // (above) as soon as it opens, resetting the attempt counter.
       await waitFor(() => opens === 2);
       expect(delays).toEqual([10]);
-      // Connection 2 welcomes, resetting the attempt counter.
-      onMessage(JSON.stringify(welcomeFrame()));
-      await flush();
       // A later drop of the now-WELCOMED connection (not a watchdog close)
       // must back off from the base delay again, not continue growing from a
       // stale attempt count carried over from before the Welcome.

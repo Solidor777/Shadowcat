@@ -79,10 +79,9 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `src/modules/settings/src/ModuleManager.svelte`. Full subsystem (server discovery/serving/enablement,
   engine-compat gate) → [[shadowcat-codebase-module-toolchain]].
 - **`boot()` resolves the world route-first, not `lastWorld`-first (silent-hang-startup fix)** —
-  `App.svelte`'s `boot()` reads `currentRoute()` — the LIVE route at the moment boot resolves
-  (`route` is module-scope `$state`; the read happens AFTER the awaited/retried
-  `getMe`/`getUiState`/`listWorlds` fetches, not synchronously at boot's start — never assume it
-  still reflects the hash present when `boot()` began) — BEFORE consulting `ui.global.lastWorld`.
+  `App.svelte`'s `boot()` reads `currentRoute()` once, AFTER the `getMe`/`getUiState` awaits and
+  BEFORE both the `withRetry(() => listWorlds())` await and consulting `ui.global.lastWorld` (a
+  hash change during the `listWorlds` await is ignored — see `docs/TODO.md`).
   The rule lives in one pure, directly-testable helper, `resolveBootWorld(route, lastWorld,
   worlds)` (`lib/bootResolution.ts`): a world route (`#/world/<id>`) always wins — `lastWorld` is
   NOT consulted at all while a world route is present, even if it would resolve to a different,
