@@ -36,8 +36,22 @@ or marker from memory — quote the Zod schema/enforcing line.
 
 ## Model/Effort directives
 
-Mainline (Fable 5, effort high) per standing directive. No-shell final review
-pair; fixes pre-merge.
+Dispatcher: MAINLINE (recorded 2026-07-31; the session model moved to Opus 5,
+so per this plan's own header and CLAUDE.md the execution mode is
+subagent-driven-development, not mainline-plan-execution). Implementers:
+`shadowcat-coder` (escalation `-opus`). Per-task review: the
+`shadowcat-spec-reviewer` + `shadowcat-code-reviewer` pair (effort high,
+`-opus` twins on shallow findings). Final whole-branch review: the `-opus`
+twins. No-shell review protocol throughout; fixes pre-merge.
+
+**Baseline re-measured 2026-07-31 after rebase onto `e05f82b`: 620 warnings**
+(the silent-hang startup fixes netted +3 in `ws-client.ts` 72→74 and
+`transport.ts` 3→4). Task groupings below are unchanged; only those two
+counts moved. A prior T1 attempt is abandoned in a git stash
+("sweep7-t1-wip scene-docs.ts partial") with two known defect classes —
+do NOT build on it: (a) a splice glued ` * @param` onto a description line
+for blocks whose closing `*/` shared the last text line, (b) six items were
+never applied because the generating script died before its single write.
 
 ## Buddy-check directives
 
