@@ -505,12 +505,15 @@ export function buildActorDoc(worldId: string, name: string | null, engine: Acto
 }
 
 /** Client-only `item` doc_type (M12c): NOT engine-defined (`data::engine::is_engine_doc_type`
- * excludes "item") — the server runs no server-side validation on an item's body at all
- * (unlike the 17 engine-defined doc types, whose `movementModel`/`bounds`/`visual`-shaped
- * fields DO get real server-side ingress validation post-M13-0 — item is the one doc_type
- * that stays fully opaque). An item lives standalone (top-level, parentless) or embedded in
- * an actor's inventory. Display name lives in the envelope; every other field is opaque,
- * edited via the tree editor. */
+ * excludes "item") — the server stays fully structural for an item's body, same as every
+ * other doc_type's `system` blob: `validate_system_size` caps it (`MAX_SYSTEM_BYTES`) and
+ * `validate_system_schema_tree` enforces any module-registered tier-2 schema for `"item"`
+ * (both run unconditionally on every doc_type), but item never goes through
+ * `validate_engine_tree`'s semantic/typed validation — the 17 engine-defined doc types'
+ * `movementModel`/`bounds`/`visual`-shaped `engine` fields do, item's `system` fields don't.
+ * An item lives standalone (top-level, parentless) or embedded in an actor's inventory.
+ * Display name lives in the envelope; every other field is opaque, edited via the tree
+ * editor. */
 export const ITEM_DOC_TYPE = "item";
 
 export interface ItemSystem {
