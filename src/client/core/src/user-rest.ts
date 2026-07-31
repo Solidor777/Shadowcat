@@ -102,10 +102,10 @@ export async function createUser(opts: {
 /** Delete a user account (server-admin only). The server refuses self-
  * deletion and deleting the last administrator with a 409 whose message is
  * client-actionable — surface it verbatim. An unknown `id` gets a plain 404
- * (`DataError::NotFound`, `data/sqlite.rs::delete_user`). On success, every
- * live connection for the deleted account is evicted from every room and its
- * sessions are revoked inside the same transaction, so a reconnect attempt
- * fails authentication immediately.
+ * (`DataError::NotFound`, `data/sqlite.rs::delete_user`). The account's
+ * sessions are revoked inside the delete transaction, so a reconnect fails
+ * authentication; after that commit, the deleted account's live connections
+ * are separately evicted from every room.
  * @param id The account id to delete.
  * @example
  * ```ts

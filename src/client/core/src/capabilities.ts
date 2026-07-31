@@ -42,15 +42,17 @@ function roleFloor(role: string): string[] {
 /**
  * Resolve a user's effective (non-GM) capability set on a document, mirroring
  * the server's `resolve_access_world`: the DocRole floor widened by the
- * document's additive grants and the world-default grants. GM/admin holds
- * everything — callers pass `role === "gm"` to `canWritePath`, which
- * short-circuits; this returns the concrete non-GM set.
+ * document's additive grants and the world-default grants. This function does
+ * not itself branch on GM/admin status — the sole production caller
+ * (`worldSession.canEdit`, `worldSession.svelte.ts:153`) returns early for
+ * `role === "gm"` before calling in, so `resolveCaps` only ever computes the
+ * non-GM floor in practice.
  * @param perms The document's `permissions` block.
  * @param userId The resolving user's id.
- * @param _role The user's world role. Unused here — a GM/admin bypasses this
- * function entirely via `canWritePath`'s `isGm` short-circuit, so `resolveCaps` only
- * ever computes the non-GM floor; the parameter exists for call-site symmetry with
- * the server's `resolve_access_world`, not because this function branches on it.
+ * @param _role The user's world role. Unused here — `resolveCaps` never branches
+ * on it directly; the parameter exists for call-site symmetry with the server's
+ * `resolve_access_world`. The sole production caller (`worldSession.canEdit`)
+ * already returns early for a GM before reaching this function.
  * @param worldGrants The world's default per-role/per-user capability grants.
  * @param isEffectiveOwner Whether `userId` is the effective owner of a TOKEN document
  * (see `effectiveOwner` in `./actor`); floors the resolved role at `"owner"`. Defaults
@@ -142,23 +144,32 @@ function pathsOverlap(a: string, b: string): boolean {
  * Whether the user may write `path` on a document, given its resolved caps and
  * the world's declarative requirements. Mirrors the server: the structural base
  * cap must be held, plus every declared cap for any requirement whose prefix
- * overlaps the path (ancestor or descendant). GM bypasses all checks. Advisory.
+ * overlaps the path (ancestor or descendant). Passing `isGm: true` bypasses
+ * every check below. Advisory only — the server enforces the real capability
+ * check independently at `apply_intent` (`resolve_access_world` +
+ * `required_cap_for_path`, `sqlite.rs:2247-2276`), so nothing here is a security
+ * boundary.
  *
- * DIVERGENCE from the server (documented, not silently smoothed over): the `isGm`
- * short-circuit here is UNCONDITIONAL, but the server's own GM bypass is not — a
- * document with `permissions.gm_role: Some(role)` (M13-0's restricted-audience cap,
- * currently used only by whisper/GM-only chat messages, see `PermissionSet.gm_role`
- * in `shadowcat-codebase-documents-permissions`) floors even a GM's write caps to an
- * ordinary `DocRole` resolution (`effective_role`/`resolve_access`, `data/permission.rs`)
- * instead of the usual `all: true` short-circuit. This function has no `gm_role` input
- * and cannot see that cap, so it over-permits a GM/admin caller on a `gm_role`-capped
- * document. Harmless in practice because this module is advisory-only UX gating — the
- * server enforces the real cap independently at `apply_intent` — but a caller must not
- * assume `canWritePath(..., isGm: true)` reflects the server's answer for every document.
+ * SCOPE NOTE on `isGm: true`: this function has no `permissions.gm_role` input,
+ * so it cannot represent the server's `gm_role: Some(role)` cap — when set,
+ * `gm_role` floors even a GM's write caps to an ordinary `DocRole` resolution
+ * instead of an unconditional grant (`effective_role`/`resolve_access`,
+ * `permission.rs:489-498`,`551-557`). Calling this with `isGm: true` against a
+ * `gm_role`-capped document would over-permit. Today that combination has no
+ * production caller: `gm_role` is set in exactly one place, chat-message
+ * construction (`chat/mod.rs:299-341` — `Public` → `None`, `Whisper` →
+ * `Some(None)`, `GmOnly` → `Some(Observer)`), and no chat module calls
+ * `canEdit`/`canWritePath` at all — the production callers are the token
+ * panels and sheets (`modules/{actors,conditions,sheet-item,sheet-actor,
+ * sheet-fallback}`), which never touch a `gm_role`-capped document; and
+ * `isGm: true` itself has no production caller today (`worldSession.canEdit`
+ * resolves the GM case and always passes `isGm: false`, see `resolveCaps`'s
+ * doc above). The live GM-bypass gate is `worldSession.canEdit`'s own
+ * `role === "gm"` early return (`worldSession.svelte.ts:153`), which is
+ * equally unaware of `gm_role` — out of scope here (`shell` package).
  * @param path A JSON pointer identifying the field being written.
  * @param caps The caller's resolved capability set (from `resolveCaps`).
- * @param isGm Whether the caller is a world GM/admin; bypasses every check below
- * (see the DIVERGENCE note above for the one case where the server disagrees).
+ * @param isGm Whether to bypass every check below (see the SCOPE NOTE above).
  * @param requirements The world's declarative capability requirements
  * (`WireCapabilityRequirement[]`), each naming a `path_prefix` subtree and the caps
  * it additionally demands.
