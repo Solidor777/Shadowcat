@@ -24,7 +24,8 @@ struct P {
     toks: Vec<Token>,
     /// Cursor into `toks`.
     pos: usize,
-    /// `cs`-modifier success rule, once seen (forces SuccessCount mode).
+    /// Success rule set by a `cs` (or `cf`-implied) modifier; forces
+    /// SuccessCount mode once seen.
     success: Option<SuccessRule>,
     /// Mode-agnostic `t<N>` target (design's notation pillar, §10): resolves to
     /// `TotalConfig::difficulty` in Total mode, or a direction-derived

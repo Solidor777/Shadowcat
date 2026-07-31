@@ -9,7 +9,7 @@ outcome.rs 29, notation/lexer.rs 16, notation/parser.rs 11, notation/mod.rs
 10, eval/crit.rs 8, mod.rs 6, eval/mod.rs 6, rng.rs 4, eval/sum.rs 3,
 eval/classify.rs 3, recalc.rs 2, eval/expertise.rs 1; proptests.rs,
 eval/groups.rs, eval/success.rs already clean) — then flip the whole dice/
-tree (all 15 files) to deny. This closes the LAST undocumented server scope.
+tree (all 16 files) to deny. This closes the LAST undocumented server scope.
 
 **Architecture:** Same calibrated pattern (prior sweep plans' Global
 Constraints verbatim). Branch `docs-sweep6b-dice`. Ship with the LOCAL
@@ -19,9 +19,9 @@ evidence; reviewers must not run `cargo test`).
 **Truthfulness hot spots:** NEVER document a notation marker, token, or
 grammar rule from memory — quote the lexer/parser's enforcing line (the
 Sweep-6a lesson: an invented `[[btn:...]]` marker survived to review); the
-label-only-after-DiceGroup grammar rule (labels are NOT legal after a bare
-`Const` — the differential-e2e lesson) must be stated exactly as `ConstTerm`
-parsing enforces it; determinism claims cite the seeded-RNG plumbing in
+label grammar must be stated as `take_label()` enforces it TODAY — legal after
+any atomic factor including a bare `Const` (the differential-e2e lesson's FIX;
+never restate the pre-fix rule); determinism claims cite the seeded-RNG plumbing in
 `rng.rs`/`recalc.rs` as implemented; saturation claims cite `eval::sum`'s
 `*_saturating` helpers; crit/success ladder docs match `classify`'s
 tie-refusal (the `RollError::AmbiguousLadder`-class rule documented in
@@ -62,7 +62,7 @@ No high-risk signals (docs + lint attrs only). Standard final review only.
 
 ### Task 4: Deny flip + verify + sync + ship
 
-- [ ] Inner deny pair in ALL 15 dice/ files (mod, outcome, proptests, recalc,
+- [ ] Inner deny pair in ALL 16 dice/ files (mod, outcome, proptests, recalc,
   rng, spec; notation/{lexer,mod,parser}; eval/{classify,crit,expertise,
   groups,mod,success,sum} — clean files get the attr too). Mutation proof on
   spec.rs + one eval file; restore via python. Full local matrix. Docs-sync:

@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use crate::data::document::Document;
 
 /// The schema version current builds emit. No migrations exist pre-ship;

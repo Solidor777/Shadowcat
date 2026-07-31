@@ -153,7 +153,9 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
                 BinOp::Add => add_saturating(l, r),
                 BinOp::Sub => sub_saturating(l, r),
                 BinOp::Mul => mul_saturating(l, r),
-                // Division by zero yields 0 (documented; parser rejects literal `/0`).
+                // Division by zero yields 0 — the ONLY guard; the parser
+                // accepts a literal `/0`, so this branch is reachable from
+                // untrusted notation.
                 BinOp::Div => {
                     if r == 0 {
                         0

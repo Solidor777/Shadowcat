@@ -171,7 +171,7 @@ pub enum GroupModifier {
         comp: Comparator,
         /// Trigger threshold.
         target: i32,
-        /// Re-roll at most once per die (`ro`) instead of repeatedly (`rr`).
+        /// Re-roll at most once per die (`ro`) instead of repeatedly (`r`).
         once: bool,
     },
 }
@@ -201,8 +201,8 @@ pub enum BinOp {
     Sub,
     /// `lhs * rhs`.
     Mul,
-    /// `lhs / rhs` — integer division; a zero divisor evaluates to 0 (the
-    /// parser rejects a literal `/0`).
+    /// `lhs / rhs` — integer division; a zero divisor evaluates to 0
+    /// (`eval::sum`'s `Div` arm — the parser does NOT reject `/0`).
     Div,
 }
 

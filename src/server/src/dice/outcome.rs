@@ -125,7 +125,8 @@ fn default_ordered() -> bool {
 /// aggregates (0 in Total mode).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollOutcome {
-    /// Total-mode fold result (0 in SuccessCount mode).
+    /// Total-mode fold result; in SuccessCount mode, the reference sum of
+    /// kept-die values (see the struct doc), never a fold.
     pub total: i64,
     /// Per-die results, AST left-to-right then roll order.
     pub records: Vec<DieRecord>,
