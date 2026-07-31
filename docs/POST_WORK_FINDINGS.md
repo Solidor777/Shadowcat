@@ -461,9 +461,11 @@ are observations awaiting triage, not committed work.
 
 - Title: `panels.spec.ts` reload failures were one pre-existing product defect, not a branch
   regression — Task 3/4 forensic closeout (silent-hang-startup, 2026-07-31). Summary: the three
-  distinct-looking `panels.spec.ts` reload failure shapes logged above (wrong-world dock miss,
-  worlds-list bounce on a since-deleted world, render-ready timeout in a busy world) are ONE
-  mechanism: `App.svelte`'s `boot()` ignored the URL hash's world route on every load and
+  distinct-looking `panels.spec.ts` reload failure shapes observed across this investigation
+  (wrong-world dock miss and worlds-list-bounce-on-a-since-deleted-world, both captured by this
+  task's own trace forensics and reported in `docs/CLOSED_BUGS.md`; render-ready timeout in a busy
+  world, the third-occurrence class member logged above) are ONE mechanism: `App.svelte`'s `boot()`
+  ignored the URL hash's world route on every load and
   unconditionally entered `ui.global.lastWorld` instead. Under the shared-account 6-worker e2e
   suite (all workers authenticate as the same `ops` account and every `enterWorld` persists
   `global.lastWorld`), a reload's `boot()` restores whichever world ANY concurrent worker entered
