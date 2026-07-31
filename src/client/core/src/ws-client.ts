@@ -173,6 +173,14 @@ export class WsClient {
   private readonly backoffMaxMs: number;
   private readonly welcomeTimeoutMs: number;
   private welcomeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Bumped on every `open()` attempt; each connection's `onMessage` closure
+   * captures its own value. A frame delivered after the client has already
+   * moved on to a later connection (e.g. a Welcome already queued as a
+   * message task when the watchdog closed this connection) carries a stale
+   * generation and must not act on the CURRENT connection's state — notably
+   * it must not disarm the current watchdog, which would silently reopen the
+   * hang this task exists to close. */
+  private connGeneration = 0;
 
   constructor(private readonly opts: WsClientOptions) {
     this.now = opts.now ?? Date.now;
@@ -291,9 +299,10 @@ export class WsClient {
 
   private async open(): Promise<void> {
     if (!this.running_) return;
+    const gen = ++this.connGeneration;
     try {
       this.transport = await this.opts.connect({
-        onMessage: (d) => this.handleFrame(d),
+        onMessage: (d) => this.handleFrame(d, gen),
         onClose: () => this.handleClose(),
       });
       this.reconnectAttempt = 0;
@@ -322,11 +331,16 @@ export class WsClient {
     void this.sleep(delay).then(() => this.open());
   }
 
-  private handleFrame(text: string): void {
+  private handleFrame(text: string, gen: number): void {
     const msg = parseServerMsg(text);
     if (!msg) return;
     switch (msg.type) {
       case "welcome":
+        // Generation guard: a Welcome queued on a since-superseded connection
+        // (e.g. already in flight when the watchdog closed it) must not act
+        // on the CURRENT connection's state — in particular it must not
+        // disarm the current connection's own watchdog.
+        if (gen !== this.connGeneration) break;
         this.clearWelcomeWatchdog();
         this.serverOffsetMs = msg.server_time - this.now();
         this.safeEmit(() => this.opts.handlers.onWelcome?.(msg));

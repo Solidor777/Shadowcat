@@ -234,6 +234,9 @@ describe("WsClient", () => {
     await client.start();
     await waitFor(() => opens === 2);
     expect(closes).toEqual([1]);
+    // Without this, connection #2 (never welcomed) keeps watchdog-closing and
+    // reconnecting unbounded in the vitest worker after the test completes.
+    client.stop();
   });
 
   it("a Welcome inside the window disarms the watchdog (no spurious close)", async () => {
@@ -295,6 +298,45 @@ describe("WsClient", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(closes).toEqual([1]); // only the first (superseded) transport ever closed
     expect(opens).toBe(2); // no further reconnect triggered by the stale timer
+  });
+
+  it("a stale Welcome delivered after reconnect does not disarm the successor's watchdog", async () => {
+    // Pins the interleaving: connection N's Welcome is already queued as a
+    // message task when the watchdog closes N; the client reconnects to
+    // N+1; the stale Welcome then delivers. It must not disarm N+1's
+    // watchdog — if N+1's own Welcome never arrives, N+1 must still time out
+    // and reconnect (else the silent hang this task exists to close would be
+    // reintroduced).
+    let opens = 0;
+    const onMessageByGen: Record<number, (d: string) => void> = {};
+    const closes: number[] = [];
+    const connect: Connect = (h) => {
+      const id = ++opens;
+      onMessageByGen[id] = h.onMessage;
+      return Promise.resolve({
+        send: () => {},
+        close: () => {
+          closes.push(id);
+          h.onClose();
+        },
+      });
+    };
+    const client = new WsClient({
+      connect,
+      handlers: noop,
+      sleep: () => Promise.resolve(),
+      welcomeTimeoutMs: 5,
+    });
+    await client.start();
+    // Connection 1 times out and reconnects to connection 2.
+    await waitFor(() => opens === 2);
+    // Connection 1's Welcome arrives late (it was in flight before its close).
+    onMessageByGen[1](JSON.stringify(welcomeFrame()));
+    // If the stale Welcome incorrectly disarmed connection 2's watchdog,
+    // connection 2 would never time out and `opens` would stay at 2.
+    await waitFor(() => opens === 3);
+    expect(closes).toEqual([1, 2]);
+    client.stop();
   });
 
   it("a throwing onCommand is surfaced, not thrown into the socket loop", async () => {
