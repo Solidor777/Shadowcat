@@ -32,13 +32,45 @@ interface Listener {
   seq: number;
 }
 
+/** The versioned hook bus. Handles three dispatch kinds — informational (await
+ * all, results ignored), mutating (chained transform), cancellable (halts on
+ * `false`/`STOP`) — over an open, namespaced string keyspace (`"ns:event"`). A
+ * throwing handler is caught and logged; it never aborts dispatch to the
+ * remaining listeners or corrupts a mutate chain (the prior payload carries
+ * forward). */
 export class HookBus {
   private defs = new Map<string, HookDefinition>();
   private listeners = new Map<string, Listener[]>();
   private seqCounter = 0;
 
+  /** Builds a hook bus that logs handler failures and undefined-hook emits to `logger`.
+   * @param logger Diagnostic sink for a throwing handler or an emit on an undefined/
+   * wrong-kind hook.
+   * @example
+   * ```ts
+   * import { HookBus, silentLogger } from "@shadowcat/core";
+   *
+   * const hooks = new HookBus(silentLogger);
+   * ```
+   */
   constructor(private readonly logger: Logger) {}
 
+  /** Declares a hook name's kind and version. Re-declaring an existing name only
+   * throws if `def.version` differs from the version already on record — a
+   * version bump would silently reinterpret every existing listener's payload
+   * contract. Re-declaring with the SAME version overwrites the stored
+   * definition unconditionally, including a changed `kind`; this function does
+   * not itself guard against that.
+   * @param name The hook's namespaced name (`"ns:event"`).
+   * @param def The hook's kind and version.
+   * @example
+   * ```ts
+   * import { HookBus, silentLogger } from "@shadowcat/core";
+   *
+   * const hooks = new HookBus(silentLogger);
+   * hooks.defineHook("example:event", { version: "1.0.0", kind: "info" });
+   * ```
+   */
   defineHook(name: string, def: HookDefinition): void {
     const existing = this.defs.get(name);
     if (existing && existing.version !== def.version) {
@@ -50,6 +82,30 @@ export class HookBus {
     if (!this.listeners.has(name)) this.listeners.set(name, []);
   }
 
+  /** Registers a listener for `name`. Listeners fire highest-`priority` first;
+   * ties keep registration order. `opts.requires` checks the currently declared
+   * hook version (`satisfies`) at registration time and throws if unmet — it does
+   * NOT re-check on a later `defineHook` version bump.
+   * @param name The hook's namespaced name.
+   * @param handler Called with the hook's payload on every emit.
+   * @param opts Listener options.
+   * @param opts.module The registering module's id, recorded so `removeModule`
+   * can find it.
+   * @param opts.priority Dispatch order among listeners on the same hook; higher
+   * runs first. Defaults to 0.
+   * @param opts.requires A semver range the hook's currently-declared version
+   * must satisfy, checked once at registration time.
+   * @returns An unsubscribe function.
+   * @example
+   * ```ts
+   * import { HookBus, silentLogger } from "@shadowcat/core";
+   *
+   * const hooks = new HookBus(silentLogger);
+   * hooks.defineHook("example:event", { version: "1.0.0", kind: "info" });
+   * const unsubscribe = hooks.on("example:event", () => {}, { priority: 10 });
+   * unsubscribe();
+   * ```
+   */
   on(name: string, handler: Handler<unknown>, opts: OnOptions = {}): () => void {
     const def = this.defs.get(name);
     if (def && opts.requires && !satisfies(def.version, opts.requires)) {
@@ -74,10 +130,33 @@ export class HookBus {
     };
   }
 
+  /** `name`'s listeners in dispatch order (already priority/registration
+   * sorted by `on`). Not exported — folded into the `emit*` methods' public
+   * surface.
+   * @param name The hook name to look up.
+   * @returns The registered listeners for `name`, or `[]` if none.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.ordered("example:event");
+   * ```
+   */
   private ordered(name: string): Listener[] {
     return this.listeners.get(name) ?? [];
   }
 
+  /** Guards an `emit*` call: logs and returns `false` if `name` is undefined or
+   * declared as a different `HookKind` than `kind`. Not exported — folded into
+   * the `emit*` methods' public surface.
+   * @param name The hook name being emitted.
+   * @param kind The dispatch kind the caller is about to perform.
+   * @returns `true` if `name` is declared as `kind`.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.expectKind("example:event", "info");
+   * ```
+   */
   private expectKind(name: string, kind: HookKind): boolean {
     const def = this.defs.get(name);
     if (!def) {
@@ -91,8 +170,48 @@ export class HookBus {
     return true;
   }
 
+  /** Emits an informational hook with a statically-known payload type, when
+   * `name` is one of the keys declared on `CoreHooks` via declaration-merging
+   * elsewhere in the app.
+   * @param name A key declared on `CoreHooks`.
+   * @param payload The payload type declared for `name` on `CoreHooks`.
+   * @returns Resolves once every listener has settled.
+   * @example
+   * ```ts
+   * import { HookBus, silentLogger } from "@shadowcat/core";
+   *
+   * const hooks = new HookBus(silentLogger);
+   * await hooks.emitInfo("example:info", { value: 1 });
+   * ```
+   */
   async emitInfo<K extends keyof CoreHooks>(name: K, payload: CoreHooks[K]): Promise<void>;
+  /** Emits an informational hook by an open (not statically declared) name.
+   * @param name The hook's namespaced name.
+   * @param payload The payload to pass to every listener.
+   * @returns Resolves once every listener has settled.
+   * @example
+   * ```ts
+   * import { HookBus, silentLogger } from "@shadowcat/core";
+   *
+   * const hooks = new HookBus(silentLogger);
+   * await hooks.emitInfo("module:custom-event", { value: 1 });
+   * ```
+   */
   async emitInfo(name: string, payload: unknown): Promise<void>;
+  /** Implementation shared by both `emitInfo` overloads above: awaits every
+   * listener on `name` in dispatch order, ignoring return values. A throwing
+   * listener is caught, logged, and does not stop dispatch to the rest. A no-op
+   * (logged, not thrown) if `name` is undefined or declared as a non-`"info"`
+   * kind.
+   * @param name The hook name.
+   * @param payload The payload to pass to every listener.
+   * @returns Resolves once every listener has settled, or immediately on a
+   * failed `expectKind` guard.
+   * @example
+   * ```
+   * // implementation signature; call emitInfo via one of its declared overloads
+   * ```
+   */
   async emitInfo(name: string, payload: unknown): Promise<void> {
     if (!this.expectKind(name, "info")) return;
     for (const l of this.ordered(name)) {
@@ -104,8 +223,51 @@ export class HookBus {
     }
   }
 
+  /** Emits a mutating hook with a statically-known payload type, when `name` is
+   * one of the keys declared on `CoreHooks` via declaration-merging elsewhere in
+   * the app.
+   * @param name A key declared on `CoreHooks`.
+   * @param payload The initial payload, declared for `name` on `CoreHooks`.
+   * @returns The payload after every listener has had a chance to transform it
+   * in dispatch order.
+   * @example
+   * ```ts
+   * import { HookBus, silentLogger } from "@shadowcat/core";
+   *
+   * const hooks = new HookBus(silentLogger);
+   * const result = await hooks.emitMutate("example:mutate", { value: 1 });
+   * ```
+   */
   async emitMutate<K extends keyof CoreHooks>(name: K, payload: CoreHooks[K]): Promise<CoreHooks[K]>;
+  /** Emits a mutating hook by an open (not statically declared) name.
+   * @param name The hook's namespaced name.
+   * @param payload The initial payload.
+   * @returns The payload after every listener has had a chance to transform it
+   * in dispatch order.
+   * @example
+   * ```ts
+   * import { HookBus, silentLogger } from "@shadowcat/core";
+   *
+   * const hooks = new HookBus(silentLogger);
+   * const result = await hooks.emitMutate("module:custom-mutate", { value: 1 });
+   * ```
+   */
   async emitMutate<P>(name: string, payload: P): Promise<P>;
+  /** Implementation shared by both `emitMutate` overloads above: threads the
+   * payload through every listener on `name` in dispatch order, each listener's
+   * return value becoming the next listener's input. A throwing listener is
+   * caught, logged, and carries the PRIOR payload forward unchanged rather than
+   * stopping the chain. A no-op returning `payload` unchanged (logged, not
+   * thrown) if `name` is undefined or declared as a non-`"mutate"` kind.
+   * @param name The hook name.
+   * @param payload The initial payload.
+   * @returns The final payload after every listener has run (or the original
+   * payload, on a failed `expectKind` guard).
+   * @example
+   * ```
+   * // implementation signature; call emitMutate via one of its declared overloads
+   * ```
+   */
   async emitMutate<P>(name: string, payload: P): Promise<P> {
     if (!this.expectKind(name, "mutate")) return payload;
     let cur = payload;
@@ -119,6 +281,26 @@ export class HookBus {
     return cur;
   }
 
+  /** Emits a cancellable hook: calls every listener on `name` in dispatch order
+   * until one returns `false` or the `STOP` symbol, at which point dispatch
+   * halts immediately and the remaining listeners are never called. A throwing
+   * listener is caught, logged, and does not itself cancel dispatch. A no-op
+   * returning `{ cancelled: false }` (logged, not thrown) if `name` is undefined
+   * or declared as a non-`"cancel"` kind.
+   * @param name The hook's namespaced name.
+   * @param payload The payload passed to every listener.
+   * @returns `{ cancelled: true, by }` naming the listener's `module` (if any)
+   * that halted dispatch, or `{ cancelled: false }` if every listener ran to
+   * completion.
+   * @example
+   * ```ts
+   * import { HookBus, silentLogger } from "@shadowcat/core";
+   *
+   * const hooks = new HookBus(silentLogger);
+   * hooks.defineHook("example:cancel", { version: "1.0.0", kind: "cancel" });
+   * const result = await hooks.emitCancel("example:cancel", { value: 1 });
+   * ```
+   */
   async emitCancel(
     name: string,
     payload: unknown,
@@ -137,6 +319,17 @@ export class HookBus {
     return { cancelled: false };
   }
 
+  /** Drop every listener tagged with `moduleId` (module unload teardown), on
+   * every hook name.
+   * @param moduleId The module id whose listeners should be removed.
+   * @example
+   * ```ts
+   * import { HookBus, silentLogger } from "@shadowcat/core";
+   *
+   * const hooks = new HookBus(silentLogger);
+   * hooks.removeModule("example-module");
+   * ```
+   */
   removeModule(moduleId: string): void {
     for (const [name, arr] of this.listeners) {
       this.listeners.set(name, arr.filter((l) => l.module !== moduleId));

@@ -39,6 +39,12 @@ export default [
     languageOptions: { parser: tseslint.parser },
     // typescript-eslint is registered (no rules enabled) so source files' inline
     // eslint-disable directives naming its rules resolve under this config too.
+    // Those rules never fire here (unregistered), so the directive is unused
+    // from THIS config's perspective even though eslint.config.js needs it —
+    // report-unused-directives is off for this file set so a directive that
+    // exists solely for the main config doesn't count against the doc-coverage
+    // warning total.
+    linterOptions: { reportUnusedDisableDirectives: false },
     plugins: { jsdoc, "@typescript-eslint": tseslint.plugin },
     rules: RULES,
   },

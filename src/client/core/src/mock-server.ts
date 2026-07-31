@@ -27,6 +27,12 @@ export interface MockServerOptions {
   rejectRule?: (ctx: IntentContext) => RejectReason | null;
 }
 
+/** An in-process TypeScript stand-in for the M5 server protocol, driving the
+ * WS client end-to-end in tests without the Rust server (the `web` CI job has
+ * no Rust toolchain). It assigns seqs, echoes intents as authoritative Events,
+ * broadcasts to every connection, serves resync from an in-memory log, and
+ * supports a scripted reject rule. NOT production code — a test double, not a
+ * protocol-conformance reference. */
 export class MockServer {
   private seq = 0;
   private log: WireCommand[] = [];
@@ -35,12 +41,39 @@ export class MockServer {
   private readonly world: string;
   private readonly now: () => number;
 
+  /** Builds a mock server. Each `connector()`/`connect()` call it drives yields
+   * an independent simulated connection sharing this instance's world/log/clock.
+   * @param opts Configuration for the simulated world.
+   * @example
+   * ```
+   * // test scaffolding — not part of @shadowcat/core's public surface;
+   * // import directly from mock-server.ts within the core package
+   * import { MockServer } from "./mock-server";
+   *
+   * const server = new MockServer({ world: "test-world" });
+   * ```
+   */
   constructor(private readonly opts: MockServerOptions = {}) {
     this.world = opts.world ?? "test-world";
     this.now = opts.now ?? (() => 1000);
   }
 
-  /** A `Connect` for a client authenticating as `author`. */
+  /** A `Connect` for a client authenticating as `author`. Passing the returned
+   * function to a `WsClient` (as its `connect` option) sends a `welcome` frame
+   * immediately, then dispatches every subsequent message the client sends
+   * through this mock server's intent/resync/ping handling.
+   * @param author The connecting client's author id, attributed to every
+   * command it authors.
+   * @returns A `Connect` function suitable for `WsClientOptions.connect`.
+   * @example
+   * ```
+   * // test scaffolding — not part of @shadowcat/core's public surface
+   * import { MockServer } from "./mock-server";
+   *
+   * const server = new MockServer();
+   * const connect = server.connector("00000000-0000-0000-0000-000000000001");
+   * ```
+   */
   connector(author: string): Connect {
     return (handlers) => {
       const conn: Conn = { id: this.nextId++, author, handlers, open: true };
@@ -65,17 +98,48 @@ export class MockServer {
     };
   }
 
-  /** Server-initiated disconnect (simulates a dropped connection). */
+  /** Server-initiated disconnect (simulates a dropped connection), for every
+   * open connection currently authored by `author`.
+   * @param author The author id whose connection(s) to drop.
+   * @example
+   * ```
+   * // test scaffolding — not part of @shadowcat/core's public surface
+   * import { MockServer } from "./mock-server";
+   *
+   * const server = new MockServer();
+   * server.drop("00000000-0000-0000-0000-000000000001");
+   * ```
+   */
   drop(author: string): void {
     for (const conn of this.conns.values()) {
       if (conn.author === author) this.dropConn(conn);
     }
   }
 
+  /** The server's current authoritative sequence number.
+   * @returns The highest `seq` assigned to any accepted intent so far.
+   * @example
+   * ```
+   * // test scaffolding — not part of @shadowcat/core's public surface
+   * import { MockServer } from "./mock-server";
+   *
+   * const server = new MockServer();
+   * server.currentSeq(); // 0
+   * ```
+   */
   currentSeq(): number {
     return this.seq;
   }
 
+  /** Closes `conn` and fires its `onClose` handler; a no-op if already closed.
+   * Not exported — folded into `drop`'s public surface.
+   * @param conn The connection to close.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.dropConn(conn);
+   * ```
+   */
   private dropConn(conn: Conn): void {
     if (!conn.open) return;
     conn.open = false;
@@ -83,6 +147,18 @@ export class MockServer {
     conn.handlers.onClose();
   }
 
+  /** Routes one client-sent frame to its handler (`intent`, `resync_request`,
+   * `time_ping`); silently drops unparseable JSON. `hello`/`pong` frames are
+   * accepted but produce no response. Not exported — the `Transport.send`
+   * implementation `connector` wires up.
+   * @param conn The sending connection.
+   * @param data The raw JSON message text.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.onClientMessage(conn, data);
+   * ```
+   */
   private onClientMessage(conn: Conn, data: string): void {
     let msg: ClientMsg;
     try {
@@ -110,6 +186,24 @@ export class MockServer {
     }
   }
 
+  /** Accepts or rejects one client intent. When `opts.rejectRule` returns a
+   * reason, sends a `reject` frame naming it back to the sending connection
+   * only. Otherwise assigns the next `seq`, appends the resulting `WireCommand`
+   * to the resync log, and broadcasts it to every connection (including the
+   * sender) as an `event` frame with `intent_id: null` — echoes never carry the
+   * originating intent id; a `WsClient` recognizes its own echo by matching
+   * `command.author` against its own connection's author instead. Not exported —
+   * folded into `onClientMessage`'s public surface.
+   * @param conn The sending connection.
+   * @param intentId The client-generated intent id (used only for the reject
+   * frame, never echoed on acceptance).
+   * @param ops The intent's operations.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.handleIntent(conn, "intent-1", []);
+   * ```
+   */
   private handleIntent(
     conn: Conn,
     intentId: string,
@@ -133,6 +227,20 @@ export class MockServer {
     this.broadcast({ type: "event", command: cmd, intent_id: null });
   }
 
+  /** Replays the resync log from `fromSeq` to `conn`: a `resync_begin` frame,
+   * one `event` frame per logged command at or after `fromSeq`, then a
+   * `resync_end` frame carrying the server's current `seq`. When no logged
+   * command matches (`fromSeq` already caught up), `resync_begin.to_seq` is
+   * `fromSeq - 1` — an empty replay window, mirroring an up-to-date resync.
+   * Not exported — folded into `onClientMessage`'s public surface.
+   * @param conn The requesting connection.
+   * @param fromSeq The first seq the client wants replayed.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.handleResync(conn, 1);
+   * ```
+   */
   private handleResync(conn: Conn, fromSeq: number): void {
     const events = this.log.filter((c) => c.seq >= fromSeq);
     const toSeq = events.length ? events[events.length - 1].seq : fromSeq - 1;
@@ -148,14 +256,35 @@ export class MockServer {
     this.sendTo(conn, { type: "resync_end", current_seq: this.seq });
   }
 
+  /** Sends `msg` to every currently open connection, including the one that
+   * caused it (e.g. the author of an accepted intent gets their own echo back).
+   * Not exported — folded into `handleIntent`'s public surface.
+   * @param msg The frame to broadcast.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.broadcast({ type: "event", command, intent_id: null });
+   * ```
+   */
   private broadcast(msg: ServerMsg): void {
     for (const conn of this.conns.values()) this.sendTo(conn, msg);
   }
 
-  // Deliver on a macrotask, mirroring a real socket: server responses are never
-  // synchronous with the client's send, so optimistic predictions are
-  // observable before confirm/reject, and Welcome lands after the client has
-  // assigned its transport. Ordered: timers fire FIFO.
+  /** Delivers `msg` to `conn` on a macrotask (`setTimeout(..., 0)`), mirroring a
+   * real socket: server responses are never synchronous with the client's send,
+   * so optimistic predictions are observable before confirm/reject, and Welcome
+   * lands only after the client has assigned its transport. Timers fire FIFO,
+   * so delivery order across calls is preserved. A no-op if `conn` has closed by
+   * the time the timer fires. Not exported — the sole delivery path every other
+   * method routes through.
+   * @param conn The destination connection.
+   * @param msg The frame to deliver.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.sendTo(conn, { type: "resync_end", current_seq: 0 });
+   * ```
+   */
   private sendTo(conn: Conn, msg: ServerMsg): void {
     const data = JSON.stringify(msg);
     setTimeout(() => {

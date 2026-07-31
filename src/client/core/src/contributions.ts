@@ -75,12 +75,34 @@ interface Entry {
 
 export type Listener = () => void;
 
+/** Registers contributions into named "surface" contracts (e.g. `shadowcat.panel`,
+ * `shadowcat.sheet:<doc_type>`) and notifies subscribers on every add/remove.
+ * Framework-neutral — `component` is an opaque handle a host renders (the Svelte
+ * `<Surface>` adapter, `PanelHost`, `pickSheet`); this class has no rendering opinion. */
 export class ContributionRegistry {
   private entries: Entry[] = [];
   private listeners = new Set<Listener>();
   private seqCounter = 0;
 
-  /** Register a contribution; returns a dispose that removes exactly it. */
+  /** Register a contribution; returns a dispose that removes exactly it.
+   * @param c The contribution to register.
+   * @param opts Registration options.
+   * @param opts.module The registering module's id, recorded for `removeModule` teardown
+   * and `entriesFor`'s module-id tie-break; omitted for a host-registered (non-module)
+   * contribution.
+   * @returns A dispose function that removes this contribution and notifies subscribers.
+   * @example
+   * ```ts
+   * import { ContributionRegistry } from "@shadowcat/core";
+   *
+   * const registry = new ContributionRegistry();
+   * const dispose = registry.contribute(
+   *   { id: "example", contract: "shadowcat.panel", component: {} },
+   *   { module: "example-module" },
+   * );
+   * dispose();
+   * ```
+   */
   contribute(c: Contribution, opts: { module?: string } = {}): () => void {
     const entry: Entry = { c, module: opts.module, seq: this.seqCounter++ };
     this.entries.push(entry);
@@ -94,7 +116,17 @@ export class ContributionRegistry {
     };
   }
 
-  /** Contributions for a contract, sorted by `order` (default 0) then insertion. */
+  /** Contributions for a contract, sorted by `order` (default 0) then insertion.
+   * @param contract The contract id to look up.
+   * @returns The matching contributions, in render order.
+   * @example
+   * ```ts
+   * import { ContributionRegistry } from "@shadowcat/core";
+   *
+   * const registry = new ContributionRegistry();
+   * const panels = registry.contributionsFor("shadowcat.panel");
+   * ```
+   */
   contributionsFor(contract: string): readonly Contribution[] {
     return this.entries
       .filter((e) => e.c.contract === contract)
@@ -104,7 +136,18 @@ export class ContributionRegistry {
 
   /** Contributions for a contract paired with the module id that registered each,
    * in `order` (default 0) then insertion sequence — the sheet registry needs the
-   * module id for its deterministic lowest-module-id tie-break. */
+   * module id for its deterministic lowest-module-id tie-break.
+   * @param contract The contract id to look up.
+   * @returns The matching contributions, each paired with its registering module id
+   * (undefined for a host-registered contribution).
+   * @example
+   * ```ts
+   * import { ContributionRegistry } from "@shadowcat/core";
+   *
+   * const registry = new ContributionRegistry();
+   * const entries = registry.entriesFor("shadowcat.sheet:actor");
+   * ```
+   */
   entriesFor(contract: string): readonly { contribution: Contribution; module?: string }[] {
     return this.entries
       .filter((e) => e.c.contract === contract)
@@ -112,18 +155,47 @@ export class ContributionRegistry {
       .map((e) => ({ contribution: e.c, module: e.module }));
   }
 
+  /** Notifies `listener` on every contribution add/remove (`contribute`'s dispose,
+   * or `removeModule`).
+   * @param listener Called with no arguments after a change.
+   * @returns An unsubscribe function.
+   * @example
+   * ```ts
+   * import { ContributionRegistry } from "@shadowcat/core";
+   *
+   * const registry = new ContributionRegistry();
+   * const unsubscribe = registry.subscribe(() => {});
+   * unsubscribe();
+   * ```
+   */
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
-  /** Drop every contribution tagged with `moduleId` (module unload teardown). */
+  /** Drop every contribution tagged with `moduleId` (module unload teardown).
+   * @param moduleId The module id whose contributions should be removed.
+   * @example
+   * ```ts
+   * import { ContributionRegistry } from "@shadowcat/core";
+   *
+   * const registry = new ContributionRegistry();
+   * registry.removeModule("example-module");
+   * ```
+   */
   removeModule(moduleId: string): void {
     const before = this.entries.length;
     this.entries = this.entries.filter((e) => e.module !== moduleId);
     if (this.entries.length !== before) this.emit();
   }
 
+  /** Notifies every subscriber that the contribution set changed.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.emit();
+   * ```
+   */
   private emit(): void {
     for (const fn of this.listeners) fn();
   }

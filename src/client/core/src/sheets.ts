@@ -11,6 +11,17 @@ export const SHEET_CONTRACT_PREFIX = "shadowcat.sheet:";
 /** The always-registered generic fallback contract (any doc_type, priority -Infinity). */
 export const SHEET_FALLBACK_CONTRACT = "shadowcat.sheet:*";
 
+/** Builds the `shadowcat.sheet:<doc_type>` contract id a sheet provider
+ * registers under for `docType`.
+ * @param docType The document's `doc_type`.
+ * @returns The contract id sheet providers for `docType` register under.
+ * @example
+ * ```ts
+ * import { sheetContract } from "@shadowcat/core";
+ *
+ * sheetContract("actor"); // "shadowcat.sheet:actor"
+ * ```
+ */
 export function sheetContract(docType: string): string {
   return SHEET_CONTRACT_PREFIX + docType;
 }
@@ -33,7 +44,17 @@ export interface SheetTarget {
 }
 
 /** Reads a ONE-level embedded child (`/embedded/<coll>/<idx>`); null on any malformed
- * path or out-of-range index. */
+ * path or out-of-range index. Not exported — folded into `resolveDocRef`'s public surface.
+ * @param top The parent document to read the embedded child from.
+ * @param embeddedPath A `/embedded/<collection>/<index>` JSON pointer.
+ * @returns The embedded child document, or `null` if `embeddedPath` is malformed
+ * or names a missing collection/index.
+ * @example
+ * ```
+ * // internal helper; not part of the public API (see resolveDocRef for the public entry point)
+ * readEmbeddedChild(top, "/embedded/actor/0");
+ * ```
+ */
 function readEmbeddedChild(top: WireDocument, embeddedPath: string): WireDocument | null {
   const m = /^\/embedded\/([^/]+)\/(\d+)$/.exec(embeddedPath);
   if (!m) return null;
@@ -41,6 +62,25 @@ function readEmbeddedChild(top: WireDocument, embeddedPath: string): WireDocumen
   return child ?? null;
 }
 
+/** Resolves a `SheetRef` to its open target: the panel id to dedup re-opens by,
+ * the document to READ for display, and the write site (`writeDocId` +
+ * `writePrefix`) every field-path Update should be addressed to. Fail-closed —
+ * every dangling, raw, or malformed reference returns `null`; this function
+ * never throws.
+ * @param ref The reference to resolve (see `SheetRef`'s per-variant resolution
+ * rules — linked token → shared actor, instanced token → embedded copy,
+ * top-level doc, or embedded child).
+ * @param store The document store to resolve `ref` against.
+ * @returns The resolved open target, or `null` if `ref` doesn't resolve to an
+ * openable document.
+ * @example
+ * ```ts
+ * import { resolveDocRef, DocumentStore } from "@shadowcat/core";
+ *
+ * const store = new DocumentStore();
+ * const target = resolveDocRef({ docId: "00000000-0000-0000-0000-000000000001" }, store);
+ * ```
+ */
 export function resolveDocRef(ref: SheetRef, store: ReadableDocuments): SheetTarget | null {
   // Fail-closed for untyped runtime callers — the `in` operator below throws on primitives.
   if (!ref || typeof ref !== "object") return null;
@@ -86,7 +126,21 @@ export function resolveDocRef(ref: SheetRef, store: ReadableDocuments): SheetTar
  * fallback, filtered by each provider's `match`, highest `priority` wins, ties broken by
  * lexicographically lowest registering module id (the M11d-3 deterministic-singleton
  * precedent). `-Infinity` keeps the fallback below every real provider. Null only when
- * nothing (not even a fallback) is registered. */
+ * nothing (not even a fallback) is registered.
+ * @param registry The contribution registry to search for sheet providers.
+ * @param doc The document to pick a sheet component for.
+ * @returns The winning provider's opaque `component` handle, or `null` if no
+ * provider (not even the fallback) is registered.
+ * @example
+ * ```ts
+ * import { pickSheet, ContributionRegistry } from "@shadowcat/core";
+ * import type { WireDocument } from "@shadowcat/core";
+ *
+ * const registry = new ContributionRegistry();
+ * declare const doc: WireDocument;
+ * const component = pickSheet(registry, doc);
+ * ```
+ */
 export function pickSheet(registry: ContributionRegistry, doc: WireDocument): unknown | null {
   const seen = new Set<unknown>();
   const candidates = [
@@ -114,7 +168,17 @@ export function pickSheet(registry: ContributionRegistry, doc: WireDocument): un
 
 /** Heuristic: does a string look like dice notation (`NdM`, optional `+K`/`-K`)? The
  * server owns real parsing; the client only decides whether to SHOW a roll affordance.
- * Trimmed, case-insensitive. */
+ * Trimmed, case-insensitive.
+ * @param s The string to test.
+ * @returns `true` if `s` looks like dice notation.
+ * @example
+ * ```ts
+ * import { isDiceNotation } from "@shadowcat/core";
+ *
+ * isDiceNotation("2d6+3"); // true
+ * isDiceNotation("hello"); // false
+ * ```
+ */
 export function isDiceNotation(s: string): boolean {
   return /^\s*\d*d\d+(\s*[+-]\s*\d+)?\s*$/i.test(s);
 }

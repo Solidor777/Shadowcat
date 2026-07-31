@@ -70,11 +70,57 @@ interface ModuleRecord {
   active: boolean;
 }
 
+/** The import-agnostic module registry: validates manifests, resolves
+ * dependencies (presence + semver, plus provides/requires contract edges),
+ * activates in topological order, and tracks every registration per module so
+ * unload is a clean teardown. The trust chokepoint — each module sees only the
+ * capability-scoped `ModuleContext` `contextFor` builds for it. */
 export class ModuleRegistry {
   private records = new Map<string, ModuleRecord>();
 
+  /** Builds a registry scoped over the given host dependencies.
+   * @param deps The host-provided singletons (hook bus, service/contribution
+   * registries, document store/client, logger) every activated module's
+   * `ModuleContext` is scoped over.
+   * @example
+   * ```ts
+   * import {
+   *   ModuleRegistry,
+   *   HookBus,
+   *   ServiceRegistry,
+   *   MiddlewareChain,
+   *   DocumentStore,
+   *   OptimisticClient,
+   *   ContributionRegistry,
+   *   silentLogger,
+   * } from "@shadowcat/core";
+   *
+   * const registry = new ModuleRegistry({
+   *   hooks: new HookBus(silentLogger),
+   *   services: new ServiceRegistry(),
+   *   middleware: new MiddlewareChain(),
+   *   store: new DocumentStore(),
+   *   client: new OptimisticClient("00000000-0000-0000-0000-000000000001"),
+   *   logger: silentLogger,
+   *   contributions: new ContributionRegistry(),
+   * });
+   * ```
+   */
   constructor(private readonly deps: Deps) {}
 
+  /** Registers a module. Validates its manifest (throws on an invalid one, e.g. a
+   * malformed id or version) before recording it; the module stays inactive until
+   * `activate()` runs.
+   * @param module The module to register.
+   * @example
+   * ```ts
+   * import { ModuleRegistry, type Module } from "@shadowcat/core";
+   *
+   * declare const registry: ModuleRegistry;
+   * declare const module: Module;
+   * registry.add(module);
+   * ```
+   */
   add(module: Module): void {
     parseManifest(module.manifest); // throws on invalid
     const id = module.manifest.id;
@@ -82,6 +128,16 @@ export class ModuleRegistry {
     this.records.set(id, { module, active: false });
   }
 
+  /** Every registered module's id, version, and active state.
+   * @returns One `ModuleInfo` per registered module, in registration order.
+   * @example
+   * ```ts
+   * import { ModuleRegistry } from "@shadowcat/core";
+   *
+   * declare const registry: ModuleRegistry;
+   * const modules = registry.list();
+   * ```
+   */
   list(): ModuleInfo[] {
     return [...this.records.values()].map((r) => ({
       id: r.module.manifest.id,
@@ -90,6 +146,17 @@ export class ModuleRegistry {
     }));
   }
 
+  /** Every active module's declared capability requirements, pooled for the
+   * Welcome frame's capability-requirements union.
+   * @returns The concatenated `requirements` of every currently active module.
+   * @example
+   * ```ts
+   * import { ModuleRegistry } from "@shadowcat/core";
+   *
+   * declare const registry: ModuleRegistry;
+   * const requirements = registry.collectRequirements();
+   * ```
+   */
   collectRequirements(): CapRequirement[] {
     const out: CapRequirement[] = [];
     for (const r of this.records.values()) {
@@ -98,17 +165,43 @@ export class ModuleRegistry {
     return out;
   }
 
-  /** Active modules projected to their UI contract declarations. */
+  /** Active modules projected to their UI contract declarations.
+   * @returns One `ContractDeclaration` per active module.
+   * @example
+   * ```ts
+   * import { ModuleRegistry } from "@shadowcat/core";
+   *
+   * declare const registry: ModuleRegistry;
+   * const declarations = registry.declarations();
+   * ```
+   */
   declarations(): ContractDeclaration[] {
     return [...this.records.values()]
       .filter((r) => r.active)
       .map((r) => declarationOf(r.module.manifest));
   }
 
-  // Per-module isolated: a colliding singleton contract or a throwing `register()`
-  // is caught, logged, and left inactive WITHOUT aborting the topological loop —
-  // one broken/colliding module (first-party or external) must never brick the
-  // modules ordered after it (ARCHITECTURE §2 invariant 4).
+  /** Activates every registered, not-yet-active module in dependency order
+   * (`topoSort`: explicit `dependencies` plus provides/requires contract edges).
+   * A module whose dependencies aren't satisfied is skipped (warned, left
+   * inactive) rather than failing the batch. Per-module isolated beyond that: a
+   * colliding singleton contract or a throwing `register()` is caught, logged,
+   * and left inactive WITHOUT aborting the topological loop — one broken or
+   * colliding module (first-party or external) must never brick the modules
+   * ordered after it (ARCHITECTURE §2 invariant 4). An already-active module is
+   * skipped as a no-op.
+   * @returns Resolves once every module has been attempted (activated, skipped,
+   * or rolled back on failure) — a single module's activation failure never
+   * rejects the call. Rejects only if the dependency graph itself has a cycle
+   * (`topoSort`, thrown before any module is touched).
+   * @example
+   * ```ts
+   * import { ModuleRegistry } from "@shadowcat/core";
+   *
+   * declare const registry: ModuleRegistry;
+   * await registry.activate();
+   * ```
+   */
   async activate(): Promise<void> {
     const order = this.topoSort(); // throws on cycle
     for (const id of order) {
@@ -156,6 +249,22 @@ export class ModuleRegistry {
     }
   }
 
+  /** Unloads a module: calls its `unregister()` (if active and provided), then
+   * strips every hook/service/middleware/contribution registration it made, and
+   * marks it inactive. A no-op if `id` isn't registered.
+   * @param id The module id to unload.
+   * @param opts Unload options.
+   * @param opts.cascade When `true`, first recursively unloads every currently
+   * active module that lists `id` as a dependency; when omitted/`false`, unloading
+   * a module with active dependents throws instead.
+   * @example
+   * ```ts
+   * import { ModuleRegistry } from "@shadowcat/core";
+   *
+   * declare const registry: ModuleRegistry;
+   * await registry.unload("example-module", { cascade: true });
+   * ```
+   */
   async unload(id: string, opts: { cascade?: boolean } = {}): Promise<void> {
     const r = this.records.get(id);
     if (!r) return;
@@ -174,6 +283,18 @@ export class ModuleRegistry {
     r.active = false;
   }
 
+  /** Whether every explicit `dependencies` entry (present, active, and
+   * satisfying the required semver range) and every `requires` contract (at
+   * least one active provider) of `m` is currently satisfied. Not exported —
+   * folded into `activate`'s public surface.
+   * @param m The module to check.
+   * @returns `true` if `m` is eligible to activate right now.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.depsSatisfied(module);
+   * ```
+   */
   private depsSatisfied(m: Module): boolean {
     for (const [depId, range] of Object.entries(m.manifest.dependencies)) {
       const dep = this.records.get(depId);
@@ -187,12 +308,34 @@ export class ModuleRegistry {
     return true;
   }
 
+  /** Active modules that list `id` in their `dependencies`. Not exported —
+   * folded into `unload`'s public surface.
+   * @param id The module id to find dependents of.
+   * @returns The ids of every active module depending on `id`.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.activeDependentsOf("example-module");
+   * ```
+   */
   private activeDependentsOf(id: string): string[] {
     return [...this.records.values()]
       .filter((r) => r.active && id in r.module.manifest.dependencies)
       .map((r) => r.module.manifest.id);
   }
 
+  /** Topologically orders every registered module over two edge kinds: explicit
+   * `dependencies` and provides/requires contract edges (a requirer after every
+   * active-or-not provider of a contract it `requires`). Not exported — folded
+   * into `activate`'s public surface.
+   * @returns Every registered module id, ordered so each comes after everything
+   * it depends on (directly or via a contract edge).
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.topoSort();
+   * ```
+   */
   private topoSort(): string[] {
     // Index providers by contract so a requirer can be ordered after them.
     const providersByContract = new Map<string, string[]>();
@@ -232,6 +375,19 @@ export class ModuleRegistry {
     return out;
   }
 
+  /** Builds the capability-scoped `ModuleContext` passed to `Module.register`:
+   * every host dependency, plus per-call wrappers over `hooks`/`services`/`use`/
+   * `contributions` that stamp `moduleId` onto each registration so `unload` can
+   * find and strip them again. Not exported — folded into `activate`'s public
+   * surface.
+   * @param moduleId The id of the module this context is being built for.
+   * @returns The `ModuleContext` to pass to that module's `register`.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.contextFor("example-module");
+   * ```
+   */
   private contextFor(moduleId: string): ModuleContext {
     const { hooks, services, middleware, store, client, logger, contributions } = this.deps;
     return {
@@ -258,7 +414,16 @@ export class ModuleRegistry {
     };
   }
 
-  /** Active modules that provide `contract`. */
+  /** Active modules that provide `contract`. Not exported — folded into
+   * `activate`'s and `depsSatisfied`'s public surface.
+   * @param contract The contract id to find active providers of.
+   * @returns The ids of every active module that provides `contract`.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.activeProvidersOf("shadowcat.panel");
+   * ```
+   */
   private activeProvidersOf(contract: string): string[] {
     return [...this.records.values()]
       .filter(
