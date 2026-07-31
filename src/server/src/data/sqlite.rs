@@ -1559,8 +1559,8 @@ impl SqliteRepository {
         // (all columns), so a shared table would let a non-GM query's score
         // be shifted by the mere LENGTH of GM-only text on the same row even
         // when column weights zero out that column's term-frequency
-        // contribution (see migrations/0008_fts_split.sql). Separate tables
-        // make each tier's row length genuinely isolated.
+        // contribution (see the FTS section of migrations/0001_init.sql).
+        // Separate tables make each tier's row length genuinely isolated.
         sqlx::query("DELETE FROM documents_fts_public WHERE doc_id = ?")
             .bind(doc.id.to_string())
             .execute(&mut *conn)
@@ -2616,7 +2616,7 @@ impl Repository for SqliteRepository {
         // `documents_fts_gm` table. (Server admin resolves to the Gm world
         // role in `permission_context`.)
         //
-        // TWO SEPARATE single-column tables (migrations/0008_fts_split.sql),
+        // TWO SEPARATE single-column tables (migrations/0001_init.sql),
         // not two columns of one table: SQLite FTS5's bm25() computes each
         // row's document-length normalization term from the token count of
         // the WHOLE ROW (every declared column combined), not just the
