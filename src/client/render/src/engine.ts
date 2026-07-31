@@ -689,8 +689,10 @@ export class RenderEngine implements SceneToolHost {
   }
 
   /** `SceneToolHost.gridDistance`: whole-cell distance between two scene points via the active
-   * grid (`Grid.distance`, `grid.ts:50` — hex axial distance, or square with the configured
-   * `diagonalRule`; mirrors the server's `scene/pathfinding.rs` cost per rule exactly).
+   * grid ({@link Grid.distance} — hex axial distance, or square with the configured
+   * `diagonalRule`). See that method's doc for the per-rule server-parity scope: the match is
+   * exact only for an unweighted route, since a terrain region's `terrain_multiplier > 1.0`
+   * raises the server's real A* cost above what this reports.
    * @param a The first scene point.
    * @param b The second scene point.
    * @returns The whole-cell distance between `a` and `b` on the active grid.
