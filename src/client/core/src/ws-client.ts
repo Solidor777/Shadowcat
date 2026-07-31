@@ -181,6 +181,15 @@ export class WsClient {
    * it must not disarm the current watchdog, which would silently reopen the
    * hang this task exists to close. */
   private connGeneration = 0;
+  /** The `connGeneration` that has been welcomed, or `-1` if none yet.
+   * `connGeneration` starts at 0 and is pre-incremented before assignment, so
+   * `-1` never collides with a real generation. Guards `armWelcomeWatchdog`
+   * against the out-of-order case where a `Connect` delivers Welcome (via a
+   * microtask) BEFORE its own `await` continuation runs: without this check
+   * the watchdog would arm anyway once the continuation resumes, and nothing
+   * would ever disarm it (Welcome already came and went) — the healthy
+   * connection would be closed at the watchdog window, forever. */
+  private welcomedGeneration = -1;
 
   constructor(private readonly opts: WsClientOptions) {
     this.now = opts.now ?? Date.now;
@@ -195,6 +204,12 @@ export class WsClient {
    * surviving into a successor connection must no-op. */
   private armWelcomeWatchdog(): void {
     this.clearWelcomeWatchdog();
+    if (this.welcomedGeneration === this.connGeneration) {
+      // Welcome for THIS connection already arrived (out-of-order Connect
+      // delivery) before this arm call ran — arming now would create a
+      // watchdog nothing will ever disarm.
+      return;
+    }
     const armed = this.transport;
     this.welcomeTimer = setTimeout(() => {
       this.welcomeTimer = null;
@@ -305,7 +320,11 @@ export class WsClient {
         onMessage: (d) => this.handleFrame(d, gen),
         onClose: () => this.handleClose(),
       });
-      this.reconnectAttempt = 0;
+      // reconnectAttempt resets on WELCOME (handleFrame's "welcome" case), not
+      // here: a server that accepts the socket but never sends Welcome must
+      // keep backing off on each watchdog-close/reconnect cycle, not retry at
+      // the base delay forever (that would amplify load against exactly the
+      // degraded server the watchdog exists to escape).
       this.armWelcomeWatchdog();
     } catch {
       this.scheduleReconnect();
@@ -342,6 +361,11 @@ export class WsClient {
         // disarm the current connection's own watchdog.
         if (gen !== this.connGeneration) break;
         this.clearWelcomeWatchdog();
+        this.welcomedGeneration = gen;
+        // "Connection established" means welcomed, not merely socket-opened —
+        // reset here so an accepted-but-degraded server (open, never welcomes)
+        // keeps backing off instead of retrying at the base delay forever.
+        this.reconnectAttempt = 0;
         this.serverOffsetMs = msg.server_time - this.now();
         this.safeEmit(() => this.opts.handlers.onWelcome?.(msg));
         // Catch up anything applied-after our watermark (initial sync or a
@@ -363,6 +387,9 @@ export class WsClient {
       case "resync_begin":
         break;
       case "resync_end":
+        // Generation guard (mirrors "welcome"): a superseded connection's
+        // queued resync_end must not fire onResyncComplete on the successor.
+        if (gen !== this.connGeneration) break;
         this.nextExpected = Math.max(this.nextExpected, msg.current_seq + 1);
         this.safeEmit(() => this.opts.handlers.onResyncComplete?.());
         break;

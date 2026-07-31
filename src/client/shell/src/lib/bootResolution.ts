@@ -26,7 +26,11 @@ export function resolveBootWorld(
     if (worlds.some((w) => w.id === route.id)) {
       return { enterWorldId: route.id, clearLastWorld: false };
     }
-    return { enterWorldId: null, clearLastWorld: true };
+    // The route's world is gone, but `lastWorld` may still be a perfectly
+    // valid reference to a DIFFERENT world — clear it only when it is
+    // ALSO stale, never as a side effect of a dead deep link.
+    const lastWorldStale = lastWorld !== null && !worlds.some((w) => w.id === lastWorld);
+    return { enterWorldId: null, clearLastWorld: lastWorldStale };
   }
   if (lastWorld && worlds.some((w) => w.id === lastWorld)) {
     return { enterWorldId: lastWorld, clearLastWorld: false };

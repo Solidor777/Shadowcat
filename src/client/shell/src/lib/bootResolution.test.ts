@@ -28,13 +28,18 @@ test("bare load with a stale lastWorld clears it", () => {
   expect(result).toEqual({ enterWorldId: null, clearLastWorld: true });
 });
 
-test("route-world missing from listWorlds falls through to stale handling, ignoring a still-valid lastWorld", () => {
+test("route-world missing from listWorlds falls through to stale handling, but does NOT clear a still-valid lastWorld", () => {
   const worlds = [world("last-world")];
   const result = resolveBootWorld({ name: "world", id: "deleted-route-world" }, "last-world", worlds);
-  expect(result).toEqual({ enterWorldId: null, clearLastWorld: true });
+  expect(result).toEqual({ enterWorldId: null, clearLastWorld: false });
 });
 
-test("route-world missing from listWorlds falls through to stale handling with no lastWorld", () => {
+test("route-world missing from listWorlds falls through to stale handling with no lastWorld (nothing to clear)", () => {
   const result = resolveBootWorld({ name: "world", id: "deleted-route-world" }, null, []);
+  expect(result).toEqual({ enterWorldId: null, clearLastWorld: false });
+});
+
+test("route-world missing from listWorlds clears an ALSO-stale lastWorld", () => {
+  const result = resolveBootWorld({ name: "world", id: "deleted-route-world" }, "also-deleted", []);
   expect(result).toEqual({ enterWorldId: null, clearLastWorld: true });
 });

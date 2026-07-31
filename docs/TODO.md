@@ -169,17 +169,36 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 - TODO: `Stage.svelte`'s backend-init failure path sets `data-render-error="true"` silently. Route
   it through the project logger so a real WebGL/backend init failure is distinguishable from a
   timeout in e2e output and user bug reports.
-- TODO: `ws-client.ts`'s connection-generation guard (added for `"welcome"` in `fb1d5be`) does not
-  cover `resync_end` — a superseded connection's queued `resync_end` frame can still fire
-  `onResyncComplete`/`#flushOfflineQueue` prematurely on the successor connection. The seq math
-  itself is safe (`nextExpected` only ever advances), but the flush trigger is not gated by
-  generation. Extend the same `gen !== this.connGeneration` guard already applied to `"welcome"`
-  to the `"resync_end"` case in `handleFrame`.
 - TODO: `WsClient.open()` (`ws-client.ts`) adopts a resolving transport (`this.transport =
   await this.opts.connect(...)`) without re-checking `running_` after the await — a `stop()`
   call during a pending connect leaves an adopted-but-unwatched socket assigned to
   `this.transport`. Re-check `running_` immediately after the connect await and close/discard the
   transport if the client was stopped in the meantime.
+- TODO: `App.svelte`'s `boot()` captures `currentRoute()` once, BEFORE the `listWorlds` await (and
+  the `withRetry` delays widening that window further) — a hash change that lands during that
+  await (e.g. a user clicking a different deep link while "Loading…" is showing) is silently
+  ignored; `resolveBootWorld` resolves against the STALE route captured before the await, not the
+  URL the page now shows. Re-read `currentRoute()` immediately before calling `resolveBootWorld`,
+  or detect and re-resolve on a hash change observed during boot.
+- TODO: `WorldSession#onWelcome`'s activation `catch` (`worldSession.svelte.ts`) rethrows out of
+  the inner `try` around `#modules.activate()`, which is caught by the OUTER per-Welcome `try` that
+  wraps the entire handler body — so while activation keeps failing (e.g. a persistent contract
+  cycle), EVERY subsequent step (the member-username fetch, `reconcileTopology`, scene
+  re-subscription, the GM first-scene seed) is skipped on every single Welcome, not just the
+  failing one. Pre-fix (single `#bootstrapped` latch) those steps ran on subsequent Welcomes once
+  the latch was set regardless of activation success; this is a narrower-but-still-real regression
+  of that behavior. Fix direction: log the activation failure in place (already logged via
+  `#logger.error` in the outer catch) and continue running the rest of the handler instead of
+  letting the rethrow short-circuit it — activation failure should degrade Surfaces, not silently
+  skip member names/topology/scene resubscription too.
+- TODO: `App.svelte`'s `boot()` worst case is roughly 2.4 minutes stuck on "Loading…": three
+  sequential `withRetry`-wrapped awaits (`getMe`, `loadSessionState`'s `getUiState`, `listWorlds`),
+  each up to 3 attempts at the 15s `FETCH_TIMEOUT_MS` plus `withRetry`'s flat `[500, 1500]`ms
+  inter-attempt delays — and unlike the WS client's full-jitter backoff (`scheduleReconnect`),
+  these delays are UNJITTERED, so many concurrently-booting clients retry in lockstep against a
+  struggling backend. Fix direction: an overall boot deadline (fail to the login/worlds route
+  sooner than three full retry cycles), a visible "still trying…" state instead of a bare
+  "Loading…" spinner, and jittered retry delays matching the WS backoff's convention.
 
 ## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
 - TODO: `src/server/src/ws/room.rs`'s `Room::execute_move` re-derives `is_gm` via its own

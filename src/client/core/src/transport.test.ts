@@ -97,6 +97,28 @@ describe("webSocketConnect", () => {
     expect(transport).toBeDefined();
   });
 
+  it("a timeout-then-late-open race settles once: no onClose, socket closed, promise rejects exactly once", async () => {
+    const connect = webSocketConnect("ws://x", 10_000);
+    const onClose = vi.fn();
+    const p = connect({ onMessage: () => {}, onClose });
+    const rejection = expect(p).rejects.toThrow(/timeout/i);
+    const ws = FakeWebSocket.instances[0];
+    // The timeout fires first (settling the promise + closing the socket)...
+    await vi.advanceTimersByTimeAsync(10_000);
+    // ...then a same-tick-queued `open` event still lands afterward (the race
+    // this settled-guard exists for)...
+    ws.fireOpen();
+    await rejection;
+    // ...followed by the async `close` event the socket's own `.close()` call
+    // (fired from the timeout branch) eventually dispatches. Without the
+    // settled-guard, the late `open` flips `opened = true`, so this `close`
+    // would ALSO call `handlers.onClose()` — double-scheduling a reconnect on
+    // top of the promise's own rejection-driven reconnect path.
+    ws.fireClose();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(ws.closed).toBe(true);
+  });
+
   it("resolves with a working transport after open, and message frames are forwarded", async () => {
     const connect = webSocketConnect("ws://x");
     const onMessage = vi.fn();

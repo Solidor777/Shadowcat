@@ -79,24 +79,28 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `src/modules/settings/src/ModuleManager.svelte`. Full subsystem (server discovery/serving/enablement,
   engine-compat gate) → [[shadowcat-codebase-module-toolchain]].
 - **`boot()` resolves the world route-first, not `lastWorld`-first (silent-hang-startup fix)** —
-  `App.svelte`'s `boot()` reads `currentRoute()` (the router's already-parsed initial
-  `location.hash`, synchronous at boot time — never re-parse the hash by hand) BEFORE consulting
-  `ui.global.lastWorld`. The rule lives in one pure, directly-testable helper,
-  `resolveBootWorld(route, lastWorld, worlds)` (`lib/bootResolution.ts`): a world route
-  (`#/world/<id>`) always wins — `lastWorld` is NOT consulted at all while a world route is
-  present, even if it would resolve to a different, still-valid world; `lastWorld` seeds ONLY a
-  bare/non-world load. A route's world id absent from `listWorlds()` (deleted/revoked) falls
-  through to the SAME stale-reference handling as a stale `lastWorld` (clear + let `boot()` fall
-  back to the entry/worlds-list route) rather than silently substituting `lastWorld`. Entering the
+  `App.svelte`'s `boot()` reads `currentRoute()` — the LIVE route at the moment boot resolves
+  (`route` is module-scope `$state`; the read happens AFTER the awaited/retried
+  `getMe`/`getUiState`/`listWorlds` fetches, not synchronously at boot's start — never assume it
+  still reflects the hash present when `boot()` began) — BEFORE consulting `ui.global.lastWorld`.
+  The rule lives in one pure, directly-testable helper, `resolveBootWorld(route, lastWorld,
+  worlds)` (`lib/bootResolution.ts`): a world route (`#/world/<id>`) always wins — `lastWorld` is
+  NOT consulted at all while a world route is present, even if it would resolve to a different,
+  still-valid world; `lastWorld` seeds ONLY a bare/non-world load. A route's world id absent from
+  `listWorlds()` (deleted/revoked) clears `lastWorld` ONLY if `lastWorld` is ALSO stale — a dead
+  deep link must never wipe an otherwise-valid `lastWorld` reference — then lets `boot()` fall
+  back to the entry/worlds-list route. Entering the
   resolved id still goes through `enterWorld(worldId)`, which itself calls `setLastWorld` +
   `navigate` — `lastWorld` write semantics are unchanged. Root-caused via a captured Playwright
   network trace: under the shared-account parallel e2e suite, a reload's `boot()` ignoring the URL
   restored whichever world a DIFFERENT concurrent worker entered last — a real product defect
   (a deep-linked reload in production would teleport away from its own URL the same way), not an
   e2e-only artifact. See `docs/CLOSED_BUGS.md` "Client / silent-hang startup paths".
-- **Bounded + retried boot fetches (silent-hang-startup fix)** — `lib/api.ts`'s session/boot
-  fetches (`getMe`, `getUiState`, `listWorlds`) each carry `AbortSignal.timeout(FETCH_TIMEOUT_MS)`
-  (15s), so a hung backend rejects instead of leaving the fetch unsettled forever. `App.svelte`'s
+- **Bounded + retried boot fetches (silent-hang-startup fix)** — `lib/api.ts`'s `FETCH_TIMEOUT_MS`
+  (15s) covers every fetch in the file, not only the session/boot trio: `getMe`, `getUiState`,
+  `listWorlds`, `postJson` (login/logout), and `putUiState` (including the unload keepalive PUT)
+  all carry `AbortSignal.timeout(FETCH_TIMEOUT_MS)`, so a hung backend rejects instead of leaving
+  any of them unsettled forever. `App.svelte`'s
   `boot()` wraps each of the three awaits in `withRetry` (3 attempts, flat delays) before
   degrading to the login/worlds route — a transient non-2xx or connection reset during startup no
   longer permanently strands the SPA on that fallback route with no retry.

@@ -32,13 +32,32 @@ export function webSocketConnect(url: string, connectTimeoutMs = 10_000): Connec
     new Promise<Transport>((resolve, reject) => {
       const ws = new WebSocket(url);
       let opened = false;
+      // Settled once the connect PROMISE has resolved or rejected (timeout,
+      // error, or a completed open) — distinct from `opened`, which only
+      // tracks the socket's own open/not-open state. A `connectTimeoutMs`
+      // expiry and an already-queued `open` event can land in the same tick;
+      // without this guard `opened` could flip true AFTER the promise already
+      // rejected, letting a later `close` still call `handlers.onClose()` —
+      // the caller's `open()` catch AND `handleClose()` would then both
+      // schedule a reconnect (two live transports), and the orphan's own
+      // close would null out `this.transport` from under the live one.
+      let settled = false;
       const timer = setTimeout(() => {
         if (!opened) {
+          settled = true;
           reject(new Error("websocket connect timeout"));
           ws.close();
         }
       }, connectTimeoutMs);
       ws.addEventListener("open", () => {
+        if (settled) {
+          // The connect promise already settled (e.g. the timeout fired in
+          // the same tick this `open` was already queued) — discard this
+          // socket without ever reaching `opened`/`onClose`.
+          ws.close();
+          return;
+        }
+        settled = true;
         opened = true;
         clearTimeout(timer);
         resolve({
@@ -58,6 +77,7 @@ export function webSocketConnect(url: string, connectTimeoutMs = 10_000): Connec
       ws.addEventListener("error", () => {
         if (!opened) {
           clearTimeout(timer);
+          settled = true;
           reject(new Error("websocket error"));
         }
         // Post-open errors are followed by `close`; onClose handles teardown.

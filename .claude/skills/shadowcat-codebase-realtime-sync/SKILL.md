@@ -139,18 +139,32 @@ optimistically and roll back on divergence.
   "Connecting…" forever (the browser's socket `open` fires at HTTP 101, BEFORE the server's
   Welcome preamble — see `ws/conn.rs`'s per-connect DB round trips + blocking
   `scan_installed_modules` scan). Every `open()` attempt is tagged with a monotonically
-  increasing `connGeneration`; `handleFrame` ignores a `"welcome"` frame whose generation doesn't
-  match the CURRENT connection before acting (clearing the watchdog, setting `serverOffsetMs`,
-  emitting `onWelcome`) — this closes the reintroduction where a Welcome already queued as a
-  message task when the watchdog fired could still arrive after reconnect and incorrectly disarm
-  the successor connection's own watchdog. **`resync_end` is NOT yet generation-guarded** — a
-  superseded connection's queued `resync_end` can still fire `onResyncComplete` prematurely on
-  the successor (seq math itself stays safe; see `docs/TODO.md`).
+  increasing `connGeneration`; `handleFrame` ignores a `"welcome"` OR `"resync_end"` frame whose
+  generation doesn't match the CURRENT connection before acting (clearing the watchdog, setting
+  `serverOffsetMs`, emitting `onWelcome`; resp. advancing `nextExpected` + emitting
+  `onResyncComplete`) — this closes the reintroduction where a frame already queued as a message
+  task when the watchdog fired could still arrive after reconnect and incorrectly act on (or
+  disarm) the successor connection's state. **`armWelcomeWatchdog` itself also guards against
+  out-of-order delivery**: a `welcomedGeneration` field (set inside the `"welcome"` case, after the
+  generation check) makes arming a no-op when the CURRENT generation is already welcomed — covers a
+  `Connect` implementation that delivers Welcome via a microtask BEFORE its own promise resolves
+  (the continuation that calls `armWelcomeWatchdog` runs strictly after), which would otherwise arm
+  a watchdog nothing will ever disarm. **`reconnectAttempt` resets on WELCOME, not on socket
+  `open`** — the reset moved from `open()` into the `"welcome"` case (after the generation guard):
+  a server that accepts the socket but never sends Welcome must keep backing off
+  (`scheduleReconnect`'s exponential-with-full-jitter delay) on every watchdog-close/reconnect
+  cycle instead of retrying at the base delay forever, which would amplify load against exactly the
+  degraded server the watchdog exists to escape.
 - `src/client/core/src/transport.ts` — `webSocketConnect(url, connectTimeoutMs = 10_000)`: bounds
   the handshake so an accepted-but-never-upgraded socket settles (rejects + closes) instead of
-  leaving `ws-client.ts`'s reconnect path unreachable behind an unsettled connect promise. A
-  settled-guard ensures a pre-open close/error only rejects the connect promise — it never ALSO
-  reaches `handlers.onClose` (which could double-schedule a reconnect).
+  leaving `ws-client.ts`'s reconnect path unreachable behind an unsettled connect promise. A single
+  shared `settled` flag (distinct from `opened`) guards ALL THREE settling paths (timeout, error,
+  open) — a `connectTimeoutMs` expiry and an already-queued `open` event landing in the same tick
+  no longer lets `opened` flip true AFTER the promise already rejected, which would otherwise let a
+  later `close` event ALSO reach `handlers.onClose` (double-scheduling a reconnect on top of the
+  promise-rejection path, and the orphan transport's own close nulling `WsClient.transport` out
+  from under the live one). The `open` listener discards the socket (`ws.close()`, no resolve) when
+  `settled` is already true instead of completing the handshake.
 - `src/client/core/src/store.ts` — `DocumentStore implements ReadableDocuments` (authoritative,
   rollback base).
 - `src/client/core/src/optimistic.ts` — `OptimisticClient implements ReadableDocuments` (the

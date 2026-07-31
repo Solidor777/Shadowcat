@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { WsClient } from "./ws-client";
 import type { MoveStream } from "./ws-client";
 import { MockServer } from "./mock-server";
@@ -336,6 +336,160 @@ describe("WsClient", () => {
     // connection 2 would never time out and `opens` would stay at 2.
     await waitFor(() => opens === 3);
     expect(closes).toEqual([1, 2]);
+    client.stop();
+  });
+
+  it("an opens-but-never-welcomes server backs off with growing reconnect delays, not a fixed watchdog-only cadence", async () => {
+    const delays: number[] = [];
+    let opens = 0;
+    const connect: Connect = (h) => {
+      opens += 1;
+      return Promise.resolve({
+        send: () => {},
+        close: () => h.onClose(),
+      });
+    };
+    const client = new WsClient({
+      connect,
+      handlers: noop,
+      sleep: (ms) => {
+        delays.push(ms);
+        return Promise.resolve();
+      },
+      welcomeTimeoutMs: 5,
+      backoffBaseMs: 10,
+      backoffMaxMs: 40,
+    });
+    // Full jitter picks a delay in [ceiling/2, ceiling); pin it to the ceiling
+    // itself so the growth assertion below is deterministic.
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(1);
+    try {
+      await client.start();
+      await waitFor(() => opens >= 4);
+    } finally {
+      client.stop();
+      randomSpy.mockRestore();
+    }
+    // Each watchdog-close reconnects at the CURRENT attempt's backoff
+    // (10 -> 20 -> 40, capped at backoffMaxMs), never resetting to the base
+    // delay merely because the socket opened — only a Welcome resets it.
+    expect(delays.slice(0, 3)).toEqual([10, 20, 40]);
+  });
+
+  it("a welcomed connection resets the reconnect attempt counter — a later drop backs off from the base delay again", async () => {
+    const delays: number[] = [];
+    let opens = 0;
+    let onMessage: (d: string) => void = () => {};
+    const closers: Array<() => void> = [];
+    const connect: Connect = (h) => {
+      opens += 1;
+      onMessage = h.onMessage;
+      const close = () => h.onClose();
+      closers.push(close);
+      return Promise.resolve({ send: () => {}, close });
+    };
+    const client = new WsClient({
+      connect,
+      handlers: noop,
+      sleep: (ms) => {
+        delays.push(ms);
+        return Promise.resolve();
+      },
+      welcomeTimeoutMs: 5,
+      backoffBaseMs: 10,
+      backoffMaxMs: 40,
+    });
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(1);
+    try {
+      await client.start();
+      // Connection 1 never welcomes; the watchdog closes it -> one reconnect
+      // at the base delay (attempt 0).
+      await waitFor(() => opens === 2);
+      expect(delays).toEqual([10]);
+      // Connection 2 welcomes, resetting the attempt counter.
+      onMessage(JSON.stringify(welcomeFrame()));
+      await flush();
+      // A later drop of the now-WELCOMED connection (not a watchdog close)
+      // must back off from the base delay again, not continue growing from a
+      // stale attempt count carried over from before the Welcome.
+      closers[1]();
+      await waitFor(() => opens === 3);
+      expect(delays).toEqual([10, 10]);
+    } finally {
+      client.stop();
+      randomSpy.mockRestore();
+    }
+  });
+
+  it("a Connect delivering Welcome before its own continuation runs does not leave a permanently-doomed watchdog", async () => {
+    // Pins the out-of-order-delivery contract structurally: if a Welcome is
+    // processed before armWelcomeWatchdog's own call site runs (a Connect
+    // that resolves handlers.onMessage in a microtask ahead of resolving its
+    // returned promise), the watchdog must not arm at all — arming would
+    // create a timer nothing will ever disarm, closing a healthy connection.
+    let opens = 0;
+    const closes: number[] = [];
+    const connect: Connect = (h) => {
+      const id = ++opens;
+      return new Promise((resolve) => {
+        queueMicrotask(() => h.onMessage(JSON.stringify(welcomeFrame())));
+        queueMicrotask(() =>
+          resolve({
+            send: () => {},
+            close: () => {
+              closes.push(id);
+              h.onClose();
+            },
+          }),
+        );
+      });
+    };
+    const client = new WsClient({
+      connect,
+      handlers: noop,
+      sleep: () => Promise.resolve(),
+      welcomeTimeoutMs: 5,
+    });
+    await client.start();
+    // Give a (wrongly) armed watchdog's window plenty of time to elapse.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(closes).toEqual([]);
+    client.stop();
+  });
+
+  it("a stale resync_end from a superseded connection does not fire onResyncComplete on the successor", async () => {
+    // Mirrors the "stale Welcome" test above but for resync_end: connection
+    // 1's queued resync_end must not fire the callback once the client has
+    // moved on to connection 2.
+    let opens = 0;
+    const onMessageByGen: Record<number, (d: string) => void> = {};
+    const closes: number[] = [];
+    const connect: Connect = (h) => {
+      const id = ++opens;
+      onMessageByGen[id] = h.onMessage;
+      return Promise.resolve({
+        send: () => {},
+        close: () => {
+          closes.push(id);
+          h.onClose();
+        },
+      });
+    };
+    let resyncCompletes = 0;
+    const client = new WsClient({
+      connect,
+      handlers: { onCommand: () => {}, onResyncComplete: () => resyncCompletes++ },
+      sleep: () => Promise.resolve(),
+      welcomeTimeoutMs: 5,
+    });
+    await client.start();
+    // Connection 1 times out and reconnects to connection 2.
+    await waitFor(() => opens === 2);
+    expect(resyncCompletes).toBe(0);
+    // Connection 1's resync_end arrives late (queued before its watchdog close).
+    onMessageByGen[1](JSON.stringify({ type: "resync_end", current_seq: 5 }));
+    await flush();
+    expect(resyncCompletes).toBe(0);
     client.stop();
   });
 

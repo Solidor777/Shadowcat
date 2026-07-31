@@ -53,9 +53,9 @@ are observations awaiting triage, not committed work.
   (hex-movement keeps its larger explicit 180s). The audit also surfaced WHY
   the symptom is "element(s) not found" rather than slow-but-green: the
   client has NO Welcome watchdog — plus three adjacent unbounded/unretried
-  startup awaits — now logged as confirmed defects in OPEN_BUGS.md
-  ("Silent-hang startup paths"). Status: suite defect RESOLVED; recurrence
-  under the new budgets would indicate the OPEN_BUGS product gaps, not the
+  startup awaits — now closed defects, see `docs/CLOSED_BUGS.md` "Client /
+  silent-hang startup paths". Status: suite defect RESOLVED; recurrence
+  under the new budgets would indicate a regression in that fix, not the
   specs.
 
 - Title: ui-e2e assets test flaked once locally at the post-login worlds list.
@@ -489,4 +489,7 @@ are observations awaiting triage, not committed work.
   built (and already-embedded) behavior in the binary under test — a constant change believed
   reverted can silently still be live for however many runs preceded the next rebuild. Status:
   RESOLVED — Task 4's route-first fix + this entry close the class; the render-ready timing-flake
-  audit and its 120s/15s budget fix remain valid as independent, separate work.
+  audit and its 120s/15s budget fix remain valid as independent, separate work. The traced run
+  underlying this forensic closeout also failed `hex-movement.spec.ts` (trace kept, not separately
+  analyzed at the time); it did not recur across the three post-fix full-suite runs (16/16 each,
+  Task 4 verification) and needs no further action.
