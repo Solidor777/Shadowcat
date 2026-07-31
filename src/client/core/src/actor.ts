@@ -53,8 +53,7 @@ function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOve
  * displayName, else a generic fallback. For unauthorized recipients the server redacts the
  * real `name` to `null` (the OwnerOrGm tier), so it is null here — fail-closed: a missing
  * name yields the generic label, never a leak. The single display chokepoint every surface
- * reads. */
-/** The display name to show for an actor-like value.
+ * reads.
  * @param a An object carrying the resolved `name`/`displayName` (typically an `EffectiveActor`).
  * @param a.name The real name, or `null`/absent when unset or redacted.
  * @param a.displayName The non-secret fallback name.
@@ -109,6 +108,14 @@ export function resolveTokenActor(token: WireDocument, store: ReadableDocuments)
  * explicit per-document override; a `token` with no override inherits its LINKED actor's
  * owner, resolved live from the store so re-assigning an actor re-owns its tokens with no
  * re-stamp.
+ *
+ * Mirrors the server's PRECEDENCE (token's own `/owner`, else the linked actor's owner) but
+ * OMITS the server's `actor.scope === doc.scope` guard (`permission.rs`'s `effective_owner`
+ * rejects a resolved actor whose `scope` differs from the token's) — `store.get(actorId)` here
+ * is a plain id lookup with no scope filter. This is safe only because the client's
+ * `DocumentStore` never holds a cross-scope document today (it is fed solely by the single
+ * connected world's WS stream; a `"compendium"`-scoped id never enters `store`), not because
+ * the check is unnecessary in principle. See `docs/TODO.md` for making this structural.
  *
  * Fail-closed: no link, a dangling link, a resolved document that is not an actor, and an
  * unowned actor all yield `null`. INSTANCED tokens deliberately do NOT inherit from their
@@ -170,8 +177,9 @@ export function ownerFloorApplies(doc: WireDocument, userId: string, store: Read
  * never a render error (fail-closed). The single read-through every condition consumer uses.
  * @param token The token to resolve effective conditions for.
  * @param store The document store to resolve the actor + condition registry against.
- * @returns Display entries `{id, name, icon}` for each of the token's effective condition ids
- * present in the world's condition registry; `[]` for a raw/dangling token or an unregistered id.
+ * @returns Display entries `{id, name, icon}`, one per effective condition id that IS present in
+ * the world's condition registry (an unregistered id is dropped, not the whole list); `[]` for a
+ * raw/dangling token, or when none of the token's condition ids are registered.
  * @example
  * ```ts
  * import { resolveConditions, type ReadableDocuments, type WireDocument } from "@shadowcat/core";

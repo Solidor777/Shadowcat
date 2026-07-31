@@ -199,6 +199,16 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   struggling backend. Fix direction: an overall boot deadline (fail to the login/worlds route
   sooner than three full retry cycles), a visible "still trying…" state instead of a bare
   "Loading…" spinner, and jittered retry delays matching the WS backoff's convention.
+- TODO: `actor.ts`'s `effectiveOwner` mirrors the server's `effective_owner` PRECEDENCE (token's
+  own `/owner`, else the linked actor's owner) but omits the server's `actor.scope === doc.scope`
+  guard (`data/permission.rs`'s `effective_owner` rejects a resolved actor whose `scope` differs
+  from the token's; `store.get(actorId)` in the client is a plain id lookup with no scope filter).
+  Add the same `actor.scope === doc.scope` check to the client so the parity is STRUCTURAL rather
+  than dependent on an unstated invariant. This is defense-in-depth, not a live bug: the client's
+  `DocumentStore` is fed only by the single connected world's WS stream (a `"compendium"`-scoped
+  id never enters `store`; ids are globally unique), so `store.get()` cannot today return a
+  cross-scope document, and `effectiveOwner` is advisory-only (the server re-resolves in its own
+  transaction). Needs its own runtime-change test + review, not a docs-only edit.
 
 ## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
 - TODO: `src/server/src/ws/room.rs`'s `Room::execute_move` re-derives `is_gm` via its own
