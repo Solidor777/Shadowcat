@@ -24,16 +24,26 @@ are observations awaiting triage, not committed work.
   signal's startup path rather than the individual specs). 2026-07-31 update:
   this SAME spec later failed twice at a DIFFERENT assert (the post-reload
   panel-restore `asset-upload` visibility, not the render-ready wait) — that
-  failure mode was root-caused to the same-user ui_state clobber race, now a
-  confirmed defect in OPEN_BUGS.md, and is NOT a member of this render-ready
-  class (which stays at two members). 2026-07-31 resolution: the panel-restore
-  assert failure mode is fixed — the ui_state clobber race is closed by the
-  per-slice merge (server `merge_ui_state` + client dirty-slice `UiStatePatch`
-  writes, commits `daf5eae`/`819d2c0`; see `docs/CLOSED_BUGS.md` "Server +
-  client / ui-state persistence"). The full local matrix (incl. 5 repeats of
-  this spec) ran 5/5 + 15/15 green post-fix. The render-ready wait itself
-  remains open and unaffected by this fix, still at two members (this spec's
-  original occurrence + the hex-movement setup flake above).
+  failure mode was root-caused to the same-user ui_state clobber race
+  (resolved — see the 2026-07-31 note below and CLOSED_BUGS.md), and is NOT a
+  member of this render-ready class (which stays at two members). 2026-07-31
+  resolution: the panel-restore assert failure mode is fixed — the ui_state
+  clobber race is closed by the per-slice merge (server `merge_ui_state` +
+  client dirty-slice `UiStatePatch` writes, commits `daf5eae`/`819d2c0`; see
+  `docs/CLOSED_BUGS.md` "Server + client / ui-state persistence"). The
+  post-fix Task-3 verification matrix was 15/16 on the full 6-worker
+  `pnpm --filter @shadowcat/shell e2e` run — the one failure was THIS spec
+  timing out on `.stage-host[data-render-ready=true]` again, i.e. a THIRD
+  occurrence of the render-ready class (immediate isolated re-run: 3/3 green,
+  same zero-code-change signature as the first two), adjudicated a
+  non-regression per this entry's own re-run protocol, not a recurrence of
+  the now-closed clobber failure mode. Per this entry's stated policy above
+  ("if a third appears, audit the render-ready signal's startup path rather
+  than the individual specs"), that audit trigger now FIRES — the class is at
+  three members and the startup-path audit is a pending follow-up, not yet
+  done. Separately, 5 additional targeted repeats of `panels.spec.ts` alone
+  (1 worker, no contention) ran 5/5 green, confirming the per-slice merge
+  removes the clobber interference mechanism specifically.
 
 - Title: ui-e2e assets test flaked once locally at the post-login worlds list.
   Summary: on the migration-squash local matrix (schema-file-only branch),

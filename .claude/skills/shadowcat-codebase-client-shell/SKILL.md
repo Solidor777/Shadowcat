@@ -89,9 +89,10 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   write; `persist()`/`flushOnUnload()` send only a `UiStatePatch` (`api.ts`) covering those
   slices — never the whole `{global, worlds}` blob — clearing the dirty markers on success and
   re-marking them on failure so a retry doesn't lose the write. Server-side,
-  `SqliteRepository::merge_ui_state` merges the patch per top-level key (each `worlds` entry
-  replaces only that world's slice) in one transaction (`http/routes.rs::put_ui_state`); a
-  whole-blob `PUT` no longer exists. Concurrent same-user sessions (two tabs) now contend only
+  `SqliteRepository::merge_ui_state` (`data/sqlite.rs`) merges the patch per top-level key (each
+  `worlds` entry replaces only that world's slice) in one transaction; the HTTP surface and size
+  cap live in `http/routes.rs::put_ui_state`. A whole-blob `PUT` no longer exists. Concurrent
+  same-user sessions (two tabs) now contend only
   on slices both sessions actually write, instead of last-writer-wins on the whole blob.
 - **Multi-scene / viewed-scene seams (M12d)** — `AppContext.viewedSceneId: string | null`
   (a live getter, `Table.svelte`: `get viewedSceneId() { return session.viewedSceneId; }` —
