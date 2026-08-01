@@ -143,8 +143,8 @@ pub struct DrawingEngine {
 }
 
 /// A template's area anchored at `(x,y)` with a `size` and `direction`
-/// (degrees), tessellated per `kind`. Client mirror: `TemplateEngine`
-/// (`@shadowcat/core`).
+/// (degrees), tessellated per `kind`. Client mirror: `TemplateEngine["shape"]`
+/// (`@shadowcat/core`) — the shape lives one level inside the engine body.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]

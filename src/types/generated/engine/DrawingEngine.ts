@@ -4,7 +4,7 @@ import type { Fill } from "./Fill";
 import type { Stroke } from "./Stroke";
 
 /**
- * A drawing document's engine body (`drawing-view.ts:9-13` `DrawingSystem`).
+ * A drawing document's engine body. Client mirror: `DrawingEngine` (`@shadowcat/core`).
  * `stroke`/`fill` are each a required-but-nullable field on the wire
  * (`{...} | null`, not optional) — `Option<T>` without a serde default
  * mirrors that exactly (the key must be present, either an object or

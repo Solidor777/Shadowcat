@@ -2,8 +2,8 @@
 
 /**
  * A template's area anchored at `(x,y)` with a `size` and `direction`
- * (degrees), tessellated per `kind` (`template-view.ts:9-11`
- * `TemplateSystem`).
+ * (degrees), tessellated per `kind`. Client mirror: `TemplateEngine["shape"]`
+ * (`@shadowcat/core`) — the shape lives one level inside the engine body.
  */
 export type TemplateShape = { 
 /**
