@@ -270,8 +270,13 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   therefore vanishes from the breakdown UI** while a positive one is attributed.
   Decide whether that is intended. If the chip is wanted, emitting `-N[originalText]` restores it
   and is arithmetically identical (verified: `x - Neg(N)` and `x - (0 - N)` both fold to `x + N`).
-  No existing test covers a negative substitution — `template.test.ts` only exercises `"d20 + mod"`
-  with a positive `mod` — so this needs a test either way.
+  **The notation output IS already tested and the absent label is deliberate at that layer** —
+  `template.test.ts:32-35` asserts `"d20 + mod"` with `mod: -2` produces `"1d20 + (0 - 2)"`, under a
+  test named "negative values emit parenthesized zero-minus form (no label)". So the client-side
+  shape was a choice, not an accident. What is NOT established is whether its DOWNSTREAM effect was
+  considered: nothing connects that output to the server-side breakdown, and no test covers the
+  missing chip (that would need a Rust test around `collect_labeled_consts`, or the `roll-wire`
+  differential harness). Decide at that layer, not this one.
   Surfaced by the formula doc sweep: the code carried a detailed, triple-cited comment claiming the
   parenthesized form prevented a `--N` sign cancellation. Both reviewers independently traced the
   server evaluator and found no such cancellation exists; the label difference is the only real
