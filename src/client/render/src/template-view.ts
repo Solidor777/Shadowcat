@@ -78,11 +78,14 @@ export class TemplateView {
  * between two authored corners (the `"rect"` string means different geometry in each
  * file). `line` builds a 2-point open segment from `(x,y)` at `direction` degrees, length
  * `size`, and is the only kind that returns `closed:false` (and therefore no `fill`).
- * Returns `null` for a missing `engine.shape` or an unrecognized `kind`, and for non-finite
- * resolved coordinates: JSON has no NaN/Infinity literal, but an oversized magnitude (`1e400`)
- * parses to `Infinity`, and a non-finite `direction` additionally yields NaN through
- * `cos`/`sin`. Checked on the RESOLVED points, so both authored and trigonometry-derived
- * coordinates are covered. Matches `drawing-view.ts`, `region-view.ts`, and `wall-view.ts`.
+ * Returns `null` for a missing `engine.shape`, an unrecognized `kind`, or a non-numeric
+ * `x`/`y`/`size`/`direction`. What actually arrives is `null`, not `Infinity`: an oversized
+ * magnitude survives `serde_json::from_value` as `f64::INFINITY`, but `normalize_engine`'s
+ * round-trip re-serializes it and `serde_json`'s `From<f64>` maps any non-finite to
+ * `Value::Null` — and that normalized value is what gets persisted and broadcast.
+ * `WireDocument.engine` is `z.unknown()`, so nothing downstream re-checks it. Guarded on the
+ * RAW authored scalars, before tessellation, matching `drawing-view.ts`, `region-view.ts`, and
+ * `wall-view.ts` — see the guard's own comment for why placement matters.
  * @param doc The `template` document to convert.
  * @returns A `ShapeNodeSpec` for the `templates` layer, or `null` if it can't be rendered.
  * @example
@@ -95,6 +98,12 @@ function toSpec(doc: WireDocument): ShapeNodeSpec | null {
   const s = doc.engine as TemplateEngine | undefined;
   if (!s?.shape) return null;
   const { kind, x, y, size, direction } = s.shape;
+  // Checked on the RAW authored scalars, before tessellation — matching `region-view.ts` and
+  // `wall-view.ts`. Post-tessellation would be too late: JS coerces `null` to 0 in arithmetic,
+  // so a null `x` on a circle yields finite, plausible-looking geometry no later check can
+  // distinguish from an authored shape. `direction` is included because `cone`/`rect`/`line`
+  // route it through `cos`/`sin`.
+  if (![x, y, size, direction].every((n) => Number.isFinite(n))) return null;
   let points: number[];
   let closed = true;
   switch (kind) {
@@ -116,9 +125,6 @@ function toSpec(doc: WireDocument): ShapeNodeSpec | null {
     default:
       return null;
   }
-  // Checked post-resolution: a non-finite x/y/size propagates through the point builders, and a
-  // non-finite `direction` becomes NaN via cos/sin — one guard on the output covers both.
-  if (!points.every((n) => Number.isFinite(n))) return null;
   const color = parseColor(s.color);
   return {
     layer: "templates",

@@ -69,3 +69,14 @@ test("a drawing whose tessellated output goes non-finite does not render", () =>
   new DrawingView(store, backend).reconcile();
   expect(backend.shapes.has("d-rect")).toBe(false);
 });
+
+// See template-view.test.ts: `null` (not Infinity) is what the server's normalize_engine
+// round-trip actually delivers. ellipsePoints averages its corners, so a null corner would
+// coerce to 0 and produce finite output -- the guard must sit on the raw points to see it.
+test("a drawing with a null coordinate does not render (ellipse)", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(cmd(1, [{ op: "create", doc: drawingDoc("d-null", "ellipse", [null as unknown as number, 0, 10, 10]) }]));
+  new DrawingView(store, backend).reconcile();
+  expect(backend.shapes.has("d-null")).toBe(false);
+});

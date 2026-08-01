@@ -83,3 +83,24 @@ test("a template with a non-finite direction does not render", () => {
   new TemplateView(store, backend).reconcile();
   expect(backend.shapes.has("t-dir")).toBe(false);
 });
+
+// `null` is the value that ACTUALLY arrives: an oversized magnitude deserializes server-side as
+// f64::INFINITY, but normalize_engine's round-trip re-serializes it and serde_json's From<f64>
+// maps non-finite to Value::Null. That distinction is load-bearing here -- JS coerces null to 0
+// in arithmetic, so a post-tessellation guard sees finite, plausible geometry and never fires.
+// These pin the guard to the raw scalars, where null is still visible as non-numeric.
+test("a template with a null coordinate does not render (circle)", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(cmd(1, [{ op: "create", doc: tmplDoc("t-null", { kind: "circle", x: null, y: 5, size: 10, direction: 0 }) }]));
+  new TemplateView(store, backend).reconcile();
+  expect(backend.shapes.has("t-null")).toBe(false);
+});
+
+test("a template with a null direction does not render (cone)", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(cmd(1, [{ op: "create", doc: tmplDoc("t-null-dir", { kind: "cone", x: 0, y: 0, size: 10, direction: null }) }]));
+  new TemplateView(store, backend).reconcile();
+  expect(backend.shapes.has("t-null-dir")).toBe(false);
+});

@@ -3,6 +3,27 @@
 Confirmed-real defects that have since been fixed, kept for provenance. New fixes append a new
 `##` section (or bullet under an existing one); do not delete resolved entries.
 
+## Client / render-layer sibling divergence on non-numeric coordinates (2026-07-31 docs sweep 8)
+
+- [Render] `drawing-view.ts` and `template-view.ts`'s `toSpec` accepted non-numeric coordinates
+  and emitted a `ShapeNodeSpec` from them, while their near-identical siblings `region-view.ts`
+  and `wall-view.ts` rejected such docs — despite all four engine bodies getting identical
+  ingress treatment (`normalize_engine` round-trips each through serde; none calls `.validate()`,
+  only `"token"` does). **The value that actually arrives is `null`, not `Infinity`:** an
+  oversized magnitude survives `serde_json::from_value` as `f64::INFINITY`, but the round-trip
+  re-serializes it and `serde_json`'s `From<f64>` maps any non-finite to `Value::Null`
+  (`value/from.rs`) — and the normalized value is what is persisted and broadcast.
+  `WireDocument.engine` is `z.unknown()`, so nothing downstream re-checks it. That distinction is
+  load-bearing: **JS coerces `null` to 0 in arithmetic**, so a guard placed after tessellation
+  sees finite, plausible-looking geometry and never fires — `circlePoints(null, 5, 10)` yields a
+  wrong-but-renderable circle. Fixed by guarding the RAW authored fields before tessellation in
+  both files, matching `region-view.ts`'s placement exactly. Tests cover `null` on the
+  arithmetic-heavy kinds (circle, cone, ellipse) plus the `direction`-through-`cos`/`sin` path,
+  and are mutation-proven twice: removing a guard fails, and moving it back after tessellation
+  fails the `null` cases specifically. Found by the sweep-8 Task 6 implementer auditing four
+  near-identical siblings; the first fix attempt had the right conclusion but a false mechanism
+  and the wrong placement, caught by the Task 6 code review.
+
 ## Client / hex grid overlay dropped cells near the viewport edge (2026-07-31 docs sweep 8)
 
 - [Render] `Grid.hexLines` (`src/client/render/src/grid.ts`) scanned too narrow a `q` range, so

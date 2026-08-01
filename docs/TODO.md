@@ -250,15 +250,4 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   if/when the `Continuous` engine gets its own full I4 parity pass. (Surfaced by Phase
   D-alpha's final whole-branch review.)
 
-## Actionable now — render-layer sibling divergence (docs sweep 8 Task 6 backlog)
-- TODO: `drawing-view.ts`'s and `template-view.ts`'s `toSpec` do not check resolved
-  coordinates for `Number.isFinite` before returning a `ShapeNodeSpec`, unlike
-  `region-view.ts`'s and `wall-view.ts`'s `toSpec`, which do. All four engine bodies
-  (`DrawingEngine`/`TemplateEngine`/`RegionEngine`/`WallEngine`) are round-tripped through
-  serde the same way on ingress (`data/engine/mod.rs`'s `normalize_engine`) — none of the
-  four calls `.validate()` (only `"token"` does) — so there is no structural reason the
-  guard should exist on two of the four and not the other two. Add the missing guard to
-  `drawing-view.ts`/`template-view.ts`'s `toSpec` (or establish why walls/regions
-  specifically need it and drawings/templates don't) so the four sibling reconcilers stop
-  silently diverging on this axis. (Surfaced by the render-package doc sweep, Task 6.)
 

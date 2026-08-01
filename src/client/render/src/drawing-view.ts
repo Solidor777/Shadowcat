@@ -72,11 +72,13 @@ export class DrawingView {
  * the first two, closed for `polygon`); `rect`/`ellipse` read exactly 4 bbox-corner
  * coordinates and tessellate via `rectPoints`/`ellipsePoints`. Returns `null` for a
  * missing `engine.shape`, an unrecognized `kind`, or a `rect`/`ellipse` with fewer than 4
- * points — a malformed doc simply doesn't render. Non-finite coordinates also yield `null`:
- * JSON has no NaN/Infinity literal, but an oversized magnitude (`1e400`) parses to `Infinity`,
- * which would otherwise reach Pixi as NaN geometry. Checked on the TESSELLATED output, so a
- * non-finite input caught via `rectPoints`/`ellipsePoints` is rejected too. Matches
- * `region-view.ts` and `wall-view.ts`.
+ * points — a malformed doc simply doesn't render. A non-numeric coordinate also yields `null`.
+ * What actually arrives is `null`, not `Infinity`: an oversized magnitude survives
+ * `serde_json::from_value` as `f64::INFINITY`, but `normalize_engine`'s round-trip re-serializes
+ * it, and `serde_json`'s `From<f64>` maps any non-finite to `Value::Null` — and that normalized
+ * value is what gets persisted and broadcast. `WireDocument.engine` is `z.unknown()`, so nothing
+ * downstream re-checks it. Guarded on the RAW authored points, before tessellation, matching
+ * `region-view.ts` and `wall-view.ts` — see the guard's own comment for why placement matters.
  * @param doc The `drawing` document to convert.
  * @returns A `ShapeNodeSpec` for the `drawings` layer, or `null` if it can't be rendered.
  * @example
@@ -89,6 +91,11 @@ function toSpec(doc: WireDocument): ShapeNodeSpec | null {
   const s = doc.engine as DrawingEngine | undefined;
   if (!s?.shape) return null;
   const { kind, points } = s.shape;
+  // Checked on the RAW authored points, before tessellation — matching `region-view.ts` and
+  // `wall-view.ts`. Post-tessellation would be too late: JS coerces `null` to 0 in arithmetic,
+  // so `ellipsePoints`'s midpoint averaging turns a null corner into finite, plausible-looking
+  // geometry that a later check cannot distinguish from an authored shape.
+  if (!Array.isArray(points) || !points.every((n) => Number.isFinite(n))) return null;
   let pts = points;
   let closed = false;
   switch (kind) {
@@ -111,9 +118,6 @@ function toSpec(doc: WireDocument): ShapeNodeSpec | null {
     default:
       return null;
   }
-  // Checked post-tessellation: a non-finite input propagates through rectPoints/ellipsePoints,
-  // so the output covers both authored and derived coordinates in one guard.
-  if (!pts.every((n) => Number.isFinite(n))) return null;
   return {
     layer: "drawings",
     points: pts,
