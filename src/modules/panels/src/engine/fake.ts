@@ -146,8 +146,12 @@ export class FakeEngine implements EngineAdapter {
    * on every call, then every floating entry (including `poppedOut` ids,
    * degraded to floating here — see below) is placed or repositioned.
    * Idempotent per the `EngineAdapter` contract: repeat calls with the same
-   * `expanded` rebuild the identical DOM shape each time, a no-op in effect
-   * even though the elements themselves are recreated. `meta` is unused —
+   * `expanded` produce the identical DOM shape each time — but the two
+   * branches get there differently. Zone/group wrapper divs are torn down
+   * (`zoneEl.replaceChildren()`) and rebuilt fresh on EVERY call; floating
+   * containers are looked up by id (`#floatEls`) and REUSED (only
+   * repositioned) across calls, created once per id and removed only when
+   * that id leaves the layout. `meta` is unused —
    * this bespoke-fallback engine renders no tab chrome (icon/label/badge) of
    * its own, unlike `DockviewEngine`'s `PanelTabRenderer`.
    * @param expanded The docked-zone + floating layout to reconcile onto.
