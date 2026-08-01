@@ -279,9 +279,19 @@ on.
   factor — a `DiceGroup` or a bare `Const` — not the `Dice` branch alone; a label immediately
   after a parenthesized/compound sub-expression is still correctly rejected as trailing input
   (the generalization is scoped to atomic factors only, not the whole grammar). This closed a
-  real bug: `@shadowcat/formula`'s `resolveNotationTemplate` substitutes every resolved
+  real bug: `@shadowcat/formula`'s `resolveNotationTemplate` substitutes a resolved
   identifier as a labeled constant (`value[name]`) even with no dice roll present, and the
   parser previously rejected any such label not immediately adjacent to a dice group.
+  **Exception — a NEGATIVE substitution carries no label at all**: `substituteIdentifier`
+  (`src/client/formula/src/template.ts`) emits `(0 - N)`, an unlabeled parenthesized subtraction,
+  and only the non-negative branch emits `N[name]`. The totals are identical either way, but
+  `collect_labeled_consts` emits a `ConstTerm` only for a `Const` CARRYING a label — and it
+  recurses through `Expr::Neg`, so a labeled `-N[name]` would still contribute a signed chip while
+  this form's two unlabeled `Const`s contribute none. A negative stat therefore shows no `[label]`
+  chip in the breakdown. `template.test.ts:32-35` pins the notation output (deliberately, naming
+  the absent label), so the client shape is a choice; what is untested and undecided is that
+  downstream breakdown consequence — see `docs/TODO.md`. Do not restate the substitution rule
+  without this exception.
 
 ## Hard invariants
 

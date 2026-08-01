@@ -35,6 +35,18 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 - `src/client/ui-kit/src/i18n.svelte.ts` — `t(key, params)`, `locale()`, the `i18n` adapter over
   core `i18n.ts` `I18n`; catalogs in `ui-kit/src/locales/`.
 - `src/client/ui-kit/src/{sceneInteraction,actorSelection,tokenSelection}.*` — AppContext seams.
+- **The three selection classes share a shape but NOT their repeat-set reactivity.** All of
+  `ActorSelection`, `TokenSelection`, `SceneSelection` are stable instances mutated in place (never
+  reassigned) so the AppContext-captured reference stays valid, and none of them PRUNE an id whose
+  document is later deleted — a stale id stays selected until something clears it, so every consumer
+  resolves against the current store and handles a miss itself. They diverge on what re-selecting the
+  CURRENT value does: `ActorSelection`/`SceneSelection` are `$state`-backed scalars, so `select(same)`
+  is a no-op for reactivity (`$state`'s default `===`), while `TokenSelection` is `SvelteSet`-backed
+  and `set()` clears-then-re-adds, so passing back an identical id list still re-triggers every
+  reader of `.ids`/`.has`/`.size`. The one exception is empty→empty: `SvelteSet.clear()` early-returns
+  without bumping its version when already empty, so that case alone is a genuine no-op. Do not
+  reason from "they're siblings" to "they behave alike" — an effect keyed off `TokenSelection` runs
+  on repeat-sets that an `ActorSelection`-keyed one skips.
 - **`AppContext.serverRole`** (`appContext.ts`) — the caller's SERVER tier (`"admin" | "user"`),
   distinct from the per-world `role`. Gates admin-only UI (the settings module's user manager).
   Derived in `App.svelte` from `/api/me` as `me?.server_role === "admin" ? "admin" : "user"`, so an
@@ -224,6 +236,18 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 
 - **i18n MUST stay framework-neutral** — the core `I18n` is Svelte-free; the Svelte `t`/`locale`
   adapter wraps it via `createSubscriber`. Don't pull a Svelte i18n lib into core.
+- **`WorldSession.canEdit` is an affordance mirror, and it diverges from server authz in BOTH
+  directions** (`worldSession.svelte.ts`) — treat it as "which controls to show", never as the
+  authority. It can over-permit: the `role === "gm"` short-circuit returns `true` unconditionally and
+  never consults `doc.permissions.gm_role`, while the server's GM bypass is CONDITIONAL — a doc
+  carrying `gm_role: Some(role)` floors even a GM to ordinary `DocRole` resolution
+  (`data/permission.rs`'s `effective_role`/`resolve_access`). It can also over-restrict: the Welcome
+  union mixes GM-authored `world_cap_requirements` with module-declared manifest requirements, and
+  the server does NOT reject a write merely because a module declared a requirement on that path.
+  Neither is a live bug today — `apply_intent` re-checks independently, and `gm_role` is currently
+  set only by chat-message construction (`chat/mod.rs`), whose `message` doc_type the server rejects
+  ordinary client Updates to outright regardless of role. Both become live the moment `gm_role`
+  is set on any other doc_type, so re-check this before extending it.
 - **Refactors across a callback boundary must preserve decision branches, not just await ordering**
   [[refactor-preserve-decision-branches]].
 - UI packaging target: swappable entry package + per-element packages + thin shell

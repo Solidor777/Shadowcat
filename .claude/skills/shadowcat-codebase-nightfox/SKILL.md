@@ -207,11 +207,13 @@ producer, not consumer.
   function caller discipline, not a library-level cap.
 - **Server-side prerequisite this pathway depends on:** the M11 dice notation parser now accepts a
   trailing `[label]` on ANY atomic factor (a bare `Const` or a `DiceGroup`), not only a dice group
-  — required because `resolveNotationTemplate` substitutes every resolved identifier as a labeled
+  — required because `resolveNotationTemplate` substitutes a resolved identifier as a labeled
   constant (`value[name]`) even when the template has no dice group at all (e.g. `str`'s default
-  flat roll → `4[str]`). See `shadowcat-codebase-dice`'s `ConstTerm`/`labeled_consts` entries for
-  the full mechanism — this skill only needs the one-sentence dependency, not a duplicate
-  description.
+  flat roll → `4[str]`). **A NEGATIVE value is the exception and emits no label** — `(0 - N)`, an
+  unlabeled parenthesized subtraction — so a negative stat contributes no `[label]` chip to the
+  breakdown even though the total is unaffected. See `shadowcat-codebase-dice`'s
+  `ConstTerm`/`labeled_consts` entries for the full mechanism — this skill only needs the
+  one-sentence dependency plus that exception, not a duplicate description.
 - **Differential proof, not just a unit test:** `e2e/roll-wire.e2e.test.ts` (Nightfox repo,
   `test:e2e:roll-wire` script) spawns the REAL Rust `test_server` and sends every
   `buildStatRollContent` output shape through a real `WsClient`, asserting each survives the
