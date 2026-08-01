@@ -1564,20 +1564,46 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
     off by one, which matters because module authors place layers at a fractional order relative to
     them. **Nothing routinely checks skills against code** — this was caught incidentally.
   Plan: `docs/superpowers/plans/2026-07-31-docs-sweep8-client-render.md`.
-- **Sweeps 10–N — doc-comment sweeps: UPCOMING.** Remaining area: the module packages
-  (~530, 3–4 groups). Client packages are done (Sweep 9 closed shell+ui-kit+formula; its
+- **Sweeps 11–N — doc-comment sweeps: UPCOMING.** Remaining area: the rest of the module packages
+  (292 warnings). Sweep 10 closed `panels` (217, the largest single module). Suggested split:
+  scene-adjacent modules (scene-tools 107, actors 17, scene-browser 9, conditions 8, factions 8,
+  stage 8) then chat/entry/settings/sheets/topbar/assets (chat 51, chat-card 23, entry 22,
+  settings 13, chat-composer 4, assets 4, topbar 7, game-settings 3, sheet-actor 5, sheet-item 3).
+  Client packages are done (Sweep 9 closed shell+ui-kit+formula; its
   actual backlog measured 276, not the 281 estimated here). Every symbol gets
   description+params+example; each completed area flips its lints to deny (Rust: per-file inner
   deny attributes as in Sweep 1; TS: per-package severity flip in `eslint.docs.config.js`).
   Server-wide informational count at Sweep-1 start: 1,059. Whole-repo `lint:docs` after Sweep 8:
   827 warnings, 0 errors.
   **Required reading for every implementer and reviewer:**
-  `docs/design/doc-sweep-truthfulness-rules.md` — twelve rules derived empirically from Sweeps 7–9,
+  `docs/design/doc-sweep-truthfulness-rules.md` — thirteen rules derived empirically from Sweeps 7–10,
   where every fix round was triggered by a doc sentence asserting something FALSE, never by a
   missing comment. Note especially that a green `lint:docs` proves tag presence, not correctness or
   placement, so the ratchet does not reduce the need for review.
   Sweep 9 documented `worldSession.canEdit`'s `gm_role` caveat and removed that `docs/TODO.md`
   entry in the same commit (`f24836e`).
+- **Sweep 10 — `@shadowcat/module-panels`: COMPLETE (2026-08-01).** 217-item backlog → 0 across 3
+  content tasks (dockview engine 73; layout tree+persist 71; controller+policy+fake+3 components 73),
+  then a two-block ratchet. **First sweep into `src/modules/`.** Whole-repo `lint:docs` after Sweep
+  10: 311 warnings, 0 errors. Doc examples 291 → 332.
+  Findings that outlived the sweep:
+  - **A latent docs-gate defect blocking every module package.** The example extractor's generated
+    `*.svelte` ambient shim typed default exports `unknown`, not freely assignable — so the first
+    `@example` anywhere to import a module package by name pulled that package's own `mount(Component)`
+    call into the compiled graph and failed `docs:check-examples` at an untouched line. Sweeps 11–12
+    would each have hit it independently.
+  - **Six fabricated `dockview-core` citations, all pre-existing (M12a).** Every `.ts`-extension
+    citation named a file absent from the vendored artifact (which ships only `.js`/`.d.ts`) at line
+    numbers past the real files' lengths; the one `.js` citation was valid. Every claim's SUBSTANCE
+    was correct — only the pointers were invented.
+  - **`EngineAdapter.focus` has no production caller** — logged to `docs/TODO.md` with the latent
+    `STAGE_ID`-guard divergence it hides.
+  - **Cascade-constant parity is now enforced.** `tree.ts`'s `SHEET_CASCADE_BASE`/`STEP` and
+    `controller.svelte.ts`'s `REHYDRATE_FLOAT_BASE`/`STEP` are deliberately unshared and must stay
+    numerically identical; every existing test asserted only that ONE side's offsets differed from
+    each other, so either could drift silently. A parity test now drives both call sites to the same
+    index and demands the identical rect (mutation-proven at n=0/1/7).
+  Plan: `docs/superpowers/plans/2026-08-01-docs-sweep10-panels.md`.
 - **Sweep 9 — client/shell + ui-kit + formula: COMPLETE (2026-07-31).** 276-item backlog → 0 across
   4 tasks (worldSession 72; shell remainder 50; ui-kit's 16 files 93; formula's 7 files 61). All
   three packages join the ratcheted `error` block. Whole-repo `lint:docs` after Sweep 9: 528

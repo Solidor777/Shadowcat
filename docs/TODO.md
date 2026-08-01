@@ -311,3 +311,26 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   (Surfaced by the sweep-9 whole-branch code review, while checking a doc comment's causal claim
   about why `canPush` omits the WRITE_FIELDS legs — the doc was wrong, and the code gap behind it
   was real.)
+
+## Actionable now — `EngineAdapter.focus` has no production caller (docs sweep 10 Task 3 backlog)
+- TODO: decide whether the panel host should perform imperative DOM-level focus, then either wire
+  `EngineAdapter.focus` up or delete the seam. Today it is defined on the adapter interface
+  (`src/modules/panels/src/engine/adapter.ts`) and implemented by BOTH engines
+  (`DockviewEngine.focus` → `api.getPanel(id)?.api.setActive()`; `FakeEngine.focus` → records
+  `#focused`), and **nothing in production calls either one.** The reachable chain
+  (`src/client/ui-kit/src/sheetsController.svelte.ts:52` → `PanelsBridge.focus` →
+  `PanelsController.focus`) terminates in `this.open(id)`, i.e. a `LayoutOp` that activates the
+  panel's tab and bumps a floating panel's z-order in the tree — never touching the engine's
+  `focus`. Only `PanelHost.test.ts` and `dockview.test.ts` call the engines' `focus` directly.
+  - **User-visible consequence, unverified:** opening a sheet whose panel is already open but
+    scrolled out of view or behind another window activates it in the tree, yet nothing scrolls or
+    raises it in the DOM. Whether that is perceptible depends on how `apply()`'s z-order
+    reconciliation lands visually — worth confirming before choosing a fix.
+  - **Latent divergence that becomes real the moment this is wired:** `DockviewEngine.focus` early-
+    returns on `STAGE_ID` (W2 stage-well defense-in-depth); `FakeEngine.focus` has no such guard.
+    Harmless only because neither is called. Whichever way this is resolved, the guard must be
+    reconciled across both adapters — see the never-fork-a-decision rule in
+    `.claude/skills/shadowcat-codebase-core`.
+  - Runtime change plus tests either way, so out of scope for a docs-only sweep.
+  (Surfaced by sweep 10 Task 3 while verifying a doc comment that claimed `PanelHost` invokes
+  `engine.focus` directly — the comment was false and the seam behind it turned out to be dead.)

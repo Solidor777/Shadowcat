@@ -3,11 +3,16 @@
 **Hand this file to every doc-sweep implementer and reviewer** (by path — do not paste the rules
 into a brief, or they drift between dispatches).
 
-Every rule traces to a specific defect the `client/core` (620 warnings), `client/render` (339), and
-`client/shell`+`ui-kit`+`formula` (276) sweeps shipped and caught, ordered by measured yield. Across
-all three, **every fix round was triggered by a doc sentence asserting something FALSE** — never by a
-missing comment. Plan review effort accordingly: the risk in a documentation sweep is not absent
-prose, it is confident prose that a future agent will trust and build on.
+Every rule traces to a specific defect the `client/core` (620 warnings), `client/render` (339),
+`client/shell`+`ui-kit`+`formula` (276), and `module-panels` (217) sweeps shipped and caught, ordered
+by measured yield. Across all four, **every fix round was triggered by a doc sentence asserting
+something FALSE, or by a citation that did not support it** — never by a missing comment. Plan review
+effort accordingly: the risk in a documentation sweep is not absent prose, it is confident prose that
+a future agent will trust and build on.
+
+**Rules 1–12 govern what a sentence claims; Rule 13 governs whether its citation can be checked at
+all.** Sweep 10 is why that distinction earns its own rule: three consecutive tasks wrote claims
+tables full of true claims and wrong pointers, and no amount of instruction fixed it.
 
 **The `client/render` sweep found more defects outside the docs than in them** — a real rendering
 bug, two defects in the docs gate itself, a runtime divergence between sibling files, and drift in
@@ -208,3 +213,40 @@ claim.
 The implementer's report must carry a claims table (claim → verifying `file:line`), and corrections in a
 fix round carry the same burden as new claims. State explicitly what the pre-existing-prose re-scan
 covered. Report a discovered divergence rather than smoothing it over — but bound its reachability.
+
+## RULE 13 — cite PATH-QUALIFIED locations, and verify the table mechanically
+
+Sweep 10's contribution, and the only rule here that instruction alone could not fix. Three
+consecutive tasks shipped claims tables whose `file:line` citations pointed at the wrong lines —
+7 of 11 rows, then 8 of 23 — **after two dispatches explicitly said "generate the table last,
+against the committed file."** Every underlying claim was true; only the pointers were wrong.
+
+The mechanism, confirmed by the implementer that produced it: anchor line numbers are captured with
+a grep partway through the work, editing continues, and the table is then written by counting
+offsets from that stale list. It feels like recall, not invention, which is why care does not
+prevent it.
+
+Two requirements follow, and the first matters more than the second:
+
+**1. Path-qualify every citation.** Write `src/modules/panels/src/controller.svelte.ts:32`, never
+`controller.svelte.ts:32`. This repo has two `controller.svelte.ts` and 26 `index.ts`; line 19 of one
+is a `@param` line and of the other `export interface ToolContext {`. A bare basename is not merely
+error-prone — it is **unverifiable by construction**, by a human or a tool, so drift in it is
+undetectable rather than merely unnoticed.
+
+**2. Verify the table mechanically, after the last source edit.** Print every citation beside the
+line it actually lands on and read them. A citation landing inside a JSDoc block is correct for a row
+whose claim is about documentation TEXT and drift for a row claiming to cite CODE — only the row's
+own wording decides which, so no checker can classify it for you.
+
+Two calibration failures are worth repeating, because both made a checker worse than none:
+
+- Resolving an ambiguous basename by accepting the citation if ANY candidate file held code at that
+  line **passed the exact rows two reviewers had already caught.** A verification step that guesses
+  converts "unchecked" into "checked", which is strictly worse than leaving it unchecked.
+- Flagging every comment-landing citation as suspect produced 15 false positives out of 51 on a table
+  that was correct. A check that cries wolf on good work gets ignored, and then catches nothing.
+
+The claims table's whole function is letting a reviewer confirm a claim by opening one location.
+Wrong pointers convert it into decoration that still reads as diligence — worse than an absent table,
+which at least advertises that nothing was verified.

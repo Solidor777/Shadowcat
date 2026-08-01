@@ -122,8 +122,13 @@ fails the WHOLE blob — those two are opposite and easy to state backwards); th
 
 - [ ] Enumerate live counts. Document all. **Run a whole-package sweep.** Gates. Commit.
 
-**Hot spots:** `regsForRole`'s `gmOnly` filter is **client-advisory only, NOT security** — say so
-explicitly and point at the server-side gate; `syncRegistrations` never resets a saved layout;
+**Hot spots:** `regsForRole`'s `gmOnly` filter is **client-advisory only, NOT security**. The
+existing comment (`controller.svelte.ts:15-18`) already states this correctly — preserve its
+framing, do not "improve" it. **Do NOT cite a server-side panel gate: none exists.** The server has
+no concept of panels at all (`grep gmOnly src/server` returns nothing); what it gates is the
+DATA a panel reads and writes, through document permissions. Claiming a server-side panel-visibility
+gate would be a fabricated citation of exactly the kind Task 1 spent two fix rounds removing.
+`syncRegistrations` never resets a saved layout;
 `#rehydratePoppedOut()` runs at construction, converts persisted `poppedOut` to floating (never
 re-opens a real popup — no user gesture at load), and **defers its notice past first mount** via
 `#pendingNotice`/`flushPendingNotice()` because an `aria-live="polite"` region never announces
