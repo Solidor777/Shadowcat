@@ -57,7 +57,7 @@ export default [
   // Ratcheted packages: doc coverage is a hard gate, not advisory. A package
   // joins this list only once it is at zero under the warn tier.
   {
-    files: ["src/client/core/**/*.ts"],
+    files: ["src/client/core/**/*.ts", "src/client/render/**/*.ts"],
     // Kept identical to the warn block's ignores, including `src/types/generated`
     // (inert against today's `files` glob). The two blocks must stay symmetric:
     // the next package added here inherits whatever asymmetry is left behind.
