@@ -67,6 +67,7 @@ export default [
     files: [
       "src/client/core/**/*.ts", "src/client/render/**/*.ts",
       "src/client/shell/**/*.ts", "src/client/ui-kit/**/*.ts", "src/client/formula/**/*.ts",
+      "src/modules/panels/**/*.ts",
     ],
     // Kept identical to the warn block's ignores, including `src/types/generated`
     // (inert against today's `files` glob). The two blocks must stay symmetric:
@@ -106,7 +107,10 @@ export default [
   // component reports, so a green run here is a real zero rather than a parser
   // that silently visits nothing).
   {
-    files: ["src/client/shell/**/*.svelte", "src/client/ui-kit/**/*.svelte"],
+    files: [
+      "src/client/shell/**/*.svelte", "src/client/ui-kit/**/*.svelte",
+      "src/modules/panels/**/*.svelte",
+    ],
     ignores: ["**/node_modules/**", "**/dist/**"],
     languageOptions: {
       parser: svelteParser,
