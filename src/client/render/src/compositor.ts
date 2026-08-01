@@ -68,7 +68,8 @@ export class Compositor {
   /** The last applied visibility — a snapshot of the most recent `setVisibility`/
    * `setVisibilityBlend` argument (the blend's nearest-endpoint approximation, per that
    * method's own doc). Not re-applied on any lifecycle event today (e.g. a backend resize —
-   * `RenderEngine.resize` calls `backend.resize` only and never reads this value); it exists
+   * `RenderEngine.setViewport` calls `backend.resize` + `redrawGrid` only, never reading this
+   * value); it exists
    * purely as a cheap read for a caller that wants "what did we last tell the mask to show".
    * @returns The most recently applied `VisibilityInput`.
    * @example
