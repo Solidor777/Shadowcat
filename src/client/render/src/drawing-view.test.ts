@@ -49,10 +49,8 @@ test("a deleted drawing removes its shape node", () => {
 });
 
 // The four *-view.ts siblings are near-identical in shape, and two of them (region, wall)
-// guarded non-finite coordinates while drawing and template did not. JSON has no NaN/Infinity
-// literal, but an oversized magnitude parses to Infinity — `JSON.parse('{"x":1e400}').x` is
-// Infinity — which reaches Pixi as NaN geometry. This pins all four to the same behavior so the
-// divergence cannot silently return.
+// rejected non-numeric coordinates while drawing and template did not. These pin all four to the
+// same behavior so the divergence cannot silently return.
 test("a drawing with a non-finite coordinate does not render", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
@@ -70,9 +68,9 @@ test("a drawing whose tessellated output goes non-finite does not render", () =>
   expect(backend.shapes.has("d-rect")).toBe(false);
 });
 
-// See template-view.test.ts: `null` (not Infinity) is what the server's normalize_engine
-// round-trip actually delivers. ellipsePoints averages its corners, so a null corner would
-// coerce to 0 and produce finite output -- the guard must sit on the raw points to see it.
+// `null` is the case that proves the guard's PLACEMENT, not just its presence: ellipsePoints
+// averages its corners, and JS coerces null to 0 in arithmetic, so a null corner yields finite
+// output. A guard after tessellation would see plausible geometry and never fire.
 test("a drawing with a null coordinate does not render (ellipse)", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();

@@ -73,12 +73,12 @@ export class DrawingView {
  * coordinates and tessellate via `rectPoints`/`ellipsePoints`. Returns `null` for a
  * missing `engine.shape`, an unrecognized `kind`, or a `rect`/`ellipse` with fewer than 4
  * points — a malformed doc simply doesn't render. A non-numeric coordinate also yields `null`.
- * What actually arrives is `null`, not `Infinity`: an oversized magnitude survives
- * `serde_json::from_value` as `f64::INFINITY`, but `normalize_engine`'s round-trip re-serializes
- * it, and `serde_json`'s `From<f64>` maps any non-finite to `Value::Null` — and that normalized
- * value is what gets persisted and broadcast. `WireDocument.engine` is `z.unknown()`, so nothing
- * downstream re-checks it. Guarded on the RAW authored points, before tessellation, matching
- * `region-view.ts` and `wall-view.ts` — see the guard's own comment for why placement matters.
+ * This is defense-in-depth, not a claim about any particular upstream conversion: the render
+ * layer draws the OPTIMISTIC view (`AppContext.documents`), so a scene-tool bug that builds a
+ * Create op with a missing or non-numeric coordinate reaches `toSpec` on the authoring client
+ * before the server has validated anything. Guarded on the RAW authored points, before
+ * tessellation, matching `region-view.ts` and `wall-view.ts` — see the guard's own comment for
+ * why the placement, not just the presence, is load-bearing.
  * @param doc The `drawing` document to convert.
  * @returns A `ShapeNodeSpec` for the `drawings` layer, or `null` if it can't be rendered.
  * @example

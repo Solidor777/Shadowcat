@@ -9,20 +9,30 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   and emitted a `ShapeNodeSpec` from them, while their near-identical siblings `region-view.ts`
   and `wall-view.ts` rejected such docs — despite all four engine bodies getting identical
   ingress treatment (`normalize_engine` round-trips each through serde; none calls `.validate()`,
-  only `"token"` does). **The value that actually arrives is `null`, not `Infinity`:** an
-  oversized magnitude survives `serde_json::from_value` as `f64::INFINITY`, but the round-trip
-  re-serializes it and `serde_json`'s `From<f64>` maps any non-finite to `Value::Null`
-  (`value/from.rs`) — and the normalized value is what is persisted and broadcast.
-  `WireDocument.engine` is `z.unknown()`, so nothing downstream re-checks it. That distinction is
-  load-bearing: **JS coerces `null` to 0 in arithmetic**, so a guard placed after tessellation
-  sees finite, plausible-looking geometry and never fires — `circlePoints(null, 5, 10)` yields a
-  wrong-but-renderable circle. Fixed by guarding the RAW authored fields before tessellation in
-  both files, matching `region-view.ts`'s placement exactly. Tests cover `null` on the
+  only `"token"` does). Fixed by guarding the RAW authored fields before tessellation in both
+  files, matching `region-view.ts`'s placement exactly.
+  **Placement, not merely presence, is the fix.** JS coerces `null` to 0 in arithmetic, so a
+  guard after tessellation sees finite, plausible-looking geometry and never fires —
+  `circlePoints(null, 5, 10)` yields a wrong-but-renderable circle. Tests cover `null` on the
   arithmetic-heavy kinds (circle, cone, ellipse) plus the `direction`-through-`cos`/`sin` path,
-  and are mutation-proven twice: removing a guard fails, and moving it back after tessellation
-  fails the `null` cases specifically. Found by the sweep-8 Task 6 implementer auditing four
-  near-identical siblings; the first fix attempt had the right conclusion but a false mechanism
-  and the wrong placement, caught by the Task 6 code review.
+  mutation-proven twice: removing a guard fails, AND moving it back after tessellation fails the
+  `null` cases specifically.
+  Treated as defense-in-depth rather than a claim about a specific upstream conversion. The
+  render layer draws the OPTIMISTIC view, so a scene-tool bug building a Create op with a
+  missing or non-numeric coordinate reaches `toSpec` on the authoring client before the server
+  validates anything.
+  **Provenance, recorded because the failure is more instructive than the fix:** found by the
+  sweep-8 Task 6 implementer auditing four near-identical siblings. The guard was then justified
+  with a false mechanism TWICE — first "an oversized magnitude reaches the client as `Infinity`",
+  then "it arrives as `null` because `normalize_engine`'s round-trip nulls non-finite floats".
+  Both were wrong: `serde_json`'s lexer rejects an overflowing literal at tokenization
+  (`de.rs`'s `f64_from_parts`: `if f.is_infinite() { Err(NumberOutOfRange) }`), so such a payload
+  fails the outermost `from_str::<ClientMsg>` and never becomes a `Value` at all; and
+  `Value::Number` can only be built via `Number::from_f64`, which already excludes non-finite.
+  Each successive explanation was more detailed and equally unverified. The guard was correct
+  throughout; only the story about *why* kept being invented. Caught by the Task 6 code review
+  and then the Task 6 spec review, each reading the vendored crate rather than accepting the
+  stated mechanism.
 
 ## Client / hex grid overlay dropped cells near the viewport edge (2026-07-31 docs sweep 8)
 

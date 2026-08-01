@@ -84,11 +84,10 @@ test("a template with a non-finite direction does not render", () => {
   expect(backend.shapes.has("t-dir")).toBe(false);
 });
 
-// `null` is the value that ACTUALLY arrives: an oversized magnitude deserializes server-side as
-// f64::INFINITY, but normalize_engine's round-trip re-serializes it and serde_json's From<f64>
-// maps non-finite to Value::Null. That distinction is load-bearing here -- JS coerces null to 0
-// in arithmetic, so a post-tessellation guard sees finite, plausible geometry and never fires.
-// These pin the guard to the raw scalars, where null is still visible as non-numeric.
+// `null` is the case that proves the guard's PLACEMENT, not just its presence: JS coerces null
+// to 0 in arithmetic, so circlePoints(null, 5, 10) yields finite, plausible geometry. A guard
+// after tessellation would never fire. These pin it to the raw scalars, where null is still
+// visible as non-numeric.
 test("a template with a null coordinate does not render (circle)", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
