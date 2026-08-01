@@ -39,14 +39,6 @@ export const DieRecordSchema = z
   .passthrough();
 export type DieRecord = z.infer<typeof DieRecordSchema>;
 
-/** Mirror of dice::outcome::RollOutcome (M11d-2). `successes`/`pass`/`margin`/
- * `tier_label`/`tier_value` are `None` in Total mode with no `difficulty`.
- * PRECISION: `total`/`margin` are i64 and — unlike wire.ts's seq/timestamp
- * fields — CAN legitimately reach i64::MAX/MIN (the evaluator saturates
- * overflowing constant/multiplication folds), beyond Number.MAX_SAFE_INTEGER;
- * JSON.parse rounds such extremes before Zod runs, so display precision
- * degrades past 2^53. Accepted tradeoff (no crash/security effect).
- * TODO: string-encode these two i64 fields if exact extreme totals matter. */
 /** Mirror of dice::spec::ConstTerm — a labeled bare constant. Display/
  * provenance decoration only (never fed into a dice-pool comparison); only
  * ever populated in Total mode. */
@@ -56,6 +48,14 @@ export const ConstTermSchema = z.object({
 });
 export type ConstTerm = z.infer<typeof ConstTermSchema>;
 
+/** Mirror of dice::outcome::RollOutcome (M11d-2). `successes`/`pass`/`margin`/
+ * `tier_label`/`tier_value` are `None` in Total mode with no `difficulty`.
+ * PRECISION: `total`/`margin` are i64 and — unlike wire.ts's seq/timestamp
+ * fields — CAN legitimately reach i64::MAX/MIN (the evaluator saturates
+ * overflowing constant/multiplication folds), beyond Number.MAX_SAFE_INTEGER;
+ * JSON.parse rounds such extremes before Zod runs, so display precision
+ * degrades past 2^53. Accepted tradeoff (no crash/security effect).
+ * TODO: string-encode these two i64 fields if exact extreme totals matter. */
 export const RollOutcomeSchema = z.object({
   total: z.number(),
   records: z.array(DieRecordSchema),
