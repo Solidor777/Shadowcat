@@ -291,8 +291,11 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   base/system but not `/embedded` on passes the client filter and is then refused server-side.
   **Not a security hole and not a whole-push failure, but worse for the affected instance than a
   dropped band:** `apply_intent` returns `Forbidden` at the FIRST uncapped path and aborts the whole
-  intent, so that instance receives NONE of the push — not even the `/name`/`/system` merge — and
-  its `/base` is never refreshed, leaving it permanently `diverged` rather than partially updated.
+  intent, so that instance receives NONE of the push — not even the `/name`/`/engine`/`/system`
+  merge — and its `/base` is not refreshed, so it stays `template_changed` rather than being
+  partially updated. Nothing in the push path retries; it stays stale until someone holding
+  `/embedded` on THAT instance pulls or reverts (both terminate in `planToUpdate`, which always
+  re-emits `/base`) — necessarily a different principal from the pusher who lacked the capability.
   `push` dispatches one intent PER INSTANCE, so the damage is contained to that instance while the
   others apply. It is an affordance mismatch — the UI offers a push it knows will fail for some
   targets, and gives no signal about which.

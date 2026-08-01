@@ -120,9 +120,12 @@ interprets or merges anything itself.
   DIFFERENT capability — so an instance the pusher can write base/system but not `/embedded` on is
   included, and its ENTIRE Update is then refused: `apply_intent` returns `Forbidden` at the FIRST
   uncapped path and aborts the whole intent (`data/sqlite.rs`). That instance receives none of the
-  push — not even the `/name`/`/system` merge — and its `/base` is never refreshed, so it stays
-  permanently `diverged`. Contained to the one instance (`push` dispatches one intent PER
-  instance), and logged in `docs/TODO.md` with two candidate fixes.**
+  push — not even the `/name`/`/engine`/`/system` merge — and its `/base` is not refreshed, so it
+  stays `template_changed`. Nothing in the push path retries, so it stays stale until someone
+  holding `/embedded` on THAT instance pulls or reverts (both terminate in `planToUpdate`, which
+  always re-emits `/base`) — a different principal from the pusher who lacked the capability.
+  Contained to the one instance (`push` dispatches one intent PER instance), and logged in
+  `docs/TODO.md` with two candidate fixes.**
 - `src/client/ui-kit/src/MergeConflictModal.svelte` (+ `TemplateModalHost.svelte`) — the
   field-level conflict resolution UI (E5/§6.2): renders one `ConflictGroup` per pending child
   (`{ key, label, conflicts: Conflict[] }`; the type lives in

@@ -139,9 +139,11 @@ export class TemplatesController {
    * pusher can write base/system but not `/embedded` on is therefore included, and its ENTIRE
    * Update is refused: `apply_intent` returns `Forbidden` at the first uncapped path and aborts
    * the whole intent (`data/sqlite.rs`), so that instance receives none of the push — not even
-   * the `/name`/`/system` merge — and its `/base` never refreshes, leaving it permanently
-   * `diverged`. Each instance is its own intent, so this is contained to that one instance.
-   * Tracked in `docs/TODO.md`.
+   * the `/name`/`/engine`/`/system` merge — and its `/base` is not refreshed, so it stays
+   * `template_changed`. Nothing in the push path retries; it stays stale until someone holding
+   * `/embedded` on THAT instance pulls or reverts (both terminate in `planToUpdate`, which always
+   * re-emits `/base`). Each instance is its own intent, so this is contained to that one
+   * instance. Tracked in `docs/TODO.md`.
    * @param templateId - The template document's id.
    * @returns Whether push is currently permitted.
    * @example templates.canPush(templateId);
