@@ -429,7 +429,7 @@ class PanelTabRenderer implements ITabRenderer {
  * two shapes a drop takes, because `#handleWillDrop` (and its
  * `#handleGroupWillDrop` delegate) `preventDefault()`s on EVERY path it can
  * take — including when `#toDropSite` resolves no subject at all (`!id`,
- * `dockview.ts:1158`) — which trips `handleDropEvent`'s own
+ * `dockview.ts:1182`) — which trips `handleDropEvent`'s own
  * `if (willDropEvent.defaultPrevented) return;`
  * (`dockviewGroupPanelModel.js:1382-1384`) before the model ever reaches the
  * data/viewId branch quoted above. So `onDidDrop` is unreachable here not
