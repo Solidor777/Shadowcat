@@ -118,20 +118,20 @@ function substituteIdentifier(
   if (Math.abs(value) > I32_MAX) {
     return { error: "cap", detail: `'${originalText}' = ${value}: out of i32 range` };
   }
-  // A negative value is emitted as a parenthesized subtraction, never a
-  // leading '-' (and unlabeled, unlike the positive branch below): the
-  // dice-notation lexer (src/server/src/dice/notation/lexer.rs) tokenizes
-  // each '-' independently — it never merges "--" into any other token —
-  // and the grammar's `factor := '-' factor | ...` (parser.rs) accepts
-  // arbitrarily many stacked unary-minus. So if this substitution's own
-  // output started with '-' and the template text immediately preceding
-  // this identifier ALSO ends in a literal '-' (e.g. the template
-  // "atk-str" with `str` resolving to -5), the composed notation
-  // "atk--5[str]" would parse as `atk - -(5)`, silently CANCELLING the
-  // negative sign. Opening with '(' instead is unambiguous in any
-  // preceding context (it never combines with an adjacent '-'), so the
-  // sign survives regardless of what character the template placed
-  // immediately before this identifier.
+  // A negative value is emitted as an unlabeled parenthesized subtraction; a
+  // positive one as a labeled constant (below). There is NO arithmetic reason
+  // for the asymmetry: `(0 - N)` and `-N` denote the same number, and the
+  // server's recursive-descent grammar evaluates either to the same total in
+  // every preceding context — `x - (0 - N)` and `x - Neg(N)` both fold to
+  // `x + N`.
+  //
+  // It does have one observable consequence, in the roll breakdown rather than
+  // the total: `collect_labeled_consts` (src/server/src/dice/eval/sum.rs) emits
+  // a ConstTerm only for a `Const` carrying a label, and it RECURSES through
+  // `Expr::Neg` — so a labeled `-N[label]` would still contribute a signed chip,
+  // while this form's two unlabeled `Const`s contribute none. A negative
+  // substitution therefore shows no `[label]` chip in the breakdown.
+  // See docs/TODO.md — whether that is intended has not been established.
   if (value < 0) return `(0 - ${-value})`;
   return `${value}[${originalText}]`;
 }
