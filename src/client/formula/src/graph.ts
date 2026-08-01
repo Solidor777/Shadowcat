@@ -67,8 +67,14 @@ class NeedsDependency {
  * @param evalNode Consumer callback computing one node's value from its
  * dependencies (fetched via the injected `get`). MUST NOT wrap its own
  * call(s) to `get` in try/catch — see the try/catch invariant above.
- * @returns A map from every key reachable from `keys` (the keys themselves
- * plus every transitive dependency) to its resolved `FormulaValue`.
+ * @returns A map from the requested `keys` plus every transitive dependency
+ * DISCOVERED while resolving them, to its resolved `FormulaValue`. Dependencies
+ * are found dynamically through `get`, so a dependency on a branch `evalNode`
+ * short-circuits past is never requested and never appears — "reachable in the
+ * dependency graph" and "present in this map" are not the same set. Resolution
+ * is also bounded: once `MAX_GRAPH_VISITS` first-attempt visits are charged,
+ * each further key is memoized as `{ error: "cap" }` rather than resolved, so a
+ * sufficiently large graph yields cap errors for its tail instead of throwing.
  * @example
  * ```ts
  * import { resolveAll } from "@shadowcat/formula";

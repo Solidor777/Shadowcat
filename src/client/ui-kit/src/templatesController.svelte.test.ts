@@ -59,6 +59,28 @@ describe("TemplatesController", () => {
     expect(ctrl.pending).toBeNull();
   });
 
+  it("pull and revert warn (not silently no-op) when the CHILD is not in store", () => {
+    // An unresolvable child is indistinguishable from a working no-op without this log:
+    // the control is enabled, the click dispatches nothing, and the console is empty.
+    // `push` already warns on its equivalent branch; these two match it.
+    const warned: string[] = [];
+    const store = new DocumentStore();
+    const ctrl = new TemplatesController({
+      store, documents: store, dispatchIntent: () => {},
+      role: "gm", selfId: "u-self", canEdit: () => true,
+      logger: { ...silentLogger, warn: (m: string) => warned.push(m) },
+    });
+
+    ctrl.pull("ABSENT");
+    ctrl.revert("ABSENT");
+
+    expect(warned).toHaveLength(2);
+    expect(warned[0]).toContain("templates.pull");
+    expect(warned[0]).toContain("ABSENT");
+    expect(warned[1]).toContain("templates.revert");
+    expect(warned[1]).toContain("ABSENT");
+  });
+
   it("push dispatches one Update per conflict-free instance and groups conflicts", () => {
     const tmpl = doc({ id: "T", system: { hp: 5 } });
     const clean = doc({ id: "A", source: { id: "T", pack: null, version: 1 }, system: { hp: 1 } });

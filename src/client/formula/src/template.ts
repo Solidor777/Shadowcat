@@ -80,9 +80,12 @@ function readAlphaPrefix(src: string, i: number): string {
  * @param resolve Consumer callback resolving the dotted path to a `FormulaValue`. May throw;
  * a thrown value is caught and converted to `"resolver-error"` rather than propagating.
  * @returns The labeled substitution text on success (see the negative-value note below),
- * or a `FormulaError` — `"resolver-error"` (thrown/malformed resolver output), `"type"`
- * (a non-integer resolved value — roll templates require integers), or `"cap"` (magnitude
- * exceeds `i32::MAX`).
+ * or a `FormulaError`. Raised here: `"resolver-error"` (the resolver threw, or returned a
+ * value that is neither a number nor a well-formed error), `"type"` (a non-integer resolved
+ * value — roll templates require integers), and `"cap"` (magnitude exceeds `i32::MAX`). NOT
+ * an exhaustive list of what can come back: a well-formed `FormulaError` returned BY the
+ * resolver passes through verbatim, so any `FormulaErrorKind` the consumer produces
+ * (`"unknown-ref"`, `"cycle"`, …) can surface here unchanged.
  * @example
  * ```
  * // not part of the public `@shadowcat/formula` surface — this helper is not exported;

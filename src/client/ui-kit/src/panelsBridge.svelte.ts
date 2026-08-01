@@ -25,9 +25,12 @@ export interface PanelsChipsView {
 }
 
 /**
- * Late-binding {@link PanelsApi}/{@link PanelsChipsView} implementation: every call/read
- * delegates to the bound host once {@link PanelsBridge.bind} runs, and no-ops (with a
- * one-time logged warning, not a silent forever no-op) before that.
+ * Late-binding {@link PanelsApi}/{@link PanelsChipsView} implementation: every call and read
+ * delegates to the bound host once {@link PanelsBridge.bind} runs. Before that, the two are
+ * treated differently — the imperative METHODS no-op with a one-time logged warning (not a
+ * silent forever no-op), while the READS (`minimized`, `metaMap`) return an empty value
+ * silently, since an unbound read is the ordinary pre-bind render state rather than a
+ * misuse worth warning about.
  */
 export class PanelsBridge implements PanelsApi, PanelsChipsView {
   // `$state`: a reader that evaluates `minimized`/`metaMap` inside a Svelte

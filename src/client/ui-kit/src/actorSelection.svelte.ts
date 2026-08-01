@@ -30,7 +30,10 @@ export class ActorSelection {
    * Set (or clear, with `null`) the selected actor. Re-selecting the CURRENTLY selected id
    * (including re-passing `null` when already `null`) is a no-op for reactivity: `$state`'s
    * default equality is reference/value (`===`), so an unchanged assignment does not
-   * invalidate readers. Contrast `TokenSelection.set`, which always re-triggers.
+   * invalidate readers. Contrast `TokenSelection.set`, which re-triggers on any call that
+   * starts from a NON-EMPTY selection (it clears-then-re-adds, and `SvelteSet.clear()` bumps
+   * the version whenever it actually removes something) — but not empty→empty, where `clear()`
+   * early-returns without bumping.
    * @param id - The actor id to select, or `null` to clear the selection.
    * @example actorSelection.select("actor-1");
    */

@@ -128,9 +128,12 @@ export class TemplatesController {
     );
   }
 
-  /** Whether the current user may push `templateId` (owner-or-GM + write caps; see
-   * `canPull`'s comment for the same advisory cap-union mirror, checked against the
-   * template doc). `false` when the template has no in-store instances to push to.
+  /** Whether the current user may push `templateId`: owner-or-GM plus `MANAGE_EMBEDDED`
+   * (`/embedded`) on the TEMPLATE doc — ONE leg of `canPull`'s union, not the same check.
+   * `canPull` additionally requires `/base` + `/system` (WRITE_FIELDS) because pulling writes
+   * those bands on the instance; pushing only READS them from the template, and per-instance
+   * write authorization is filtered inside `push` itself rather than gated here. `false` when
+   * the template has no in-store instances to push to.
    * @param templateId - The template document's id.
    * @returns Whether push is currently permitted.
    * @example templates.canPush(templateId);
@@ -153,7 +156,10 @@ export class TemplatesController {
    */
   pull(childId: string): void {
     const child = this.#get(childId);
-    if (!child) return;
+    if (!child) {
+      this.#deps.logger.warn(`templates.pull: child ${childId} not in store; pull unavailable`);
+      return;
+    }
     const template = this.#templateOf(child);
     if (!template) {
       this.#deps.logger.warn(`templates.pull: template ${child.source?.id ?? "?"} not in store; pull unavailable`);
@@ -176,7 +182,10 @@ export class TemplatesController {
    */
   revert(childId: string): void {
     const child = this.#get(childId);
-    if (!child) return;
+    if (!child) {
+      this.#deps.logger.warn(`templates.revert: child ${childId} not in store; revert unavailable`);
+      return;
+    }
     const template = this.#templateOf(child);
     if (!template) {
       this.#deps.logger.warn(`templates.revert: template ${child.source?.id ?? "?"} not in store; revert unavailable`);
