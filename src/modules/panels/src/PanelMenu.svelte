@@ -36,6 +36,16 @@
   // (wired in `dockview.ts` against the floating dialog element, unrelated to
   // this popup).
   const menuKeyboard = createMenuKeyboard(() => itemEls, (returnFocus) => onClose(returnFocus));
+  /** Forwards a menu item's keydown to the shared APG menu-keyboard handler.
+   * @param event The keydown event.
+   * @param index The item's index within `items`.
+   * @example
+   * ```
+   * // private function; not part of the public API — used only in this
+   * // component's own menu-item template below
+   * onKeydown(event, 0);
+   * ```
+   */
   function onKeydown(event: KeyboardEvent, index: number): void {
     menuKeyboard.handleKeydown(event, index);
   }

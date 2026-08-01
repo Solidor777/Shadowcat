@@ -45,7 +45,17 @@
    * mere focus bump within an already-open group/floating window — no
    * current UI affordance dispatches `"open"` (unreachable from any control
    * this host renders today), so this is dead code pending a future
-   * command palette, not a narration bug against any live path. */
+   * command palette, not a narration bug against any live path.
+   * @param op The layout-changing op `PanelsController.onOp` fired.
+   * @returns The `panels.moved` announcement text, or `null` for an op not
+   * worth narrating.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked only from
+   * // the controller's onOp callback below
+   * describeOp({ op: "minimize", id: "chat" });
+   * ```
+   */
   function describeOp(op: LayoutOp): string | null {
     const label = (id: string): string => {
       const meta = ctrl.metaMap.get(id);
@@ -187,13 +197,34 @@
     if (changed) remountKeys = nm;
   });
 
+  /** Returns a slot element CompactSwitcher adopted back to the staging
+   * container — passed to `CompactSwitcher` as its `release` prop, so it (not
+   * this host) decides when an adopted slot's ownership needs reclaiming (a
+   * switch to a different tab, leaving compact presentation, or unmount).
+   * @param el The slot element to return to staging.
+   * @example
+   * ```
+   * // private function; not part of the public API — passed to
+   * // CompactSwitcher as its `release` prop below
+   * releaseToStaging(slotEl);
+   * ```
+   */
   function releaseToStaging(el: HTMLElement): void {
     if (stagingEl && el.parentElement !== stagingEl) stagingEl.appendChild(el);
   }
 
-  // Never throws on an unknown/removed id (containment for finding 1): a bug
-  // upstream then degrades to a missing panel, not a dead reactive graph.
-  // Returns a detached placeholder that is never appended anywhere visible.
+  /** Never throws on an unknown/removed id (containment for finding 1): a bug
+   * upstream then degrades to a missing panel, not a dead reactive graph.
+   * @param id The panel id to resolve a slot for.
+   * @returns The registered slot element for `id`, or a detached placeholder
+   * (never appended anywhere visible) if none is registered.
+   * @example
+   * ```
+   * // private function; not part of the public API — passed to the engine's
+   * // `init()` and to CompactSwitcher/registerSlot below
+   * slotFor("chat");
+   * ```
+   */
   function slotFor(id: string): HTMLElement {
     const el = slotEls.get(id);
     if (el) return el;
@@ -202,7 +233,17 @@
   }
 
   /** Svelte action registering an `{#each}` iteration's slot element under its
-   * panel id — the per-id ref binding `bind:this` cannot express here. */
+   * panel id — the per-id ref binding `bind:this` cannot express here.
+   * @param node The slot element this `{#each}` iteration mounted.
+   * @param id The panel id this iteration corresponds to.
+   * @returns A Svelte action lifecycle object; `destroy()` unregisters the
+   * slot only if it is still the currently-registered one for `id`.
+   * @example
+   * ```
+   * <!-- not exported; a Svelte action used only in this component's own template -->
+   * <div use:registerSlot={id}></div>
+   * ```
+   */
   function registerSlot(node: HTMLElement, id: string): { destroy(): void } {
     slotEls.set(id, node);
     return {
@@ -212,6 +253,17 @@
     };
   }
 
+  /** Discards and re-mounts a fresh instance of panel `id` — the sole
+   * sanctioned remount path (see the `{#key}` in the template below);
+   * ordinary layout ops never touch `remountKeys`.
+   * @param id The crashed panel's id, from its own `svelte:boundary` reload button.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked only from the
+   * // crashed-panel boundary's reload button in this component's template
+   * bumpRemount("chat");
+   * ```
+   */
   function bumpRemount(id: string): void {
     const m = new Map(remountKeys);
     m.set(id, (m.get(id) ?? 0) + 1);

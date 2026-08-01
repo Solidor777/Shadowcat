@@ -33,6 +33,15 @@
   let adoptedId: string | null = null;
   let adoptedEl: HTMLElement | null = null;
 
+  /** Returns the currently-adopted slot (if any) to `release`, and clears the
+   * adopted-id/-element bookkeeping. A no-op when nothing is adopted.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the
+   * // adoption effect below and this component's own unmount cleanup
+   * releaseAdopted();
+   * ```
+   */
   function releaseAdopted(): void {
     if (adoptedEl) release(adoptedEl);
     adoptedEl = null;
@@ -60,6 +69,17 @@
     return () => releaseAdopted();
   });
 
+  /** Resolves a switcher tab's accessible/tooltip label.
+   * @param id The panel id to label.
+   * @returns The panel's translated `labelKey`, or `id` itself if it has no
+   * registered `PanelMeta`.
+   * @example
+   * ```
+   * // private function; not part of the public API — used only in this
+   * // component's own switcher-tab template below
+   * label("chat");
+   * ```
+   */
   function label(id: string): string {
     const m = meta.get(id);
     return m ? t(m.labelKey) : id;

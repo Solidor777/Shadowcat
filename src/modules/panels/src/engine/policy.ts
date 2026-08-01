@@ -69,7 +69,17 @@ export const MENU_FLOAT_RECT: Rect = { x: 96, y: 96, w: 360, h: 280 };
  * veto — belt-and-suspenders alongside `dockview.ts`'s `#handleMenuCommand`
  * guard and W1's headerless stage group (which never gives the stage a menu
  * button to invoke this with in the first place): a menu-command chokepoint
- * with the identical shape as the drag chokepoint, not the sole guard. */
+ * with the identical shape as the drag chokepoint, not the sole guard.
+ * @param command The `PanelMenu` command chosen.
+ * @param id The panel id the command targets.
+ * @returns The `LayoutOp` to dispatch, or a veto with its reason.
+ * @example
+ * ```
+ * // not exported from the package's index.ts — internal to engine/dockview.ts's
+ * // #handleMenuCommand, which translates a PanelMenu command into a LayoutOp
+ * opForMenuCommand("dockRight", "chat");
+ * ```
+ */
 export function opForMenuCommand(command: MenuCommand, id: string): ClassifyResult {
   if (id === STAGE_ID) {
     return veto("the stage panel is not a menu-command subject");
@@ -94,6 +104,17 @@ export function opForMenuCommand(command: MenuCommand, id: string): ClassifyResu
 
 export type ClassifyResult = LayoutOp | { veto: true; reason: string };
 
+/** Builds a veto result — the `{ veto: true, reason }` shape both
+ * `classifyDrop` and `opForMenuCommand` return to refuse a gesture.
+ * @param reason Human-readable reason surfaced in a vetoed-gesture log message.
+ * @returns A veto `ClassifyResult`.
+ * @example
+ * ```
+ * // private function; not part of the public API — invoked only by
+ * // classifyDrop and opForMenuCommand's own veto branches
+ * veto("the stage panel is not a draggable subject");
+ * ```
+ */
 function veto(reason: string): { veto: true; reason: string } {
   return { veto: true, reason };
 }
@@ -104,7 +125,22 @@ function veto(reason: string): { veto: true; reason: string } {
  * (no `"top"` `ZoneId` exists) already make most of these unreachable in
  * practice — this function is what a reviewer/test can exercise directly,
  * without needing a real drag gesture, to prove the invariant holds even if
- * an upstream guard were ever weakened. */
+ * an upstream guard were ever weakened.
+ * @param target The drop site to classify (already translated into our own
+ * vocabulary by `dockview.ts`).
+ * @param layout The current expanded layout, consulted to validate a
+ * `"group"` site's target zone exists.
+ * @returns The `LayoutOp` this drop should produce, or a veto with its reason.
+ * @example
+ * ```ts
+ * import { classifyDrop, type DropSite } from "@shadowcat/module-panels";
+ * import type { ExpandedLayout } from "@shadowcat/module-panels";
+ *
+ * declare const site: DropSite;
+ * declare const layout: ExpandedLayout;
+ * const result = classifyDrop(site, layout);
+ * ```
+ */
 export function classifyDrop(target: DropSite, layout: ExpandedLayout): ClassifyResult {
   // Rule: any op whose subject is "stage" — the stage panel itself is never
   // draggable (W1 leaves it no drag handle at all; this is the policy-level

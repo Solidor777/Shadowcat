@@ -11,6 +11,19 @@ import type { EngineAdapter } from "./adapter";
 const ZONE_IDS = ["right", "bottom", "left"] as const;
 type Zone = (typeof ZONE_IDS)[number];
 
+/** In-memory `EngineAdapter`: plain divs per zone/group/floating panel,
+ * reconciled by `apply` via real `appendChild` adoption — no dockview
+ * dependency. Doubles as the production bespoke-fallback engine (any
+ * `PanelHost` constructed without an `engine` prop) and as the test double for
+ * `PanelHost`'s own tests (`emitOp` simulates a user gesture through the same
+ * `onOp` channel a real engine uses).
+ * @example
+ * ```ts
+ * import { FakeEngine } from "@shadowcat/module-panels";
+ *
+ * const engine = new FakeEngine();
+ * ```
+ */
 export class FakeEngine implements EngineAdapter {
   #host: HTMLElement | null = null;
   #slotFor: ((id: string) => HTMLElement) | null = null;
@@ -22,6 +35,26 @@ export class FakeEngine implements EngineAdapter {
   #stageEl: HTMLElement | null = null;
   #centerEl: HTMLElement | null = null;
 
+  /** `EngineAdapter.init`: builds this engine's own zone/center-well DOM
+   * inside `host` (left/right side columns flanking the center well, `bottom`
+   * full-width below) and adopts `stageEl` into the center well. See the
+   * inline comments below for why `host` and the center well each need an
+   * explicit flex size chain, and why the row/column nesting exists.
+   * @param host The container this engine builds its zone DOM into.
+   * @param slotFor Resolves a panel id to its persistent, already-mounted slot
+   * element — adopted, never re-created, by `apply`.
+   * @param stageEl The shared canvas/stage element, adopted into the center well.
+   * @example
+   * ```ts
+   * import { FakeEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new FakeEngine();
+   * declare const host: HTMLElement;
+   * declare const stageEl: HTMLElement;
+   * declare const slots: Map<string, HTMLElement>;
+   * engine.init(host, (id) => slots.get(id)!, stageEl);
+   * ```
+   */
   init(host: HTMLElement, slotFor: (id: string) => HTMLElement, stageEl: HTMLElement): void {
     this.#host = host;
     this.#slotFor = slotFor;
@@ -41,7 +74,7 @@ export class FakeEngine implements EngineAdapter {
     // (matching a real docked layout's geometry); "bottom" stacks below the
     // row at full width. Without this nesting, `host`'s own column flow made
     // every zone a full-width block sibling of the center well — the "loses
-    // width containment" defect (docs/OPEN_BUGS.md): a zone `<div>` with no
+    // width containment" defect (docs/CLOSED_BUGS.md, resolved): a zone `<div>` with no
     // width of its own, inside a column flex container, stretches to the
     // container's full cross-size (`align-items: stretch`, the flex default)
     // regardless of how many groups are docked into it.
@@ -81,7 +114,15 @@ export class FakeEngine implements EngineAdapter {
    * WITHIN the zone rather than escaping it. `apply` sets the actual px
    * cross-size (width for right/left, height for bottom) from
    * `ZoneNode.size` on every reconcile — 0 while the zone has no groups, so
-   * an empty zone reserves no layout space. */
+   * an empty zone reserves no layout space.
+   * @param zone The zone this container will host.
+   * @returns The newly-created (and tracked in `#zoneEls`) zone container.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from init()
+   * this.#makeZoneEl("right");
+   * ```
+   */
   #makeZoneEl(zone: Zone): HTMLElement {
     const el = document.createElement("div");
     el.dataset.zone = zone;
@@ -95,6 +136,29 @@ export class FakeEngine implements EngineAdapter {
     return el;
   }
 
+  /** `EngineAdapter.apply`: full-rebuild reconcile (never a diff) — every
+   * zone's group wrapper divs are torn down and rebuilt fresh from `expanded`
+   * on every call, then every floating entry (including `poppedOut` ids,
+   * degraded to floating here — see below) is placed or repositioned.
+   * Idempotent per the `EngineAdapter` contract: repeat calls with the same
+   * `expanded` rebuild the identical DOM shape each time, a no-op in effect
+   * even though the elements themselves are recreated. `meta` is unused —
+   * this bespoke-fallback engine renders no tab chrome (icon/label/badge) of
+   * its own, unlike `DockviewEngine`'s `PanelTabRenderer`.
+   * @param expanded The docked-zone + floating layout to reconcile onto.
+   * @param _meta Per-panel metadata; accepted for `EngineAdapter` parity but
+   * not read by this engine.
+   * @example
+   * ```ts
+   * import { FakeEngine, type ExpandedLayout } from "@shadowcat/module-panels";
+   * import type { PanelMeta } from "@shadowcat/core";
+   *
+   * const engine = new FakeEngine();
+   * declare const expanded: ExpandedLayout;
+   * declare const meta: ReadonlyMap<string, PanelMeta>;
+   * engine.apply(expanded, meta);
+   * ```
+   */
   apply(expanded: ExpandedLayout, _meta: ReadonlyMap<string, PanelMeta>): void {
     const host = this.#host;
     const slotFor = this.#slotFor;
@@ -195,51 +259,148 @@ export class FakeEngine implements EngineAdapter {
     }
   }
 
+  /** `EngineAdapter.onOp`: subscribes to ops this engine emits — in
+   * production, only ever `emitOp`'s test/simulation channel (this
+   * bespoke-fallback engine has no real drag/resize gestures of its own).
+   * @param cb Called once per emitted op.
+   * @returns An unsubscribe function.
+   * @example
+   * ```ts
+   * import { FakeEngine, type LayoutOp } from "@shadowcat/module-panels";
+   *
+   * const engine = new FakeEngine();
+   * const unsubscribe = engine.onOp((op: LayoutOp) => console.log(op));
+   * unsubscribe();
+   * ```
+   */
   onOp(cb: (op: LayoutOp) => void): () => void {
     this.#opListeners.add(cb);
     return () => this.#opListeners.delete(cb);
   }
 
   /** Test/bespoke-fallback helper: simulates a user gesture normalized to a
-   * `LayoutOp`, exactly as a real engine would emit through `onOp`. */
+   * `LayoutOp`, exactly as a real engine would emit through `onOp`.
+   * @param op The op to emit to every `onOp` subscriber.
+   * @example
+   * ```ts
+   * import { FakeEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new FakeEngine();
+   * engine.emitOp({ op: "minimize", id: "chat" });
+   * ```
+   */
   emitOp(op: LayoutOp): void {
     for (const cb of this.#opListeners) cb(op);
   }
 
+  /** `EngineAdapter.focus`: records `id` as the last-focused panel — read
+   * back via the `focused` test getter. No visible DOM effect (this
+   * bespoke-fallback engine renders no focus chrome of its own). Unlike
+   * `DockviewEngine.focus`, this has no `STAGE_ID` guard — a sibling
+   * divergence with no observed production impact today, since no caller in
+   * this package invokes `EngineAdapter.focus` at all (see `PanelsController.
+   * focus`'s doc comment).
+   * @param id The panel id to focus.
+   * @example
+   * ```ts
+   * import { FakeEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new FakeEngine();
+   * engine.focus("chat");
+   * ```
+   */
   focus(id: string): void {
     this.#focused = id;
   }
 
-  /** Test helper: the last id passed to `focus`. */
+  /** Test helper: the last id passed to `focus`.
+   * @returns The last-focused panel id, or `null` if `focus` was never called.
+   */
   get focused(): string | null {
     return this.#focused;
   }
 
-  /** Test helper: the DOM element hosting a given zone/group's tabs (or null). */
+  /** Test helper: the DOM element hosting a given zone/group's tabs (or null).
+   * @param zone The zone the group lives in.
+   * @param index The group's positional index within `zone`.
+   * @returns The group's container element, or `null` if no such group exists.
+   * @example
+   * ```ts
+   * import { FakeEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new FakeEngine();
+   * const el = engine.groupEl("right", 0);
+   * ```
+   */
   groupEl(zone: Zone, index: number): HTMLElement | null {
     return this.#groupEls.get(`${zone}:${index}`) ?? null;
   }
 
-  /** Test helper: the zone container itself (or null before `init`). */
+  /** Test helper: the zone container itself (or null before `init`).
+   * @param zone The zone to look up.
+   * @returns The zone's own container element, or `null` before `init` has run.
+   * @example
+   * ```ts
+   * import { FakeEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new FakeEngine();
+   * const el = engine.zoneEl("right");
+   * ```
+   */
   zoneEl(zone: Zone): HTMLElement | null {
     return this.#zoneEls.get(zone) ?? null;
   }
 
-  /** Test helper: the DOM element hosting a floating panel (or null). */
+  /** Test helper: the DOM element hosting a floating panel (or null).
+   * @param id The floating (or popped-out — see `apply`'s degradation) panel id.
+   * @returns The floating container element, or `null` if `id` is not floating.
+   * @example
+   * ```ts
+   * import { FakeEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new FakeEngine();
+   * const el = engine.floatEl("chat");
+   * ```
+   */
   floatEl(id: string): HTMLElement | null {
     return this.#floatEls.get(id) ?? null;
   }
 
-  /** Test helper: the center-well container the `stageEl` passed to `init` was adopted into. */
+  /** Test helper: the center-well container the `stageEl` passed to `init` was adopted into.
+   * @returns The center-well container, or `null` before `init` has run.
+   * @example
+   * ```ts
+   * import { FakeEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new FakeEngine();
+   * const el = engine.centerEl();
+   * ```
+   */
   centerEl(): HTMLElement | null {
     return this.#centerEl;
   }
 
-  /** Test helper: the `stageEl` passed to `init` (or null before init/after destroy). */
+  /** Test helper: the `stageEl` passed to `init` (or null before init/after destroy).
+   * @returns The stage element, or `null` before `init`/after `destroy`.
+   */
   get stageEl(): HTMLElement | null {
     return this.#stageEl;
   }
 
+  /** `EngineAdapter.destroy`: clears every internal tracking map/listener set
+   * and drops this engine's element references. Does NOT remove the zone/
+   * group/floating container elements it built inside `host` from the DOM —
+   * the caller (`PanelHost`, on its own unmount) discards `host` itself, so
+   * there is nothing left for this method to detach on its own. Slot elements
+   * are untouched either way, per the `EngineAdapter` contract.
+   * @example
+   * ```ts
+   * import { FakeEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new FakeEngine();
+   * engine.destroy();
+   * ```
+   */
   destroy(): void {
     this.#zoneEls.clear();
     this.#groupEls.clear();

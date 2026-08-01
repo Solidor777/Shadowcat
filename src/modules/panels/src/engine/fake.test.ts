@@ -52,8 +52,9 @@ test("poppedOut degrades to a floating window (bespoke-fallback, spec §10)", ()
   eng.destroy();
 });
 
-// Regression: `docs/OPEN_BUGS.md` "[Panels] The bespoke-fallback engine ...
-// loses width containment once a THIRD docked group is added". `ZoneNode.size`
+// Regression: `docs/CLOSED_BUGS.md` (resolved) "[Panels] The bespoke-fallback
+// engine ... loses width containment once a THIRD docked group is added".
+// `ZoneNode.size`
 // (the zone's own px basis, already tracked by the reducer and driven by
 // dockview's real splitter) was never read by `FakeEngine.apply` — a docked
 // zone's container carried no width/height constraint at all, so it stretched
