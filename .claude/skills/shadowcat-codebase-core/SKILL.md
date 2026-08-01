@@ -121,9 +121,9 @@ source of truth. The ones agents break most:
   `pnpm docs:serve` (view; file:// unsupported), `pnpm docs:check-examples` (`@example` ```ts
   blocks must typecheck — CI-blocking in the web job), `pnpm lint:docs` (doc-coverage gate;
   `eslint.docs.config.js` holds one rule set via `rulesAt(severity)`, applied at `warn` repo-wide
-  and at `error` for ratcheted packages. **`@shadowcat/core` is ratcheted — a missing doc comment
-  there fails the command**; every other package is still advisory. A sweep flips its package only
-  after reaching zero.)
+  and at `error` for ratcheted packages. **`@shadowcat/core` and `@shadowcat/render` are ratcheted
+  — a missing doc comment in either fails the command**; every other package is still advisory. A
+  sweep flips its package only after reaching zero.)
 - **A green `pnpm lint:docs` is NOT evidence the docs are correct.** The `jsdoc/require-*` rules
   gate on tag PRESENCE only: they cannot see a vacuous tag (`@returns The result.`), a false
   statement, or a second doc block appended below an existing one. That last case actively

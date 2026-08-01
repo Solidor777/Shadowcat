@@ -920,6 +920,21 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   earlier draft broadcast `cost` unconditionally). **Load-bearing invariant, not a footnote:** any
   FUTURE whole-move scalar added to `MoveStream` must default to the same trusted-only disclosure
   pattern unless explicitly proven safe to broadcast to every recipient.
+- **The four shape views are a NEAR-IDENTICAL SIBLING SET, and that is where they diverge silently.**
+  `drawing-view.ts`, `template-view.ts`, `region-view.ts`, and `wall-view.ts` share one shape: a
+  `reconcile()` diffing scene-scoped docs against tracked ids, and a module-private `toSpec()`
+  returning `ShapeNodeSpec | null` where `null` means "don't render". Because they are written by
+  copy-and-adapt, a change made to one is easy to omit from the other three, and nothing structural
+  catches it. Two divergences have already been found this way:
+  - **Non-numeric coordinate guards** were present in `region-view`/`wall-view` and absent in
+    `drawing-view`/`template-view`. Now identical in all four, and the placement is load-bearing:
+    the guard runs on the RAW authored fields BEFORE tessellation, because JS coerces `null` to 0 in
+    arithmetic — `circlePoints(null, 5, 10)` yields finite, plausible geometry that a
+    post-tessellation check cannot distinguish from an authored shape.
+  - **`"rect"` means different geometry per file**: a ROTATED square via `squarePoints` (side
+    `2*size`, centred on the anchor) in `template-view`, versus an axis-aligned bbox between two
+    authored corners via `rectPoints` in `drawing-view`/`region-view`. Same string, different shape.
+  **When you change one of these four, diff it against the other three.** [[docs-sweep8-render]]
 - **`RegionView` (`region-view.ts`) mirrors `WallView` exactly** — a dumb per-frame reconciler with
   NO client-side secrecy logic. The `"regions"` render layer sits between `"tiles"` and
   `"drawings"` in `layers.ts`'s `CORE_LAYERS`. Only regions the viewer is permitted to see ever
