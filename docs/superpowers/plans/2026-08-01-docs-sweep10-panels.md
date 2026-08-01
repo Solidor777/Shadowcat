@@ -107,7 +107,11 @@ on any op whose no-op case is non-obvious; `locate`/`prune`/`placeNewRegistratio
 `placeFromPersistedLocation` (each is a placement decision with an ordering rule — get the precedence
 right and cite it); `resizeFloating` vs `float` (in-place rect update vs detach-and-reinsert — the
 distinction is the reason both exist); `SHEET_CASCADE_BASE`/`STEP` (cross-file parity, above);
-`decodeLayout`'s three-way outcome (valid / prune-unknown-ids / reset-to-default on garbage) and the
+`decodeLayout`'s TWO-way outcome — `reset: true` + a fresh `fallback()` on a blob failing
+`isPanelLayoutV1`/`isReferentiallyConsistent`, else `reset: false` + `prune(normalized, known)`
+(`persist.ts:141-143`). Pruning is NOT a third outcome: the accepted branch ALWAYS prunes, possibly
+to a no-op, and `reset` reports decode-time rejection only — the file says so itself at
+`persist.ts:124`. Do not write "three-way". Also the
 `poppedOut` back-compat rule (absent normalizes to `[]` via `withPoppedOut`; present-but-malformed
 fails the WHOLE blob — those two are opposite and easy to state backwards); the retained pre-prune
 `source` layout and why late registrations need it.
