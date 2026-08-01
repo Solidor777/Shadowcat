@@ -1598,11 +1598,17 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
     was correct — only the pointers were invented.
   - **`EngineAdapter.focus` has no production caller** — logged to `docs/TODO.md` with the latent
     `STAGE_ID`-guard divergence it hides.
-  - **Cascade-constant parity is now enforced.** `tree.ts`'s `SHEET_CASCADE_BASE`/`STEP` and
-    `controller.svelte.ts`'s `REHYDRATE_FLOAT_BASE`/`STEP` are deliberately unshared and must stay
-    numerically identical; every existing test asserted only that ONE side's offsets differed from
-    each other, so either could drift silently. A parity test now drives both call sites to the same
-    index and demands the identical rect (mutation-proven at n=0/1/7).
+  - **Cascade-constant parity is now enforced, across all THREE copies.** `tree.ts`'s
+    `SHEET_CASCADE_BASE`/`STEP`, `controller.svelte.ts`'s `REHYDRATE_FLOAT_BASE`/`STEP`, and
+    `fake.ts`'s `POPOUT_FALLBACK_BASE`/`STEP` are deliberately unshared and must stay numerically
+    identical; every pre-existing test asserted only that ONE side's offsets differed from each
+    other, so any of them could drift silently. Parity tests now drive the call sites to the same
+    index and demand the identical rect, at n=0/1/3/5/7 — **3 and 5 are the load-bearing indices**,
+    since 0/1/7 share residues under `% 6`, `% 3` and `% 2` and so cannot pin the modulus at all.
+    Mutation-proven per leg (BASE, STEP, and modulus).
+  - **Ratchet mutation-proven per block:** dropping `classifyDrop`'s doc comment fails at
+    `policy.ts:122` (`.ts` block); dropping `onKeydown`'s fails at `PanelMenu.svelte:39` (`.svelte`
+    block). Whole-package vendored-citation audit: 26 citations, 26 resolve.
   Plan: `docs/superpowers/plans/2026-08-01-docs-sweep10-panels.md`.
 - **Sweep 9 — client/shell + ui-kit + formula: COMPLETE (2026-07-31).** 276-item backlog → 0 across
   4 tasks (worldSession 72; shell remainder 50; ui-kit's 16 files 93; formula's 7 files 61). All
