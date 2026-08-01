@@ -262,7 +262,9 @@ not the only, expected caller):
   `resolveAll` + `resolveNotationTemplate` + `NOTATION_KEYWORDS`.
 - **Arithmetic semantics that surprise formula AUTHORS** (all in `evaluate.ts`/`lexer.ts`): `/` is
   float division and `%` is JS TRUNCATED remainder, so `-7 % 2` is `-1`, not the floored `1` — and
-  neither implicitly rounds, so a stat requiring an integer needs an explicit `floor`/`round`.
+  neither implicitly rounds, so a stat requiring an integer needs an explicit `floor`/`round` —
+  and `round` is JS-native, meaning ties go toward +Infinity, NOT away from zero
+  (`Math.round(-2.5) === -2`), which is a real difference for negative modifiers.
   Both `x / 0` and `x % 0` are `"div-zero"`, never `Infinity`/`NaN`; every arithmetic result is
   gated through `finite()`, so an overflow surfaces as `"non-finite"` rather than leaking
   `Infinity` downstream. **`.5` is not a numeric literal** — the lexer requires a leading digit and
@@ -308,7 +310,9 @@ not the only, expected caller):
   A prior task (buddy-check-caught) skipped this pattern at one boundary and reopened a bug
   already fixed twice elsewhere in the pipeline — treat any new injected-callback seam as
   needing the same validation, not a bespoke check.
-- `/` is float division; `%` is JS truncated remainder; neither implicitly rounds.
+- Arithmetic semantics (`/`, `%`, rounding, `finite()` gating, `.5`) → see the
+  `@shadowcat/formula` arithmetic bullet under **Key files & seams** — stated once there, so the
+  two copies cannot drift apart.
 - Property/fuzz tests (`property.test.ts` in this repo; `permutation.test.ts` in the Nightfox
   repo) use a hand-rolled seeded PRNG — do not add `fast-check` or any other new dependency to
   either package (Global Constraint).

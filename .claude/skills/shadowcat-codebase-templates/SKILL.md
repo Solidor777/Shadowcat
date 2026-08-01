@@ -106,14 +106,20 @@ interprets or merges anything itself.
   "gm" || effectiveOwner(child, documents) === selfId` — `effectiveOwner` from
   `@shadowcat/core`'s `actor.ts`, the SAME per-doc-override-else-linked-actor-owner rule the
   server now resolves at egress (Phase C); a literal `doc.owner` read here would fork it) AND the
-  injected `canEdit(child, "/base")` AND `canEdit(child, "/system")` (an advisory client-side
-  mirror of the server's real authority). `canPush (templateId)` gates only on
-  `#isOwnerOrGm(template)` AND `findInstances(templateId).length > 0`
-  — it does NOT call `canEdit` at the predicate level. `push` itself DOES per-instance-filter by
-  `canEdit(inst, "/base")`/`canEdit(inst, "/system")` when actually pushing, additionally
-  filtering `findInstances`' same-world result before splitting into dispatch-now (no conflicts)
-  vs. conflict-modal groups (E9: same-world see+write, not just same-world see) — so the
-  write-scope check lives in `push`'s body, not in `canPush`'s predicate.
+  injected `canEdit(child, "/base")` AND `canEdit(child, "/system")` AND `canEdit(child,
+  "/embedded")` (an advisory client-side mirror of the server's real authority — WRITE_FIELDS ∪
+  MANAGE_EMBEDDED). **`canPush(templateId)` DOES call `canEdit`**, but only one leg of that union:
+  `#isOwnerOrGm(template)` AND `canEdit(template, "/embedded")` AND
+  `findInstances(templateId).length > 0`. The two predicates are NOT the same check and neither
+  is a superset by accident — `canPull` gates the bands a pull writes onto the INSTANCE, while
+  `canPush` gates the TEMPLATE only. `push` then per-instance-filters by
+  `canEdit(inst, "/base")`/`canEdit(inst, "/system")`, additionally filtering `findInstances`'
+  same-world result before splitting into dispatch-now (no conflicts) vs. conflict-modal groups
+  (E9: same-world see+write, not just same-world see). **That per-instance filter has a known gap:
+  `planToUpdate` also emits `/embedded/<coll>` changes, which the filter does not check, so an
+  instance the pusher can write base/system but not `/embedded` on is included and has that change
+  rejected server-side. Contained to the one instance (`push` dispatches one intent PER instance),
+  and logged in `docs/TODO.md` with two candidate fixes.**
 - `src/client/ui-kit/src/MergeConflictModal.svelte` (+ `TemplateModalHost.svelte`) — the
   field-level conflict resolution UI (E5/§6.2): renders one `ConflictGroup` per pending child
   (`{ key, label, conflicts: Conflict[] }`; the type lives in

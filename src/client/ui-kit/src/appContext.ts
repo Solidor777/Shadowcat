@@ -153,9 +153,11 @@ export interface AppContext {
    * read-only observability signal, not a broadcast of every scene viewer's moves. Returns an
    * unsubscribe. */
   onMoveOutcome: (cb: (msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void) => () => void;
-  /** Chat transport seam: send/edit/delete a chat message. Fire-and-forget (no
-   * correlation id) — the server applies/rejects out-of-band; the composer
-   * pre-validates the cheap rejects client-side. */
+  /** Chat transport seam: send/edit/delete a chat message. NOT fire-and-forget — each frame
+   * carries a `request_id` and a rejection correlates back to REJECT this promise with the
+   * server's player-presentable reason (which the composer surfaces). Success is the
+   * asymmetric case: the broadcast Event echo carries no `request_id`, so an accepted op is
+   * never acknowledged and resolution is assumed from silence. See `ChatApi` above. */
   chat: ChatApi;
   /** Template merge seam: stamp + pull/push/revert (M13e). */
   templates: TemplatesApi;

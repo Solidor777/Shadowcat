@@ -192,8 +192,10 @@ export class WorldSession {
    * `effective_role`/`resolve_access`) — so this gate's write affordances can over-permit on a
    * `gm_role`-capped document. Advisory-only, not a live bug today: `apply_intent` re-checks
    * independently, and separately rejects every ordinary client Update to a `message` doc
-   * outright regardless of role (`data/sqlite.rs`) — `gm_role` is currently set only by
-   * chat-message construction (`chat/mod.rs`), the one doc_type this over-permit could apply to.
+   * outright regardless of role (`data/sqlite.rs`). `chat/mod.rs` is the only place the SERVER
+   * constructs a `gm_role` today — NOT a bound on where it can live: it is an ordinary field on
+   * every document's `permissions` block, so do not assume it is chat-specific (see the SCOPE
+   * NOTE on `canWritePath` in `@shadowcat/core`'s `capabilities.ts`).
    *
    * @param doc The document being edited.
    * @param path The JSON-pointer path within `doc` the caller wants to write.
@@ -252,7 +254,10 @@ export class WorldSession {
 
   /** Predict `ops` optimistically and transmit them as one correlated Intent. The
    * single `intent_id` ties the local prediction to the server echo/reject (FIFO
-   * confirm). While reconnecting (transport down but `running`), predict AND queue:
+   * confirm). ORDERING (other packages' docs cite this): `applyIntent` runs BEFORE
+   * `ws.send` on every path that predicts at all — the optimistic view is updated
+   * first, so a synchronous reader observing the send has already seen the
+   * prediction, and a send that throws cannot leave a transmitted-but-unpredicted op. While reconnecting (transport down but `running`), predict AND queue:
    * every offline intent queues, so optimistic FIFO order equals the eventual send
    * order and the confirm-correlation contract holds. A flush happens after resync
    * (the optimistic view rebases onto authoritative state first). When stopped, drop
@@ -569,10 +574,11 @@ export class WorldSession {
   }
 
   /** Open the WS connection to `worldId` and wire the broadcast-driven move/ping animation
-   * listeners. Resolves once the underlying transport opens (`WsClient.start`'s own
-   * contract) — the server's Welcome, module activation, member fetch, and external-module
-   * loading all happen asynchronously afterward inside `#onWelcome` and are NOT awaited by
-   * this call.
+   * listeners. Resolves once the connect ATTEMPT settles — `WsClient.open` catches a failed
+   * `connect` and schedules a reconnect rather than rejecting, so resolution does NOT imply
+   * the transport is up. It certainly does not imply the world is usable: the server's
+   * Welcome, module activation, member fetch, and external-module loading all happen
+   * asynchronously afterward inside `#onWelcome` and are NOT awaited by this call.
    * @param worldId The world to connect to.
    * @example
    * ```

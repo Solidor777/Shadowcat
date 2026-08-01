@@ -1564,8 +1564,9 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
     off by one, which matters because module authors place layers at a fractional order relative to
     them. **Nothing routinely checks skills against code** — this was caught incidentally.
   Plan: `docs/superpowers/plans/2026-07-31-docs-sweep8-client-render.md`.
-- **Sweeps 9–N — doc-comment sweeps: UPCOMING.** Remaining client packages, then modules:
-  shell+ui-kit+formula (281), module packages (~530, 3–4 groups). Every symbol gets
+- **Sweeps 10–N — doc-comment sweeps: UPCOMING.** Remaining area: the module packages
+  (~530, 3–4 groups). Client packages are done (Sweep 9 closed shell+ui-kit+formula; its
+  actual backlog measured 276, not the 281 estimated here). Every symbol gets
   description+params+example; each completed area flips its lints to deny (Rust: per-file inner
   deny attributes as in Sweep 1; TS: per-package severity flip in `eslint.docs.config.js`).
   Server-wide informational count at Sweep-1 start: 1,059. Whole-repo `lint:docs` after Sweep 8:
@@ -1585,6 +1586,12 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   single flat-config block cannot carry two parsers, so a package reaching zero ratchets in TWO
   places, not one. Verified the block is a real gate rather than a parser that silently visits
   nothing: an undocumented function injected into a ratcheted component's `<script>` reports.
+  **Mutation-proven on all FIVE newly-ratcheted targets**, not just the novel one — `shell` `.ts`
+  (a class method), `ui-kit` `.ts`, `formula` `.ts`, `shell` `.svelte`, `ui-kit` `.svelte`: deleting
+  a doc comment makes `pnpm lint:docs` exit 1 naming the file. Worth recording because two probes
+  first came back GREEN and the gate was fine — they had removed a block from a `const`, which
+  `require-jsdoc` does not gate. **A mutation proof that fails to bite may be a bad probe rather
+  than a bad gate; check what you mutated before concluding.**
   `**/*.spec.ts` joined `**/*.test.ts` in both ignore lists — the same category (a test file, whose
   local helpers the test itself describes) was being exempted or not purely by which runner's naming
   convention the file used. The distinction the list actually draws — test file vs. helper MODULE —
@@ -1593,8 +1600,10 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   ALREADY-SHIPPED work.** A doc block placed above another doc block rather than a declaration binds
   to nothing, since TypeDoc, editor hover, and jsdoc lint all take the NEAREST preceding block —
   `lint:docs` cannot see this class by construction. Widening the scan past sweep 9's own packages
-  found three survivors in the ratcheted `core`/`render` packages, because their anchors are `const`
-  declarations that `require-jsdoc` never demands a doc for. The real one: `chat-docs.ts`'s
+  found three survivors in the ratcheted `core`/`render` packages — a NEARER doc block already
+  satisfied the rule at each anchor, which is the whole mechanism; do not narrow the scan by anchor
+  kind, since two of the three sit on `export function` declarations that `require-jsdoc` DOES
+  demand docs for and that carry them. The real one: `chat-docs.ts`'s
   `RollOutcome` block — carrying the i64 PRECISION caveat and a TODO — documented nothing while
   `RollOutcomeSchema` itself had none. **Run this scan repo-wide, not sweep-scoped.**
   Every fix round this sweep was again triggered by a FALSE sentence, never a missing one, and the

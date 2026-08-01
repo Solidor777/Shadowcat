@@ -136,17 +136,23 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   drops the `WsClient` and resets `state`/`role`/`world`/`#gmViewedScene`, but does NOT clear
   `store`/`documents`, module registrations, or EITHER latch. That is correct only because
   `App.svelte`'s `leaveWorld` discards the instance and constructs a fresh `WorldSession`. Reuse one
-  across `leave()` → `enter()` and both latches are still set, so the next Welcome skips activation
-  entirely and every Surface renders empty — precisely the failure this split exists to prevent.
-  Treat `WorldSession` as single-use per world entry.
-  **Two more boundaries worth knowing before relying on `enter()`:** it resolves when the TRANSPORT
-  OPENS, not when the world is usable — Welcome, module activation, the member fetch, and external
-  module loading all happen afterward and are not awaited. And `#onWelcome` contains its failures
-  asymmetrically: the member fetch has its own inner catch (logged, non-blocking), whereas an
-  activation throw reverts `#activated` and RE-throws, skipping topology reconcile, scene
-  re-establishment, and the GM first-scene seed FOR THAT WELCOME — so a failed activation also
-  costs that Welcome's scene re-subscription, not just its modules. An outer catch means the
-  method itself never rejects, so neither failure surfaces to a caller.
+  across `leave()` → `enter()` and it carries the PREVIOUS world's state into the new one: `store`/
+  `documents`, module registrations, and the `contributions` registry all survive (nothing clears
+  them — `ContributionRegistry` drops entries only via a contribution's own dispose or
+  `removeModule`), while both latches stay set so the next Welcome skips activation. Surfaces then
+  render the previous world's contributions — stale cross-world content, NOT an empty screen, which
+  is the harder failure to notice. Treat `WorldSession` as single-use per world entry. (Distinct
+  from what the latch split itself guards, which is a FAILED first activation being cached.)
+  **Two more boundaries worth knowing before relying on `enter()`:** it resolves when the connect
+  ATTEMPT SETTLES — `WsClient.open` catches a failed `connect` and schedules a reconnect instead of
+  rejecting — so resolution implies neither an open transport nor a usable world; Welcome, module
+  activation, the member fetch, and external module loading all happen afterward and are not
+  awaited. And `#onWelcome` contains its failures asymmetrically: the member fetch has its own inner
+  catch (logged, non-blocking), whereas an activation throw reverts `#activated` and RE-throws,
+  skipping EVERY later step in that Welcome — external-module loading, the member fetch, topology
+  reconcile, scene re-establishment, the GM first-scene seed — so a failed activation also costs
+  that Welcome's scene re-subscription, not just its modules. An outer catch means the method
+  itself never rejects, so neither failure surfaces to a caller.
 - `src/client/shell/src/` — `App.svelte`, `main.ts`, `lib/` (hash router, api client, session,
   WorldSession controller, default-module wiring). `sessionState.svelte.ts` owns the
   `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` (M12a, replaced
@@ -203,7 +209,8 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   caller's promise with the server's player-presentable reason, which the composer surfaces.
   SUCCESS is the asymmetric case — the broadcast Event echo carries no `request_id`, so nothing
   acknowledges an accepted op and the 15s timer RESOLVES on silence. Exactly three settle paths:
-  that timer, a `chat_error` reject, a disconnect reject. Details →
+  that timer, a `chat_error` reject, and a `failPending` reject — reached from BOTH a disconnect
+  and an explicit `stop()`, which is what `WorldSession.leave()` calls. Details →
   [[shadowcat-codebase-chat]]). `members` is now populated for EVERY role (chat name resolution; the
   roster endpoint was widened from GM-only), not just GM.
 - `src/modules/{entry,core-ui,panels,stage,topbar,statusbar,settings,game-settings,scene-browser,

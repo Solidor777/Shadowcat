@@ -12,10 +12,12 @@ export type Tok =
 const OPS = new Set<string>(["+", "-", "*", "/", "%", "(", ")", ",", "."]);
 
 /**
- * True for an ASCII decimal digit. Only used to START a numeric literal
- * (see `tokenize`'s digit branch) — a leading `.` is NOT in this set, so
- * a formula like `.5` is not recognized as a number (it lexes `.` as a
- * bare operator token instead; write `0.5`).
+ * True for an ASCII decimal digit — used wherever one must be recognized:
+ * starting a numeric literal, continuing one, the post-`.` lookahead, and
+ * (via `isWordChar`) mid-identifier. IMPLICIT COUPLING: changing this set
+ * changes IDENTIFIER lexing too, not just numeric-literal entry.
+ * A leading `.` is NOT in this set, so a formula like `.5` is not recognized
+ * as a number (it lexes `.` as a bare operator token instead; write `0.5`).
  * @param ch A single character.
  * @returns `true` when `ch` is `'0'`–`'9'`.
  * @example
