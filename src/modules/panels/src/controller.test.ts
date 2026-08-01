@@ -350,7 +350,12 @@ test("rehydratePoppedOut: two persisted popped-out ids cascade to distinct float
 // a given side's own offsets differ FROM EACH OTHER, which stays green if
 // either pair changes. This is the one test that fails on divergence: it drives
 // both call sites to the same floating index and demands the identical rect.
-// n=0 pins BASE, n=1 pins STEP, n=7 pins the shared `% 6` wrap.
+// Index choice is load-bearing. n=0 pins BASE (offset is 0 whatever STEP is);
+// n=1 pins STEP; n=7 exercises the wrap. Those three alone do NOT pin the
+// MODULUS: 0,1,7 have identical residues under `% 6`, `% 3` and `% 2`, so a
+// one-side edit to `% 3` passes every one of them while diverging at n=2..6.
+// n=3 and n=5 disagree across those divisors (3 -> 3/0/1, 5 -> 5/2/1) and are
+// what actually gate the `% 6`.
 function rectViaPlacement(alreadyFloating: number): Rect {
   let l = defaultLayout([]);
   for (let i = 0; i < alreadyFloating; i++) {
@@ -387,7 +392,7 @@ function rectViaRehydration(alreadyFloating: number): Rect {
   return ctrl.layout.expanded.floating.find((f) => f.id === "probe")!.rect;
 }
 
-test.each([0, 1, 7])(
+test.each([0, 1, 3, 5, 7])(
   "cascade parity at index %i: a floating placement and a rehydrated popout land on the identical rect",
   (alreadyFloating) => {
     expect(rectViaRehydration(alreadyFloating)).toEqual(rectViaPlacement(alreadyFloating));

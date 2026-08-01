@@ -117,3 +117,48 @@ test("two simultaneously popped-out ids cascade to distinct floating rects under
   expect(chatEl.style.zIndex).not.toBe(assetsEl.style.zIndex);
   eng.destroy();
 });
+
+// THIRD copy of the cascade constants: `POPOUT_FALLBACK_BASE`/`STEP` inside
+// `apply()`, whose own comment asserts it mirrors `tree.ts`'s
+// SHEET_CASCADE_BASE/STEP and `controller.svelte.ts`'s REHYDRATE_FLOAT_BASE/STEP.
+// The test above asserts only that two fallback rects DIFFER from each other,
+// which stays green if this copy drifts away from the other two; the
+// controller.test.ts parity test covers the other two but not this one. This
+// closes the third leg: with no pre-existing floating panels, the i-th
+// popped-out id's degraded rect must equal what the layout tree would place the
+// i-th floating panel at. Index choice mirrors controller.test.ts's — 3 and 5
+// are the ones that pin the `% 6` modulus rather than merely the step.
+test.each([0, 1, 3, 5, 7])(
+  "cascade parity at index %i: FakeEngine's popout fallback matches the layout tree's floating placement",
+  (index) => {
+    const ids = Array.from({ length: index + 1 }, (_, i) => `p${i}`);
+    const probe = ids[index];
+
+    // Layout-tree side: place `index` panels floating, then the probe.
+    let treeLayout = defaultLayout([]);
+    for (const id of ids) {
+      treeLayout = applyOp(treeLayout, { op: "open", id, placement: { kind: "floating" } });
+    }
+    const treeRect = treeLayout.expanded.floating.find((f) => f.id === probe)!.rect;
+
+    // FakeEngine side: all ids popped out, degraded to floating by `apply()`.
+    const host = document.createElement("div");
+    const eng = new FakeEngine();
+    eng.init(host, makeSlots(ids), document.createElement("div"));
+    let popped = defaultLayout([]);
+    for (const id of ids) {
+      popped = applyOp(popped, { op: "open", id, placement: { kind: "docked", zone: "right" } });
+      popped = applyOp(popped, { op: "popOut", id });
+    }
+    eng.apply(popped.expanded, new Map());
+    const el = eng.floatEl(probe)!;
+
+    expect({ x: el.style.left, y: el.style.top, w: el.style.width, h: el.style.height }).toEqual({
+      x: `${treeRect.x}px`,
+      y: `${treeRect.y}px`,
+      w: `${treeRect.w}px`,
+      h: `${treeRect.h}px`,
+    });
+    eng.destroy();
+  },
+);
